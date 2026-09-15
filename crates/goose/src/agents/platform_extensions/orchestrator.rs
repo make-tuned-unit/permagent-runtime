@@ -1497,6 +1497,7 @@ pub(crate) fn ground_roadmap_goals(
             &mut goal.acceptance_criteria,
             &goal.description,
             root,
+            facts,
         );
         if behavioural_added {
             receipts.push(format!(
@@ -1623,11 +1624,29 @@ fn ungrounded_named_criteria_in_goals(
     out
 }
 
+/// Prefix shared by every `ac_validation_error` message -- `pub(crate)`
+/// (not a private const) so `tool_monitor::reconstruct_window` can
+/// recognize a `create_roadmap` result as THIS specific rejection (not
+/// this monitor's own `GUARD_BLOCK_PREFIX`, not some other tool error) and
+/// exempt the model's next identical `create_roadmap` retry from the S1
+/// identical-call guard (R52a, belt-and-braces to the fix below). Kept as
+/// one named constant, referenced from both crates' modules, rather than
+/// two copies of the literal string that could drift apart.
+pub(crate) const AC_VALIDATION_ERROR_MARKER: &str = "create_roadmap rejected:";
+
 /// The structured error `create_roadmap` returns the FIRST time a given
-/// proposal fails R21b validation: lists every ungrounded criterion plus
-/// the checks this repo actually has, so the coordinator can re-plan (a
-/// fresh `decompose_roadmap` pass, or a hand-corrected `goals_json`) in one
-/// turn rather than dispatching a worker onto an unsatisfiable target.
+/// proposal still has a MODEL-authored ungrounded criterion after R52a's
+/// own harness-derived rewrite below has already run (harness-derived
+/// offenders never reach this function at all -- they are rewritten
+/// immediately, never rejected): lists every remaining ungrounded
+/// criterion plus the checks this repo actually has, and says exactly what
+/// to change about each one. Deliberately does NOT tell the model to
+/// resubmit the identical proposal (A50 analysis (a): a model that follows
+/// that literal instruction gets denied by `tool_monitor`'s own S1
+/// identical-call guard before `create_roadmap`'s one-retry accept-and-
+/// rewrite branch below ever runs) -- the belt-and-braces retry path still
+/// exists as a safety net for a proposal that fails again, but is
+/// advertised as exactly that, not as the primary instruction.
 fn ac_validation_error(ungrounded: &[UngroundedCriterion], facts: &RepoFacts) -> String {
     let items = ungrounded
         .iter()
@@ -1649,16 +1668,17 @@ fn ac_validation_error(ungrounded: &[UngroundedCriterion], facts: &RepoFacts) ->
         facts.check_commands.join("; ")
     };
     format!(
-        "create_roadmap rejected: {} acceptance criterion(s) name a check or file this repo \
+        "{AC_VALIDATION_ERROR_MARKER} {} acceptance criterion(s) name a check or file this repo \
          does not have -- never invented, always grounded in what this repo can actually run. \
-         Re-plan and call create_roadmap again (a fresh decompose_roadmap pass, or a corrected \
-         goals_json) naming only a detected check command or a file that actually exists here:\n\
+         For EACH item below, change its wording to name a detected check command or a file \
+         that actually exists here (never resend the same text unchanged), then call \
+         create_roadmap again with the corrected goals_json:\n\
          {}\n\n\
          Detected check command(s) you may use verbatim: {}\n\n\
-         (One-retry gate: a second create_roadmap call for this exact proposal that is still \
-         ungrounded will be accepted, with each ungrounded criterion rewritten to the closest \
-         detected check and recorded as `ac_rewritten` on the card metadata for human review -- \
-         never silently dropped.)",
+         (Safety net, not a shortcut: if a corrected proposal still fails this same check, a \
+         second create_roadmap call is accepted, with each remaining ungrounded criterion \
+         rewritten to the closest detected check and recorded as `ac_rewritten` on the card \
+         metadata for human review -- never silently dropped.)",
         ungrounded.len(),
         items,
         checks
@@ -1872,6 +1892,61 @@ fn rewrite_ungrounded_named_criteria(
         }
     }
     (rewritten, notes)
+}
+
+/// R52a (A50 analysis (a)/(c); see also `## Lane R43b`, `## Lane R43b-b`):
+/// [`rewrite_ungrounded_named_criteria`]'s same per-criterion rewrite
+/// (closest detected check / structured probe marker / honest
+/// `UNVERIFIED`), but selective -- only a criterion for which
+/// `should_rewrite` returns true is touched; everything else, including a
+/// genuinely model-authored ungrounded criterion, is returned byte-for-
+/// byte unchanged so `validate_roadmap_ac_or_rewrite` can still give the
+/// MODEL one real chance to fix its own wording before falling back to
+/// this same mechanical rewrite. Used to rewrite harness-derived offenders
+/// (`criterion_is_harness_derived`) immediately, on the FIRST
+/// `create_roadmap` call for a proposal -- never the model's fault, so
+/// never worth a reject-then-identical-resubmit round trip.
+fn rewrite_selected_ungrounded_criteria(
+    goals: &mut [goal_state::ProposedGoal],
+    facts: &RepoFacts,
+    should_rewrite: impl Fn(&str) -> bool,
+) -> std::collections::BTreeMap<usize, Vec<String>> {
+    let mut notes_by_goal = std::collections::BTreeMap::new();
+    for (idx, goal) in goals.iter_mut().enumerate() {
+        let mut rewritten = Vec::with_capacity(goal.acceptance_criteria.len());
+        let mut notes = Vec::new();
+        let mut seen_replacement = HashSet::new();
+        for criterion in &goal.acceptance_criteria {
+            let ungrounded_named = criterion_names_a_check_or_file(criterion)
+                && !is_grounded_criterion(criterion, facts);
+            if !ungrounded_named || !should_rewrite(criterion) {
+                rewritten.push(criterion.clone());
+                continue;
+            }
+            let replacement = if let Some(check) = facts.check_commands.first() {
+                format!("run `{check}`")
+            } else if let Some(shape) = classify_probe_shape(criterion) {
+                format!("{} — {}", shape.render(), criterion)
+            } else {
+                format!(
+                    "UNVERIFIED (no detected check command in this repo) — kept for human review: {criterion}"
+                )
+            };
+            notes.push(format!(
+                "acceptance criterion named a check/file this repo does not have, harness-\
+                 derived (R43b/R43b-b) — rewritten immediately, no retry needed (R52a): \
+                 \"{criterion}\" -> \"{replacement}\""
+            ));
+            if seen_replacement.insert(replacement.clone()) {
+                rewritten.push(replacement);
+            }
+        }
+        if !notes.is_empty() {
+            goal.acceptance_criteria = rewritten;
+            notes_by_goal.insert(idx, notes);
+        }
+    }
+    notes_by_goal
 }
 
 // ── R43b: acceptance criteria must be behavioural, not existence-only ────
@@ -2095,10 +2170,22 @@ fn most_behavioural_sentence(description: &str) -> Option<String> {
 /// non-behavioural pick through, re-checks gate (4) on the wrapped text
 /// too, and relativises/rejects any absolute or out-of-root path token via
 /// R44a's [`normalize_path_token`] -- a raw host filesystem path baked into
-/// an AC can never be satisfied against a goal's own worktree (#A39).
+/// an AC can never be satisfied against a goal's own worktree (#A39). R52a
+/// adds one more pass, [`ground_derived_ac_or_substitute`]: the WRAPPED
+/// text can still quote a path or invocation from the task's own words
+/// that this repo does not actually have (A50 analysis (a)/(c) -- the task
+/// text's own account of a currently-BROKEN command, e.g. `node
+/// tests/run.ts` when the real file is `test/run.ts`), so it is checked
+/// against the SAME grounding `create_roadmap`'s own validator applies
+/// before this criterion is ever handed to a caller, and substituted with
+/// this repo's own detected check when the literal quote does not survive.
 /// `None` on any failure, so the caller always has a safe fallback to "no
-/// AC derived" rather than a half-checked candidate.
-fn finalize_derived_ac(candidate: String, root: Option<&std::path::Path>) -> Option<String> {
+/// AC derived" rather than a half-checked, or ungrounded, candidate.
+fn finalize_derived_ac(
+    candidate: String,
+    root: Option<&std::path::Path>,
+    facts: &RepoFacts,
+) -> Option<String> {
     let normalized = normalize_derived_ac_paths(&candidate, root)?;
     if classify_acceptance_criterion(&normalized) != AcKind::Behavioural {
         return None;
@@ -2106,7 +2193,53 @@ fn finalize_derived_ac(candidate: String, root: Option<&std::path::Path>) -> Opt
     if !names_a_non_path_concrete_token(&normalized) {
         return None;
     }
-    Some(normalized)
+    let grounded = ground_derived_ac_or_substitute(normalized, facts)?;
+    // Defensive re-check: the substitution's wrapping prose is fixed and
+    // hand-verified to satisfy both, but this function's whole contract is
+    // "never hand back a criterion that fails its own checks".
+    if classify_acceptance_criterion(&grounded) != AcKind::Behavioural
+        || !names_a_non_path_concrete_token(&grounded)
+    {
+        return None;
+    }
+    Some(grounded)
+}
+
+/// R52a (A50 analysis (a)/(c)): does `candidate` quote a FILE PATH (a
+/// dotted-extension token, via [`extract_file_path`]) or a literal
+/// INVOCATION (via [`extract_quoted_command`]) that this repo does not
+/// actually have, per the SAME [`is_grounded_criterion`] check
+/// `create_roadmap`'s own `ungrounded_named_criteria_in_goals` validator
+/// applies? Deliberately narrower than that validator's own
+/// [`criterion_names_a_check_or_file`] gate (which treats ANY backtick
+/// span as "names a check or file") -- a derived candidate routinely
+/// backtick-quotes a bare CLI flag straight from the task text (e.g.
+/// `` `--level` ``), which is not itself a file or check name and must
+/// never block derivation on its own; only an actual path-with-extension
+/// or a recognized-program command token is checked against `facts` here.
+fn derived_ac_names_an_ungrounded_path_or_command(candidate: &str, facts: &RepoFacts) -> bool {
+    let names_something_checkable =
+        extract_file_path(candidate).is_some() || extract_quoted_command(candidate).is_some();
+    names_something_checkable && !is_grounded_criterion(candidate, facts)
+}
+
+/// R52a: when [`derived_ac_names_an_ungrounded_path_or_command`] flags
+/// `candidate`, replace it with the SAME "closest detected check" fallback
+/// [`rewrite_ungrounded_named_criteria`] already uses on an ordinary
+/// ungrounded criterion -- never the task text's broken form, the one
+/// piece of "what actually runs here" ground truth this function has.
+/// `None` (the existing "nothing could be derived" fallback to
+/// `ac_existence_only`) only when this repo has no detected check command
+/// either -- never invents one.
+fn ground_derived_ac_or_substitute(candidate: String, facts: &RepoFacts) -> Option<String> {
+    if !derived_ac_names_an_ungrounded_path_or_command(&candidate, facts) {
+        return Some(candidate);
+    }
+    let check = facts.check_commands.first()?;
+    Some(format!(
+        "running `{check}` produces the behavior the task describes, not merely that \
+         supporting code was added (derived from the task description, R43b)"
+    ))
 }
 
 /// Replace every absolute, path-shaped token in `candidate` with its
@@ -2139,13 +2272,14 @@ fn normalize_derived_ac_paths(candidate: &str, root: Option<&std::path::Path>) -
 fn derive_behavioural_ac_from_task_text(
     description: &str,
     root: Option<&std::path::Path>,
+    facts: &RepoFacts,
 ) -> Option<String> {
     if let Some(cmd) = extract_quoted_command(description) {
         let candidate = format!(
             "running `{cmd}` produces the behavior the task describes, not merely that \
              supporting code was added (derived from the task description, R43b)"
         );
-        return finalize_derived_ac(candidate, root);
+        return finalize_derived_ac(candidate, root, facts);
     }
     let sentence = most_behavioural_sentence(description)?;
     let candidate = format!(
@@ -2153,7 +2287,23 @@ fn derive_behavioural_ac_from_task_text(
          example, not just that supporting code was added -- \"{sentence}\" (derived from the \
          task description, R43b)"
     );
-    finalize_derived_ac(candidate, root)
+    finalize_derived_ac(candidate, root, facts)
+}
+
+/// The literal marker every criterion [`derive_behavioural_ac_from_task_text`]
+/// hands back ends with -- both of its own candidate formats append it
+/// verbatim, and [`ground_derived_ac_or_substitute`]'s substitution
+/// preserves it too. R52a (A50 analysis (a)/(c)): a criterion carrying
+/// this tag was never written by the model; it is this harness's own
+/// scaffolding, so `create_roadmap`'s AC-grounding validator rejecting one
+/// is the harness rejecting its own output, not something the model needs
+/// (or can usefully be asked) to fix by resubmitting.
+const DERIVED_AC_TAG: &str = "(derived from the task description, R43b)";
+
+/// Whether `criterion` is R43b/R43b-b's own derived output, per
+/// [`DERIVED_AC_TAG`].
+fn criterion_is_harness_derived(criterion: &str) -> bool {
+    criterion.contains(DERIVED_AC_TAG)
 }
 
 /// Card metadata key set when a goal's acceptance criteria are ALL
@@ -2181,11 +2331,12 @@ fn ground_acceptance_criteria_behaviourally(
     criteria: &mut Vec<String>,
     description: &str,
     root: Option<&std::path::Path>,
+    facts: &RepoFacts,
 ) -> (bool, bool) {
     if !all_acceptance_criteria_existence_only(criteria) {
         return (false, false);
     }
-    match derive_behavioural_ac_from_task_text(description, root) {
+    match derive_behavioural_ac_from_task_text(description, root, facts) {
         Some(derived) => {
             criteria.push(derived);
             (true, false)
@@ -2300,6 +2451,19 @@ async fn roadmap_decision_is_approved(pool: &sqlx::Pool<sqlx::Sqlite>, decision_
 /// the three-way branch (clean / reject / rewrite) reads as one policy in
 /// one place, directly unit-testable against a real pool without the rest
 /// of `handle_create_roadmap`'s plumbing.
+///
+/// R52a (A50 analysis (a)/(c)): a harness-derived ungrounded criterion
+/// (`criterion_is_harness_derived` -- R43b/R43b-b's own scaffolding, never
+/// the model's own wording) is rewritten immediately below, on THIS call,
+/// regardless of retry state. Forcing a reject-then-identical-resubmit
+/// round trip just to reach the one-retry accept-and-rewrite branch would
+/// ask the model to trigger a mechanism `tool_monitor`'s S1 identical-call
+/// guard intercepts and denies first (confirmed: `create_roadmap`'s own
+/// documented escape hatch was unreachable by construction whenever a
+/// model followed its literal instructions). Only a REMAINING,
+/// model-authored ungrounded criterion ever reaches the reject/one-retry
+/// path below, and its error text names what to change rather than asking
+/// for a resubmit.
 async fn validate_roadmap_ac_or_rewrite(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     project: &crate::projects::Project,
@@ -2308,35 +2472,40 @@ async fn validate_roadmap_ac_or_rewrite(
     root: Option<&std::path::Path>,
     goals: &mut [goal_state::ProposedGoal],
 ) -> Result<std::collections::BTreeMap<usize, Vec<String>>, String> {
-    let ungrounded = ungrounded_named_criteria_in_goals(goals, facts);
-    let mut ac_rewrite_notes = std::collections::BTreeMap::new();
-    if ungrounded.is_empty() {
+    let mut ac_rewrite_notes =
+        rewrite_selected_ungrounded_criteria(goals, facts, criterion_is_harness_derived);
+
+    // Re-check groundedness fresh: the harness-derived rewrite above may
+    // have resolved every ungrounded criterion, or a genuinely
+    // model-authored one may remain.
+    let remaining = ungrounded_named_criteria_in_goals(goals, facts);
+    if remaining.is_empty() {
         // Clear any stale retry marker left by a DIFFERENT, earlier
         // proposal for this project that failed and was never retried.
         clear_roadmap_ac_validation_state(pool, project).await;
-        apply_behavioural_ac_grounding(goals, &mut ac_rewrite_notes, root);
+        apply_behavioural_ac_grounding(goals, &mut ac_rewrite_notes, root, facts);
         return Ok(ac_rewrite_notes);
     }
     if !roadmap_ac_validation_previously_failed(project, proposal_hash) {
         record_roadmap_ac_validation_failure(pool, project, proposal_hash).await;
-        return Err(ac_validation_error(&ungrounded, facts));
+        return Err(ac_validation_error(&remaining, facts));
     }
     // Bounded to one retry (R21b): this exact proposal already failed AC
-    // validation once. Never invent a check — rewrite each ungrounded
-    // criterion to the closest detected check (or mark it UNVERIFIED when
-    // nothing was detected), leave every other criterion untouched, and
-    // make the correction auditable on the card itself so a human can see
-    // exactly what changed and why.
+    // validation once. Never invent a check — rewrite each remaining
+    // (model-authored) ungrounded criterion to the closest detected check
+    // (or mark it UNVERIFIED when nothing was detected), leave every other
+    // criterion untouched, and make the correction auditable on the card
+    // itself so a human can see exactly what changed and why.
     for (idx, goal) in goals.iter_mut().enumerate() {
         let (rewritten, notes) =
             rewrite_ungrounded_named_criteria(&goal.acceptance_criteria, facts);
         if !notes.is_empty() {
             goal.acceptance_criteria = rewritten;
-            ac_rewrite_notes.insert(idx, notes);
+            ac_rewrite_notes.entry(idx).or_default().extend(notes);
         }
     }
     clear_roadmap_ac_validation_state(pool, project).await;
-    apply_behavioural_ac_grounding(goals, &mut ac_rewrite_notes, root);
+    apply_behavioural_ac_grounding(goals, &mut ac_rewrite_notes, root, facts);
     Ok(ac_rewrite_notes)
 }
 
@@ -2353,12 +2522,14 @@ fn apply_behavioural_ac_grounding(
     goals: &mut [goal_state::ProposedGoal],
     ac_rewrite_notes: &mut std::collections::BTreeMap<usize, Vec<String>>,
     root: Option<&std::path::Path>,
+    facts: &RepoFacts,
 ) {
     for (idx, goal) in goals.iter_mut().enumerate() {
         let (behavioural_added, existence_only) = ground_acceptance_criteria_behaviourally(
             &mut goal.acceptance_criteria,
             &goal.description,
             root,
+            facts,
         );
         if behavioural_added {
             ac_rewrite_notes.entry(idx).or_default().push(
@@ -36548,8 +36719,12 @@ mod tests {
 
     #[test]
     fn derive_behavioural_ac_from_task_text_quotes_the_logfilter_fixtures_own_example() {
-        let derived = derive_behavioural_ac_from_task_text(LOGFILTER_TASK_PROMPT, None)
-            .expect("the fixture's own prompt names --level/--since/--last and exit codes");
+        let derived = derive_behavioural_ac_from_task_text(
+            LOGFILTER_TASK_PROMPT,
+            None,
+            &RepoFacts::default(),
+        )
+        .expect("the fixture's own prompt names --level/--since/--last and exit codes");
         // Quotes the task's own text, not an invented example.
         assert!(
             derived.contains("--level")
@@ -36572,9 +36747,14 @@ mod tests {
 
     #[test]
     fn derive_behavioural_ac_from_task_text_prefers_a_literal_runnable_command() {
+        let facts = RepoFacts {
+            check_commands: vec!["pytest".to_string()],
+            ..Default::default()
+        };
         let derived = derive_behavioural_ac_from_task_text(
             "Run `pytest -k thing` and confirm it exits 0.",
             None,
+            &facts,
         )
         .expect("a literal quoted pytest command should derive");
         assert!(derived.contains("`pytest -k thing`"), "{derived}");
@@ -36584,7 +36764,11 @@ mod tests {
     #[test]
     fn derive_behavioural_ac_from_task_text_is_none_when_nothing_concrete_to_quote() {
         assert_eq!(
-            derive_behavioural_ac_from_task_text("Refactor the internal helper for clarity.", None),
+            derive_behavioural_ac_from_task_text(
+                "Refactor the internal helper for clarity.",
+                None,
+                &RepoFacts::default(),
+            ),
             None
         );
     }
@@ -36600,8 +36784,9 @@ mod tests {
     ) {
         let description = "Edit `/Users/x/ws/src/foo` and `/Users/x/ws/src/bar` for the refactor. \
              Running the tool with --level DEBUG prints ready and exits 0.";
-        let derived = derive_behavioural_ac_from_task_text(description, None)
-            .expect("the second sentence is genuinely behavioural");
+        let derived =
+            derive_behavioural_ac_from_task_text(description, None, &RepoFacts::default())
+                .expect("the second sentence is genuinely behavioural");
         assert!(
             derived.contains("--level DEBUG") && derived.contains("prints ready"),
             "expected the behavioural sentence to be quoted, not the path-only one: {derived}"
@@ -36623,6 +36808,7 @@ mod tests {
             derive_behavioural_ac_from_task_text(
                 "The tool `/Users/x/ws/src/foo` prints an error and exits 1.",
                 None,
+                &RepoFacts::default(),
             ),
             None
         );
@@ -36634,7 +36820,11 @@ mod tests {
     #[test]
     fn derive_behavioural_ac_from_task_text_is_none_for_a_bare_edit_path_sentence() {
         assert_eq!(
-            derive_behavioural_ac_from_task_text("edit /Users/x/ws/src/foo.py", None),
+            derive_behavioural_ac_from_task_text(
+                "edit /Users/x/ws/src/foo.py",
+                None,
+                &RepoFacts::default(),
+            ),
             None
         );
     }
@@ -36648,8 +36838,9 @@ mod tests {
         let root = std::path::Path::new("/Users/j/ws");
         let description = "Running the new parser against /Users/j/ws/data/samplelog with \
              --level DEBUG prints the filtered lines and exits 0.";
-        let derived = derive_behavioural_ac_from_task_text(description, Some(root))
-            .expect("the sentence is behavioural via --level/prints");
+        let derived =
+            derive_behavioural_ac_from_task_text(description, Some(root), &RepoFacts::default())
+                .expect("the sentence is behavioural via --level/prints");
         assert!(
             derived.contains("data/samplelog"),
             "expected the path relativised under root: {derived}"
@@ -36669,8 +36860,52 @@ mod tests {
         let description = "Running the new parser against /Users/j/ws/data/samplelog with \
              --level DEBUG prints the filtered lines and exits 0.";
         assert_eq!(
-            derive_behavioural_ac_from_task_text(description, None),
+            derive_behavioural_ac_from_task_text(description, None, &RepoFacts::default()),
             None
+        );
+    }
+
+    /// R52a (A50 analysis (a)): a derived candidate that quotes the task
+    /// text's own account of a currently-BROKEN invocation (`node
+    /// tests/run.ts` -- the exact typo the ticket is about; the real file
+    /// is `test/run.ts`, singular) must never be handed back verbatim.
+    /// With a detected check command available, the broken invocation is
+    /// substituted for it (still behavioural, now genuinely grounded) --
+    /// never the task text's own broken form.
+    #[test]
+    fn derive_behavioural_ac_from_task_text_substitutes_a_broken_invocation_with_a_detected_check()
+    {
+        let facts = RepoFacts {
+            check_commands: vec!["make test".to_string()],
+            files: vec!["test/run.ts".to_string()],
+            file_count: 2,
+            ..Default::default()
+        };
+        let description = "make test currently fails because it runs `node tests/run.ts`, \
+             which does not exist";
+        let derived = derive_behavioural_ac_from_task_text(description, None, &facts)
+            .expect("a detected check command lets this repo substitute a grounded candidate");
+        assert!(
+            !derived.contains("tests/run.ts"),
+            "the broken invocation must never survive into the derived AC: {derived}"
+        );
+        assert!(derived.contains("make test"), "{derived}");
+        assert_eq!(classify_acceptance_criterion(&derived), AcKind::Behavioural);
+    }
+
+    /// Without ANY detected check command, the same broken-invocation
+    /// candidate has nothing to ground a substitution in -- it is dropped
+    /// entirely (`None`), falling back to `ac_existence_only` rather than
+    /// ever emitting an ungrounded criterion.
+    #[test]
+    fn derive_behavioural_ac_from_task_text_drops_a_broken_invocation_with_no_detected_check() {
+        let description = "make test currently fails because it runs `node tests/run.ts`, \
+             which does not exist";
+        assert_eq!(
+            derive_behavioural_ac_from_task_text(description, None, &RepoFacts::default()),
+            None,
+            "with nothing to ground a substitution in, the candidate must be dropped, not \
+             emitted ungrounded"
         );
     }
 
@@ -36678,8 +36913,12 @@ mod tests {
     fn ground_acceptance_criteria_behaviourally_appends_a_derived_ac_for_the_logfilter_fixture() {
         let mut criteria = a38_miss1_existence_only_criteria();
         let original_len = criteria.len();
-        let (behavioural_added, existence_only) =
-            ground_acceptance_criteria_behaviourally(&mut criteria, LOGFILTER_TASK_PROMPT, None);
+        let (behavioural_added, existence_only) = ground_acceptance_criteria_behaviourally(
+            &mut criteria,
+            LOGFILTER_TASK_PROMPT,
+            None,
+            &RepoFacts::default(),
+        );
         assert!(behavioural_added);
         assert!(!existence_only);
         assert_eq!(criteria.len(), original_len + 1);
@@ -36701,6 +36940,7 @@ mod tests {
             &mut criteria,
             "edit /Users/x/ws/src/foo.py",
             None,
+            &RepoFacts::default(),
         );
         assert!(!behavioural_added);
         assert!(existence_only);
@@ -36714,6 +36954,7 @@ mod tests {
             &mut criteria,
             "Refactor the internal helper for clarity.",
             None,
+            &RepoFacts::default(),
         );
         assert!(!behavioural_added);
         assert!(existence_only);
@@ -36726,8 +36967,12 @@ mod tests {
             "`python -m logfilter --level BOGUS sample_logs/app.log` exits with code 2".to_string(),
         ];
         let before = criteria.clone();
-        let (behavioural_added, existence_only) =
-            ground_acceptance_criteria_behaviourally(&mut criteria, LOGFILTER_TASK_PROMPT, None);
+        let (behavioural_added, existence_only) = ground_acceptance_criteria_behaviourally(
+            &mut criteria,
+            LOGFILTER_TASK_PROMPT,
+            None,
+            &RepoFacts::default(),
+        );
         assert!(!behavioural_added);
         assert!(!existence_only);
         assert_eq!(criteria, before);
@@ -36941,6 +37186,114 @@ mod tests {
             rewritten_ac.starts_with("UNVERIFIED"),
             "no check was detected in this tempdir repo, so the rewrite must be an honest \
              UNVERIFIED marker, never an invented check: {rewritten_ac}"
+        );
+    }
+
+    /// R52a (A50 analysis (a)/(c)): a harness-derived ungrounded criterion
+    /// (R43b/R43b-b's own scaffolding, tagged with `DERIVED_AC_TAG` --
+    /// never the model's own wording) is rewritten and ACCEPTED on the
+    /// FIRST `create_roadmap` call, never rejected. Before this lane the
+    /// same shape would hit the R21b reject-then-identical-resubmit path,
+    /// and the resubmission it asked for was itself denied by
+    /// `tool_monitor`'s S1 identical-call guard (A50 analysis (a)) --
+    /// confirmed here by the absence of any `Err` at all, not just by
+    /// belt-and-braces exempting the retry.
+    #[tokio::test]
+    async fn create_roadmap_rewrites_a_harness_derived_ac_on_the_first_call() {
+        let (_tmp, sm, _session, _em, client) =
+            roadmap_handler_fixture(GooseMode::Approve, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        let derived_ac = format!(
+            "running `node tests/run.ts` produces the behavior the task describes, not merely \
+             that supporting code was added {DERIVED_AC_TAG}"
+        );
+        let goals = vec![goal_state::ProposedGoal {
+            title: "Fix the broken test invocation".to_string(),
+            description: "fix the broken test invocation".to_string(),
+            acceptance_criteria: vec![derived_ac],
+            tags: vec![],
+            depends_on: vec![],
+        }];
+        let (hash, decision_id) =
+            install_answered_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let goals_json = serde_json::to_string(&goals).unwrap();
+
+        // FIRST attempt: accepted immediately, no rejection, no retry
+        // needed -- this is the whole point of R52a.
+        let result = client
+            .handle_create_roadmap(Some(create_roadmap_args(&goals_json, &hash, &decision_id)))
+            .await
+            .expect(
+                "a harness-derived ungrounded criterion must be rewritten on the FIRST call, \
+                 never rejected",
+            );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(text.contains("ac_rewritten") || text.contains("corrected"));
+
+        let metadata: String = sqlx::query_scalar(
+            "SELECT metadata_json FROM cards WHERE project_id = ? AND card_type = 'goal'",
+        )
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(metadata["ac_rewritten"], true);
+        assert!(
+            metadata["ac_rewritten_notes"][0]
+                .as_str()
+                .unwrap()
+                .contains("no retry needed (R52a)"),
+            "the note must credit R52a's immediate, no-retry rewrite: {metadata}"
+        );
+    }
+
+    /// A50 analysis (a): a MODEL-authored (not R43b/R43b-b-tagged)
+    /// ungrounded criterion still gets one real chance to be fixed by the
+    /// model -- rejected on the first call -- but the error text must tell
+    /// the model exactly what to change about the named criterion, never
+    /// instruct it to resubmit the identical proposal (the literal
+    /// instruction that, before this lane, walked straight into
+    /// `tool_monitor`'s S1 identical-call guard).
+    #[tokio::test]
+    async fn create_roadmap_model_authored_failure_names_the_criterion_and_never_says_resubmit() {
+        let (_tmp, sm, _session, _em, client) =
+            roadmap_handler_fixture(GooseMode::Approve, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        let goals = vec![goal_state::ProposedGoal {
+            title: "Fix pricing".to_string(),
+            description: "fix the pricing bug".to_string(),
+            acceptance_criteria: vec![
+                "src/pricing_missing_file.rs contains the rounding fix".to_string()
+            ],
+            tags: vec![],
+            depends_on: vec![],
+        }];
+        let (hash, decision_id) =
+            install_answered_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let goals_json = serde_json::to_string(&goals).unwrap();
+
+        let err = client
+            .handle_create_roadmap(Some(create_roadmap_args(&goals_json, &hash, &decision_id)))
+            .await
+            .expect_err("a model-authored ungrounded criterion must still be rejected once");
+        assert!(
+            err.contains("src/pricing_missing_file.rs"),
+            "the error must name the specific offending criterion: {err}"
+        );
+        assert!(
+            !err.to_lowercase().contains("resubmit"),
+            "the error must never instruct the model to resubmit the identical proposal -- \
+             tool_monitor's S1 guard denies exactly that resubmission before create_roadmap's \
+             own retry path ever runs: {err}"
+        );
+        assert!(
+            err.contains("change its wording") || err.contains("change the"),
+            "the error must say WHAT to change, not merely that something is wrong: {err}"
         );
     }
 
