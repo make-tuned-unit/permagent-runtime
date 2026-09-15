@@ -146,6 +146,24 @@ fn extract_response_text(messages: &Conversation, return_last_only: bool) -> Str
 
 pub const SUBAGENT_TOOL_REQUEST_TYPE: &str = "subagent_tool_request";
 
+/// Build the [`Agent`] every subagent run through this module shares —
+/// goal-dispatch workers (`InternalSubagentEngine::spawn`), `summon.rs`
+/// delegates, and best-of-N candidates alike. All of them run as
+/// `SessionType::SubAgent`, and `SessionType::is_interactive` never returns
+/// `true` for that type: there is no human who could ever answer a parked
+/// tool-approval confirmation for a session built here. Mark it headless up
+/// front, the same way `scheduler.rs` marks a scheduled-recipe job, so a
+/// scanner-flagged tool call is auto-denied with a recorded skip
+/// (`HEADLESS_SKIPPED_RESPONSE`) instead of parking on a confirmation that
+/// structurally can never arrive — the mechanism traced in
+/// HARNESS_LOOP_LOG.md's A28 analysis, miss 2 (`is_headless()` was
+/// previously only ever set by `scheduler.rs`, never by this dispatch path).
+fn build_subagent_agent(config: AgentRunnerConfig) -> Arc<Agent> {
+    let agent = Arc::new(Agent::with_config(config));
+    agent.set_headless(true);
+    agent
+}
+
 fn get_agent_messages(params: SubagentRunParams) -> AgentMessagesFuture {
     Box::pin(async move {
         let SubagentRunParams {
@@ -169,7 +187,7 @@ fn get_agent_messages(params: SubagentRunParams) -> AgentMessagesFuture {
             .clone()
             .unwrap_or_else(|| "Begin.".to_string());
 
-        let agent = Arc::new(Agent::with_config(config));
+        let agent = build_subagent_agent(config);
 
         agent
             .update_provider(task_config.provider.clone(), &session_id)
@@ -352,11 +370,44 @@ pub fn create_tool_notification(
 
 #[cfg(test)]
 mod tests {
-    use super::{create_tool_notification, runtime_outcome_error, SUBAGENT_TOOL_REQUEST_TYPE};
-    use crate::agents::AgentRuntimeOutcome;
+    use super::{
+        build_subagent_agent, create_tool_notification, runtime_outcome_error,
+        SUBAGENT_TOOL_REQUEST_TYPE,
+    };
+    use crate::agents::{AgentRunnerConfig, AgentRuntimeOutcome, GoosePlatform};
+    use crate::config::permission::PermissionManager;
+    use crate::config::GooseMode;
     use crate::conversation::message::MessageContent;
     use rmcp::model::{CallToolRequestParams, ServerNotification};
     use serde_json::json;
+
+    /// The seam this lane fixes: every agent built through
+    /// `build_subagent_agent` (goal-dispatch workers, `summon.rs`,
+    /// best-of-N) must come up headless, since none of them ever has a
+    /// human able to answer a parked tool-approval confirmation. See the
+    /// function's own doc comment and HARNESS_LOOP_LOG.md's A28 analysis,
+    /// miss 2.
+    #[test]
+    fn subagent_agents_are_always_headless() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let config = AgentRunnerConfig::new(
+            sm,
+            PermissionManager::instance(),
+            None,
+            GooseMode::Auto,
+            true,
+            GoosePlatform::GooseCli,
+        );
+        let agent = build_subagent_agent(config);
+        assert!(
+            agent.is_headless(),
+            "a subagent built through this module must run headless — no \
+             approver can ever answer its tool confirmations"
+        );
+    }
 
     #[test]
     fn create_tool_notification_for_tool_request() {
