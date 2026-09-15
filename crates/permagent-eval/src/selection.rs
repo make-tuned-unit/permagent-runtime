@@ -922,11 +922,64 @@ mod tests {
 
     #[test]
     fn select_checks_worker_before_dispatch() {
+        // R22a-b (HARNESS_LOOP_LOG.md "Lane R22a" / "### R22a-b"): the
+        // fixture's `before: [[check_worker, goal_advance]]` ordering rule
+        // was removed — R22a made the worker check STRUCTURAL
+        // (`goal_advance` refuses to dispatch a Ready goal without a fresh
+        // `check_worker` result, performing it internally when the model
+        // skipped the explicit call), so `must_call` alone is now the whole
+        // rule and it is order-free by design.
         let check = load_selection_check("select-checks-worker-before-dispatch");
+        // Correct: the model called check_worker explicitly first, same as
+        // before this lane.
         assert!(check.evaluate(&signals(&["check_worker", "goal_advance"])));
-        // Wrong decision: dispatches blind, never checks the worker first.
+        // ALSO correct post-R22a: the model let goal_advance's own internal
+        // check run — check_worker's banner necessarily appears AFTER
+        // goal_advance's in this case (see
+        // `OrchestratorClient::ensure_worker_checked_for_dispatch`'s doc
+        // comment, `orchestrator.rs`), but the dispatch still could not have
+        // happened without the check, so this order must PASS now — this is
+        // the exact case the old `before` rule wrongly failed.
+        assert!(check.evaluate(&signals(&["goal_advance", "check_worker"])));
+        // Wrong decision: dispatches and check_worker never appears in the
+        // log at all — `must_call` alone still catches this.
         assert!(!check.evaluate(&signals(&["goal_advance"])));
-        assert!(!check.evaluate(&signals(&["goal_advance", "check_worker"])));
+    }
+
+    /// R22a-c: the same "goal_advance dispatched, check_worker ran
+    /// internally afterward" scenario as
+    /// `select_checks_worker_before_dispatch` above, but through the REAL
+    /// log-scanning pipeline (`harness_log::scan`) rather than the
+    /// hand-built `signals()` helper — proving the literal
+    /// `"  ▸ check_worker"` marker
+    /// `ensure_worker_checked_for_dispatch` prints (`orchestrator.rs`,
+    /// Lane R22a) when it performs the check internally is actually
+    /// recognized by [`scan`](crate::harness_log::scan)'s banner detection
+    /// as a `check_worker` call, not merely asserted by constructing
+    /// `LogSignals` by hand.
+    #[test]
+    fn select_checks_worker_before_dispatch_recognizes_goal_advances_synthesized_check_worker_banner(
+    ) {
+        let check = load_selection_check("select-checks-worker-before-dispatch");
+        // Mirrors the real transcript shape: the CLI's own `goal_advance`
+        // tool-call banner (printed when the model's turn is rendered,
+        // before its handler ever runs), followed by the synthesized
+        // `check_worker` banner `ensure_worker_checked_for_dispatch` prints
+        // from inside that handler once it performs the internal check.
+        let separator = "─".repeat(40);
+        let log = format!("\n  {separator}\n  ▸ goal_advance\n\n  {separator}\n  ▸ check_worker\n");
+        let observed = crate::harness_log::scan(&log);
+        assert_eq!(
+            observed.tool_names,
+            vec!["goal_advance".to_string(), "check_worker".to_string()],
+            "the scan must see both banners, goal_advance first: {:?}",
+            observed.tool_names
+        );
+        assert!(
+            check.evaluate(&observed),
+            "a real scanned log with goal_advance's own banner followed by the \
+             synthesized check_worker banner must satisfy the fixture's selection_check"
+        );
     }
 
     #[test]
