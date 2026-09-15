@@ -12248,6 +12248,23 @@ pub async fn handle_goal_timeout(
         return Ok(());
     }
 
+    // R28a-b (G27 MEDIUM-2): `handle_goal_timeout` is the single point the
+    // drain-sweep stall park (`DrainAction::Park`), the drain's own
+    // cap-expiry catch-all, AND `park_dispatched_goals_now`'s SIGTERM/SIGINT
+    // immediate park all funnel through for an `in_progress` goal (three
+    // separate call sites, one shared handler) — none of which previously
+    // ran R28a's teardown checkpoint, so a goal that stalled badly enough to
+    // be parked by the drain sweep, or one still running at daemon shutdown,
+    // could still lose real, uncommitted worker output exactly as before
+    // R28a existed. Checkpointing here, before `maybe_salvage_committed_
+    // work` runs, closes that gap for all three at once. Idempotent: a no-op
+    // on an already-clean tree (`checkpoint_uncommitted_changes_in`'s own
+    // guarantee) — this call ALSO runs for the ordinary `GoalOutcome::
+    // TimedOut` path (the completion tracker already checkpointed at
+    // `:4867` before reaching here), so the common case is simply a second,
+    // free no-op, not a double commit.
+    checkpoint_uncommitted_worker_changes(pool, card_id, TIMEOUT_HANDLER_CHECKPOINT_REASON).await;
+
     // Lane R20b (A20 Q1, Mechanism B — `loc-refund`/`refactor-shipping`,
     // both killed by the eval's outer per-task timeout / a shutdown signal
     // racing the drain): this is the ONE park path both `drain_dispatched_
@@ -14796,13 +14813,38 @@ async fn worktree_has_uncommitted_work(
 /// Result of a successful [`checkpoint_uncommitted_changes_in`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CheckpointCommit {
+    /// The checkpoint commit's sha. When `quarantined_reason` is `Some`, this
+    /// commit was soft-reset away right after being scanned — the sha is no
+    /// longer reachable from any ref (kept only for the log line/audit
+    /// evidence, not as a landable reference).
     sha: String,
     files: usize,
+    /// G27 HIGH-1: the credential/secret-scan verdict on this commit's own
+    /// diff (`pre_commit_head..HEAD`, i.e. exactly the content this call just
+    /// staged and committed), run with the SAME gate
+    /// [`goal_engine::scan_committed_changes`] that guards every other
+    /// worker-completion commit path in `goal_engine.rs`. `None` on a clean
+    /// scan (the commit stands). `Some(reason)` when the scan flagged
+    /// content — the caller has already undone the commit
+    /// (`git reset --soft`) so the worktree is dirty-but-uncommitted again,
+    /// exactly the state `maybe_salvage_committed_work`'s existing
+    /// uncommitted-work guard already refuses.
+    quarantined_reason: Option<String>,
 }
 
 /// Commit-message prefix for a checkpoint commit, so a reader (or a future
 /// grep) can tell one apart from the worker's own commits at a glance.
 const CHECKPOINT_COMMIT_PREFIX: &str = "checkpoint: uncommitted worker changes at session end";
+
+/// R28a-b (G27 MEDIUM-2): the `reason` tag [`handle_goal_timeout`] passes to
+/// [`checkpoint_uncommitted_worker_changes`] — distinct from
+/// [`checkpoint_reason_for_outcome`]'s per-`GoalOutcome` tags because the
+/// three sites that reach `handle_goal_timeout` (drain-sweep stall park,
+/// cap-expiry catch-all, SIGTERM/SIGINT immediate park) are not all a wall
+/// timeout in the `GoalOutcome::TimedOut` sense — a stall park in particular
+/// is "nothing further will happen for this session," not "the wall clock
+/// ran out."
+const TIMEOUT_HANDLER_CHECKPOINT_REASON: &str = "goal_teardown_park";
 
 /// Pure git mechanics: commit whatever is dirty in `worktree` right now, on
 /// whatever branch is already checked out there — this only ever runs `git -C
@@ -14827,6 +14869,10 @@ async fn checkpoint_uncommitted_changes_in(
     if status.trim().is_empty() {
         return Ok(None);
     }
+    // Captured BEFORE staging/committing so the scan below has an exact
+    // `pre_commit_head..HEAD` range naming only this new commit's own
+    // content — never the worker's own (already-scanned) prior commits.
+    let pre_commit_head = git_in_worktree(worktree, &["rev-parse", "HEAD"]).await?;
     git_in_worktree(worktree, &["add", "-A"]).await?;
     let staged = git_in_worktree(worktree, &["diff", "--cached", "--name-only"]).await?;
     let files = staged
@@ -14842,7 +14888,32 @@ async fn checkpoint_uncommitted_changes_in(
     let message = format!("{CHECKPOINT_COMMIT_PREFIX} ({reason})");
     git_in_worktree(worktree, &["commit", "-m", &message]).await?;
     let sha = git_in_worktree(worktree, &["rev-parse", "HEAD"]).await?;
-    Ok(Some(CheckpointCommit { sha, files }))
+
+    // G27 HIGH-1: before this commit is visible to salvage/landing, run the
+    // SAME credential/secret gate `goal_engine.rs`'s own worker-completion
+    // path runs on every other committed changeset
+    // (`goal_engine::scan_committed_changes`) — this call previously ran
+    // unscanned, the one gap that let dirty content become git history
+    // without ever passing the guard. A flagged commit is undone
+    // (`git reset --soft` to the pre-commit head): the index/working tree
+    // are untouched, so the flagged content lands back as ordinary
+    // uncommitted changes — dirty exactly as it was before this call, which
+    // `maybe_salvage_committed_work`'s existing uncommitted-work guard
+    // already refuses to salvage, same as before R28a existed at all.
+    let scan_verdict = goal_engine::scan_committed_changes(worktree, &pre_commit_head).await;
+    if let Some(scan_reason) = scan_verdict {
+        git_in_worktree(worktree, &["reset", "--soft", &pre_commit_head]).await?;
+        return Ok(Some(CheckpointCommit {
+            sha,
+            files,
+            quarantined_reason: Some(scan_reason),
+        }));
+    }
+    Ok(Some(CheckpointCommit {
+        sha,
+        files,
+        quarantined_reason: None,
+    }))
 }
 
 /// The short machine tag folded into a checkpoint commit's message and its
@@ -14928,17 +14999,49 @@ async fn checkpoint_uncommitted_worker_changes(
                 return;
             }
         };
-    tracing::info!(
-        target: "permagentd::brain",
-        goal_id = %card_id,
-        reason,
-        sha = %commit.sha,
-        files = commit.files,
-        "worker checkpoint: committed {} uncommitted file(s) at session end ({reason}): {}",
-        commit.files,
-        commit.sha,
-    );
-    let evidence = format!("reason={reason} files={}", commit.files);
+    // G27 HIGH-1: log and audit the scan verdict either way — a flagged
+    // commit was already undone by `checkpoint_uncommitted_changes_in`
+    // (soft-reset to dirty-but-uncommitted), so this is a `warn`, not the
+    // ordinary "committed" `info` line, and the audit row's `scanned=`
+    // field lets a reader tell the two shapes apart without cross-
+    // referencing `decision_audit`'s `evidence` prose against git history.
+    let scanned = match &commit.quarantined_reason {
+        None => "clean",
+        Some(_) => "flagged",
+    };
+    match &commit.quarantined_reason {
+        None => {
+            tracing::info!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                reason,
+                sha = %commit.sha,
+                files = commit.files,
+                "worker checkpoint: committed {} uncommitted file(s) at session end ({reason}): {}",
+                commit.files,
+                commit.sha,
+            );
+        }
+        Some(scan_reason) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                reason,
+                files = commit.files,
+                "worker checkpoint: the credential guard flagged {} uncommitted file(s) at \
+                 session end ({reason}) — quarantined, left uncommitted rather than exposed to \
+                 salvage/landing: {scan_reason}",
+                commit.files,
+            );
+        }
+    }
+    let evidence = match &commit.quarantined_reason {
+        None => format!("reason={reason} files={} scanned={scanned}", commit.files),
+        Some(scan_reason) => format!(
+            "reason={reason} files={} scanned={scanned} block_reason={scan_reason}",
+            commit.files
+        ),
+    };
     let synthetic_decision_id = format!("worker-checkpoint:{card_id}");
     let mut tx = match pool.begin_with("BEGIN IMMEDIATE").await {
         Ok(tx) => tx,
@@ -15113,6 +15216,83 @@ mod r28a_checkpoint_tests {
                 reason: "x".into()
             }),
             "credential_blocked"
+        );
+    }
+
+    /// G27 HIGH-1: a checkpoint commit whose OWN diff carries credential-
+    /// shaped content (the exact `.env`/`API_KEY=...` shape
+    /// `goal_engine::scan_committed_changes_blocks_secrets_and_passes_clean`
+    /// already uses) must never stand as a land-eligible commit — the scan
+    /// this lane adds must catch it even though it never ran through
+    /// `goal_engine.rs`'s own worker-completion path at all.
+    #[tokio::test]
+    async fn checkpoint_with_a_secret_is_quarantined_and_left_uncommitted() {
+        let dir = r28a_seeded_repo();
+        let root = dir.path();
+        let head_before = r28a_git(root, &["rev-parse", "HEAD"]);
+
+        std::fs::write(root.join(".env"), "API_KEY=Sup3rS3cretValue123\n").unwrap();
+
+        let commit = checkpoint_uncommitted_changes_in(root, "test_reason")
+            .await
+            .unwrap()
+            .expect("a dirty tree must still produce a CheckpointCommit result, quarantined");
+
+        let reason = commit
+            .quarantined_reason
+            .as_ref()
+            .expect("a committed secret must be flagged by the credential guard");
+        assert!(
+            reason.contains(".env"),
+            "the quarantine reason must name the file: {reason}"
+        );
+
+        // The flagged commit was undone: HEAD is back where it started, and
+        // the tree is dirty again — exactly the state `maybe_salvage_
+        // committed_work`'s existing uncommitted-work guard already refuses
+        // to salvage, same as before R28a's checkpoint existed at all.
+        let head_after = r28a_git(root, &["rev-parse", "HEAD"]);
+        assert_eq!(
+            head_before, head_after,
+            "the flagged commit must be undone (soft-reset), never left as HEAD"
+        );
+        let status = r28a_git(root, &["status", "--porcelain"]);
+        assert!(
+            !status.trim().is_empty(),
+            "the worktree must be dirty again after quarantine, not silently clean: {status:?}"
+        );
+        let log_len = r28a_git(root, &["log", "--oneline"]).lines().count();
+        assert_eq!(
+            log_len, 1,
+            "a quarantined checkpoint must never remain reachable from HEAD"
+        );
+    }
+
+    /// The clean-content counterpart to the test above: a checkpoint commit
+    /// whose diff carries nothing credential-shaped must stand exactly as
+    /// before this lane — `quarantined_reason` is `None`, and the commit
+    /// becomes HEAD.
+    #[tokio::test]
+    async fn checkpoint_with_clean_content_is_not_quarantined() {
+        let dir = r28a_seeded_repo();
+        let root = dir.path();
+
+        std::fs::write(root.join("a.txt"), "one\nclean change\n").unwrap();
+
+        let commit = checkpoint_uncommitted_changes_in(root, "test_reason")
+            .await
+            .unwrap()
+            .expect("a dirty tree must produce a checkpoint commit");
+
+        assert!(
+            commit.quarantined_reason.is_none(),
+            "a clean checkpoint must not be quarantined: {:?}",
+            commit.quarantined_reason
+        );
+        let head = r28a_git(root, &["rev-parse", "HEAD"]);
+        assert_eq!(
+            commit.sha, head,
+            "a clean checkpoint's commit must stand as HEAD, land-eligible as before"
         );
     }
 }
@@ -15580,6 +15760,26 @@ async fn maybe_salvage_committed_work(
             .await;
             return not_salvaged(note);
         }
+    }
+
+    // G27 HIGH-1 belt-and-braces: re-run the codebase's one credential/
+    // secret gate directly on the range this call is about to spend a verify
+    // time-box on and, on a genuine pass, hand to `handle_goal_completion` →
+    // eventual `land_approved_goal`. Independent of whatever already
+    // committed this content (a worker's own commit, already scanned inline
+    // by `goal_engine.rs`'s own completion path; or R28a-b's teardown
+    // checkpoint, which now scans its own new commit before returning) —
+    // this is the LAST gate before salvage acts on the range, so it must
+    // never trust an earlier scan on faith. `trunk_head` (the range that
+    // would actually be fast-forwarded onto trunk) when a trusted trunk
+    // resolved; `baseline` — the same fallback `ahead` itself already uses —
+    // otherwise. `ahead > 0` is already established above, so this range is
+    // always non-empty.
+    let scan_base = trunk_head.as_deref().unwrap_or(baseline.as_str());
+    if let Some(reason) = goal_engine::scan_committed_changes(worktree_path, scan_base).await {
+        let note = format!("salvage refused by the credential guard: {reason}");
+        record_salvage_receipt(pool, &card.id, "salvage_skipped_secret_scan", &note).await;
+        return not_salvaged(note);
     }
 
     let mut time_box = match remaining_wall_budget_secs(&card.metadata_json) {
@@ -22947,6 +23147,83 @@ mod tests {
             session_had_successful_verify(&pool, Some(&session_id)).await,
             "the synthetic verify evidence must be genuine, readable by the SAME predicate a \
              live worker's own verify call would satisfy"
+        );
+    }
+
+    /// G27 HIGH-1 belt-and-braces: `maybe_salvage_committed_work` must
+    /// refuse to verify/land ANY commit range that has not passed the
+    /// credential/secret scan — independent of whatever committed it (a
+    /// worker's own commit, or R28a-b's now-scanned teardown checkpoint;
+    /// this fixture models a commit that reached the branch some other way,
+    /// fully committed so the earlier uncommitted-work guard cannot mask
+    /// it). Commits a secret-shaped `.env` file (the same shape
+    /// `goal_engine::scan_committed_changes_blocks_secrets_and_passes_clean`
+    /// uses) on top of an otherwise-clean, already-passing fix.
+    #[tokio::test]
+    async fn salvage_refuses_a_committed_secret() {
+        let pool = test_pool().await;
+        let (dir, baseline, _head) = r20b_worktree_with_committed_fix("r28ab-salvage-secret");
+        std::fs::write(dir.path().join(".env"), "API_KEY=Sup3rS3cretValue123\n").unwrap();
+        r20b_git(dir.path(), &["add", "-A"]);
+        r20b_git(dir.path(), &["commit", "-q", "-m", "oops secret"]);
+        let head = r20b_git(dir.path(), &["rev-parse", "HEAD"]);
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": head,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r28ab-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(dir.path().to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert!(
+            updated.metadata_json.get("salvaged_on_park").is_none(),
+            "a committed secret must never be salvaged/landed"
+        );
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("a refused salvage must still leave a breadcrumb");
+        assert_eq!(
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvage_skipped_secret_scan")
+        );
+        let note = receipt
+            .get("note")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            note.contains(".env"),
+            "the refusal note must name the flagged file: {note}"
         );
     }
 
@@ -35425,6 +35702,77 @@ mod tests {
              Ready goal sitting Ready forever — the A25 backstop item 2 of this lane adds"
         );
         assert!(updated.metadata_json.get("salvaged_on_park").is_some());
+    }
+
+    /// R28a-b (G27 MEDIUM-2): `handle_goal_timeout` is the single handler
+    /// the drain-sweep stall park, the drain's cap-expiry catch-all, and
+    /// `park_dispatched_goals_now`'s SIGTERM/SIGINT immediate park all
+    /// funnel through — before this lane, none of those three teardown
+    /// paths ever checkpointed a worker's uncommitted changes, so real,
+    /// uncommitted output left in the worktree at exactly this moment was
+    /// simply lost. Dirties the worktree on top of an already-committed fix
+    /// and confirms `handle_goal_timeout` checkpoints it (a `worker_
+    /// checkpoint_committed` decision_audit row exists, and the worktree is
+    /// clean again) before it goes on to salvage/park.
+    #[tokio::test]
+    async fn handle_goal_timeout_checkpoints_uncommitted_work_before_salvage() {
+        let pool = test_pool().await;
+        let (card, dir, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "r28ab-timeout-checkpoint", None).await;
+        std::fs::write(dir.path().join("uncommitted.txt"), "left behind\n").unwrap();
+
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None)
+            .await
+            .unwrap();
+
+        let checkpoint_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decision_audit WHERE goal_id = ? AND outcome = ?",
+        )
+        .bind(&card.id)
+        .bind("worker_checkpoint_committed")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            checkpoint_rows, 1,
+            "handle_goal_timeout must checkpoint uncommitted worker changes before parking/salvaging"
+        );
+
+        let status = r20b_git(dir.path(), &["status", "--porcelain"]);
+        assert!(
+            status.trim().is_empty(),
+            "the checkpoint must leave the worktree clean: {status:?}"
+        );
+    }
+
+    /// R28a-b: a second checkpoint call for the same goal, once the tree is
+    /// already clean, must be a no-op — no second commit, no second audit
+    /// row. R28a's own `checkpoint_uncommitted_changes_in` already
+    /// guarantees the git-level no-op (`r28a_checkpoint_tests::is_a_no_op_
+    /// on_a_clean_tree`); this asserts the DB-aware wrapper's audit trail
+    /// reflects that too, rather than writing a second row for nothing.
+    #[tokio::test]
+    async fn checkpoint_uncommitted_worker_changes_is_idempotent_on_repeat_calls() {
+        let pool = test_pool().await;
+        let (card, dir, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "r28ab-checkpoint-idempotent", None).await;
+        std::fs::write(dir.path().join("leftover.txt"), "dirty\n").unwrap();
+
+        checkpoint_uncommitted_worker_changes(&pool, &card.id, "test_reason").await;
+        checkpoint_uncommitted_worker_changes(&pool, &card.id, "test_reason").await;
+
+        let rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decision_audit WHERE goal_id = ? AND outcome = ?",
+        )
+        .bind(&card.id)
+        .bind("worker_checkpoint_committed")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows, 1,
+            "a second call on an already-clean tree must be a no-op, not a second commit/audit row"
+        );
     }
 
     // ── R27b (harness loop, "A26 analysis" section 1 Q2/Q3, lever 3):
