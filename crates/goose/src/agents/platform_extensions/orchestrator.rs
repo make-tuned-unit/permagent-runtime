@@ -11038,9 +11038,9 @@ fn criterion_to_check(
 ) -> Option<serde_json::Value> {
     let text = criterion.trim();
     let lower = text.to_ascii_lowercase();
-    try_grep_absent(text, &lower)
+    try_grep_absent(text, &lower, working_dir)
         .or_else(|| try_http_assert(text, &lower))
-        .or_else(|| try_file_exists(text, &lower))
+        .or_else(|| try_file_exists(text, &lower, working_dir))
         .or_else(|| try_command(text, &lower, project_meta, working_dir))
 }
 
@@ -11162,7 +11162,7 @@ fn detect_http_method(text: &str) -> Option<&'static str> {
 }
 
 /// `file_exists` from a criterion asserting a file is present or created.
-fn try_file_exists(text: &str, lower: &str) -> Option<serde_json::Value> {
+fn try_file_exists(text: &str, lower: &str, root: &std::path::Path) -> Option<serde_json::Value> {
     const EXIST_SIGNALS: &[&str] = &[
         "exist",
         "is created",
@@ -11180,7 +11180,7 @@ fn try_file_exists(text: &str, lower: &str) -> Option<serde_json::Value> {
     if !contains_any(lower, EXIST_SIGNALS) {
         return None;
     }
-    let path = first_relative_path(text)?;
+    let path = first_relative_path(text, root)?;
     Some(serde_json::json!({
         "type": "file_exists",
         "path": path,
@@ -11192,7 +11192,7 @@ fn try_file_exists(text: &str, lower: &str) -> Option<serde_json::Value> {
 /// absence signal + recognizable token AND at least one concrete named path —
 /// grep_absent reads specific files, so a pathless "no TODO" is skipped (there
 /// is nothing to grep) rather than guessed.
-fn try_grep_absent(text: &str, lower: &str) -> Option<serde_json::Value> {
+fn try_grep_absent(text: &str, lower: &str, root: &std::path::Path) -> Option<serde_json::Value> {
     const ABSENCE_SIGNALS: &[&str] = &[
         "no ",
         "without",
@@ -11212,7 +11212,7 @@ fn try_grep_absent(text: &str, lower: &str) -> Option<serde_json::Value> {
         return None;
     }
     let token = absence_token(text, lower)?;
-    let paths = path_tokens(text);
+    let paths = path_tokens(text, root);
     if paths.is_empty() {
         return None;
     }
@@ -11297,29 +11297,65 @@ fn has_path_extension(tok: &str) -> bool {
 }
 
 /// A relative-path-shaped token (a `/`-joined path or a file with a known
-/// extension). Excludes absolute paths and URLs.
+/// extension). Excludes absolute paths and URLs — unconditionally: neither
+/// disjunct below is reachable for a token starting with `/` (#A39: the old
+/// extension disjunct had no such guard, so an absolute `.py`/etc. path
+/// bypassed this function's own "exclude absolute paths" contract).
 fn looks_like_path(tok: &str) -> bool {
-    if tok.is_empty() || tok.contains("://") {
+    if tok.is_empty() || tok.contains("://") || tok.starts_with('/') {
         return false;
     }
-    (tok.contains('/') && !tok.starts_with('/')) || has_path_extension(tok)
+    tok.contains('/') || has_path_extension(tok)
 }
 
-fn path_tokens(text: &str) -> Vec<String> {
+/// A cleaned token, shaped like an absolute filesystem path (starts with `/`,
+/// not a URL, and either has another path separator or a known code
+/// extension) — the class `looks_like_path` always rejects.
+fn looks_like_absolute_path(tok: &str) -> bool {
+    match tok.strip_prefix('/') {
+        Some(rest) if !tok.contains("://") => rest.contains('/') || has_path_extension(tok),
+        _ => false,
+    }
+}
+
+/// Turn one cleaned token into a completion-check-safe path, or `None`.
+///
+/// A completion check must never carry a raw host filesystem path (#A39: an
+/// absolute path seeded into `FileExists`/`grep_absent` is checked against the
+/// literal host path, never the goal worktree, and so can never be satisfied).
+/// Relative, path-shaped tokens pass through unchanged. An absolute,
+/// path-shaped token is only accepted when it lies under `root` — where it is
+/// relativised to it; otherwise it is dropped (traced
+/// `ac_check_dropped reason=absolute_path`) rather than seeded verbatim.
+fn normalize_path_token(tok: &str, root: &std::path::Path) -> Option<String> {
+    if looks_like_path(tok) {
+        return Some(tok.to_string());
+    }
+    if !looks_like_absolute_path(tok) {
+        return None;
+    }
+    match std::path::Path::new(tok).strip_prefix(root) {
+        Ok(rel) if !rel.as_os_str().is_empty() => Some(rel.to_string_lossy().into_owned()),
+        _ => {
+            tracing::info!(
+                target: "permagentd::brain",
+                path = tok,
+                root = %root.display(),
+                "ac_check_dropped reason=absolute_path (outside the task root — not seeded as a completion check)"
+            );
+            None
+        }
+    }
+}
+
+fn path_tokens(text: &str, root: &std::path::Path) -> Vec<String> {
     text.split_whitespace()
-        .filter_map(|tok| {
-            let t = clean_token(tok);
-            if looks_like_path(t) {
-                Some(t.to_string())
-            } else {
-                None
-            }
-        })
+        .filter_map(|tok| normalize_path_token(clean_token(tok), root))
         .collect()
 }
 
-fn first_relative_path(text: &str) -> Option<String> {
-    path_tokens(text).into_iter().next()
+fn first_relative_path(text: &str, root: &std::path::Path) -> Option<String> {
+    path_tokens(text, root).into_iter().next()
 }
 
 /// The first server-absolute request path (`/...`, not `//...`) in the text.
@@ -21472,6 +21508,59 @@ mod tests {
         assert!(!looks_like_path("/health")); // server path, not a repo file
         assert!(!looks_like_path("e.g.")); // ".g" is not a code extension
         assert!(!looks_like_path("word"));
+        // #A39: an absolute path with a known code extension used to bypass
+        // this function's own "exclude absolute paths" contract.
+        assert!(!looks_like_path("/Users/x/ws/fizzbuzz.py"));
+        assert!(!looks_like_path("/etc/passwd"));
+    }
+
+    // #A39: `normalize_path_token`/`path_tokens` must never let an absolute
+    // host path through into a completion check — relativise it under the
+    // task root when possible, otherwise drop it.
+    #[test]
+    fn normalize_path_token_relativises_absolute_paths_under_root() {
+        let root = std::path::Path::new("/Users/x/ws");
+        assert_eq!(
+            normalize_path_token("/Users/x/ws/fizzbuzz.py", root).as_deref(),
+            Some("fizzbuzz.py")
+        );
+        assert_eq!(
+            normalize_path_token("/Users/x/ws/src/lib.rs", root).as_deref(),
+            Some("src/lib.rs")
+        );
+    }
+
+    #[test]
+    fn normalize_path_token_drops_absolute_paths_outside_root() {
+        let root = std::path::Path::new("/Users/x/ws");
+        assert_eq!(normalize_path_token("/Users/other/fizzbuzz.py", root), None);
+        assert_eq!(normalize_path_token("/etc/passwd", root), None);
+    }
+
+    #[test]
+    fn normalize_path_token_leaves_relative_paths_unchanged() {
+        let root = std::path::Path::new("/Users/x/ws");
+        assert_eq!(
+            normalize_path_token("src/main.rs", root).as_deref(),
+            Some("src/main.rs")
+        );
+        assert_eq!(normalize_path_token("word", root), None);
+    }
+
+    #[test]
+    fn try_file_exists_relativises_absolute_path_seeded_by_the_model() {
+        let root = std::path::Path::new("/Users/x/ws");
+        let text = "/Users/x/ws/fizzbuzz.py exists";
+        let check = try_file_exists(text, &text.to_ascii_lowercase(), root).unwrap();
+        assert_eq!(check["type"], "file_exists");
+        assert_eq!(check["path"], "fizzbuzz.py");
+    }
+
+    #[test]
+    fn try_file_exists_skips_absolute_path_outside_root() {
+        let root = std::path::Path::new("/Users/x/ws");
+        let text = "/Users/other/fizzbuzz.py exists";
+        assert!(try_file_exists(text, &text.to_ascii_lowercase(), root).is_none());
     }
 
     async fn test_pool() -> sqlx::Pool<sqlx::Sqlite> {

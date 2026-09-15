@@ -1831,6 +1831,36 @@ async fn run_markdown_checks(files: &[PathBuf], timeout_secs: u64) -> CheckOutco
 // checks.rs has a "does this symbol exist" check today, and the fizzbuzz-
 // shaped defect this lane fixes needs exactly that.
 
+/// Validate a probe-supplied path before any filesystem access (R44a/#A39):
+/// reject an absolute path outright (a probe only ever checks inside the goal
+/// worktree — the compiler that seeds these paths is supposed to have
+/// relativised or dropped an absolute one already, but a probe must never
+/// trust that and fall back to a silent host filesystem lookup) and reject
+/// any path that could escape the worktree via `..` or another non-plain
+/// component, mirroring the same guard [`normalize_supplied_changes`] already
+/// applies to caller-supplied changed-file paths. Does not require the target
+/// to exist — `FileExists` probes a path that may legitimately be absent —
+/// so this only joins and validates, it never canonicalizes the candidate.
+fn safe_probe_path(dir: &Path, rel_path: &str) -> Result<PathBuf, String> {
+    let supplied = Path::new(rel_path);
+    if supplied.is_absolute() {
+        return Err(
+            "is an absolute path — a probe can only check paths inside the goal worktree, \
+             not the host filesystem"
+                .to_string(),
+        );
+    }
+    if supplied
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(
+            "must be relative and cannot contain parent-directory traversal (`..`)".to_string(),
+        );
+    }
+    Ok(dir.join(supplied))
+}
+
 /// Run one synthesized probe. `FileExists`/`SymbolDefined` are plain,
 /// synchronous filesystem reads — cheap enough not to need the timeout.
 /// `CommandExitsZero` delegates to the ordinary `Shell` path (same spawn,
@@ -1839,7 +1869,15 @@ async fn run_markdown_checks(files: &[PathBuf], timeout_secs: u64) -> CheckOutco
 async fn run_probe_check(kind: &ProbeKind, dir: &Path, timeout_secs: u64) -> CheckOutcome {
     match kind {
         ProbeKind::FileExists(rel_path) => {
-            if dir.join(rel_path).is_file() {
+            let full_path = match safe_probe_path(dir, rel_path) {
+                Ok(full_path) => full_path,
+                Err(reason) => {
+                    return CheckOutcome::SpawnError(format!(
+                        "PROBE: cannot check `{rel_path}`: {reason}"
+                    ));
+                }
+            };
+            if full_path.is_file() {
                 CheckOutcome::Passed {
                     output: format!("PROBE: `{rel_path}` exists."),
                 }
@@ -1855,7 +1893,14 @@ async fn run_probe_check(kind: &ProbeKind, dir: &Path, timeout_secs: u64) -> Che
         }
         ProbeKind::SymbolDefined { symbol, kind, file } => {
             let found = match file {
-                Some(file) => find_symbol_definition_in_file(dir, file, symbol, *kind),
+                Some(file) => {
+                    if let Err(reason) = safe_probe_path(dir, file) {
+                        return CheckOutcome::SpawnError(format!(
+                            "PROBE: cannot check `{file}`: {reason}"
+                        ));
+                    }
+                    find_symbol_definition_in_file(dir, file, symbol, *kind)
+                }
                 None => find_symbol_definition(dir, symbol, *kind),
             };
             match found {
@@ -4649,6 +4694,84 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             is_genuine_pass(&result),
             "a matching file-exists probe must stand in for NO CHECKS"
         );
+    }
+
+    // ── R44a/#A39: a probe must never join an absolute or `..`-escaping path
+    // straight into the host filesystem ─────────────────────────────────────
+
+    #[test]
+    fn safe_probe_path_accepts_a_normal_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = safe_probe_path(dir.path(), "src/lib.rs").unwrap();
+        assert_eq!(resolved, dir.path().join("src/lib.rs"));
+    }
+
+    #[test]
+    fn safe_probe_path_rejects_an_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(safe_probe_path(dir.path(), "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn safe_probe_path_rejects_a_parent_dir_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(safe_probe_path(dir.path(), "../outside.txt").is_err());
+        assert!(safe_probe_path(dir.path(), "sub/../../outside.txt").is_err());
+    }
+
+    #[tokio::test]
+    async fn file_exists_probe_with_absolute_path_is_unusable_not_a_host_lookup() {
+        // Even a path that genuinely exists on the host must never be looked
+        // up directly — an absolute probe path is always a harness bug (the
+        // acceptance-criteria compiler should have relativised or dropped
+        // it), never a real check to run against the goal worktree.
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = run_probe_check(
+            &ProbeKind::FileExists("/etc/hosts".to_string()),
+            dir.path(),
+            5,
+        )
+        .await;
+        assert!(
+            matches!(outcome, CheckOutcome::SpawnError(_)),
+            "an absolute probe path must be reported unusable, not PASS or FAIL"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_exists_probe_with_parent_dir_escape_is_unusable() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = run_probe_check(
+            &ProbeKind::FileExists("../outside.txt".to_string()),
+            dir.path(),
+            5,
+        )
+        .await;
+        assert!(
+            matches!(outcome, CheckOutcome::SpawnError(_)),
+            "a `..`-escaping probe path must be reported unusable, not PASS or FAIL"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_exists_probe_with_a_normal_relative_path_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fizzbuzz.py"), "print(1)\n").unwrap();
+        let found = run_probe_check(
+            &ProbeKind::FileExists("fizzbuzz.py".to_string()),
+            dir.path(),
+            5,
+        )
+        .await;
+        assert!(matches!(found, CheckOutcome::Passed { .. }));
+
+        let missing = run_probe_check(
+            &ProbeKind::FileExists("missing.py".to_string()),
+            dir.path(),
+            5,
+        )
+        .await;
+        assert!(matches!(missing, CheckOutcome::Failed { .. }));
     }
 
     // ── R21c-b: structured `probe:*` marker parsing ─────────────────────────
