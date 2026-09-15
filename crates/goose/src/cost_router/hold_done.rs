@@ -229,6 +229,15 @@ pub fn goal_expects_change(meta: &serde_json::Map<String, serde_json::Value>) ->
 /// text reads — these always win over a read-only-sounding phrase in the
 /// same goal, because a mixed "review this AND fix it" goal is not
 /// read-only.
+///
+/// Lane R29b (A28 Miss 3 repair): `"write "` used to be in this list, but
+/// it is genuinely ambiguous — "write a report" is exactly as common an
+/// English phrase as "write the fix," and the former is squarely read-only.
+/// Since [`matches_word_boundary`] now matches `"write"` as a real whole
+/// word (not just a substring), keeping it here would make "write a
+/// report" register as mutation-intent solely because it shares a verb with
+/// "write the migration script" — the same class of false positive this
+/// lane exists to remove. Dropped rather than kept.
 const CHANGE_KEYWORDS: &[&str] = &[
     "fix",
     "implement",
@@ -237,7 +246,6 @@ const CHANGE_KEYWORDS: &[&str] = &[
     "modify",
     "refactor",
     "update",
-    "write ",
     "create",
     "remove",
     "delete",
@@ -275,6 +283,52 @@ const READ_ONLY_KEYWORDS: &[&str] = &[
     "read only",
 ];
 
+/// [`READ_ONLY_KEYWORDS`] entries that are deliberate word STEMS (a prefix
+/// of several inflections — "analy" for analyze/analysis/analyse,
+/// "summariz"/"summaris" for summarize/summarise/summarizing/…) rather than
+/// complete English words. [`matches_word_boundary`] matches these as a
+/// prefix of a whole haystack word; every other keyword must equal a whole
+/// word exactly. This is the one place the A28 Miss 3 fix stays a PREFIX
+/// match rather than tightening to exact equality — unlike `"report"`
+/// (which must never match inside `"reports.py"` / `"reporting"`), these
+/// stems have no bare dictionary form of their own to be exact about.
+const STEM_KEYWORDS: &[&str] = &["analy", "summariz", "summaris"];
+
+/// Tokenize on non-alphanumeric boundaries — the same char-based scan named
+/// in this lane's own instructions, never a byte-index slice. Used for both
+/// the haystack and each keyword so a keyword like `"add "` (kept for
+/// readability elsewhere) and one like `"add"` tokenize identically.
+fn word_tokens(text: &str) -> Vec<&str> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// True when `keyword` matches `haystack_words` at a whole-word boundary —
+/// never as a fragment of a longer word, so `"report"` does not match
+/// `"reports.py"`, `"reporting"`, or `"reports"`. A multi-word keyword
+/// (e.g. `"no code change"`) matches as a contiguous run of whole words. A
+/// [`STEM_KEYWORDS`] entry matches as a prefix of a single haystack word
+/// instead (see its doc comment).
+fn matches_word_boundary(haystack_words: &[&str], keyword: &str) -> bool {
+    let kw_words = word_tokens(keyword);
+    if kw_words.is_empty() {
+        return false;
+    }
+    if kw_words.len() == 1 {
+        let kw = kw_words[0];
+        return if STEM_KEYWORDS.contains(&kw) {
+            haystack_words.iter().any(|w| w.starts_with(kw))
+        } else {
+            haystack_words.iter().any(|&w| w == kw)
+        };
+    }
+    kw_words.len() <= haystack_words.len()
+        && haystack_words
+            .windows(kw_words.len())
+            .any(|w| w == kw_words.as_slice())
+}
+
 /// Lane R21a: the ONLY place `expects_change` is ever derived — called once,
 /// at roadmap-creation time (`materialize_roadmap_transaction`), from the
 /// planner's own acceptance criteria plus the goal description (the planner
@@ -284,6 +338,16 @@ const READ_ONLY_KEYWORDS: &[&str] = &[
 /// review/report/analysis with no change-shaped keyword at all comes back
 /// `false`. Empty/ambiguous input defaults `true` — silence is never treated
 /// as a licence to skip the commit-required rule.
+///
+/// Lane R29b (A28 Miss 3): matching is whole-word (via
+/// [`matches_word_boundary`]), not a raw substring test — a filename or
+/// identifier mentioned in the text (`"reports.py"`) can no longer flip a
+/// genuine fix-and-verify goal to read-only just because a keyword happens
+/// to be one of its letter-runs. [`CHANGE_KEYWORDS`] is still checked
+/// first, so explicit mutation intent ("fix", "implement", "change",
+/// "update", "add", "remove", …) always outranks a read-only-sounding word
+/// in the same text — that precedence already existed here and is
+/// unchanged by this lane.
 pub fn infer_expects_change(acceptance_criteria: &[String], description: &str) -> bool {
     let mut haystack = description.to_ascii_lowercase();
     for ac in acceptance_criteria {
@@ -293,10 +357,16 @@ pub fn infer_expects_change(acceptance_criteria: &[String], description: &str) -
     if haystack.trim().is_empty() {
         return true;
     }
-    if CHANGE_KEYWORDS.iter().any(|kw| haystack.contains(kw)) {
+    let haystack_words = word_tokens(&haystack);
+    if CHANGE_KEYWORDS
+        .iter()
+        .any(|kw| matches_word_boundary(&haystack_words, kw))
+    {
         return true;
     }
-    !READ_ONLY_KEYWORDS.iter().any(|kw| haystack.contains(kw))
+    !READ_ONLY_KEYWORDS
+        .iter()
+        .any(|kw| matches_word_boundary(&haystack_words, kw))
 }
 
 /// How long a worker's final report text must be, trimmed, to count as a
@@ -631,6 +701,76 @@ mod tests {
         assert!(infer_expects_change(
             &["The new endpoint returns 200 for a valid request".into()],
             "Implement the /health endpoint",
+        ));
+    }
+
+    // ── Lane R29b (A28 Miss 3): whole-word matching, not raw substring ──────
+
+    /// The exact A28 miss: a change-shaped goal whose description names a
+    /// consumer filename (`reports.py`) must not be flipped read-only by
+    /// `"report"` matching inside that filename — and here "fix" is also
+    /// present, so `CHANGE_KEYWORDS`' pre-existing precedence decides it
+    /// outright regardless.
+    #[test]
+    fn infer_expects_change_true_for_fix_with_a_reports_py_filename() {
+        assert!(infer_expects_change(
+            &[],
+            "Fix the failing tests in cli.py/reports.py",
+        ));
+    }
+
+    /// A genuinely read-only goal ("write a report") must still read
+    /// read-only — `"write"` no longer sits in `CHANGE_KEYWORDS` (it was
+    /// exactly as ambiguous as the `"report"`/`"reports.py"` bug this lane
+    /// fixes), so the only whole-word keyword left in this text is the
+    /// read-only `"report"`.
+    #[test]
+    fn infer_expects_change_false_for_write_a_report() {
+        assert!(!infer_expects_change(&[], "Write a report on the module"));
+    }
+
+    /// `"report"` must never match as a fragment of `"reports"` — this is
+    /// the literal A28 Miss 3 substring: with no other change or read-only
+    /// signal in the text, the filename alone must not flip the default.
+    #[test]
+    fn infer_expects_change_reports_py_filename_alone_does_not_match_report() {
+        assert!(infer_expects_change(&[], "reports.py"));
+    }
+
+    /// `"report"` must also never match inside `"reporting"` — a different
+    /// word entirely, not a filename this time.
+    #[test]
+    fn infer_expects_change_reporting_does_not_match_report() {
+        assert!(infer_expects_change(
+            &[],
+            "The ingest pipeline needs continuous reporting visibility",
+        ));
+    }
+
+    /// The real A28 Miss 3 fixture, reconstructed: prose that is genuinely
+    /// fix-shaped but — as the actual goal card did — avoids every literal
+    /// `CHANGE_KEYWORDS` verb, while naming a `reports.py` consumer module
+    /// in a scope-preservation clause. With word-boundary matching, no
+    /// keyword in either list matches at all, so the function falls back to
+    /// its documented default: silence is never a licence to skip the
+    /// commit-required rule.
+    #[test]
+    fn infer_expects_change_reconstructed_a28_miss3_fixture_defaults_true() {
+        assert!(infer_expects_change(
+            &["Preserve existing call sites in cli.py/reports.py".into()],
+            "Correct the two underlying bugs; must raise ValueError and must return min(...)",
+        ));
+    }
+
+    /// The stem keywords (`"analy"`, `"summariz"`, `"summaris"`) are
+    /// deliberately partial — they must keep matching their full
+    /// inflections (unlike `"report"`, which must not).
+    #[test]
+    fn infer_expects_change_stem_keywords_still_match_their_inflections() {
+        assert!(!infer_expects_change(&[], "Analyze the query planner"));
+        assert!(!infer_expects_change(
+            &[],
+            "Summarize the incident timeline"
         ));
     }
 
