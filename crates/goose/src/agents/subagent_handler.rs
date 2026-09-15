@@ -387,8 +387,8 @@ mod tests {
     /// human able to answer a parked tool-approval confirmation. See the
     /// function's own doc comment and HARNESS_LOOP_LOG.md's A28 analysis,
     /// miss 2.
-    #[test]
-    fn subagent_agents_are_always_headless() {
+    #[tokio::test]
+    async fn subagent_agents_are_always_headless() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = std::sync::Arc::new(crate::session::SessionManager::new(
             tmp.path().to_path_buf(),

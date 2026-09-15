@@ -2748,7 +2748,7 @@ mod turn_budget_nudge_tests {
     fn singular_wording_at_exactly_one_remaining() {
         let text = turn_budget_nudge_text(24, 25, true).unwrap();
         assert!(
-            text.starts_with("1 action remains "),
+            text.starts_with("1 action remains."),
             "expected singular 'action'/'remains', got {text:?}"
         );
     }
