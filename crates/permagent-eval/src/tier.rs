@@ -150,6 +150,48 @@ impl Tier {
                 "gpt-5.4-mini",
                 Some("OPENAI_API_KEY"),
             )),
+            // Lane MC2 (see `loop-scratch/MINICPM5_2B_PLAN.md`, Lane MC1's
+            // research): a cheap-model-usability probe, not a
+            // `coding_success` candidate — a 2.52B dense model isn't expected
+            // to reliably drive the roadmap/verify/escalate tool-call loop
+            // the way `sonnet`/`dschat` do. Keyless like `local`, but on
+            // shared 16 GB hardware a 2.5B model is slow, so this tier
+            // declares its own 1200s floor (Lane K6's `harness_timeout_secs`
+            // mechanism — see the field doc above; it only ever RAISES a
+            // task's ceiling, never shortens one).
+            //
+            // OpenBMB's own docs recommend SGLang for MiniCPM5's native
+            // XML-style tool-call format; there is no stated llama.cpp/Ollama
+            // parser for it. Two ways to get tool calls working through the
+            // `ollama` provider if MiniCPM5's `TEMPLATE` doesn't already
+            // speak Ollama's own tool-call JSON: (1) it may just work — the
+            // `ollama` provider has no allowlist gating tool calls on a
+            // model's listing metadata; (2) if native calls don't parse,
+            // fall back to the toolshim: set `GOOSE_TOOLSHIM=true` and
+            // `GOOSE_TOOLSHIM_OLLAMA_MODEL=<model>` (see
+            // `crates/goose/src/providers/toolshim.rs`) to route raw text
+            // output through a second Ollama model that re-derives
+            // structured tool calls — format-agnostic, at the cost of a
+            // second model load and an extra hop per call. There is no field
+            // on `Tier` for this; it's an operator-set env var, not part of
+            // the tier's own provider+model pinning.
+            "minicpm5" => Some(Tier {
+                harness_timeout_secs: Some(1200),
+                ..t("minicpm5", "ollama", "openbmb/minicpm5:q8_0", None)
+            }),
+            // Fallback if `openbmb/minicpm5:q8_0`'s Ollama-library tag turns
+            // out to be a smaller/mismatched model than the HF 2.5B GGUF
+            // (UNVERIFIED in the plan — the fetched tag page's size/param
+            // count didn't match the HF GGUF repo for the same quant level;
+            // verify with `ollama show` before trusting it). This name is
+            // the local Modelfile built manually from
+            // `openbmb/MiniCPM5-2B-GGUF` per the plan's §4a fallback recipe —
+            // it does not exist until that Modelfile is created and
+            // `ollama create`d under this name.
+            "minicpm5-hf" => Some(Tier {
+                harness_timeout_secs: Some(1200),
+                ..t("minicpm5-hf", "ollama", "minicpm5-2b-q8", None)
+            }),
             _ => None,
         }
     }
@@ -171,6 +213,8 @@ impl Tier {
             "dsreason",
             "kimi25",
             "gpt54mini",
+            "minicpm5",
+            "minicpm5-hf",
         ]
     }
 
@@ -245,7 +289,7 @@ mod tests {
     #[test]
     fn builtin_names_lists_every_tier_and_each_one_resolves() {
         let names = Tier::builtin_names();
-        assert_eq!(names.len(), 14, "{names:?}");
+        assert_eq!(names.len(), 16, "{names:?}");
         for &name in names {
             let t = Tier::builtin(name)
                 .unwrap_or_else(|| panic!("{name} is in builtin_names() but does not resolve"));
@@ -267,6 +311,10 @@ mod tests {
             "kimi25",
             "gpt54mini",
         ] {
+            assert!(names.contains(&name), "{name} missing from builtin_names()");
+        }
+        // Lane MC2: the minicpm5 local tier and its HF-Modelfile fallback.
+        for name in ["minicpm5", "minicpm5-hf"] {
             assert!(names.contains(&name), "{name} missing from builtin_names()");
         }
     }
@@ -315,6 +363,26 @@ mod tests {
         }
     }
 
+    /// Lane MC2: `minicpm5` and its `minicpm5-hf` fallback resolve to the
+    /// keyless `ollama` provider with the plan's models, and both declare
+    /// the 1200s harness-timeout floor (Lane K6's mechanism — a 2.5B model
+    /// on shared 16 GB hardware is slow).
+    #[test]
+    fn minicpm5_tiers_resolve_ollama_with_1200s_floor() {
+        let minicpm5 = Tier::builtin("minicpm5").unwrap();
+        assert_eq!(minicpm5.provider, "ollama");
+        assert_eq!(minicpm5.model, "openbmb/minicpm5:q8_0");
+        assert_eq!(minicpm5.required_key_env, None);
+        assert_eq!(minicpm5.harness_timeout_secs, Some(1200));
+        assert!(minicpm5.pin_packs);
+
+        let minicpm5_hf = Tier::builtin("minicpm5-hf").unwrap();
+        assert_eq!(minicpm5_hf.provider, "ollama");
+        assert_eq!(minicpm5_hf.model, "minicpm5-2b-q8");
+        assert_eq!(minicpm5_hf.required_key_env, None);
+        assert_eq!(minicpm5_hf.harness_timeout_secs, Some(1200));
+    }
+
     #[test]
     fn pack_env_pins_all_four_roles_when_enabled() {
         let t = Tier::builtin("frontier").unwrap();
@@ -344,9 +412,11 @@ mod tests {
     }
 
     /// Lane K6 / K6-b: the zai tiers (`glm47`/`glm53`) declare a 900s
-    /// harness ceiling FLOOR; every other tier — `dschat` explicitly named,
-    /// since DeepSeek's own walls on this suite run comfortably under the
-    /// flat 900s default — declares no tier-level floor (`None`, so
+    /// harness ceiling FLOOR, and Lane MC2's `minicpm5`/`minicpm5-hf`
+    /// declare their own 1200s floor (see `minicpm5_tiers_resolve_ollama_
+    /// with_1200s_floor` above); every other tier — `dschat` explicitly
+    /// named, since DeepSeek's own walls on this suite run comfortably under
+    /// the flat 900s default — declares no tier-level floor (`None`, so
     /// `TaskSpec::resolved_harness_timeout_secs` applies just the task's
     /// own cap or `DEFAULT_HARNESS_TIMEOUT_SECS`, unchanged by the tier).
     #[test]
@@ -356,7 +426,7 @@ mod tests {
             assert_eq!(t.harness_timeout_secs, Some(900), "{name}");
         }
         for &name in Tier::builtin_names() {
-            if name == "glm47" || name == "glm53" {
+            if name == "glm47" || name == "glm53" || name == "minicpm5" || name == "minicpm5-hf" {
                 continue;
             }
             let t = Tier::builtin(name).unwrap();
