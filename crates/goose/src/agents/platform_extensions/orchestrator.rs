@@ -16817,7 +16817,16 @@ tokio::task_local! {
 /// whether to promote `maybe_hold_review`'s own Allow, never lands or
 /// credits anything itself. `false` on a genuine failure, a vacuous pass, a
 /// timeout, or when no wall budget remains to even try.
-async fn run_fresh_verify_for_hold(card: &cards::Card, worktree_path: &std::path::Path) -> bool {
+///
+/// R43a-b (G31 review, M38 lanes, HIGH-1): `pub(crate)` (was private) so
+/// `decisions_effects.rs`'s `land_approved_goal` can require the SAME
+/// verify-bound-to-head discipline on its own trunk-relative override —
+/// `commits_unlanded_at_trunk > 0` alone is not evidence the commit was
+/// ever checked, exactly the gap R42a-b closed here for `maybe_hold_review`.
+pub(crate) async fn run_fresh_verify_for_hold(
+    card: &cards::Card,
+    worktree_path: &std::path::Path,
+) -> bool {
     #[cfg(test)]
     let _ = FRESH_HOLD_VERIFY_CALL_COUNT.try_with(|count| {
         count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
