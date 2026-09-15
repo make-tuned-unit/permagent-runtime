@@ -1415,10 +1415,14 @@ fn ground_acceptance_criteria(
 /// canned planner proposal. Returns the corrected goals plus one
 /// human-readable receipt per correction, so `decompose_roadmap`'s own output
 /// can show what changed and why instead of silently reshaping the proposal.
+/// `root`, when known (the project's own worktree root), lets R43b-b
+/// relativise an absolute path quoted inside a goal's task text instead of
+/// rejecting the derived behavioural criterion outright.
 pub(crate) fn ground_roadmap_goals(
     mut goals: Vec<goal_state::ProposedGoal>,
     facts: &RepoFacts,
     allowed_tags: &std::collections::BTreeSet<String>,
+    root: Option<&std::path::Path>,
 ) -> (Vec<goal_state::ProposedGoal>, Vec<String>) {
     let mut receipts = Vec::new();
 
@@ -1475,6 +1479,7 @@ pub(crate) fn ground_roadmap_goals(
         let (behavioural_added, existence_only) = ground_acceptance_criteria_behaviourally(
             &mut goal.acceptance_criteria,
             &goal.description,
+            root,
         );
         if behavioural_added {
             receipts.push(format!(
@@ -1486,7 +1491,8 @@ pub(crate) fn ground_roadmap_goals(
         } else if existence_only {
             receipts.push(format!(
                 "goal '{}': acceptance criteria are all existence-only and no behavioural check \
-                 could be derived from the task description — tag {} for reviewer (R43b)",
+                 could be derived from the task description — tag {} for reviewer \
+                 (ac_grounding behavioural_added=0 reason=no_behavioural_sentence) (R43b)",
                 goal.title, AC_EXISTENCE_ONLY_METADATA_KEY
             ));
         }
@@ -2009,81 +2015,128 @@ fn all_acceptance_criteria_existence_only(criteria: &[String]) -> bool {
             .all(|c| classify_acceptance_criterion(c) == AcKind::ExistenceOnly)
 }
 
-/// R43b: does `description` (a goal's own task text) name a concrete
-/// input/command AND an observable outcome word -- the same two-part
-/// behavioural signal [`classify_acceptance_criterion`] looks for in a
-/// criterion, applied here to the TASK TEXT instead, so a derived criterion
-/// is only ever attempted when the task itself actually describes real
-/// behavior to check.
-fn task_text_names_input_and_outcome(lower: &str) -> bool {
-    let has_input = lower.contains('`')
-        || regex::Regex::new(r"--[a-z][\w-]*")
-            .map(|re| re.is_match(lower))
-            .unwrap_or(false);
-    if !has_input {
-        return false;
-    }
-    const OUTCOME_WORDS: &[&str] = &[
-        "print", "return", "exit", "filter", "accept", "reject", "output", "produce",
-    ];
-    OUTCOME_WORDS.iter().any(|w| lower.contains(w))
-}
-
-/// R43b: does `description` describe an observable behavior at all -- an
-/// explicit runnable command, a named test file, or (the general case) a
-/// concrete input plus an outcome word ([`task_text_names_input_and_outcome`])?
-/// Gates whether [`derive_behavioural_ac_from_task_text`] is even attempted;
-/// `false` means the task text itself gives nothing to derive from, so the
-/// goal is left tagged `ac_existence_only` for a human instead of inventing
-/// something the task never said.
-fn task_text_describes_observable_behaviour(description: &str) -> bool {
-    if extract_quoted_command(description).is_some() {
-        return true;
-    }
-    if regex::Regex::new(r"(?i)\btest[\w./-]*\.\w+\b")
-        .map(|re| re.is_match(description))
+/// R43b-b (#G31 HIGH-2 / A39): does `criterion` name a concrete input or
+/// command that is NOT merely a file path? [`criterion_names_an_input_or_command`]
+/// treats ANY backtick span as a command, so a criterion whose only
+/// backtick-quoted content is a bare path (e.g. "`src/foo.py` prints an
+/// error and exits 1") would otherwise read as behavioural on a path alone
+/// -- gate (4): never let a derived AC's only concrete token be a file
+/// path. Splits on backticks (never byte-indexes) so this stays
+/// `-D clippy::string_slice` clean.
+fn names_a_non_path_concrete_token(criterion: &str) -> bool {
+    if regex::Regex::new(r"--[A-Za-z][\w-]*")
+        .map(|re| re.is_match(criterion))
         .unwrap_or(false)
     {
         return true;
     }
-    task_text_names_input_and_outcome(&description.to_lowercase())
+    if regex::Regex::new(r"[A-Za-z_][\w.]*\([^()]*\)")
+        .map(|re| re.is_match(criterion))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if criterion.to_lowercase().contains("running ") {
+        return true;
+    }
+    criterion
+        .split('`')
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1) // odd segments are inside a backtick pair
+        .any(|(_, span)| {
+            let span = span.trim();
+            !span.is_empty() && !looks_like_path(span) && !looks_like_absolute_path(span)
+        })
 }
 
-/// R43b: of every "sentence" in `description` (split on `.`/newlines), the
-/// one with the most backtick-quoted spans -- a cheap proxy for "the most
-/// concrete one" that lets [`derive_behavioural_ac_from_task_text`] quote
-/// the task's OWN words rather than paraphrasing them.
-fn most_concrete_sentence(description: &str) -> Option<String> {
+/// R43b-b: of every "sentence" in `description` (split on `.`/newlines),
+/// the ONE that itself classifies as behavioural -- run through the SAME
+/// [`classify_acceptance_criterion`] a written-out criterion is judged by,
+/// plus [`names_a_non_path_concrete_token`] (gate (4)) -- rather than the
+/// old "most backticks" proxy, which happily quoted a file path or any
+/// other non-behavioural sentence as long as it had backticks (#A39/#G31
+/// HIGH-2). Coupling the gate ("is there anything to derive from") and the
+/// pick ("which sentence") into one classifier-scored selection means a
+/// candidate is only ever returned when IT, not the wrapping prose around
+/// it, actually describes an input/command and an observable outcome.
+/// Ties (more than one behavioural sentence) prefer the one with the most
+/// backtick-quoted spans, same tiebreak flavor as before.
+fn most_behavioural_sentence(description: &str) -> Option<String> {
     description
         .split(['.', '\n'])
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
+        .filter(|s| classify_acceptance_criterion(s) == AcKind::Behavioural)
+        .filter(|s| names_a_non_path_concrete_token(s))
         .max_by_key(|s| s.matches('`').count())
         .map(|s| s.to_string())
 }
 
-/// R43b's derivation step: when the task's own description already
-/// describes an observable behavior ([`task_text_describes_observable_behaviour`]),
-/// produce ONE behavioural acceptance criterion quoting the task's own
-/// words -- never invented, same discipline as R21b/R21c's "never invent a
-/// check". `None` when the task text gives nothing concrete to quote, so
-/// the caller can fall back to tagging the goal for human review instead.
-fn derive_behavioural_ac_from_task_text(description: &str) -> Option<String> {
-    if let Some(cmd) = extract_quoted_command(description) {
-        return Some(format!(
-            "running `{cmd}` produces the behavior the task describes, not merely that \
-             supporting code was added (derived from the task description, R43b)"
-        ));
-    }
-    if !task_text_describes_observable_behaviour(description) {
+/// R43b-b: the final gate every derived AC text must pass before it is
+/// handed back to a caller. Re-classifies the WRAPPED text (not just the
+/// quoted fragment picked above) so the wrapping prose can never smuggle a
+/// non-behavioural pick through, re-checks gate (4) on the wrapped text
+/// too, and relativises/rejects any absolute or out-of-root path token via
+/// R44a's [`normalize_path_token`] -- a raw host filesystem path baked into
+/// an AC can never be satisfied against a goal's own worktree (#A39).
+/// `None` on any failure, so the caller always has a safe fallback to "no
+/// AC derived" rather than a half-checked candidate.
+fn finalize_derived_ac(candidate: String, root: Option<&std::path::Path>) -> Option<String> {
+    let normalized = normalize_derived_ac_paths(&candidate, root)?;
+    if classify_acceptance_criterion(&normalized) != AcKind::Behavioural {
         return None;
     }
-    let sentence = most_concrete_sentence(description)?;
-    Some(format!(
+    if !names_a_non_path_concrete_token(&normalized) {
+        return None;
+    }
+    Some(normalized)
+}
+
+/// Replace every absolute, path-shaped token in `candidate` with its
+/// relativised form under `root` ([`normalize_path_token`]); `None` (reject
+/// the whole candidate) as soon as ANY such token has no `root` to
+/// relativise against or lies outside it -- never seed a derived AC with a
+/// raw host path (#A39/#R44a).
+fn normalize_derived_ac_paths(candidate: &str, root: Option<&std::path::Path>) -> Option<String> {
+    let mut out = candidate.to_string();
+    for raw_tok in candidate.split_whitespace() {
+        let tok = clean_token(raw_tok);
+        if !looks_like_absolute_path(tok) {
+            continue;
+        }
+        let relative = normalize_path_token(tok, root?)?;
+        out = out.replace(tok, &relative);
+    }
+    Some(out)
+}
+
+/// R43b's derivation step: produce ONE behavioural acceptance criterion
+/// quoting the task's own words -- never invented, same discipline as
+/// R21b/R21c's "never invent a check". A literal quoted, recognized-program
+/// command wins outright (it is unambiguously behavioural); otherwise
+/// [`most_behavioural_sentence`] must find a sentence that ITSELF
+/// classifies as behavioural. Either way the wrapped result is re-checked
+/// end-to-end by [`finalize_derived_ac`] before it is ever returned.
+/// `None` when nothing survives, so the caller can fall back to tagging the
+/// goal for human review instead.
+fn derive_behavioural_ac_from_task_text(
+    description: &str,
+    root: Option<&std::path::Path>,
+) -> Option<String> {
+    if let Some(cmd) = extract_quoted_command(description) {
+        let candidate = format!(
+            "running `{cmd}` produces the behavior the task describes, not merely that \
+             supporting code was added (derived from the task description, R43b)"
+        );
+        return finalize_derived_ac(candidate, root);
+    }
+    let sentence = most_behavioural_sentence(description)?;
+    let candidate = format!(
         "actually invoke the change and check its real exit code/output against the task's own \
          example, not just that supporting code was added -- \"{sentence}\" (derived from the \
          task description, R43b)"
-    ))
+    );
+    finalize_derived_ac(candidate, root)
 }
 
 /// Card metadata key set when a goal's acceptance criteria are ALL
@@ -2097,19 +2150,25 @@ pub const AC_EXISTENCE_ONLY_METADATA_KEY: &str = "ac_existence_only";
 /// R43b's entry point, run alongside R21b/R21c's own grounding: when every
 /// criterion in `criteria` is existence-only, either append one derived
 /// behavioural criterion (quoting the task's own description) or, when
-/// nothing could be derived, leave `criteria` untouched. Returns
-/// `(behavioural_added, existence_only_remaining)` -- `existence_only_remaining`
-/// is the caller's cue to set [`AC_EXISTENCE_ONLY_METADATA_KEY`] on the card.
-/// A no-op (`(false, false)`) whenever at least one criterion is already
+/// nothing could be derived (no sentence itself classifies as behavioural,
+/// or every candidate's only concrete token was a path), leave `criteria`
+/// untouched. `root`, when known, lets [`derive_behavioural_ac_from_task_text`]
+/// relativise an absolute path quoted inside the task text rather than
+/// rejecting the candidate outright. Returns `(behavioural_added,
+/// existence_only_remaining)` -- `existence_only_remaining` is the caller's
+/// cue to set [`AC_EXISTENCE_ONLY_METADATA_KEY`] on the card AND record
+/// `ac_grounding behavioural_added=0 reason=no_behavioural_sentence`. A
+/// no-op (`(false, false)`) whenever at least one criterion is already
 /// behavioural, so this never re-flags a goal R43b already fixed.
 fn ground_acceptance_criteria_behaviourally(
     criteria: &mut Vec<String>,
     description: &str,
+    root: Option<&std::path::Path>,
 ) -> (bool, bool) {
     if !all_acceptance_criteria_existence_only(criteria) {
         return (false, false);
     }
-    match derive_behavioural_ac_from_task_text(description) {
+    match derive_behavioural_ac_from_task_text(description, root) {
         Some(derived) => {
             criteria.push(derived);
             (true, false)
@@ -2196,6 +2255,7 @@ async fn validate_roadmap_ac_or_rewrite(
     project: &crate::projects::Project,
     proposal_hash: &str,
     facts: &RepoFacts,
+    root: Option<&std::path::Path>,
     goals: &mut [goal_state::ProposedGoal],
 ) -> Result<std::collections::BTreeMap<usize, Vec<String>>, String> {
     let ungrounded = ungrounded_named_criteria_in_goals(goals, facts);
@@ -2204,7 +2264,7 @@ async fn validate_roadmap_ac_or_rewrite(
         // Clear any stale retry marker left by a DIFFERENT, earlier
         // proposal for this project that failed and was never retried.
         clear_roadmap_ac_validation_state(pool, project).await;
-        apply_behavioural_ac_grounding(goals, &mut ac_rewrite_notes);
+        apply_behavioural_ac_grounding(goals, &mut ac_rewrite_notes, root);
         return Ok(ac_rewrite_notes);
     }
     if !roadmap_ac_validation_previously_failed(project, proposal_hash) {
@@ -2226,7 +2286,7 @@ async fn validate_roadmap_ac_or_rewrite(
         }
     }
     clear_roadmap_ac_validation_state(pool, project).await;
-    apply_behavioural_ac_grounding(goals, &mut ac_rewrite_notes);
+    apply_behavioural_ac_grounding(goals, &mut ac_rewrite_notes, root);
     Ok(ac_rewrite_notes)
 }
 
@@ -2242,11 +2302,13 @@ async fn validate_roadmap_ac_or_rewrite(
 fn apply_behavioural_ac_grounding(
     goals: &mut [goal_state::ProposedGoal],
     ac_rewrite_notes: &mut std::collections::BTreeMap<usize, Vec<String>>,
+    root: Option<&std::path::Path>,
 ) {
     for (idx, goal) in goals.iter_mut().enumerate() {
         let (behavioural_added, existence_only) = ground_acceptance_criteria_behaviourally(
             &mut goal.acceptance_criteria,
             &goal.description,
+            root,
         );
         if behavioural_added {
             ac_rewrite_notes.entry(idx).or_default().push(
@@ -2257,7 +2319,8 @@ fn apply_behavioural_ac_grounding(
         } else if existence_only {
             ac_rewrite_notes.entry(idx).or_default().push(format!(
                 "acceptance criteria are all existence-only and no behavioural check could be \
-                 derived from the task description — tagged {} for reviewer (R43b)",
+                 derived from the task description — tagged {} for reviewer \
+                 (ac_grounding behavioural_added=0 reason=no_behavioural_sentence) (R43b)",
                 AC_EXISTENCE_ONLY_METADATA_KEY
             ));
         }
@@ -8018,7 +8081,8 @@ impl OrchestratorClient {
         // Z1: ground the raw proposal in this repo and the live roster
         // before any validation or approval — see the "Roadmap grounding"
         // block above `ground_roadmap_goals`.
-        let (goals, grounding_receipts) = ground_roadmap_goals(goals, &facts, &allowed_tags);
+        let (goals, grounding_receipts) =
+            ground_roadmap_goals(goals, &facts, &allowed_tags, facts_dir);
 
         validate_roadmap_goals(&goals)?;
 
@@ -8273,9 +8337,15 @@ impl OrchestratorClient {
                     .map(|s| s.working_dir.as_path())
             });
         let facts = facts_dir.map(RepoFacts::gather).unwrap_or_default();
-        let ac_rewrite_notes =
-            validate_roadmap_ac_or_rewrite(&pool, &project, &proposal_hash, &facts, &mut goals)
-                .await?;
+        let ac_rewrite_notes = validate_roadmap_ac_or_rewrite(
+            &pool,
+            &project,
+            &proposal_hash,
+            &facts,
+            facts_dir,
+            &mut goals,
+        )
+        .await?;
 
         // Harness loop, Lane V (V3): `resolve_internal_isolation` (goal_engine.rs)
         // fatally refuses to dispatch into a project with no git baseline —
@@ -34686,7 +34756,7 @@ mod tests {
                 &["code_edit"],
             ),
         ];
-        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed);
+        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed, None);
         assert_eq!(
             grounded.len(),
             1,
@@ -34722,7 +34792,7 @@ mod tests {
                 &["code_edit"],
             ),
         ];
-        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed);
+        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed, None);
         assert_eq!(grounded.len(), 2);
         assert!(!receipts.iter().any(|r| r.contains("right-sized")));
     }
@@ -34745,7 +34815,7 @@ mod tests {
             goal("Goal A", "do the first thing", &[], &["code_edit"]),
             goal("Goal B", "do the second thing", &[], &["code_edit"]),
         ];
-        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed);
+        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed, None);
         assert_eq!(grounded.len(), 2);
         assert!(!receipts.iter().any(|r| r.contains("right-sized")));
     }
@@ -34775,7 +34845,7 @@ mod tests {
             goal("R2 fixture A", "first", &[], &[]),
             goal("R2 fixture B", "second", &[], &[]),
         ];
-        let (grounded, receipts) = ground_roadmap_goals(goals.clone(), &facts, &allowed);
+        let (grounded, receipts) = ground_roadmap_goals(goals.clone(), &facts, &allowed, None);
         assert_eq!(
             grounded, goals,
             "no manifest was detected, so an unrecognized directory's incidental file count \
@@ -34816,7 +34886,7 @@ mod tests {
                 &["code_edit", "frontend"],
             ),
         ];
-        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed);
+        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed, None);
 
         assert_eq!(
             grounded.len(),
@@ -35096,7 +35166,7 @@ mod tests {
 
     #[test]
     fn derive_behavioural_ac_from_task_text_quotes_the_logfilter_fixtures_own_example() {
-        let derived = derive_behavioural_ac_from_task_text(LOGFILTER_TASK_PROMPT)
+        let derived = derive_behavioural_ac_from_task_text(LOGFILTER_TASK_PROMPT, None)
             .expect("the fixture's own prompt names --level/--since/--last and exit codes");
         // Quotes the task's own text, not an invented example.
         assert!(
@@ -35120,9 +35190,11 @@ mod tests {
 
     #[test]
     fn derive_behavioural_ac_from_task_text_prefers_a_literal_runnable_command() {
-        let derived =
-            derive_behavioural_ac_from_task_text("Run `pytest -k thing` and confirm it exits 0.")
-                .expect("a literal quoted pytest command should derive");
+        let derived = derive_behavioural_ac_from_task_text(
+            "Run `pytest -k thing` and confirm it exits 0.",
+            None,
+        )
+        .expect("a literal quoted pytest command should derive");
         assert!(derived.contains("`pytest -k thing`"), "{derived}");
         assert_eq!(classify_acceptance_criterion(&derived), AcKind::Behavioural);
     }
@@ -35130,7 +35202,92 @@ mod tests {
     #[test]
     fn derive_behavioural_ac_from_task_text_is_none_when_nothing_concrete_to_quote() {
         assert_eq!(
-            derive_behavioural_ac_from_task_text("Refactor the internal helper for clarity."),
+            derive_behavioural_ac_from_task_text("Refactor the internal helper for clarity.", None),
+            None
+        );
+    }
+
+    /// #G31 HIGH-2 / A39 regression: the old "most backticks" pick chose a
+    /// sentence quoting two bare file paths (all its concrete content) over
+    /// the ACTUALLY behavioural sentence with fewer backticks. R43b-b scores
+    /// candidates by [`classify_acceptance_criterion`], not backtick count,
+    /// so it must pick the behavioural sentence even though it loses the
+    /// backtick count.
+    #[test]
+    fn derive_behavioural_ac_from_task_text_picks_the_behavioural_sentence_over_the_backtick_heavy_one(
+    ) {
+        let description = "Edit `/Users/x/ws/src/foo` and `/Users/x/ws/src/bar` for the refactor. \
+             Running the tool with --level DEBUG prints ready and exits 0.";
+        let derived = derive_behavioural_ac_from_task_text(description, None)
+            .expect("the second sentence is genuinely behavioural");
+        assert!(
+            derived.contains("--level DEBUG") && derived.contains("prints ready"),
+            "expected the behavioural sentence to be quoted, not the path-only one: {derived}"
+        );
+        assert!(
+            !derived.contains("/Users/x/ws"),
+            "the backtick-heavy, path-only sentence must never be chosen: {derived}"
+        );
+        assert_eq!(classify_acceptance_criterion(&derived), AcKind::Behavioural);
+    }
+
+    /// Gate (4): a sentence whose only backtick-quoted, "concrete" content
+    /// is a bare file path must never be derived into an AC, even though
+    /// [`classify_acceptance_criterion`] alone would call it behavioural
+    /// (a backtick plus an outcome word like "prints"/"exits").
+    #[test]
+    fn derive_behavioural_ac_from_task_text_never_derives_from_a_path_only_concrete_token() {
+        assert_eq!(
+            derive_behavioural_ac_from_task_text(
+                "The tool `/Users/x/ws/src/foo` prints an error and exits 1.",
+                None,
+            ),
+            None
+        );
+    }
+
+    /// The lane's own literal test case: a task text whose only concrete
+    /// sentence names a bare absolute path with no behavioural signal at
+    /// all -- no AC should be derived.
+    #[test]
+    fn derive_behavioural_ac_from_task_text_is_none_for_a_bare_edit_path_sentence() {
+        assert_eq!(
+            derive_behavioural_ac_from_task_text("edit /Users/x/ws/src/foo.py", None),
+            None
+        );
+    }
+
+    /// R44a integration: a behavioural sentence that also names an absolute
+    /// path (outside the wording that makes it behavioural) still derives an
+    /// AC, with the path relativised under `root` rather than baked in as a
+    /// raw host path (#A39).
+    #[test]
+    fn derive_behavioural_ac_from_task_text_relativises_an_absolute_path_under_root() {
+        let root = std::path::Path::new("/Users/j/ws");
+        let description = "Running the new parser against /Users/j/ws/data/samplelog with \
+             --level DEBUG prints the filtered lines and exits 0.";
+        let derived = derive_behavioural_ac_from_task_text(description, Some(root))
+            .expect("the sentence is behavioural via --level/prints");
+        assert!(
+            derived.contains("data/samplelog"),
+            "expected the path relativised under root: {derived}"
+        );
+        assert!(
+            !derived.contains("/Users/j/ws"),
+            "the raw absolute path must never survive into the derived AC: {derived}"
+        );
+        assert_eq!(classify_acceptance_criterion(&derived), AcKind::Behavioural);
+    }
+
+    /// Without a known `root` to relativise against, an absolute path
+    /// anywhere in the derived text is grounds to reject the candidate
+    /// outright rather than seed an unsatisfiable raw host path.
+    #[test]
+    fn derive_behavioural_ac_from_task_text_rejects_an_absolute_path_with_no_root() {
+        let description = "Running the new parser against /Users/j/ws/data/samplelog with \
+             --level DEBUG prints the filtered lines and exits 0.";
+        assert_eq!(
+            derive_behavioural_ac_from_task_text(description, None),
             None
         );
     }
@@ -35140,7 +35297,7 @@ mod tests {
         let mut criteria = a38_miss1_existence_only_criteria();
         let original_len = criteria.len();
         let (behavioural_added, existence_only) =
-            ground_acceptance_criteria_behaviourally(&mut criteria, LOGFILTER_TASK_PROMPT);
+            ground_acceptance_criteria_behaviourally(&mut criteria, LOGFILTER_TASK_PROMPT, None);
         assert!(behavioural_added);
         assert!(!existence_only);
         assert_eq!(criteria.len(), original_len + 1);
@@ -35150,12 +35307,31 @@ mod tests {
         );
     }
 
+    /// The lane's own literal test case, at the `ground_acceptance_criteria_behaviourally`
+    /// entry point: a task text whose only concrete sentence is a bare
+    /// path -- no AC is added, and the existence-only tag is set for a
+    /// reviewer instead.
+    #[test]
+    fn ground_acceptance_criteria_behaviourally_tags_existence_only_for_a_bare_edit_path_sentence()
+    {
+        let mut criteria = vec!["the docs are updated".to_string()];
+        let (behavioural_added, existence_only) = ground_acceptance_criteria_behaviourally(
+            &mut criteria,
+            "edit /Users/x/ws/src/foo.py",
+            None,
+        );
+        assert!(!behavioural_added);
+        assert!(existence_only);
+        assert_eq!(criteria, vec!["the docs are updated".to_string()]);
+    }
+
     #[test]
     fn ground_acceptance_criteria_behaviourally_tags_existence_only_when_nothing_derivable() {
         let mut criteria = vec!["the docs are updated".to_string()];
         let (behavioural_added, existence_only) = ground_acceptance_criteria_behaviourally(
             &mut criteria,
             "Refactor the internal helper for clarity.",
+            None,
         );
         assert!(!behavioural_added);
         assert!(existence_only);
@@ -35169,7 +35345,7 @@ mod tests {
         ];
         let before = criteria.clone();
         let (behavioural_added, existence_only) =
-            ground_acceptance_criteria_behaviourally(&mut criteria, LOGFILTER_TASK_PROMPT);
+            ground_acceptance_criteria_behaviourally(&mut criteria, LOGFILTER_TASK_PROMPT, None);
         assert!(!behavioural_added);
         assert!(!existence_only);
         assert_eq!(criteria, before);
@@ -35192,7 +35368,7 @@ mod tests {
             depends_on: vec![],
         }];
         let (grounded, receipts) =
-            ground_roadmap_goals(goals, &facts, &std::collections::BTreeSet::new());
+            ground_roadmap_goals(goals, &facts, &std::collections::BTreeSet::new(), None);
         assert!(
             receipts
                 .iter()
@@ -35202,6 +35378,43 @@ mod tests {
         assert_eq!(
             classify_acceptance_criterion(grounded[0].acceptance_criteria.last().unwrap()),
             AcKind::Behavioural
+        );
+    }
+
+    /// End-to-end at the `ground_roadmap_goals` entry point: a goal whose
+    /// task text's only concrete sentence is a bare absolute-path edit
+    /// instruction gets no derived AC, and the receipt records WHY
+    /// (`reason=no_behavioural_sentence`) rather than silently doing
+    /// nothing.
+    #[test]
+    fn ground_roadmap_goals_tags_existence_only_and_records_the_reason_for_a_bare_path_sentence() {
+        let facts = RepoFacts {
+            manifests: vec!["setup.py".to_string()],
+            files: vec!["src/foo.py".to_string()],
+            file_count: 1,
+            check_commands: vec![],
+            ..Default::default()
+        };
+        let goals = vec![goal_state::ProposedGoal {
+            title: "Tweak foo".to_string(),
+            description: "edit /Users/x/ws/src/foo.py".to_string(),
+            acceptance_criteria: vec!["src/foo.py exists".to_string()],
+            tags: vec![],
+            depends_on: vec![],
+        }];
+        let (grounded, receipts) =
+            ground_roadmap_goals(goals, &facts, &std::collections::BTreeSet::new(), None);
+        assert_eq!(
+            grounded[0].acceptance_criteria,
+            vec!["src/foo.py exists".to_string()],
+            "no AC should have been derived from a bare path sentence"
+        );
+        assert!(
+            receipts
+                .iter()
+                .any(|r| r
+                    .contains("ac_grounding behavioural_added=0 reason=no_behavioural_sentence")),
+            "receipts: {receipts:?}"
         );
     }
 
