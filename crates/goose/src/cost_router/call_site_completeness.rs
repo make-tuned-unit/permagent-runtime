@@ -150,6 +150,10 @@ fn strip_diff_path_prefix(path: &str) -> String {
 /// rewrite can separate the old and new definition lines into different
 /// hunks — so old/new definitions are collected per (file, symbol) across the
 /// WHOLE diff and compared once at the end.
+// Boundary-safe by construction: `b_idx` is `str::find`'s index for the ASCII
+// literal " b/" and the `+ 3` is that literal's own byte length, i.e. the
+// match's end boundary, so the slice cannot split a UTF-8 character.
+#[allow(clippy::string_slice)]
 pub fn detect_signature_changes(diff: &str) -> Vec<SignatureChange> {
     let mut current_file: Option<String> = None;
     // (file, symbol) -> (normalized params, raw trimmed line)
