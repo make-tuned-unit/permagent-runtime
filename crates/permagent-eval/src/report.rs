@@ -290,6 +290,14 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                         "cache_read_tokens": r.cost.cache_read_tokens,
                         "cache_write_tokens": r.cost.cache_write_tokens,
                         "cache_hit_rate": r.cost.cache_hit_rate(),
+                        // K18 (`## A45 design` Q3): per-role cost/offset
+                        // accounting for this one task's isolated ledger —
+                        // `null` on a ledger schema/run with no role data,
+                        // never fabricated as zero.
+                        "coordinator_usd": r.cost.coordinator_usd,
+                        "worker_usd": r.cost.worker_usd,
+                        "worker_local_tokens": r.cost.worker_local_tokens,
+                        "worker_offset_usd": r.cost.worker_offset_usd,
                         "duration_secs": r.duration_secs,
                         "harness_exit": r.harness_exit,
                         "harness_timed_out": r.harness_timed_out,
@@ -361,6 +369,12 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                     "total_rate_limit_events": agg.total_rate_limit_events,
                     "cache_hit_rate": agg.cache_hit_rate,
                     "dag_selection_pct": agg.dag_selection_pct,
+                    // K18: run-wide per-role cost totals and the local-
+                    // worker "offset" they represent — see `metrics::
+                    // Aggregate`'s field docs.
+                    "coordinator_usd": agg.coordinator_usd,
+                    "worker_usd": agg.worker_usd,
+                    "worker_offset_usd": agg.worker_offset_usd,
                 },
                 "tasks": tasks,
             })
@@ -786,5 +800,60 @@ mod tests {
     fn json_report_selection_correct_is_null_for_a_non_selection_task() {
         let v = render_json(&[sample()]);
         assert!(v["tiers"][0]["tasks"][0]["selection_correct"].is_null());
+    }
+
+    // ── K18: per-role, per-provider cost accounting in the JSON report ─────
+
+    #[test]
+    fn json_report_carries_role_cost_per_task_and_in_summary() {
+        let mut coordinator_only = TaskResult::new(
+            "alpha",
+            "classic",
+            OracleOutcome::Pass,
+            CostReading::known(0.10, false, 1),
+        );
+        coordinator_only.cost.coordinator_usd = Some(0.10);
+
+        let mut with_local_worker = TaskResult::new(
+            "bravo",
+            "classic",
+            OracleOutcome::Pass,
+            CostReading::known(0.02, false, 1),
+        );
+        with_local_worker.cost.coordinator_usd = Some(0.02);
+        with_local_worker.cost.worker_usd = Some(0.0);
+        with_local_worker.cost.worker_local_tokens = Some(1_000);
+        with_local_worker.cost.worker_offset_usd = crate::cost::worker_offset_usd(Some(1_000));
+
+        let tr = TierReport {
+            tier: "local".to_string(),
+            provider: "ollama".to_string(),
+            model: "qwen3".to_string(),
+            pinned_packs: false,
+            results: vec![coordinator_only, with_local_worker],
+        };
+        let v = render_json(&[tr]);
+        let tasks = &v["tiers"][0]["tasks"];
+        assert_eq!(tasks[0]["coordinator_usd"], 0.10);
+        assert!(tasks[0]["worker_usd"].is_null());
+        assert!(tasks[0]["worker_offset_usd"].is_null());
+
+        assert_eq!(tasks[1]["worker_local_tokens"], 1_000);
+        assert!(tasks[1]["worker_offset_usd"].as_f64().unwrap() > 0.0);
+
+        let summary = &v["tiers"][0]["summary"];
+        assert!((summary["coordinator_usd"].as_f64().unwrap() - 0.12).abs() < 1e-9);
+        assert_eq!(summary["worker_usd"], 0.0);
+        assert!(summary["worker_offset_usd"].as_f64().unwrap() > 0.0);
+    }
+
+    #[test]
+    fn json_report_role_cost_is_null_without_role_data() {
+        let v = render_json(&[sample()]);
+        let summary = &v["tiers"][0]["summary"];
+        assert!(summary["coordinator_usd"].is_null());
+        assert!(summary["worker_usd"].is_null());
+        assert!(summary["worker_offset_usd"].is_null());
+        assert!(v["tiers"][0]["tasks"][0]["coordinator_usd"].is_null());
     }
 }

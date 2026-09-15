@@ -358,6 +358,20 @@ pub struct TaskQualificationEvidence {
     pub output_tokens: Option<i64>,
     pub cache_read_tokens: Option<i64>,
     pub cache_write_tokens: Option<i64>,
+    /// K18 (`## A45 design` Q3): [`crate::cost::CostReading::coordinator_usd`]
+    /// verbatim. `#[serde(default)]` for a record retained before this
+    /// lane, never fabricated as `Some(0.0)`.
+    #[serde(default)]
+    pub coordinator_usd: Option<f64>,
+    /// K18: [`crate::cost::CostReading::worker_usd`] verbatim.
+    #[serde(default)]
+    pub worker_usd: Option<f64>,
+    /// K18: [`crate::cost::CostReading::worker_local_tokens`] verbatim.
+    #[serde(default)]
+    pub worker_local_tokens: Option<i64>,
+    /// K18: [`crate::cost::CostReading::worker_offset_usd`] verbatim.
+    #[serde(default)]
+    pub worker_offset_usd: Option<f64>,
     pub tool_calls: usize,
     pub seconds: f64,
     pub seed_commit: Option<String>,
@@ -553,6 +567,10 @@ pub fn build_run_qualification_record(
             output_tokens: r.cost.output_tokens,
             cache_read_tokens: r.cost.cache_read_tokens,
             cache_write_tokens: r.cost.cache_write_tokens,
+            coordinator_usd: r.cost.coordinator_usd,
+            worker_usd: r.cost.worker_usd,
+            worker_local_tokens: r.cost.worker_local_tokens,
+            worker_offset_usd: r.cost.worker_offset_usd,
             tool_calls: r.signals.tool_calls,
             seconds: r.duration_secs,
             seed_commit: r.seed_commit.clone(),
@@ -2336,6 +2354,11 @@ mod tests {
             "cost_routing",
             // Lane K10.
             "provider_error",
+            // K18 (`## A45 design` Q3).
+            "coordinator_usd",
+            "worker_usd",
+            "worker_local_tokens",
+            "worker_offset_usd",
         ] {
             task.remove(field);
         }
@@ -2353,6 +2376,12 @@ mod tests {
         // way a caller could mistake for a checked `false`.
         assert!(!old.provider_unavailable);
         assert!(old.tasks[0].provider_error.is_none());
+        // A pre-K18 record must read every new role/offset field as
+        // `None`, never fabricated as a known `Some(0.0)`.
+        assert!(old.tasks[0].coordinator_usd.is_none());
+        assert!(old.tasks[0].worker_usd.is_none());
+        assert!(old.tasks[0].worker_local_tokens.is_none());
+        assert!(old.tasks[0].worker_offset_usd.is_none());
     }
 
     /// Lane K10 (2026-09-14 M22 zai w1 defect): the record-level flag is
