@@ -261,6 +261,23 @@ impl IndependentReview {
                     f.evidence.trim()
                 }
             ));
+            // G26 MED-4: E7's call-site enumeration is deliberately
+            // recall-first (see `cost_router::call_site_completeness`'s
+            // module doc) — a same-named symbol elsewhere, or a call site
+            // the new signature genuinely does not affect, can HOLD as a
+            // false positive. Without this, the only way to resolve one was
+            // the reviewer re-judging a bare `file:line` snippet on the next
+            // round — the worker itself had no way to say anything. Give it
+            // one: explain why in the summary, and the reviewer can mark the
+            // site UNAFFECTED next round instead of holding on it again.
+            if f.lens == ReviewLens::CallSiteCompleteness {
+                out.push_str(
+                    "    if this call site does not actually need a change for the new \
+                     signature, say so explicitly in your summary with the reason — the \
+                     reviewer re-checks it next round and can mark it UNAFFECTED instead of \
+                     holding on it again\n",
+                );
+            }
         }
         if let Some(pick) = &self.reviewer {
             out.push_str(&format!("\nReviewed by {} ({}).\n", pick.label(), pick.why));
@@ -1273,5 +1290,54 @@ mod tests {
         )
         .await;
         assert_eq!(r.decision, ReviewDecision::Passed);
+    }
+
+    // ── G26 MED-4: an E7 hold tells the worker how to dispute it ──────────────
+
+    /// The corrective plan for an E7 finding gives the worker a way to
+    /// dispute a false positive (`enumerate_call_sites` is deliberately
+    /// recall-first) instead of only "fix it" — without this, only the
+    /// reviewer's own next-round re-judgment of a bare `file:line` snippet
+    /// could resolve one.
+    #[tokio::test]
+    async fn e7_hold_detail_tells_the_worker_it_can_mark_a_site_unaffected() {
+        let mut inputs = code_inputs();
+        inputs.call_site_enumerations = shipping_quote_call_sites();
+        let raw = "VERDICT: APPROVE\n\
+                   CHECKED: read the diff and the checkout call site\n\
+                   CALLSITE shippingQuote | src/checkout/checkout.ts:12 | UPDATED | passes the new opts arg\n";
+        let r = run_review(
+            &inputs,
+            &pick(true),
+            Some(&SpendDecision::Allow),
+            &Canned(raw.into()),
+        )
+        .await;
+        assert_eq!(r.decision, ReviewDecision::Rejected);
+        let plan = r.corrective_plan();
+        assert!(plan.contains("admin/manualQuote.ts:7"));
+        assert!(
+            plan.contains("UNAFFECTED"),
+            "the worker must be told it can dispute a call site: {plan}"
+        );
+    }
+
+    /// Control: an ORDINARY (non-E7) finding's corrective plan carries no
+    /// such instruction — it is specific to `CallSiteCompleteness`.
+    #[tokio::test]
+    async fn a_non_e7_hold_detail_carries_no_unaffected_instruction() {
+        let r = run_review(
+            &code_inputs(),
+            &pick(true),
+            Some(&SpendDecision::Allow),
+            &Canned(
+                "VERDICT: REQUEST_CHANGES\nCHECKED: the diff\n\
+                 FINDING TEST_INTEGRITY | the assertion was narrowed to always hold | crates/goose/src/lib.rs:42\n"
+                    .into(),
+            ),
+        )
+        .await;
+        let plan = r.corrective_plan();
+        assert!(!plan.contains("UNAFFECTED"), "{plan}");
     }
 }
