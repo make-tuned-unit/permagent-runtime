@@ -161,6 +161,16 @@ pub struct ToolEvent {
     /// model repeats the exact same call: see the S1 walk in
     /// [`assess_tool_call`] and [`observed_verify_failure_run`].
     pub is_guard_block: bool,
+    /// R52a: true when this event's own result is `create_roadmap`'s
+    /// AC-grounding rejection (`orchestrator::AC_VALIDATION_ERROR_MARKER`)
+    /// — never this monitor's own [`GUARD_BLOCK_PREFIX`] text, a distinct
+    /// mechanism. Lets [`assess_tool_call`] exempt the ONE retry that
+    /// immediately follows this exact rejection from the S1 identical-call
+    /// guard (belt-and-braces to `create_roadmap`'s own one-retry
+    /// accept-and-rewrite path — see A50 analysis (a): that escape hatch
+    /// was unreachable by construction whenever S1 intercepted the
+    /// resubmission first).
+    pub is_ac_validation_error: bool,
 }
 
 /// Which stall signal fired.
@@ -254,6 +264,35 @@ pub fn is_mutating(name: &str) -> bool {
 /// Strip an `extension__tool` prefix so heuristics match the bare tool name.
 fn base_tool_name(name: &str) -> &str {
     name.rsplit("__").next().unwrap_or(name)
+}
+
+/// R52a belt-and-braces (A50 analysis (a)): `create_roadmap`'s own
+/// AC-grounding validator (`orchestrator::ac_validation_error`) tells a
+/// model to correct and resubmit its proposal, and documents a one-retry
+/// accept-and-rewrite path for a SECOND call that is still ungrounded —
+/// but before this lane, the S1 identical-call guard above intercepted
+/// and denied that exact resubmission first, making the escape hatch it
+/// documents unreachable whenever a model followed its literal
+/// instructions. Exempt exactly ONE retry: an incoming `create_roadmap` or
+/// `decompose_roadmap` call whose immediately preceding event in the
+/// window (same tool, same arguments — i.e. this IS a resubmission of
+/// that exact call) was this specific rejection
+/// ([`ToolEvent::is_ac_validation_error`]). Any call after that (a second
+/// identical resubmission with no fresh `ac_validation_error` in between)
+/// is NOT exempt — the ordinary S1 guard still catches a real stall.
+fn is_create_roadmap_retry_after_ac_validation_error(
+    name: &str,
+    args: &Value,
+    win: &[ToolEvent],
+) -> bool {
+    let bare = base_tool_name(name);
+    if bare != "create_roadmap" && bare != "decompose_roadmap" {
+        return false;
+    }
+    matches!(
+        win.last(),
+        Some(e) if e.name == name && &e.args == args && e.is_ac_validation_error
+    )
 }
 
 /// The project-checks tool (`developer__verify`). Its fix loop has its own bound
@@ -558,19 +597,32 @@ pub fn reconstruct_window(messages: &[Message]) -> Vec<ToolEvent> {
                 }
                 MessageContent::ToolResponse(resp) => {
                     if let Some((name, args)) = pending.remove(&resp.id) {
-                        let (is_error, result_hash, is_guard_block) = match &resp.tool_result {
-                            Ok(r) => {
-                                let err = r.is_error.unwrap_or(false);
-                                let body = serde_json::to_string(&r.content).unwrap_or_default();
-                                let guard_block = response_text(r)
-                                    .is_some_and(|text| text.starts_with(GUARD_BLOCK_PREFIX));
-                                (err, hash_str(&body), guard_block)
-                            }
-                            Err(e) => {
-                                let body = serde_json::to_string(e).unwrap_or_default();
-                                (true, hash_str(&body), false)
-                            }
-                        };
+                        let (is_error, result_hash, is_guard_block, is_ac_validation_error) =
+                            match &resp.tool_result {
+                                Ok(r) => {
+                                    let err = r.is_error.unwrap_or(false);
+                                    let body =
+                                        serde_json::to_string(&r.content).unwrap_or_default();
+                                    let text = response_text(r);
+                                    let guard_block = text
+                                        .is_some_and(|text| text.starts_with(GUARD_BLOCK_PREFIX));
+                                    // R52a: `create_roadmap`'s own AC-grounding
+                                    // rejection, not this monitor's block text —
+                                    // the two are mutually exclusive, but check
+                                    // explicitly rather than assume.
+                                    let ac_validation_error = !guard_block
+                                        && text.is_some_and(|text| {
+                                            text.contains(
+                                                crate::agents::platform_extensions::orchestrator::AC_VALIDATION_ERROR_MARKER,
+                                            )
+                                        });
+                                    (err, hash_str(&body), guard_block, ac_validation_error)
+                                }
+                                Err(e) => {
+                                    let body = serde_json::to_string(e).unwrap_or_default();
+                                    (true, hash_str(&body), false, false)
+                                }
+                            };
                         let is_mutating = is_mutating(&name);
                         events.push(ToolEvent {
                             name,
@@ -579,6 +631,7 @@ pub fn reconstruct_window(messages: &[Message]) -> Vec<ToolEvent> {
                             is_error,
                             is_mutating,
                             is_guard_block,
+                            is_ac_validation_error,
                         });
                     }
                 }
@@ -651,7 +704,8 @@ pub fn assess_tool_call(window: &[ToolEvent], name: &str, args: &Value) -> LoopA
         window
     };
 
-    let exempt = is_wait_poll(name);
+    let exempt =
+        is_wait_poll(name) || is_create_roadmap_retry_after_ac_validation_error(name, args, win);
 
     // ── S1 / S2: identical (name, args, result) trailing run ────────────────
     // Walk back over calls with this exact fingerprint while the result stays
@@ -1432,6 +1486,7 @@ mod tests {
             is_error,
             is_mutating: is_mutating(name),
             is_guard_block: false,
+            is_ac_validation_error: false,
         }
     }
 
@@ -1447,6 +1502,23 @@ mod tests {
             is_error: true,
             is_mutating: is_mutating(name),
             is_guard_block: true,
+            is_ac_validation_error: false,
+        }
+    }
+
+    /// R52a: `create_roadmap`'s own AC-grounding rejection for an earlier
+    /// call with these exact `args` — reconstructed the way
+    /// [`reconstruct_window`] would see it (a real, non-guard-block error
+    /// carrying `orchestrator::AC_VALIDATION_ERROR_MARKER`).
+    fn ac_validation_error_result(name: &str, args: Value) -> ToolEvent {
+        ToolEvent {
+            name: name.to_string(),
+            args,
+            result_hash: hash_str("create_roadmap rejected: 1 acceptance criterion(s) ..."),
+            is_error: true,
+            is_mutating: is_mutating(name),
+            is_guard_block: false,
+            is_ac_validation_error: true,
         }
     }
 
@@ -1503,6 +1575,77 @@ mod tests {
             assess_tool_call(&[], "read_file", &args),
             LoopAction::Pass,
             "first call ever must pass"
+        );
+    }
+
+    // ── R52a: create_roadmap retry-after-ac_validation_error is exempt from S1 ──
+
+    /// A50 analysis (a): the model resubmits the identical `create_roadmap`
+    /// call right after its own AC-grounding rejection, to trigger
+    /// `create_roadmap`'s documented one-retry accept-and-rewrite path.
+    /// Before this lane the generic S1 guard denied that resubmission on
+    /// its 2nd occurrence, so the escape hatch was unreachable; this ONE
+    /// retry must now pass through to the real tool handler.
+    #[test]
+    fn s1_exempts_a_create_roadmap_retry_immediately_after_its_own_ac_validation_error() {
+        let args = json!({"goals_json": "[...]", "proposal_hash": "abc"});
+        let win = vec![ac_validation_error_result("create_roadmap", args.clone())];
+        assert_eq!(
+            assess_tool_call(&win, "create_roadmap", &args),
+            LoopAction::Pass,
+            "the retry immediately following create_roadmap's own ac_validation_error must not be blocked"
+        );
+    }
+
+    /// The exemption is ONE retry only: a SECOND identical resubmission,
+    /// with no fresh `ac_validation_error` in between (the retry above
+    /// already ran and is not itself flagged), is an ordinary S1 stall and
+    /// must still be caught.
+    #[test]
+    fn s1_exemption_does_not_extend_past_one_retry() {
+        let args = json!({"goals_json": "[...]", "proposal_hash": "abc"});
+        let win = vec![
+            ac_validation_error_result("create_roadmap", args.clone()),
+            ev("create_roadmap", args.clone(), 99, false), // the exempted retry, now a real (non-error) result
+        ];
+        assert_eq!(
+            assess_tool_call(&win, "create_roadmap", &args),
+            LoopAction::Nudge(Signal::RepeatedCall),
+            "a second identical call with no fresh ac_validation_error must not be exempt"
+        );
+    }
+
+    /// The exemption is specific to `create_roadmap`/`decompose_roadmap`
+    /// retries that immediately follow their OWN `ac_validation_error` —
+    /// an unrelated tool's identical, ordinary failing calls are never
+    /// exempt just because SOME earlier `create_roadmap` call happened to
+    /// fail this way.
+    #[test]
+    fn s1_exemption_does_not_apply_to_other_tools_or_other_failures() {
+        let roadmap_args = json!({"goals_json": "[...]"});
+        let other_args = json!({"cmd": "cargo build"});
+        let win = vec![
+            ac_validation_error_result("create_roadmap", roadmap_args),
+            ev("developer__shell", other_args.clone(), 7, true),
+        ];
+        assert_eq!(
+            assess_tool_call(&win, "developer__shell", &other_args),
+            LoopAction::Nudge(Signal::RepeatedCall),
+            "an unrelated tool's identical call must not inherit create_roadmap's exemption"
+        );
+    }
+
+    /// A plain, ordinary `create_roadmap` failure (e.g. a bad hash, not
+    /// this specific AC-grounding rejection) grants no exemption — only
+    /// the exact `ac_validation_error` marker does.
+    #[test]
+    fn s1_exemption_requires_the_ac_validation_error_marker_specifically() {
+        let args = json!({"goals_json": "[...]"});
+        let win = vec![ev("create_roadmap", args.clone(), 5, true)];
+        assert_eq!(
+            assess_tool_call(&win, "create_roadmap", &args),
+            LoopAction::Nudge(Signal::RepeatedCall),
+            "an ordinary create_roadmap failure (not ac_validation_error) must not be exempt"
         );
     }
 
