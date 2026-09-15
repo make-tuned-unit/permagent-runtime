@@ -22,6 +22,18 @@ static DISPATCHES: AtomicU64 = AtomicU64::new(0);
 static CHEAPEST_CAPABLE: AtomicU64 = AtomicU64::new(0);
 static PACK_HONORED: AtomicU64 = AtomicU64::new(0);
 static PLANNER: Mutex<String> = Mutex::new(String::new());
+// R48b (HARNESS_LOOP_LOG.md "A45 design", Addendum (c) / Q5): appended at
+// the END of the existing `cost_routing` line (RECEIPT CONTRACT v1.3) —
+// `routed_local`/`routed_cloud` count each dispatch's classified provider
+// (`cost_router::is_local_provider`, the SAME classification the
+// coordinator-visible routing roster uses), and `fallbacks` counts a goal
+// redispatched once from a LOCAL worker tier to the coordinator/cloud tier
+// after a context-exceeded, wall/turn-ceiling, or verify-failed-with-no-
+// commit attempt. `dispatches`/`cheapest_capable`/`pack_honored`'s existing
+// semantics are unchanged — these are pure additions.
+static ROUTED_LOCAL: AtomicU64 = AtomicU64::new(0);
+static ROUTED_CLOUD: AtomicU64 = AtomicU64::new(0);
+static FALLBACKS: AtomicU64 = AtomicU64::new(0);
 
 /// Lane R22b: zero every counter and clear the planner, for the start of a
 /// fresh headless CLI run — called from [`crate::receipts::begin_run`].
@@ -33,6 +45,9 @@ pub fn reset() {
     DISPATCHES.store(0, Ordering::Relaxed);
     CHEAPEST_CAPABLE.store(0, Ordering::Relaxed);
     PACK_HONORED.store(0, Ordering::Relaxed);
+    ROUTED_LOCAL.store(0, Ordering::Relaxed);
+    ROUTED_CLOUD.store(0, Ordering::Relaxed);
+    FALLBACKS.store(0, Ordering::Relaxed);
     *PLANNER.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
 }
 
@@ -44,6 +59,9 @@ pub fn record(area: &str, key: &str) {
         "dispatches" => &DISPATCHES,
         "cheapest_capable" => &CHEAPEST_CAPABLE,
         "pack_honored" => &PACK_HONORED,
+        "routed_local" => &ROUTED_LOCAL,
+        "routed_cloud" => &ROUTED_CLOUD,
+        "fallbacks" => &FALLBACKS,
         _ => return,
     };
     counter.fetch_add(1, Ordering::Relaxed);
@@ -68,6 +86,14 @@ pub struct Snapshot {
     pub cheapest_capable: u64,
     pub pack_honored: u64,
     pub planner: String,
+    /// R48b: dispatches this run routed to a local/on-device worker tier.
+    pub routed_local: u64,
+    /// R48b: dispatches this run routed to a metered cloud worker tier.
+    pub routed_cloud: u64,
+    /// R48b: goals redispatched once from a LOCAL worker tier to the
+    /// coordinator/cloud tier after a context-exceeded, wall/turn-ceiling,
+    /// or verify-failed-with-no-commit attempt.
+    pub fallbacks: u64,
 }
 
 /// Lane R22b: an unrouted run (no dispatch went through
@@ -90,14 +116,24 @@ pub fn snapshot() -> Snapshot {
         } else {
             planner
         },
+        routed_local: ROUTED_LOCAL.load(Ordering::Relaxed),
+        routed_cloud: ROUTED_CLOUD.load(Ordering::Relaxed),
+        fallbacks: FALLBACKS.load(Ordering::Relaxed),
     }
 }
 
 impl Snapshot {
     pub fn format_line(&self) -> String {
         format!(
-            "receipt cost_routing dispatches={} cheapest_capable={} pack_honored={} planner={}",
-            self.dispatches, self.cheapest_capable, self.pack_honored, self.planner
+            "receipt cost_routing dispatches={} cheapest_capable={} pack_honored={} planner={} \
+             routed_local={} routed_cloud={} fallbacks={}",
+            self.dispatches,
+            self.cheapest_capable,
+            self.pack_honored,
+            self.planner,
+            self.routed_local,
+            self.routed_cloud,
+            self.fallbacks
         )
     }
 }
@@ -117,10 +153,14 @@ mod tests {
             cheapest_capable: 2,
             pack_honored: 3,
             planner: "provider/model".into(),
+            routed_local: 2,
+            routed_cloud: 1,
+            fallbacks: 1,
         };
         assert_eq!(
             receipt.format_line(),
-            "receipt cost_routing dispatches=3 cheapest_capable=2 pack_honored=3 planner=provider/model"
+            "receipt cost_routing dispatches=3 cheapest_capable=2 pack_honored=3 \
+             planner=provider/model routed_local=2 routed_cloud=1 fallbacks=1"
         );
     }
 
@@ -142,10 +182,14 @@ mod tests {
             cheapest_capable: 0,
             pack_honored: 0,
             planner: "unknown/unknown".into(),
+            routed_local: 0,
+            routed_cloud: 0,
+            fallbacks: 0,
         };
         assert_eq!(
             receipt.format_line(),
-            "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 planner=unknown/unknown"
+            "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 \
+             planner=unknown/unknown routed_local=0 routed_cloud=0 fallbacks=0"
         );
     }
 
@@ -179,6 +223,9 @@ mod tests {
                 cheapest_capable: 0,
                 pack_honored: 0,
                 planner: "unknown/unknown".into(),
+                routed_local: 0,
+                routed_cloud: 0,
+                fallbacks: 0,
             },
             "reset() must zero every counter and clear the planner"
         );
@@ -195,7 +242,8 @@ mod tests {
         assert!(after.pack_honored >= baseline.pack_honored + 1);
 
         let re = regex::Regex::new(
-            r"^receipt cost_routing dispatches=\d+ cheapest_capable=\d+ pack_honored=\d+ planner=\S+$",
+            r"^receipt cost_routing dispatches=\d+ cheapest_capable=\d+ pack_honored=\d+ \
+             planner=\S+ routed_local=\d+ routed_cloud=\d+ fallbacks=\d+$",
         )
         .unwrap();
         let line = format_line();
@@ -212,9 +260,78 @@ mod tests {
                 cheapest_capable: 0,
                 pack_honored: 0,
                 planner: "unknown/unknown".into(),
+                routed_local: 0,
+                routed_cloud: 0,
+                fallbacks: 0,
             },
             "reset() must fully clear the planner along with the counters, leaving the \
              binary's shared statics clean for any later test"
         );
+    }
+
+    /// R48b: a plain local dispatch (no fallback) increments `routed_local`
+    /// once and leaves `routed_cloud`/`fallbacks` at zero — the shape
+    /// `dispatch_goal_fn` produces for an ordinary goal that started, and
+    /// stayed, on the LOCAL worker tier. `begin_run()` (not a bare
+    /// `reset()`) per this lane's own contract: it is the one entry point a
+    /// real headless run calls, and it resets `receipts::Registry`
+    /// alongside this module's own statics, exercising the same seam a
+    /// live run does.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn a_local_dispatch_with_no_fallback_records_routed_local_only() {
+        crate::receipts::begin_run();
+        let baseline = snapshot();
+
+        record("cost_routing", "dispatches");
+        record("cost_routing", "routed_local");
+
+        let after = snapshot();
+        assert_eq!(after.dispatches, baseline.dispatches + 1);
+        assert_eq!(after.routed_local, baseline.routed_local + 1);
+        assert_eq!(after.routed_cloud, baseline.routed_cloud);
+        assert_eq!(after.fallbacks, baseline.fallbacks);
+
+        reset();
+    }
+
+    /// R48b: a fallback re-dispatch (local tier → coordinator/cloud tier)
+    /// records `fallbacks=1` AND `routed_cloud=1` for the SAME dispatch —
+    /// mirroring the two independent `record()` calls `dispatch_goal_fn`
+    /// makes at its one recording point: the provider classification
+    /// (`routed_cloud`, since the fallback always targets the coordinator/
+    /// cloud `Orchestrate` tier) and the fallback flag (`fallbacks`) are
+    /// both driven off `worker_fallback_applied`/the resolved provider,
+    /// never off each other, so this test drives them independently too.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn a_fallback_dispatch_records_fallbacks_and_routed_cloud() {
+        crate::receipts::begin_run();
+        let baseline = snapshot();
+
+        record("cost_routing", "dispatches");
+        record("cost_routing", "routed_cloud");
+        record("cost_routing", "fallbacks");
+
+        let after = snapshot();
+        assert_eq!(after.dispatches, baseline.dispatches + 1);
+        assert_eq!(after.routed_cloud, baseline.routed_cloud + 1);
+        assert_eq!(after.fallbacks, baseline.fallbacks + 1);
+        assert_eq!(after.routed_local, baseline.routed_local);
+
+        reset();
+    }
+
+    /// An unrecognized counter key (typo, or a key from an unrelated area)
+    /// must be a silent no-op, exactly like the four pre-existing keys
+    /// already guarantee — R48b's three new keys must not weaken that.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn record_ignores_unknown_keys_and_areas() {
+        reset();
+        let baseline = snapshot();
+        record("cost_routing", "not_a_real_counter");
+        record("some_other_area", "routed_local");
+        assert_eq!(snapshot(), baseline);
     }
 }
