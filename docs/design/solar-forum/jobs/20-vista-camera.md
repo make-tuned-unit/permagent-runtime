@@ -383,3 +383,19 @@ Still open:
 - everything jobs 18 and 19 left open and this pass did not touch: an end-to-end
   agent reply (the `127.0.0.1:8081` transport), WKWebView render and FPS for the
   current export, the district-nav overflow at 1600 x 1000, and the job-11 list.
+
+## Belvedere and raised eye (v5–v7)
+
+Removing the upper stoa's north bays (a belvedere, bays 6–9) opened the sky
+line but an eye at 10 m still skimmed the gallery balustrade
+(`v5-vista-day.webp`). The vista pose is now eye (0, 15, 27), target
+(30, 3, -76), 74° vertical field: the view clears the gallery and the
+promenade groves, and the lakeside town and far shore read beyond them
+(`v7-vista-day.webp`, `v7-vista-night.webp`). The day fog is a cool aerial
+haze (`#B7C4D3`, density 0.0016) instead of the warm peach that had merged
+the sunlit far ground into the sky. The harness's ray-occlusion probe reports
+the far groups as "occluded-other" because it hits translucent mist and sky
+batches first; the captures are the evidence, not that probe. Evidence:
+`../../../../assets/world/forum/browser/v7-vista-day.webp`,
+`../../../../assets/world/forum/browser/v7-vista-night.webp`,
+`../vista-frame-v7.json`.

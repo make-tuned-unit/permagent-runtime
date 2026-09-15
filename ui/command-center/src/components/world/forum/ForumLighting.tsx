@@ -35,7 +35,7 @@ export function ForumLighting({ appearance }: { appearance: 'day' | 'night' }) {
         low-sun horizon glow rather than as the scene fading into its own
         background. Night keeps the linear fall-off it already had. */}
     {day
-      ? <fogExp2 attach="fog" args={['#F2DDC3', .0022]} />
+      ? <fogExp2 attach="fog" args={['#B7C4D3', .0016]} />  // cool aerial haze so the ridge and town read against the warm sky
       : <fog attach="fog" args={[light.background, 220, 520]} />}
     <hemisphereLight args={[light.sky, light.ground, light.ambient]} />
     {/* shadow-normalBias: a 15-degree key grazes every surface it lights, and

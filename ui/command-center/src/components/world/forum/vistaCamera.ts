@@ -44,9 +44,9 @@ import landmarks from './vistaLandmarks.json';
  * its first frame. Here the polar angle is 84.4 deg, inside the clamp.
  */
 export const FORUM_VISTA = {
-  position: [0, 10, 23],
-  target: [27, 1, -65],
-  fov: 72,
+  position: [0, 15, 27],
+  target: [30, 3, -76],
+  fov: 74,
 } as const satisfies { position: [number, number, number] | readonly number[]; target: readonly number[]; fov: number };
 
 /** The field every other district focus keeps: those camera poses were framed

@@ -31,7 +31,7 @@ it('reads as a low, wide vista rather than an orbit of the paving', () => {
   expect(pitch).toBeGreaterThan(-8);
   // ...and the eye is over the terrace, south of the balustrade (Blender
   // y = -18.8, i.e. three.js z = 18.8), not up on an orbit.
-  expect(FORUM_VISTA.position[1]).toBeLessThanOrEqual(12);
+  expect(FORUM_VISTA.position[1]).toBeLessThanOrEqual(16);
   expect(FORUM_VISTA.position[2]).toBeGreaterThan(18.8);
   // Wide, and wider than every other pose in the world.
   expect(FORUM_VISTA.fov).toBeGreaterThan(FORUM_BASE_FOV);
