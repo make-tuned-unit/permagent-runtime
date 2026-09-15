@@ -11607,6 +11607,45 @@ async fn auto_land_headless_goal(
     // worker produced no commits") — this only decides whether the approval
     // is attempted at all; it never fabricates a merge.
     if card.metadata_json.get("read_only_review").is_some() {
+        // Lane R29b (A28 Miss 3): `read_only_review` is scoped to the
+        // CALLING worker session's own rolling baseline (`worktree_mutated`
+        // in `maybe_hold_review` compares against THAT session's dispatch
+        // baseline, not the trunk) — so a later, zero-progress session
+        // dispatched onto an EARLIER session's already-committed fix can
+        // leave a genuine `read_only_review` receipt even though the goal
+        // branch still carries a real, unlanded commit. Recording
+        // `status: "read_only"` here would land that no-op report and
+        // strand the real fix forever (the exact A28 Miss 3 shape).
+        // `commits_unlanded_at_trunk` answers the TRUNK-relative question
+        // the rolling baseline cannot: if it finds unlanded work, refuse
+        // the read-only shortcut and give the goal the same salvage pass a
+        // budget/wall park already gets for exactly this situation.
+        let unlanded_at_trunk =
+            match resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await {
+                Ok(Some((_baseline, worktree))) => {
+                    commits_unlanded_at_trunk(pool, card, std::path::Path::new(&worktree))
+                        .await
+                        .ok()
+                        .map(|(unlanded, _trunk_head)| unlanded)
+                }
+                _ => None,
+            };
+        if let Some(unlanded) = unlanded_at_trunk {
+            if unlanded > 0 {
+                record_salvage_audit(
+                    pool,
+                    &card.id,
+                    &format!("read_only_landing_refused_unlanded_commits={unlanded}"),
+                    "goal metadata says expects_change=false, but the goal branch carries \
+                     commit(s) not yet reached at the project's trunk — refusing the read-only \
+                     auto-land receipt and routing through the ordinary salvage/verify/land \
+                     path instead",
+                )
+                .await;
+                maybe_salvage_committed_work(pool, card, None, calling_session_id).await;
+                return;
+            }
+        }
         if let Err(e) = cards::set_goal_verdict_and_program_receipts(
             pool,
             &card.id,
@@ -27074,6 +27113,186 @@ mod tests {
         assert!(
             answered.acted_by.is_none(),
             "an unverified completion must never be auto-approved"
+        );
+    }
+
+    // ── Lane R29b (A28 Miss 3): the read-only auto-land shortcut must ───────
+    // refuse a goal whose branch still carries unlanded commits.
+
+    /// The A28 Miss 3 shape, reconstructed: a card carries a `read_only_review`
+    /// receipt (as a later, zero-progress session's own rolling baseline made
+    /// it look genuinely read-only), but the goal branch itself — measured
+    /// against the real trunk, not that session's rolling baseline — still
+    /// has a real, unlanded commit. `auto_land_headless_goal` must NOT record
+    /// `status: "read_only"` in that case; it must leave an audit trail
+    /// naming the refusal and route the goal through the ordinary
+    /// salvage/verify/land path instead.
+    #[tokio::test]
+    async fn read_only_auto_land_refuses_when_the_goal_branch_has_unlanded_commits() {
+        let pool = test_pool().await;
+        let (trunk, goal_dir, base_sha, fix_sha) =
+            r22d_trunk_and_goal_worktree("r29b-readonly-unlanded");
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(trunk.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": goal_dir.path().to_string_lossy(),
+                "head_commit": fix_sha,
+                "commits": [],
+                // The rolling baseline a later, zero-progress session would
+                // have recorded: it equals the branch tip (nothing further
+                // was committed on top), which is exactly why that session's
+                // own `worktree_mutated` check read clean and left a
+                // `read_only_review` receipt in the first place.
+                "baseline_commit": fix_sha,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "read_only_review".to_string(),
+                serde_json::json!({
+                    "report": "x".repeat(60),
+                    "landed_notes": "no change (read-only review)",
+                    "recorded_at": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
+        })
+        .await
+        .unwrap();
+        let decision = v1_review_decision(&pool, &card.id).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        auto_land_headless_goal(&pool, &decision.id, &card, true, Some("coord-session-1")).await;
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_ne!(
+            updated
+                .metadata_json
+                .pointer("/dispatch_evidence/verdict/status")
+                .and_then(|v| v.as_str()),
+            Some("read_only"),
+            "a goal branch with unlanded commits must never be landed as a no-op read-only \
+             review — the real, already-committed fix would be stranded"
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert!(
+            outcomes
+                .iter()
+                .any(|o| o == "read_only_landing_refused_unlanded_commits=1"),
+            "expected a read_only_landing_refused_unlanded_commits audit row, got {outcomes:?}"
+        );
+
+        // The trunk's own base commit must be unaffected either way — this
+        // test asserts the read-only shortcut was refused, not that salvage
+        // itself lands the work (that mechanism is covered by the R20b/R22d
+        // salvage tests).
+        assert_eq!(
+            git_v1(trunk.path(), &["rev-parse", "HEAD"]),
+            base_sha,
+            "sanity: the trunk fixture itself is unmodified by this test's setup"
+        );
+    }
+
+    /// Counterpart: when the goal branch's tip is ALREADY an ancestor of the
+    /// real trunk (nothing unlanded — the ordinary case, e.g. an earlier
+    /// attempt's fix already landed, or the goal genuinely never committed
+    /// anything), the new guard must not misfire; the read-only receipt
+    /// still lands the ordinary way. Uses a real trunk resolution (not just
+    /// an unresolvable-worktree fallback) so this actually exercises
+    /// `commits_unlanded_at_trunk`'s `Ok((0, _))` arm.
+    #[tokio::test]
+    async fn read_only_auto_land_still_lands_when_nothing_is_unlanded_at_trunk() {
+        let pool = test_pool().await;
+        let run_id = "r29b-readonly-already-landed";
+        let (trunk, goal_dir, base_sha, fix_sha) = r22d_trunk_and_goal_worktree(run_id);
+        // Simulate the fix already having reached trunk (an earlier
+        // salvage, or a human's own merge) — the goal branch's tip is now
+        // an ancestor of trunk's HEAD, so nothing is left unlanded. `trunk`
+        // and `goal_dir` are separate clones with separate object stores
+        // (see `r22d_trunk_and_goal_worktree`), so the fix commit's objects
+        // have to be fetched in before trunk can fast-forward onto it.
+        let branch = format!("goal/{run_id}");
+        let goal_dir_str = goal_dir.path().to_string_lossy().into_owned();
+        r20b_git(trunk.path(), &["fetch", "-q", &goal_dir_str, &branch]);
+        r20b_git(trunk.path(), &["merge", "--ff-only", "-q", "FETCH_HEAD"]);
+        assert_eq!(
+            git_v1(trunk.path(), &["rev-parse", "HEAD"]),
+            fix_sha,
+            "sanity: the trunk fixture must have fast-forwarded onto the fix"
+        );
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(trunk.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": goal_dir.path().to_string_lossy(),
+                "head_commit": fix_sha,
+                "commits": [],
+                "baseline_commit": base_sha,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "read_only_review".to_string(),
+                serde_json::json!({
+                    "report": "x".repeat(60),
+                    "landed_notes": "no change (read-only review)",
+                    "recorded_at": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
+        })
+        .await
+        .unwrap();
+        let decision = v1_review_decision(&pool, &card.id).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        auto_land_headless_goal(&pool, &decision.id, &card, true, Some("coord-session-1")).await;
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(
+            updated
+                .metadata_json
+                .pointer("/dispatch_evidence/verdict/status")
+                .and_then(|v| v.as_str()),
+            Some("read_only"),
+            "a goal with nothing unlanded at trunk must still take the ordinary read-only \
+             auto-land path"
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert!(
+            outcomes
+                .iter()
+                .all(|o| o != "read_only_landing_refused_unlanded_commits=1"),
+            "must not refuse a goal with nothing unlanded, got {outcomes:?}"
         );
     }
 
