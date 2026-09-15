@@ -2254,7 +2254,16 @@ async fn materialize_roadmap_transaction_with_budget(
         .await
         .map_err(|e| format!("Could not commit roadmap materialization: {e}"))?;
 
-    crate::receipts::record_count("verification_integrity", "goals", created_ids.len() as u64);
+    // Lane R41a: per-card, not a bulk `created_ids.len()` count — so a card
+    // counted here is a no-op if `dispatch_goal_fn` later counts the SAME
+    // card id again on dispatch (identical total for this create-only run),
+    // while a card `dispatch_goal_fn` counts that was never created THIS
+    // way (a resumed or pre-existing Ready card) is still counted exactly
+    // once, there. See the `("verification_integrity", "goals", ...)`
+    // FIELDS doc comment in `receipts.rs`.
+    for id in &created_ids {
+        crate::receipts::record_once("verification_integrity", "goals", id);
+    }
     Ok(RoadmapMaterialization {
         project_name,
         created_ids,
@@ -4913,6 +4922,15 @@ pub(crate) async fn dispatch_goal_fn(
         }
     };
 
+    // Lane R41a: the single choke point every real dispatch funnels through
+    // — `goal_advance{dispatch}` directly (a pre-existing Ready card, e.g.
+    // `select-checks-worker-before-dispatch`) and `resume_roadmap` (via
+    // `dispatch_eligible_goals`, resuming a paused roadmap this session
+    // never created) alike. `record_once` keyed by `card_id` makes this a
+    // no-op for a card the create path already counted at materialization
+    // (see that call site's own comment) and idempotent across a re-dispatch
+    // of the same card.
+    crate::receipts::record_once("verification_integrity", "goals", card_id);
     crate::cost_router::routing_receipt::record("cost_routing", "dispatches");
     if cheapest_capable {
         crate::cost_router::routing_receipt::record("cost_routing", "cheapest_capable");
@@ -31793,6 +31811,119 @@ mod tests {
         .await
         .expect("an Auto-mode launch must be able to create its own pre-approved roadmap");
         assert_eq!(materialized.created_ids.len(), 2);
+    }
+
+    /// Lane R41a (HARNESS_LOOP_LOG.md "A36 analysis" verification_integrity
+    /// m2 case): `verification_integrity.goals` used to be a single bulk
+    /// `record_count("verification_integrity", "goals", created_ids.len())`
+    /// at the end of `materialize_roadmap_transaction_with_budget`; it is
+    /// now a per-card `record_once(..., card_id)` loop over the same
+    /// `created_ids` — this pins that the create path's own total is
+    /// unchanged (still exactly one count per newly materialized card, no
+    /// double counting introduced by the new per-card mechanism).
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn materialize_roadmap_transaction_counts_each_created_goal_once_for_verification_integrity_r41a(
+    ) {
+        crate::receipts::begin_run();
+
+        let pool = test_pool().await;
+        let goals = two_goal_roadmap("R41a-Create");
+        let (hash, decision_id) = install_auto_launch_roadmap_proof(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            "r41a-create-session",
+        )
+        .await;
+        let order = goal_state::topological_order(&goals).unwrap();
+        let materialized = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+            GooseMode::Auto,
+            Some("r41a-create-session"),
+        )
+        .await
+        .expect("materialization must succeed");
+        assert_eq!(materialized.created_ids.len(), 2);
+
+        let lines = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+        assert!(
+            lines[1].contains("goals=2"),
+            "the create path's per-card record_once must still count every newly \
+             materialized goal exactly once, got: {}",
+            lines[1]
+        );
+    }
+
+    /// Lane R41a (same defect): before this lane, a goal card this session
+    /// never created — a resumed paused roadmap's pre-existing card
+    /// (`resume_roadmap` → `dispatch_eligible_goals`), or a bare Ready card
+    /// a coordinator dispatches directly with `goal_advance{dispatch}`
+    /// (`select-checks-worker-before-dispatch`'s fixture) — could be
+    /// dispatched, reviewed and landed while `verification_integrity.goals`
+    /// stayed 0, because the ONLY producer was roadmap materialization.
+    /// `dispatch_goal_fn` is the one choke point both call shapes funnel
+    /// through (see `dispatch_goal_to`'s own doc comment); this test drives
+    /// it directly via the public `OrchestratorClient::dispatch_goal_to`
+    /// wrapper on a card that was NEVER routed through
+    /// `materialize_roadmap_transaction`, modelling both fixtures at once.
+    /// Deliberately avoids `install_dispatch_hook_for_headless_session` /
+    /// `PERMAGENT_ROLE_EDIT_*` (the process-global `OnceLock`s / env vars
+    /// the long comment above
+    /// `dispatch_goal_to_and_resume_roadmap_consult_the_installed_headless_policy`
+    /// warns against piling a third installer-calling test onto): a real
+    /// `ExtensionManager` wired to a mock provider (`roadmap_handler_fixture`)
+    /// resolves the worker's provider with no such global footprint, and an
+    /// explicit worker pin (`"permagent"`) keeps ranked selection out of the
+    /// picture entirely. The same-card-twice ("redispatch does not double
+    /// count") half of R41a's idempotency contract is covered at the
+    /// mechanism level by `receipts::verification_integrity_goals_is_
+    /// idempotent_per_card_r41a`, rather than here, to avoid racing this
+    /// test's assertions against the real background completion tracker a
+    /// second real dispatch on the same card would spawn.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn dispatch_of_a_goal_this_session_never_created_increments_verification_integrity_goals_r41a(
+    ) {
+        crate::receipts::begin_run();
+
+        let (tmp, sm, _session, _em, client) =
+            roadmap_handler_fixture(GooseMode::Approve, false).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        let repo = tmp.path().join("proj");
+        init_git_repo_for_dispatch_test(&repo);
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(repo.to_str().unwrap())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Never routed through `materialize_roadmap_transaction`.
+        let card = setup_goal_in_state(&pool, "ready", 0).await;
+
+        let session_id = client
+            .dispatch_goal_to(&card.id, Some("permagent"))
+            .await
+            .expect("dispatch of a pre-existing Ready card must succeed");
+        assert!(!session_id.is_empty());
+
+        let lines = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+        assert!(
+            lines[1].contains("goals=1"),
+            "a dispatched (never-materialized-this-session) goal must count toward \
+             verification_integrity's goals, got: {}",
+            lines[1]
+        );
     }
 
     /// X-dag-1 (harness loop, coding-harness excellence iteration): every

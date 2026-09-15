@@ -54,6 +54,26 @@ const FIELDS: [(&str, &str, bool); 17] = [
     // `permagent-eval::harness_log`'s `DAG_ENFORCEMENT_RE` for the
     // backward-compatible regex.
     ("dag_enforcement", "worker_checked", true),
+    // Lane R41a (RECEIPT CONTRACT unchanged — v1.2 shape, just a wider
+    // producer set): A36's M34 verification_integrity m2 case found a goal
+    // that was resumed (`resume_roadmap`), dispatched, reviewed
+    // (`review_reached=1`) and landed still reporting `goals=0`, because the
+    // only producer was `materialize_roadmap_transaction_with_budget`
+    // (create_roadmap/decompose path), counted once per newly-created card.
+    // A resumed or already-existing Ready card (never created by this
+    // session) never passed through that call, so it never contributed to
+    // the denominator `review_reached >= goals.div_ceil(2)` needs — same
+    // class of bug R33a fixed for `dag_enforcement`'s
+    // `roadmap_dispatched`/`worker_checked`. Now recorded per-card via
+    // `record_once("verification_integrity", "goals", card_id)` at BOTH the
+    // create-path's materialization (unchanged total for a create-only run)
+    // and `dispatch_goal_fn`'s successful worker spawn (`orchestrator.rs`)
+    // — the one choke point every real dispatch funnels through
+    // (`goal_advance{dispatch}` directly, and `resume_roadmap` via
+    // `dispatch_eligible_goals`). `record_once`'s identity-keyed `seen` set
+    // makes this idempotent per card id: a card counted at creation is a
+    // no-op when it is later dispatched, and a card dispatched twice (a
+    // re-dispatch after a failed attempt) is only ever counted once.
     ("verification_integrity", "goals", true),
     ("verification_integrity", "review_reached", true),
     ("verification_integrity", "vacuous_passes", true),
@@ -426,6 +446,36 @@ mod tests {
         registry.record("dag_enforcement", "roadmap_dispatched", 1, None);
         assert_eq!(first.counts[0], Some(3));
         assert_eq!(registry.snapshot().counts[0], Some(4));
+    }
+
+    /// Lane R41a (HARNESS_LOOP_LOG.md "A36 analysis" verification_integrity
+    /// m2 case): `verification_integrity.goals` moved from a single bulk
+    /// `record_count(created_ids.len())` (create_roadmap/decompose path
+    /// only) to a per-card `record_once(..., card_id)`, called both at
+    /// materialization (`materialize_roadmap_transaction_with_budget`) and
+    /// at every successful dispatch (`dispatch_goal_fn`, the choke point
+    /// `resume_roadmap` and `goal_advance{dispatch}` both funnel through) —
+    /// so a resumed or pre-existing card (never materialized this session)
+    /// is finally counted, and a card counted at materialization is a no-op
+    /// when dispatched later in the SAME run. Index 7 is `goals` (index 8
+    /// is `review_reached`, per the doc comments above).
+    #[test]
+    fn verification_integrity_goals_is_idempotent_per_card_r41a() {
+        let registry = Registry::default();
+        // Same card id recorded twice (e.g. materialized, then dispatched;
+        // or dispatched, parked, and redispatched) — counts once.
+        registry.record("verification_integrity", "goals", 1, Some("card-a"));
+        registry.record("verification_integrity", "goals", 1, Some("card-a"));
+        assert_eq!(registry.snapshot().counts[7], Some(1));
+        // A genuinely different card id still counts as a second goal.
+        registry.record("verification_integrity", "goals", 1, Some("card-b"));
+        assert_eq!(registry.snapshot().counts[7], Some(2));
+        // A fresh run's `seen` set is cleared by `reset()` (called by
+        // `begin_run()`), so a card id reused across runs is not
+        // permanently stuck at "already counted".
+        registry.reset();
+        registry.record("verification_integrity", "goals", 1, Some("card-a"));
+        assert_eq!(registry.snapshot().counts[7], Some(1));
     }
 
     #[test]
