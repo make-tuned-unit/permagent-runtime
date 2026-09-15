@@ -105,6 +105,15 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     // written by the trusted `advance_goal_checked` patch path at the
     // reviewer-approval call site, never by a raw metadata write.
     UNVERIFIED_REVIEWER_APPROVAL_METADATA_KEY,
+    // Lane R26b (A25 analysis): stamped by R18g's headless unblock at the
+    // moment it resumes a goal Held → Ready without itself redispatching
+    // it — the drain's re-dispatch sweep reads this to prioritise the
+    // goal (it already burned real attempts getting here) and the audit
+    // trail reads it to tell "R18g's own resume, still Ready" apart from
+    // an ordinary Ready goal waiting its turn. Protected so a worker
+    // cannot forge or clear its own priority/attribution stamp via the
+    // agent-facing metadata PATCH tool.
+    "resumed_by_headless_unblock_at",
 ];
 
 /// Lane R22c-e (G26 MED-1): see [`PROTECTED_GOAL_METADATA_KEYS`]'s own
