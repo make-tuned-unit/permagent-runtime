@@ -1999,6 +1999,201 @@ impl AfterTurn for NoRoadmapGuard {
     }
 }
 
+// ── Lane R35a: nudge a verified-but-unlanded goal instead of a prose summary ──
+
+/// Marker every [`VerifiedGoalAwaitingLandGuard`] injection contains,
+/// regardless of goal id or which action it names — lets the once-PER-GOAL
+/// check below test for "was THIS goal already nudged" without re-parsing the
+/// sentence. Distinct from [`STRANDED_READY_NUDGE_MARKER`] (a different
+/// shape: no verified commit, only R26b's headless-unblock resume stamp).
+const VERIFIED_LANDING_NUDGE_MARKER: &str = "has a verified commit awaiting review";
+
+/// Which real `goal_advance` action closes the gap for a given goal's current
+/// state — never a hoped-for "land" action: `goal_advance` only ever parses
+/// `ready`/`dispatch`/`review`/`approve`/`reject`
+/// ([`crate::goal_state::GoalAction::parse_action`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerifiedLandingAction {
+    /// `ready` with `dispatch_evidence.verdict.status == "pass"` already on
+    /// the card: a prior attempt verified and committed, but the card cycled
+    /// back to Ready (redispatch) instead of ever reaching Review — call
+    /// `review` to advance it there directly.
+    Review,
+    /// `review` with the same verified verdict: the completion tracker's own
+    /// automatic InProgress -> Review transition already fired and opened the
+    /// `approve_review` decision, but the turn is about to end without
+    /// answering it — call `approve`, which lands the goal.
+    Approve,
+}
+
+impl VerifiedLandingAction {
+    fn tool_action(&self) -> &'static str {
+        match self {
+            Self::Review => "review",
+            Self::Approve => "approve",
+        }
+    }
+}
+
+/// The full injected sentence for `goal_id`/`action` — always contains
+/// [`VERIFIED_LANDING_NUDGE_MARKER`] so
+/// [`VerifiedGoalAwaitingLandGuard::already_nudged_for_goal`] recognises it on
+/// a later turn.
+fn verified_landing_nudge_text(goal_id: &str, action: &VerifiedLandingAction) -> String {
+    format!(
+        "goal {goal_id} {VERIFIED_LANDING_NUDGE_MARKER}; call orchestrator__goal_advance action \
+         \"{}\" now — do not summarise until every goal is Done or parked.",
+        action.tool_action()
+    )
+}
+
+/// Refuses to let a coding-harness coordinator's turn end in prose while a
+/// goal in its roadmap already has a worker's verified, committed PASS
+/// sitting unconsumed.
+///
+/// A32 root cause 1 (HARNESS_LOOP_LOG.md, "A32 analysis — review_reached /
+/// vacuous_passes flake on M31"): every `review_reached=0` miss traced ends
+/// its harness log with the byte-identical tail `"0 goal(s) finished, 1 still
+/// running at exit -> parked"` after 2-3 dispatch cycles (workers go
+/// in_progress -> ready, never complete). The clearest case
+/// (`m3/select-named-check-uses-verify-tool`) had a worker that diagnosed a
+/// broken `python3` interpreter, re-ran `verify` explicitly, got a genuine
+/// PASS, and committed real, correct, verified work — but the coordinator's
+/// final captured turn was spent narrating a prose summary of the
+/// environment issue instead of calling a tool to advance the card, and the
+/// run parked before any `approve_review` decision was ever created.
+/// `run_end_salvage_sweep` (Lane R31b, `orchestrator.rs`) already rescues
+/// this at teardown, but the coordinator should not need rescuing — this
+/// hook gives it one more chance to act itself, before that backstop is the
+/// only thing left.
+///
+/// Distinct from [`NoRoadmapGuard`]'s own stranded-Ready nudge (R31b): that
+/// one fires on R26b's `resumed_by_headless_unblock_at` stamp (a goal
+/// resumed from Held with no verified work yet); this one fires on a real
+/// `dispatch_evidence.verdict.status == "pass"` — a worker actually finished
+/// and verified, not merely resumed.
+///
+/// Same applicability gate as [`NoRoadmapGuard`]
+/// ([`crate::tool_inspection::is_top_level_coding_harness`]) — a dispatched
+/// worker (which has a parent session) never reaches this check. Fires only
+/// on a turn whose FINAL message has no tool call at all (the exact "prose
+/// summary instead of advancing" shape A32 traced,
+/// [`final_message_has_tool_call`]) — a turn that called ANY tool, even an
+/// unrelated one, is not this shape and is left to the other guards. At most
+/// once PER GOAL, not once per session: a coordinator juggling several goals
+/// may need the nudge again for a second one even after acting on the first.
+pub struct VerifiedGoalAwaitingLandGuard;
+
+impl VerifiedGoalAwaitingLandGuard {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// True when [`verified_landing_nudge_text`] for `goal_id` (in either
+    /// action shape) is already in the conversation.
+    fn already_nudged_for_goal(messages: &[Message], goal_id: &str) -> bool {
+        use crate::conversation::message::MessageContent;
+        let needle = format!("goal {goal_id} {VERIFIED_LANDING_NUDGE_MARKER}");
+        messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .any(|c| matches!(c, MessageContent::Text(text) if text.text.contains(&needle)))
+    }
+
+    /// The first (if any) of `cards` that is `ready` or `review` and carries
+    /// `dispatch_evidence.verdict.status == "pass"` — a real, observed worker
+    /// PASS, the same field
+    /// [`crate::decisions_effects::approve_review_verification_status`] reads
+    /// for the identical "was this goal actually verified" question. One
+    /// extra [`crate::cards::get_card`] fetch per ready/review candidate only
+    /// ([`crate::cards::SessionGoalCard`] itself carries no `metadata_json`)
+    /// — never a scan of the whole roadmap. A card read failure is treated as
+    /// "not a candidate" (fail open, same posture as every other lookup in
+    /// this file).
+    async fn verified_landing_candidate(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        cards: &[crate::cards::SessionGoalCard],
+    ) -> Option<(String, VerifiedLandingAction)> {
+        for card in cards {
+            let action = match card.state_binding.as_str() {
+                "ready" => VerifiedLandingAction::Review,
+                "review" => VerifiedLandingAction::Approve,
+                _ => continue,
+            };
+            let Ok(Some(full)) = crate::cards::get_card(pool, &card.card_id).await else {
+                continue;
+            };
+            let verified = full
+                .metadata_json
+                .pointer("/dispatch_evidence/verdict/status")
+                .and_then(serde_json::Value::as_str)
+                .map(|status| status.eq_ignore_ascii_case("pass"))
+                .unwrap_or(false);
+            if verified {
+                return Some((card.card_id.clone(), action));
+            }
+        }
+        None
+    }
+}
+
+impl Default for VerifiedGoalAwaitingLandGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl AfterTurn for VerifiedGoalAwaitingLandGuard {
+    fn name(&self) -> &'static str {
+        "verified_goal_awaiting_land"
+    }
+
+    async fn after_turn(&self, ctx: &AfterTurnContext<'_>) -> AfterTurnAction {
+        // The exact A32 shape: a turn that ends with no tool call at all. A
+        // turn that called any tool (even one unrelated to landing) is left
+        // to the other guards.
+        if final_message_has_tool_call(ctx.messages) {
+            return AfterTurnAction::Allow;
+        }
+
+        let manager = crate::session::SessionManager::instance();
+        // Fail open on a degraded session store — this is a quality-policy
+        // nudge, not a correctness gate, same posture as `NoRoadmapGuard`.
+        let Ok(session) = manager.get_session(ctx.session_id, false).await else {
+            return AfterTurnAction::Allow;
+        };
+        let title = session.recipe.as_ref().map(|recipe| recipe.title.as_str());
+        if !crate::tool_inspection::is_top_level_coding_harness(
+            title,
+            session.parent_session_id.as_deref(),
+        ) {
+            return AfterTurnAction::Allow;
+        }
+
+        let Ok(pool) = manager.pool_clone().await else {
+            return AfterTurnAction::Allow;
+        };
+        let Ok(roadmap_cards) =
+            goal_cards_relevant_to_session(&pool, ctx.session_id, &session.working_dir).await
+        else {
+            return AfterTurnAction::Allow;
+        };
+
+        let Some((goal_id, action)) = Self::verified_landing_candidate(&pool, &roadmap_cards).await
+        else {
+            return AfterTurnAction::Allow;
+        };
+        if Self::already_nudged_for_goal(ctx.messages, &goal_id) {
+            return AfterTurnAction::Allow;
+        }
+
+        AfterTurnAction::Continue {
+            inject: verified_landing_nudge_text(&goal_id, &action),
+        }
+    }
+}
+
 // ── Fifth implementor: rule 5, an honest failure for a headless free-text turn ──
 
 /// Whether the turn's FINAL message contains at least one `ToolRequest` — the
@@ -5379,6 +5574,156 @@ mod tests {
         assert!(!NoRoadmapGuard::already_nudged_stranded_ready(&[
             Message::assistant().with_text("all done")
         ]));
+    }
+
+    // ── Lane R35a (A32 root cause 1): verified-goal-awaiting-land nudge ────
+
+    /// A `ready` card carrying a verified PASS verdict — a prior attempt
+    /// committed and verified, but the card cycled back to Ready instead of
+    /// ever reaching Review — is the `Review`-action candidate.
+    #[tokio::test]
+    async fn verified_landing_candidate_finds_a_ready_card_with_a_verified_pass_verdict() {
+        let pool = roadmap_guard_test_pool().await;
+        let session_id = format!("r35a-ready-{}", uuid::Uuid::now_v7());
+        let card_id = insert_session_goal_card(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &session_id,
+            "ready",
+            true,
+            None,
+        )
+        .await;
+        crate::cards::set_goal_verdict(&pool, &card_id, serde_json::json!({"status": "pass"}))
+            .await
+            .unwrap();
+
+        let cards = goal_cards_relevant_to_session(
+            &pool,
+            &session_id,
+            std::path::Path::new("/nonexistent"),
+        )
+        .await
+        .unwrap();
+        let found = VerifiedGoalAwaitingLandGuard::verified_landing_candidate(&pool, &cards).await;
+        assert_eq!(found, Some((card_id, VerifiedLandingAction::Review)));
+    }
+
+    /// The same verified PASS verdict on a `review` card is the
+    /// `Approve`-action candidate instead — the completion tracker's own
+    /// automatic transition already fired and opened the review decision.
+    #[tokio::test]
+    async fn verified_landing_candidate_finds_a_review_card_with_a_verified_pass_verdict() {
+        let pool = roadmap_guard_test_pool().await;
+        let session_id = format!("r35a-review-{}", uuid::Uuid::now_v7());
+        let card_id = insert_session_goal_card(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &session_id,
+            "review",
+            true,
+            None,
+        )
+        .await;
+        crate::cards::set_goal_verdict(&pool, &card_id, serde_json::json!({"status": "pass"}))
+            .await
+            .unwrap();
+
+        let cards = goal_cards_relevant_to_session(
+            &pool,
+            &session_id,
+            std::path::Path::new("/nonexistent"),
+        )
+        .await
+        .unwrap();
+        let found = VerifiedGoalAwaitingLandGuard::verified_landing_candidate(&pool, &cards).await;
+        assert_eq!(found, Some((card_id, VerifiedLandingAction::Approve)));
+    }
+
+    /// A worker still running (`in_progress`) — even one that later gets a
+    /// verified verdict stamped onto it (e.g. a checkpoint) — is never a
+    /// candidate: the goal is not sitting idle, so nothing should nudge the
+    /// coordinator to advance it out from under a live worker.
+    #[tokio::test]
+    async fn verified_landing_candidate_ignores_an_in_progress_card_even_with_a_verified_verdict() {
+        let pool = roadmap_guard_test_pool().await;
+        let session_id = format!("r35a-in-progress-{}", uuid::Uuid::now_v7());
+        let card_id = insert_session_goal_card(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &session_id,
+            "in_progress",
+            true,
+            None,
+        )
+        .await;
+        crate::cards::set_goal_verdict(&pool, &card_id, serde_json::json!({"status": "pass"}))
+            .await
+            .unwrap();
+
+        let cards = goal_cards_relevant_to_session(
+            &pool,
+            &session_id,
+            std::path::Path::new("/nonexistent"),
+        )
+        .await
+        .unwrap();
+        let found = VerifiedGoalAwaitingLandGuard::verified_landing_candidate(&pool, &cards).await;
+        assert_eq!(found, None, "an in_progress goal must never be a candidate");
+    }
+
+    /// A `ready` card with no verdict at all (the ordinary case) is not a
+    /// candidate — only an observed PASS makes it one.
+    #[tokio::test]
+    async fn verified_landing_candidate_ignores_a_ready_card_without_a_verdict() {
+        let pool = roadmap_guard_test_pool().await;
+        let session_id = format!("r35a-unverified-{}", uuid::Uuid::now_v7());
+        insert_session_goal_card(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &session_id,
+            "ready",
+            true,
+            None,
+        )
+        .await;
+
+        let cards = goal_cards_relevant_to_session(
+            &pool,
+            &session_id,
+            std::path::Path::new("/nonexistent"),
+        )
+        .await
+        .unwrap();
+        let found = VerifiedGoalAwaitingLandGuard::verified_landing_candidate(&pool, &cards).await;
+        assert_eq!(found, None);
+    }
+
+    /// The injected nudge text always contains the fixed marker
+    /// `already_nudged_for_goal` looks for, keyed to the goal id, and the
+    /// once-per-goal check correctly recognises it once injected — for
+    /// EITHER action shape.
+    #[test]
+    fn verified_landing_nudge_marker_round_trips_through_already_nudged_check() {
+        let review_text = verified_landing_nudge_text("goal-1", &VerifiedLandingAction::Review);
+        let approve_text = verified_landing_nudge_text("goal-1", &VerifiedLandingAction::Approve);
+        assert!(review_text.contains(VERIFIED_LANDING_NUDGE_MARKER));
+        assert!(approve_text.contains(VERIFIED_LANDING_NUDGE_MARKER));
+        assert!(review_text.contains("action \"review\""));
+        assert!(approve_text.contains("action \"approve\""));
+
+        let messages = vec![Message::user().with_text(review_text)];
+        assert!(VerifiedGoalAwaitingLandGuard::already_nudged_for_goal(
+            &messages, "goal-1"
+        ));
+        // A different goal id's nudge must not be mistaken for this one's.
+        assert!(!VerifiedGoalAwaitingLandGuard::already_nudged_for_goal(
+            &messages, "goal-2"
+        ));
+        assert!(!VerifiedGoalAwaitingLandGuard::already_nudged_for_goal(
+            &[Message::assistant().with_text("all done")],
+            "goal-1"
+        ));
     }
 
     // ── Rule5HonestFailureGuard (Lane R18f, A17 analysis Class 4) ──────────
