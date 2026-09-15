@@ -374,6 +374,23 @@ struct GoalAdvanceParams {
     /// until the scope is cleared.
     #[serde(default)]
     extension_scope: Option<Vec<String>>,
+    /// For 'dispatch' only: pin this dispatch to a routing tier — one of
+    /// "orchestrate" (alias "hard"), "edit", "mechanical", "review", "local",
+    /// or omit/"auto" to let the existing default rule choose. Validated
+    /// against routing_roster before dispatch: an unrecognized or
+    /// currently-unresolvable tier is refused outright, naming the tiers
+    /// that ARE available, rather than silently substituting one. Persisted
+    /// on the goal (sticky across re-dispatches until changed) and outranks
+    /// both the worker's own persona role and the default breadth/vocabulary
+    /// rule — call routing_roster first if you are not sure which tier is
+    /// available.
+    #[serde(default)]
+    worker_tier: Option<String>,
+    /// For 'dispatch' only: free-text reason for the worker_tier choice —
+    /// logged on the dispatch audit trail and the card's routing snapshot,
+    /// not enforced. Only meaningful alongside worker_tier.
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -2736,6 +2753,11 @@ struct ListWorkersParams {
     refresh: Option<bool>,
 }
 
+/// R48d: `routing_roster` takes no arguments — it always reports every
+/// `WorkflowRole`'s current resolution.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct RoutingRosterParams {}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct CheckWorkerParams {
     /// The worker key from agent.yaml to check. Optional: when omitted,
@@ -3477,6 +3499,185 @@ fn resolve_dispatch_role_model(
         };
         (rm, source)
     })
+}
+
+/// R48d (HARNESS_LOOP_LOG.md "A45 design", Addendum (b)/(c)): the routing
+/// decision actually applied to one dispatch — either an explicit per-goal
+/// `worker_tier` from `goal_advance{action: dispatch}` or the default
+/// breadth/vocabulary rule ([`crate::cost_router::default_worker_tier_for_goal`])
+/// that ran in its place. Recorded on the dispatch's tracing audit line and
+/// the card's `capability_snapshot.cost_routing.routing_choice`/
+/// `routing_reason`, so "why did this land on that tier" is answerable
+/// after the fact. A pure, named seam only — not yet wired into a receipt
+/// counter (R48b's job); `tier` names the resolved [`WorkflowRole`] for that
+/// counter to read later.
+#[derive(Debug, Clone)]
+struct RoutingChoice {
+    tier: crate::cost_router::WorkflowRole,
+    reason: String,
+}
+
+/// R48d: an explicit per-goal `worker_tier`, persisted by
+/// `goal_advance{action: dispatch, worker_tier, reason}` onto
+/// `card.metadata_json.dispatch_worker_tier`/`dispatch_reason` — the THIRD
+/// precedence level [`dispatch_goal_fn`] consults, ahead of both the
+/// worker's own persona `workflow_role` tag and
+/// `default_worker_tier_for_goal`'s inference. `handle_goal_advance`
+/// validates the tier against the routing roster BEFORE persisting it (an
+/// unresolvable tier is refused outright, never silently substituted), so a
+/// value found here is trusted to have resolved at least once; an
+/// unrecognized tag (e.g. hand-edited metadata) still returns `None` rather
+/// than inventing a role from garbage.
+fn explicit_routing_choice(metadata: &serde_json::Value) -> Option<RoutingChoice> {
+    let tier = metadata
+        .get("dispatch_worker_tier")
+        .and_then(serde_json::Value::as_str)
+        .and_then(crate::cost_router::WorkflowRole::from_tag)?;
+    let reason = metadata
+        .get("dispatch_reason")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| "explicit worker_tier on dispatch".to_string());
+    Some(RoutingChoice { tier, reason })
+}
+
+/// R48d (HARNESS_LOOP_LOG.md "A45 design", Addendum (a)): one row of the
+/// coordinator-visible routing roster (`orchestrator__routing_roster`) —
+/// what one `WorkflowRole` currently resolves to. `available: false` names
+/// an unresolvable role honestly (`"unavailable — no configured or derived
+/// model"`), never a baked default row, matching every other cost_router
+/// surface's no-baked-default contract.
+#[derive(Debug, Clone, Serialize)]
+struct RoutingRosterRow {
+    tier: &'static str,
+    available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_or_cloud: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost_per_1k_tokens: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_limit: Option<usize>,
+    strengths: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+}
+
+/// Short, static strengths/typical-scope line per role — mirrors `packs.rs`'s
+/// own role-table doc comment and `assess.rs`'s tier semantics. Not claimed
+/// to be dynamically inferred; there is no live strength-scoring mechanism
+/// to source it from (Addendum (a)).
+fn routing_roster_strengths(role: crate::cost_router::WorkflowRole) -> &'static str {
+    use crate::cost_router::WorkflowRole;
+    match role {
+        WorkflowRole::Orchestrate => {
+            "multi-file, architecture, ambiguity — the judgment-dense main loop / planning rung"
+        }
+        WorkflowRole::Edit => "token-heavy code editing — needs diff-format reliability",
+        WorkflowRole::Mechanical => {
+            "apply-diff / summarize / grep-triage — cheap search/read/summarize"
+        }
+        WorkflowRole::Review => "independent cross-family verification",
+        WorkflowRole::Local => "mechanical, single-file, small goals — on-device, $0, private",
+    }
+}
+
+/// Pure core of `routing_roster`: one row per [`crate::cost_router::
+/// WorkflowRole::all`], resolved through the caller-supplied `resolve`
+/// (production passes `|role| crate::cost_router::role_model_or_derived(role,
+/// &derived)` — the EXACT precedence `resolve_dispatch_role_model`'s DAEMON
+/// arm uses, so the roster reports what dispatch will actually do, not a
+/// separate guess). Split out from the tool handler so the classification
+/// logic is testable without a live `DerivedRoleMap`/global config.
+fn routing_roster_rows(
+    resolve: impl Fn(
+        crate::cost_router::WorkflowRole,
+    ) -> Option<(
+        crate::cost_router::RoleModel,
+        crate::cost_router::RoleSource,
+    )>,
+) -> Vec<RoutingRosterRow> {
+    crate::cost_router::WorkflowRole::all()
+        .into_iter()
+        .map(|role| match resolve(role) {
+            Some((rm, source)) => {
+                let local = crate::cost_router::is_local_provider(&rm.provider);
+                let cost_per_1k_tokens =
+                    crate::cost_router::lookup_model_knowledge(&rm.provider, &rm.model)
+                        .map(|k| k.blended_cost_per_mtok() / 1000.0);
+                let context_limit = crate::model::ModelConfig::new(&rm.model)
+                    .ok()
+                    .map(|cfg| cfg.with_canonical_limits(&rm.provider).context_limit());
+                RoutingRosterRow {
+                    tier: role.as_str(),
+                    available: true,
+                    provider: Some(rm.provider),
+                    model: Some(rm.model),
+                    source: Some(source.as_str()),
+                    local_or_cloud: Some(if local { "local" } else { "cloud" }),
+                    cost_per_1k_tokens,
+                    context_limit,
+                    strengths: routing_roster_strengths(role),
+                    reason: None,
+                }
+            }
+            None => RoutingRosterRow {
+                tier: role.as_str(),
+                available: false,
+                provider: None,
+                model: None,
+                source: None,
+                local_or_cloud: None,
+                cost_per_1k_tokens: None,
+                context_limit: None,
+                strengths: routing_roster_strengths(role),
+                reason: Some("unavailable — no configured or derived model"),
+            },
+        })
+        .collect()
+}
+
+/// R48d: every `WorkflowRole` the roster currently reports as available —
+/// shared by the `routing_roster` tool (implicitly, via `routing_roster_rows`)
+/// and `goal_advance`'s `worker_tier` validation, so an "unknown or
+/// unavailable tier" refusal and the roster's own `available` column can
+/// never disagree.
+fn resolvable_worker_tiers(
+    derived: &crate::cost_router::DerivedRoleMap,
+) -> Vec<crate::cost_router::WorkflowRole> {
+    crate::cost_router::WorkflowRole::all()
+        .into_iter()
+        .filter(|role| crate::cost_router::role_model_or_derived(*role, derived).is_some())
+        .collect()
+}
+
+/// R48d: the refusal `goal_advance{action: dispatch, worker_tier}` returns
+/// for an unrecognized or currently-unresolvable tier — always names the
+/// valid tiers (or says plainly that none are configured yet), never
+/// silently substitutes something the coordinator did not ask for.
+fn invalid_worker_tier_error(
+    requested: &str,
+    derived: &crate::cost_router::DerivedRoleMap,
+) -> String {
+    let valid = resolvable_worker_tiers(derived);
+    if valid.is_empty() {
+        format!(
+            "worker_tier '{requested}' is unknown or unavailable, and no worker tiers are \
+             currently configured or derivable. Call routing_roster to see the roster."
+        )
+    } else {
+        let names: Vec<&str> = valid.iter().map(|r| r.as_str()).collect();
+        format!(
+            "Unknown or unavailable worker_tier '{requested}'. Valid tiers right now: {}. \
+             Call routing_roster to see the full roster.",
+            names.join(", ")
+        )
+    }
 }
 
 /// The parent session's enabled extensions (free-fn form of
@@ -5196,6 +5397,12 @@ pub(crate) async fn dispatch_goal_fn(
              `worker` argument) or clear '{key}' from the card's metadata."
         ));
     }
+    // R48d: the routing decision actually applied to this dispatch, if any
+    // (InternalSubagent only — an external/supervised CLI worker owns its
+    // own model flag, see the arms below). Recorded onto the audit line and
+    // `capability_snapshot.cost_routing` after the match, alongside the
+    // existing cheapest_capable/pack_honored fields.
+    let mut routing_choice: Option<RoutingChoice> = None;
     let engine: Box<dyn goal_engine::GoalEngine> = match engine_kind {
         Some(agent_identity::WorkerEngineKind::ExternalCli { bin, args }) => {
             // External workers own their model flag in `agent.yaml`; the role
@@ -5300,10 +5507,29 @@ pub(crate) async fn dispatch_goal_fn(
             // every other daemon call site's byte-identical-behavior
             // contract (Lane U's report).
             let derived = crate::cost_router::derived_role_map().await;
+            // R48d: an explicit per-goal `worker_tier` (goal_advance{action:
+            // dispatch, worker_tier, reason}) outranks the worker's own
+            // persona role outright — the coordinator's own routing call,
+            // when it makes one (HARNESS_LOOP_LOG.md "A45 design", Addendum
+            // (b)). `explicit_routing` is `None` for the ordinary case
+            // (omitted/"auto"), in which the existing precedence below
+            // (persona role, else the first-dispatch reassessment) applies
+            // unchanged. Already validated against the roster at
+            // `goal_advance` time, before it was ever persisted.
+            let explicit_routing = explicit_routing_choice(&card.metadata_json);
+            if let Some(rc) = explicit_routing.as_ref() {
+                tracing::info!(
+                    target: "permagentd::brain",
+                    card_id,
+                    routing_choice = rc.tier.as_str(),
+                    reason = %rc.reason,
+                    "goal dispatched with an explicit worker_tier",
+                );
+            }
             let worker_role = worker_cfg.and_then(|w| w.routing_role());
-            let mut role = worker_role;
-            let mut resolved =
-                worker_role.and_then(|r| resolve_dispatch_role_model(r, &derived, policy));
+            let mut role = explicit_routing.as_ref().map(|rc| rc.tier).or(worker_role);
+            let mut resolved = role.and_then(|r| resolve_dispatch_role_model(r, &derived, policy));
+            routing_choice = explicit_routing.clone();
 
             // Verify-loop escalation override: an escalated re-dispatch runs
             // the model for the climbed tier (configured, else derived). This is
@@ -5319,48 +5545,79 @@ pub(crate) async fn dispatch_goal_fn(
                 if let Some(hit) = resolve_dispatch_role_model(esc_role, &derived, policy) {
                     role = Some(esc_role);
                     resolved = Some(hit);
+                    routing_choice = Some(RoutingChoice {
+                        tier: esc_role,
+                        reason: "verify-loop escalation".to_string(),
+                    });
                 }
             } else if escalation_state.is_none() {
-                // First dispatch of a fresh goal: seed the escalation ladder
-                // position, and pick the rung from the GOAL rather than from
-                // the worker's static role. The worker's role says what KIND of
-                // work it does; it says nothing about whether this particular
-                // goal is a README or a concurrency rewrite, so every goal a
-                // worker took started on the same rung.
-                //
-                // The assessment is deterministic (see `cost_router::assess`): free
-                // text can only lower the tier; only structure, an explicit pin,
-                // and explicit tags can raise it. It only chooses the STARTING
-                // rung — the reactive ladder still owns the outcome, and an
-                // under-tiered goal escalates on its own verify failure.
-                let assessment = crate::cost_router::assess_goal(
-                    &card.title,
-                    &card.description,
-                    &card.metadata_json,
-                );
-                let assessed_role = crate::cost_router::workflow_role_for_tier(assessment.tier);
-                if let Some(hit) = resolve_dispatch_role_model(assessed_role, &derived, policy) {
-                    tracing::info!(
-                        target: "permagentd::brain",
-                        card_id,
-                        tier = assessment.tier.as_str(),
-                        reason = assessment.reason,
-                        provider = %hit.0.provider,
-                        model = %hit.0.model,
-                        source = hit.1.as_str(),
-                        "goal assessed to a starting tier",
-                    );
-                    role = Some(assessed_role);
-                    resolved = Some(hit);
-                }
-                let seed = crate::cost_router::GoalEscalationState::seed(Some(assessment.tier));
-                if let Err(e) = persist_escalation_state(&pool, card_id, &seed, None).await {
-                    tracing::warn!(
-                        target: "permagentd::brain",
-                        card_id,
-                        error = %e,
-                        "failed to seed verify-escalation state (non-fatal)",
-                    );
+                if let Some(rc) = explicit_routing.as_ref() {
+                    // Explicit per-goal tier already applied above; still
+                    // seed the escalation ladder from it, exactly like the
+                    // default-rule branch below, so a later verify failure
+                    // has a real rung to climb from.
+                    let seed = crate::cost_router::GoalEscalationState::seed(Some(
+                        crate::cost_router::tier_for_workflow_role(rc.tier),
+                    ));
+                    if let Err(e) = persist_escalation_state(&pool, card_id, &seed, None).await {
+                        tracing::warn!(
+                            target: "permagentd::brain",
+                            card_id,
+                            error = %e,
+                            "failed to seed verify-escalation state (non-fatal)",
+                        );
+                    }
+                } else {
+                    // First dispatch of a fresh goal with no explicit tier:
+                    // seed the escalation ladder position, and pick the rung
+                    // from the GOAL rather than from the worker's static
+                    // role. The worker's role says what KIND of work it
+                    // does; it says nothing about whether this particular
+                    // goal is a README or a concurrency rewrite, so every
+                    // goal a worker took started on the same rung.
+                    //
+                    // R48d: `default_worker_tier_for_goal` is the same
+                    // deterministic, zero-LLM rule `assess_goal` always was
+                    // (free text can only lower the tier; only structure and
+                    // explicit tags can raise it), refined into a concrete
+                    // `WorkflowRole` directly rather than an abstract `Tier`.
+                    let (assessed_role, assessed_reason) =
+                        crate::cost_router::default_worker_tier_for_goal(
+                            &card.title,
+                            &card.description,
+                            &card.metadata_json,
+                        );
+                    if let Some(hit) = resolve_dispatch_role_model(assessed_role, &derived, policy)
+                    {
+                        tracing::info!(
+                            target: "permagentd::brain",
+                            card_id,
+                            tier = crate::cost_router::tier_for_workflow_role(assessed_role).as_str(),
+                            routing_choice = assessed_role.as_str(),
+                            reason = assessed_reason,
+                            provider = %hit.0.provider,
+                            model = %hit.0.model,
+                            source = hit.1.as_str(),
+                            "goal assessed to a starting tier",
+                        );
+                        role = Some(assessed_role);
+                        resolved = Some(hit);
+                        routing_choice = Some(RoutingChoice {
+                            tier: assessed_role,
+                            reason: assessed_reason.to_string(),
+                        });
+                    }
+                    let seed = crate::cost_router::GoalEscalationState::seed(Some(
+                        crate::cost_router::tier_for_workflow_role(assessed_role),
+                    ));
+                    if let Err(e) = persist_escalation_state(&pool, card_id, &seed, None).await {
+                        tracing::warn!(
+                            target: "permagentd::brain",
+                            card_id,
+                            error = %e,
+                            "failed to seed verify-escalation state (non-fatal)",
+                        );
+                    }
                 }
             }
             // The routing receipt (#211 snapshot): configured / derived (with
@@ -5424,10 +5681,20 @@ pub(crate) async fn dispatch_goal_fn(
         policy,
     )
     .await;
-    capability_snapshot["cost_routing"] = serde_json::json!({
+    let mut cost_routing_snapshot = serde_json::json!({
         "cheapest_capable": cheapest_capable,
         "pack_honored": pack_honored,
     });
+    // R48d: record the routing choice actually applied to this dispatch (an
+    // explicit worker_tier, a verify-loop escalation, or the default
+    // breadth/vocabulary rule) on the card metadata alongside the existing
+    // cheapest_capable/pack_honored fields — the seam a later receipt
+    // counter (R48b) reads from, without one existing yet.
+    if let Some(rc) = routing_choice.as_ref() {
+        cost_routing_snapshot["routing_choice"] = serde_json::json!(rc.tier.as_str());
+        cost_routing_snapshot["routing_reason"] = serde_json::json!(rc.reason);
+    }
+    capability_snapshot["cost_routing"] = cost_routing_snapshot;
 
     // Atomically claim this Ready goal before starting any worker. The claim
     // token ties all post-spawn bookkeeping and cleanup to this exact attempt.
@@ -6785,6 +7052,30 @@ impl OrchestratorClient {
         ))]))
     }
 
+    /// R48d (HARNESS_LOOP_LOG.md "A45 design", Addendum (a)): the
+    /// coordinator-visible routing roster — one row per `WorkflowRole`,
+    /// resolved through the SAME `role_model_or_derived` precedence a
+    /// daemon dispatch uses, so this tool reports what dispatch will
+    /// actually do, not a separate guess. Sourced entirely from the cost
+    /// router's live pack/role config and the model knowledge base — no
+    /// hard-coded model list. Distinct from `list_workers`, which lists
+    /// agent.yaml WORKER entries (persona-level), not the routing ROLES
+    /// `dispatch_goal_fn` actually dispatches by.
+    async fn handle_routing_roster(
+        &self,
+        _arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let derived = crate::cost_router::derived_role_map().await;
+        let rows =
+            routing_roster_rows(|role| crate::cost_router::role_model_or_derived(role, &derived));
+        let output = serde_json::to_string_pretty(&rows).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{} routing tier(s)\n\n{}",
+            rows.len(),
+            output
+        ))]))
+    }
+
     /// Lane R22a: the probe + graduation lookup `handle_check_worker`
     /// performs, factored out so `ensure_worker_checked_for_dispatch` (the
     /// `goal_advance`-internal equivalent of a real `check_worker` call) can
@@ -7178,6 +7469,34 @@ impl OrchestratorClient {
             .map(|value| serde_json::from_value::<Vec<String>>(value.clone()))
             .transpose()
             .map_err(|e| format!("extension_scope must be an array of strings: {e}"))?;
+        // R48d: an explicit per-goal `worker_tier`, validated against the
+        // routing roster up front — same "refuse loudly on a typo/unresolvable
+        // value" convention `requested_role` just used above. "auto" and an
+        // omitted/blank value both mean "no explicit choice — the existing
+        // default rule applies", so neither is validated or persisted.
+        let requested_worker_tier = match args
+            .get("worker_tier")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto"))
+        {
+            Some(s) => {
+                let derived = crate::cost_router::derived_role_map().await;
+                let role = crate::cost_router::WorkflowRole::from_tag(s)
+                    .filter(|r| crate::cost_router::role_model_or_derived(*r, &derived).is_some());
+                match role {
+                    Some(r) => Some(r),
+                    None => return Err(invalid_worker_tier_error(s, &derived)),
+                }
+            }
+            None => None,
+        };
+        let requested_worker_tier_reason = args
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
 
         let action = GoalAction::parse_action(&action_str).ok_or_else(|| {
             format!(
@@ -7292,6 +7611,32 @@ impl OrchestratorClient {
                     .execute(&pool)
                     .await
                     .map_err(|e| format!("persist dispatch_extension_scope: {e}"))?;
+                }
+                // R48d: persist the explicit worker_tier/reason BEFORE dispatch
+                // so `dispatch_goal_fn` reads it as the third precedence level,
+                // ahead of both the worker's own persona role and the default
+                // breadth/vocabulary rule. Sticky, same as dispatch_role above.
+                if let Some(tier) = requested_worker_tier {
+                    sqlx::query(
+                        "UPDATE cards SET metadata_json = json_set(metadata_json, '$.dispatch_worker_tier', ?) \
+                         WHERE id = ?",
+                    )
+                    .bind(tier.as_str())
+                    .bind(&card_id)
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| format!("persist dispatch_worker_tier: {e}"))?;
+                }
+                if let Some(reason) = requested_worker_tier_reason.as_ref() {
+                    sqlx::query(
+                        "UPDATE cards SET metadata_json = json_set(metadata_json, '$.dispatch_reason', ?) \
+                         WHERE id = ?",
+                    )
+                    .bind(reason)
+                    .bind(&card_id)
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| format!("persist dispatch_reason: {e}"))?;
                 }
                 let session_id = self
                     .dispatch_goal_to(&card_id, requested_worker.as_deref())
@@ -9830,6 +10175,20 @@ impl OrchestratorClient {
                 schema::<ListWorkersParams>(),
             ),
             Tool::new(
+                "routing_roster".to_string(),
+                "Show the coordinator's routing roster: one row per workflow role \
+                 (orchestrate/edit/mechanical/review/local) with the provider/model it \
+                 currently resolves to, whether that is local or cloud, its context limit, \
+                 blended cost per Mtok, and a short strengths/typical-scope line. Sourced live \
+                 from the cost router's pack/role config and model knowledge — no hard-coded \
+                 model list. A role with nothing configured or derivable reports unavailable, \
+                 never a made-up default. Call this before choosing a goal_advance{dispatch} \
+                 worker_tier, or to see what the default breadth/vocabulary rule would pick \
+                 from."
+                    .to_string(),
+                schema::<RoutingRosterParams>(),
+            ),
+            Tool::new(
                 "check_worker".to_string(),
                 "Check a specific worker's availability by probing its detection method. \
                  Always re-probes regardless of cache. The response includes the worker's \
@@ -9859,6 +10218,10 @@ impl OrchestratorClient {
                  still the preferred way to know what you're dispatching to. \
                  Dispatch may persistently narrow extensions for in-process workers; \
                  scoped dispatch to CLI workers is refused. \
+                 'dispatch' also accepts an optional worker_tier (routing_roster's tiers) \
+                 and reason to make the routing call explicitly instead of leaving it to the \
+                 default breadth/vocabulary rule — an unresolvable tier refuses, naming the \
+                 tiers that ARE available. \
                  Only works on card_type='goal' cards. \
                  card_id is optional: omit it to resolve this project's single Ready goal \
                  card, matched by cwd — several Ready cards, or none, return a structured \
@@ -10063,6 +10426,7 @@ impl McpClientTrait for OrchestratorClient {
             }
             "interrupt_agent" => self.handle_interrupt_agent(arguments).await,
             "list_workers" => self.handle_list_workers(arguments).await,
+            "routing_roster" => self.handle_routing_roster(arguments).await,
             "check_worker" => self.handle_check_worker(arguments).await,
             "goal_advance" => self.handle_goal_advance(arguments).await,
             "goal_status" => self.handle_goal_status(arguments).await,
@@ -28960,6 +29324,253 @@ mod tests {
             "the receipt must name the PACK-pinned model, not the T1 session \
              fallback ('qwen3'): {routing:?}"
         );
+    }
+
+    /// R48d (HARNESS_LOOP_LOG.md "A45 design", Addendum (b)/(c)): an explicit
+    /// per-goal `worker_tier` — persisted as `card.metadata_json.
+    /// dispatch_worker_tier`, exactly the way `goal_advance{action: dispatch,
+    /// worker_tier}` persists it before calling into this function — outranks
+    /// the default breadth/vocabulary rule outright. Mirrors
+    /// `dispatch_goal_fn_honours_a_pack_only_pin_for_a_fresh_headless_goal`'s
+    /// own env-pin/assert-on-the-persisted-receipt shape, but pins the LOCAL
+    /// pack: a vanilla `setup_goal_in_state` goal's own default rule
+    /// (`default_worker_tier_for_goal`, no `paths`/`tags` set) lands on
+    /// `Mechanical`, a DIFFERENT role/pack from `Local` — so a Local-pinned
+    /// receipt is only possible if the explicit tier actually won.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn dispatch_goal_fn_honours_an_explicit_worker_tier_and_records_it_on_the_audit() {
+        std::env::remove_var("PERMAGENT_ROLE_LOCAL_PROVIDER");
+        std::env::remove_var("PERMAGENT_ROLE_LOCAL_MODEL");
+        std::env::set_var("PERMAGENT_PACK_LOCAL_PROVIDER", "ollama");
+        std::env::set_var("PERMAGENT_PACK_LOCAL_MODEL", "qwen3-coder");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+
+        let repo = tmp.path().join("proj");
+        init_git_repo_for_dispatch_test(&repo);
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(repo.to_str().unwrap())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "ready", 0).await;
+        // Persist the explicit worker_tier exactly as `goal_advance` would —
+        // this test exercises `dispatch_goal_fn`'s own precedence, not the
+        // `handle_goal_advance` validation wired ahead of it.
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.dispatch_worker_tier', ?) \
+             WHERE id = ?",
+        )
+        .bind("local")
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let fallback_session = crate::session::Session {
+            provider_name: Some("ollama".to_string()),
+            model_config: Some(crate::model::ModelConfig::new("qwen3").unwrap()),
+            ..crate::session::Session::default()
+        };
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let probe_cache = ProbeCache::new();
+        let policy = HeadlessDispatchPolicy {
+            session_for_provider_fallback: Some(Arc::new(fallback_session)),
+            restrict_ranked_selection_to_internal_engine: true,
+            auto_land: false,
+        };
+
+        let result = dispatch_goal_fn(
+            &context,
+            &probe_cache,
+            &card.id,
+            Some("permagent"),
+            Some(&policy),
+        )
+        .await;
+
+        std::env::remove_var("PERMAGENT_PACK_LOCAL_PROVIDER");
+        std::env::remove_var("PERMAGENT_PACK_LOCAL_MODEL");
+
+        let _session_id = result.expect("dispatch must succeed");
+
+        let updated = cards::get_card(&pool, &card.id)
+            .await
+            .unwrap()
+            .expect("the card must still exist");
+        let snapshot = updated
+            .metadata_json
+            .get("capability_snapshot")
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a capability_snapshot, got {:?}",
+                    updated.metadata_json
+                )
+            });
+        let routing = snapshot
+            .get("model_routing")
+            .unwrap_or_else(|| panic!("expected a model_routing receipt, got {snapshot:?}"));
+        assert_eq!(
+            routing.get("provider").and_then(|v| v.as_str()),
+            Some("ollama"),
+            "{routing:?}"
+        );
+        assert_eq!(
+            routing.get("model").and_then(|v| v.as_str()),
+            Some("qwen3-coder"),
+            "the explicit worker_tier must route to the LOCAL pack pin, not the \
+             default rule's Mechanical/CheapCloud pick: {routing:?}"
+        );
+
+        let cost_routing = snapshot
+            .get("cost_routing")
+            .unwrap_or_else(|| panic!("expected a cost_routing audit block, got {snapshot:?}"));
+        assert_eq!(
+            cost_routing.get("routing_choice").and_then(|v| v.as_str()),
+            Some("local"),
+            "the dispatch audit row must carry routing_choice: {cost_routing:?}"
+        );
+        assert!(
+            cost_routing.get("routing_reason").is_some(),
+            "{cost_routing:?}"
+        );
+    }
+
+    /// R48d: `goal_advance{action: dispatch, worker_tier}` refuses an
+    /// unrecognized tier before dispatch even starts — `WorkflowRole::
+    /// from_tag` is a fixed, deterministic match with no dependency on
+    /// global config, so this refusal fires regardless of what routing IS
+    /// configured in the test environment.
+    #[tokio::test]
+    async fn goal_advance_dispatch_refuses_an_unrecognized_worker_tier_naming_the_valid_tiers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        args.insert("action".to_string(), serde_json::json!("dispatch"));
+        args.insert(
+            "worker_tier".to_string(),
+            serde_json::json!("not-a-real-tier-r48d"),
+        );
+
+        let err = client
+            .handle_goal_advance(Some(args))
+            .await
+            .expect_err("an unrecognized worker_tier must refuse before dispatch even starts");
+        assert!(
+            err.contains("not-a-real-tier-r48d"),
+            "the refusal must name the offending value: {err}"
+        );
+        assert!(
+            err.to_lowercase().contains("tier"),
+            "the refusal must be about the worker_tier: {err}"
+        );
+    }
+
+    /// R48d: the pure core of `routing_roster` — one row per `WorkflowRole`,
+    /// classified consistently with `is_local_provider`, an unresolvable role
+    /// reporting "unavailable" rather than a baked default. Two fake packs
+    /// (one local, one cloud) stand in for a real `DerivedRoleMap` so this
+    /// stays a pure, IO-free test.
+    #[test]
+    fn routing_roster_reflects_the_configured_packs() {
+        use crate::cost_router::{RoleModel, RoleSource, WorkflowRole};
+
+        let cloud = RoleModel {
+            provider: "anthropic".to_string(),
+            model: "claude-opus-4-8".to_string(),
+        };
+        let local = RoleModel {
+            provider: "ollama".to_string(),
+            model: "qwen3-coder".to_string(),
+        };
+        let rows = routing_roster_rows(|role| match role {
+            WorkflowRole::Orchestrate | WorkflowRole::Review => {
+                Some((cloud.clone(), RoleSource::Configured))
+            }
+            WorkflowRole::Mechanical | WorkflowRole::Local => {
+                Some((local.clone(), RoleSource::Derived))
+            }
+            WorkflowRole::Edit => None,
+        });
+
+        assert_eq!(rows.len(), 5, "one row per WorkflowRole: {rows:?}");
+
+        let orchestrate = rows
+            .iter()
+            .find(|r| r.tier == "orchestrate")
+            .expect("orchestrate row");
+        assert!(orchestrate.available);
+        assert_eq!(orchestrate.local_or_cloud, Some("cloud"));
+        assert_eq!(orchestrate.provider.as_deref(), Some("anthropic"));
+
+        let local_row = rows.iter().find(|r| r.tier == "local").expect("local row");
+        assert!(local_row.available);
+        assert_eq!(local_row.local_or_cloud, Some("local"));
+        assert_eq!(local_row.provider.as_deref(), Some("ollama"));
+        assert_eq!(local_row.source, Some("derived"));
+
+        let edit = rows.iter().find(|r| r.tier == "edit").expect("edit row");
+        assert!(!edit.available, "{edit:?}");
+        assert_eq!(edit.provider, None);
+        assert_eq!(
+            edit.reason,
+            Some("unavailable — no configured or derived model"),
+            "an unresolvable role must say so plainly, never a baked default: {edit:?}"
+        );
+    }
+
+    /// R48d: `explicit_routing_choice` reads `card.metadata_json.
+    /// dispatch_worker_tier`/`dispatch_reason` — present with a recognized
+    /// tag → `Some`; absent, or an unrecognized tag (e.g. hand-edited
+    /// metadata), → `None` rather than inventing a role from garbage.
+    #[test]
+    fn explicit_routing_choice_reads_a_recognized_tag_and_ignores_the_rest() {
+        let present = explicit_routing_choice(&serde_json::json!({
+            "dispatch_worker_tier": "local",
+            "dispatch_reason": "small py fixture",
+        }))
+        .expect("a recognized tag must resolve");
+        assert_eq!(present.tier, crate::cost_router::WorkflowRole::Local);
+        assert_eq!(present.reason, "small py fixture");
+
+        let no_reason = explicit_routing_choice(&serde_json::json!({
+            "dispatch_worker_tier": "orchestrate",
+        }))
+        .expect("a recognized tag must resolve even with no reason");
+        assert_eq!(
+            no_reason.reason, "explicit worker_tier on dispatch",
+            "a missing reason gets a stand-in, not an empty string"
+        );
+
+        assert!(explicit_routing_choice(&serde_json::json!({})).is_none());
+        assert!(explicit_routing_choice(&serde_json::json!({
+            "dispatch_worker_tier": "not-a-real-tier",
+        }))
+        .is_none());
     }
 
     /// Lane U / U1 (HARNESS_LOOP_LOG.md, "Lane G4 review" finding 1,

@@ -30,6 +30,7 @@
 //! explicit `tags` entry — never prose, which is written by whoever, or
 //! whatever, filed the goal.
 
+use super::recommend::WorkflowRole;
 use super::tier::Tier;
 
 /// Why a goal landed on its starting rung — carried into telemetry and the
@@ -165,6 +166,90 @@ pub fn assess_goal(title: &str, description: &str, metadata: &serde_json::Value)
     }
 }
 
+/// File extensions the on-device tier is expected to handle comfortably —
+/// small, well-trodden scripting languages, not the exhaustive set of
+/// "languages a local model can technically write."
+const LOCAL_LANGUAGE_EXTENSIONS: &[&str] = &["py", "js", "ts", "jsx", "tsx"];
+
+/// R48d (HARNESS_LOOP_LOG.md "A45 design", Addendum (b)): the default
+/// `WorkflowRole` a dispatch routes to when `goal_advance{action: dispatch}`
+/// carries neither an explicit `worker_tier` nor a worker persona
+/// `workflow_role` tag — i.e. it sits exactly where [`assess_goal`]'s own
+/// inference sits today, refining it into a concrete role rather than
+/// replacing its signals. Reuses [`assess_goal`]'s breadth ([`MANY_FILES`])
+/// and vocabulary ([`HARD_SIGNALS`], tags-only — the same no-self-promotion
+/// rule: free text can only route DOWN, never up) checks verbatim, adding
+/// one new structural signal: file extension, read from `metadata.paths`
+/// when present. Never asks a model, for the same reason `assess_goal`
+/// never does (see this module's doc comment).
+///
+/// Precedence: breadth (many files) or tagged hard-signal vocabulary →
+/// `Orchestrate` (the multi-file/refactor/build-system rung); a small,
+/// single-file goal in a language the on-device tier handles well → `Local`;
+/// otherwise `Mechanical` — the same cheap-cloud-shaped rung an unsignalled
+/// goal starts on in [`assess_goal`]. Returns the resolved role together
+/// with a static reason string for the dispatch audit trail.
+pub fn default_worker_tier_for_goal(
+    // Reserved: mirrors `assess_goal`'s free-text parameters for signature
+    // parity, but this rule reads no prose today — only structure (`paths`)
+    // and explicit `tags`, never title/description.
+    _title: &str,
+    _description: &str,
+    metadata: &serde_json::Value,
+) -> (WorkflowRole, &'static str) {
+    let paths: Vec<&str> = metadata
+        .get("paths")
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| arr.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+
+    // Breadth: many files is a coordination problem regardless of vocabulary
+    // — the same structural signal `assess_goal` reads, reused verbatim.
+    if paths.len() > MANY_FILES {
+        return (
+            WorkflowRole::Orchestrate,
+            "touches many files — a broad change",
+        );
+    }
+
+    // Vocabulary: explicit `tags` only, mirroring `assess_goal`'s
+    // no-self-promotion rule — title/description prose cannot promote a
+    // goal to the expensive tier.
+    let tagged_hard = metadata
+        .get("tags")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|tags| {
+            tags.iter().filter_map(serde_json::Value::as_str).any(|t| {
+                let t = t.to_lowercase();
+                HARD_SIGNALS.iter().any(|s| t.contains(s))
+            })
+        });
+    if tagged_hard {
+        return (WorkflowRole::Orchestrate, "tagged as reasoning-heavy work");
+    }
+
+    // Language: a small, single-file goal in a language the local tier
+    // handles well is the "give the free rung a fair shot" case.
+    let is_local_language = !paths.is_empty()
+        && paths.iter().all(|p| {
+            p.rsplit('.').next().is_some_and(|ext| {
+                let ext = ext.to_lowercase();
+                LOCAL_LANGUAGE_EXTENSIONS.contains(&ext.as_str())
+            })
+        });
+    if paths.len() <= 1 && is_local_language {
+        return (
+            WorkflowRole::Local,
+            "small, single-file goal in a language the local tier handles well",
+        );
+    }
+
+    (
+        WorkflowRole::Mechanical,
+        "no strong signal — start on the cheap rung",
+    )
+}
+
 fn tier_from_str(s: &str) -> Option<Tier> {
     match s.trim().to_lowercase().as_str() {
         "mesh_free" => Some(Tier::MeshFree),
@@ -290,5 +375,80 @@ mod tests {
             &meta(serde_json::json!({})),
         );
         assert_eq!(a.tier, Tier::CheapCloud, "{a:?}");
+    }
+
+    // ── R48d: default_worker_tier_for_goal ──────────────────────────────────
+
+    #[test]
+    fn a_one_file_python_goal_defaults_to_local() {
+        let (role, _reason) = default_worker_tier_for_goal(
+            "Fix a small bug",
+            "",
+            &meta(serde_json::json!({ "paths": ["app/main.py"] })),
+        );
+        assert_eq!(role, WorkflowRole::Local);
+    }
+
+    #[test]
+    fn a_one_file_js_or_ts_goal_also_defaults_to_local() {
+        for ext in ["app.js", "app.ts", "app.tsx", "app.jsx"] {
+            let (role, _) = default_worker_tier_for_goal(
+                "Small fix",
+                "",
+                &meta(serde_json::json!({ "paths": [ext] })),
+            );
+            assert_eq!(role, WorkflowRole::Local, "{ext}");
+        }
+    }
+
+    #[test]
+    fn a_five_file_tagged_refactor_defaults_to_orchestrate() {
+        let (role, reason) = default_worker_tier_for_goal(
+            "Refactor the payment module",
+            "",
+            &meta(serde_json::json!({
+                "paths": ["a.py", "b.py", "c.py", "d.py", "e.py"],
+                "tags": ["refactor"],
+            })),
+        );
+        assert_eq!(role, WorkflowRole::Orchestrate, "{reason}");
+    }
+
+    #[test]
+    fn breadth_alone_defaults_to_orchestrate_even_with_no_vocabulary() {
+        let paths: Vec<&str> = (0..9).map(|_| "file.py").collect();
+        let (role, _) = default_worker_tier_for_goal(
+            "Touch a lot of files",
+            "",
+            &meta(serde_json::json!({ "paths": paths })),
+        );
+        assert_eq!(role, WorkflowRole::Orchestrate);
+    }
+
+    /// Free-text vocabulary must not promote — same no-self-promotion rule
+    /// as `assess_goal`. A title naming "refactor" with no explicit tag stays
+    /// on the cheap rung, not Orchestrate.
+    #[test]
+    fn free_text_refactor_wording_cannot_promote_the_default_rule() {
+        let (role, _) = default_worker_tier_for_goal(
+            "Refactor the payment module",
+            "",
+            &meta(serde_json::json!({ "paths": ["a.py", "b.py"] })),
+        );
+        assert_ne!(role, WorkflowRole::Orchestrate);
+    }
+
+    #[test]
+    fn a_multi_language_or_pathless_goal_defaults_to_mechanical() {
+        let (role, _) =
+            default_worker_tier_for_goal("Wire the widget", "", &meta(serde_json::json!({})));
+        assert_eq!(role, WorkflowRole::Mechanical);
+
+        let (role, _) = default_worker_tier_for_goal(
+            "Touch two files",
+            "",
+            &meta(serde_json::json!({ "paths": ["a.py", "b.rs"] })),
+        );
+        assert_eq!(role, WorkflowRole::Mechanical);
     }
 }

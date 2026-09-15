@@ -72,7 +72,7 @@ pub mod snapshot;
 pub mod tier;
 pub mod tool_signals;
 
-pub use assess::{assess_goal, Assessment};
+pub use assess::{assess_goal, default_worker_tier_for_goal, Assessment};
 pub use authorized_attempts::{
     attempt_is_authorized, authorized_attempts, with_authorized_attempts,
     with_authorized_attempts_opt,
@@ -347,6 +347,24 @@ pub fn route_pack(
     (tier, pack)
 }
 
+/// R48d (HARNESS_LOOP_LOG.md "A45 design", Addendum (a)/(c)): whether a
+/// provider id names an on-device/local runtime rather than a metered cloud
+/// one. Shared so the coordinator-visible routing roster (`orchestrator__
+/// routing_roster`) and the routing receipt's future `routed_local`/
+/// `routed_cloud` counters (R48b) can never disagree about the
+/// classification — both call this one function rather than growing their
+/// own copies of the provider-id list. Mirrors `agents::reply_parts`'s own
+/// private `is_local_provider` (a different call site, kept separate on
+/// purpose — see that module — but deliberately the same provider-id rule).
+pub fn is_local_provider(provider: &str) -> bool {
+    let provider = provider.to_ascii_lowercase();
+    provider == "local"
+        || provider.contains("ollama")
+        || provider == "lmstudio"
+        || provider == "llama_swap"
+        || provider == "qwen38_split"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,5 +586,22 @@ mod tests {
         let (tier, pack) = route_pack(&s, no_pool(), &packs, &ladder, |_| false);
         assert_eq!(tier, Tier::Frontier);
         assert_eq!(pack.model, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn is_local_provider_classifies_known_local_runtimes_and_nothing_else() {
+        assert!(is_local_provider("local"));
+        assert!(is_local_provider("ollama"));
+        assert!(is_local_provider("remote-ollama"));
+        assert!(is_local_provider("lmstudio"));
+        assert!(is_local_provider("llama_swap"));
+        assert!(is_local_provider("qwen38_split"));
+        assert!(
+            is_local_provider("OLLAMA"),
+            "classification is case-insensitive"
+        );
+        assert!(!is_local_provider("anthropic"));
+        assert!(!is_local_provider("openai"));
+        assert!(!is_local_provider("custom_deepseek"));
     }
 }
