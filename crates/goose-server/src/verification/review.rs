@@ -1266,7 +1266,7 @@ mod tests {
         let raw = "VERDICT: APPROVE\n\
                    CHECKED: read the diff and every listed call site\n\
                    CALLSITE shippingQuote | src/checkout/checkout.ts:12 | UPDATED | passes the new opts arg\n\
-                   CALLSITE shippingQuote | admin/manualQuote.ts:7 | UNAFFECTED | this call omits opts positionally; default applies\n";
+                   CALLSITE shippingQuote | src/admin/manualQuote.ts:7 | UNAFFECTED | this call omits opts positionally; default applies\n";
         let r = run_review(
             &inputs,
             &pick(true),
