@@ -18791,6 +18791,16 @@ async fn record_synthetic_verify_evidence(
 }
 
 /// Hold a premature InProgress → Review. `None` means allow the transition.
+/// R47 (A44): `dispatch_evidence.head_commit` is a full 40-char sha today, but
+/// records written before R47 hold a `--short` abbreviation. Treat the two as the
+/// same commit when either is a prefix of the other, requiring at least 7 chars so
+/// a stray short string can never match broadly.
+pub(crate) fn sha_matches(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim(), b.trim());
+    let n = a.len().min(b.len());
+    n >= 7 && a[..n] == b[..n]
+}
+
 async fn maybe_hold_review(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
@@ -18917,12 +18927,15 @@ async fn maybe_hold_review(
                             .ok()
                             .map(|s| s.trim().to_string());
                         let recorded_pass_at_head = verify_ran
-                            && current_head.is_some()
-                            && card
-                                .metadata_json
-                                .pointer("/dispatch_evidence/head_commit")
-                                .and_then(|v| v.as_str())
-                                == current_head.as_deref();
+                            && match (
+                                card.metadata_json
+                                    .pointer("/dispatch_evidence/head_commit")
+                                    .and_then(|v| v.as_str()),
+                                current_head.as_deref(),
+                            ) {
+                                (Some(recorded), Some(current)) => sha_matches(recorded, current),
+                                _ => false,
+                            };
                         if recorded_pass_at_head {
                             true
                         } else {
@@ -27214,6 +27227,30 @@ mod tests {
     /// checkpoint) — option (a) cannot fire — so the override must fall to
     /// a fresh, time-boxed verify, which genuinely fails against this
     /// broken checkpoint. Must Hold, naming the unverified checkpoint.
+    /// R47 (A44): a pre-R47 record holds a `--short` abbreviation where the
+    /// worktree now reports a full sha; the override must still bind. The >= 7
+    /// floor keeps a stray short string from matching broadly.
+    #[test]
+    fn sha_matches_binds_a_short_record_to_a_full_head() {
+        let full = "0b8a39d7c1e4f2a6b90d3c5e7f1a2b4c6d8e0f13";
+        assert!(sha_matches("0b8a39d", full), "short prefix must bind");
+        assert!(sha_matches(full, "0b8a39d"), "order must not matter");
+        assert!(sha_matches(full, full), "identical shas bind");
+        assert!(
+            sha_matches("  0b8a39d\n", full),
+            "surrounding whitespace is trimmed"
+        );
+        assert!(
+            !sha_matches("0b8a39e", full),
+            "a different sha must not bind"
+        );
+        assert!(
+            !sha_matches("0b8a39", full),
+            "fewer than 7 chars must never bind"
+        );
+        assert!(!sha_matches("", full), "an empty sha must never bind");
+    }
+
     #[tokio::test]
     async fn maybe_hold_review_holds_unlanded_checkpoint_when_fresh_verify_fails() {
         let pool = test_pool().await;

@@ -570,17 +570,24 @@ async fn land_approved_goal(
                                     worktree_path,
                                 )
                                 .await;
-                            let recorded_pass_at_head = current_head.is_some()
-                                && card
-                                    .metadata_json
-                                    .pointer("/dispatch_evidence/verdict/status")
-                                    .and_then(|v| v.as_str())
-                                    == Some("pass")
-                                && card
-                                    .metadata_json
-                                    .pointer("/dispatch_evidence/head_commit")
-                                    .and_then(|v| v.as_str())
-                                    == current_head.as_deref();
+                            let recorded_pass_at_head = card
+                                .metadata_json
+                                .pointer("/dispatch_evidence/verdict/status")
+                                .and_then(|v| v.as_str())
+                                == Some("pass")
+                                && match (
+                                    card.metadata_json
+                                        .pointer("/dispatch_evidence/head_commit")
+                                        .and_then(|v| v.as_str()),
+                                    current_head.as_deref(),
+                                ) {
+                                    (Some(recorded), Some(current)) => {
+                                        crate::agents::platform_extensions::orchestrator::sha_matches(
+                                            recorded, current,
+                                        )
+                                    }
+                                    _ => false,
+                                };
                             let verified = recorded_pass_at_head
                                 || crate::agents::platform_extensions::orchestrator::run_fresh_verify_for_hold(
                                     &card,

@@ -2174,7 +2174,9 @@ pub(crate) async fn collect_evidence(
     // verifier records Uncertain regardless).
     let head_commit = match read_work_head(worktree).await {
         Some(h) => Some(h),
-        None => git_line(worktree, &["rev-parse", "--short", "HEAD"]).await,
+        // R47 (A44): record the FULL sha, matching what the post-commit hook
+        // writes, so head_commit comparisons bind byte-for-byte.
+        None => git_line(worktree, &["rev-parse", "HEAD"]).await,
     };
     // Fix (#523): the worker's true base, recorded by the in-worktree git hook at
     // its first commit (re-captured on rebase). It lives in the worktree's private
