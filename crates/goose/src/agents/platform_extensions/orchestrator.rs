@@ -13722,6 +13722,129 @@ async fn commits_ahead_of_baseline(
         .map_err(|e| format!("unexpected `git rev-list --count` output {out:?}: {e}"))
 }
 
+/// Like [`git_in_worktree`], but for a git subcommand (`merge-base
+/// --is-ancestor`) whose EXIT CODE is the answer, not a failure signal —
+/// exit 1 there means "not an ancestor" (a plain `false`), not "the
+/// inspection broke." `git_in_worktree` would wrongly turn that into an
+/// `Err`. Mirrors `goal_landing::git`'s own exact exit-code-preserving
+/// contract (that copy is private to `goal_landing.rs`; this one exists so
+/// `orchestrator.rs`'s salvage path does not need a third `git` runner).
+async fn git_bool_in_worktree(worktree: &std::path::Path, args: &[&str]) -> Result<bool, String> {
+    let mut command = tokio::process::Command::new("git");
+    command
+        .arg("-C")
+        .arg(worktree)
+        .args(args)
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(20), command.output())
+        .await
+        .map_err(|_| "git inspection timed out after 20 s".to_string())?
+        .map_err(|e| format!("cannot run git in {}: {e}", worktree.display()))?;
+    Ok(output.status.success())
+}
+
+/// Lane R22d (A24 Q1/Q3): resolve the SAME trusted repo root
+/// `decisions_effects::land_approved_goal` would actually fast-forward onto
+/// for this goal — `project.root_path` when configured, else the H1-guarded
+/// worktree-derived fallback (`goal_landing::resolve_primary_checkout_from_
+/// worktree` + `goal_landing::verify_worktree_landing_target`, the EXACT
+/// composition `land_approved_goal` itself uses, reused rather than
+/// re-derived so salvage's notion of "already landed" can never disagree
+/// with the real landing decision). `Err` when no trusted root can be
+/// resolved at all (no `root_path`, and the worktree-derived candidate
+/// fails verification or the worktree is gone) — the caller falls back to
+/// the rolling-baseline count as the best remaining signal rather than
+/// refusing salvage outright for a goal whose project was simply never
+/// given a root path.
+async fn resolve_trusted_landing_root(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    worktree_path: &std::path::Path,
+) -> Result<String, String> {
+    let configured_root = crate::projects::get_project_by_id_or_slug(pool, &card.project_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|project| project.root_path)
+        .filter(|root| !root.is_empty());
+    if let Some(root) = configured_root {
+        return Ok(root);
+    }
+
+    let worktree_str = worktree_path.to_string_lossy().into_owned();
+    let Some(candidate) =
+        crate::goal_landing::resolve_primary_checkout_from_worktree(&worktree_str).await
+    else {
+        return Err(format!(
+            "project '{}' has no root_path and the goal's own worktree ('{worktree_str}') \
+             could not resolve a primary checkout via git",
+            card.project_id
+        ));
+    };
+    let baseline_commit = card
+        .metadata_json
+        .pointer("/dispatch_evidence/baseline_commit")
+        .and_then(|v| v.as_str());
+    let known_working_dir =
+        crate::decisions_effects::goal_dispatching_session_working_dir(pool, &card.metadata_json)
+            .await;
+    crate::goal_landing::verify_worktree_landing_target(
+        &candidate,
+        baseline_commit,
+        known_working_dir.as_deref(),
+    )
+    .await
+    .map(|()| candidate)
+    .map_err(|reason| format!("landing target is not the goal's repo ({reason})"))
+}
+
+/// Lane R22d (A24 Q1/Q3): how many commits the goal branch's tip carries
+/// that have NOT reached the project's trunk yet — the question salvage
+/// actually needs answered, as opposed to [`commits_ahead_of_baseline`]'s
+/// count against the ROLLING per-redispatch baseline. Y16b resumes every
+/// redispatch from the branch's OWN prior tip, so once one attempt's fix is
+/// committed, every LATER attempt's `baseline_commit` already equals that
+/// commit — `commits_ahead_of_baseline` reading 0 there means only "nothing
+/// NEW since the last redispatch," never "nothing was ever committed" or
+/// "this already reached `main`." A24 traced this to two confirmed misses
+/// (`refactor-shipping-quote-signature` m2/m3, `editapply-duplicate-
+/// discount-blocks` m2): a genuinely correct fix landed on the goal branch
+/// at attempt 1, a later hold-exhaustion park's salvage read the rolling
+/// `ahead == 0` and bailed with "nothing past the dispatch baseline —
+/// nothing to salvage" while the fix sat one un-fast-forwarded merge away
+/// from grading.
+///
+/// `Ok(0)` when the tip is already an ancestor of the trunk's HEAD (already
+/// landed — by an earlier salvage, a human's own manual merge, or anything
+/// else). Otherwise `git rev-list --count <trunk-HEAD>..HEAD` in the goal's
+/// own worktree (which shares the trunk's object store as a linked
+/// worktree, so the trunk's sha is always resolvable there once known).
+/// `Err` when [`resolve_trusted_landing_root`] cannot resolve a trusted
+/// trunk at all — the caller falls back to the rolling-baseline count.
+async fn commits_unlanded_at_trunk(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    worktree_path: &std::path::Path,
+) -> Result<u32, String> {
+    let root = resolve_trusted_landing_root(pool, card, worktree_path).await?;
+    let trunk_head = git_in_worktree(std::path::Path::new(&root), &["rev-parse", "HEAD"]).await?;
+
+    let already_landed = git_bool_in_worktree(
+        worktree_path,
+        &["merge-base", "--is-ancestor", "HEAD", &trunk_head],
+    )
+    .await?;
+    if already_landed {
+        return Ok(0);
+    }
+
+    let range = format!("{trunk_head}..HEAD");
+    let out = git_in_worktree(worktree_path, &["rev-list", "--count", &range]).await?;
+    out.trim()
+        .parse::<u32>()
+        .map_err(|e| format!("unexpected `git rev-list --count` output {out:?}: {e}"))
+}
+
 // ── Lane R20b: salvage committed goal work before a budget/wall park ────────
 //
 // A20's Q1 forensics (HARNESS_LOOP_LOG.md "## A20 analysis — M19 zai z2")
@@ -13852,7 +13975,7 @@ async fn maybe_salvage_committed_work(
     };
     let worktree_path = std::path::Path::new(&worktree);
 
-    let ahead = match commits_ahead_of_baseline(worktree_path, &baseline).await {
+    let rolling_ahead = match commits_ahead_of_baseline(worktree_path, &baseline).await {
         Ok(n) => n,
         Err(e) => {
             let note = format!("could not inspect the goal branch: {e}");
@@ -13866,9 +13989,29 @@ async fn maybe_salvage_committed_work(
             return not_salvaged(note);
         }
     };
+    // Lane R22d (A24 Q1/Q3): `rolling_ahead` counts commits past the
+    // ROLLING per-redispatch baseline (Y16b resumes each redispatch from
+    // the branch's own prior tip) — reading 0 there means only "nothing NEW
+    // since the last redispatch," never "nothing was ever committed" or
+    // "this already reached the trunk." Measure against the project's
+    // trunk instead, when a trusted trunk can be resolved at all; fall back
+    // to the rolling count (the pre-R22d signal, unchanged) when it cannot
+    // — never refuse salvage outright just because trunk resolution failed.
+    let ahead = match commits_unlanded_at_trunk(pool, card, worktree_path).await {
+        Ok(unlanded) => unlanded,
+        Err(_) => rolling_ahead,
+    };
     if ahead == 0 {
-        let note = "no commits past the dispatch baseline — nothing to salvage".to_string();
-        record_salvage_receipt(pool, &card.id, "salvage_skipped_no_commits", &note).await;
+        if rolling_ahead == 0 {
+            let note = "no commits past the dispatch baseline — nothing to salvage".to_string();
+            record_salvage_receipt(pool, &card.id, "salvage_skipped_no_commits", &note).await;
+            return not_salvaged(note);
+        }
+        let note = format!(
+            "{rolling_ahead} commit(s) past the rolling redispatch baseline, but the branch \
+             tip is already an ancestor of the project's trunk — nothing left to land"
+        );
+        record_salvage_receipt(pool, &card.id, "salvage_skipped_already_landed", &note).await;
         return not_salvaged(note);
     }
 
@@ -14280,8 +14423,14 @@ async fn hand_salvaged_work_to_review_unverified(
         return hand_to_review_for_a_human(pool, card, ahead, verify_note).await;
     }
 
-    match dispatch_cross_family_reviewer_for_salvage(card, worktree_path, baseline, verify_note)
-        .await
+    match dispatch_cross_family_reviewer_for_salvage(
+        pool,
+        card,
+        worktree_path,
+        baseline,
+        verify_note,
+    )
+    .await
     {
         ReviewerGateOutcome::Approved {
             checked,
@@ -14460,6 +14609,7 @@ fn count_diff_changed_lines(diff: &str) -> usize {
 /// occupy, so the reviewer sees explicitly that it must judge the diff on
 /// its own merits, not a fabricated test run.
 async fn dispatch_cross_family_reviewer_for_salvage(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
     worktree_path: &std::path::Path,
     baseline: &str,
@@ -14497,9 +14647,25 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         _ => None,
     };
 
-    let diff = git_in_worktree(worktree_path, &["diff", &format!("{baseline}..HEAD")])
-        .await
-        .unwrap_or_default();
+    // Lane R22d: show the reviewer the FULL unlanded diff, not just what
+    // changed since the last redispatch — when this arm is reached via a
+    // rolling-baseline-equals-tip goal (an earlier attempt's fix already
+    // committed, nothing new since), `baseline..HEAD` alone would read
+    // empty even though real, unlanded work exists. Prefer the trunk-
+    // relative range when a trusted trunk can be resolved; fall back to
+    // the rolling `baseline..HEAD` otherwise (the pre-R22d range).
+    let diff_range_base = match resolve_trusted_landing_root(pool, card, worktree_path).await {
+        Ok(root) => git_in_worktree(std::path::Path::new(&root), &["rev-parse", "HEAD"])
+            .await
+            .unwrap_or_else(|_| baseline.to_string()),
+        Err(_) => baseline.to_string(),
+    };
+    let diff = git_in_worktree(
+        worktree_path,
+        &["diff", &format!("{diff_range_base}..HEAD")],
+    )
+    .await
+    .unwrap_or_default();
     let changed_lines = count_diff_changed_lines(&diff);
     let diff_for_prompt = if diff.len() > REVIEWER_GATE_MAX_DIFF_CHARS {
         format!(
@@ -21499,6 +21665,292 @@ mod tests {
         assert_eq!(
             outcomes,
             vec!["salvaged_on_park_unverified_reviewed".to_string()]
+        );
+    }
+
+    // ── Lane R22d (A24 Q1/Q3): salvage measures unlanded commits against ────
+    // the trunk, not the rolling per-redispatch baseline.
+
+    /// A REAL trunk repo (`project.root_path`) plus a goal worktree that is
+    /// a genuine `git clone` of it (sharing full object history, the same
+    /// property a linked `git worktree add` checkout has) — one commit
+    /// ahead on a `goal/<run_id>` branch with a real, passing Rust test.
+    /// Returns (trunk dir, goal worktree dir, the base commit's sha, the
+    /// fix commit's sha).
+    fn r22d_trunk_and_goal_worktree(
+        run_id: &str,
+    ) -> (tempfile::TempDir, tempfile::TempDir, String, String) {
+        let trunk = tempfile::tempdir().unwrap();
+        let troot = trunk.path();
+        r20b_git(troot, &["init", "-q", "-b", "main"]);
+        r20b_git(troot, &["config", "user.email", "test@example.com"]);
+        r20b_git(troot, &["config", "user.name", "Test"]);
+        r20b_git(troot, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(
+            troot.join("Cargo.toml"),
+            "[package]\nname = \"r22d-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(troot.join("src")).unwrap();
+        std::fs::write(
+            troot.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
+        r20b_git(troot, &["add", "-A"]);
+        r20b_git(troot, &["commit", "-q", "-m", "base"]);
+        let base_sha = r20b_git(troot, &["rev-parse", "HEAD"]);
+
+        let goal_dir = tempfile::tempdir().unwrap();
+        let clone_out = std::process::Command::new("git")
+            .args(["clone", "-q"])
+            .arg(troot)
+            .arg(goal_dir.path())
+            .output()
+            .expect("git clone must succeed for this test");
+        assert!(
+            clone_out.status.success(),
+            "git clone failed: {}",
+            String::from_utf8_lossy(&clone_out.stderr)
+        );
+        let gpath = goal_dir.path();
+        r20b_git(gpath, &["config", "user.email", "test@example.com"]);
+        r20b_git(gpath, &["config", "user.name", "Test"]);
+        r20b_git(gpath, &["config", "commit.gpgsign", "false"]);
+        let branch = format!("goal/{run_id}");
+        r20b_git(gpath, &["checkout", "-q", "-b", &branch]);
+        std::fs::write(
+            gpath.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n\n#[test]\nfn it_adds() { \
+             assert_eq!(add(2, 2), 4); }\n",
+        )
+        .unwrap();
+        r20b_git(gpath, &["commit", "-q", "-am", "fix: the salvageable work"]);
+        let fix_sha = r20b_git(gpath, &["rev-parse", "HEAD"]);
+        (trunk, goal_dir, base_sha, fix_sha)
+    }
+
+    /// The coordinator's first required test: attempt 1 committed a real
+    /// fix; a later redispatch's ROLLING baseline (Y16b resumes from the
+    /// branch's own prior tip) now equals that same commit, so
+    /// `commits_ahead_of_baseline` reads 0 — but the trunk never moved, so
+    /// `commits_unlanded_at_trunk` must still find 1 unlanded commit and
+    /// salvage must fire.
+    #[tokio::test]
+    async fn hold_exhaustion_park_salvages_against_unlanded_trunk_when_rolling_baseline_equals_tip()
+    {
+        let pool = test_pool().await;
+        let (trunk, goal_dir, _base_sha, fix_sha) = r22d_trunk_and_goal_worktree("r22d-unlanded");
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(trunk.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": goal_dir.path().to_string_lossy(),
+                "head_commit": fix_sha,
+                "commits": [],
+                // The rolling redispatch baseline: a later attempt resumed
+                // from the branch's own prior tip, which IS this same fix
+                // commit — the exact A24 shape.
+                "baseline_commit": fix_sha,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r22d-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(goal_dir.path().to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "a rolling baseline reading 0 must not park a goal with real, unlanded work — the \
+             A24 defect this lane fixes"
+        );
+        assert_ne!(col.state_binding.as_deref(), Some("in_progress"));
+        assert!(
+            updated.metadata_json.get("salvaged_on_park").is_some(),
+            "expected the genuine-pass salvage path to record salvaged_on_park"
+        );
+        let receipt = updated.metadata_json.get("salvaged_on_park").unwrap();
+        assert_eq!(
+            receipt.get("commits_ahead").and_then(|v| v.as_u64()),
+            Some(1),
+            "the trunk-relative count (1 unlanded commit), not the rolling count (0), must be \
+             what salvage reports"
+        );
+    }
+
+    /// The coordinator's second required test: the goal branch's tip has
+    /// ALREADY reached the trunk (landed by an earlier salvage, or a
+    /// human's own merge) — salvage must skip cleanly with
+    /// `salvage_skipped_already_landed`, never re-attempt landing work
+    /// that is already there.
+    #[tokio::test]
+    async fn hold_exhaustion_park_skips_salvage_when_the_tip_already_landed_on_trunk() {
+        let pool = test_pool().await;
+        let (trunk, goal_dir, base_sha, fix_sha) =
+            r22d_trunk_and_goal_worktree("r22d-already-landed");
+
+        // Land the fix onto the trunk directly (fetch + fast-forward merge)
+        // — simulates an earlier salvage, or a human's own manual merge,
+        // having already landed this exact commit.
+        r20b_git(
+            trunk.path(),
+            &[
+                "fetch",
+                "-q",
+                goal_dir.path().to_str().unwrap(),
+                "goal/r22d-already-landed",
+            ],
+        );
+        r20b_git(trunk.path(), &["merge", "-q", "--ff-only", "FETCH_HEAD"]);
+        assert_eq!(
+            r20b_git(trunk.path(), &["rev-parse", "HEAD"]),
+            fix_sha,
+            "precondition: the trunk must actually carry the fix commit"
+        );
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(trunk.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": goal_dir.path().to_string_lossy(),
+                "head_commit": fix_sha,
+                "commits": [],
+                // A rolling baseline distinct from the tip, so
+                // `commits_ahead_of_baseline` alone would (wrongly) say
+                // "1 ahead, go salvage it" — the trunk check must override
+                // that with "already landed."
+                "baseline_commit": base_sha,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r22d-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(goal_dir.path().to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "an already-landed tip must still park (nothing left to salvage), exactly like an \
+             ordinary hold-exhaustion park"
+        );
+        assert!(updated.metadata_json.get("salvaged_on_park").is_none());
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("an already-landed skip must still leave a card-metadata breadcrumb");
+        assert_eq!(
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvage_skipped_already_landed")
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(
+            outcomes,
+            vec!["salvage_skipped_already_landed".to_string()],
+            "an already-landed tip must still leave a decision_audit row, not just a \
+             card-metadata breadcrumb"
         );
     }
 

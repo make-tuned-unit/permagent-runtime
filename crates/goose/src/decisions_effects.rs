@@ -446,7 +446,12 @@ pub fn install_post_landing_hook(hook: PostLandingHook) {
 /// [`crate::goal_landing::verify_worktree_landing_target`] treats an
 /// unknown working directory as a refusal, never as license to trust the
 /// worktree's own claim about where it came from.
-async fn goal_dispatching_session_working_dir(
+///
+/// Lane R22d: `pub(crate)` (was private) so `orchestrator.rs`'s salvage path
+/// can resolve the SAME trusted landing root this function's own caller
+/// (`land_approved_goal`) actually lands onto — salvage's notion of
+/// "already landed" must never disagree with the real landing decision.
+pub(crate) async fn goal_dispatching_session_working_dir(
     pool: &Pool<Sqlite>,
     metadata: &serde_json::Value,
 ) -> Option<String> {
