@@ -5123,12 +5123,28 @@ pub(crate) async fn dispatch_goal_fn(
                 .await
             }
             goal_engine::GoalOutcome::TimedOut { secs } => {
+                // R37a (A34 analysis, finding 1): same derivation
+                // `handle_goal_completion`'s own Ok/Err arms use for their
+                // `coordinator_session_id` — read fresh from the installed
+                // headless policy config (never the borrowed `policy`,
+                // which cannot cross into this `'static` task), so a
+                // headless auto-land dispatch's timeout salvage can also
+                // resolve R28b's reviewer tier-provider fallback instead of
+                // being permanently unreachable via a literal `None`.
+                let coordinator_session_id = if tracker_headless_auto_land {
+                    HEADLESS_DISPATCH_POLICY_CONFIG
+                        .get()
+                        .map(|c| c.coordinator_session_id.clone())
+                } else {
+                    None
+                };
                 handle_goal_timeout(
                     &tracker_pool,
                     &tracker_card_id,
                     &tracker_project_id,
                     secs,
                     None,
+                    coordinator_session_id.as_deref(),
                 )
                 .await
             }
@@ -12373,6 +12389,7 @@ pub async fn handle_goal_timeout(
     project_id: &str,
     secs: u64,
     grace_deadline: Option<std::time::Instant>,
+    calling_session_id: Option<&str>,
 ) -> Result<(), String> {
     let card = cards::get_card(pool, card_id)
         .await?
@@ -12401,6 +12418,7 @@ pub async fn handle_goal_timeout(
                 exhaustion,
                 grace_deadline,
                 "cap-expiry sweep found a Ready goal with a spent budget",
+                calling_session_id,
             )
             .await;
         }
@@ -12446,23 +12464,30 @@ pub async fn handle_goal_timeout(
     // review and land before parking — see `maybe_salvage_committed_work`.
     // G25/M21: fold `NotSalvaged`'s `note` into the park reason instead of
     // discarding it — see `handle_goal_completion`'s sibling fix for why.
-    // R22c-c: `handle_goal_timeout` is the drain/cap-expiry sweep — no live
-    // calling session exists here, so a reviewer-approved unverified
-    // salvage lands under no particular attributed session (`None`), same
-    // as every other caller that has none to give.
-    let salvage_note = match maybe_salvage_committed_work(pool, &card, grace_deadline, None).await {
-        SalvageOutcome::Salvaged { note } => {
-            tracing::info!(
-                target: "permagentd::brain",
-                "Goal '{}' worker timed out after {}s, but its committed work was salvaged \
-                 instead of parked: {note}",
-                card.title,
-                secs
-            );
-            return Ok(());
-        }
-        SalvageOutcome::NotSalvaged { note } => note,
-    };
+    // R37a (A34 analysis, finding 1): `handle_goal_timeout` is the drain/
+    // cap-expiry sweep, park-on-shutdown, and completion-tracker timeout
+    // path — every one of its callers already knows the coordinator session
+    // that owns this goal (the drain functions have `coordinator_session_id`
+    // in scope; the completion tracker derives it from the same headless
+    // policy config `handle_goal_completion` uses), so a literal `None` here
+    // made R28b's reviewer tier-fallback permanently unreachable from this
+    // path by construction. `calling_session_id` is threaded through from
+    // the caller instead — still `None` for the rare caller with no
+    // coordinator session to give (e.g. a direct test).
+    let salvage_note =
+        match maybe_salvage_committed_work(pool, &card, grace_deadline, calling_session_id).await {
+            SalvageOutcome::Salvaged { note } => {
+                tracing::info!(
+                    target: "permagentd::brain",
+                    "Goal '{}' worker timed out after {}s, but its committed work was salvaged \
+                     instead of parked: {note}",
+                    card.title,
+                    secs
+                );
+                return Ok(());
+            }
+            SalvageOutcome::NotSalvaged { note } => note,
+        };
 
     let exhaustion = goal_transition::BudgetExhaustion::Wallclock {
         spent_secs: secs,
@@ -12521,6 +12546,7 @@ async fn salvage_or_park_stranded_ready_goal(
     exhaustion: goal_transition::BudgetExhaustion,
     grace_deadline: Option<std::time::Instant>,
     context: &str,
+    calling_session_id: Option<&str>,
 ) -> Result<(), String> {
     if let Err(e) = goal_transition::advance_goal_checked(
         pool,
@@ -12545,19 +12571,25 @@ async fn salvage_or_park_stranded_ready_goal(
         return Ok(());
     };
 
-    let salvage_note =
-        match maybe_salvage_committed_work(pool, &claimed, grace_deadline, None).await {
-            SalvageOutcome::Salvaged { note } => {
-                tracing::info!(
-                    target: "permagentd::brain",
-                    "Ready goal '{}' ({context}) had committed work salvaged instead of being \
-                     left stranded: {note}",
-                    claimed.title
-                );
-                return Ok(());
-            }
-            SalvageOutcome::NotSalvaged { note } => note,
-        };
+    let salvage_note = match maybe_salvage_committed_work(
+        pool,
+        &claimed,
+        grace_deadline,
+        calling_session_id,
+    )
+    .await
+    {
+        SalvageOutcome::Salvaged { note } => {
+            tracing::info!(
+                target: "permagentd::brain",
+                "Ready goal '{}' ({context}) had committed work salvaged instead of being \
+                 left stranded: {note}",
+                claimed.title
+            );
+            return Ok(());
+        }
+        SalvageOutcome::NotSalvaged { note } => note,
+    };
 
     let last_error = format!("{context}; salvage: {salvage_note}");
     let decision_id = goal_transition::exhaust_and_park(
@@ -12594,6 +12626,7 @@ async fn handle_refused_redispatch(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
     dispatch_error: &str,
+    calling_session_id: Option<&str>,
 ) {
     let card = match cards::get_card(pool, card_id).await {
         Ok(Some(c)) => c,
@@ -12608,12 +12641,17 @@ async fn handle_refused_redispatch(
     let evidence = format!("spent={spent},cap={cap}; dispatch error: {dispatch_error}");
     record_redispatch_refusal_audit(pool, &card, &outcome, &evidence).await;
 
+    // R37a (A34 analysis, finding 1): thread the drain's own coordinator
+    // session id through so a reviewer-approved unverified salvage here can
+    // resolve R28b's tier-provider fallback — this call site previously
+    // passed a literal `None`, same gap as `run_end_salvage_sweep`'s.
     if let Err(e) = salvage_or_park_stranded_ready_goal(
         pool,
         &card,
         exhaustion,
         None,
         "redispatch refused by the attempt/token/wall cap",
+        calling_session_id,
     )
     .await
     {
@@ -13024,6 +13062,7 @@ pub(crate) fn run_scoped_ready_goals(
 /// cannot spin the drain.
 async fn redispatch_ready_goals(
     pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
     project_ids: &std::collections::BTreeSet<String>,
     live_card_ids: &std::collections::HashSet<String>,
     awaited_cards: &std::collections::HashSet<String>,
@@ -13095,7 +13134,8 @@ async fn redispatch_ready_goals(
                     // cap — audit it and give it one honest salvage-or-
                     // park chance instead of leaving it Ready to lose
                     // this exact race on every future sweep.
-                    handle_refused_redispatch(pool, &card_id, &e).await;
+                    handle_refused_redispatch(pool, &card_id, &e, Some(coordinator_session_id))
+                        .await;
                 }
             }
         }
@@ -13258,6 +13298,7 @@ async fn drain_dispatched_goals_with(
                         &project_id,
                         start.elapsed().as_secs(),
                         None,
+                        Some(coordinator_session_id),
                     )
                     .await;
                     stalled += 1;
@@ -13328,6 +13369,7 @@ async fn drain_dispatched_goals_with(
         } else {
             redispatch_ready_goals(
                 pool,
+                coordinator_session_id,
                 &projects,
                 &live_card_ids,
                 &awaited_cards,
@@ -13372,7 +13414,15 @@ async fn drain_dispatched_goals_with(
         // was never restarted is `ready`, so this is a no-op for it too — it
         // is counted, not silently dropped, which is what the summary line
         // and the eval's own post-run audit read.
-        let _ = handle_goal_timeout(pool, &card_id, &project_id, cap.as_secs(), None).await;
+        let _ = handle_goal_timeout(
+            pool,
+            &card_id,
+            &project_id,
+            cap.as_secs(),
+            None,
+            Some(coordinator_session_id),
+        )
+        .await;
     }
 
     Ok(DrainSummary {
@@ -13466,7 +13516,15 @@ pub async fn park_dispatched_goals_now(
                 "SIGTERM park sweep skipped_in_flight: a completion handler is already running"
             );
         } else {
-            let _ = handle_goal_timeout(pool, &card_id, &project_id, 0, grace_deadline).await;
+            let _ = handle_goal_timeout(
+                pool,
+                &card_id,
+                &project_id,
+                0,
+                grace_deadline,
+                Some(coordinator_session_id),
+            )
+            .await;
             timed_out += 1;
         }
     }
@@ -13656,8 +13714,19 @@ pub async fn run_end_salvage_sweep(
             card
         };
 
+        // R37a (A34 analysis, finding 1): this was the ONE call site actually
+        // reached in the A34 runs, and it passed a literal `None` — thread
+        // this sweep's own owning session id instead, so R28b's reviewer
+        // tier-provider fallback can resolve a candidate instead of being
+        // unreachable by construction.
         if matches!(
-            maybe_salvage_committed_work(pool, &target_card, grace_deadline, None).await,
+            maybe_salvage_committed_work(
+                pool,
+                &target_card,
+                grace_deadline,
+                Some(coordinator_session_id),
+            )
+            .await,
             SalvageOutcome::Salvaged { .. }
         ) {
             landed += 1;
@@ -16086,6 +16155,24 @@ enum SalvageOutcome {
     Salvaged { note: String },
 }
 
+#[cfg(test)]
+tokio::task_local! {
+    /// R37a (A34 analysis, finding 1): test-only capture seam recording
+    /// every `calling_session_id` [`maybe_salvage_committed_work`] is
+    /// actually invoked with, while a test has scoped it. A
+    /// `tokio::task_local!`, not a global/static — it lives only for the
+    /// duration of the scoped future and is dropped with it, so it cannot
+    /// leak between tests (the same established pattern
+    /// `providers::inflight`'s `BACKGROUND_REQUEST` and
+    /// `session_context`'s task-locals already use in this codebase for an
+    /// ambient per-call-stack signal). Lets a test prove a caller like
+    /// `run_end_salvage_sweep` threads its own session id into this
+    /// function without needing to drive the call all the way to a live
+    /// cross-provider reviewer dispatch, which needs real network/provider
+    /// config no test in this file can stand up.
+    static SALVAGE_CALLING_SESSION_CAPTURE: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>;
+}
+
 /// Lane R20b: before a goal is parked for a budget/wall reason, check
 /// whether its branch tip already carries committed work past the dispatch
 /// baseline and, if so, give that committed state one honest chance to be
@@ -16143,6 +16230,16 @@ async fn maybe_salvage_committed_work(
     grace_deadline: Option<std::time::Instant>,
     calling_session_id: Option<&str>,
 ) -> SalvageOutcome {
+    // R37a: record-only when a test has scoped the capture above; a no-op
+    // `try_with` failure (the ordinary, non-test-scoped case) is silently
+    // ignored.
+    #[cfg(test)]
+    let _ = SALVAGE_CALLING_SESSION_CAPTURE.try_with(|log| {
+        log.lock()
+            .unwrap()
+            .push(calling_session_id.map(str::to_string));
+    });
+
     // Same derivation `handle_goal_completion`'s own callers already use
     // (`dispatch_goal_fn` passes `policy.is_some_and(|p| p.auto_land)`) —
     // computed here so every salvage call site gets it for free instead of
@@ -23839,7 +23936,7 @@ mod tests {
         .await
         .unwrap();
 
-        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None)
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None, None)
             .await
             .unwrap();
 
@@ -23893,7 +23990,7 @@ mod tests {
         // pre-gate — it always attempts salvage before its own
         // `exhaust_and_park` — so it is the only one of the three that can
         // actually exercise this skip path end to end.
-        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None)
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None, None)
             .await
             .unwrap();
 
@@ -23936,7 +24033,7 @@ mod tests {
 
         // `None`: ample grace (or none of this drain's business — the
         // ordinary cap-expiry loop never races a SIGTERM clock at all).
-        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None)
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None, None)
             .await
             .unwrap();
 
@@ -36684,6 +36781,7 @@ mod tests {
             &pool,
             &card.id,
             "budget exhausted: attempt cap reached (simulated dispatch refusal)",
+            None,
         )
         .await;
 
@@ -36769,6 +36867,7 @@ mod tests {
             &pool,
             &card.id,
             "budget exhausted: attempt cap reached (simulated dispatch refusal)",
+            None,
         )
         .await;
 
@@ -36829,7 +36928,7 @@ mod tests {
         .await
         .unwrap();
 
-        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None)
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None, None)
             .await
             .unwrap();
 
@@ -36904,7 +37003,7 @@ mod tests {
         .await
         .unwrap();
 
-        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None)
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None, None)
             .await
             .unwrap();
 
@@ -36939,7 +37038,7 @@ mod tests {
             r20b_setup_goal_with_committed_work(&pool, "r28ab-timeout-checkpoint", None).await;
         std::fs::write(dir.path().join("uncommitted.txt"), "left behind\n").unwrap();
 
-        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None)
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None, None)
             .await
             .unwrap();
 
@@ -37478,6 +37577,84 @@ mod tests {
             audited,
             vec!["run_end_salvage_sweep goals=1 landed=1 skipped_in_flight=0".to_string()],
             "the sweep must record exactly one summary audit row naming both counts"
+        );
+    }
+
+    /// R37a (A34 analysis, finding 1): `run_end_salvage_sweep` was the ONE
+    /// salvage call site actually reached in the A34 runs, and it passed a
+    /// literal `None` for `calling_session_id` — making R28b's reviewer
+    /// tier-provider fallback (`resolve_session_tier_fallback`) permanently
+    /// unreachable from this path by construction, regardless of provider
+    /// health. Proves the fix using the `SALVAGE_CALLING_SESSION_CAPTURE`
+    /// task-local seam (declared above `maybe_salvage_committed_work`):
+    /// scope it around the sweep call and assert the ONE recorded value is
+    /// `Some(coordinator_session_id)`, not `None` — the exact distinction
+    /// that made the fallback unreachable before this lane. Same fixture
+    /// shape as test (a) above (a genuinely committed, passing fix), reused
+    /// only to give the sweep something to attempt; the salvage OUTCOME
+    /// itself is already covered there and not re-asserted here.
+    #[tokio::test]
+    async fn run_end_salvage_sweep_threads_the_coordinator_session_id_into_salvage() {
+        let pool = test_pool().await;
+        let coordinator_session_id = format!("r37a-coord-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&coordinator_session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (dir, baseline, head) = r20b_worktree_with_committed_fix("r37a-sweep-session-thread");
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": head,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let worker_session_id = format!("r37a-worker-{}", uuid::Uuid::new_v4());
+        r31b_attach_worker_session(
+            &pool,
+            &card.id,
+            &coordinator_session_id,
+            &worker_session_id,
+            dir.path(),
+        )
+        .await;
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "resumed_by_headless_unblock_at".to_string(),
+                serde_json::json!(chrono::Utc::now().to_rfc3339()),
+            );
+        })
+        .await
+        .unwrap();
+
+        let captured: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        SALVAGE_CALLING_SESSION_CAPTURE
+            .scope(captured.clone(), async {
+                run_end_salvage_sweep(&pool, &coordinator_session_id)
+                    .await
+                    .unwrap()
+            })
+            .await;
+
+        let recorded = captured.lock().unwrap().clone();
+        assert_eq!(
+            recorded,
+            vec![Some(coordinator_session_id.clone())],
+            "the sweep must call maybe_salvage_committed_work with Some(coordinator_session_id), \
+             never a literal None — otherwise R28b's reviewer tier-provider fallback \
+             (resolve_session_tier_fallback) can never resolve a candidate from this call site"
         );
     }
 
