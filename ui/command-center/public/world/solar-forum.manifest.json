@@ -3,10 +3,10 @@
   "metersPerUnit": 1,
   "runtimeUp": "Y",
   "sourceUp": "Z",
-  "meshes": 51,
-  "triangles": 790374,
-  "bytes": 14425300,
-  "rawBytes": 63304076,
+  "meshes": 56,
+  "triangles": 804146,
+  "bytes": 14600520,
+  "rawBytes": 64176836,
   "liveState": false,
   "levels": [
     0,
@@ -18,13 +18,13 @@
   "celestial": {
     "schema": "permagent.forum.celestial.v1",
     "deterministic": true,
-    "objects": 835,
-    "mesh_objects": 835,
-    "triangles": 95744,
+    "objects": 841,
+    "mesh_objects": 841,
+    "triangles": 95924,
     "bounds_m": {
       "min": [
         -187.0,
-        169.76,
+        21.54,
         3.0
       ],
       "max": [

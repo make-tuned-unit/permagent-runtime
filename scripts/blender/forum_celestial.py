@@ -708,6 +708,23 @@ _compact_habitat('Northwest lower floating garden', (-78.0, 304.0, 132.0),
 _compact_habitat('Northeast lower floating garden', (86.0, 322.0, 145.0),
                  28.0, 20.0, 145.0, 2.1)
 
+# Job 21 optional sky dressing: three static low-poly skiffs over the lagoon.
+# They use linked hull and fin meshes and sit well above the playable disc.
+_job21_skiff = _ellipse_solid('Job21 distant skiff hull template', (0, 0, 0),
+                              4.8, 1.35, 3.6, .85, .25, -.25, 12, dark)
+_job21_skiff.name = 'Job21 distant skiff hull template'
+_job21_fin = box('Job21 distant skiff fin template', (0, 0, .65), (.12, 2.2, 1.35), cyan)
+for _index, (_x, _y, _z, _angle) in enumerate(((-46.0, 48.0, 76.0, .35), (31.0, 88.0, 102.0, 2.4), (74.0, 24.0, 118.0, 2.9))):
+    _job16_skiff = _linked_object(_job21_skiff, f'Job21 distant airship skiff {_index}',
+                                  (_x, _y, _z), rotation=(0, 0, _angle), scale=(1, 1, 1), material=dark)
+    _job16_skiff['animated'] = False
+    _linked_object(_job21_fin, f'Job21 distant airship skiff fin {_index}',
+                   (_x, _y, _z + .55), rotation=(0, 0, _angle), scale=(1, 1, 1), material=cyan)
+bpy.data.objects.remove(_job21_skiff, do_unlink=True)
+bpy.data.objects.remove(_job21_fin, do_unlink=True)
+celestial_manifest_job21 = {'airships': 3, 'linked_meshes': True, 'triangle_delta_estimate': 3 * 12 * 4}
+print('FORUM_CELESTIAL_JOB21', celestial_manifest_job21)
+
 # Publish a compact manifest for root integration and review.  Bounds include
 # only objects created by this module, so unrelated scene edits are excluded.
 bpy.context.view_layer.update()
