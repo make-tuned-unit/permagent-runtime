@@ -330,6 +330,12 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                             "rate_limit_events": r.signals.rate_limit_events,
                             "rate_limit_examples": r.signals.rate_limit_examples,
                             "max_turns_hit": r.signals.max_turns_hit,
+                            // Lane K15: a provider-unavailable marker whose
+                            // own line named a provider OTHER than this
+                            // tier (so it was NOT grounds to override the
+                            // oracle's verdict) — see
+                            // `crate::provider_unavailable`'s module docs.
+                            "provider_unavailable_ignored": r.signals.provider_unavailable_ignored,
                         },
                     })
                 })

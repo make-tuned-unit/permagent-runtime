@@ -313,7 +313,7 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     )?;
     // Best-effort: a missing/unreadable log just yields zeroed signals rather
     // than failing the whole task (the oracle's verdict is authoritative).
-    // Lane K10: keep the raw text too — `provider_unavailable::detect_in_run`
+    // Lane K10: keep the raw text too — `provider_unavailable::classify_in_run`
     // below scans it (and, if that comes up empty, this run's own
     // `data/logs/llm_request.*.jsonl`) for a billing/auth/quota marker.
     let harness_log_text = fs::read_to_string(&harness_log_path).unwrap_or_default();
@@ -359,10 +359,27 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     // AFTER the oracle runs (the oracle's own verdict is otherwise
     // authoritative) but always wins over it, the same way an oracle
     // timeout always wins above.
-    let provider_error = provider_unavailable::detect_in_run(&harness_log_text, &data_root);
-    if provider_error.is_some() {
+    //
+    // Lane K15: a bare marker is not enough on its own — the harness's
+    // planner tries `anthropic` first, by design, before falling back to
+    // this tier's own provider, so `classify_in_run` only forces `errored`
+    // when the marker's own line names THIS tier's provider (or the run
+    // shows a terminal provider-unavailable exit); a marker naming a
+    // different, fallback-able provider is kept as evidence on `signals`
+    // instead of overriding the oracle's verdict. See
+    // `provider_unavailable`'s module docs for the full rule and the
+    // M31/M33 `dschat` evidence it was built from.
+    let provider_classification =
+        provider_unavailable::classify_in_run(&tier.provider, &harness_log_text, &data_root);
+    if provider_classification.unavailable {
         outcome = OracleOutcome::Errored;
     }
+    signals.provider_unavailable_ignored = provider_classification.ignored_count;
+    let provider_error = if provider_classification.unavailable {
+        provider_classification.marker
+    } else {
+        None
+    };
 
     let reading = deps
         .cost

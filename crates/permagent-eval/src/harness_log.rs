@@ -344,6 +344,15 @@ pub struct LogSignals {
     pub safety_and_trust: Option<SafetyAndTrustReceipt>,
     /// Complete `cost_routing` receipt; absent or malformed lines remain unknown.
     pub cost_routing: Option<CostRoutingReceipt>,
+    /// Lane K15: count of provider-unavailable marker lines
+    /// (`crate::provider_unavailable`) seen in this run whose own line named
+    /// a provider OTHER than the tier under test (e.g. the harness's
+    /// fallback-able `anthropic`-first planner attempt) — evidence that was
+    /// correctly NOT grounds to override the oracle's verdict, kept here so
+    /// a report/scorecard reader can still see it. `0` (the default) means
+    /// none were seen, including for every task where this module never ran
+    /// at all (never fabricated as a distinct "unknown" state).
+    pub provider_unavailable_ignored: usize,
 }
 
 /// One coordinator's routing decision, as best-effort parsed from a
