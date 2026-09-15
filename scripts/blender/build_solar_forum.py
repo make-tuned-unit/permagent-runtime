@@ -215,8 +215,13 @@ for sign in [-1,1]:
     for edge in [-1.3,1.3]:
         branch((x+edge,-8,1.1),(x+edge,0,GALLERY+1.1),.045,bronze)
 # Upper archive stoa follows the curve, with rooms visible through the columns.
+# Bays 6-9 (north sector, 67-101 degrees) stay open as a belvedere: the gallery slab
+# and balustrade remain walkable, but no archive bay or solar roof rises there, so the
+# terrace vista sees over the gallery to the lagoon, the lakeside town and the ridge.
+BELVEDERE_BAYS=(6,7,8,9)
 for i in range(3,14):
     if i in (10,11):continue # Clear approach and headroom for the observatory stair.
+    if i in BELVEDERE_BAYS:continue
     a=i*math.pi/16; x,y=21.1*math.cos(a),21.1*math.sin(a)
     box('Upper archive bay',(x,y,GALLERY+1.45),(.28,3.0,2.9),dark,a)
     for z in [.5,1.2,1.9,2.6]:
@@ -229,7 +234,7 @@ for i in range(3,14):
     for r in [19.05,21.5]:
         xx,yy=r*math.cos(a),r*math.sin(a)
         cyl('Upper stoa column',(xx,yy,GALLERY+1.95),.19,3.9,pale,top=.15,verts=20)
-    if i not in (10,11):
+    if i not in (10,11) and i not in BELVEDERE_BAYS:
         box('Upper solar roof',(20.3*math.cos(a),20.3*math.sin(a),8.45),(3.9,4.25,.14),solar,a)
         box('Roof bronze seam',(20.3*math.cos(a),20.3*math.sin(a),8.55),(4,.08,.09),bronze,a)
 # A third small prospect above the west gallery with a real spiral stair.

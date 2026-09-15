@@ -1,0 +1,3077 @@
+{
+  "schema": "permagent.forum.vista-frame.v5",
+  "job": "docs/design/solar-forum/jobs/20-vista-camera.md",
+  "capturedAt": "2026-09-15T06:35:15.589Z",
+  "appUrl": "http://127.0.0.1:5284/ui/",
+  "viewport": {
+    "width": 1280,
+    "height": 1000
+  },
+  "browser": {
+    "channel": "chrome",
+    "version": "152.0.7977.83",
+    "args": [
+      "--use-angle=gl",
+      "--enable-gpu",
+      "--ignore-gpu-blocklist",
+      "--disable-frame-rate-limit",
+      "--disable-gpu-vsync"
+    ]
+  },
+  "tokenSource": "/Users/j/.permagent/secrets/daemon_token.json (value never recorded)",
+  "landmarkTable": "ui/command-center/src/components/world/forum/vistaLandmarks.json",
+  "orbitControls": {
+    "start": {
+      "position": {
+        "x": 0,
+        "y": 10,
+        "z": 23
+      },
+      "fov": 72,
+      "yawDegEastOfNorth": 17.057,
+      "pitchDeg": -5.584
+    },
+    "afterDrag": {
+      "position": {
+        "x": 35.171,
+        "y": 4.543,
+        "z": 27.058
+      },
+      "fov": 72,
+      "yawDegEastOfNorth": -5.072,
+      "pitchDeg": -2.195
+    },
+    "afterScroll": {
+      "position": {
+        "x": 39.281,
+        "y": 4.365,
+        "z": 21.936
+      },
+      "fov": 72,
+      "yawDegEastOfNorth": -8.04,
+      "pitchDeg": -2.195
+    },
+    "restored": {
+      "position": {
+        "x": 1.356,
+        "y": 9.524,
+        "z": 23.452
+      },
+      "fov": 72,
+      "yawDegEastOfNorth": 16.168,
+      "pitchDeg": -5.288
+    },
+    "dragMovedCameraM": 35.82,
+    "scrollMovedCameraM": 6.57,
+    "restoredWithinM": 1.51,
+    "restoredFovMatches": true,
+    "restoreError": "Commons: locator.click: Timeout 8000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.forum-districts butt (fell back to dispatchEvent)"
+  },
+  "day": {
+    "appearance": "day",
+    "appearanceLabel": "Day / follows system appearance",
+    "screenshot": "assets/world/forum/browser/v5-vista-day.webp",
+    "pureBlackPixels": 0,
+    "captureAttempts": 1,
+    "skyMeasurementFrame": {
+      "screenshot": "assets/world/forum/browser/v5-vista-day-sky.webp",
+      "pureBlackPixels": 0,
+      "attempts": 1,
+      "hudHidden": ".forum-brand, .forum-districts, .forum-location, .forum-controls, .forum-play, .forum-live, .forum-waypoint"
+    },
+    "canvasBox": {
+      "x": 208,
+      "y": 28,
+      "width": 702,
+      "height": 972
+    },
+    "probe": {
+      "ok": true,
+      "canvas": {
+        "width": 702,
+        "height": 972,
+        "aspect": 0.7222
+      },
+      "camera": {
+        "position": {
+          "x": 0,
+          "y": 10,
+          "z": 23
+        },
+        "fov": 72,
+        "yawDegEastOfNorth": 17.057,
+        "pitchDeg": -5.584
+      },
+      "landmarks": [
+        {
+          "id": "hologram_globe",
+          "label": "Hologram globe on the gathering terrace",
+          "source": "scripts/blender/forum_terrace.py:281",
+          "points": 1,
+          "inFrame": 1,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.568,
+              -0.348
+            ],
+            "px": [
+              152,
+              655
+            ],
+            "distanceM": 24,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              152,
+              655
+            ]
+          ]
+        },
+        {
+          "id": "terrace_south_balustrade",
+          "label": "South overlook balustrade, the terrace edge the vantage stands on",
+          "source": "scripts/blender/forum_terrace.py:476",
+          "points": 3,
+          "inFrame": 0,
+          "visible": false,
+          "nearestToCentre": {
+            "ndc": [
+              2.122,
+              -1.387
+            ],
+            "px": [
+              1096,
+              1160
+            ],
+            "distanceM": 14,
+            "inFrame": false
+          },
+          "samplePixels": []
+        },
+        {
+          "id": "lagoon",
+          "label": "The lagoon ring (radius 62-118 m) between the geodisc and the ridge",
+          "source": "scripts/blender/forum_landform.py:194",
+          "points": 9,
+          "inFrame": 6,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              0.187,
+              -0.048
+            ],
+            "px": [
+              417,
+              509
+            ],
+            "distanceM": 91,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              417,
+              509
+            ],
+            [
+              147,
+              511
+            ],
+            [
+              435,
+              491
+            ],
+            [
+              147,
+              492
+            ],
+            [
+              446,
+              480
+            ],
+            [
+              147,
+              481
+            ]
+          ]
+        },
+        {
+          "id": "council_island",
+          "label": "Council destination island in the northern lagoon",
+          "source": "scripts/blender/forum_landform.py:476",
+          "points": 3,
+          "inFrame": 3,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.289,
+              0.015
+            ],
+            "px": [
+              250,
+              479
+            ],
+            "distanceM": 117,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              147,
+              481
+            ],
+            [
+              34,
+              484
+            ],
+            [
+              250,
+              479
+            ]
+          ]
+        },
+        {
+          "id": "ne_spires",
+          "label": "The three NE spires (Alpha 72 m, Beta 96 m, Gamma 118 m)",
+          "source": "scripts/blender/forum_towers.py:301",
+          "points": 7,
+          "inFrame": 2,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              0.931,
+              0.509
+            ],
+            "px": [
+              678,
+              239
+            ],
+            "distanceM": 113,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              678,
+              239
+            ],
+            [
+              697,
+              225
+            ]
+          ]
+        },
+        {
+          "id": "ridge_crest",
+          "label": "Mountain ridge crest, Blender polar 100-215 deg at radius 140/160/175 (deterministic envelope, without the +/-11 m fractal term)",
+          "source": "scripts/blender/forum_landform.py:294",
+          "points": 36,
+          "inFrame": 3,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.926,
+              0.233
+            ],
+            "px": [
+              26,
+              373
+            ],
+            "distanceM": 163,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              26,
+              373
+            ],
+            [
+              15,
+              190
+            ],
+            [
+              24,
+              402
+            ]
+          ]
+        },
+        {
+          "id": "ridge_waterfalls",
+          "label": "The three ridge waterfalls (Blender polar 100/125/150 deg)",
+          "source": "scripts/blender/forum_landform.py:383",
+          "points": 6,
+          "inFrame": 2,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.902,
+              0.005
+            ],
+            "px": [
+              34,
+              484
+            ],
+            "distanceM": 141,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              15,
+              190
+            ],
+            [
+              34,
+              484
+            ]
+          ]
+        },
+        {
+          "id": "orbital_ring_1",
+          "label": "Monumental orbital garden ring, centre (0,260,106) m, radii 86-101 m",
+          "source": "scripts/blender/forum_celestial.py:467",
+          "points": 72,
+          "inFrame": 35,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.14,
+              0.224
+            ],
+            "px": [
+              302,
+              377
+            ],
+            "distanceM": 291,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              349,
+              194
+            ],
+            [
+              382,
+              198
+            ],
+            [
+              346,
+              157
+            ],
+            [
+              379,
+              155
+            ],
+            [
+              337,
+              120
+            ],
+            [
+              369,
+              112
+            ]
+          ]
+        },
+        {
+          "id": "orbital_ring_2",
+          "label": "Second, 28-degree tilted orbital ring, centre (0,338,158) m, radii 108-126 m",
+          "source": "scripts/blender/forum_celestial.py:566",
+          "points": 72,
+          "inFrame": 33,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.285,
+              0.311
+            ],
+            "px": [
+              251,
+              335
+            ],
+            "distanceM": 420,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              346,
+              145
+            ],
+            [
+              378,
+              149
+            ],
+            [
+              348,
+              105
+            ],
+            [
+              381,
+              103
+            ],
+            [
+              344,
+              63
+            ],
+            [
+              377,
+              53
+            ]
+          ]
+        },
+        {
+          "id": "floating_islands",
+          "label": "The four floating gardens",
+          "source": "scripts/blender/forum_celestial.py:702",
+          "points": 4,
+          "inFrame": 2,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              0.54,
+              0.608
+            ],
+            "px": [
+              540,
+              191
+            ],
+            "distanceM": 291,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              540,
+              191
+            ],
+            [
+              314,
+              154
+            ]
+          ]
+        },
+        {
+          "id": "west_habitats",
+          "label": "Market habitat cluster, west of the commons",
+          "source": "scripts/blender/forum_towers.py:320",
+          "points": 1,
+          "inFrame": 0,
+          "visible": false,
+          "nearestToCentre": {
+            "ndc": [
+              4.841,
+              -0.241
+            ],
+            "px": [
+              2050,
+              603
+            ],
+            "distanceM": 101,
+            "inFrame": false
+          },
+          "samplePixels": []
+        },
+        {
+          "id": "se_conservatory_dome",
+          "label": "Geodesic conservatory dome, south-east of the commons",
+          "source": "scripts/blender/forum_towers.py:321",
+          "points": 1,
+          "inFrame": 0,
+          "visible": false,
+          "nearestToCentre": {
+            "ndc": [
+              -4.076,
+              -0.017
+            ],
+            "px": [
+              -1080,
+              494
+            ],
+            "distanceM": 108,
+            "inFrame": false
+          },
+          "samplePixels": []
+        }
+      ],
+      "bodies": [
+        {
+          "label": "gasGiant",
+          "material": "Forum gas giant",
+          "world": {
+            "x": 270.593,
+            "y": 401.578,
+            "z": -758.627
+          },
+          "ndc": [
+            0.071,
+            0.825
+          ],
+          "px": [
+            376,
+            85
+          ],
+          "radiusPx": 128,
+          "inFrame": true
+        },
+        {
+          "label": "moon",
+          "material": "Forum moon",
+          "world": {
+            "x": 502.567,
+            "y": 460.687,
+            "z": -837.612
+          },
+          "ndc": [
+            0.471,
+            0.811
+          ],
+          "px": [
+            516,
+            92
+          ],
+          "radiusPx": 35,
+          "inFrame": true
+        }
+      ]
+    },
+    "sky": {
+      "gasGiant": {
+        "measured": true,
+        "centre": [
+          584,
+          113
+        ],
+        "radiusPx": 128,
+        "discPixels": 32937,
+        "discMeanLuma": 195.52,
+        "discMedianLuma": 215.6,
+        "discMaxLuma": 255,
+        "surroundMeanLuma": 130.04,
+        "contrastRatio": 1.5
+      },
+      "moon": {
+        "measured": true,
+        "centre": [
+          724,
+          120
+        ],
+        "radiusPx": 35,
+        "discPixels": 2453,
+        "discMeanLuma": 253.65,
+        "discMedianLuma": 255,
+        "discMaxLuma": 255,
+        "surroundMeanLuma": 167.29,
+        "contrastRatio": 1.52
+      }
+    },
+    "skyWithWorldHidden": {
+      "meshesHidden": 172,
+      "pureBlackPixels": 0,
+      "bodies": {
+        "gasGiant": {
+          "measured": true,
+          "centre": [
+            584,
+            113
+          ],
+          "radiusPx": 128,
+          "discPixels": 32937,
+          "discMeanLuma": 227.71,
+          "discMedianLuma": 239.22,
+          "discMaxLuma": 255,
+          "surroundMeanLuma": 140,
+          "contrastRatio": 1.63
+        },
+        "moon": {
+          "measured": true,
+          "centre": [
+            724,
+            120
+          ],
+          "radiusPx": 35,
+          "discPixels": 2453,
+          "discMeanLuma": 253.65,
+          "discMedianLuma": 255,
+          "discMaxLuma": 255,
+          "surroundMeanLuma": 169.62,
+          "contrastRatio": 1.5
+        }
+      }
+    },
+    "groundTint": {
+      "region": [
+        0.299609375,
+        0.7278399999999999,
+        0.573828125,
+        0.9514
+      ],
+      "pixels": 79200,
+      "meanRgb": [
+        125.96,
+        113.72,
+        97.27
+      ],
+      "blueMinusRed": -28.69,
+      "greenMinusRed": -12.24
+    },
+    "perfOnGlBackendNotComparable": {
+      "fps": 0.8,
+      "calls": 313,
+      "triangles": 2723723,
+      "geometries": 163,
+      "textures": 46,
+      "programs": 35,
+      "dpr": 1
+    }
+  },
+  "night": {
+    "appearance": "night",
+    "appearanceLabel": "Night / follows system appearance",
+    "screenshot": "assets/world/forum/browser/v5-vista-night.webp",
+    "pureBlackPixels": 5,
+    "captureAttempts": 1,
+    "skyMeasurementFrame": {
+      "screenshot": "assets/world/forum/browser/v5-vista-night-sky.webp",
+      "pureBlackPixels": 19,
+      "attempts": 1,
+      "hudHidden": ".forum-brand, .forum-districts, .forum-location, .forum-controls, .forum-play, .forum-live, .forum-waypoint"
+    },
+    "canvasBox": {
+      "x": 208,
+      "y": 28,
+      "width": 702,
+      "height": 972
+    },
+    "probe": {
+      "ok": true,
+      "canvas": {
+        "width": 702,
+        "height": 972,
+        "aspect": 0.7222
+      },
+      "camera": {
+        "position": {
+          "x": 0,
+          "y": 10,
+          "z": 23
+        },
+        "fov": 72,
+        "yawDegEastOfNorth": 17.057,
+        "pitchDeg": -5.584
+      },
+      "landmarks": [
+        {
+          "id": "hologram_globe",
+          "label": "Hologram globe on the gathering terrace",
+          "source": "scripts/blender/forum_terrace.py:281",
+          "points": 1,
+          "inFrame": 1,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.568,
+              -0.348
+            ],
+            "px": [
+              152,
+              655
+            ],
+            "distanceM": 24,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              152,
+              655
+            ]
+          ]
+        },
+        {
+          "id": "terrace_south_balustrade",
+          "label": "South overlook balustrade, the terrace edge the vantage stands on",
+          "source": "scripts/blender/forum_terrace.py:476",
+          "points": 3,
+          "inFrame": 0,
+          "visible": false,
+          "nearestToCentre": {
+            "ndc": [
+              2.122,
+              -1.387
+            ],
+            "px": [
+              1096,
+              1160
+            ],
+            "distanceM": 14,
+            "inFrame": false
+          },
+          "samplePixels": []
+        },
+        {
+          "id": "lagoon",
+          "label": "The lagoon ring (radius 62-118 m) between the geodisc and the ridge",
+          "source": "scripts/blender/forum_landform.py:194",
+          "points": 9,
+          "inFrame": 6,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              0.187,
+              -0.048
+            ],
+            "px": [
+              417,
+              509
+            ],
+            "distanceM": 91,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              417,
+              509
+            ],
+            [
+              147,
+              511
+            ],
+            [
+              435,
+              491
+            ],
+            [
+              147,
+              492
+            ],
+            [
+              446,
+              480
+            ],
+            [
+              147,
+              481
+            ]
+          ]
+        },
+        {
+          "id": "council_island",
+          "label": "Council destination island in the northern lagoon",
+          "source": "scripts/blender/forum_landform.py:476",
+          "points": 3,
+          "inFrame": 3,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.289,
+              0.015
+            ],
+            "px": [
+              250,
+              479
+            ],
+            "distanceM": 117,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              147,
+              481
+            ],
+            [
+              34,
+              484
+            ],
+            [
+              250,
+              479
+            ]
+          ]
+        },
+        {
+          "id": "ne_spires",
+          "label": "The three NE spires (Alpha 72 m, Beta 96 m, Gamma 118 m)",
+          "source": "scripts/blender/forum_towers.py:301",
+          "points": 7,
+          "inFrame": 2,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              0.931,
+              0.509
+            ],
+            "px": [
+              678,
+              239
+            ],
+            "distanceM": 113,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              678,
+              239
+            ],
+            [
+              697,
+              225
+            ]
+          ]
+        },
+        {
+          "id": "ridge_crest",
+          "label": "Mountain ridge crest, Blender polar 100-215 deg at radius 140/160/175 (deterministic envelope, without the +/-11 m fractal term)",
+          "source": "scripts/blender/forum_landform.py:294",
+          "points": 36,
+          "inFrame": 3,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.926,
+              0.233
+            ],
+            "px": [
+              26,
+              373
+            ],
+            "distanceM": 163,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              26,
+              373
+            ],
+            [
+              15,
+              190
+            ],
+            [
+              24,
+              402
+            ]
+          ]
+        },
+        {
+          "id": "ridge_waterfalls",
+          "label": "The three ridge waterfalls (Blender polar 100/125/150 deg)",
+          "source": "scripts/blender/forum_landform.py:383",
+          "points": 6,
+          "inFrame": 2,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.902,
+              0.005
+            ],
+            "px": [
+              34,
+              484
+            ],
+            "distanceM": 141,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              15,
+              190
+            ],
+            [
+              34,
+              484
+            ]
+          ]
+        },
+        {
+          "id": "orbital_ring_1",
+          "label": "Monumental orbital garden ring, centre (0,260,106) m, radii 86-101 m",
+          "source": "scripts/blender/forum_celestial.py:467",
+          "points": 72,
+          "inFrame": 35,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.14,
+              0.224
+            ],
+            "px": [
+              302,
+              377
+            ],
+            "distanceM": 291,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              349,
+              194
+            ],
+            [
+              382,
+              198
+            ],
+            [
+              346,
+              157
+            ],
+            [
+              379,
+              155
+            ],
+            [
+              337,
+              120
+            ],
+            [
+              369,
+              112
+            ]
+          ]
+        },
+        {
+          "id": "orbital_ring_2",
+          "label": "Second, 28-degree tilted orbital ring, centre (0,338,158) m, radii 108-126 m",
+          "source": "scripts/blender/forum_celestial.py:566",
+          "points": 72,
+          "inFrame": 33,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.285,
+              0.311
+            ],
+            "px": [
+              251,
+              335
+            ],
+            "distanceM": 420,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              346,
+              145
+            ],
+            [
+              378,
+              149
+            ],
+            [
+              348,
+              105
+            ],
+            [
+              381,
+              103
+            ],
+            [
+              344,
+              63
+            ],
+            [
+              377,
+              53
+            ]
+          ]
+        },
+        {
+          "id": "floating_islands",
+          "label": "The four floating gardens",
+          "source": "scripts/blender/forum_celestial.py:702",
+          "points": 4,
+          "inFrame": 2,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              0.54,
+              0.608
+            ],
+            "px": [
+              540,
+              191
+            ],
+            "distanceM": 291,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              540,
+              191
+            ],
+            [
+              314,
+              154
+            ]
+          ]
+        },
+        {
+          "id": "west_habitats",
+          "label": "Market habitat cluster, west of the commons",
+          "source": "scripts/blender/forum_towers.py:320",
+          "points": 1,
+          "inFrame": 0,
+          "visible": false,
+          "nearestToCentre": {
+            "ndc": [
+              4.841,
+              -0.241
+            ],
+            "px": [
+              2050,
+              603
+            ],
+            "distanceM": 101,
+            "inFrame": false
+          },
+          "samplePixels": []
+        },
+        {
+          "id": "se_conservatory_dome",
+          "label": "Geodesic conservatory dome, south-east of the commons",
+          "source": "scripts/blender/forum_towers.py:321",
+          "points": 1,
+          "inFrame": 0,
+          "visible": false,
+          "nearestToCentre": {
+            "ndc": [
+              -4.076,
+              -0.017
+            ],
+            "px": [
+              -1080,
+              494
+            ],
+            "distanceM": 108,
+            "inFrame": false
+          },
+          "samplePixels": []
+        }
+      ],
+      "bodies": [
+        {
+          "label": "gasGiant",
+          "material": "Forum gas giant",
+          "world": {
+            "x": 270.593,
+            "y": 401.578,
+            "z": -758.627
+          },
+          "ndc": [
+            0.071,
+            0.825
+          ],
+          "px": [
+            376,
+            85
+          ],
+          "radiusPx": 128,
+          "inFrame": true
+        },
+        {
+          "label": "moon",
+          "material": "Forum moon",
+          "world": {
+            "x": 502.567,
+            "y": 460.687,
+            "z": -837.612
+          },
+          "ndc": [
+            0.471,
+            0.811
+          ],
+          "px": [
+            516,
+            92
+          ],
+          "radiusPx": 35,
+          "inFrame": true
+        }
+      ]
+    },
+    "sky": {
+      "gasGiant": {
+        "measured": true,
+        "centre": [
+          584,
+          113
+        ],
+        "radiusPx": 128,
+        "discPixels": 32937,
+        "discMeanLuma": 154.17,
+        "discMedianLuma": 215.03,
+        "discMaxLuma": 255,
+        "surroundMeanLuma": 17.06,
+        "contrastRatio": 9.04
+      },
+      "moon": {
+        "measured": true,
+        "centre": [
+          724,
+          120
+        ],
+        "radiusPx": 35,
+        "discPixels": 2453,
+        "discMeanLuma": 253.65,
+        "discMedianLuma": 255,
+        "discMaxLuma": 255,
+        "surroundMeanLuma": 105.25,
+        "contrastRatio": 2.41
+      }
+    },
+    "skyWithWorldHidden": {
+      "meshesHidden": 142,
+      "pureBlackPixels": 0,
+      "bodies": {
+        "gasGiant": {
+          "measured": true,
+          "centre": [
+            584,
+            113
+          ],
+          "radiusPx": 128,
+          "discPixels": 32937,
+          "discMeanLuma": 227.64,
+          "discMedianLuma": 238.95,
+          "discMaxLuma": 255,
+          "surroundMeanLuma": 11.09,
+          "contrastRatio": 20.53
+        },
+        "moon": {
+          "measured": true,
+          "centre": [
+            724,
+            120
+          ],
+          "radiusPx": 35,
+          "discPixels": 2453,
+          "discMeanLuma": 253.65,
+          "discMedianLuma": 255,
+          "discMaxLuma": 255,
+          "surroundMeanLuma": 105.49,
+          "contrastRatio": 2.4
+        }
+      }
+    },
+    "groundTint": {
+      "region": [
+        0.299609375,
+        0.7278399999999999,
+        0.573828125,
+        0.9514
+      ],
+      "pixels": 79200,
+      "meanRgb": [
+        69.85,
+        78.45,
+        98.62
+      ],
+      "blueMinusRed": 28.77,
+      "greenMinusRed": 8.61
+    },
+    "perfOnGlBackendNotComparable": {
+      "fps": 0.5,
+      "calls": 295,
+      "triangles": 2722529,
+      "geometries": 163,
+      "textures": 51,
+      "programs": 58,
+      "dpr": 1
+    }
+  },
+  "belvedereCheck": {
+    "ok": true,
+    "boxesConsidered": 142,
+    "groups": [
+      {
+        "id": "town_ground_band",
+        "label": "Blender polar 60-120 deg, r 118-135 m, ground/water level (job spec)",
+        "points": 35,
+        "inFrame": 25,
+        "visible": 0,
+        "occludedByGallery": 0,
+        "occludedByOther": 25,
+        "samples": [
+          {
+            "point": [
+              59,
+              0,
+              -102.191
+            ],
+            "distanceM": 138.758,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 16.465,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              40.358,
+              0,
+              -110.884
+            ],
+            "distanceM": 140.191,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.555,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              20.49,
+              0,
+              -116.207
+            ],
+            "distanceM": 141.062,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.053,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              0,
+              0,
+              -118
+            ],
+            "distanceM": 141.354,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.893,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -20.49,
+              0,
+              -116.207
+            ],
+            "distanceM": 141.062,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.053,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -40.358,
+              0,
+              -110.884
+            ],
+            "distanceM": 140.191,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.555,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -59,
+              0,
+              -102.191
+            ],
+            "distanceM": 138.758,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 16.465,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              61,
+              0,
+              -105.655
+            ],
+            "distanceM": 142.734,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 16.481,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              41.726,
+              0,
+              -114.642
+            ],
+            "distanceM": 144.175,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.561,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              21.185,
+              0,
+              -120.147
+            ],
+            "distanceM": 145.051,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.053,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              0,
+              0,
+              -122
+            ],
+            "distanceM": 145.344,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.891,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -21.185,
+              0,
+              -120.147
+            ],
+            "distanceM": 145.051,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.053,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -41.726,
+              0,
+              -114.642
+            ],
+            "distanceM": 144.175,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.561,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -61,
+              0,
+              -105.655
+            ],
+            "distanceM": 142.734,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 16.481,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              63,
+              0,
+              -109.119
+            ],
+            "distanceM": 146.712,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 16.496,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              43.095,
+              0,
+              -118.401
+            ],
+            "distanceM": 148.16,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.566,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              21.88,
+              0,
+              -124.086
+            ],
+            "distanceM": 149.04,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.053,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              0,
+              0,
+              -126
+            ],
+            "distanceM": 149.335,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.889,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -21.88,
+              0,
+              -124.086
+            ],
+            "distanceM": 149.04,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.053,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -43.095,
+              0,
+              -118.401
+            ],
+            "distanceM": 148.16,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.566,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -63,
+              0,
+              -109.119
+            ],
+            "distanceM": 146.712,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 16.496,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              65,
+              0,
+              -112.583
+            ],
+            "distanceM": 150.691,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 16.511,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              44.463,
+              0,
+              -122.16
+            ],
+            "distanceM": 152.146,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.57,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              22.574,
+              0,
+              -128.025
+            ],
+            "distanceM": 153.03,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.053,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              0,
+              0,
+              -130
+            ],
+            "distanceM": 153.326,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.887,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -22.574,
+              0,
+              -128.025
+            ],
+            "distanceM": 153.03,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.053,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -44.463,
+              0,
+              -122.16
+            ],
+            "distanceM": 152.146,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.57,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -65,
+              0,
+              -112.583
+            ],
+            "distanceM": 150.691,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 16.511,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              67.5,
+              0,
+              -116.913
+            ],
+            "distanceM": 155.666,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 16.528,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              46.173,
+              0,
+              -126.859
+            ],
+            "distanceM": 157.129,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.576,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              23.443,
+              0,
+              -132.949
+            ],
+            "distanceM": 158.018,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.053,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              0,
+              0,
+              -135
+            ],
+            "distanceM": 158.316,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.885,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -23.443,
+              0,
+              -132.949
+            ],
+            "distanceM": 158.018,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.053,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -46.173,
+              0,
+              -126.859
+            ],
+            "distanceM": 157.129,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.576,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -67.5,
+              0,
+              -116.913
+            ],
+            "distanceM": 155.666,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 16.528,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          }
+        ]
+      },
+      {
+        "id": "town_buildings_approx",
+        "label": "job21 lakeside-town buildings, base+roofline (approx height)",
+        "points": 24,
+        "inFrame": 18,
+        "visible": 0,
+        "occludedByGallery": 0,
+        "occludedByOther": 18,
+        "samples": [
+          {
+            "point": [
+              50.435,
+              1,
+              -113.28
+            ],
+            "distanceM": 145.591,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.871,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              50.435,
+              8.79,
+              -113.28
+            ],
+            "distanceM": 145.318,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.841,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              39.554,
+              1,
+              -121.735
+            ],
+            "distanceM": 150.312,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.428,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              39.554,
+              11.54,
+              -121.735
+            ],
+            "distanceM": 150.051,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.401,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              22.574,
+              1,
+              -128.025
+            ],
+            "distanceM": 152.968,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.047,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              22.574,
+              8.79,
+              -128.025
+            ],
+            "distanceM": 152.708,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.021,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              4.502,
+              1,
+              -128.921
+            ],
+            "distanceM": 152.254,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.888,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              4.502,
+              6.04,
+              -128.921
+            ],
+            "distanceM": 152.04,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.867,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -13.693,
+              1,
+              -130.282
+            ],
+            "distanceM": 154.156,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.94,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -13.693,
+              8.79,
+              -130.282
+            ],
+            "distanceM": 153.898,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.915,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -28.569,
+              1,
+              -123.745
+            ],
+            "distanceM": 149.771,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.162,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -28.569,
+              11.54,
+              -123.745
+            ],
+            "distanceM": 149.508,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.135,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -42.41,
+              1,
+              -116.522
+            ],
+            "distanceM": 146.103,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.556,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -42.41,
+              8.79,
+              -116.522
+            ],
+            "distanceM": 145.83,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.527,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              29.273,
+              1,
+              -117.406
+            ],
+            "distanceM": 143.707,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.205,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              29.273,
+              6.04,
+              -117.406
+            ],
+            "distanceM": 143.479,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.181,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              12.752,
+              1,
+              -121.332
+            ],
+            "distanceM": 145.173,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.942,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              12.752,
+              8.79,
+              -121.332
+            ],
+            "distanceM": 144.899,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.914,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -4.293,
+              1,
+              -122.925
+            ],
+            "distanceM": 146.265,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.89,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -4.293,
+              6.04,
+              -122.925
+            ],
+            "distanceM": 146.042,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.867,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -23.088,
+              1,
+              -118.777
+            ],
+            "distanceM": 143.926,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.081,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -23.088,
+              8.79,
+              -118.777
+            ],
+            "distanceM": 143.65,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.052,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -37.7,
+              1,
+              -116.029
+            ],
+            "distanceM": 144.331,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.422,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -37.7,
+              6.04,
+              -116.029
+            ],
+            "distanceM": 144.104,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.398,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          }
+        ]
+      },
+      {
+        "id": "lagoon_surface",
+        "label": "Lagoon water surface (vistaLandmarks.json lagoon, real z=-2 m)",
+        "points": 9,
+        "inFrame": 6,
+        "visible": 0,
+        "occludedByGallery": 0,
+        "occludedByOther": 6,
+        "samples": [
+          {
+            "point": [
+              35,
+              -2,
+              -60.6
+            ],
+            "distanceM": 91.422,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 16.245,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              0,
+              -2,
+              -70
+            ],
+            "distanceM": 93.771,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.979,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -35,
+              -2,
+              -60.6
+            ],
+            "distanceM": 91.422,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 16.245,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              47.5,
+              -2,
+              -82.3
+            ],
+            "distanceM": 116.139,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 16.385,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              0,
+              -2,
+              -95
+            ],
+            "distanceM": 118.609,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.932,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -47.5,
+              -2,
+              -82.3
+            ],
+            "distanceM": 116.139,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 16.385,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              58,
+              -2,
+              -100.5
+            ],
+            "distanceM": 136.968,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 16.476,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              0,
+              -2,
+              -116
+            ],
+            "distanceM": 139.517,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 14.911,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -58,
+              -2,
+              -100.5
+            ],
+            "distanceM": 136.968,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 16.476,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          }
+        ]
+      },
+      {
+        "id": "ridge_crest",
+        "label": "Ridge crest (vistaLandmarks.json ridge_crest, real authored heights)",
+        "points": 36,
+        "inFrame": 3,
+        "visible": 0,
+        "occludedByGallery": 0,
+        "occludedByOther": 3,
+        "samples": [
+          {
+            "point": [
+              -24.3,
+              20.3,
+              -137.9
+            ],
+            "distanceM": 163.05,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.054,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -27.8,
+              64.3,
+              -157.6
+            ],
+            "distanceM": 190.624,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.68,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -30.4,
+              14.9,
+              -172.3
+            ],
+            "distanceM": 197.713,
+            "inFrame": true,
+            "occluded": true,
+            "occluderDistanceM": 15.039,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -47.9,
+              22,
+              -131.6
+            ],
+            "distanceM": 162.295,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.595,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -54.7,
+              69.7,
+              -150.4
+            ],
+            "distanceM": 191.373,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 16.395,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -59.9,
+              16.2,
+              -164.4
+            ],
+            "distanceM": 196.838,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 15.604,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -70,
+              23.1,
+              -121.2
+            ],
+            "distanceM": 160.827,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 16.568,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -80,
+              73,
+              -138.6
+            ],
+            "distanceM": 191.007,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 17.559,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -87.5,
+              16.9,
+              -151.6
+            ],
+            "distanceM": 195.42,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 16.627,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -90,
+              20.8,
+              -107.2
+            ],
+            "distanceM": 158.646,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 18.101,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -102.8,
+              65.8,
+              -122.6
+            ],
+            "distanceM": 186.764,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 19.055,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -112.5,
+              15.3,
+              -134.1
+            ],
+            "distanceM": 193.3,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 18.279,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -107.2,
+              23.6,
+              -90
+            ],
+            "distanceM": 156.352,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 20.555,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -122.6,
+              74.6,
+              -102.8
+            ],
+            "distanceM": 187.162,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 22.102,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -134.1,
+              17.3,
+              -112.5
+            ],
+            "distanceM": 190.778,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 20.916,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -121.2,
+              17.1,
+              -70
+            ],
+            "distanceM": 152.934,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 24.429,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -138.6,
+              54,
+              -80
+            ],
+            "distanceM": 178.199,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 25.701,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -151.6,
+              12.5,
+              -87.5
+            ],
+            "distanceM": 187.614,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 25.223,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -131.6,
+              24.7,
+              -47.9
+            ],
+            "distanceM": 150.205,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 31.472,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -150.4,
+              78,
+              -54.7
+            ],
+            "distanceM": 182.432,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 34.879,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -164.4,
+              18.1,
+              -59.9
+            ],
+            "distanceM": 184.297,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 33.026,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -137.9,
+              24.6,
+              -24.3
+            ],
+            "distanceM": 146.516,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 46.016,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -157.6,
+              77.9,
+              -27.8
+            ],
+            "distanceM": 178.966,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 52.335,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -172.3,
+              18.1,
+              -30.4
+            ],
+            "distanceM": 180.567,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 50.233,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -140,
+              22.1,
+              0
+            ],
+            "distanceM": 142.392,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 91.97,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -160,
+              69.9,
+              0
+            ],
+            "distanceM": 172.386,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 111.343,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -175,
+              16.2,
+              0
+            ],
+            "distanceM": 176.614,
+            "inFrame": false,
+            "occluded": true,
+            "occluderDistanceM": 114.073,
+            "occluderCentre": {
+              "x": 1.12,
+              "y": 136.94,
+              "z": -193.724
+            },
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -137.9,
+              24.7,
+              24.3
+            ],
+            "distanceM": 138.687,
+            "inFrame": false,
+            "occluded": false,
+            "occluderDistanceM": null,
+            "occluderCentre": null,
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -157.6,
+              78,
+              27.8
+            ],
+            "distanceM": 171.711,
+            "inFrame": false,
+            "occluded": false,
+            "occluderDistanceM": null,
+            "occluderCentre": null,
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -172.3,
+              18.1,
+              30.4
+            ],
+            "distanceM": 172.649,
+            "inFrame": false,
+            "occluded": false,
+            "occluderDistanceM": null,
+            "occluderCentre": null,
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -131.6,
+              20.7,
+              47.9
+            ],
+            "distanceM": 134.362,
+            "inFrame": false,
+            "occluded": false,
+            "occluderDistanceM": null,
+            "occluderCentre": null,
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -150.4,
+              65.3,
+              54.7
+            ],
+            "distanceM": 163.35,
+            "inFrame": false,
+            "occluded": false,
+            "occluderDistanceM": null,
+            "occluderCentre": null,
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -164.4,
+              15.2,
+              59.9
+            ],
+            "distanceM": 168.57,
+            "inFrame": false,
+            "occluded": false,
+            "occluderDistanceM": null,
+            "occluderCentre": null,
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -121.2,
+              19.2,
+              70
+            ],
+            "distanceM": 130.319,
+            "inFrame": false,
+            "occluded": false,
+            "occluderDistanceM": null,
+            "occluderCentre": null,
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -138.6,
+              60.5,
+              80
+            ],
+            "distanceM": 158.143,
+            "inFrame": false,
+            "occluded": false,
+            "occluderDistanceM": null,
+            "occluderCentre": null,
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          },
+          {
+            "point": [
+              -151.6,
+              14,
+              87.5
+            ],
+            "distanceM": 164.799,
+            "inFrame": false,
+            "occluded": false,
+            "occluderDistanceM": null,
+            "occluderCentre": null,
+            "occluderLooksLikeGallery": false,
+            "visible": false
+          }
+        ]
+      }
+    ]
+  },
+  "consoleErrorSample": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ],
+  "consoleErrors": 50
+}
