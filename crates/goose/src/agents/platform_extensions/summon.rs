@@ -1391,6 +1391,17 @@ impl SummonClient {
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
 
+        // Lane R36b: captured now, before `task_config` moves into the spawn
+        // below, so a `worker_persona: "reviewer"` sub-session that fails
+        // with a provider-unavailable-class error can retry once on the
+        // author's own (provider, model) pair — same extensions/max_turns,
+        // only the provider swapped (`TaskConfig` IS the existing profile/
+        // override mechanism, never a new spawn path). Cheap even when
+        // unused (an `Arc` clone plus a small extension list).
+        let dispatch_provider_id = task_config.provider.get_name().to_string();
+        let dispatch_model_id = task_config.provider.get_model_config().model_name.clone();
+        let task_config_for_retry = task_config.clone();
+
         // X-verify-1: a `worker_persona: "reviewer"` subagent is supposed to
         // be READ-ONLY (F2/H1's tool-allowlist restriction), but Lane A2's
         // live evidence showed a reviewer subagent calling `edit` anyway, and
@@ -1434,40 +1445,44 @@ impl SummonClient {
             crate::agents::GoosePlatform::GooseCli,
         );
 
-        let subagent_session = self
-            .context
-            .session_manager
-            .create_session_with_parent(
-                Some(session_id),
+        let (result, subagent_session_id) = self
+            .dispatch_subagent_once(
+                agent_config.clone(),
+                recipe.clone(),
+                task_config,
+                session_id,
+                working_dir.clone(),
+                cancellation_token.clone(),
+                persona_override.clone(),
+            )
+            .await?;
+
+        // Lane R36b: closes the gap R36a's call-site audit flagged — this
+        // real sub-session had no breaker check and no fallback at all when
+        // its own completion call failed (the M33 record's second,
+        // unrecovered `CreditsExhausted` hit, ~70-100s into a run with no
+        // paired "escalating" line). One retry, on the author's own
+        // (provider, model) pair, through the SAME `dispatch_subagent_once`
+        // spawn path above — never a new one.
+        let (result, subagent_session_id) = if is_reviewer_persona {
+            self.retry_reviewer_dispatch_if_unavailable(
+                result,
+                subagent_session_id,
+                session_id,
+                &session,
+                &dispatch_provider_id,
+                &dispatch_model_id,
+                task_config_for_retry,
+                agent_config,
+                recipe,
                 working_dir,
-                "Delegated task".to_string(),
-                SessionType::SubAgent,
-                GooseMode::Auto,
+                cancellation_token,
+                persona_override,
             )
             .await
-            .map_err(|e| format!("Failed to create subagent session: {}", e))?;
-
-        let (notif_tx, notif_rx) = tokio::sync::mpsc::unbounded_channel::<ServerNotification>();
-        Self::spawn_notification_bridge(
-            notif_rx,
-            Arc::clone(&self.notification_subscribers),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-
-        let subagent_session_id = subagent_session.id.clone();
-
-        let result = run_subagent_task(SubagentRunParams {
-            config: agent_config,
-            recipe,
-            task_config,
-            return_last_only: true,
-            session_id: subagent_session.id,
-            cancellation_token: Some(cancellation_token),
-            on_message: None,
-            notification_tx: Some(notif_tx),
-            persona_override,
-        })
-        .await;
+        } else {
+            (result, subagent_session_id)
+        };
 
         let mut meta = Meta::new();
         meta.0.insert(
@@ -2193,6 +2208,225 @@ impl SummonClient {
         Ok((task_config, routing_receipt, roadmap_gate_note))
     }
 
+    /// Run ONE real subagent dispatch — the fresh subagent session,
+    /// notification bridge, and `run_subagent_task` call `handle_delegate`
+    /// always ran inline — extracted (Lane R36b) so the reviewer-persona
+    /// breaker retry below calls the SAME spawn path a second time rather
+    /// than inventing a new one. Session-creation failure is folded into the
+    /// `Result` (instead of the caller's own `?`) so a retry attempt's
+    /// creation failure just reads as "this attempt failed", not a second
+    /// hard abort of the whole delegate call.
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_subagent_once(
+        &self,
+        agent_config: AgentRunnerConfig,
+        recipe: Recipe,
+        task_config: TaskConfig,
+        session_id: &str,
+        working_dir: PathBuf,
+        cancellation_token: CancellationToken,
+        persona_override: Option<(String, String)>,
+    ) -> Result<(Result<String, anyhow::Error>, String), String> {
+        let subagent_session = self
+            .context
+            .session_manager
+            .create_session_with_parent(
+                Some(session_id),
+                working_dir,
+                "Delegated task".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .map_err(|e| format!("Failed to create subagent session: {}", e))?;
+
+        let (notif_tx, notif_rx) = tokio::sync::mpsc::unbounded_channel::<ServerNotification>();
+        Self::spawn_notification_bridge(
+            notif_rx,
+            Arc::clone(&self.notification_subscribers),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+
+        let subagent_session_id = subagent_session.id.clone();
+
+        let result = run_subagent_task(SubagentRunParams {
+            config: agent_config,
+            recipe,
+            task_config,
+            return_last_only: true,
+            session_id: subagent_session.id,
+            cancellation_token: Some(cancellation_token),
+            on_message: None,
+            notification_tx: Some(notif_tx),
+            persona_override,
+        })
+        .await;
+
+        Ok((result, subagent_session_id))
+    }
+
+    /// Lane R36b: after a `worker_persona: "reviewer"` sub-session's real
+    /// dispatch fails, decide (pure `cost_router::reviewer_retry_target`)
+    /// whether the failure is provider-unavailable-class and a different
+    /// session model exists to retry on; if so, open this session's breaker
+    /// — so a LATER reviewer/planner call in the same session skips the
+    /// same dead provider outright (R36a's `provider_circuit`) — and run
+    /// ONE retry through [`Self::dispatch_subagent_once`], on the author's
+    /// own (provider, model) pair, reusing `task_config`'s existing
+    /// extensions/max_turns via `retry_task_config_base.clone()` with only
+    /// the provider swapped (the existing profile/override mechanism, never
+    /// a new spawn path).
+    ///
+    /// The G-lane independence rule is honored honestly, never by skipping:
+    /// a retry on the author's own model IS the mutating session's model,
+    /// so it is recorded via the SAME `reviewer_not_independent` receipt
+    /// counter the ordinary same-family dispatch fallback already uses (the
+    /// warning-driven branch in [`Self::resolve_provider`] does not fire for
+    /// this RUNTIME retry — that check only sees the SELECTION-time
+    /// dispatch, which already ran and picked the now-failed provider).
+    ///
+    /// If no retry is attempted, or the retry itself fails, the original
+    /// failure and session id are returned unchanged and a `reviewer_
+    /// unreachable` line is logged for the audit trail. That failure still
+    /// surfaces to the caller as an errored delegate result — this
+    /// deliberately does NOT try to make the goal read as reviewed:
+    /// `after_turn::ReviewerMandate`'s own `ReviewerLastOutcome::Empty`
+    /// handling already never treats a failed/empty delegate call as a
+    /// completed review, which is what keeps this goal from being counted
+    /// as reviewed.
+    #[allow(clippy::too_many_arguments)]
+    async fn retry_reviewer_dispatch_if_unavailable(
+        &self,
+        result: Result<String, anyhow::Error>,
+        subagent_session_id: String,
+        session_id: &str,
+        session: &crate::session::Session,
+        failed_provider: &str,
+        failed_model: &str,
+        retry_task_config_base: TaskConfig,
+        agent_config: AgentRunnerConfig,
+        recipe: Recipe,
+        working_dir: PathBuf,
+        cancellation_token: CancellationToken,
+        persona_override: Option<(String, String)>,
+    ) -> (Result<String, anyhow::Error>, String) {
+        // Captured as an owned `String` up front (rather than holding a
+        // borrow of `result` across the whole function) so `result` stays
+        // free to move into every early-return below without fighting the
+        // borrow checker.
+        let error_text = match &result {
+            Ok(_) => return (result, subagent_session_id),
+            Err(e) => e.to_string(),
+        };
+        let author = session
+            .provider_name
+            .as_deref()
+            .zip(session.model_config.as_ref().map(|m| m.model_name.as_str()));
+        let Some((class, fallback)) = crate::cost_router::reviewer_retry_target(
+            failed_provider,
+            failed_model,
+            &error_text,
+            author,
+        ) else {
+            tracing::warn!(
+                target: "permagentd::brain",
+                session_id = %session_id,
+                provider = %failed_provider,
+                "reviewer_unreachable: the independent reviewer sub-session failed with no \
+                 retry target ({}); the review did not happen this turn",
+                error_text,
+            );
+            return (result, subagent_session_id);
+        };
+
+        if crate::cost_router::provider_circuit::open(session_id, failed_provider, class) {
+            tracing::info!(
+                target: "permagentd::brain",
+                provider = %failed_provider,
+                reason = %class,
+                "provider_circuit_open provider={} reason={}",
+                failed_provider,
+                class,
+            );
+        }
+        // The fallback is definitionally the author's own (provider,
+        // model) — the G-lane independence rule says NEVER skip the review
+        // over this, only report it honestly.
+        crate::receipts::record("verification_integrity", "reviewer_not_independent");
+
+        let model_config = match crate::model::ModelConfig::new(&fallback.model)
+            .map(|c| c.with_canonical_limits(&fallback.provider))
+        {
+            Ok(c) => c,
+            Err(build_err) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    session_id = %session_id,
+                    "reviewer_unreachable: could not build the fallback reviewer model config \
+                     ({}); the review did not happen this turn",
+                    build_err,
+                );
+                return (result, subagent_session_id);
+            }
+        };
+        let fallback_provider =
+            match providers::create(&fallback.provider, model_config, Vec::new()).await {
+                Ok(p) => p,
+                Err(create_err) => {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        session_id = %session_id,
+                        "reviewer_unreachable: could not create the fallback reviewer provider \
+                         {}/{} ({}); the review did not happen this turn",
+                        fallback.provider,
+                        fallback.model,
+                        create_err,
+                    );
+                    return (result, subagent_session_id);
+                }
+            };
+
+        let mut retry_task_config = retry_task_config_base;
+        retry_task_config.provider = fallback_provider;
+
+        match self
+            .dispatch_subagent_once(
+                agent_config,
+                recipe,
+                retry_task_config,
+                session_id,
+                working_dir,
+                cancellation_token,
+                persona_override,
+            )
+            .await
+        {
+            Ok((retry_result, retry_subagent_session_id)) => {
+                if let Err(retry_err) = &retry_result {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        session_id = %session_id,
+                        subagent_session_id = %retry_subagent_session_id,
+                        "reviewer_unreachable: the session-tier fallback reviewer also failed \
+                         ({}); the review did not happen this turn",
+                        retry_err,
+                    );
+                }
+                (retry_result, retry_subagent_session_id)
+            }
+            Err(create_err) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    session_id = %session_id,
+                    "reviewer_unreachable: could not spawn the session-tier fallback reviewer \
+                     ({}); the review did not happen this turn",
+                    create_err,
+                );
+                (result, subagent_session_id)
+            }
+        }
+    }
+
     /// The workflow role a delegate's worker persona plays, for cost routing.
     /// `None` when there is no persona or it yields no role signal — dispatch then
     /// stays single-model. See `cost_router::role_map::derive_role`.
@@ -2363,8 +2597,32 @@ impl SummonClient {
         // review's OWN dispatch precedence instead of blindly slotting
         // whatever `Role::Hard`'s pack pin produced — a HARD pin no longer
         // silently swallows review's cross-family requirement.
+        //
+        // Lane R36b: this is the REAL dispatch seam R36a's call-site audit
+        // flagged as the one best/fast-over-session path its breaker never
+        // reached — `apply_breaker_to_review_dispatch` skips a resolved
+        // reviewer provider this session's breaker already has open (a
+        // prior billing/auth/outage-class failure anywhere else this same
+        // session) straight to the author's own pair, honestly labeled
+        // not-independent, rather than dispatching a second doomed call at
+        // the same dead account.
         let review_dispatch = if role == Some(crate::cost_router::WorkflowRole::Review) {
-            Some(self.resolve_review_dispatch(session, &routing, spend).await)
+            let dispatch = self.resolve_review_dispatch(session, &routing, spend).await;
+            // A clean author pair, not `session_pair` above — that one
+            // substitutes the placeholder string "the session model" when
+            // `model_config` is unset (fine for `delegate_routing_live`'s
+            // own purposes), which must never leak into a real fallback
+            // `RoleModel`. Mirrors `resolve_review_dispatch`'s own
+            // `author_provider`/`author_model` construction exactly.
+            let author_pair = session
+                .provider_name
+                .as_deref()
+                .zip(session.model_config.as_ref().map(|m| m.model_name.as_str()));
+            Some(crate::cost_router::apply_breaker_to_review_dispatch(
+                dispatch,
+                author_pair,
+                &|p| crate::cost_router::provider_circuit::reason_if_open(&session.id, p),
+            ))
         } else {
             None
         };

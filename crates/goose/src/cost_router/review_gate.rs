@@ -929,6 +929,135 @@ pub fn resolve_actual_review_dispatch(
     }
 }
 
+// ── Lane R36b: the LIVE in-turn reviewer mandate's real sub-session spawn ──
+//
+// R36a's call-site audit (HARNESS_LOOP_LOG.md "Lane R36a") found this the one
+// best/fast-over-session path its breaker never reached: `resolve_actual_
+// review_dispatch` above picks a cross-family "best" reviewer for the REAL
+// `summon`/`delegate` sub-session `after_turn::ReviewerMandate` asks the model
+// to spawn, with no breaker check before dispatch and no fallback when the
+// spawned sub-session's own completion call fails. The M33 DeepSeek record
+// showed the resulting shape: a second, unrecovered `CreditsExhausted` ~70-
+// 100s into a run, after the SAME provider had already failed once earlier in
+// the SAME session (the planner's own escalation arm had already recovered
+// from it) — the mandate re-discovered the dead account from scratch and the
+// review never happened. Two pure decision points close this, both consulted
+// from `summon::SummonClient`'s real dispatch seam (`resolve_provider` /
+// `dispatch_subagent_once`) — not from `ReviewerMandate::assess`'s
+// prediction-only composition (see that module's doc comment on why it
+// cannot itself depend on `summon`):
+//
+// 1. [`apply_breaker_to_review_dispatch`] — BEFORE dispatch, skip a resolved
+//    reviewer provider this session's breaker already has open (a prior
+//    failure anywhere else this session — the planner, the salvage reviewer,
+//    or an earlier reviewer-mandate call).
+// 2. [`reviewer_retry_target`] — AFTER the real sub-session's own completion
+//    call fails, decide whether that failure is worth ONE retry.
+//
+// Both fall back to the AUTHOR's own (provider, model) pair — the one
+// candidate guaranteed available, since it is the session already running —
+// mirroring `orchestrator::resolve_session_tier_fallback`'s shape (Lane
+// R28b/A27 Miss 3) for the salvage reviewer's single `complete_fast` call,
+// applied here to the mandate's real spawned sub-session instead. The G-lane
+// independence rule is honored honestly, never by skipping: falling back to
+// the author's own model IS the mutating session's model, so the caller
+// records that via the SAME `reviewer_not_independent` receipt counter the
+// ordinary same-family fallback above already uses — never a reason to skip
+// the review outright.
+
+/// Apply this session's provider circuit breaker to an already-resolved
+/// [`ReviewerDispatch`] (the caller's `resolve_actual_review_dispatch`
+/// result). `is_open` is the caller's `provider_circuit::reason_if_open`
+/// lookup, kept as a closure so this stays pure/unit-testable without a real
+/// session id. `dispatch.role_model` unset (nothing configured — the review
+/// already inherits the session model) passes through unchanged: there is no
+/// "preferred provider" to check a breaker for.
+///
+/// When the resolved reviewer provider's circuit IS open, falls back to
+/// `author`'s own (provider, model) pair and labels the dispatch same-family/
+/// not-independent — the exact same warning shape [`decide_review_route`]'s
+/// own same-family branch produces, so the live seam's existing "does this
+/// warning describe where we're actually dispatching" check
+/// (`summon::resolve_provider`) records `reviewer_not_independent` for this
+/// case with no extra wiring. `author: None` (no session pair to fall back
+/// to) clears `role_model` entirely and leaves an honest warning — the
+/// caller's own unreachable handling takes it from there.
+pub fn apply_breaker_to_review_dispatch(
+    dispatch: ReviewerDispatch,
+    author: Option<(&str, &str)>,
+    is_open: &impl Fn(&str) -> Option<String>,
+) -> ReviewerDispatch {
+    let Some(rm) = dispatch.role_model.as_ref() else {
+        return dispatch;
+    };
+    let Some(class) = is_open(&rm.provider) else {
+        return dispatch;
+    };
+    let author = author.filter(|(p, m)| !p.is_empty() && !m.is_empty());
+    match author {
+        Some((provider, model)) => ReviewerDispatch {
+            role_model: Some(RoleModel {
+                provider: provider.to_string(),
+                model: model.to_string(),
+            }),
+            warning: Some(format!(
+                "reviewer provider {} circuit open this session ({class}); fell back to the \
+                 session model — review not independent: same family",
+                rm.provider
+            )),
+        },
+        None => ReviewerDispatch {
+            role_model: None,
+            warning: Some(format!(
+                "reviewer provider {} circuit open this session ({class}); no session model to \
+                 fall back to",
+                rm.provider
+            )),
+        },
+    }
+}
+
+/// Decide whether a REAL reviewer sub-session's failure (`error_detail`, the
+/// dispatch's own completion-call error text) is worth ONE retry on a
+/// different candidate, and — when it is — which candidate to retry with.
+///
+/// `None` ⇒ do not retry: either the failure is not provider-unavailable-
+/// class (reuses [`crate::providers::errors::classify_unavailable`] — the
+/// SAME classifier the planner's and the salvage reviewer's breakers already
+/// key off of, so this can never disagree with them about what counts as
+/// worth a retry), there is no `author` session pair to retry with, or the
+/// only candidate is the EXACT `(provider, model)` pair that already failed
+/// (retrying the identical pair would prove nothing — the same guard
+/// `orchestrator::resolve_session_tier_fallback` applies for the salvage
+/// reviewer's own fallback).
+///
+/// `Some((class, fallback))` ⇒ retry-worthy: `class` is the reason tag the
+/// caller opens this session's breaker with (so a LATER reviewer/planner
+/// call in the same session skips the same dead provider outright), and
+/// `fallback` is the author's own (provider, model) pair to retry on.
+pub fn reviewer_retry_target(
+    failed_provider: &str,
+    failed_model: &str,
+    error_detail: &str,
+    author: Option<(&str, &str)>,
+) -> Option<(&'static str, RoleModel)> {
+    let class = crate::providers::errors::classify_unavailable(error_detail)?;
+    let (provider, model) = author?;
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    if provider.eq_ignore_ascii_case(failed_provider) && model == failed_model {
+        return None;
+    }
+    Some((
+        class,
+        RoleModel {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        },
+    ))
+}
+
 // ── Prompts (data-fenced; adversarial diverse-lens core) ──────────────────────
 
 /// The reviewer's system prompt: a DIFFERENT engineer instructed to REFUTE the
@@ -1918,5 +2047,143 @@ mod tests {
         assert!(REVIEW_SYSTEM_PROMPT.contains(
             "CALLSITE <symbol> | <file:line> | UPDATED|UNAFFECTED|MISSED | <one-line note>"
         ));
+    }
+
+    // ── Lane R36b: breaker-aware review dispatch + real-sub-session retry ────
+
+    /// "with the preferred provider open in the breaker, the mandate selects
+    /// the tier provider" (lane brief's test contract): a resolved reviewer
+    /// whose circuit this session already has open falls back to the
+    /// author's own pair, honestly labeled not-independent.
+    #[test]
+    fn breaker_open_falls_back_to_the_author_session_pair() {
+        let dispatch = ReviewerDispatch {
+            role_model: Some(rm("anthropic", "claude-fable-5")),
+            warning: None,
+        };
+        let is_open = |provider: &str| (provider == "anthropic").then(|| "billing".to_string());
+        let out =
+            apply_breaker_to_review_dispatch(dispatch, Some(("openai", "gpt-5.4-mini")), &is_open);
+        assert_eq!(out.role_model, Some(rm("openai", "gpt-5.4-mini")));
+        assert!(out.warning.is_some_and(|w| w.contains("not independent")));
+    }
+
+    /// A closed breaker leaves the resolved dispatch untouched — no
+    /// unnecessary fallback for a provider that never failed this session.
+    #[test]
+    fn breaker_closed_leaves_the_dispatch_unchanged() {
+        let dispatch = ReviewerDispatch {
+            role_model: Some(rm("anthropic", "claude-fable-5")),
+            warning: None,
+        };
+        let is_open = |_: &str| None;
+        let out = apply_breaker_to_review_dispatch(
+            dispatch.clone(),
+            Some(("openai", "gpt-5.4-mini")),
+            &is_open,
+        );
+        assert_eq!(out, dispatch);
+    }
+
+    /// No configured reviewer at all (`role_model: None`) has no "preferred
+    /// provider" to check a breaker for — passes through unchanged even with
+    /// an `is_open` that would otherwise report every provider open.
+    #[test]
+    fn breaker_check_is_a_no_op_with_no_role_model() {
+        let dispatch = ReviewerDispatch {
+            role_model: None,
+            warning: Some(REVIEWER_DIVERSITY_WARNING.to_string()),
+        };
+        let is_open = |_: &str| Some("billing".to_string());
+        let out = apply_breaker_to_review_dispatch(
+            dispatch.clone(),
+            Some(("openai", "gpt-5.4-mini")),
+            &is_open,
+        );
+        assert_eq!(out, dispatch);
+    }
+
+    /// No author pair to fall back to: the breaker-open provider is cleared
+    /// rather than left pointed at a dead account, with an honest warning —
+    /// the caller's own unreachable handling takes it from there.
+    #[test]
+    fn breaker_open_with_no_author_clears_role_model() {
+        let dispatch = ReviewerDispatch {
+            role_model: Some(rm("anthropic", "claude-fable-5")),
+            warning: None,
+        };
+        let is_open = |_: &str| Some("billing".to_string());
+        let out = apply_breaker_to_review_dispatch(dispatch, None, &is_open);
+        assert_eq!(out.role_model, None);
+        assert!(out.warning.is_some());
+    }
+
+    /// "a provider-unavailable failure opens the breaker and retries once on
+    /// the tier provider" (lane brief's test contract).
+    #[test]
+    fn retry_target_retries_a_provider_unavailable_failure_on_the_author_pair() {
+        let target = reviewer_retry_target(
+            "anthropic",
+            "claude-fable-5",
+            "credit balance is too low to access the Anthropic API",
+            Some(("openai", "gpt-5.4-mini")),
+        );
+        let (class, fallback) = target.expect("billing-class failure must retry");
+        assert_eq!(class, "billing");
+        assert_eq!(fallback, rm("openai", "gpt-5.4-mini"));
+    }
+
+    /// A request-shaped failure (bad model id, malformed request) would
+    /// recur identically against any provider — never worth a retry.
+    #[test]
+    fn retry_target_never_retries_a_request_shaped_failure() {
+        let target = reviewer_retry_target(
+            "anthropic",
+            "claude-fable-5",
+            "invalid_request_error: unknown parameter",
+            Some(("openai", "gpt-5.4-mini")),
+        );
+        assert_eq!(target, None);
+    }
+
+    /// No author session pair at all — nothing to retry with.
+    #[test]
+    fn retry_target_refuses_with_no_author_pair() {
+        let target = reviewer_retry_target(
+            "anthropic",
+            "claude-fable-5",
+            "credit balance is too low",
+            None,
+        );
+        assert_eq!(target, None);
+    }
+
+    /// "independence accounting when only the same model remains" (lane
+    /// brief's test contract): the only candidate is the EXACT pair that
+    /// already failed — retrying it would prove nothing, so this refuses
+    /// rather than looping on a doomed pair. (The mandate's OWN independence
+    /// accounting — marking `reviewer_not_independent` when a fallback lands
+    /// on the author's pair — is exercised by
+    /// `breaker_open_falls_back_to_the_author_session_pair` above and by the
+    /// live seam's existing warning-driven receipt, which this function
+    /// deliberately leaves to the caller.)
+    #[test]
+    fn retry_target_refuses_the_identical_pair_that_already_failed() {
+        let target = reviewer_retry_target(
+            "anthropic",
+            "claude-fable-5",
+            "credit balance is too low",
+            Some(("anthropic", "claude-fable-5")),
+        );
+        assert_eq!(target, None);
+        // Case-insensitive on the provider, like `provider_circuit`'s own
+        // normalization.
+        let target = reviewer_retry_target(
+            "Anthropic",
+            "claude-fable-5",
+            "credit balance is too low",
+            Some(("anthropic", "claude-fable-5")),
+        );
+        assert_eq!(target, None);
     }
 }
