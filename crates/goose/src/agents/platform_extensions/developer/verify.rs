@@ -471,6 +471,17 @@ impl VerifyTool {
     ) -> CallToolResult {
         let base_dir = resolve_dir(working_dir, params.path.as_deref());
 
+        // R35b: set only when detection left nothing but a syntax-only smoke
+        // check AND no acceptance-criteria probe could stand in for a real
+        // one — the sole remaining path that used to score a smoke-only run
+        // as a `pass_result` (and increment `vacuous_passes`). Carries the
+        // honest [`no_real_checks_reason`] text so the run loop below can
+        // report [`NO_CHECKS_VERDICT`] instead of a fabricated PASS, while a
+        // genuine smoke FAILURE (a real syntax error) still surfaces as
+        // `fail_result` exactly as before — this flag is only consulted on
+        // the success path.
+        let mut smoke_without_real_check: Option<String> = None;
+
         // An explicit command overrides detection; otherwise detect the checks.
         let checks = match params.command.as_deref().map(str::trim) {
             Some("") => {
@@ -527,6 +538,14 @@ impl VerifyTool {
                         if checks.iter().all(|check| check.is_smoke) {
                             let probes = synthesize_probe_checks(criteria);
                             if probes.is_empty() {
+                                // R35b: a smoke-only run is never scored as a
+                                // PASS — run it anyway (a real syntax error
+                                // must still surface as `fail_result` below),
+                                // but a *successful* smoke check now reports
+                                // honest `NO_CHECKS_VERDICT` instead of
+                                // `pass_result`'s fabricated PASS.
+                                smoke_without_real_check =
+                                    Some(no_real_checks_reason(criteria.len()));
                                 checks
                             } else {
                                 probes
@@ -616,8 +635,32 @@ impl VerifyTool {
             }
         }
 
-        pass_result(&checks, &passed_outputs)
+        // R35b: every check that ran passed. A smoke-only run with no
+        // acceptance-criteria probe to back it up is never reported as a
+        // PASS (see `smoke_without_real_check` above) — report the honest
+        // `NO_CHECKS_VERDICT` instead. Every other outcome (a real check
+        // passed, or a probe stood in for the smoke check) is an unchanged,
+        // genuine `pass_result`.
+        match smoke_without_real_check {
+            Some(reason) => no_checks_result(&reason),
+            None => pass_result(&checks, &passed_outputs),
+        }
     }
+}
+
+/// R35b: the honest verdict text for "detection left nothing but a
+/// syntax-only smoke check, and none of the `unparsed` supplied acceptance
+/// criteria (explicit, or R21c-b's bound-goal fallback) compiled into a
+/// mechanically-checkable probe" — the sole remaining path that used to let
+/// `pass_result` score a smoke-only run as a PASS (X-verify-2/R21c/A32 root
+/// cause 2). `unparsed` is `0` when no criteria were supplied at all (still
+/// honestly "nothing to run"), matching [`NO_CHECKS_VERDICT`]'s own contract:
+/// neither a pass nor a fail, just an honest account of what was tried.
+fn no_real_checks_reason(unparsed: usize) -> String {
+    format!(
+        "no executable checks derived from the supplied criteria ({unparsed} unparsed); run \
+         the test suite or name a check"
+    )
 }
 
 impl Default for VerifyTool {
@@ -2010,6 +2053,154 @@ fn symbol_defined_probe(text: &str) -> Option<Check> {
     ))
 }
 
+/// R35b (A32 root cause 2): "calling `f(args)` returns `value`" / "`f(args)`
+/// == `value`" — the shape a model most often writes for a manifestless
+/// single-file goal. Backtick-delimited on both sides so the call expression
+/// and the expected value are unambiguous.
+static CALL_RETURNS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)`([A-Za-z_][\w.]*\([^()`]*\))`\s*(?:returns?|==)\s*`([^`]*)`").unwrap()
+});
+
+/// The same shape without backticks: "f(args) should return value", or
+/// plainly "f(args) returns value" — the exact `"fizzbuzz(3) returns
+/// 'Fizz'"` text A32 root cause 2 traced as the freeform criterion that fell
+/// through to a vacuous smoke-only PASS.
+static CALL_RETURNS_BARE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b([A-Za-z_][\w.]*\([^()\n]*\))\s+(?:should\s+return|returns?)\s+(.+)$")
+        .unwrap()
+});
+
+/// A single, flat call expression — no nested calls or parens in the
+/// argument list. [`call_returns_probe`] rejects anything else rather than
+/// risk splicing something unexpected into the synthesized Python check.
+static CALL_EXPR_SHAPE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z_][\w.]*\([^()]*\)$").unwrap());
+
+/// "running `<cmd>` prints `<text>`" / "running `<cmd>` outputs `<text>`".
+static RUN_STDOUT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)running\s+`([^`]{1,300})`\s+(?:prints?|outputs?)\s+`([^`]*)`").unwrap()
+});
+
+/// Normalize a captured value token into valid Python source: an
+/// already-quoted string, `True`/`False`/`None`, a list/tuple literal, or a
+/// number are used as-is; a bare word or phrase (the common unquoted-string
+/// shape, e.g. "returns Fizz") is wrapped as a Python string literal via
+/// Rust's `Debug` formatting — close enough to Python string-literal syntax
+/// for the plain ASCII text these criteria are written in. Anything else
+/// (unrecognized punctuation, characters that would make the shape
+/// ambiguous) is rejected rather than guessed at.
+fn python_literal_for_value(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('\'') || trimmed.starts_with('"') {
+        return Some(trimmed.to_string());
+    }
+    if trimmed == "True" || trimmed == "False" || trimmed == "None" {
+        return Some(trimmed.to_string());
+    }
+    if (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        || (trimmed.starts_with('(') && trimmed.ends_with(')'))
+    {
+        return Some(trimmed.to_string());
+    }
+    let digits = trimmed.trim_start_matches(['-', '+']);
+    if !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && digits.chars().any(|c| c.is_ascii_digit())
+    {
+        return Some(trimmed.to_string());
+    }
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ' ')
+    {
+        return Some(format!("{trimmed:?}"));
+    }
+    None
+}
+
+/// Wrap `text` as one POSIX shell single-quoted argument, safe regardless of
+/// its contents (quotes, `$`, backticks, newlines): the standard
+/// close-quote/escaped-quote/reopen-quote technique. Used to embed
+/// criterion-supplied text into a generated `ProbeKind::CommandExitsZero`
+/// command without needing to reason about shell metacharacters in that text.
+fn shell_single_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// R35b: "calling `f(args)` returns `value`" (see [`CALL_RETURNS_RE`]) or
+/// "f(args) should return value" (see [`CALL_RETURNS_BARE_RE`]) becomes a
+/// [`ProbeKind::CommandExitsZero`] that `exec`s every top-level `.py` file in
+/// the verification directory (the same manifestless, non-recursive scope
+/// [`manifestless_checks`]/[`find_symbol_definition`] already use) and
+/// asserts the call's actual result equals the expected value — real
+/// execution, not a syntax-only smoke check. Python only: the motivating
+/// defect (A32 root cause 2) is a manifestless single `.py` file, and this
+/// stays a closed, conservative shape rather than guessing a language from
+/// the criterion text alone. `None` when the call expression isn't a single
+/// flat call ([`CALL_EXPR_SHAPE_RE`]) or the value doesn't normalize into
+/// valid Python source ([`python_literal_for_value`]) — left honestly
+/// unverified rather than approximated, same as every other probe shape.
+fn call_returns_probe(text: &str) -> Option<Check> {
+    let (expr, value_raw) = if let Some(caps) = CALL_RETURNS_RE.captures(text) {
+        (
+            caps.get(1)?.as_str().trim().to_string(),
+            caps.get(2)?.as_str().trim().to_string(),
+        )
+    } else {
+        let caps = CALL_RETURNS_BARE_RE.captures(text)?;
+        (
+            caps.get(1)?.as_str().trim().to_string(),
+            caps.get(2)?
+                .as_str()
+                .trim()
+                .trim_end_matches(['.', '!'])
+                .trim()
+                .to_string(),
+        )
+    };
+    if !CALL_EXPR_SHAPE_RE.is_match(&expr) {
+        return None;
+    }
+    let value_literal = python_literal_for_value(&value_raw)?;
+    let script = format!(
+        "import glob\nfor _f in sorted(glob.glob('*.py')):\n    exec(open(_f).read())\n\
+         _actual = {expr}\n_expected = {value_literal}\nassert _actual == _expected, \
+         f\"expected {{_expected!r}}, got {{_actual!r}}\"\n"
+    );
+    let command = format!("python3 -c {}", shell_single_quote(&script));
+    Some(Check::probe(
+        format!("acceptance criterion: `{expr}` returns `{value_raw}`"),
+        ProbeKind::CommandExitsZero(command),
+    ))
+}
+
+/// R35b: "running `<cmd>` prints `<text>`" / "running `<cmd>` outputs
+/// `<text>`" (see [`RUN_STDOUT_RE`]) becomes a [`ProbeKind::CommandExitsZero`]
+/// that pipes the command's real output through `grep -qF` for the expected
+/// text — reuses the existing `CommandExitsZero` → `Shell` delegation
+/// ([`run_probe_check`]) exactly like [`command_exit_probe`] does, just with
+/// a synthesized pipeline instead of the criterion's own command verbatim.
+/// `cmd` is spliced in unescaped, same trust boundary as
+/// [`command_exit_probe`]'s own backtick-delimited command text; `text` is
+/// shell-quoted via [`shell_single_quote`] so it is matched literally
+/// regardless of its contents.
+fn run_stdout_probe(text: &str) -> Option<Check> {
+    let caps = RUN_STDOUT_RE.captures(text)?;
+    let cmd = caps.get(1)?.as_str().trim().to_string();
+    let expected = caps.get(2)?.as_str();
+    if cmd.is_empty() || expected.is_empty() {
+        return None;
+    }
+    let command = format!("{cmd} | grep -qF -- {}", shell_single_quote(expected));
+    Some(Check::probe(
+        format!("acceptance criterion: `{cmd}` prints `{expected}`"),
+        ProbeKind::CommandExitsZero(command),
+    ))
+}
+
 /// R21b's structured probe-check grammar (`orchestrator::{
 /// PROBE_FILE_EXISTS_PREFIX, PROBE_SYMBOL_DEFINED_PREFIX,
 /// PROBE_COMMAND_PREFIX}` — the sole producer, `rewrite_ungrounded_named_
@@ -2105,9 +2296,8 @@ fn probe_quoted_kv(text: &str, key: &str) -> Option<String> {
 
 /// Compile ONE criterion into a probe check, trying each closed shape in
 /// order — R21b's structured `probe:*` marker first (unambiguous when
-/// present), then the three free-text heuristics. `None` when the
-/// criterion matches none of them — left honestly unverified, never
-/// approximated.
+/// present), then the free-text heuristics. `None` when the criterion
+/// matches none of them — left honestly unverified, never approximated.
 fn probe_for_criterion(criterion: &str) -> Option<Check> {
     let text = criterion
         .strip_prefix(UNVERIFIED_MARKER_PREFIX)
@@ -2117,6 +2307,8 @@ fn probe_for_criterion(criterion: &str) -> Option<Check> {
         .or_else(|| file_exists_probe(text))
         .or_else(|| command_exit_probe(text))
         .or_else(|| symbol_defined_probe(text))
+        .or_else(|| call_returns_probe(text))
+        .or_else(|| run_stdout_probe(text))
 }
 
 /// Synthesize probe checks for every criterion that mechanically supports
@@ -4161,6 +4353,100 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         );
     }
 
+    // ── R35b: call/return and run/stdout-contains probe shapes ──────────────
+
+    /// A32 root cause 2's exact motivating text: no backticks, plain
+    /// "returns", a quoted string value — this is the specific freeform
+    /// criterion that used to fall through to a vacuous smoke-only PASS.
+    #[test]
+    fn call_returns_criterion_bare_compiles_to_a_probe() {
+        let check = probe_for_criterion("fizzbuzz(3) returns 'Fizz'").unwrap();
+        assert!(!check.is_smoke);
+        let Exec::Probe(ProbeKind::CommandExitsZero(command)) = &check.exec else {
+            panic!("expected a CommandExitsZero probe, got {:?}", check.exec);
+        };
+        assert!(command.starts_with("python3 -c "), "got: {command}");
+        assert!(command.contains("fizzbuzz(3)"), "got: {command}");
+        assert!(command.contains("Fizz"), "got: {command}");
+        assert_eq!(
+            check.label,
+            "acceptance criterion: `fizzbuzz(3)` returns `'Fizz'`"
+        );
+    }
+
+    /// The backtick-delimited "==" phrasing, and an unquoted bare-word value
+    /// (the common unquoted-string shape, e.g. "returns FizzBuzz") which
+    /// `python_literal_for_value` must wrap into a valid Python string
+    /// literal rather than treat as a bare (undefined) identifier.
+    #[test]
+    fn call_returns_criterion_with_backticks_and_bare_value_compiles_to_a_probe() {
+        let check = probe_for_criterion("`fizzbuzz(15)` == `FizzBuzz`").unwrap();
+        let Exec::Probe(ProbeKind::CommandExitsZero(command)) = &check.exec else {
+            panic!("expected a CommandExitsZero probe, got {:?}", check.exec);
+        };
+        assert!(command.contains("fizzbuzz(15)"), "got: {command}");
+        assert!(command.contains(r#""FizzBuzz""#), "got: {command}");
+    }
+
+    /// The closed-set contract, narrowed to this shape: text that merely
+    /// LOOKS call-shaped but names no return/equality phrasing must never be
+    /// approximated into a probe.
+    #[test]
+    fn call_returns_criterion_without_a_return_phrase_synthesizes_no_probe() {
+        assert!(probe_for_criterion("fizzbuzz(3) is nice").is_none());
+        assert!(probe_for_criterion("the fizzbuzz function is well tested").is_none());
+    }
+
+    /// "running `<cmd>` prints/outputs `<text>`" compiles to a real
+    /// `CommandExitsZero` probe that pipes the command's own output through
+    /// `grep -qF` for the expected text.
+    #[test]
+    fn run_stdout_criterion_compiles_to_a_probe() {
+        let check =
+            probe_for_criterion("running `python3 main.py` prints `Hello, world!`").unwrap();
+        assert!(!check.is_smoke);
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::CommandExitsZero(
+                "python3 main.py | grep -qF -- 'Hello, world!'".to_string()
+            ))
+        );
+        assert_eq!(
+            check.label,
+            "acceptance criterion: `python3 main.py` prints `Hello, world!`"
+        );
+
+        let check = probe_for_criterion("running `node app.js` outputs `ready`").unwrap();
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::CommandExitsZero(
+                "node app.js | grep -qF -- 'ready'".to_string()
+            ))
+        );
+    }
+
+    /// The closed-set contract, narrowed to this shape: prose that describes
+    /// running something without the backtick-delimited `<cmd>`/`<text>`
+    /// shape is left honestly unverified, never guessed at.
+    #[test]
+    fn run_stdout_criterion_without_backticks_synthesizes_no_probe() {
+        assert!(probe_for_criterion("running main.py prints Hello").is_none());
+        assert!(probe_for_criterion("the program prints a greeting").is_none());
+    }
+
+    /// The closed-set contract, root-cause level: freeform criteria the
+    /// probe grammar cannot parse must never be silently approximated —
+    /// verified at the `verify_with_cwd` level (never a smoke-only PASS) by
+    /// `unparseable_acceptance_criteria_reports_no_checks_not_a_smoke_pass`.
+    #[test]
+    fn an_unmechanical_criterion_synthesizes_no_probe_even_when_call_shaped() {
+        assert!(synthesize_probe_checks(&[
+            "the output feels right".to_string(),
+            "fizzbuzz(3) is basically Fizz".to_string(),
+        ])
+        .is_empty());
+    }
+
     /// The closed-set contract: a criterion that names no file, no command,
     /// and no symbol is left completely alone — never approximated into a
     /// check that would silently fabricate a verdict.
@@ -4256,10 +4542,16 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         assert!(text.contains("fizzbuzz"), "got: {text}");
     }
 
-    /// No acceptance criteria at all: unchanged behavior — the smoke check
-    /// alone, still vacuous, exactly as before this lane.
+    /// R35b: no acceptance criteria at all, and the code is syntactically
+    /// valid — this used to be `pass_result`'s smoke-only vacuous PASS
+    /// (`vacuous_passes` incremented for genuinely correct, uninspected
+    /// code). A smoke-only run is never scored as a PASS any more: this now
+    /// reports the honest `NO_CHECKS_VERDICT`, exactly like a project with no
+    /// detectable checks at all — neither a pass nor a fail, and
+    /// `vacuous_passes` is not touched (see
+    /// `zero_checks_never_increments_the_vacuous_passes_receipt`).
     #[tokio::test]
-    async fn fizzbuzz_shaped_goal_with_no_acceptance_criteria_is_still_only_a_smoke_check() {
+    async fn fizzbuzz_shaped_goal_with_no_acceptance_criteria_reports_no_checks_not_a_smoke_pass() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("fizzbuzz.py"), "def fizzbuzz(n): pass\n").unwrap();
         let result = VerifyTool::new()
@@ -4277,9 +4569,64 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
                 None,
             )
             .await;
-        assert!(is_authoritative_pass(&result));
+        assert!(
+            !is_authoritative_pass(&result),
+            "smoke-only is never a PASS"
+        );
         assert!(!is_genuine_pass(&result));
-        assert!(vacuous_pass_reason(&result).is_some());
+        assert_eq!(vacuous_pass_reason(&result), None);
+        let text = text_of(&result).to_string();
+        let observation: VerificationObservation =
+            serde_json::from_value(result.structured_content.unwrap()).unwrap();
+        assert_eq!(observation.verdict.as_deref(), Some(NO_CHECKS_VERDICT));
+        assert!(
+            text.contains("no executable checks derived from the supplied criteria (0 unparsed)"),
+            "got: {text}"
+        );
+    }
+
+    /// R35b (A32 root cause 2): the ORIGINAL M23 dschat defect — freeform
+    /// criteria the probe grammar cannot parse. This used to fall through to
+    /// the smoke-only vacuous PASS (`vacuous_passes` incremented even though
+    /// nothing was genuinely checked); it must now report `NO_CHECKS_VERDICT`
+    /// naming how many criteria were unparsed, and never increment
+    /// `vacuous_passes` — driven through the real global receipts registry
+    /// (same pattern as
+    /// `zero_checks_never_increments_the_vacuous_passes_receipt`) so a future
+    /// refactor that routes this path back through `pass_result` would be
+    /// caught here.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn unparseable_acceptance_criteria_reports_no_checks_not_a_smoke_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fizzbuzz.py"), "def fizzbuzz(n): pass\n").unwrap();
+        crate::receipts::begin_run();
+        let before = crate::receipts::snapshot().lines();
+        let result = VerifyTool::new()
+            .verify_with_cwd(
+                params_with_criteria(&["the output feels right", "fizzbuzz(3) is basically Fizz"]),
+                Some(dir.path()),
+                None,
+            )
+            .await;
+        let after = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+        assert!(
+            !is_authoritative_pass(&result),
+            "smoke-only is never a PASS"
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+        let text = text_of(&result);
+        assert!(
+            text.contains("no executable checks derived from the supplied criteria (2 unparsed)"),
+            "got: {text}"
+        );
+        assert_eq!(
+            before[1], after[1],
+            "an unparseable-criteria NO CHECKS result must not move the verification_integrity \
+             line"
+        );
+        assert!(after[1].contains("vacuous_passes=0"), "got: {}", after[1]);
     }
 
     /// A criterion mechanically checkable but with no repo checks at all
@@ -4474,8 +4821,11 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
     /// The mirror case: a session id that is NOT a registered goal worker
     /// (an interactive session, or simply a session this process never
-    /// dispatched) must behave exactly as before this lane — no criteria
-    /// loaded, the plain smoke-only vacuous pass.
+    /// dispatched) must behave exactly as before this lane for CRITERIA
+    /// LOADING — no criteria loaded. As of R35b the resulting smoke-only run
+    /// is no longer scored as a vacuous PASS (see
+    /// `fizzbuzz_shaped_goal_with_no_acceptance_criteria_reports_no_checks_not_a_smoke_pass`);
+    /// it now honestly reports `NO_CHECKS_VERDICT`.
     #[tokio::test]
     #[serial_test::serial(goal_workers)]
     async fn non_goal_worker_session_with_no_param_is_unchanged() {
@@ -4508,11 +4858,20 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             )
             .await;
 
-        assert!(is_authoritative_pass(&result));
-        assert!(!is_genuine_pass(&result));
         assert!(
-            vacuous_pass_reason(&result).is_some(),
+            !is_authoritative_pass(&result),
+            "smoke-only is never a PASS"
+        );
+        assert!(!is_genuine_pass(&result));
+        assert_eq!(
+            vacuous_pass_reason(&result),
+            None,
             "a non-goal-worker session must never have criteria synthesized for it"
+        );
+        let text = text_of(&result);
+        assert!(
+            text.contains("no executable checks derived from the supplied criteria (0 unparsed)"),
+            "got: {text}"
         );
     }
 
