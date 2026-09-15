@@ -2951,6 +2951,7 @@ mod tests {
     /// test pass — `is_authoritative_pass` (and every consumer that trusted
     /// it, e.g. `after_turn::scan_verify_positions`) would advance past it.
     #[test]
+    #[serial_test::serial(receipts_global_registry)]
     fn a_smoke_only_pass_is_authoritative_but_flagged_vacuous() {
         let result = pass_result(
             &[Check::direct_owned(
@@ -3011,6 +3012,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(receipts_global_registry)]
     fn a_real_test_run_reporting_zero_tests_is_vacuous() {
         let result = pass_result(
             &[Check::direct("cargo", &["test"])],
@@ -3073,6 +3075,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     /// The other half of the same regression: with nothing but zero-count
     /// blocks, the marker must still fire.
     #[test]
+    #[serial_test::serial(receipts_global_registry)]
     fn a_cargo_run_with_only_empty_targets_is_still_vacuous() {
         let output = "\
 running 0 tests
@@ -3114,6 +3117,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     /// pytest and jest keep their existing behaviour in both directions: a
     /// genuine run is not vacuous, an empty collection still is.
     #[test]
+    #[serial_test::serial(receipts_global_registry)]
     fn pytest_and_jest_equivalents_are_unchanged_by_the_counter_marker() {
         for genuine in [
             "===== 12 passed, 1 skipped in 0.42s =====",
@@ -3177,6 +3181,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     // ── G5 finding 1: the shared genuine-pass predicate ─────────────────────
 
     #[test]
+    #[serial_test::serial(receipts_global_registry)]
     fn is_genuine_pass_rejects_a_smoke_only_pass() {
         let result = pass_result(
             &[Check::direct_owned(
@@ -3201,6 +3206,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     }
 
     #[test]
+    #[serial_test::serial(receipts_global_registry)]
     fn is_genuine_pass_rejects_a_zero_tests_pass() {
         let result = pass_result(
             &[Check::direct("cargo", &["test"])],

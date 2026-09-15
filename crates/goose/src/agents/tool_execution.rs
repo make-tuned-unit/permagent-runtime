@@ -752,6 +752,7 @@ mod tests {
     /// action_required and without any confirmation being delivered), no
     /// decision row, no dispatched tool.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn headless_core_park_auto_denies_without_parking_or_filing() {
         let tmp = tempfile::tempdir().unwrap();
         let (agent, session, pool) = park_test_agent(&tmp, GooseMode::Approve).await;
@@ -882,6 +883,7 @@ mod tests {
     /// fired, failing loudly instead of the silent goal-timeout hang traced
     /// in HARNESS_LOOP_LOG.md's A28 analysis (miss 2).
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn non_interactive_non_headless_core_park_denies_without_awaiting() {
         let tmp = tempfile::tempdir().unwrap();
         let session_manager = Arc::new(SessionManager::new(tmp.path().to_path_buf()));

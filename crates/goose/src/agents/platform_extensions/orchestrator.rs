@@ -30573,6 +30573,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     #[serial_test::serial]
     async fn dispatch_goal_fn_dispatches_an_internal_worker_through_a_headless_policy_with_no_extension_manager(
     ) {
@@ -30656,6 +30657,7 @@ mod tests {
     /// `PERMAGENT_PACK_*` at all, so this pin had zero effect and the
     /// receipt would have shown the T1 session fallback instead.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     #[serial_test::serial]
     async fn dispatch_goal_fn_honours_a_pack_only_pin_for_a_fresh_headless_goal() {
         std::env::remove_var("PERMAGENT_ROLE_MECHANICAL_PROVIDER");
@@ -30759,6 +30761,7 @@ mod tests {
     /// `Mechanical`, a DIFFERENT role/pack from `Local` — so a Local-pinned
     /// receipt is only possible if the explicit tier actually won.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     #[serial_test::serial]
     async fn dispatch_goal_fn_honours_an_explicit_worker_tier_and_records_it_on_the_audit() {
         std::env::remove_var("PERMAGENT_ROLE_LOCAL_PROVIDER");
@@ -34822,6 +34825,7 @@ mod tests {
     /// so an `Ok` here is only possible if the prior record short-circuited
     /// the check entirely.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn goal_advance_dispatch_does_not_repeat_a_check_worker_already_on_file() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(crate::session::SessionManager::new(
@@ -37285,6 +37289,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn materialized_goals_persist_budget_identity_for_headless_dispatch() {
         let pool = test_pool().await;
         let goals = vec![
@@ -39014,6 +39019,7 @@ mod tests {
     /// with the ungrounded criterion rewritten (never invented) and
     /// `ac_rewritten` recorded on the card for human review.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn create_roadmap_rejects_then_rewrites_an_ac_naming_a_file_this_repo_lacks() {
         let (_tmp, sm, _session, _em, client) =
             roadmap_handler_fixture(GooseMode::Approve, true).await;
@@ -39095,6 +39101,7 @@ mod tests {
     /// confirmed here by the absence of any `Err` at all, not just by
     /// belt-and-braces exempting the retry.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn create_roadmap_rewrites_a_harness_derived_ac_on_the_first_call() {
         let (_tmp, sm, _session, _em, client) =
             roadmap_handler_fixture(GooseMode::Approve, true).await;
@@ -39813,6 +39820,7 @@ mod tests {
     /// Lane R20d: an explicit `project_id_or_slug` must keep working exactly
     /// as before the default-resolution fallback was added.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn handle_resume_roadmap_with_explicit_id_still_works() {
         let (_tmp, sm, _session, _em, client) =
             roadmap_handler_fixture(GooseMode::Approve, false).await;
@@ -39861,6 +39869,7 @@ mod tests {
     /// must resolve and resume it, never demand an id the coordinator has
     /// no way to discover (HARNESS_LOOP_LOG.md "A20 analysis" Q2/Q3).
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn handle_resume_roadmap_with_no_argument_resolves_the_cwd_project() {
         let (_tmp, sm, session, _em, client) =
             roadmap_handler_fixture(GooseMode::Approve, true).await;
@@ -41031,6 +41040,7 @@ mod tests {
     /// with the Approve-mode sibling below, which the pre-fix code would
     /// have FAILED by wrongly self-approving.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn handle_decompose_then_create_roadmap_succeeds_with_no_human_answer_in_auto_mode() {
         let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
         let pool = sm.pool_clone().await.unwrap();
@@ -41102,6 +41112,7 @@ mod tests {
     /// hand-typed hash that never matched the server's own hash, while the
     /// resubmitted goals were the exact same proposal every time.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn identical_goals_json_is_accepted_despite_a_wrong_proposal_hash() {
         let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
         let pool = sm.pool_clone().await.unwrap();
@@ -41315,6 +41326,7 @@ mod tests {
     /// own phases; the attribute fixes mutual exclusion between tests.
     #[serial_test::serial]
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn create_roadmap_dispatches_a_real_child_session_once_a_dispatch_hook_is_installed() {
         let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
         let pool = sm.pool_clone().await.unwrap();
@@ -41651,6 +41663,7 @@ mod tests {
     /// — no network, no spend, seconds not minutes.
     #[serial_test::serial]
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     #[ignore = "Lane R1 replay-slice mechanism smoke test — run explicitly, \
                 see this test's own doc comment"]
     async fn replay_slice_smoke() {
@@ -41924,6 +41937,7 @@ mod tests {
     /// transcripts). The error must now name the known goal card ids in the
     /// caller's own project.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn goal_advance_on_an_unknown_id_names_the_known_goal_card_ids() {
         let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
         let pool = sm.pool_clone().await.unwrap();
@@ -43544,6 +43558,7 @@ mod tests {
     /// get back EXACTLY the lean coding profile — no finance/CRM/social —
     /// even though its own `parent_extensions()` carried them.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn scoped_child_session_extensions_fn_narrows_to_the_lean_coding_profile_for_the_top_level_coordinator(
     ) {
         let tmp = tempfile::tempdir().unwrap();
@@ -43631,6 +43646,7 @@ mod tests {
     /// the same "no active roadmap" contract `restrict_delegate_for_
     /// active_roadmap`'s own tests pin for `delegate`.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn scoped_child_session_extensions_fn_is_unchanged_without_an_active_coding_roadmap() {
         let tmp = tempfile::tempdir().unwrap();
         let _guard =
