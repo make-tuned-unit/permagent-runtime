@@ -102,10 +102,23 @@ use regex::Regex;
 ///   exhausted: Your credit balance is too low to access the Anthropic
 ///   API...").
 /// - `"insufficient_quota"` — the OpenAI-shaped quota error code.
+/// - `"not found, try pulling it first"` — Lane R48a (A45 design): Ollama's
+///   own error text (`api.StatusError`, seen verbatim as
+///   `{"error":"model 'qwen2.5-coder:7b' not found, try pulling it first"}`)
+///   when a mixed tier's local worker model (`Tier::worker_model`, e.g. the
+///   `dschat+qwen-coder` placeholder tier) has not actually been `ollama
+///   pull`ed on the machine running the harness. Unlike a billing/auth/quota
+///   failure this is not a REJECTED call — Ollama answers it immediately
+///   (no retry, no hang) — but classifying it here still gets the run a
+///   fast, honest `errored: provider unavailable` verdict and the note
+///   `"provider unavailable: not found, try pulling it first"` instead of
+///   running out the clock against a task's full (1200s-floored, for a
+///   mixed tier) harness-timeout ceiling on a call that can never succeed.
 pub const PROVIDER_UNAVAILABLE_MARKERS: &[&str] = &[
     "credits exhausted",
     "insufficient balance",
     "insufficient_quota",
+    "not found, try pulling it first",
 ];
 
 /// An HTTP 401/402/403 co-occurring with billing-shaped wording on the same
@@ -472,6 +485,33 @@ mod tests {
             detect(r#"{"error":{"code":"insufficient_quota","message":"..."}}"#).as_deref(),
             Some("insufficient_quota")
         );
+    }
+
+    /// Lane R48a: Ollama's own "model not found" error text (the exact shape
+    /// a `dschat+qwen-coder`-style mixed tier hits when its worker model was
+    /// never `ollama pull`ed) is detected, and — since the raw body names no
+    /// provider at all — `classify`/`classify_in_run` fast-fail it via the
+    /// same conservative-default path the M22 zai raw body uses, regardless
+    /// of the tier's own (coordinator) provider id.
+    #[test]
+    fn detects_the_ollama_model_not_found_marker_verbatim() {
+        let line = r#"{"error":"model 'qwen2.5-coder:7b' not found, try pulling it first"}"#;
+        assert_eq!(
+            detect(line).as_deref(),
+            Some("not found, try pulling it first")
+        );
+    }
+
+    #[test]
+    fn classify_fast_fails_a_missing_worker_model_regardless_of_the_coordinators_own_provider() {
+        // `tier_provider` here is the MIXED tier's coordinator id
+        // (`custom_deepseek`), not the local worker's (`ollama`) — the raw
+        // Ollama error body names neither, so the ambiguous conservative
+        // default must still classify this `unavailable: true`.
+        let line = r#"{"error":"model 'qwen2.5-coder:7b' not found, try pulling it first"}"#;
+        let c = classify("custom_deepseek", line);
+        assert!(c.unavailable, "{c:?}");
+        assert_eq!(c.marker.as_deref(), Some("not found, try pulling it first"));
     }
 
     #[test]

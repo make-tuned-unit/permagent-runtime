@@ -24,6 +24,22 @@
 /// Pinning every role to the tier's model keeps all work on one model.
 const PACK_ROLES: [&str; 4] = ["EDIT", "HARD", "MECHANICAL", "LOCAL"];
 
+/// Lane R48a: the pack roles an ordinary dispatched goal WORKER routes
+/// through (`cost_router::escalation`'s CheapCloud→Mechanical,
+/// Local/Mesh→Local map) — when a tier declares `worker_provider`/
+/// `worker_model`, these two roles are pinned to the WORKER pair instead of
+/// the coordinator's own `provider`/`model`.
+const WORKER_PACK_ROLES: [&str; 2] = ["MECHANICAL", "LOCAL"];
+
+/// The remaining two pack roles: `HARD` (planning/hard-reasoning — the
+/// escalation ladder's frontier rung, and `Role::Hard` is also what
+/// `WorkflowRole::Review` maps to absent a dedicated `PERMAGENT_PACK_REVIEW_*`
+/// pin, so leaving `HARD` on the coordinator's model is what keeps review
+/// independent of the local worker) and `EDIT` (inert for dispatch, kept for
+/// parity with every other tier). Always pinned to the coordinator's own
+/// `provider`/`model`, mixed tier or not.
+const COORDINATOR_PACK_ROLES: [&str; 2] = ["HARD", "EDIT"];
+
 /// A model tier: the provider + model the harness runs under for a task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tier {
@@ -56,6 +72,24 @@ pub struct Tier {
     /// universal provider-speed claim, so a per-tier floor scales it for a
     /// 3-5x-slower provider without rewriting every fixture.
     pub harness_timeout_secs: Option<u64>,
+    /// Lane R48a (A45 design, Q2's "smallest change"): the LOCAL worker
+    /// provider a mixed tier dispatches ordinary (non-escalated) goal work
+    /// to -- `ollama` for every mixed tier shipped so far. `None` (every
+    /// pre-R48a tier) means "coordinator and worker are the same model,"
+    /// today's only behavior: [`Tier::pack_env`] pins all four pack roles to
+    /// `provider`/`model` unchanged. `Some` together with
+    /// [`Self::worker_model`] splits [`Self::pack_env`]'s pins:
+    /// [`WORKER_PACK_ROLES`] (`MECHANICAL`, `LOCAL` -- the roles an ordinary
+    /// dispatched goal worker routes through) go to this worker pair, while
+    /// [`COORDINATOR_PACK_ROLES`] (`HARD`, `EDIT`) stay pinned to
+    /// `provider`/`model` -- so the escalation ladder still has a real
+    /// stronger rung, and the review role (which maps to `Hard` absent its
+    /// own dedicated pin) stays on the coordinator's model, independent of
+    /// the local worker.
+    pub worker_provider: Option<String>,
+    /// The worker model string, paired with [`Self::worker_provider`]. Both
+    /// are `Some` or both `None` -- every constructor keeps them together.
+    pub worker_model: Option<String>,
 }
 
 impl Tier {
@@ -68,6 +102,8 @@ impl Tier {
             pin_packs: true,
             required_key_env: key.map(str::to_string),
             harness_timeout_secs: None,
+            worker_provider: None,
+            worker_model: None,
         };
         match name {
             "local" => Some(t("local", "ollama", "qwen3", None)),
@@ -192,6 +228,46 @@ impl Tier {
                 harness_timeout_secs: Some(1200),
                 ..t("minicpm5-hf", "ollama", "minicpm5-2b-q8", None)
             }),
+            // Lane R48a (A45 design): mixed tiers — a real cloud coordinator
+            // (`custom_deepseek`/`deepseek-chat`, same pinning as the
+            // `dschat` tier above, so it needs `DEEPSEEK_API_KEY` exactly
+            // like `dschat` does) paired with a LOCAL Ollama worker pack, so
+            // `pack_env()`'s split (see the field doc on
+            // `Tier::worker_provider`) actually exercises coordinator≠worker
+            // routing instead of every pack role pinned to one model. Both
+            // declare the same 1200s harness-timeout floor `minicpm5`/
+            // `minicpm5-hf` do — Lane K6's mechanism, a local worker on
+            // shared hardware is slow — since the worker, not the
+            // coordinator, is the per-task wall-clock bottleneck here.
+            "dschat+minicpm" => Some(Tier {
+                harness_timeout_secs: Some(1200),
+                worker_provider: Some("ollama".to_string()),
+                worker_model: Some("minicpm5-2b-q8".to_string()),
+                ..t(
+                    "dschat+minicpm",
+                    "custom_deepseek",
+                    "deepseek-chat",
+                    Some("DEEPSEEK_API_KEY"),
+                )
+            }),
+            // Placeholder mixed tier: same coordinator, a bigger local coder
+            // model (`qwen2.5-coder:7b`) that is NOT verified pulled on any
+            // shared machine as of this lane — see `crate::provider_unavailable`
+            // (the "model not found" marker it now recognizes, Lane R48a) for
+            // how a run against this tier fails FAST with a clear note
+            // instead of grinding to its 1200s ceiling when the model is
+            // absent.
+            "dschat+qwen-coder" => Some(Tier {
+                harness_timeout_secs: Some(1200),
+                worker_provider: Some("ollama".to_string()),
+                worker_model: Some("qwen2.5-coder:7b".to_string()),
+                ..t(
+                    "dschat+qwen-coder",
+                    "custom_deepseek",
+                    "deepseek-chat",
+                    Some("DEEPSEEK_API_KEY"),
+                )
+            }),
             _ => None,
         }
     }
@@ -215,6 +291,8 @@ impl Tier {
             "gpt54mini",
             "minicpm5",
             "minicpm5-hf",
+            "dschat+minicpm",
+            "dschat+qwen-coder",
         ]
     }
 
@@ -231,6 +309,8 @@ impl Tier {
             pin_packs: true,
             required_key_env: None,
             harness_timeout_secs: None,
+            worker_provider: None,
+            worker_model: None,
         }
     }
 
@@ -240,19 +320,39 @@ impl Tier {
         self
     }
 
-    /// The `PERMAGENT_PACK_*` environment overrides that pin every role to this
-    /// tier's provider+model. Empty when `pin_packs` is false.
+    /// The `PERMAGENT_PACK_*` environment overrides that pin every role to
+    /// this tier's provider+model. Empty when `pin_packs` is false.
+    ///
+    /// Lane R48a: when [`Self::worker_provider`]/[`Self::worker_model`] are
+    /// BOTH `Some` (a mixed tier), [`WORKER_PACK_ROLES`] (`MECHANICAL`,
+    /// `LOCAL`) are pinned to the worker pair instead, while
+    /// [`COORDINATOR_PACK_ROLES`] (`HARD`, `EDIT`) stay pinned to
+    /// `provider`/`model` — see the field doc on `worker_provider` for why.
+    /// Every pre-R48a tier leaves both `None`, so this is unchanged from
+    /// today's all-four-pinned-to-`provider`/`model` behavior. A tier with
+    /// only ONE of the two worker fields set (not constructible via
+    /// `builtin`/`custom` today, but not ruled out by the type) is treated
+    /// the same as neither set — a partial pin is not enough evidence to
+    /// split the roles.
     pub fn pack_env(&self) -> Vec<(String, String)> {
         if !self.pin_packs {
             return Vec::new();
         }
+        let worker = match (&self.worker_provider, &self.worker_model) {
+            (Some(provider), Some(model)) => Some((provider.as_str(), model.as_str())),
+            _ => None,
+        };
         let mut env = Vec::with_capacity(PACK_ROLES.len() * 2);
         for role in PACK_ROLES {
+            let (provider, model) = match worker {
+                Some((wp, wm)) if WORKER_PACK_ROLES.contains(&role) => (wp, wm),
+                _ => (self.provider.as_str(), self.model.as_str()),
+            };
             env.push((
                 format!("PERMAGENT_PACK_{role}_PROVIDER"),
-                self.provider.clone(),
+                provider.to_string(),
             ));
-            env.push((format!("PERMAGENT_PACK_{role}_MODEL"), self.model.clone()));
+            env.push((format!("PERMAGENT_PACK_{role}_MODEL"), model.to_string()));
         }
         env
     }
@@ -289,7 +389,7 @@ mod tests {
     #[test]
     fn builtin_names_lists_every_tier_and_each_one_resolves() {
         let names = Tier::builtin_names();
-        assert_eq!(names.len(), 16, "{names:?}");
+        assert_eq!(names.len(), 18, "{names:?}");
         for &name in names {
             let t = Tier::builtin(name)
                 .unwrap_or_else(|| panic!("{name} is in builtin_names() but does not resolve"));
@@ -315,6 +415,10 @@ mod tests {
         }
         // Lane MC2: the minicpm5 local tier and its HF-Modelfile fallback.
         for name in ["minicpm5", "minicpm5-hf"] {
+            assert!(names.contains(&name), "{name} missing from builtin_names()");
+        }
+        // Lane R48a: the two mixed (cloud coordinator + local worker) tiers.
+        for name in ["dschat+minicpm", "dschat+qwen-coder"] {
             assert!(names.contains(&name), "{name} missing from builtin_names()");
         }
     }
@@ -426,11 +530,103 @@ mod tests {
             assert_eq!(t.harness_timeout_secs, Some(900), "{name}");
         }
         for &name in Tier::builtin_names() {
-            if name == "glm47" || name == "glm53" || name == "minicpm5" || name == "minicpm5-hf" {
+            if matches!(
+                name,
+                "glm47"
+                    | "glm53"
+                    | "minicpm5"
+                    | "minicpm5-hf"
+                    | "dschat+minicpm"
+                    | "dschat+qwen-coder"
+            ) {
                 continue;
             }
             let t = Tier::builtin(name).unwrap();
             assert_eq!(t.harness_timeout_secs, None, "{name} must be unset");
+        }
+    }
+
+    /// Lane R48a: `dschat+minicpm`/`dschat+qwen-coder` resolve by name to a
+    /// `custom_deepseek`/`deepseek-chat` coordinator (same pin as the
+    /// `dschat` tier — needs `DEEPSEEK_API_KEY`) with a distinct `ollama`
+    /// worker pair, and both declare the mixed-tier 1200s timeout floor.
+    #[test]
+    fn mixed_tiers_resolve_coordinator_and_worker_with_1200s_floor() {
+        let minicpm = Tier::builtin("dschat+minicpm").unwrap();
+        assert_eq!(minicpm.provider, "custom_deepseek");
+        assert_eq!(minicpm.model, "deepseek-chat");
+        assert_eq!(
+            minicpm.required_key_env.as_deref(),
+            Some("DEEPSEEK_API_KEY")
+        );
+        assert_eq!(minicpm.worker_provider.as_deref(), Some("ollama"));
+        assert_eq!(minicpm.worker_model.as_deref(), Some("minicpm5-2b-q8"));
+        assert_eq!(minicpm.harness_timeout_secs, Some(1200));
+        assert!(minicpm.pin_packs);
+
+        let qwen_coder = Tier::builtin("dschat+qwen-coder").unwrap();
+        assert_eq!(qwen_coder.provider, "custom_deepseek");
+        assert_eq!(qwen_coder.model, "deepseek-chat");
+        assert_eq!(
+            qwen_coder.required_key_env.as_deref(),
+            Some("DEEPSEEK_API_KEY")
+        );
+        assert_eq!(qwen_coder.worker_provider.as_deref(), Some("ollama"));
+        assert_eq!(qwen_coder.worker_model.as_deref(), Some("qwen2.5-coder:7b"));
+        assert_eq!(qwen_coder.harness_timeout_secs, Some(1200));
+    }
+
+    /// Lane R48a: `pack_env()` on a mixed tier pins `MECHANICAL`/`LOCAL` (the
+    /// roles an ordinary dispatched goal worker routes through) to the WORKER
+    /// pair, and `HARD`/`EDIT` (planning + the review role's fallback, and
+    /// the inert main-loop role) to the COORDINATOR pair — still 8 entries,
+    /// still every role set, just split across two models instead of one.
+    #[test]
+    fn pack_env_splits_worker_roles_from_coordinator_roles_on_a_mixed_tier() {
+        let t = Tier::builtin("dschat+minicpm").unwrap();
+        let env = t.pack_env();
+        assert_eq!(env.len(), 8);
+
+        for role in ["MECHANICAL", "LOCAL"] {
+            assert!(env
+                .iter()
+                .any(|(k, v)| k == &format!("PERMAGENT_PACK_{role}_PROVIDER") && v == "ollama"));
+            assert!(env.iter().any(
+                |(k, v)| k == &format!("PERMAGENT_PACK_{role}_MODEL") && v == "minicpm5-2b-q8"
+            ));
+        }
+        for role in ["HARD", "EDIT"] {
+            assert!(env
+                .iter()
+                .any(|(k, v)| k == &format!("PERMAGENT_PACK_{role}_PROVIDER")
+                    && v == "custom_deepseek"));
+            assert!(
+                env.iter()
+                    .any(|(k, v)| k == &format!("PERMAGENT_PACK_{role}_MODEL")
+                        && v == "deepseek-chat")
+            );
+        }
+    }
+
+    /// A tier with neither `worker_provider` nor `worker_model` set (every
+    /// pre-R48a tier, including plain `dschat`) keeps pinning all four roles
+    /// to its own `provider`/`model` — the split above must not regress the
+    /// existing single-model behavior.
+    #[test]
+    fn pack_env_pins_all_four_roles_to_the_same_model_when_no_worker_is_set() {
+        let t = Tier::builtin("dschat").unwrap();
+        let env = t.pack_env();
+        assert_eq!(env.len(), 8);
+        for role in ["EDIT", "HARD", "MECHANICAL", "LOCAL"] {
+            assert!(env
+                .iter()
+                .any(|(k, v)| k == &format!("PERMAGENT_PACK_{role}_PROVIDER")
+                    && v == "custom_deepseek"));
+            assert!(
+                env.iter()
+                    .any(|(k, v)| k == &format!("PERMAGENT_PACK_{role}_MODEL")
+                        && v == "deepseek-chat")
+            );
         }
     }
 }
