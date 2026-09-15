@@ -521,10 +521,31 @@ async fn land_approved_goal(
     // trunk hasn't seen yet, regardless of which attempt made it. A goal
     // reviewed and approved on the strength of an earlier attempt's commit
     // must not be refused here just because THIS attempt's own rolling
-    // evidence is empty. Falls back to the plain refusal below whenever no
-    // trusted trunk root resolves, the worktree hint is missing, or nothing
-    // is actually unlanded there either — never widened beyond that.
-    let trunk_relative_head = if rolling_commits_empty {
+    // evidence is empty.
+    //
+    // R43a-b (G31 review, HIGH-1): an unlanded commit ALONE is not evidence
+    // it was ever verified — R28a's teardown checkpoint commits every dirty
+    // tracked change unconditionally, with no build/test check. Mirror
+    // `maybe_hold_review`'s own R42a-b discipline: only credit the
+    // trunk-relative commit as landable when EITHER this goal's own
+    // recorded verdict is a PASS bound to that exact head
+    // (`dispatch_evidence.head_commit == worktree HEAD`), or a fresh,
+    // time-boxed verify against the worktree genuinely passes right now
+    // (`run_fresh_verify_for_hold`, the identical helper `maybe_hold_
+    // review`'s override calls). Neither is attempted when the goal's own
+    // `salvage_receipt` already recorded a verify FAILURE for this branch —
+    // salvage already spent time proving this exact, still-unmoved range
+    // broken.
+    //
+    // Falls back to the plain refusal below whenever no trusted trunk root
+    // resolves, the worktree hint is missing, nothing is actually unlanded
+    // there, or nothing verifies at that head — never widened beyond that.
+    // `refusal_reason` names WHY, for the note below: `no_evidence` (no
+    // worktree hint to even consult), `no_trunk` (no trusted trunk root
+    // resolved), `nothing_unlanded` (trunk resolved; zero unlanded
+    // commits), `unverified_head` (commits are unlanded but none verify at
+    // that exact head).
+    let (trunk_relative_head, refusal_reason) = if rolling_commits_empty {
         match worktree_path_hint {
             Some(worktree) => {
                 let worktree_path = std::path::Path::new(worktree);
@@ -536,18 +557,54 @@ async fn land_approved_goal(
                 .await
                 {
                     Ok((unlanded, _trunk_head)) if unlanded > 0 => {
-                        crate::agents::platform_extensions::orchestrator::worktree_head_commit(
-                            worktree_path,
-                        )
-                        .await
+                        let salvage_already_failed = card
+                            .metadata_json
+                            .pointer("/salvage_receipt/outcome")
+                            .and_then(|v| v.as_str())
+                            == Some("salvage_verify_failed");
+                        if salvage_already_failed {
+                            (None, "unverified_head")
+                        } else {
+                            let current_head =
+                                crate::agents::platform_extensions::orchestrator::worktree_head_commit(
+                                    worktree_path,
+                                )
+                                .await;
+                            let recorded_pass_at_head = current_head.is_some()
+                                && card
+                                    .metadata_json
+                                    .pointer("/dispatch_evidence/verdict/status")
+                                    .and_then(|v| v.as_str())
+                                    == Some("pass")
+                                && card
+                                    .metadata_json
+                                    .pointer("/dispatch_evidence/head_commit")
+                                    .and_then(|v| v.as_str())
+                                    == current_head.as_deref();
+                            let verified = recorded_pass_at_head
+                                || crate::agents::platform_extensions::orchestrator::run_fresh_verify_for_hold(
+                                    &card,
+                                    worktree_path,
+                                )
+                                .await;
+                            if verified {
+                                match current_head {
+                                    Some(head) => (Some(head), ""),
+                                    None => (None, "unverified_head"),
+                                }
+                            } else {
+                                (None, "unverified_head")
+                            }
+                        }
                     }
-                    _ => None,
+                    Ok(_) => (None, "nothing_unlanded"),
+                    Err(_) => (None, "no_trunk"),
                 }
             }
-            None => None,
+            None => (None, "no_evidence"),
         }
     } else {
-        None
+        (None, "")
     };
 
     // Missing evidence or empty history cannot establish committed work.
@@ -555,8 +612,8 @@ async fn land_approved_goal(
     if rolling_commits_empty && trunk_relative_head.is_none() {
         let worktree = worktree_path_hint.unwrap_or("unknown worktree");
         let note = format!(
-            "note: not landed — goal {goal_id} has no commits past the baseline \
-             (uncommitted work in {worktree})"
+            "land_refused reason={refusal_reason}: note: not landed — goal {goal_id} has no \
+             commits past the baseline (uncommitted work in {worktree})"
         );
         tracing::warn!(goal_id, "{note}");
         let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
@@ -608,12 +665,44 @@ async fn land_approved_goal(
         // NON-override path (`rolling_commits_empty == false`) still hands
         // this the card's own raw metadata unmodified, and nothing enforces
         // `head_commit` being present/non-empty whenever `commits` merely
-        // happens to be non-empty. Before this hardening that inconsistent
-        // shape made `land_approved_goal` return `(None, None)` — a SILENT
-        // no-op: no refusal note, no park, no persisted outcome, nothing
-        // for a human or the next A-series analysis to see. Report it
-        // exactly like every other landing refusal in this function.
+        // happens to be non-empty.
+        //
+        // R43a-b (M38 gate): two genuinely different shapes reach here and
+        // they are NOT the same defect. A `head_commit` key present but
+        // blank/empty (or `commits` present-but-empty) is a real,
+        // inconsistent evidence shape — the worker's own session recorded
+        // SOME commits yet left nothing usable to land from; that must stay
+        // a reported, parked refusal (unchanged from the A41 hardening
+        // below). But a `head_commit` key entirely ABSENT means this
+        // evidence was never shaped to describe a land in the first place —
+        // the sibling-credit (`try_credit_sibling_goals`) and
+        // promoted-dependent (Y15) card shapes both stamp `commits` as a
+        // marker/receipt with no `head_commit` field at all, because the
+        // credited/promoted goal has no worktree of its OWN to land from
+        // (the commit belongs to a different goal's dispatch). Parking
+        // THOSE goals here re-fails a Review→Complete transition
+        // `advance_goal_checked_with_auto_land` already made before this
+        // function ever ran — the exact M38 gate regression (two
+        // pre-existing landing-success tests: `approving_a_review_
+        // dispatches_the_promoted_dependent`,
+        // `try_credit_sibling_goals_auto_lands_the_credited_goal_under_
+        // headless_auto_land`). Falls back to the ORIGINAL rolling-evidence
+        // behaviour for that shape: report it honestly (never silent) but
+        // never park a goal that has nothing of its own to land.
         let worktree = worktree_path_hint.unwrap_or("unknown worktree");
+        let head_commit_key_present = landing_metadata
+            .pointer("/dispatch_evidence/head_commit")
+            .is_some();
+        if !head_commit_key_present {
+            let note = format!(
+                "land_refused reason=no_evidence: note: not landed — goal {goal_id} has no \
+                 worktree of its own to land from (worktree {worktree})"
+            );
+            tracing::info!(goal_id, "{note}");
+            let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
+            persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+            return (Some((project_id, outcome)), Some(note));
+        }
         let note = format!(
             "land_refused reason=no_evidence_head: goal {goal_id} has no usable head commit \
              to land (worktree {worktree})"
@@ -3055,12 +3144,15 @@ mod tests {
 
         let pool = test_pool().await;
         let parent = goal_in_review(&pool).await;
-        // Y15 refuses to land — and now PARKS — a goal whose dispatch evidence
-        // carries no commits past the baseline. This pin is about dependent
-        // promotion, not about that refusal, so give the parent the one thing
-        // Y15's new precondition asks for. Deliberately no `worktree_path` /
-        // `head_commit`: `evidence_head_and_worktree` then still returns None
-        // and the landing is skipped exactly as it was before Y15, so this test
+        // Y15 refuses to land a goal whose dispatch evidence carries no
+        // commits past the baseline. This pin is about dependent promotion,
+        // not about that refusal, so give the parent the one thing Y15's
+        // precondition asks for. Deliberately no `worktree_path` /
+        // `head_commit`: `evidence_head_and_worktree` then still returns
+        // None, so `land_approved_goal` has no worktree of the parent's OWN
+        // to land from — R43a-b: that shape is reported (never silent) but
+        // never PARKED (parking would undo the Review→Complete transition
+        // `advance_goal_checked_with_auto_land` already made), so this test
         // exercises the same promotion path it always did.
         crate::cards::set_goal_dispatch_evidence(
             &pool,
@@ -3762,6 +3854,155 @@ mod tests {
             .unwrap()
             .expect("a refused land must leave an answerable unblock decision");
         assert!(unblock.detail.contains(&note));
+    }
+
+    /// R43a-b (G31 review, M38 lanes, HIGH-1): the trunk-relative override
+    /// must not credit "committed work exists" from `commits_unlanded_at_
+    /// trunk > 0` alone — an unlanded commit with no verify bound to its
+    /// exact head is refused (mirrors `maybe_hold_review`'s own R42a-b
+    /// discipline); the identical shape with a recorded PASS bound to that
+    /// head lands normally. The refused half uses `salvage_receipt.outcome
+    /// == "salvage_verify_failed"` rather than an actually-undetectable
+    /// build stack — deterministic and fast (no subprocess), and the fresh-
+    /// verify-subprocess path itself already has real-process coverage from
+    /// R42a-b's own `maybe_hold_review` tests via the same shared
+    /// `run_fresh_verify_for_hold` helper this override now also calls.
+    #[tokio::test]
+    async fn land_approved_goal_requires_a_verified_head_for_the_trunk_relative_override() {
+        let (repo, head) = repo_with_finished_goal_branch();
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let worktrees_root = tempfile::tempdir().unwrap();
+        let worktree_path = worktrees_root.path().join("run-1");
+        git_in(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "goal/run-1",
+            ],
+        );
+
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Verify-gated trunk-relative override".to_string(),
+                root_path: Some(root.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Unlanded at trunk, but no verify is bound to that head — salvage
+        // already tried and failed this exact, still-unmoved range.
+        let goal_unverified = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Unlanded but never verified".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 3,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        "worktree_path": worktree_path.to_string_lossy(),
+                        "baseline_commit": head,
+                        "head_commit": head,
+                        "commits": [],
+                    },
+                    "salvage_receipt": {"outcome": "salvage_verify_failed"},
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let (landing, note) = land_approved_goal(&pool, &goal_unverified.id, None).await;
+        assert!(
+            matches!(
+                landing,
+                Some((_, crate::goal_landing::LandOutcome::Skipped(_)))
+            ),
+            "an unlanded commit with no verify bound to its head must be refused, not landed: \
+             {landing:?}"
+        );
+        let note = note.expect("a genuine refusal must report a note");
+        assert!(
+            note.contains("land_refused reason=unverified_head"),
+            "note: {note}"
+        );
+        assert_eq!(goal_state_of(&pool, &goal_unverified.id).await, "failed");
+        assert_ne!(
+            git_in(repo.path(), &["rev-parse", "main"]),
+            head,
+            "the trunk must never move on an unverified-head refusal"
+        );
+
+        // Identical unlanded commit, but this goal's own recorded verdict is
+        // a PASS bound to that exact head.
+        let goal_verified = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Unlanded and verified at head".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 3,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        "worktree_path": worktree_path.to_string_lossy(),
+                        "baseline_commit": head,
+                        "head_commit": head,
+                        "commits": [],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let (landing, note) = land_approved_goal(&pool, &goal_verified.id, None).await;
+        assert_eq!(
+            note, None,
+            "a successful land must not also report a refusal note"
+        );
+        assert!(
+            matches!(
+                landing,
+                Some((_, crate::goal_landing::LandOutcome::FastForwarded { .. }))
+            ),
+            "a verified unlanded commit must land: {landing:?}"
+        );
+        assert_eq!(
+            git_in(repo.path(), &["rev-parse", "main"]),
+            head,
+            "the trunk must advance once the unlanded commit is verified at its head"
+        );
+        // Note: `land_approved_goal` is called directly here (as the other
+        // direct-call tests in this module do) rather than through
+        // `apply_decision_effect` — the Review→Complete transition itself
+        // is `advance_goal_checked_with_auto_land`'s job, called BEFORE
+        // landing in the real approval flow, so this goal's card column is
+        // left exactly where it started (Review); only the trunk-side
+        // outcome asserted above is this function's own contract.
     }
 
     /// H1 (G8 review, harness loop Lane E3 2026-09-10), G8's own pinning
