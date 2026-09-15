@@ -3123,8 +3123,15 @@ mod tests {
     #[test]
     fn cost_routing_receipt_is_printed_only_after_the_goal_drain() {
         let cli = include_str!("../cli.rs");
+        // Lane R22b-b: was `"let result = ..."` (no `mut`) — Lane R18f
+        // (`84e688f5`, before this lane, unrelated) changed the declaration
+        // to `let mut result = ...` for its own Class-4 fix but never
+        // updated this literal, so `.find()` could never match and this
+        // test would panic on `.unwrap()`. Found while re-verifying this
+        // exact contract for R22b/R22b-b; fixed here since it directly
+        // covers the print-site ordering both of those lanes depend on.
         let headless_call = cli
-            .find("let result = session.headless(contents).await;")
+            .find("let mut result = session.headless(contents).await;")
             .unwrap();
         let tail = &cli[headless_call..];
         let drain = tail.find(".drain_dispatched_goals(").unwrap();
