@@ -86,6 +86,37 @@ use std::process::Command;
 /// [`assert_schema`] refuses to seed rather than guess which shape is live.
 pub const EXPECTED_FRESH_INIT_SCHEMA_VERSION: i32 = 14;
 
+/// Lane K12: the literal token a fixture's `seed/harness_state.json` uses in
+/// `project.root_path` to mean "this run's own isolated workspace
+/// directory" instead of a path baked in at fixture-authoring time.
+/// [`apply`] substitutes it (and an omitted `root_path`, the same
+/// resolution) with the run's actual, canonicalized `workdir` right before
+/// inserting -- see [`resolve_seed_root_path`].
+///
+/// Guards against the failure mode named in the Lane K12 brief
+/// (`HARNESS_LOOP_LOG.md`): the harness's cwd-based project resolution
+/// (`resolve_decompose_project` / `resolve_resume_project`,
+/// `crates/goose/src/agents/platform_extensions/orchestrator.rs`, and
+/// `goal_cards_for_project_matching_cwd`, `crates/goose/src/cards.rs`) all
+/// filter on the single `projects.root_path` column
+/// (`crates/goose/src/projects.rs:16`) against the session's own cwd. Every
+/// run gets a FRESH, uniquely-named isolated workspace directory
+/// (`runner::run_task`'s `run_dir.join("workspace")`), so a `root_path`
+/// value fixed at fixture-authoring time can only coincidentally equal a
+/// given run's actual directory. (Lane K12 forensic note: re-reading the
+/// specific M28 `select-checks-worker-before-dispatch` transcript's own DB,
+/// the seeded `widget-cli` project's `root_path` already equaled that run's
+/// workspace exactly, byte for byte -- the driver already forced `root_path`
+/// from `workdir`, ignoring the seed JSON, which then had no path field at
+/// all. That escalation's actual cause looks like a missing card-discovery
+/// tool, not a path mismatch; see the Lane K12 log entry's risk section.
+/// This placeholder mechanism is still the correct hardening for the
+/// failure mode the brief named -- it makes the run's-workspace-wins
+/// contract explicit and fixture-authorable instead of an unwritten
+/// invariant of `runner.rs`, and fails loudly if a future fixture author
+/// hand-types a literal path instead.)
+pub const WORKSPACE_PLACEHOLDER: &str = "${WORKSPACE}";
+
 /// The goal lifecycle column layout `cards::GOAL_COLUMNS`
 /// (`crates/goose/src/cards.rs`) seeds for any project using goal cards —
 /// mirrored here (state bindings + display names + positions only) because
@@ -130,6 +161,19 @@ pub struct SeedProject {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// The value to seed into `projects.root_path` -- the ONLY column the
+    /// harness's cwd-based project resolution reads (see
+    /// [`WORKSPACE_PLACEHOLDER`]'s doc for the exact functions/file:line).
+    /// Must be [`WORKSPACE_PLACEHOLDER`] (`"${WORKSPACE}"`) or omitted --
+    /// both resolve, via [`resolve_seed_root_path`], to THIS run's own
+    /// isolated workspace directory, canonicalized the same way the
+    /// harness canonicalizes its session cwd before comparing. A literal
+    /// path is refused loudly unless it is absolute and already exists as
+    /// a directory (mirroring the same guard `projects::resolve_root_path`
+    /// applies to a real user-supplied `root_path`) -- see
+    /// [`resolve_seed_root_path`].
+    #[serde(default)]
+    pub root_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -157,10 +201,15 @@ pub fn load(path: &Path) -> Result<HarnessStateSeed> {
 /// `PERMAGENT_PATH_ROOT` (`run_dir/data` in `runner::run_task` — the store
 /// lives at `data_root/spectral/permagent.db`, matching
 /// `cost::LedgerCostReader::db_path`); `workdir` is the run's seeded
-/// workspace directory (`run_dir/workspace`) — the seeded project's
-/// `root_path` is set to this (canonicalized), so `resolve_resume_project`'s
-/// / `resolve_decompose_project`'s cwd match finds it exactly as it would a
-/// real user project.
+/// workspace directory (`run_dir/workspace`) — `seed.project.root_path` is
+/// resolved against it via [`resolve_seed_root_path`] (the placeholder, or
+/// an omitted field, both mean "this run's own workspace"; see
+/// [`WORKSPACE_PLACEHOLDER`]), so `resolve_resume_project`'s /
+/// `resolve_decompose_project`'s cwd match finds it exactly as it would a
+/// real user project. Logs the resolved `seeded_workspace_path` (stderr,
+/// the same convention `run_round` already uses for a provider-unavailable
+/// note) so a run's own log carries the seeded project's path without
+/// needing to open its store.
 pub fn apply(
     seed: &HarnessStateSeed,
     permagent_bin: &str,
@@ -176,9 +225,69 @@ pub fn apply(
     let canonical_workdir = workdir
         .canonicalize()
         .unwrap_or_else(|_| workdir.to_path_buf());
-    let root_path = canonical_workdir.to_string_lossy().into_owned();
+    let root_path = resolve_seed_root_path(seed.project.root_path.as_deref(), &canonical_workdir)
+        .with_context(|| {
+        format!(
+            "resolving root_path for seed project '{}'",
+            seed.project.slug
+        )
+    })?;
+
+    eprintln!(
+        "seed_state: applying seed for project '{}' (slug '{}') seeded_workspace_path={}",
+        seed.project.name, seed.project.slug, root_path
+    );
 
     seed_into_connection(&conn, seed, &root_path)
+}
+
+/// Resolve a seed's `project.root_path` field (see [`SeedProject::root_path`]
+/// / [`WORKSPACE_PLACEHOLDER`]) to the value actually written into the
+/// `projects.root_path` column.
+///
+/// - `None` or the literal [`WORKSPACE_PLACEHOLDER`] both resolve to
+///   `canonical_workdir` -- this run's own isolated workspace directory --
+///   so the seeded project always resolves to THIS run, never to a value
+///   baked into the fixture at authoring time. `None` (an omitted field) is
+///   accepted, not just the placeholder, so a fixture with no local-path
+///   concept at all need not spell out a placeholder it will never read.
+/// - Anything else is treated as a literal path a fixture author typed by
+///   hand and is refused loudly (never silently inserted) unless it is
+///   BOTH absolute AND already exists as a directory on this machine right
+///   now -- the same existence guard the real
+///   `projects::resolve_root_path` applies to a user-supplied `root_path`.
+///   A relative or nonexistent literal can only coincidentally match a
+///   future run's own isolated workspace directory, which is exactly the
+///   failure mode this function exists to catch before a single row is
+///   written (see [`WORKSPACE_PLACEHOLDER`]'s doc).
+fn resolve_seed_root_path(seed_value: Option<&str>, canonical_workdir: &Path) -> Result<String> {
+    match seed_value {
+        None => Ok(canonical_workdir.to_string_lossy().into_owned()),
+        Some(v) if v == WORKSPACE_PLACEHOLDER => {
+            Ok(canonical_workdir.to_string_lossy().into_owned())
+        }
+        Some(literal) => {
+            let path = Path::new(literal);
+            if !path.is_absolute() {
+                bail!(
+                    "seed project root_path '{literal}' is neither the placeholder \
+                     '{WORKSPACE_PLACEHOLDER}' nor an absolute path -- use the placeholder so \
+                     this seed resolves to each run's own isolated workspace directory instead \
+                     of a path fixed at fixture-authoring time",
+                );
+            }
+            if !path.is_dir() {
+                bail!(
+                    "seed project root_path '{literal}' does not exist as a directory on this \
+                     machine -- a literal path baked into a fixture's harness_state.json will \
+                     only coincidentally equal a future run's own isolated workspace directory; \
+                     use the placeholder '{WORKSPACE_PLACEHOLDER}' instead so `seed_state::apply` \
+                     substitutes each run's real workspace path",
+                );
+            }
+            Ok(literal.to_string())
+        }
+    }
 }
 
 /// Boot the real `permagent` binary once against `data_root` with a
@@ -438,6 +547,7 @@ mod tests {
                 slug: "acme-api".to_string(),
                 name: "Acme API".to_string(),
                 description: "".to_string(),
+                root_path: None,
             },
             roadmap_paused: true,
             goals: vec![
@@ -583,5 +693,158 @@ mod tests {
         assert_eq!(seed.project.slug, "acme-api");
         assert_eq!(seed.goals.len(), 2);
         assert!(seed.roadmap_paused);
+    }
+
+    #[test]
+    fn placeholder_root_path_resolves_to_the_runs_workspace() {
+        let workdir = tempfile::tempdir().unwrap();
+        let canonical = workdir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| workdir.path().to_path_buf());
+        let resolved = resolve_seed_root_path(Some(WORKSPACE_PLACEHOLDER), &canonical).unwrap();
+        assert_eq!(resolved, canonical.to_string_lossy());
+    }
+
+    #[test]
+    fn omitted_root_path_also_resolves_to_the_runs_workspace() {
+        let workdir = tempfile::tempdir().unwrap();
+        let canonical = workdir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| workdir.path().to_path_buf());
+        let resolved = resolve_seed_root_path(None, &canonical).unwrap();
+        assert_eq!(resolved, canonical.to_string_lossy());
+    }
+
+    #[test]
+    fn absolute_nonexistent_literal_root_path_fails_loudly() {
+        let workdir = tempfile::tempdir().unwrap();
+        let canonical = workdir.path().to_path_buf();
+        let err = resolve_seed_root_path(
+            Some("/no/such/permagent-eval-seed-state-path-xyz"),
+            &canonical,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("does not exist as a directory"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn relative_literal_root_path_fails_loudly() {
+        let workdir = tempfile::tempdir().unwrap();
+        let canonical = workdir.path().to_path_buf();
+        let err = resolve_seed_root_path(Some("relative/path"), &canonical).unwrap_err();
+        assert!(
+            err.to_string().contains("not an absolute path"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn absolute_existing_literal_root_path_is_accepted_as_is() {
+        let literal_dir = tempfile::tempdir().unwrap();
+        let workdir = tempfile::tempdir().unwrap();
+        let resolved =
+            resolve_seed_root_path(Some(literal_dir.path().to_str().unwrap()), workdir.path())
+                .unwrap();
+        assert_eq!(resolved, literal_dir.path().to_str().unwrap());
+    }
+
+    /// Locate a real `permagent` binary for the one test below that
+    /// exercises the full `apply()` path end to end (`warm_schema`'s real
+    /// subprocess boot -- module docs note `warm_schema` alone is "NOT
+    /// itself unit tested", since it shells out to a real binary this
+    /// crate cannot fake; this test opportunistically covers it when a
+    /// binary is actually available). Tries, in order: an explicit
+    /// `PERMAGENT_EVAL_TEST_BIN` override, this workspace's own
+    /// `target/{debug,release}/permagent` (relative to this crate's
+    /// `CARGO_MANIFEST_DIR`, matching a normal `cargo build`'s output),
+    /// then `permagent` resolved off `PATH` (the harness's own CLI is
+    /// ordinarily on `PATH` in a dev environment -- see
+    /// `permagent-build-environment` memory on the symlinked harness).
+    /// Returns `None` rather than panicking when nothing resolves, so this
+    /// crate's suite still passes with no pre-built binary anywhere --
+    /// the round-trip test below skips itself instead of failing.
+    fn find_permagent_bin() -> Option<String> {
+        if let Ok(explicit) = std::env::var("PERMAGENT_EVAL_TEST_BIN") {
+            if Path::new(&explicit).is_file() {
+                return Some(explicit);
+            }
+        }
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for profile in ["debug", "release"] {
+            let candidate = manifest_dir
+                .join("../../target")
+                .join(profile)
+                .join("permagent");
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+        if let Ok(path_var) = std::env::var("PATH") {
+            for dir in std::env::split_paths(&path_var) {
+                let candidate = dir.join("permagent");
+                if candidate.is_file() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+        None
+    }
+
+    /// Lane K12: the real `select-checks-worker-before-dispatch` fixture
+    /// seed, round-tripped through the full public `apply()` (warm-up boot
+    /// + insert) with a fresh temp workspace standing in for a run's own
+    /// isolated `run_dir/workspace` -- the resulting project row's
+    /// `root_path` must equal that temp workspace path exactly, the same
+    /// equality `resolve_decompose_project` / `resolve_resume_project` /
+    /// `goal_cards_for_project_matching_cwd` require for their cwd match to
+    /// find it. Skips (does not fail) when no `permagent` binary is
+    /// available -- see [`find_permagent_bin`].
+    #[test]
+    fn checks_worker_seed_round_trips_through_apply_with_a_temp_workspace() {
+        let Some(permagent_bin) = find_permagent_bin() else {
+            eprintln!(
+                "skipping checks_worker_seed_round_trips_through_apply_with_a_temp_workspace: \
+                 no `permagent` binary found (set PERMAGENT_EVAL_TEST_BIN, or build one at \
+                 target/debug/permagent, to exercise this test)"
+            );
+            return;
+        };
+
+        let workdir = tempfile::tempdir().unwrap();
+        let data_root = tempfile::tempdir().unwrap();
+
+        let seed_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tasks/select-checks-worker-before-dispatch/seed/harness_state.json");
+        let seed = load(&seed_path).expect("loading the real checks-worker fixture seed");
+
+        apply(&seed, &permagent_bin, data_root.path(), workdir.path())
+            .expect("apply should round-trip the checks-worker seed into a fresh store");
+
+        let db_path = data_root.path().join("spectral").join("permagent.db");
+        let conn = Connection::open(&db_path).unwrap();
+        let root_path: String = conn
+            .query_row(
+                "SELECT root_path FROM projects WHERE slug = 'widget-cli'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the seeded widget-cli project must exist in the warmed store");
+
+        let expected = workdir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| workdir.path().to_path_buf())
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            root_path, expected,
+            "seeded project's root_path must equal this run's own (canonicalized) workspace \
+             directory, not a value baked into harness_state.json"
+        );
     }
 }

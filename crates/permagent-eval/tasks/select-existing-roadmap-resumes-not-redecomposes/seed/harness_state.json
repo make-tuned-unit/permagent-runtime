@@ -3,7 +3,8 @@
   "project": {
     "slug": "acme-api",
     "name": "Acme API",
-    "description": "Fixture project for select-existing-roadmap-resumes-not-redecomposes (Lane K8)."
+    "description": "Fixture project for select-existing-roadmap-resumes-not-redecomposes (Lane K8).",
+    "root_path": "${WORKSPACE}"
   },
   "roadmap_paused": true,
   "goals": [

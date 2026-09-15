@@ -3,7 +3,8 @@
   "project": {
     "slug": "widget-cli",
     "name": "Widget CLI",
-    "description": "Fixture project for select-checks-worker-before-dispatch (Lane K8)."
+    "description": "Fixture project for select-checks-worker-before-dispatch (Lane K8).",
+    "root_path": "${WORKSPACE}"
   },
   "roadmap_paused": false,
   "goals": [
