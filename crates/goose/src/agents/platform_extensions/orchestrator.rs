@@ -1944,6 +1944,14 @@ pub(crate) fn ground_roadmap_goals(
 /// R21b violation would just second-guess Z1's own, already-honest output.
 const UNVERIFIED_CRITERION_PREFIX: &str = "UNVERIFIED";
 
+/// R43b-d (A53): the BENIGN half of the `UNVERIFIED` marker family — "this
+/// repo has no detected check command", which every simple task in a fresh
+/// sandbox produces for every one of its criteria. It says nothing about the
+/// work being wrong, so it must NOT hold a genuine verified pass. Only
+/// R43b-c's preservation reclassification (task text names a subject as
+/// currently broken) is evidence the goal still owes a human a look.
+const UNVERIFIED_NO_CHECK_FALLBACK: &str = "no detected check command in this repo";
+
 /// R21b: does `criterion` assert something mechanically specific enough to
 /// check against this repo -- a known test/build command (`cargo test`,
 /// `pytest`, `npm test`, `make ...`), a Rust test path (`mod::test_name`),
@@ -14499,9 +14507,14 @@ fn goal_still_carries_an_unresolved_unverified_ac(
     description: &str,
 ) -> bool {
     let criteria = collect_acceptance_criteria(card_meta, description);
-    let has_unresolved_marker = criteria
-        .iter()
-        .any(|c| c.starts_with(UNVERIFIED_CRITERION_PREFIX) || c.contains("kept for human review"));
+    // R43b-d (A53): fire ONLY on a preservation-reclassified criterion. The
+    // generic "no detected check command in this repo" fallback marks every
+    // criterion of every simple task in a fresh sandbox, so treating it as an
+    // unresolved AC held genuine passes forever and made the oracle fail fast.
+    let has_unresolved_marker = criteria.iter().any(|c| {
+        (c.starts_with(UNVERIFIED_CRITERION_PREFIX) || c.contains("kept for human review"))
+            && !c.contains(UNVERIFIED_NO_CHECK_FALLBACK)
+    });
     if !has_unresolved_marker {
         return false;
     }
@@ -25737,6 +25750,50 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    /// R43b-d (A53): the unverified-AC hold must fire ONLY on a
+    /// preservation-reclassified criterion. Before this fix it fired whenever
+    /// EVERY criterion carried the generic "no detected check command in this
+    /// repo" fallback — which is every simple task in a fresh sandbox — so a
+    /// genuine verified pass was Held forever and the oracle failed fast
+    /// (fizzbuzz in 25 s).
+    #[test]
+    fn the_unverified_ac_hold_ignores_the_no_check_fallback_but_fires_on_preservation() {
+        let meta = |criteria: &[&str]| serde_json::json!({ "acceptance_criteria": criteria });
+
+        // Every AC is the benign fallback — a genuine pass must LAND.
+        let all_fallback = meta(&[
+            "UNVERIFIED (no detected check command in this repo) — kept for human review: prints FizzBuzz to stdout",
+            "UNVERIFIED (no detected check command in this repo) — kept for human review: exits 0",
+        ]);
+        assert!(
+            !goal_still_carries_an_unresolved_unverified_ac(&all_fallback, ""),
+            "the no-check fallback alone must never hold a genuine verified pass"
+        );
+
+        // A preservation reclassification is real evidence the goal still owes
+        // a human a look — that one must still HOLD.
+        let preservation = meta(&[
+            "UNVERIFIED (task text names `parse_config` as currently broken, but no check \
+             confirms it) — kept for human review: parse_config still returns Ok",
+            "UNVERIFIED (no detected check command in this repo) — kept for human review: exits 0",
+        ]);
+        assert!(
+            goal_still_carries_an_unresolved_unverified_ac(&preservation, ""),
+            "a preservation-reclassified criterion must still hold"
+        );
+
+        // A resolved behavioural criterion still backs the preservation marker.
+        let backed = meta(&[
+            "UNVERIFIED (task text names `parse_config` as currently broken, but no check \
+             confirms it) — kept for human review: parse_config still returns Ok",
+            "running `cargo test parse_config` exits 0",
+        ]);
+        assert!(
+            !goal_still_carries_an_unresolved_unverified_ac(&backed, ""),
+            "a resolved behavioural criterion backs the marker and releases the hold"
+        );
     }
 
     /// G5 finding 1: a worker session whose verify tool returned an
