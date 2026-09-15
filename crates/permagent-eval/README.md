@@ -55,6 +55,8 @@ Built-in tiers:
 | `minimax` | `minimax` | `MiniMax-M2.5` | `MINIMAX_API_KEY` |
 | `sonnet` | `anthropic` | `claude-sonnet-5` | `ANTHROPIC_API_KEY` |
 | `frontier` | `anthropic` | `claude-opus-4-8` | `ANTHROPIC_API_KEY` |
+| `minicpm5` | `ollama` | `openbmb/minicpm5:q8_0` | nothing (on-device, $0); 1200s harness-timeout floor |
+| `minicpm5-hf` | `ollama` | `minicpm5-2b-q8` | nothing (on-device, $0); fallback if the `minicpm5` Ollama tag mismatches the HF GGUF — build via a local Modelfile; 1200s harness-timeout floor |
 
 Or define an ad-hoc tier with `--provider <id> --model <name>`.
 
