@@ -43945,6 +43945,39 @@ mod tests {
         );
     }
 
+    /// R48g (A52): a real `std::env::var(WORKER_PROMPT_PROFILE_ENV)` round
+    /// trip — not just the pure function with a literal string — mirroring
+    /// exactly what `dispatch_goal_fn` does with the value `Tier::pack_env()`
+    /// exports for a mixed local/ollama worker tier (`crates/permagent-eval/
+    /// src/tier.rs`'s `pack_env()`). Closes the gap A52 flagged: nothing
+    /// previously proved the env var, once set on the process, is actually
+    /// read back through this exact const/function pair.
+    #[test]
+    #[serial_test::serial]
+    fn worker_prompt_profile_reads_the_real_process_env_var() {
+        std::env::remove_var(WORKER_PROMPT_PROFILE_ENV);
+        assert_eq!(
+            worker_prompt_profile(
+                None,
+                std::env::var(WORKER_PROMPT_PROFILE_ENV).ok().as_deref()
+            ),
+            WorkerPromptProfile::Default,
+            "no env set: Default"
+        );
+
+        std::env::set_var(WORKER_PROMPT_PROFILE_ENV, "compact");
+        assert_eq!(
+            worker_prompt_profile(
+                Some(200_000),
+                std::env::var(WORKER_PROMPT_PROFILE_ENV).ok().as_deref()
+            ),
+            WorkerPromptProfile::Compact,
+            "PERMAGENT_WORKER_PROFILE=compact must win even for a large model context limit"
+        );
+
+        std::env::remove_var(WORKER_PROMPT_PROFILE_ENV);
+    }
+
     /// A block within both bounds is returned unchanged — no marker, no
     /// truncation — so a compact-profile worker never pays for bounding
     /// blocks that already fit (and the default profile, which never calls
