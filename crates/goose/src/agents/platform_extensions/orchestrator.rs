@@ -16424,7 +16424,19 @@ async fn drain_dispatched_goals_with(
                     } else {
                         false
                     };
-                    if stalled_locally {
+                    // R55a-b (G35): never race a still-running completion
+                    // tracker — the same guard `park_dispatched_goals_now`
+                    // applies before its own `handle_goal_timeout` call. A
+                    // detached handler already finishing this goal must not
+                    // also be fallen back to cloud.
+                    if stalled_locally && goal_completion_in_flight(&card_id) {
+                        tracing::debug!(
+                            target: "permagentd::brain",
+                            goal_id = %card_id,
+                            "local stall fallback skipped_in_flight: a completion handler is already running"
+                        );
+                        still_pending.insert(session_id, (card_id, project_id));
+                    } else if stalled_locally {
                         stamp_local_fallback_to_cloud(pool, &card_id, "stall").await;
                         let _ = handle_goal_timeout(
                             pool,
@@ -44538,6 +44550,7 @@ mod tests {
         assert_eq!(
             worker_prompt_profile(
                 None,
+                false,
                 std::env::var(WORKER_PROMPT_PROFILE_ENV).ok().as_deref()
             ),
             WorkerPromptProfile::Default,
@@ -44548,6 +44561,7 @@ mod tests {
         assert_eq!(
             worker_prompt_profile(
                 Some(200_000),
+                false,
                 std::env::var(WORKER_PROMPT_PROFILE_ENV).ok().as_deref()
             ),
             WorkerPromptProfile::Compact,
