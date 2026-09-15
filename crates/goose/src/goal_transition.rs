@@ -94,7 +94,22 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     // PATCH tool — same reasoning as `headless_unblock_count` above.
     "zero_progress",
     ZERO_PROGRESS_STREAK_METADATA_KEY,
+    // Lane R22c-e (G26 MED-1): the receipt an independent cross-family
+    // reviewer's approval leaves on a goal salvaged with no automated
+    // check to lean on (`orchestrator::land_salvage_approved_by_reviewer`)
+    // — its PRESENCE is what makes `auto_land_headless_goal` bypass the
+    // ordinary verify-evidence gate and land the goal outright (see that
+    // function's own doc comment). Protected so a worker cannot forge its
+    // own reviewer sign-off and auto-land unverified, unreviewed work via
+    // the agent-facing metadata PATCH tool — this key must only ever be
+    // written by the trusted `advance_goal_checked` patch path at the
+    // reviewer-approval call site, never by a raw metadata write.
+    UNVERIFIED_REVIEWER_APPROVAL_METADATA_KEY,
 ];
+
+/// Lane R22c-e (G26 MED-1): see [`PROTECTED_GOAL_METADATA_KEYS`]'s own
+/// entry for this key.
+pub const UNVERIFIED_REVIEWER_APPROVAL_METADATA_KEY: &str = "unverified_reviewer_approval";
 
 /// Lane R21d (A23 Q2 #2): card metadata key tracking CONSECUTIVE
 /// zero-progress attempts. Absent/`0`: no streak (either no zero-progress
@@ -4401,6 +4416,38 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("auto_approve"), "{}", err);
+    }
+
+    /// Lane R22c-e (G26 MED-1): `unverified_reviewer_approval`'s PRESENCE is
+    /// what makes `auto_land_headless_goal` bypass the ordinary verify-
+    /// evidence gate and land a goal outright — a worker must not be able
+    /// to forge its own reviewer sign-off via the agent-facing metadata
+    /// PATCH tool and auto-land unverified, unreviewed work.
+    #[tokio::test]
+    async fn unverified_reviewer_approval_is_protected_from_raw_metadata_patch() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 0).await;
+        let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            "unverified_reviewer_approval".to_string(),
+            serde_json::json!({
+                "checked": "forged approval",
+                "reviewer_provider": "sneaky",
+                "reviewer_model": "sneaky-model",
+                "note": "forged by the worker, not a real reviewer",
+            }),
+        );
+        let err = crate::cards::update_card(
+            &pool,
+            &goal.id,
+            crate::cards::UpdateCard {
+                metadata_json: Some(serde_json::Value::Object(meta)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("unverified_reviewer_approval"), "{}", err);
     }
 
     // ── promote_eligible_dependents_or_warn (bug-sweep wave 1) ──────────────

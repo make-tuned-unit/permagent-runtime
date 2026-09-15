@@ -11174,7 +11174,10 @@ async fn auto_land_headless_goal(
     // verification_status` — the retryable-effect race-closer
     // `apply_decision_effect_with_auto_land` consults — accepts ONLY that
     // literal value; anything else silently declines to land the approval.
-    if let Some(approval) = card.metadata_json.get("unverified_reviewer_approval") {
+    if let Some(approval) = card
+        .metadata_json
+        .get(goal_transition::UNVERIFIED_REVIEWER_APPROVAL_METADATA_KEY)
+    {
         if let Err(e) = cards::set_goal_verdict_and_program_receipts(
             pool,
             &card.id,
@@ -14422,15 +14425,19 @@ async fn maybe_salvage_committed_work(
         if matches!(verdict, Some("no_checks") | Some("error")) {
             return hand_salvaged_work_to_review_unverified(
                 pool,
-                card,
-                // `commits_unlanded_at_trunk` yields u32; this helper takes
-                // u64. Widening is lossless.
-                ahead.into(),
-                &evidence,
-                worktree_path,
-                &baseline,
-                headless_auto_land,
-                calling_session_id,
+                SalvageReviewInput {
+                    card,
+                    // `ahead` is `u32` here (git commit counts never need
+                    // more); the review-path functions take `u64` (matching
+                    // every other salvage `ahead` already does) — widen,
+                    // never lossy.
+                    ahead: ahead.into(),
+                    verify_note: &evidence,
+                    worktree_path,
+                    baseline: &baseline,
+                    headless_auto_land,
+                    calling_session_id,
+                },
             )
             .await;
         }
@@ -14564,6 +14571,20 @@ async fn maybe_salvage_committed_work(
     SalvageOutcome::Salvaged { note }
 }
 
+/// Lane R22c-e (clippy `too_many_arguments`): bundles [`hand_salvaged_work_
+/// to_review_unverified`]'s call — otherwise 8 positional arguments — into
+/// one struct. Borrowed, not owned: this only threads references through
+/// one dispatch call, never persisted or held past it.
+struct SalvageReviewInput<'a> {
+    card: &'a cards::Card,
+    ahead: u64,
+    verify_note: &'a str,
+    worktree_path: &'a std::path::Path,
+    baseline: &'a str,
+    headless_auto_land: bool,
+    calling_session_id: Option<&'a str>,
+}
+
 /// Lane R22c-b/R22c-c: NO_CHECKS (R21c) — and the `error_result` shape that
 /// reaches the same honest place ("nothing could be checked") through
 /// `node_checks`'/`select_checks`'s own `Err(..)` branches — are not a pass
@@ -14598,14 +14619,18 @@ async fn maybe_salvage_committed_work(
 /// run waiting on a human who does not exist.
 async fn hand_salvaged_work_to_review_unverified(
     pool: &sqlx::Pool<sqlx::Sqlite>,
-    card: &cards::Card,
-    ahead: u64,
-    verify_note: &str,
-    worktree_path: &std::path::Path,
-    baseline: &str,
-    headless_auto_land: bool,
-    calling_session_id: Option<&str>,
+    input: SalvageReviewInput<'_>,
 ) -> SalvageOutcome {
+    let SalvageReviewInput {
+        card,
+        ahead,
+        verify_note,
+        worktree_path,
+        baseline,
+        headless_auto_land,
+        calling_session_id,
+    } = input;
+
     if !headless_auto_land {
         return hand_to_review_for_a_human(pool, card, ahead, verify_note).await;
     }
@@ -14629,15 +14654,31 @@ async fn hand_salvaged_work_to_review_unverified(
                 card,
                 ahead,
                 verify_note,
-                &checked,
-                &reviewer_provider,
-                &reviewer_model,
+                SalvageReviewerApproval {
+                    checked: &checked,
+                    reviewer_provider: &reviewer_provider,
+                    reviewer_model: &reviewer_model,
+                },
                 calling_session_id,
             )
             .await
         }
         ReviewerGateOutcome::Refused { reason } => {
             park_salvage_the_reviewer_rejected(pool, card, ahead, verify_note, &reason).await
+        }
+        // Lane R22c-e (G26 MED-2): a distinct outcome from an ordinary
+        // reviewer refusal — the reviewer was never even asked, because the
+        // diff was too large to show it in full. `park_salvage_the_
+        // reviewer_rejected`'s generic `salvaged_on_park_unverified_
+        // reviewed` outcome would misleadingly imply a reviewer actually
+        // looked; this records the real reason instead.
+        ReviewerGateOutcome::DiffTooLarge { reason } => {
+            let note = format!(
+                "{ahead} commit(s) past baseline could not be checked automatically \
+                 ({verify_note}); {reason}"
+            );
+            record_salvage_receipt(pool, &card.id, "salvage_review_diff_too_large", &note).await;
+            SalvageOutcome::NotSalvaged { note }
         }
     }
 }
@@ -14748,6 +14789,7 @@ async fn hand_to_review_for_a_human(
 /// repeated-finding escalation) — every one of these parks, never lands,
 /// per the coordinator's own rule: never land without the reviewer's
 /// approval.
+#[derive(Debug)]
 enum ReviewerGateOutcome {
     Approved {
         checked: String,
@@ -14757,6 +14799,16 @@ enum ReviewerGateOutcome {
     Refused {
         reason: String,
     },
+    /// Lane R22c-e (G26 MED-2): the diff is larger than the reviewer's
+    /// prompt window can carry. Distinct from `Refused` so the caller
+    /// records the specific `salvage_review_diff_too_large` outcome rather
+    /// than the generic reviewer-declined one — this is never sent to the
+    /// reviewer at all, truncated or otherwise: reviewing a partial diff
+    /// on its merits is not reviewing the change, and the coordinator's
+    /// rule is explicit that a truncated diff must never be reviewed.
+    DiffTooLarge {
+        reason: String,
+    },
 }
 
 /// Bounds how long the reviewer's own completion call may run — independent
@@ -14764,9 +14816,14 @@ enum ReviewerGateOutcome {
 /// the time this runs).
 const REVIEWER_GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// A diff this large is truncated before it goes into the reviewer prompt —
-/// bounds the request size without changing what the diff-substantive check
-/// (`changed_lines`, computed from the FULL diff before truncation) sees.
+/// Lane R22c-e (G26 MED-2): the reviewer's prompt window, in characters
+/// (not bytes — `git diff` output is arbitrary UTF-8, and a byte-index
+/// slice can land mid-codepoint and panic). A diff over this size is NEVER
+/// sent to the reviewer, truncated or otherwise — `dispatch_cross_family_
+/// reviewer_for_salvage` rejects it outright
+/// (`ReviewerGateOutcome::DiffTooLarge`) rather than reviewing a partial
+/// diff on its merits, which would let a reviewer approve work it never
+/// actually saw in full.
 const REVIEWER_GATE_MAX_DIFF_CHARS: usize = 40_000;
 
 /// The number of `+`/`-` content lines in a unified diff (`+++`/`---`
@@ -14854,14 +14911,23 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     .await
     .unwrap_or_default();
     let changed_lines = count_diff_changed_lines(&diff);
-    let diff_for_prompt = if diff.len() > REVIEWER_GATE_MAX_DIFF_CHARS {
-        format!(
-            "{}\n\n[diff truncated at {REVIEWER_GATE_MAX_DIFF_CHARS} chars]",
-            &diff[..REVIEWER_GATE_MAX_DIFF_CHARS]
-        )
-    } else {
-        diff
-    };
+    // Lane R22c-e (G26 MED-2): character count, not `diff.len()` (bytes) —
+    // `git diff` output is arbitrary UTF-8, so a byte-length comparison
+    // could refuse a diff that is actually under the character window (or,
+    // worse, the OLD code's `&diff[..N]` byte slice could land mid-codepoint
+    // and panic). Over the window: never review it, truncated or otherwise
+    // — park honestly instead of approving on a partial read.
+    let diff_char_count = diff.chars().count();
+    if diff_char_count > REVIEWER_GATE_MAX_DIFF_CHARS {
+        return ReviewerGateOutcome::DiffTooLarge {
+            reason: format!(
+                "the diff is {diff_char_count} characters, over the \
+                 {REVIEWER_GATE_MAX_DIFF_CHARS}-character review window — an independent \
+                 reviewer must see the full diff, never a truncated one"
+            ),
+        };
+    }
+    let diff_for_prompt = diff;
 
     let configured = crate::cost_router::role_model(crate::cost_router::WorkflowRole::Review);
     let derived_map = crate::cost_router::derived_role_map().await;
@@ -14990,6 +15056,15 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     }
 }
 
+/// Lane R22c-e (clippy `too_many_arguments`): bundles the three reviewer-
+/// identity fields [`land_salvage_approved_by_reviewer`] otherwise took as
+/// separate arguments.
+struct SalvageReviewerApproval<'a> {
+    checked: &'a str,
+    reviewer_provider: &'a str,
+    reviewer_model: &'a str,
+}
+
 /// Lane R22c-c: the reviewer approved — land through the SAME
 /// `auto_land_headless_goal`/`PERMAGENT_HEADLESS_AUTOLAND` policy a
 /// genuinely verified goal lands through (the operator's launch is the
@@ -15004,43 +15079,37 @@ async fn land_salvage_approved_by_reviewer(
     card: &cards::Card,
     ahead: u64,
     verify_note: &str,
-    checked: &str,
-    reviewer_provider: &str,
-    reviewer_model: &str,
+    approval: SalvageReviewerApproval<'_>,
     calling_session_id: Option<&str>,
 ) -> SalvageOutcome {
-    if let Err(e) = persist_card_meta(pool, &card.id, |m| {
-        m.insert(
-            "unverified_reviewer_approval".to_string(),
-            serde_json::json!({
-                "checked": checked,
-                "reviewer_provider": reviewer_provider,
-                "reviewer_model": reviewer_model,
-                "note": verify_note,
-                "recorded_at": chrono::Utc::now().to_rfc3339(),
-            }),
-        );
-    })
-    .await
-    {
-        let note = format!(
-            "the independent reviewer approved {ahead} commit(s), but the approval receipt \
-             could not be recorded: {e}"
-        );
-        record_salvage_receipt(
-            pool,
-            &card.id,
-            "salvage_skipped_review_transition_failed",
-            &note,
-        )
-        .await;
-        return SalvageOutcome::NotSalvaged { note };
-    }
-
+    let SalvageReviewerApproval {
+        checked,
+        reviewer_provider,
+        reviewer_model,
+    } = approval;
+    // Lane R22c-e (G26 MED-1): `unverified_reviewer_approval` is now in
+    // `goal_transition::PROTECTED_GOAL_METADATA_KEYS` — its PRESENCE is
+    // what makes `auto_land_headless_goal` bypass the ordinary verify-
+    // evidence gate, so it may only ever be written through the guard's
+    // own audited `metadata_patch` path, folded into the SAME
+    // `advance_goal_checked` call that moves the card to Review, never as
+    // a separate raw write beforehand (that would leave a window — however
+    // brief — where the key existed without ANY audited transition
+    // recording who set it or why).
     let mut patch = serde_json::Map::new();
     patch.insert(
         "completed_at".to_string(),
         serde_json::json!(chrono::Utc::now().to_rfc3339()),
+    );
+    patch.insert(
+        goal_transition::UNVERIFIED_REVIEWER_APPROVAL_METADATA_KEY.to_string(),
+        serde_json::json!({
+            "checked": checked,
+            "reviewer_provider": reviewer_provider,
+            "reviewer_model": reviewer_model,
+            "note": verify_note,
+            "recorded_at": chrono::Utc::now().to_rfc3339(),
+        }),
     );
     if let Err(e) = goal_transition::advance_goal_checked(
         pool,
@@ -21738,9 +21807,12 @@ mod tests {
             &card,
             1,
             "no automated checks ran; review the diff on its merits",
-            "read the diff end to end; the change matches the task and adds no new risk",
-            "test-reviewer-provider",
-            "test-reviewer-model",
+            SalvageReviewerApproval {
+                checked: "read the diff end to end; the change matches the task and adds no \
+                          new risk",
+                reviewer_provider: "test-reviewer-provider",
+                reviewer_model: "test-reviewer-model",
+            },
             Some("coord-session-1"),
         )
         .await;
@@ -21843,7 +21915,7 @@ mod tests {
         assert!(
             updated
                 .metadata_json
-                .get("unverified_reviewer_approval")
+                .get(goal_transition::UNVERIFIED_REVIEWER_APPROVAL_METADATA_KEY)
                 .is_none(),
             "a rejection must never stamp the approval marker that bypasses auto-land's \
              verify-evidence gate"
@@ -21853,6 +21925,75 @@ mod tests {
             outcomes,
             vec!["salvaged_on_park_unverified_reviewed".to_string()]
         );
+    }
+
+    /// Lane R22c-e (G26 MED-2): a diff over the reviewer's prompt window
+    /// must be refused outright — never truncated and sent for review. The
+    /// old code's `&diff[..N]` byte slice could also panic on a multi-byte
+    /// UTF-8 boundary; this fixture's oversized content is plain ASCII (so
+    /// a byte-slice bug alone would not have been caught here), but the
+    /// size check itself is what this test pins.
+    #[tokio::test]
+    async fn dispatch_cross_family_reviewer_refuses_a_diff_over_the_review_window() {
+        let pool = test_pool().await;
+        let (dir, baseline, _fix_head) = r20b_worktree_with_committed_fix("r22c-e-oversized-diff");
+        // Add a further commit whose diff alone is larger than the
+        // reviewer's 40,000-character window.
+        let huge_line = "x".repeat(REVIEWER_GATE_MAX_DIFF_CHARS + 1_000);
+        std::fs::write(dir.path().join("src/huge.rs"), format!("// {huge_line}\n")).unwrap();
+        r20b_git(dir.path(), &["add", "-A"]);
+        r20b_git(dir.path(), &["commit", "-q", "-m", "add an oversized file"]);
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": "",
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r22c-e-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(dir.path().to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        let outcome = dispatch_cross_family_reviewer_for_salvage(
+            &pool,
+            &card,
+            dir.path(),
+            &baseline,
+            "no automated checks ran; review the diff on its merits",
+        )
+        .await;
+        match outcome {
+            ReviewerGateOutcome::DiffTooLarge { reason } => {
+                assert!(
+                    reason.contains("character"),
+                    "the refusal must name the size problem: {reason}"
+                );
+            }
+            other => panic!("expected DiffTooLarge, got {other:?}"),
+        }
     }
 
     // ── Lane R22d (A24 Q1/Q3): salvage measures unlanded commits against ────
