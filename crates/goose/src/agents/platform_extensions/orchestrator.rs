@@ -1508,34 +1508,163 @@ fn merge_mechanical_call_site_goals(
     (collapse_goal_clusters(&goals, &clusters), merged_away)
 }
 
-/// Z1-5 cap (R52b brief): a scope-proportional ceiling on total goal count,
-/// independent of whether any two goals shared a mechanical shape — `1 +
-/// <distinct file-shaped tokens named across every goal>`, clamped to
-/// `[2, 6]`. Never DROPS a goal to reach the cap: repeatedly folds the
-/// highest-indexed remaining goal into its immediate predecessor (one
-/// `collapse_goal_clusters` call per fold) until the count fits, so every
-/// acceptance criterion and tag from an over-decomposed roadmap still
-/// survives somewhere in the output, just combined.
+/// R53a (G34 HIGH-4): regardless of whether the mechanical merge above
+/// found anything to fold, a roadmap larger than this is capped anyway --
+/// the ONLY unconditional trigger for `cap_roadmap_goal_count` now (see its
+/// own doc comment for the other, gated trigger).
+const ROADMAP_GOAL_COUNT_SANITY_CEILING: usize = 8;
+
+/// R53a (G34 HIGH-4): true when `token` names a module/package/path scope
+/// even without a file extension -- a multi-segment path (`src/auth`) or a
+/// `::`-qualified Rust path (`billing::invoice`). Deliberately narrower
+/// than a bare identifier: an unqualified word like `auth` alone is too
+/// common to trust as a scope signal, but a qualified path is. Combined
+/// with [`looks_like_file_token`] (which already covers a path WITH an
+/// extension, e.g. `src/auth.rs`) so a roadmap scoped by module/component
+/// name rather than literal filenames still produces a nonzero scope
+/// signal -- the exact gap G34 flagged (`file_tokens.len() == 0` clamping
+/// the cap to its floor of 2 for a genuinely-justified module-scoped
+/// split).
+fn looks_like_module_token(token: &str) -> bool {
+    let trimmed = token.trim_matches(|c: char| {
+        !c.is_alphanumeric() && c != '.' && c != '_' && c != '/' && c != ':'
+    });
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains("::") {
+        return trimmed
+            .split("::")
+            .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_alphanumeric() || c == '_'));
+    }
+    if trimmed.contains('/') {
+        let segments: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+        return segments.len() >= 2
+            && segments.iter().all(|seg| {
+                seg.chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+            });
+    }
+    false
+}
+
+/// R53a (G34 HIGH-4): backtick-quoted, function-call-shaped spans
+/// (`` `name(...)` ``) naming the SPECIFIC function a goal's title/
+/// description targets -- used only to VETO a cap fold, never to select
+/// one. Two goals whose extracted target-function sets are both non-empty
+/// AND disjoint name different functions and must never be merged into one
+/// dispatch/verify/review unit, even if merging would otherwise bring the
+/// roadmap under the cap.
+fn extract_target_functions(text: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let mut in_span = false;
+    let mut start = 0usize;
+    for (i, c) in text.char_indices() {
+        if c != '`' {
+            continue;
+        }
+        if in_span {
+            if let Some(span) = text.get(start..i) {
+                if let Some(name) = function_call_name(span) {
+                    out.insert(name);
+                }
+            }
+            in_span = false;
+        } else {
+            in_span = true;
+            start = i + 1;
+        }
+    }
+    out
+}
+
+/// Whether backtick-span `span` reads as a function-call expression
+/// (`ident(...)` or `ident::path(...)`), and if so, the called name.
+fn function_call_name(span: &str) -> Option<String> {
+    let trimmed = span.trim();
+    let open = trimmed.find('(')?;
+    if !trimmed.ends_with(')') {
+        return None;
+    }
+    let name = trimmed.get(..open)?.trim();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == ':')
+    {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// R53a (G34 HIGH-4): true when `a` and `b` each name at least one
+/// backtick-quoted target function AND the two sets share none -- the hard
+/// veto `cap_roadmap_goal_count`'s fold loop checks before ever merging two
+/// goals. A goal naming no function at all never vetoes anything (an empty
+/// set is never "disjoint AND non-empty" on either side).
+fn goals_target_different_functions(
+    a: &goal_state::ProposedGoal,
+    b: &goal_state::ProposedGoal,
+) -> bool {
+    let ta = extract_target_functions(&format!("{} {}", a.title, a.description));
+    let tb = extract_target_functions(&format!("{} {}", b.title, b.description));
+    !ta.is_empty() && !tb.is_empty() && ta.is_disjoint(&tb)
+}
+
+/// Z1-5 cap (R52b brief, narrowed by R53a / G34 HIGH-4): a scope-
+/// proportional ceiling on total goal count -- `1 + <distinct file/module-
+/// shaped tokens named across every goal>`, clamped to `[2, 6]`. Only runs
+/// at all when `mechanical_merge_found_a_group` (the mechanical pass right
+/// above found at least one same-shape cluster) OR the roadmap exceeds
+/// [`ROADMAP_GOAL_COUNT_SANITY_CEILING`] regardless -- an ordinary
+/// multi-goal roadmap where nothing shared a mechanical shape and the count
+/// is unremarkable is left alone entirely, never blind-merged by index
+/// adjacency (G34 HIGH-4: the old unconditional trigger folded a
+/// genuinely-justified, non-filename-scoped split down to its 2-goal
+/// floor). Never DROPS a goal to reach the cap, and never folds two goals
+/// whose extracted target functions differ ([`goals_target_different_functions`]):
+/// the fold loop walks backward from the highest-indexed goal for the
+/// NEAREST predecessor it is safe to merge into, and stops (leaving the
+/// roadmap over cap) rather than force an unsafe fold when none exists.
 fn cap_roadmap_goal_count(
     mut goals: Vec<goal_state::ProposedGoal>,
+    mechanical_merge_found_a_group: bool,
 ) -> (Vec<goal_state::ProposedGoal>, usize) {
     if goals.len() < 2 {
         return (goals, 0);
     }
-    let mut file_tokens: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if !mechanical_merge_found_a_group && goals.len() <= ROADMAP_GOAL_COUNT_SANITY_CEILING {
+        return (goals, 0);
+    }
+    let mut scope_tokens: std::collections::HashSet<String> = std::collections::HashSet::new();
     for goal in &goals {
         let haystack = format!("{} {}", goal.title, goal.description).to_lowercase();
         for tok in haystack.split_whitespace() {
-            if looks_like_file_token(tok) {
-                file_tokens.insert(tok.to_string());
+            if looks_like_file_token(tok) || looks_like_module_token(tok) {
+                scope_tokens.insert(tok.to_string());
             }
         }
     }
-    let cap = (1 + file_tokens.len()).clamp(2, 6);
+    let cap = (1 + scope_tokens.len()).clamp(2, 6);
     let mut merged = 0usize;
     while goals.len() > cap {
         let last = goals.len() - 1;
-        goals = collapse_goal_clusters(&goals, &[vec![last - 1, last]]);
+        let mut fold_into = None;
+        let mut j = last;
+        while j > 0 {
+            j -= 1;
+            if !goals_target_different_functions(&goals[j], &goals[last]) {
+                fold_into = Some(j);
+                break;
+            }
+        }
+        let Some(j) = fold_into else {
+            // No remaining predecessor is safe to fold into (every
+            // candidate names a different target function) -- stop rather
+            // than force an unsafe merge; the roadmap stays over cap.
+            break;
+        };
+        goals = collapse_goal_clusters(&goals, &[vec![j, last]]);
         merged += 1;
     }
     (goals, merged)
@@ -1705,7 +1834,10 @@ pub(crate) fn ground_roadmap_goals(
         // Z1-5 cap: even after the mechanical merge above, keep the roadmap
         // proportional to scope — never drop a goal to get there, fold the
         // excess instead (see `cap_roadmap_goal_count`'s own doc comment).
-        let (capped_goals, merged_for_cap) = cap_roadmap_goal_count(goals);
+        // R53a (G34 HIGH-4): gated on the mechanical merge above actually
+        // having found something, or the hard sanity ceiling — never
+        // unconditional.
+        let (capped_goals, merged_for_cap) = cap_roadmap_goal_count(goals, merged_mechanical > 0);
         goals = capped_goals;
         if merged_for_cap > 0 {
             receipts.push(format!(
@@ -2401,6 +2533,20 @@ fn criterion_reads_as_preservation_claim(lower: &str) -> bool {
     PRESERVATION_PHRASES.iter().any(|p| lower.contains(p))
 }
 
+/// R53a (G34 HIGH-2): below this many words / characters, a free-text
+/// backtick span is too generic to trust as a preservation-claim SUBJECT --
+/// a single short word ("it", "this", "ok") could coincidentally co-occur
+/// with an unrelated broken-phrase sentence elsewhere in the task text. A
+/// `--flag` candidate (matched separately, below) is exempt: its syntax
+/// (the `--` prefix) already rules out the generic-short-word shape this
+/// guards against, and the A49 fixture's own subject (`--level`, 7 chars)
+/// must keep matching.
+const MIN_SUBJECT_CHARS: usize = 8;
+
+fn subject_candidate_is_specific_enough(candidate: &str) -> bool {
+    candidate.split_whitespace().count() >= 2 || candidate.chars().count() >= MIN_SUBJECT_CHARS
+}
+
 /// R43b-c: candidate "subject" tokens a preservation claim might be about,
 /// most-specific first -- `--flag`s, then backtick-quoted spans -- so a
 /// rewrite prefers `` `--level` `` over a vaguer quoted phrase when both are
@@ -2419,9 +2565,72 @@ fn preservation_subject_candidates(criterion: &str) -> Vec<String> {
             .enumerate()
             .filter(|(i, _)| i % 2 == 1) // odd segments are inside a backtick pair
             .map(|(_, s)| s.trim().to_string())
-            .filter(|s| !s.is_empty()),
+            .filter(|s| !s.is_empty() && subject_candidate_is_specific_enough(s)),
     );
     out
+}
+
+/// R53a (G34 HIGH-2): char-based whole-token "contains" -- true when
+/// `needle` appears in `haystack` at a position not embedded inside a
+/// longer alphanumeric run on either side. Deliberately NOT a regex `\b`
+/// boundary: `\b` requires the boundary character itself to be a word
+/// character, which is wrong for a needle like `--level` that STARTS with
+/// a non-word `-` -- `\b--level\b` fails to match at all, even at the very
+/// start of a sentence. Operates on `Vec<char>` slices (never a byte-index
+/// `&str` slice), so this stays `-D clippy::string_slice` clean.
+fn contains_as_whole_token(haystack: &str, needle: &str) -> bool {
+    let needle_chars: Vec<char> = needle.chars().collect();
+    if needle_chars.is_empty() {
+        return false;
+    }
+    let hay_chars: Vec<char> = haystack.chars().collect();
+    if needle_chars.len() > hay_chars.len() {
+        return false;
+    }
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    for start in 0..=(hay_chars.len() - needle_chars.len()) {
+        let end = start + needle_chars.len();
+        if hay_chars[start..end] != needle_chars[..] {
+            continue;
+        }
+        let before_ok = start == 0 || !is_word(hay_chars[start - 1]);
+        let after_ok = end == hay_chars.len() || !is_word(hay_chars[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+    false
+}
+
+/// R53a (G34 HIGH-2): `sentence_lower` contains a bare "should" -- on its
+/// own too generic a signal that a subject is BROKEN (a requirements
+/// statement like "Documentation should list all flags including
+/// `--format`" says nothing about `--format` being broken) -- but reading
+/// it alongside a negation or bug word in the SAME sentence ("shouldn't",
+/// "should not", "should have failed") is a genuine defect claim.
+fn should_co_occurs_with_negation_or_bug_word(sentence_lower: &str) -> bool {
+    // Plain substring, not a `\b`-bounded regex: "shouldn't"/"should've"
+    // must count as "carries should" too, and the negation/bug-word check
+    // right below is what actually guards against a false positive, not
+    // this presence check.
+    if !sentence_lower.contains("should") {
+        return false;
+    }
+    const NEGATION_OR_BUG_WORDS: &[&str] = &[
+        "not ",
+        "n't",
+        "instead of",
+        "wrong",
+        "incorrectly",
+        "bug",
+        "broken",
+        "fails",
+        "failing",
+        "never ",
+    ];
+    NEGATION_OR_BUG_WORDS
+        .iter()
+        .any(|w| sentence_lower.contains(w))
 }
 
 /// R43b-c: does some sentence of `task_text` (split the same `.`/`\n` way
@@ -2429,9 +2638,13 @@ fn preservation_subject_candidates(criterion: &str) -> Vec<String> {
 /// `subject` AND say it is currently broken/incorrect/needs fixing? Scoped
 /// to one sentence at a time so a broken-phrase in one sentence is never
 /// credited to an unrelated subject mentioned only in a different sentence.
+/// R53a (G34 HIGH-2): the subject match is a char-based whole-token check
+/// (never a raw substring), and the bare `\bshould\b` alternative was
+/// dropped from `broken_re` -- a "should" sentence only counts when it also
+/// carries a negation/bug word ([`should_co_occurs_with_negation_or_bug_word`]).
 fn task_text_names_subject_as_broken(task_text: &str, subject: &str) -> Option<String> {
     let broken_re = regex::Regex::new(
-        r"(?i)\bbroken\b|\bonly matches\b|\bincorrect\b|\bbug\b|\bfails\b|doesn't|does not|\bshould\b",
+        r"(?i)\bbroken\b|\bonly matches\b|\bincorrect\b|\bbug\b|\bfails\b|doesn't|does not",
     )
     .ok()?;
     let subject_lower = subject.to_lowercase();
@@ -2439,7 +2652,14 @@ fn task_text_names_subject_as_broken(task_text: &str, subject: &str) -> Option<S
         .split(['.', '\n'])
         .map(|s| s.trim())
         .find(|s| {
-            !s.is_empty() && s.to_lowercase().contains(&subject_lower) && broken_re.is_match(s)
+            if s.is_empty() {
+                return false;
+            }
+            let lower = s.to_lowercase();
+            if !contains_as_whole_token(&lower, &subject_lower) {
+                return false;
+            }
+            broken_re.is_match(s) || should_co_occurs_with_negation_or_bug_word(&lower)
         })
         .map(|s| s.to_string())
 }
@@ -2465,20 +2685,68 @@ fn criterion_contradicts_task_text_as_broken(
         })
 }
 
-/// R43b-c: rewrite a preservation claim the task text itself contradicts
-/// into a must-fix behavioural criterion that quotes the task's own account
-/// of what is broken -- never inventing a new claim, same "quote the task's
-/// own words" discipline [`derive_behavioural_ac_from_task_text`] already
-/// uses. Names an exit-code/output check explicitly so the result stays a
-/// probe-able, R35b-shaped claim (an invocation plus an observable outcome),
-/// not just a restated description.
-fn rewrite_preservation_ac_as_fix(subject: &str, task_sentence: &str) -> String {
-    format!(
-        "`{subject}` matching is case-insensitive: {task_sentence} -- invoke the change with a \
-         case-differing example and check its real exit code/output, not merely that the \
-         behavior was assumed to already work (rewritten from a preservation claim that \
-         contradicted the task text, R43b-c)"
-    )
+/// R53a (G34 HIGH-1): a sentence is only "usable" as the basis for a
+/// fix-form rewrite when it carries enough of its own content to state a
+/// concrete requirement -- below this many words it is closer to a bare tag
+/// than an account of what's broken, and inventing a specific-sounding
+/// claim around it would be worse than an honest UNVERIFIED marker.
+const MIN_USABLE_SENTENCE_WORDS: usize = 4;
+
+fn task_sentence_is_usable(sentence: &str) -> bool {
+    sentence.split_whitespace().count() >= MIN_USABLE_SENTENCE_WORDS
+}
+
+/// R53a (G34 HIGH-2 note, "if present, its example"): does some OTHER
+/// sentence of `task_text` also name `subject` AND read as an illustrative
+/// example ("for example", "e.g.", "example:")? Returns that sentence
+/// verbatim (never invented) so the rewrite can quote it alongside the
+/// task's own account of the breakage.
+fn find_example_sentence_for_subject(task_text: &str, subject: &str) -> Option<String> {
+    let subject_lower = subject.to_lowercase();
+    task_text
+        .split(['.', '\n'])
+        .map(|s| s.trim())
+        .find(|s| {
+            if s.is_empty() {
+                return false;
+            }
+            let lower = s.to_lowercase();
+            contains_as_whole_token(&lower, &subject_lower)
+                && (lower.contains("for example")
+                    || lower.contains("e.g.")
+                    || lower.contains("example:"))
+        })
+        .map(|s| s.to_string())
+}
+
+/// R43b-c / R53a (G34 HIGH-1): rewrite a preservation claim the task text
+/// itself contradicts into a must-fix behavioural criterion that quotes the
+/// task's own account of what is broken -- never inventing a new claim,
+/// same "quote the task's own words" discipline
+/// [`derive_behavioural_ac_from_task_text`] already uses. Parametrized on
+/// the actually-detected subject/sentence/example rather than a fixed
+/// "case-insensitive" template (G34 HIGH-1: the old hard-coded wording
+/// misdescribed every non-case bug). `None` when `task_sentence` is not
+/// [`task_sentence_is_usable`] -- the caller falls back to an honest
+/// UNVERIFIED marker rather than inventing text around a sentence with
+/// nothing concrete to quote.
+fn rewrite_preservation_ac_as_fix(
+    subject: &str,
+    task_sentence: &str,
+    example: Option<&str>,
+) -> Option<String> {
+    if subject.trim().is_empty() || !task_sentence_is_usable(task_sentence) {
+        return None;
+    }
+    let example_clause = example
+        .map(|e| format!(" Task's own example: {e}."))
+        .unwrap_or_default();
+    Some(format!(
+        "`{subject}` behavior matches what the task describes: {task_sentence}.{example_clause} \
+         -- invoke the change and check its real exit code/output against that account, not \
+         merely that the behavior was assumed to already work (rewritten from a preservation \
+         claim that contradicted the task text, R43b-c)"
+    ))
 }
 
 /// R43b-c entry point: reclassify every criterion in `criteria` whose
@@ -2487,7 +2755,14 @@ fn rewrite_preservation_ac_as_fix(subject: &str, task_sentence: &str) -> String 
 /// the goal's OTHER criteria are already behavioural (the exact cli-argparse
 /// m5 shape: six real exit-code criteria plus one contradicted preservation
 /// claim). Returns how many criteria were rewritten, for the caller's
-/// `ac_grounding preservation_reclassified=<n>` receipt.
+/// `ac_grounding preservation_reclassified=<n>` receipt. R53a (G34 HIGH-1):
+/// when [`rewrite_preservation_ac_as_fix`] has nothing usable to build a
+/// fix-form claim from, the criterion is tagged UNVERIFIED for human review
+/// instead of being left as a silently-false preservation claim or having
+/// generic text invented for it -- the same `UNVERIFIED (...) — kept for
+/// human review` convention [`ground_acceptance_criteria`] already uses,
+/// which `goal_still_carries_an_unresolved_unverified_ac` already holds a
+/// headless auto-land on.
 fn reclassify_contradicted_preservation_criteria(
     criteria: &mut [String],
     task_text: &str,
@@ -2497,7 +2772,16 @@ fn reclassify_contradicted_preservation_criteria(
         if let Some((subject, sentence)) =
             criterion_contradicts_task_text_as_broken(criterion, task_text)
         {
-            *criterion = rewrite_preservation_ac_as_fix(&subject, &sentence);
+            let example = find_example_sentence_for_subject(task_text, &subject);
+            let rewritten = rewrite_preservation_ac_as_fix(&subject, &sentence, example.as_deref())
+                .unwrap_or_else(|| {
+                    format!(
+                        "UNVERIFIED (task text names `{subject}` as currently broken, but no \
+                         clear account of the intended fix could be extracted) — kept for human \
+                         review: {criterion}"
+                    )
+                });
+            *criterion = rewritten;
             reclassified += 1;
         }
     }
@@ -2697,10 +2981,73 @@ fn derive_behavioural_ac_from_task_text(
 /// (or can usefully be asked) to fix by resubmitting.
 const DERIVED_AC_TAG: &str = "(derived from the task description, R43b)";
 
-/// Whether `criterion` is R43b/R43b-b's own derived output, per
-/// [`DERIVED_AC_TAG`].
+/// Whether `criterion` carries the [`DERIVED_AC_TAG`] substring. R53a (G34
+/// HIGH-3): this substring test is ONLY trustworthy immediately after this
+/// harness itself generates the criterion (e.g. inside
+/// [`harness_derived_ac_hashes`], run right after `ground_roadmap_goals`
+/// produces `goals`, before any model resubmission is possible) -- it must
+/// NEVER be used to decide whether a criterion coming back from a model's
+/// own `goals_json` (fully model-controlled text) is harness-derived; see
+/// [`derived_ac_hash`]/[`harness_derived_ac_hashes`] for the non-spoofable
+/// membership check `validate_roadmap_ac_or_rewrite` actually uses for that.
 fn criterion_is_harness_derived(criterion: &str) -> bool {
     criterion.contains(DERIVED_AC_TAG)
+}
+
+/// R53a (G34 HIGH-3): a stable per-criterion hash, used ONLY to record (at
+/// generation time) and later check (at `create_roadmap` time) whether a
+/// specific criterion is this harness's own derived output -- never as a
+/// cryptographic commitment, just a compact membership key. Content-only:
+/// a collision would only ever let a model-authored criterion identical to
+/// a real derived one ride the already-safe rewrite path, never bypass
+/// anything unsafe.
+fn derived_ac_hash(criterion: &str) -> String {
+    hex::encode(Sha256::digest(criterion.as_bytes()))
+}
+
+/// R53a (G34 HIGH-3 fix): the set of [`derived_ac_hash`] values for every
+/// criterion across `goals` that carries [`DERIVED_AC_TAG`] -- computed
+/// ONCE, immediately after `ground_roadmap_goals` produces `goals` inside
+/// `decompose_roadmap`, while every criterion is still 100% harness output
+/// (the model has not yet had a chance to submit anything). Stored
+/// server-side on the pending proposal (`ROADMAP_PROPOSAL_METADATA_KEY`,
+/// `derived_ac_hashes`) so a later `create_roadmap` call -- receiving
+/// `goals_json` the model fully controls -- can check a resubmitted
+/// criterion's hash against THIS recorded set instead of trusting a tag
+/// substring embedded in text the model wrote.
+fn harness_derived_ac_hashes(goals: &[goal_state::ProposedGoal]) -> Vec<String> {
+    goals
+        .iter()
+        .flat_map(|g| g.acceptance_criteria.iter())
+        .filter(|c| criterion_is_harness_derived(c))
+        .map(|c| derived_ac_hash(c))
+        .collect()
+}
+
+/// R53a (G34 HIGH-3): a criterion whose hash is NOT in `derived_hashes` is,
+/// by construction, not this harness's own output for the pending proposal
+/// -- even when it happens to contain the literal [`DERIVED_AC_TAG`] text
+/// (a model that has seen a prior `ac_rewritten_notes` value in context
+/// could echo it back, adversarially or not). Strip the tag substring from
+/// any such criterion before anything downstream (a receipt, a stored
+/// card) could read it and misattribute the model's own wording to this
+/// harness's scaffolding. A criterion whose hash DOES match is left
+/// byte-for-byte alone -- it legitimately carries the tag as part of its
+/// real, harness-generated text, which is exactly what was hashed.
+fn strip_spoofed_derived_ac_tags(
+    goals: &mut [goal_state::ProposedGoal],
+    derived_hashes: &std::collections::HashSet<String>,
+) {
+    for goal in goals.iter_mut() {
+        for criterion in goal.acceptance_criteria.iter_mut() {
+            if derived_hashes.contains(&derived_ac_hash(criterion)) {
+                continue;
+            }
+            if criterion.contains(DERIVED_AC_TAG) {
+                *criterion = criterion.replace(DERIVED_AC_TAG, "").trim().to_string();
+            }
+        }
+    }
 }
 
 /// Card metadata key set when a goal's acceptance criteria are ALL
@@ -2849,18 +3196,26 @@ async fn roadmap_decision_is_approved(pool: &sqlx::Pool<sqlx::Sqlite>, decision_
 /// one place, directly unit-testable against a real pool without the rest
 /// of `handle_create_roadmap`'s plumbing.
 ///
-/// R52a (A50 analysis (a)/(c)): a harness-derived ungrounded criterion
-/// (`criterion_is_harness_derived` -- R43b/R43b-b's own scaffolding, never
-/// the model's own wording) is rewritten immediately below, on THIS call,
-/// regardless of retry state. Forcing a reject-then-identical-resubmit
-/// round trip just to reach the one-retry accept-and-rewrite branch would
-/// ask the model to trigger a mechanism `tool_monitor`'s S1 identical-call
-/// guard intercepts and denies first (confirmed: `create_roadmap`'s own
-/// documented escape hatch was unreachable by construction whenever a
-/// model followed its literal instructions). Only a REMAINING,
-/// model-authored ungrounded criterion ever reaches the reject/one-retry
-/// path below, and its error text names what to change rather than asking
-/// for a resubmit.
+/// R52a (A50 analysis (a)/(c)): a harness-derived ungrounded criterion is
+/// rewritten immediately below, on THIS call, regardless of retry state.
+/// Forcing a reject-then-identical-resubmit round trip just to reach the
+/// one-retry accept-and-rewrite branch would ask the model to trigger a
+/// mechanism `tool_monitor`'s S1 identical-call guard intercepts and denies
+/// first (confirmed: `create_roadmap`'s own documented escape hatch was
+/// unreachable by construction whenever a model followed its literal
+/// instructions). Only a REMAINING, model-authored ungrounded criterion
+/// ever reaches the reject/one-retry path below, and its error text names
+/// what to change rather than asking for a resubmit.
+///
+/// R53a (G34 HIGH-3): "harness-derived" is decided by hash membership
+/// against `derived_ac_hashes` recorded server-side on the pending
+/// proposal at decompose time ([`harness_derived_ac_hashes`]) -- NEVER by
+/// [`criterion_is_harness_derived`]'s tag substring against `goals`, which
+/// is fully model-controlled text by the time it reaches this function.
+/// Any criterion carrying the tag text that is NOT in that recorded set is
+/// stripped of it first ([`strip_spoofed_derived_ac_tags`]), so a
+/// model-authored criterion can never borrow the tag's audit-trail
+/// attribution or skip straight to the "no retry needed" rewrite.
 async fn validate_roadmap_ac_or_rewrite(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     project: &crate::projects::Project,
@@ -2869,8 +3224,22 @@ async fn validate_roadmap_ac_or_rewrite(
     root: Option<&std::path::Path>,
     goals: &mut [goal_state::ProposedGoal],
 ) -> Result<std::collections::BTreeMap<usize, Vec<String>>, String> {
-    let mut ac_rewrite_notes =
-        rewrite_selected_ungrounded_criteria(goals, facts, criterion_is_harness_derived);
+    let derived_hashes: std::collections::HashSet<String> = project
+        .metadata_json
+        .get(ROADMAP_PROPOSAL_METADATA_KEY)
+        .and_then(|v| v.get("derived_ac_hashes"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    strip_spoofed_derived_ac_tags(goals, &derived_hashes);
+    let mut ac_rewrite_notes = rewrite_selected_ungrounded_criteria(goals, facts, |criterion| {
+        derived_hashes.contains(&derived_ac_hash(criterion))
+    });
 
     // Re-check groundedness fresh: the harness-derived rewrite above may
     // have resolved every ungrounded criterion, or a genuinely
@@ -9681,10 +10050,20 @@ impl OrchestratorClient {
         // JSON-path update + updated_at CAS: concurrent metadata writers keep
         // their keys, while a stale decomposition refuses to overwrite a
         // newer project revision.
+        //
+        // R53a (G34 HIGH-3): `derived_ac_hashes` is recorded HERE, right
+        // after `ground_roadmap_goals` produced `goals` above and before
+        // any model resubmission is possible -- the one point in the
+        // pipeline where `criterion_is_harness_derived`'s tag substring is
+        // actually trustworthy. `validate_roadmap_ac_or_rewrite` checks a
+        // later `create_roadmap` call's criteria against THIS recorded set
+        // by hash, never by re-trusting the tag on model-controlled text.
+        let derived_ac_hashes = harness_derived_ac_hashes(&goals);
         let proof_json = serde_json::json!({
             "hash": proposal_hash,
             "goal_count": goals.len(),
             "approval_decision_id": approval.id.clone(),
+            "derived_ac_hashes": derived_ac_hashes,
         });
         let saved = sqlx::query(
             "UPDATE projects
@@ -36072,6 +36451,7 @@ mod tests {
                 "hash": hash,
                 "goal_count": goals.len(),
                 "approval_decision_id": decision.id,
+                "derived_ac_hashes": harness_derived_ac_hashes(goals),
             }),
         );
         crate::projects::update_project(
@@ -36158,6 +36538,7 @@ mod tests {
                 "hash": hash,
                 "goal_count": goals.len(),
                 "approval_decision_id": decision.id,
+                "derived_ac_hashes": harness_derived_ac_hashes(goals),
             }),
         );
         crate::projects::update_project(
@@ -36215,6 +36596,7 @@ mod tests {
                 "hash": hash,
                 "goal_count": goals.len(),
                 "approval_decision_id": decision.id,
+                "derived_ac_hashes": harness_derived_ac_hashes(goals),
             }),
         );
         crate::projects::update_project(
@@ -37336,7 +37718,9 @@ mod tests {
             .flat_map(|g| g.acceptance_criteria.iter().cloned())
             .collect();
 
-        let (capped, merged_for_cap) = cap_roadmap_goal_count(goals);
+        // `true`: exercises the fold mechanism itself directly, independent
+        // of the R53a gating tested separately below.
+        let (capped, merged_for_cap) = cap_roadmap_goal_count(goals, true);
 
         assert_eq!(
             capped.len(),
@@ -37358,6 +37742,189 @@ mod tests {
             goal_state::topological_order(&capped).is_ok(),
             "folding must leave every depends_on edge resolvable, with no cycle or self-edge"
         );
+    }
+
+    /// R53a (G34 HIGH-4), positive case: a 4-goal roadmap scoped by module
+    /// name rather than literal filenames, where nothing shares a
+    /// mechanical shape and the count is nowhere near the sanity ceiling,
+    /// must NOT be capped at all — the gate never even runs.
+    #[test]
+    fn cap_roadmap_goal_count_leaves_a_module_scoped_roadmap_alone() {
+        let goals = vec![
+            goal(
+                "Add rate limiting to auth/login",
+                "Add rate limiting to the auth/login module's failed-attempt counter",
+                &["auth/login rejects after 5 failed attempts"],
+                &["code_edit"],
+            ),
+            goal(
+                "Add audit log to billing/invoice",
+                "Add an audit log entry to the billing/invoice module on refund",
+                &["billing/invoice logs refunds"],
+                &["code_edit"],
+            ),
+            goal(
+                "Add caching to search/index",
+                "Add caching to the search/index module's query path",
+                &["search/index caches repeated queries"],
+                &["code_edit"],
+            ),
+            goal(
+                "Add metrics to notify/dispatch",
+                "Add metrics counters to the notify/dispatch module",
+                &["notify/dispatch emits a dispatched_total metric"],
+                &["code_edit"],
+            ),
+        ];
+        let (capped, merged_for_cap) = cap_roadmap_goal_count(goals.clone(), false);
+        assert_eq!(
+            merged_for_cap, 0,
+            "no mechanical group and well under the sanity ceiling -- the cap must not run at all"
+        );
+        assert_eq!(
+            capped, goals,
+            "the roadmap must be left byte-for-byte untouched"
+        );
+    }
+
+    /// R53a (G34 HIGH-4): the same module-scoped goals, but now a
+    /// mechanical merge upstream DID find a group (opening the cap gate).
+    /// Scope must be computed from module tokens too, not filename tokens
+    /// only — with the old filename-only proxy this would compute
+    /// `file_tokens.len() == 0`, clamp the cap to its floor of 2, and
+    /// force-fold three genuinely distinct module-scoped goals together.
+    #[test]
+    fn cap_roadmap_goal_count_uses_module_tokens_not_just_filenames_once_gated_open() {
+        let goals = vec![
+            // Stands in for what the upstream mechanical merge already
+            // folded into one goal (its description mentions two files, so
+            // the OLD filename-only proxy sees exactly 2 tokens here).
+            goal(
+                "Update the retry wrapper",
+                "Update the retry wrapper call in src/auth.rs to pass a timeout argument. \
+                 Update the retry wrapper call in src/session.rs to pass a timeout argument",
+                &[
+                    "src/auth.rs passes the retry test",
+                    "src/session.rs passes the retry test",
+                ],
+                &["code_edit"],
+            ),
+            goal(
+                "Add rate limiting to auth/login",
+                "Add rate limiting to the auth/login module's failed-attempt counter",
+                &["auth/login rejects after 5 failed attempts"],
+                &["code_edit"],
+            ),
+            goal(
+                "Add audit log to billing/invoice",
+                "Add an audit log entry to the billing/invoice module on refund",
+                &["billing/invoice logs refunds"],
+                &["code_edit"],
+            ),
+            goal(
+                "Add caching to search/index",
+                "Add caching to the search/index module's query path",
+                &["search/index caches repeated queries"],
+                &["code_edit"],
+            ),
+            goal(
+                "Add metrics to notify/dispatch",
+                "Add metrics counters to the notify/dispatch module",
+                &["notify/dispatch emits a dispatched_total metric"],
+                &["code_edit"],
+            ),
+        ];
+        let goal_count = goals.len();
+        // `true`: simulates the mechanical merge upstream having found a
+        // group, which is what opens the gate in the real pipeline.
+        let (capped, merged_for_cap) = cap_roadmap_goal_count(goals, true);
+        assert_eq!(
+            merged_for_cap, 0,
+            "2 file tokens + 4 module tokens = 6 -> cap 7 clamped to 6, which already covers \
+             all {goal_count} goals -- nothing needed folding"
+        );
+        assert_eq!(
+            capped.len(),
+            goal_count,
+            "every genuinely distinct module-scoped goal must survive on its own"
+        );
+    }
+
+    /// R53a (G34 HIGH-4), negative case: once the cap DOES need to fold
+    /// goals (here, via the hard sanity ceiling), it must never merge two
+    /// goals that name different target functions — the fold must skip an
+    /// otherwise-adjacent conflicting pair and use a different, safe
+    /// predecessor instead.
+    #[test]
+    fn cap_roadmap_goal_count_never_folds_goals_naming_different_target_functions() {
+        let mut goals: Vec<goal_state::ProposedGoal> = (0..5)
+            .map(|i| {
+                let title = format!("Goal {i}");
+                let description = format!("do unrelated thing {i} to file{i}.rs");
+                goal(&title, &description, &[], &["code_edit"])
+            })
+            .collect();
+        goals.push(goal(
+            "Fix parse_config edge case",
+            "Fix an edge case in `parse_config()` for empty files",
+            &[],
+            &["code_edit"],
+        ));
+        goals.push(goal(
+            "Fix render_page edge case",
+            "Fix an edge case in `render_page()` for missing templates",
+            &[],
+            &["code_edit"],
+        ));
+        // 7 goals, 5 distinct file tokens -> cap = 1+5 = 6, exactly one
+        // fold needed; the two goals at the end (adjacent) name different
+        // target functions and must never be merged into each other.
+        let (capped, merged_for_cap) = cap_roadmap_goal_count(goals, true);
+        assert_eq!(capped.len(), 6);
+        assert_eq!(merged_for_cap, 1);
+        let has_both = capped.iter().any(|g| {
+            let text = format!("{} {}", g.title, g.description);
+            text.contains("parse_config(") && text.contains("render_page(")
+        });
+        assert!(
+            !has_both,
+            "goals naming different target functions must never end up merged into one: \
+             {capped:#?}"
+        );
+        assert!(
+            capped
+                .iter()
+                .any(|g| g.description.contains("parse_config(")),
+            "the parse_config goal must still be present somewhere: {capped:#?}"
+        );
+        assert!(
+            capped
+                .iter()
+                .any(|g| g.description.contains("render_page(")),
+            "the render_page goal must still be present somewhere: {capped:#?}"
+        );
+    }
+
+    /// R53a (G34 HIGH-4): the hard sanity ceiling still caps an oversized
+    /// roadmap even when NOTHING shared a mechanical shape upstream — the
+    /// other (non-mechanical) trigger for the gate.
+    #[test]
+    fn cap_roadmap_goal_count_sanity_ceiling_fires_without_a_mechanical_group() {
+        let goals: Vec<goal_state::ProposedGoal> = (0..9)
+            .map(|i| {
+                let title = format!("Goal {i}");
+                let description = format!("do completely unrelated thing number {i}");
+                goal(&title, &description, &[], &["code_edit"])
+            })
+            .collect();
+        let (capped, merged_for_cap) = cap_roadmap_goal_count(goals, false);
+        assert!(
+            capped.len() <= 6,
+            "9 goals with no mechanical group but over the sanity ceiling of 8 must still be \
+             capped: got {}",
+            capped.len()
+        );
+        assert!(merged_for_cap > 0);
     }
 
     /// Right-sizing is scoped to small repos (Z1-4's "≤ ~12 files"): a large
@@ -38193,6 +38760,124 @@ mod tests {
         );
     }
 
+    /// R53a (G34 HIGH-1): the rewrite text must name the ACTUAL contradicted
+    /// behavior, not a hard-coded "case-insensitive" template -- a
+    /// non-case-sensitivity bug (here, ordering) must be described as what
+    /// it actually is, and the task's own "for example" sentence must be
+    /// quoted too.
+    #[test]
+    fn reclassify_contradicted_preservation_criteria_describes_a_non_case_bug_specifically() {
+        let mut criteria = vec![
+            "Output ordering (`--sort-by`) still works correctly on sample_logs/app.log"
+                .to_string(),
+        ];
+        let task_text = "Fix logfilter: `--sort-by` ordering is currently broken, records come \
+                          out in insertion order instead of the requested field. For example, \
+                          `--sort-by level` should print ERROR before INFO but prints them in \
+                          file order.";
+
+        let reclassified = reclassify_contradicted_preservation_criteria(&mut criteria, task_text);
+        assert_eq!(reclassified, 1);
+        let rewritten = &criteria[0];
+        assert!(
+            !rewritten.to_lowercase().contains("case-insensitive")
+                && !rewritten.to_lowercase().contains("case-differing"),
+            "the old hard-coded case-insensitivity template must be gone for a non-case bug: \
+             {rewritten:?}"
+        );
+        assert!(
+            rewritten.contains("insertion order instead of the requested field"),
+            "must quote the task's own account of the breakage verbatim: {rewritten:?}"
+        );
+        assert!(
+            rewritten.contains("should print ERROR before INFO"),
+            "must quote the task's own example when present: {rewritten:?}"
+        );
+        assert_eq!(
+            classify_acceptance_criterion(rewritten),
+            AcKind::Behavioural
+        );
+    }
+
+    /// R53a (G34 HIGH-1): when the detector fires but the task's own
+    /// sentence has nothing usable to build a fix-form claim from (too
+    /// short), the criterion is tagged UNVERIFIED for human review instead
+    /// of inventing plausible-sounding text.
+    #[test]
+    fn rewrite_preservation_ac_as_fix_falls_back_to_unverified_for_an_unusable_sentence() {
+        assert!(rewrite_preservation_ac_as_fix("--level", "it's broken", None).is_none());
+        let result = rewrite_preservation_ac_as_fix(
+            "--level",
+            "the --level flag matching is currently broken for mixed case input",
+            None,
+        );
+        assert!(result.is_some());
+    }
+
+    /// R53a (G34 HIGH-1), end-to-end at the entry point: when the task
+    /// text's account is too short to build a fix-form claim from, the
+    /// criterion is rewritten to an honest UNVERIFIED marker (never
+    /// left as the original, now-known-false preservation claim, and
+    /// never a fabricated fix-form claim either).
+    #[test]
+    fn reclassify_contradicted_preservation_criteria_falls_back_to_unverified_for_an_unusable_sentence(
+    ) {
+        let mut criteria = vec!["`--level` handling still works correctly".to_string()];
+        let task_text = "--level broken. See the design doc for more info.";
+
+        let reclassified = reclassify_contradicted_preservation_criteria(&mut criteria, task_text);
+
+        assert_eq!(reclassified, 1);
+        assert!(
+            criteria[0].starts_with("UNVERIFIED"),
+            "an unusable sentence must fall back to an honest UNVERIFIED marker, never invented \
+             text: {:?}",
+            criteria[0]
+        );
+        assert!(
+            criteria[0].contains("kept for human review"),
+            "must use the same UNVERIFIED/kept-for-human-review convention \
+             `goal_still_carries_an_unresolved_unverified_ac` already holds a headless auto-land \
+             on: {:?}",
+            criteria[0]
+        );
+        assert!(
+            criteria[0].contains("still works correctly"),
+            "the original claim must still be quoted verbatim for the human reviewer, not \
+             discarded: {:?}",
+            criteria[0]
+        );
+    }
+
+    /// R53a (G34 HIGH-2), positive case: a genuine defect sentence using
+    /// "should" alongside a negation ("shouldn't") still gets flagged.
+    #[test]
+    fn task_text_names_subject_as_broken_flags_should_with_negation() {
+        let task_text = "The `--retries` flag shouldn't be silently ignored when combined with \
+                          `--timeout`.";
+        assert!(task_text_names_subject_as_broken(task_text, "--retries").is_some());
+    }
+
+    /// R53a (G34 HIGH-2), negative case: the exact false-positive shape from
+    /// the review -- a generic requirements sentence using bare "should"
+    /// must NOT flag the subject as broken, and a true preservation claim
+    /// elsewhere about that subject must be left alone.
+    #[test]
+    fn criterion_contradicts_task_text_as_broken_is_none_for_a_bare_should_requirements_sentence() {
+        let task_text = "Documentation should list all flags including `--format` for \
+                          completeness.";
+        assert!(
+            task_text_names_subject_as_broken(task_text, "--format").is_none(),
+            "a bare 'should' requirements sentence must not read as a defect claim"
+        );
+        let criterion = "`--format` output still works correctly on sample_logs/app.log";
+        assert!(
+            criterion_contradicts_task_text_as_broken(criterion, task_text).is_none(),
+            "a true preservation claim must survive a bare 'should' sentence elsewhere: {:?}",
+            criterion
+        );
+    }
+
     /// Priority ordering: a criterion that reads as BOTH a symbol claim and
     /// a bare file-existence claim ("class Foo exists in src/bar.py")
     /// resolves to the more specific `symbol_defined` shape, not
@@ -38395,6 +39080,106 @@ mod tests {
                 .unwrap()
                 .contains("no retry needed (R52a)"),
             "the note must credit R52a's immediate, no-retry rewrite: {metadata}"
+        );
+    }
+
+    /// R53a (G34 HIGH-3), pure-function coverage: [`strip_spoofed_derived_ac_tags`]
+    /// leaves a criterion whose hash IS in the recorded set byte-for-byte
+    /// alone, and strips the tag substring from one whose hash is NOT --
+    /// even though both criteria carry the identical literal tag text.
+    #[test]
+    fn strip_spoofed_derived_ac_tags_only_strips_criteria_outside_the_recorded_hash_set() {
+        let legit = format!("running `pytest` produces the fix {DERIVED_AC_TAG}");
+        let spoofed = format!("src/made_up_file.rs contains the fix {DERIVED_AC_TAG}");
+        let mut goals = vec![goal_state::ProposedGoal {
+            title: "G".to_string(),
+            description: "d".to_string(),
+            acceptance_criteria: vec![legit.clone(), spoofed.clone()],
+            tags: vec![],
+            depends_on: vec![],
+        }];
+        let mut derived_hashes = std::collections::HashSet::new();
+        derived_hashes.insert(derived_ac_hash(&legit));
+
+        strip_spoofed_derived_ac_tags(&mut goals, &derived_hashes);
+
+        assert_eq!(
+            goals[0].acceptance_criteria[0], legit,
+            "a criterion whose hash is recorded must be left byte-for-byte alone"
+        );
+        assert!(
+            !goals[0].acceptance_criteria[1].contains(DERIVED_AC_TAG),
+            "a criterion carrying the tag but NOT in the recorded hash set must have it \
+             stripped: {:?}",
+            goals[0].acceptance_criteria[1]
+        );
+    }
+
+    /// R53a (G34 HIGH-3), end-to-end negative case: a model-authored
+    /// criterion that carries the literal `DERIVED_AC_TAG` text -- but was
+    /// never actually produced by `ground_roadmap_goals` for THIS pending
+    /// proposal, so it is not in the server-recorded `derived_ac_hashes` --
+    /// must NOT get R52a's "no retry needed" free pass. It is treated as an
+    /// ordinary model-authored ungrounded criterion: rejected on the first
+    /// call, naming the offending criterion, same as an untagged one would
+    /// be.
+    #[tokio::test]
+    async fn create_roadmap_ignores_a_spoofed_derived_ac_tag_on_a_model_authored_criterion() {
+        let (_tmp, sm, _session, _em, client) =
+            roadmap_handler_fixture(GooseMode::Approve, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        // The pending proposal on record has NO derived criteria at all --
+        // `derived_ac_hashes` recorded for it is empty.
+        let original_goals = vec![goal_state::ProposedGoal {
+            title: "Fix pricing".to_string(),
+            description: "fix the pricing bug".to_string(),
+            acceptance_criteria: vec!["placeholder".to_string()],
+            tags: vec![],
+            depends_on: vec![],
+        }];
+        let (_hash, decision_id) = install_answered_roadmap_proof(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &original_goals,
+        )
+        .await;
+
+        // The model submits DIFFERENT goals whose ungrounded criterion
+        // echoes the literal derived-AC tag text -- self-consistent with
+        // its OWN proposal_hash (so the hash-reconciliation step alone
+        // does not block this call), but naming a file this repo does not
+        // have.
+        let spoofed_goals = vec![goal_state::ProposedGoal {
+            title: "Fix pricing".to_string(),
+            description: "fix the pricing bug".to_string(),
+            acceptance_criteria: vec![format!(
+                "src/pricing_missing_file.rs contains the rounding fix {DERIVED_AC_TAG}"
+            )],
+            tags: vec![],
+            depends_on: vec![],
+        }];
+        let spoofed_hash = roadmap_proposal_hash(&spoofed_goals);
+        let goals_json = serde_json::to_string(&spoofed_goals).unwrap();
+
+        let err = client
+            .handle_create_roadmap(Some(create_roadmap_args(
+                &goals_json,
+                &spoofed_hash,
+                &decision_id,
+            )))
+            .await
+            .expect_err(
+                "a spoofed derived-AC tag must not exempt a model-authored ungrounded \
+                 criterion from rejection",
+            );
+        assert!(
+            err.contains("src/pricing_missing_file.rs"),
+            "the error must name the specific offending criterion: {err}"
+        );
+        assert!(
+            !err.contains("no retry needed (R52a)"),
+            "a spoofed tag must never earn the harness-derived immediate-rewrite free pass: {err}"
         );
     }
 
