@@ -1655,6 +1655,26 @@ async fn handle_run_command(
         goose_mode,
     )
     .await?;
+    // Lane R22b-b (M24 forensics, round 2): `receipts::begin_run()` used to
+    // sit below, right before `session.headless(contents)`. R22b made
+    // `begin_run()` also reset `cost_router::routing_receipt`'s counters AND
+    // planner every run (previously never reset at all); R22b-b then made
+    // `build_session` set that same planner at coordinator session start
+    // (`session/builder.rs`'s `headless_coding_dispatch` block) — but
+    // `build_session` runs BEFORE `begin_run()` did, so a run's freshly-set
+    // planner would be wiped by `begin_run()`'s reset moments later, before
+    // the coordinator ever took a turn, silently reintroducing the
+    // `planner=unknown/unknown` sentinel `harness_log.rs` discards a
+    // real-dispatch run's receipt over. Hoisted here, before `build_session`,
+    // gated on the same `!run_behavior.interactive` this is only ever
+    // meaningful for (receipts collection is headless-only; `build_session`
+    // itself is shared with the interactive path just below and must not be
+    // treated as "receipts active" for it) — see `receipts::begin_run`'s own
+    // doc comment for why an eager call is safe (no write happens until the
+    // first counter mutation).
+    if !run_behavior.interactive {
+        permagent::receipts::begin_run();
+    }
     let mut session = build_session(SessionBuilderConfig {
         session_id,
         resume: run_behavior.resume,
@@ -1692,7 +1712,8 @@ async fn handle_run_command(
             "Headless session started"
         );
 
-        permagent::receipts::begin_run();
+        // Lane R22b-b: `begin_run()` moved above `build_session` — see the
+        // comment there. Not called again here.
         let mut result = session.headless(contents).await;
 
         // Harness loop, Lane R18f (A17 analysis Class 4): `Rule5HonestFailureGuard`

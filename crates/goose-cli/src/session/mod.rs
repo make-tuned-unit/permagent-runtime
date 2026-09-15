@@ -1520,6 +1520,19 @@ impl CliSession {
     /// the same finished run. Q-routing's `result`-capturing rewrite of
     /// `headless()` is kept (it also fixed `print_harness_overhead_line` being
     /// skipped on the error path via `?`); only its `println!` moved here.
+    ///
+    /// Lane R22b (M24 `dschat-select-existing-roadmap-resumes-not-
+    /// redecomposes` forensics — a resume-path run that finished with no
+    /// `receipt cost_routing …` line at all): audited this call site again.
+    /// The cost_routing print below is unconditional — no snapshot/audit
+    /// gate, no dispatch-count check — so it always fires, on every headless
+    /// run, whether or not this run's `resume_roadmap` / `goal_advance
+    /// (dispatch)` / decompose path actually dispatched anything (see the
+    /// `cost_router::routing_receipt` module's `Snapshot::format_line` for
+    /// the honest zero-value line an unrouted run prints instead of omitting
+    /// the line entirely). No change needed at this site; the actual gap
+    /// this lane fixed was that module never resetting its counters between
+    /// runs (see `receipts::begin_run`).
     pub fn print_harness_receipts(&self) {
         println!("{}", permagent::cost_router::routing_receipt::format_line());
         for line in permagent::receipts::snapshot().lines() {
@@ -3110,8 +3123,15 @@ mod tests {
     #[test]
     fn cost_routing_receipt_is_printed_only_after_the_goal_drain() {
         let cli = include_str!("../cli.rs");
+        // Lane R22b-b: was `"let result = ..."` (no `mut`) — Lane R18f
+        // (`84e688f5`, before this lane, unrelated) changed the declaration
+        // to `let mut result = ...` for its own Class-4 fix but never
+        // updated this literal, so `.find()` could never match and this
+        // test would panic on `.unwrap()`. Found while re-verifying this
+        // exact contract for R22b/R22b-b; fixed here since it directly
+        // covers the print-site ordering both of those lanes depend on.
         let headless_call = cli
-            .find("let result = session.headless(contents).await;")
+            .find("let mut result = session.headless(contents).await;")
             .unwrap();
         let tail = &cli[headless_call..];
         let drain = tail.find(".drain_dispatched_goals(").unwrap();
