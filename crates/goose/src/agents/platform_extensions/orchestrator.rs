@@ -18146,10 +18146,61 @@ async fn maybe_hold_review(
     } else {
         Ok((false, String::new()))
     };
-    let (uncommitted_work, tracked_status, inspection_error) = match inspection {
+    let (mut uncommitted_work, tracked_status, inspection_error) = match inspection {
         Ok((no_commits, status)) => (no_commits, status, None),
         Err(error) => (true, String::new(), Some(error)),
     };
+    // R42a (A37): `uncommitted_work` above is `goal_has_uncommitted_work`'s
+    // rolling-per-attempt-baseline answer (Y16b resets `baseline_commit` to
+    // the PRIOR attempt's own branch tip on every re-dispatch), so once one
+    // attempt commits a real, correct fix, every LATER attempt reads
+    // `no_commits == true` here even though the fix already sits on the
+    // goal branch — the exact trap A24/R22d/R22h already closed for
+    // salvage's own gate (`maybe_salvage_committed_work`) and R29b's
+    // read-only-landing refusal (`auto_land_headless_goal`), never for
+    // THIS, the primary Allow/Hold decision every ordinary re-dispatch
+    // actually takes (A37's traced mechanism). Consult the SAME
+    // trunk-relative count those two call sites already trust, as the
+    // authoritative answer to "does committed work exist" — falling back to
+    // the rolling signal above only when no trusted trunk root resolves
+    // (no `project.root_path`, no worktree-derived fallback: this file's
+    // own no-root-path test fixtures, matching R22d's precedent). Never
+    // consulted when the rolling check already found commits, or when the
+    // inspection itself errored (that error path is handled separately,
+    // below).
+    if uncommitted_work && inspection_error.is_none() {
+        if let Ok(Some((_baseline, worktree))) =
+            resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await
+        {
+            if let Ok((unlanded, _trunk_head)) =
+                commits_unlanded_at_trunk(pool, card, std::path::Path::new(&worktree)).await
+            {
+                if unlanded > 0 {
+                    // R42a: keep the dirty-worktree signal honest and
+                    // separate — a real unlanded commit already satisfies
+                    // "committed work exists," so this must not fire the
+                    // ordinary "verified but uncommitted: commit your work"
+                    // Hold merely because stray tracked changes also sit on
+                    // top of it. Note the dirty leftovers rather than
+                    // discarding the signal outright: `tracked_status` is
+                    // still appended to the Hold arm's plan text below in
+                    // the (rarer) cases that still hold, and logged here so
+                    // an Allow born of this override never hides them.
+                    if !tracked_status.trim().is_empty() {
+                        tracing::info!(
+                            target: "permagentd::brain",
+                            goal_id = %card.id,
+                            unlanded_at_trunk = unlanded,
+                            "goal has {unlanded} commit(s) unlanded at the trunk; allowing \
+                             despite dirty tracked changes still sitting uncommitted on top: \
+                             {tracked_status}"
+                        );
+                    }
+                    uncommitted_work = false;
+                }
+            }
+        }
+    }
     // A read-only goal is only still read-only when the worktree is
     // genuinely clean: zero commits past baseline (`uncommitted_work` here
     // really means "no commits exist" — see `goal_has_uncommitted_work`'s doc
@@ -25843,6 +25894,195 @@ mod tests {
             vec!["salvage_skipped_already_landed".to_string()],
             "an already-landed tip must still leave a decision_audit row, not just a \
              card-metadata breadcrumb"
+        );
+    }
+
+    // ── Lane R42a (A37): `maybe_hold_review` judges committed work against ──
+    // the trunk, not just the rolling per-attempt baseline Y16b resets on
+    // every re-dispatch. Same `r22d_trunk_and_goal_worktree` fixture R22d/
+    // R22h/R29b already use for this exact shape (rolling baseline == tip,
+    // real unlanded work at the trunk) — this lane's gap was the ONE
+    // remaining call site (the primary Allow/Hold decision every ordinary
+    // re-dispatch actually takes) that still trusted the rolling answer
+    // alone.
+
+    /// (a) The goal branch carries a real, unlanded commit; the ROLLING
+    /// baseline was reset (Y16b) to that same commit, so `rev-list
+    /// baseline..HEAD` reads empty — but `commits_unlanded_at_trunk` still
+    /// finds it. Worktree otherwise clean. Must Allow, not Hold.
+    #[tokio::test]
+    async fn maybe_hold_review_allows_unlanded_trunk_commit_when_rolling_baseline_equals_tip() {
+        let pool = test_pool().await;
+        let (trunk, goal_dir, _base_sha, fix_sha) =
+            r22d_trunk_and_goal_worktree("r42a-allow-clean");
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(trunk.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": goal_dir.path().to_string_lossy(),
+                "head_commit": fix_sha,
+                "commits": [],
+                // The rolling redispatch baseline: a later attempt resumed
+                // from the branch's own prior tip, which IS this same fix
+                // commit — the exact A24/A37 shape.
+                "baseline_commit": fix_sha,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        stamp_successful_verify(&pool, &card.id).await;
+
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let held = maybe_hold_review(&pool, &card, false, None).await.unwrap();
+        assert!(
+            held.is_none(),
+            "a real, unlanded commit at the trunk must Allow even though the rolling \
+             baseline == HEAD reads as \"nothing committed\": {held:?}"
+        );
+    }
+
+    /// (b) Nothing has ever landed anywhere (goal branch tip == trunk head,
+    /// no fix commit at all) and the worktree carries a genuine dirty
+    /// tracked change. Must Hold, citing the uncommitted change.
+    #[tokio::test]
+    async fn maybe_hold_review_holds_uncommitted_when_worktree_dirty_and_nothing_unlanded() {
+        let pool = test_pool().await;
+        let trunk = tempfile::tempdir().unwrap();
+        let troot = trunk.path();
+        r20b_git(troot, &["init", "-q", "-b", "main"]);
+        r20b_git(troot, &["config", "user.email", "test@example.com"]);
+        r20b_git(troot, &["config", "user.name", "Test"]);
+        r20b_git(troot, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(troot.join("tracked.txt"), "baseline\n").unwrap();
+        r20b_git(troot, &["add", "-A"]);
+        r20b_git(troot, &["commit", "-q", "-m", "base"]);
+        let base_sha = r20b_git(troot, &["rev-parse", "HEAD"]);
+
+        let goal_dir = tempfile::tempdir().unwrap();
+        let clone_out = std::process::Command::new("git")
+            .args(["clone", "-q"])
+            .arg(troot)
+            .arg(goal_dir.path())
+            .output()
+            .expect("git clone must succeed for this test");
+        assert!(clone_out.status.success());
+        let gpath = goal_dir.path();
+        r20b_git(gpath, &["config", "user.email", "test@example.com"]);
+        r20b_git(gpath, &["config", "user.name", "Test"]);
+        r20b_git(gpath, &["config", "commit.gpgsign", "false"]);
+        r20b_git(gpath, &["checkout", "-q", "-b", "goal/r42a-hold-dirty"]);
+        // A genuine dirty tracked change — never committed.
+        std::fs::write(gpath.join("tracked.txt"), "in progress\n").unwrap();
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(troot.to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": gpath.to_string_lossy(),
+                "head_commit": base_sha,
+                "commits": [],
+                "baseline_commit": base_sha,
+                "files_changed": 0,
+                "insertions": 0,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        stamp_successful_verify(&pool, &card.id).await;
+
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let held = maybe_hold_review(&pool, &card, false, None).await.unwrap();
+        let plan = held.expect("no committed work anywhere — must Hold, not Allow");
+        assert!(
+            plan.contains("verified but uncommitted: commit your work on the goal branch"),
+            "must cite the uncommitted-work reason: {plan}"
+        );
+        assert!(
+            plan.contains("tracked.txt"),
+            "the dirty tracked change must be named: {plan}"
+        );
+    }
+
+    /// (c) The goal branch carries a real, unlanded commit AND the worktree
+    /// also has a genuine dirty change sitting on top of it. Per
+    /// `decide_goal_hold`'s own stated intent ("Any role after a successful
+    /// verify → Allow (goal callers also require committed work)"), the
+    /// commit already satisfies the commit-required rule — the extra dirty
+    /// file is informational, not a reason to Hold a goal that has real,
+    /// reviewable progress (this mirrors the pre-existing `(committed: true,
+    /// dirty: true)` case in
+    /// `hold_verified_goal_until_work_is_committed_uncommitted_status_is_informational`,
+    /// which already asserts Allow for a non-rolling-baseline-reset commit
+    /// + dirty combination — this test exercises the SAME combination
+    /// through the new trunk-relative path).
+    #[tokio::test]
+    async fn maybe_hold_review_allows_unlanded_trunk_commit_despite_dirty_worktree_on_top() {
+        let pool = test_pool().await;
+        let (trunk, goal_dir, _base_sha, fix_sha) =
+            r22d_trunk_and_goal_worktree("r42a-allow-dirty");
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(trunk.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // A further, genuinely uncommitted edit on top of the already-
+        // committed fix.
+        std::fs::write(
+            goal_dir.path().join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n\n#[test]\nfn it_adds() { \
+             assert_eq!(add(2, 2), 4); }\n\n// stray edit, never committed\n",
+        )
+        .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": goal_dir.path().to_string_lossy(),
+                "head_commit": fix_sha,
+                "commits": [],
+                "baseline_commit": fix_sha,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        stamp_successful_verify(&pool, &card.id).await;
+
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let held = maybe_hold_review(&pool, &card, false, None).await.unwrap();
+        assert!(
+            held.is_none(),
+            "a real, unlanded commit at the trunk must still Allow even with a stray dirty \
+             edit on top — decide_goal_hold's own intent is committed work, not a spotless \
+             worktree: {held:?}"
         );
     }
 
