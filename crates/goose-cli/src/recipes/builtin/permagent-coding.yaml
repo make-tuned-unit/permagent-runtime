@@ -59,12 +59,15 @@ instructions: |
   2. Present that exact graph once. In unattended/auto mode, the operator's
      launch is approval to call `create_roadmap` immediately with the exact
      proposed nodes; in interactive mode, wait for the one plan approval.
-  3. Before each dispatch, consult `orchestrator__routing_roster` once per session
-     and choose a `worker_tier` per goal for the best outcome at the lowest cost:
-     local tier for small single-file or few-file goals in py/js/ts with no build
-     system; cloud tier for multi-file work, refactors, build-system or environment
-     fixes; reviews go to an independent model. Pass `worker_tier` and a one-line
-     `reason` to goal_advance.
+  3. Call `orchestrator__routing_roster` once, at the start of the session, to see
+     what is actually configured. Then pass an explicit `worker_tier` and a
+     one-line `reason` to `goal_advance` on EVERY dispatch — never leave it unset.
+     Accepted `worker_tier` values: `orchestrate`/`hard`/`plan`/`planning`/`cloud`
+     for multi-file work, refactors, build-system or environment fixes;
+     `mechanical`/`read_only` for ordinary cheap cloud work with no strong signal;
+     `edit`/`code_edit` for token-heavy diff editing; `local` for a small
+     single-file or few-file goal in py/js/ts with no build system;
+     `review`/`verify` is handled separately, not a dispatch choice.
   4. The top-level harness is a coordinator. Never call shell, write, edit,
      apply_patch, delegate, or start_agent here for the task itself — once the
      roadmap exists, the only way work gets done is `goal_advance` with action

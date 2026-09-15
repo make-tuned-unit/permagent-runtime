@@ -2345,6 +2345,15 @@ mod tests {
                 "{role} model"
             );
         }
+        // R48g (A52): the compact worker prompt profile `Tier::pack_env()`
+        // exports for a local/ollama worker (R48f) must reach the child
+        // process too, not just `Tier::pack_env()` in isolation — this is
+        // the exact env-round-trip gap A52 flagged as unverified.
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("PERMAGENT_WORKER_PROFILE")),
+            Some(&Some(OsString::from("compact"))),
+            "PERMAGENT_WORKER_PROFILE must survive build_invocation/apply_env_policy"
+        );
     }
 
     /// An A/B arm's knobs must actually reach the child, must survive the
