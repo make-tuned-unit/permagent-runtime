@@ -2531,6 +2531,65 @@ impl AfterTurn for Rule5HonestFailureGuard {
                                 "Lane R24b: rule-5 guard minted the escalation a free-text \
                                  question represents instead of parking the turn"
                             );
+                            // Lane R26a: the same headless-information-answer
+                            // policy a live `escalate` tool call gets
+                            // (`orchestrator::record_escalation`) — call into
+                            // it here too, at the ONE seam this lane touches
+                            // in this file, so a rule-5-minted `information`
+                            // question about an implementation detail does
+                            // not sit open forever with no human ever going
+                            // to see it (this decision has no goal binding —
+                            // `rule5_escalation_payload`'s evidence_refs name
+                            // only `minted_by:rule5_guard` — so nothing else
+                            // will ever resolve it). Gated on the TRUE
+                            // headless-CLI signal, not merely "Auto mode +
+                            // top-level coding harness" (this guard's own
+                            // gate above, which an interactive desktop-app
+                            // Auto session can also satisfy).
+                            use crate::agents::platform_extensions::orchestrator as headless_policy;
+                            let headless = headless_policy::is_headless_dispatch_policy_installed();
+                            let cap = headless_policy::parse_headless_escalate_cap(
+                                std::env::var("PERMAGENT_HEADLESS_ESCALATE_CAP")
+                                    .ok()
+                                    .as_deref(),
+                            );
+                            match headless_policy::headless_information_answer_policy(
+                                &pool,
+                                &recorded.decision_id,
+                                Some(ctx.session_id),
+                                headless,
+                                cap,
+                            )
+                            .await
+                            {
+                                Ok(Some(answer)) => {
+                                    tracing::info!(
+                                        session_id = %ctx.session_id,
+                                        harness_note = "headless_information_answered",
+                                        decision_id = %recorded.decision_id,
+                                        "Lane R26a: headless policy auto-answered the rule-5-minted \
+                                         information question; continuing the coordinator's turn"
+                                    );
+                                    return AfterTurnAction::Continue {
+                                        inject: format!(
+                                            "Your question has been answered automatically (headless \
+                                             policy, decision {}): {}",
+                                            recorded.decision_id, answer
+                                        ),
+                                    };
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    tracing::error!(
+                                        session_id = %ctx.session_id,
+                                        harness_error = "headless_information_answer_failed",
+                                        decision_id = %recorded.decision_id,
+                                        error = %error,
+                                        "Lane R26a: headless information-answer policy errored; \
+                                         the decision stays open for a human, same as today"
+                                    );
+                                }
+                            }
                             return AfterTurnAction::Allow;
                         }
                         Err(error) => {

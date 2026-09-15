@@ -80,6 +80,21 @@ fn compose_detail(draft: &DecisionDraft) -> String {
             detail.push_str(&format!("\n- {}: {} — {}", o.id, o.label, o.consequence));
         }
     }
+    // Lane R26a: stamp the RESOLVED escalate-level kind into the persisted
+    // row's detail. `DecisionKind`/`kind` alone can't carry this for an
+    // `Unblock` draft — `escalate::map_kind` sends both `credential` and
+    // `information` to the same `"unblock"` decisions-table kind, so once
+    // this row exists that collapse is otherwise permanent.
+    // `orchestrator::headless_information_answer_policy` reads this marker
+    // back to tell an implementation-detail question (auto-answerable) from
+    // a missing-credential ask (never auto-answered) — deliberately kept out
+    // of `escalate::draft_from_payload`'s own `detail` field, which
+    // `after_turn`'s rule-5 mint test pins byte-for-byte to the model's raw
+    // question text.
+    detail.push_str(&format!(
+        "\nescalate_kind: {}",
+        draft.escalate_kind.as_str()
+    ));
     detail
 }
 

@@ -232,6 +232,21 @@ pub struct DecisionDraft {
     /// problem). Never dropped: an unrecognized kind is evidence a human
     /// reviewing the decision may want, not noise.
     pub requested_kind: Option<String>,
+    /// Lane R26a: the RESOLVED escalate-level kind (post [`resolve_kind`]
+    /// coercion) — distinct from [`DecisionDraft::kind`], which is already
+    /// mapped into L1's decisions-table vocabulary and collapses `credential`
+    /// and `information` into the same `Unblock`/`"unblock"` kind (see
+    /// [`map_kind`]). That collapse is exactly why this field exists: once a
+    /// draft becomes a persisted decision row, `"unblock"` alone can no
+    /// longer tell a missing-credential ask from an implementation-detail
+    /// question, and `orchestrator::headless_information_answer_policy`
+    /// needs that distinction to auto-answer ONLY the latter. Not stamped
+    /// into `detail` here (that would break
+    /// `after_turn::mint_rule5_question_escalation_records_the_question_text_and_receipt`'s
+    /// verbatim-detail contract) — `decision_inbox::sink::compose_detail`
+    /// stamps it into the PERSISTED row's detail instead, downstream of this
+    /// field.
+    pub escalate_kind: EscalationKind,
 }
 
 // ── Validation ──────────────────────────────────────────────────────────
@@ -714,6 +729,7 @@ pub fn draft_from_payload(raw: serde_json::Value, source: &DraftSource) -> Decis
                 raw_payload: None,
                 validation_errors: Vec::new(),
                 requested_kind,
+                escalate_kind: params.kind,
             }
         }
         EscalationOutcome::Malformed { errors } => {
@@ -743,6 +759,7 @@ pub fn draft_from_payload(raw: serde_json::Value, source: &DraftSource) -> Decis
                 raw_payload: Some(raw),
                 validation_errors: errors,
                 requested_kind,
+                escalate_kind: resolved_kind,
             }
         }
     }

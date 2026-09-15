@@ -8035,6 +8035,30 @@ async fn record_escalation(
                 .ok()
                 .as_deref(),
         );
+        // Lane R26a: try the information-question auto-answer FIRST — it is
+        // the only path that can resolve a `kind='unblock'` decision (the
+        // `escalate.kind = credential | information` pair, see
+        // `escalate::map_kind`) without touching the goal at all. Order
+        // matters: `headless_escalate_policy` below unconditionally calls
+        // `park_refused_goal` for any decision it cannot itself resolve
+        // (including every `unblock`, since its own resumable-`choice`
+        // check never applies to one) — running it against an
+        // already-answered decision would be at best redundant and at
+        // worst park a goal whose blocking question was just answered.
+        if let Some(answer) = headless_information_answer_policy(
+            pool,
+            &recorded.decision_id,
+            draft.source_session_id.as_deref(),
+            true,
+            cap,
+        )
+        .await?
+        {
+            return Ok(format!(
+                "Escalation {} answered by headless_policy: {}",
+                recorded.decision_id, answer
+            ));
+        }
         if headless_escalate_policy(pool, &recorded.decision_id, true, cap).await? {
             return Ok(format!(
                 "Escalation {} answered by headless_policy; goal resumed.",
@@ -8060,11 +8084,208 @@ async fn record_escalation(
     ))
 }
 
-fn parse_headless_escalate_cap(value: Option<&str>) -> u32 {
+pub(crate) fn parse_headless_escalate_cap(value: Option<&str>) -> u32 {
     value
         .and_then(|v| v.parse::<u32>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(2)
+}
+
+/// Whether a headless dispatch policy is installed for THIS process — the
+/// exact check `handle_escalate` makes inline
+/// (`HEADLESS_DISPATCH_POLICY_CONFIG.get().is_some()`), exposed so
+/// `after_turn::Rule5HonestFailureGuard` (Lane R26a) can gate its own
+/// information-escalation auto-answer on "is this a headless coding-harness
+/// CLI run", not merely "is this session in Auto mode running a top-level
+/// coding-harness recipe" — that guard's own gate, which is ALSO true for an
+/// interactive desktop-app Auto session working the identical recipe, and
+/// must stay unaffected by this lane (see the task's "interactive session
+/// unchanged" requirement).
+pub(crate) fn is_headless_dispatch_policy_installed() -> bool {
+    HEADLESS_DISPATCH_POLICY_CONFIG.get().is_some()
+}
+
+/// Lane R26a: the fixed, honest auto-answer a headless coding-harness run
+/// gives itself for an `information`-kind escalation about an
+/// implementation detail. In a headless run the operator's launch IS the
+/// approval (Lane V2 policy) — a question like "which rounding rule…" or
+/// "should the Makefile call npm test or node directly…" has an honest
+/// automatic answer, unlike a missing credential or a real choice between
+/// different outcomes (neither of which this policy ever answers — see
+/// `headless_information_answer_policy`'s own doc comment).
+pub(crate) const HEADLESS_INFORMATION_ANSWER_TEXT: &str = "Proceed on your best reading; \
+     state the assumption in the roadmap node's acceptance criteria and in the final summary.";
+
+/// `decision_audit.outcome` stamped by [`headless_information_answer_policy`]
+/// — also reused as the `decisions.answer_note` marker its own session-scoped
+/// cap counts against, so one literal names both.
+const HEADLESS_INFORMATION_AUDIT_OUTCOME: &str = "headless_information_answered";
+
+/// Text signals that mean "this reads as `information`, but it is actually a
+/// missing-credential/provider/service ask" — never auto-answered even when
+/// the escalation was classified (or R24a-coerced) as `information`. A
+/// SECOND, independent guard on top of the `escalate_kind` check: a
+/// miscategorized ask is still, in substance, a credential ask, not an
+/// implementation detail with an honest default. Matched case-insensitively
+/// against the decision's headline + detail.
+const HEADLESS_INFORMATION_NEVER_KEYWORDS: &[&str] = &[
+    "api key",
+    "token",
+    "credential",
+    "provider",
+    "service unavailable",
+];
+
+/// Pull the `escalate_kind: <word>` marker `decision_inbox::sink::compose_detail`
+/// stamps into every persisted decision's `detail` (Lane R26a) back out.
+/// `None` for a decision minted before this lane shipped, or any row this
+/// marker was never stamped onto (e.g. a decision built outside the
+/// `escalate` sink) — both must read as "not eligible", never panic.
+fn escalate_kind_from_detail(detail: &str) -> Option<&str> {
+    let marker = "escalate_kind: ";
+    let start = detail.find(marker)? + marker.len();
+    let rest = &detail[start..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let kind = &rest[..end];
+    (!kind.is_empty()).then_some(kind)
+}
+
+/// Lane R26a (harness loop; M29 DeepSeek m1/m2, HARNESS_LOOP_LOG.md "Lane
+/// R26a"): on a fully specified coding task, a headless coordinator that
+/// escalates an `information`-kind question about an implementation detail
+/// (never a missing credential, never a real choice between outcomes) gets
+/// an honest, automatic "proceed on your best reading" answer instead of
+/// leaving the goal undone waiting on a human who was never going to be
+/// asked mid-run — in a headless coding run the operator's own launch IS the
+/// approval (Lane V2 policy).
+///
+/// Deliberately narrower than [`headless_escalate_policy`] (the Y13/Y13c
+/// choice-retry policy this sits alongside):
+/// - Only `kind == "unblock"` rows are even considered — the decisions-table
+///   kind `escalate.kind = credential | information` both map to (see
+///   `escalate::map_kind`). `"choice"`, `"approve_review"`, `"risk_gate"`
+///   and `"malformed"` are never touched here.
+/// - Of that pair, only the RESOLVED escalate-level kind `information` is
+///   ever auto-answered — read back from the `escalate_kind: ...` marker
+///   `decision_inbox::sink::compose_detail` stamps into `detail` (see
+///   [`escalate_kind_from_detail`]); `credential` (or anything else) is
+///   never touched, by kind alone, before the keyword guard even runs.
+/// - A second, independent keyword guard
+///   ([`HEADLESS_INFORMATION_NEVER_KEYWORDS`]) refuses to answer any ask
+///   whose own text names a missing credential/provider/service, even one
+///   classified `information` — a miscategorized ask is still a credential
+///   ask in substance.
+/// - Bounded to `cap` answers PER SESSION, not per goal: an information ask
+///   has no goal-parking machinery to piggyback on, and a rule-5-minted ask
+///   in particular has no goal binding at all
+///   (`after_turn::rule5_escalation_payload`'s evidence_refs name only
+///   `minted_by:rule5_guard`). The count is read back from `detail`'s
+///   existing `(session <id>)` stamp (also `compose_detail`) rather than a
+///   new column — `session_id` is required to even attempt an answer
+///   (`None` fails closed, same as every other "can't safely bound this"
+///   case below).
+///
+/// No goal is ever parked or resumed here (unlike
+/// [`headless_escalate_policy`]'s resumable-`choice` path): the caller is
+/// either a LIVE `escalate` tool call still executing this exact turn
+/// (`record_escalation`), where the answer becomes the tool result directly,
+/// or the rule-5 guard minting the escalation the model's own free-text
+/// question represents (`after_turn::mint_rule5_question_escalation`'s
+/// caller), where the answer is injected as the coordinator's next turn
+/// (`AfterTurnAction::Continue`) — in both cases the worker is still live
+/// and simply continues with the answer, exactly as it would with a human's.
+///
+/// Returns the answer text to deliver back to the coordinator when this
+/// decision was auto-answered; `Ok(None)` means "not this policy's
+/// problem" — the caller falls through to whatever it would otherwise do.
+pub(crate) async fn headless_information_answer_policy(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    decision_id: &str,
+    session_id: Option<&str>,
+    headless: bool,
+    cap: u32,
+) -> Result<Option<String>, String> {
+    if !headless {
+        return Ok(None);
+    }
+    let Some(session_id) = session_id else {
+        return Ok(None);
+    };
+    let d = decisions::get_decision(pool, decision_id)
+        .await?
+        .ok_or("Missing escalation")?;
+    if d.status != "open" || d.kind != "unblock" {
+        return Ok(None);
+    }
+    if escalate_kind_from_detail(&d.detail) != Some("information") {
+        return Ok(None);
+    }
+    let haystack = format!("{} {}", d.headline, d.detail).to_ascii_lowercase();
+    if HEADLESS_INFORMATION_NEVER_KEYWORDS
+        .iter()
+        .any(|kw| haystack.contains(kw))
+    {
+        return Ok(None);
+    }
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+    let session_marker = format!("(session {session_id})");
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM decisions WHERE acted_by = ? AND answer_note = ? \
+         AND detail LIKE '%' || ? || '%'",
+    )
+    .bind(decisions::ACTOR_HEADLESS_POLICY)
+    .bind(HEADLESS_INFORMATION_AUDIT_OUTCOME)
+    .bind(&session_marker)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if count >= i64::from(cap) {
+        tx.rollback().await.map_err(|e| e.to_string())?;
+        return Ok(None);
+    }
+
+    let changed = sqlx::query(
+        "UPDATE decisions SET status = 'answered', answer = 'input', answer_input = ?, \
+         answer_choice_id = NULL, answer_note = ?, acted_by = ?, \
+         resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), staged_answer_json = NULL \
+         WHERE id = ? AND status = 'open'",
+    )
+    .bind(HEADLESS_INFORMATION_ANSWER_TEXT)
+    .bind(HEADLESS_INFORMATION_AUDIT_OUTCOME)
+    .bind(decisions::ACTOR_HEADLESS_POLICY)
+    .bind(decision_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if changed.rows_affected() == 0 {
+        // Lost a race with a real answer between the read above and here —
+        // leave it be, the other answer wins.
+        tx.rollback().await.map_err(|e| e.to_string())?;
+        return Ok(None);
+    }
+    decisions::append_audit_tx(
+        &mut tx,
+        decision_id,
+        d.goal_id.as_deref(),
+        decisions::ACTOR_HEADLESS_POLICY,
+        d.tier,
+        HEADLESS_INFORMATION_AUDIT_OUTCOME,
+        None,
+    )
+    .await?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    crate::events::emit(crate::events::decision_resolved(
+        decision_id,
+        "unblock",
+        "input",
+        decisions::ACTOR_HEADLESS_POLICY,
+        d.tier,
+    ));
+    Ok(Some(HEADLESS_INFORMATION_ANSWER_TEXT.to_string()))
 }
 
 /// Only called for a freshly recorded escalation, never for general inbox answers.
@@ -18647,6 +18868,246 @@ mod tests {
             "nothing auto-answers a real Decision Inbox item either"
         );
         assert_eq!(kind, "choice");
+    }
+
+    // ── Lane R26a (M29 DeepSeek m1/m2, harness loop): a headless run
+    // auto-answers an `information`-kind escalation about an implementation
+    // detail with an honest "proceed on your best reading" instead of
+    // leaving the goal undone — bounded to 2 per session, never for a
+    // missing credential/provider ask. ─────────────────────────────────
+
+    fn information_escalation_draft(
+        session_id: &str,
+    ) -> crate::decision_inbox::escalate::DecisionDraft {
+        crate::decision_inbox::escalate::draft_from_payload(
+            serde_json::json!({
+                "kind": "information",
+                "specific_ask": "Choose the tie-breaking rounding rule for totals",
+                "why_blocked": "The spec does not say whether to round half up or half to even.",
+                "evidence_refs": [],
+                "resume": "auto",
+            }),
+            &crate::decision_inbox::escalate::DraftSource {
+                session_id: Some(session_id.to_string()),
+                worker_roster_name: None,
+            },
+        )
+    }
+
+    fn credential_escalation_draft(
+        session_id: &str,
+    ) -> crate::decision_inbox::escalate::DecisionDraft {
+        crate::decision_inbox::escalate::draft_from_payload(
+            serde_json::json!({
+                "kind": "credential",
+                "specific_ask": "Add the staging deploy credential so the goal can proceed",
+                "why_blocked": "No STAGING_DEPLOY_TOKEN is set in the environment.",
+                "evidence_refs": [],
+                "resume": "auto",
+            }),
+            &crate::decision_inbox::escalate::DraftSource {
+                session_id: Some(session_id.to_string()),
+                worker_roster_name: None,
+            },
+        )
+    }
+
+    /// Repairs the exact M29 defect: a fully specified coding task escalates
+    /// an `information` question about an implementation detail, and a
+    /// headless run must answer it itself (the operator's launch IS the
+    /// approval — Lane V2) rather than leave the goal undone.
+    #[tokio::test]
+    async fn headless_information_answer_policy_answers_and_stamps_audit() {
+        use crate::decision_inbox::escalate::DecisionSink;
+        let pool = test_pool().await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = information_escalation_draft("r26a-info-1");
+        let id = sink.record(draft).await.unwrap().decision_id;
+
+        let answer = headless_information_answer_policy(&pool, &id, Some("r26a-info-1"), true, 2)
+            .await
+            .unwrap();
+        assert_eq!(answer.as_deref(), Some(HEADLESS_INFORMATION_ANSWER_TEXT));
+
+        let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
+        assert_eq!(d.status, "answered");
+        assert_eq!(
+            d.acted_by.as_deref(),
+            Some(decisions::ACTOR_HEADLESS_POLICY)
+        );
+        assert_eq!(d.answer.as_deref(), Some("input"));
+        assert_eq!(
+            d.answer_input.as_deref(),
+            Some(HEADLESS_INFORMATION_ANSWER_TEXT)
+        );
+
+        let audit_outcome: String = sqlx::query_scalar(
+            "SELECT outcome FROM decision_audit WHERE decision_id = ? AND acted_by = ?",
+        )
+        .bind(&id)
+        .bind(decisions::ACTOR_HEADLESS_POLICY)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audit_outcome, HEADLESS_INFORMATION_AUDIT_OUTCOME);
+    }
+
+    /// `credential` and `information` both map to the SAME decisions-table
+    /// kind (`"unblock"`, see `escalate::map_kind`) — this pins that a
+    /// missing-credential ask is never auto-answered on that basis alone,
+    /// regardless of the kind collapse.
+    #[tokio::test]
+    async fn headless_information_answer_policy_never_touches_credential() {
+        use crate::decision_inbox::escalate::DecisionSink;
+        let pool = test_pool().await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = credential_escalation_draft("r26a-cred-1");
+        let id = sink.record(draft).await.unwrap().decision_id;
+
+        let answer = headless_information_answer_policy(&pool, &id, Some("r26a-cred-1"), true, 2)
+            .await
+            .unwrap();
+        assert_eq!(answer, None);
+
+        let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
+        assert_eq!(d.status, "open", "a credential escalation stays parked");
+        assert!(d.acted_by.is_none());
+    }
+
+    /// Even a `kind=information` ask is never auto-answered when its own
+    /// text plainly names a missing credential/provider/service — a
+    /// miscategorized ask is still a credential ask in substance.
+    #[tokio::test]
+    async fn headless_information_answer_policy_keyword_guard_blocks_credential_shaped_asks() {
+        use crate::decision_inbox::escalate::DecisionSink;
+        let pool = test_pool().await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = crate::decision_inbox::escalate::draft_from_payload(
+            serde_json::json!({
+                "kind": "information",
+                "specific_ask": "Which provider should the deploy step use?",
+                "why_blocked": "No API key or token is configured for any provider.",
+                "evidence_refs": [],
+                "resume": "auto",
+            }),
+            &crate::decision_inbox::escalate::DraftSource {
+                session_id: Some("r26a-keyword-1".to_string()),
+                worker_roster_name: None,
+            },
+        );
+        let id = sink.record(draft).await.unwrap().decision_id;
+
+        let answer =
+            headless_information_answer_policy(&pool, &id, Some("r26a-keyword-1"), true, 2)
+                .await
+                .unwrap();
+        assert_eq!(
+            answer, None,
+            "a credential/provider-shaped ask must never auto-answer even when classified \
+             information"
+        );
+    }
+
+    /// Bound: at most 2 information escalations answered per session; the
+    /// third parks exactly as today.
+    #[tokio::test]
+    async fn headless_information_answer_policy_bounded_to_two_per_session() {
+        use crate::decision_inbox::escalate::DecisionSink;
+        let pool = test_pool().await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let session_id = "r26a-cap-1";
+        for attempt in 0..3 {
+            let draft = information_escalation_draft(session_id);
+            let id = sink.record(draft).await.unwrap().decision_id;
+            let answer = headless_information_answer_policy(&pool, &id, Some(session_id), true, 2)
+                .await
+                .unwrap();
+            let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
+            if attempt < 2 {
+                assert!(answer.is_some(), "attempt {attempt} must be answered");
+                assert_eq!(d.status, "answered");
+            } else {
+                assert!(
+                    answer.is_none(),
+                    "the third information escalation must park, not answer"
+                );
+                assert_eq!(d.status, "open");
+            }
+        }
+    }
+
+    /// Outside headless mode this policy never touches anything — the
+    /// pre-existing Decision Inbox behavior for an interactive session is
+    /// unchanged.
+    #[tokio::test]
+    async fn headless_information_answer_policy_interactive_session_unchanged() {
+        use crate::decision_inbox::escalate::DecisionSink;
+        let pool = test_pool().await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = information_escalation_draft("r26a-interactive-1");
+        let id = sink.record(draft).await.unwrap().decision_id;
+
+        let answer =
+            headless_information_answer_policy(&pool, &id, Some("r26a-interactive-1"), false, 2)
+                .await
+                .unwrap();
+        assert_eq!(answer, None);
+        let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
+        assert_eq!(d.status, "open");
+    }
+
+    /// End-to-end through `record_escalation`: the answer is delivered as
+    /// the tool result exactly as a human answer would be, and the
+    /// `dag_enforcement.escalated` receipt still counts the escalation.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn headless_record_escalation_answers_information_and_counts_receipt() {
+        let pool = test_pool().await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = information_escalation_draft("r26a-e2e-1");
+
+        crate::receipts::begin_run();
+        let text = record_escalation(&pool, &sink, draft, true).await.unwrap();
+        let escalated_line = crate::receipts::snapshot().lines()[0].clone();
+        crate::receipts::end_run();
+
+        assert!(
+            text.contains("answered by headless_policy"),
+            "the coordinator must see the answer, not a BLOCKED refusal: {text}"
+        );
+        assert!(text.contains(HEADLESS_INFORMATION_ANSWER_TEXT), "{text}");
+        assert!(
+            escalated_line.contains("escalated=1"),
+            "an auto-answered information escalation must still count toward \
+             dag_enforcement.escalated: {escalated_line}"
+        );
+
+        let (status, kind): (String, String) = sqlx::query_as("SELECT status, kind FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "answered");
+        assert_eq!(kind, "unblock");
+    }
+
+    /// End-to-end through `record_escalation`: a credential escalation is
+    /// never auto-answered and stays parked, same as before this lane.
+    #[tokio::test]
+    async fn headless_record_escalation_never_auto_answers_credential() {
+        let pool = test_pool().await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = credential_escalation_draft("r26a-cred-e2e-1");
+
+        let text = record_escalation(&pool, &sink, draft, true).await.unwrap();
+        assert!(text.contains("BLOCKED"), "{text}");
+        assert!(!text.contains(HEADLESS_INFORMATION_ANSWER_TEXT), "{text}");
+
+        let (status, kind): (String, String) = sqlx::query_as("SELECT status, kind FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "open");
+        assert_eq!(kind, "unblock");
     }
 
     // ── Lane R24a (M26 DeepSeek m1, harness loop): an unsupported `kind`
