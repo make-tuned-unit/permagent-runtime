@@ -101,7 +101,7 @@ impl ToolInspector for CodingDagInspector {
             .map(|request| InspectionResult {
                 tool_request_id: request.id.clone(),
                 action: InspectionAction::Deny,
-                reason: "Top-level coding harness sessions must create an approved orchestrator DAG and dispatch its node; direct shell execution or edits bypass routing, verification evidence, and approval. Use read/search tools to plan, decompose_roadmap/create_roadmap (or an approved Council plan), then let the dispatched worker execute and edit.".to_string(),
+                reason: "Top-level coding harness sessions must create an approved orchestrator DAG and dispatch its node; direct shell execution or edits bypass routing, verification evidence, and approval. Use read/search tools to plan, decompose_roadmap/create_roadmap (or an approved Council plan), then call orchestrator__goal_advance with action \"dispatch\" (card_id may be omitted — it resolves this project's single Ready goal card) to have a worker make the change. The coordinator itself never edits or runs shell.".to_string(),
                 confidence: 1.0,
                 inspector_name: CODING_DAG_INSPECTOR_NAME.to_string(),
                 finding_id: Some("coding_dag_required".to_string()),
@@ -567,6 +567,70 @@ mod tests {
         for name in ["read", "search", "developer__text_search", "orchestrator"] {
             assert!(!requires_dispatched_coding_worker(name), "{name}");
         }
+    }
+
+    /// A26 (M30 MiniCPM5-2B fizzbuzz probe): the denial text told a weak
+    /// coordinator model to "let the dispatched worker execute and edit"
+    /// without ever naming the call that dispatches one. The model tried
+    /// write/shell/delegate/start_agent/send_message and never
+    /// `goal_advance(action: dispatch)` — the one legal path — in 25 tool
+    /// calls. This pins the fix at the source: a real top-level coding
+    /// harness session's `write` denial must name `goal_advance` and its
+    /// `dispatch` action explicitly, not just describe the DAG in the
+    /// abstract.
+    #[tokio::test]
+    async fn coding_dag_denial_names_goal_advance_dispatch_as_the_next_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_manager = std::sync::Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                crate::session::SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let recipe = crate::recipe::Recipe::builder()
+            .version("1.0.0")
+            .title(CODING_HARNESS_RECIPE_TITLE)
+            .description("coding harness")
+            .prompt("plan and dispatch")
+            .build()
+            .unwrap();
+        session_manager
+            .update(&session.id)
+            .recipe(Some(recipe))
+            .apply()
+            .await
+            .unwrap();
+
+        let inspector = CodingDagInspector::new(session_manager);
+        let write_request = ToolRequest {
+            id: "req_write".to_string(),
+            tool_call: Ok(CallToolRequestParams::new("write").with_arguments(object!({}))),
+            metadata: None,
+            tool_meta: None,
+        };
+        let results = inspector
+            .inspect(&session.id, &[write_request], &[], GooseMode::Auto)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].action, InspectionAction::Deny);
+        assert!(
+            results[0].reason.contains("goal_advance"),
+            "denial must name the exact tool to call: {}",
+            results[0].reason
+        );
+        assert!(
+            results[0].reason.contains("dispatch"),
+            "denial must name the dispatch action: {}",
+            results[0].reason
+        );
     }
 
     #[test]
