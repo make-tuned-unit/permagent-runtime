@@ -11757,7 +11757,19 @@ async fn auto_land_headless_goal(
                      path instead",
                 )
                 .await;
-                maybe_salvage_committed_work(pool, card, None, calling_session_id).await;
+                // Lane R29b closes a real async cycle here:
+                // maybe_salvage_committed_work -> hand_salvaged_work_to_review_unverified
+                // -> land_salvage_approved_by_reviewer -> auto_land_headless_goal -> back.
+                // One Box::pin anywhere in the cycle breaks it (E0733); put it on THIS
+                // edge — the rare read-only refusal path — so the ordinary salvage path
+                // keeps its inline future.
+                Box::pin(maybe_salvage_committed_work(
+                    pool,
+                    card,
+                    None,
+                    calling_session_id,
+                ))
+                .await;
                 return;
             }
         }
