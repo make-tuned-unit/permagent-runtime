@@ -1737,6 +1737,30 @@ impl CliSession {
                     "{} goal(s) finished, {} still running at exit \u{2192} parked",
                     summary.finished, summary.timed_out
                 ));
+                // Lane R35a (A32 root cause 1): the line above alone cannot
+                // distinguish a worker genuinely still mid-attempt from a
+                // goal that already has a verified, committed PASS sitting
+                // unconsumed (the exact shape that flake traced) from one
+                // never dispatched at all — append one reason line per
+                // still-running goal, after the existing summary line so its
+                // own prefix/format never changes for anything parsing it.
+                if summary.timed_out > 0 {
+                    match permagent::agents::platform_extensions::orchestrator::still_running_goal_reasons_for_session(
+                        &pool,
+                        &self.session_id,
+                    )
+                    .await
+                    {
+                        Ok(reasons) => {
+                            for (card_id, reason) in reasons {
+                                output::render_notice(&format!("park_reason {card_id} {reason}"));
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("post-run park-reason summary failed (non-fatal): {e}");
+                        }
+                    }
+                }
                 // Harness loop, Lane V (V2): print exactly which of this
                 // run's dispatched goals actually LANDED (fast-forwarded
                 // onto the working directory's checked-out branch), not just

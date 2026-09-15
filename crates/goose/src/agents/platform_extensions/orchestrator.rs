@@ -13843,6 +13843,110 @@ pub async fn landed_goals_for_session(
     Ok(out)
 }
 
+/// Lane R35a (A32 root cause 1): for each of `coordinator_session_id`'s
+/// dispatched goal cards still non-terminal right after the drain returns, a
+/// short machine-parseable reason — printed by the CLI's drain summary
+/// (`goose-cli/src/session/mod.rs`) as extra lines AFTER the existing "N
+/// goal(s) finished, M still running at exit -> parked" line, so the
+/// driver's existing prefix parse never changes. Distinguishes what today's
+/// generic message cannot: a worker genuinely still mid-attempt
+/// (`still_running(worker alive)`) from a goal requeued back to Ready (or
+/// sitting in Review) with — or without — an already-committed sha waiting
+/// to be consumed (`ready_unconsumed(commit=<sha7>|none)`, the exact A32
+/// shape: a verified PASS was committed but the card never reached Complete)
+/// from one that was never even dispatched (`never_dispatched`). The same
+/// `descendant_session_ids`/`goal_card_for_worker_session` walk
+/// [`landed_goals_for_session`] uses, so the scope can never drift from what
+/// the drain itself was awaiting; unlike that function, a root card with NO
+/// worker session at all still needs naming, so this also folds in
+/// [`cards::goal_cards_created_by_session`]'s roots that never got one.
+/// Best-effort snapshot: a lookup failure for one card is skipped rather
+/// than failing the whole summary (this is a logging aid, never a gate).
+pub async fn still_running_goal_reasons_for_session(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+
+    for session_id in descendant_session_ids(pool, coordinator_session_id).await? {
+        let Some((card_id, _project_id)) = goal_card_for_worker_session(pool, &session_id).await?
+        else {
+            continue;
+        };
+        if !seen.insert(card_id.clone()) {
+            continue;
+        }
+        if let Ok(Some(reason)) = still_running_reason_for_card(pool, &card_id).await {
+            out.push((card_id, reason));
+        }
+    }
+    // Roots this session created that never got a worker session at all —
+    // `descendant_session_ids` cannot find these (it resolves THROUGH a
+    // worker session), so they are named separately.
+    for card in cards::goal_cards_created_by_session(pool, coordinator_session_id).await? {
+        if seen.contains(&card.card_id)
+            || matches!(
+                card.state_binding.as_str(),
+                "complete" | "cancelled" | "failed"
+            )
+        {
+            continue;
+        }
+        seen.insert(card.card_id.clone());
+        out.push((card.card_id, "never_dispatched".to_string()));
+    }
+    Ok(out)
+}
+
+/// The pool-parameterised half of [`still_running_goal_reasons_for_session`]
+/// for exactly one card — `Ok(None)` for a terminal card (nothing to name).
+async fn still_running_reason_for_card(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+) -> Result<Option<String>, String> {
+    let state = goal_state_for_card(pool, card_id).await?;
+    let reason = match state {
+        GoalState::Complete | GoalState::Cancelled | GoalState::Failed => return Ok(None),
+        GoalState::InProgress => "still_running(worker alive)".to_string(),
+        GoalState::Ready | GoalState::Review => {
+            let commit = cards::get_card(pool, card_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|card| commit_sha7_from_dispatch_evidence(&card.metadata_json));
+            format!(
+                "ready_unconsumed(commit={})",
+                commit.unwrap_or_else(|| "none".to_string())
+            )
+        }
+        GoalState::Triage => "never_dispatched".to_string(),
+    };
+    Ok(Some(reason))
+}
+
+/// The first 7 characters of the most recent commit
+/// `dispatch_evidence` names — `head_commit` (the worker's true HEAD,
+/// #531) when present, else the leading token of `commits[0]`
+/// (`"<short-sha> <subject>"`, [`goal_engine::GoalEvidence::commits`]'s own
+/// format). `None` when no evidence, or an evidence object with no commits at
+/// all, is on the card.
+fn commit_sha7_from_dispatch_evidence(metadata: &serde_json::Value) -> Option<String> {
+    let evidence = metadata.get("dispatch_evidence")?;
+    let sha = evidence
+        .get("head_commit")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            evidence
+                .get("commits")
+                .and_then(|value| value.as_array())
+                .and_then(|commits| commits.first())
+                .and_then(|value| value.as_str())
+                .and_then(|line| line.split_whitespace().next())
+        })?;
+    Some(sha.chars().take(7).collect())
+}
+
 /// Park a goal whose worker committed credential-shaped content (#508).
 ///
 /// The deterministic credential guard (see `goal_engine::scan_committed_changes`)
@@ -26971,6 +27075,221 @@ mod tests {
             landed,
             vec![(card.id.clone(), "f7b9c90aaaa".to_string())],
             "a re-dispatched card must be reported exactly once, not once per attempt"
+        );
+    }
+
+    // ── Lane R35a (A32 root cause 1): still_running_goal_reasons_for_session ──
+
+    /// An `in_progress` card with a live worker session is named
+    /// `still_running(worker alive)` — the worker genuinely has not finished.
+    #[tokio::test]
+    async fn still_running_goal_reasons_names_an_in_progress_goal_as_still_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: still running".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+
+        let reasons = still_running_goal_reasons_for_session(&pool, &coordinator.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            reasons,
+            vec![(card.id.clone(), "still_running(worker alive)".to_string())]
+        );
+    }
+
+    /// A `ready` card that cycled back for redispatch but already carries a
+    /// verified commit's `head_commit` — the exact A32 root-cause-1 shape,
+    /// "worker had a verified PASS and a correct commit... never reached
+    /// Complete" — is named `ready_unconsumed(commit=<sha7>)`, truncated to 7
+    /// characters.
+    #[tokio::test]
+    async fn still_running_goal_reasons_names_a_ready_goal_with_a_committed_sha() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: ready with a commit".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({"head_commit": "cb776a5deadbeef", "commits": ["cb776a5 Fix off-by-one"]}),
+        )
+        .await
+        .unwrap();
+
+        let reasons = still_running_goal_reasons_for_session(&pool, &coordinator.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            reasons,
+            vec![(
+                card.id.clone(),
+                "ready_unconsumed(commit=cb776a5)".to_string()
+            )]
+        );
+    }
+
+    /// The same `ready` shape with no evidence at all names `commit=none` —
+    /// never a fabricated sha.
+    #[tokio::test]
+    async fn still_running_goal_reasons_names_a_ready_goal_with_no_commit_as_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: ready with nothing".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+
+        let reasons = still_running_goal_reasons_for_session(&pool, &coordinator.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            reasons,
+            vec![(card.id.clone(), "ready_unconsumed(commit=none)".to_string())]
+        );
+    }
+
+    /// A root goal this coordinator created but never dispatched at all (no
+    /// worker session ever attached — `descendant_session_ids` cannot find
+    /// it, since that walk resolves through worker sessions) is still named,
+    /// as `never_dispatched`.
+    #[tokio::test]
+    async fn still_running_goal_reasons_names_an_undispatched_root_as_never_dispatched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "triage", 0).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, \
+             '$.created_by_session_id', ?) WHERE id = ?",
+        )
+        .bind(&coordinator.id)
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let reasons = still_running_goal_reasons_for_session(&pool, &coordinator.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            reasons,
+            vec![(card.id.clone(), "never_dispatched".to_string())]
+        );
+    }
+
+    /// A `complete` goal is never named at all — only non-terminal goals are
+    /// "still running".
+    #[tokio::test]
+    async fn still_running_goal_reasons_omits_a_complete_goal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: done".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "complete", 1).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+
+        let reasons = still_running_goal_reasons_for_session(&pool, &coordinator.id)
+            .await
+            .unwrap();
+        assert!(
+            reasons.is_empty(),
+            "a Complete goal must never be named: {reasons:?}"
         );
     }
 
