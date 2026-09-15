@@ -8346,6 +8346,25 @@ async fn record_escalation(
                 recorded.decision_id, answer
             ));
         }
+        // Lane R40a: try the worker/goal-status auto-answer next, same
+        // ordering reason as above — it can resolve a decision (of any
+        // kind, not just `unblock`) that only asks whether a dispatched
+        // worker is still running, before `headless_escalate_policy` below
+        // would otherwise park the goal on it.
+        if let Some(answer) = headless_worker_status_answer_policy(
+            pool,
+            &recorded.decision_id,
+            draft.source_session_id.as_deref(),
+            true,
+            cap,
+        )
+        .await?
+        {
+            return Ok(format!(
+                "Escalation {} answered by headless_policy: {}",
+                recorded.decision_id, answer
+            ));
+        }
         if headless_escalate_policy(pool, &recorded.decision_id, true, cap).await? {
             return Ok(format!(
                 "Escalation {} answered by headless_policy; goal resumed.",
@@ -8422,6 +8441,55 @@ const HEADLESS_INFORMATION_NEVER_KEYWORDS: &[&str] = &[
     "provider",
     "service unavailable",
 ];
+
+/// Lane R40a (A36 cheap_model_usability, HARNESS_LOOP_LOG.md "Lane R40a"):
+/// text signals that an escalation is really asking "is my dispatched
+/// worker still running / should I wait / may I redispatch" — a question
+/// `check_worker`/`goal_status` answers directly, never a genuine blocker.
+/// Matched case-insensitively against the decision's headline + detail,
+/// same convention as [`HEADLESS_INFORMATION_NEVER_KEYWORDS`].
+const HEADLESS_WORKER_STATUS_KEYWORDS: &[&str] = &[
+    "still running",
+    "should i wait",
+    "may i redispatch",
+    "may i re-dispatch",
+    "worker still",
+    "is the worker",
+    "worker status",
+    "worker available",
+    "wait for the worker",
+    "check on the worker",
+];
+
+/// True when `headline`/`detail` reads as a worker/goal-status question —
+/// see [`HEADLESS_WORKER_STATUS_KEYWORDS`]. Does not by itself decide
+/// anything is answerable; [`headless_worker_status_answer_policy`] also
+/// requires a real dispatched/in-progress card to back the answer.
+fn is_worker_status_question(headline: &str, detail: &str) -> bool {
+    let haystack = format!("{headline} {detail}").to_ascii_lowercase();
+    HEADLESS_WORKER_STATUS_KEYWORDS
+        .iter()
+        .any(|kw| haystack.contains(kw))
+}
+
+/// Lane R40a: the fixed, honest auto-answer for a worker/goal-status
+/// question once a dispatched/in-progress card is confirmed to back it —
+/// the same honest-default shape as [`HEADLESS_INFORMATION_ANSWER_TEXT`],
+/// specific to "is my dispatch still live" instead of an implementation
+/// detail.
+pub(crate) const HEADLESS_WORKER_STATUS_ANSWER_TEXT: &str = "check_worker/goal_status already \
+     confirms a worker is dispatched and in progress on this goal — that is not a blocker. Wait \
+     for it to report, or call goal_advance once it reaches review; do not escalate on worker \
+     liveness alone.";
+
+/// `decision_audit.outcome`/`answer_note` marker for
+/// [`headless_worker_status_answer_policy`] — distinct from
+/// [`HEADLESS_INFORMATION_AUDIT_OUTCOME`] so the two answer classes never
+/// share one session cap or get confused in an audit trail, while still
+/// carrying the shared `headless_information_answered` prefix the task
+/// asked for.
+const HEADLESS_WORKER_STATUS_AUDIT_OUTCOME: &str =
+    "headless_information_answered kind=worker_status";
 
 /// Pull the `escalate_kind: <word>` marker `decision_inbox::sink::compose_detail`
 /// stamps into every persisted decision's `detail` (Lane R26a) back out.
@@ -8520,6 +8588,39 @@ pub(crate) async fn headless_information_answer_policy(
         return Ok(None);
     }
 
+    answer_decision_headlessly(
+        pool,
+        decision_id,
+        &d.kind,
+        d.goal_id.as_deref(),
+        d.tier,
+        session_id,
+        cap,
+        HEADLESS_INFORMATION_ANSWER_TEXT,
+        HEADLESS_INFORMATION_AUDIT_OUTCOME,
+    )
+    .await
+}
+
+/// Lane R40a: the bounded write path shared by
+/// [`headless_information_answer_policy`] and
+/// [`headless_worker_status_answer_policy`] — factored out so the two
+/// policies answer through the identical per-session cap/audit machinery
+/// instead of drifting apart. Every caller has already decided the decision
+/// qualifies; this only performs the write, and still loses gracefully to a
+/// real human answer that landed first (`rows_affected() == 0` below).
+#[allow(clippy::too_many_arguments)]
+async fn answer_decision_headlessly(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    decision_id: &str,
+    kind: &str,
+    goal_id: Option<&str>,
+    tier: i64,
+    session_id: &str,
+    cap: u32,
+    answer_text: &'static str,
+    audit_outcome: &str,
+) -> Result<Option<String>, String> {
     let mut tx = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
@@ -8530,7 +8631,7 @@ pub(crate) async fn headless_information_answer_policy(
          AND detail LIKE '%' || ? || '%'",
     )
     .bind(decisions::ACTOR_HEADLESS_POLICY)
-    .bind(HEADLESS_INFORMATION_AUDIT_OUTCOME)
+    .bind(audit_outcome)
     .bind(&session_marker)
     .fetch_one(&mut *tx)
     .await
@@ -8546,8 +8647,8 @@ pub(crate) async fn headless_information_answer_policy(
          resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), staged_answer_json = NULL \
          WHERE id = ? AND status = 'open'",
     )
-    .bind(HEADLESS_INFORMATION_ANSWER_TEXT)
-    .bind(HEADLESS_INFORMATION_AUDIT_OUTCOME)
+    .bind(answer_text)
+    .bind(audit_outcome)
     .bind(decisions::ACTOR_HEADLESS_POLICY)
     .bind(decision_id)
     .execute(&mut *tx)
@@ -8562,22 +8663,98 @@ pub(crate) async fn headless_information_answer_policy(
     decisions::append_audit_tx(
         &mut tx,
         decision_id,
-        d.goal_id.as_deref(),
+        goal_id,
         decisions::ACTOR_HEADLESS_POLICY,
-        d.tier,
-        HEADLESS_INFORMATION_AUDIT_OUTCOME,
+        tier,
+        audit_outcome,
         None,
     )
     .await?;
     tx.commit().await.map_err(|e| e.to_string())?;
     crate::events::emit(crate::events::decision_resolved(
         decision_id,
-        "unblock",
+        kind,
         "input",
         decisions::ACTOR_HEADLESS_POLICY,
-        d.tier,
+        tier,
     ));
-    Ok(Some(HEADLESS_INFORMATION_ANSWER_TEXT.to_string()))
+    Ok(Some(answer_text.to_string()))
+}
+
+/// Lane R40a (A36 cheap_model_usability, HARNESS_LOOP_LOG.md "Lane R40a"):
+/// a `check_worker`/`goal_status`-answerable question about a dispatched
+/// worker ("is it still running", "should I wait", "may I redispatch") is
+/// never a genuine blocker once a dispatched/in-progress card actually
+/// backs it — answered headlessly through the same write path as
+/// [`headless_information_answer_policy`] instead of minting a decision
+/// that sits open waiting on a human who was never going to weigh in on
+/// worker liveness. Deliberately requires a REAL in-progress card, checked
+/// two ways: the decision's own `goal_id` (set when `escalate` names one),
+/// or — since a rule-5-minted or pre-dispatch ask often carries no goal
+/// binding — any in-progress card the escalating session itself created.
+/// Never fires on a Ready card that has not been dispatched yet, so a
+/// genuine scope/credential escalation raised before dispatch is untouched.
+/// Shares [`HEADLESS_INFORMATION_NEVER_KEYWORDS`] so a miscategorized
+/// credential/provider ask is never auto-answered here either, and is NOT
+/// restricted to `kind == "unblock"` — a status question can just as
+/// easily arrive as a `choice`/`decision` escalation.
+pub(crate) async fn headless_worker_status_answer_policy(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    decision_id: &str,
+    session_id: Option<&str>,
+    headless: bool,
+    cap: u32,
+) -> Result<Option<String>, String> {
+    if !headless {
+        return Ok(None);
+    }
+    let Some(session_id) = session_id else {
+        return Ok(None);
+    };
+    let d = decisions::get_decision(pool, decision_id)
+        .await?
+        .ok_or("Missing escalation")?;
+    if d.status != "open" {
+        return Ok(None);
+    }
+    if !is_worker_status_question(&d.headline, &d.detail) {
+        return Ok(None);
+    }
+    let haystack = format!("{} {}", d.headline, d.detail).to_ascii_lowercase();
+    if HEADLESS_INFORMATION_NEVER_KEYWORDS
+        .iter()
+        .any(|kw| haystack.contains(kw))
+    {
+        return Ok(None);
+    }
+
+    let goal_in_progress = match d.goal_id.as_deref() {
+        Some(goal_id) => matches!(
+            goal_state_for_card(pool, goal_id).await,
+            Ok(GoalState::InProgress)
+        ),
+        None => false,
+    };
+    let session_has_in_progress_card = cards::goal_cards_created_by_session(pool, session_id)
+        .await?
+        .iter()
+        .any(|c| c.state_binding == GoalState::InProgress.binding());
+    if !goal_in_progress && !session_has_in_progress_card {
+        return Ok(None);
+    }
+
+    answer_decision_headlessly(
+        pool,
+        decision_id,
+        &d.kind,
+        d.goal_id.as_deref(),
+        d.tier,
+        session_id,
+        cap,
+        HEADLESS_WORKER_STATUS_ANSWER_TEXT,
+        HEADLESS_WORKER_STATUS_AUDIT_OUTCOME,
+    )
+    .await
 }
 
 /// Only called for a freshly recorded escalation, never for general inbox answers.
@@ -20915,6 +21092,152 @@ mod tests {
             .unwrap();
         assert_eq!(status, "open");
         assert_eq!(kind, "unblock");
+    }
+
+    // ── Lane R40a (A36 cheap_model_usability, harness loop): a question
+    // about whether a dispatched worker is still running / should be
+    // waited on / may be redispatched is never a genuine blocker once a
+    // dispatched/in-progress card backs it — `check_worker`/`goal_status`
+    // answers it, not a person. ─────────────────────────────────────────
+
+    fn worker_status_escalation_draft(
+        session_id: &str,
+    ) -> crate::decision_inbox::escalate::DecisionDraft {
+        crate::decision_inbox::escalate::draft_from_payload(
+            serde_json::json!({
+                "kind": "decision",
+                "specific_ask": "Is the worker still running, or should I wait before redispatching?",
+                "why_blocked": "The dispatched worker has not reported back yet.",
+                "evidence_refs": [],
+                "options": [
+                    {"id": "wait", "label": "Wait for the worker", "consequence": "No action taken now."},
+                    {"id": "redispatch", "label": "Redispatch now", "consequence": "A second worker starts on the same goal."}
+                ],
+                "resume": "auto",
+            }),
+            &crate::decision_inbox::escalate::DraftSource {
+                session_id: Some(session_id.to_string()),
+                worker_roster_name: None,
+            },
+        )
+    }
+
+    #[test]
+    fn is_worker_status_question_classifies_status_phrasing_only() {
+        assert!(is_worker_status_question(
+            "Is the worker still running?",
+            "Should I wait for it to finish, or may I redispatch?"
+        ));
+        assert!(
+            !is_worker_status_question(
+                "Which rounding rule should the fragile surcharge use?",
+                "Round the already-rounded base, or round once on the raw product? They \
+                 disagree by a cent at fractional weights."
+            ),
+            "a scope/implementation-detail question must not classify as worker_status"
+        );
+    }
+
+    /// The fixture shape this lane repairs, `select-checks-worker-before-
+    /// dispatch`: a worker/goal-status-shaped question is answered
+    /// headlessly, never minted as an open decision, once a dispatched/
+    /// in-progress card actually exists for the escalating session.
+    #[tokio::test]
+    async fn headless_worker_status_answer_policy_answers_when_a_dispatched_card_exists() {
+        use crate::decision_inbox::escalate::DecisionSink;
+        let pool = test_pool().await;
+        let session_id = "r40a-status-1";
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, \
+             '$.created_by_session_id', ?) WHERE id = ?",
+        )
+        .bind(session_id)
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = worker_status_escalation_draft(session_id);
+        let id = sink.record(draft).await.unwrap().decision_id;
+
+        let answer = headless_worker_status_answer_policy(&pool, &id, Some(session_id), true, 2)
+            .await
+            .unwrap();
+        assert_eq!(answer.as_deref(), Some(HEADLESS_WORKER_STATUS_ANSWER_TEXT));
+
+        let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
+        assert_eq!(d.status, "answered");
+        assert_eq!(
+            d.acted_by.as_deref(),
+            Some(decisions::ACTOR_HEADLESS_POLICY)
+        );
+
+        let audit_outcome: String = sqlx::query_scalar(
+            "SELECT outcome FROM decision_audit WHERE decision_id = ? AND acted_by = ?",
+        )
+        .bind(&id)
+        .bind(decisions::ACTOR_HEADLESS_POLICY)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audit_outcome, HEADLESS_WORKER_STATUS_AUDIT_OUTCOME);
+    }
+
+    /// The precise shape of the M34 defect this lane's guard does NOT
+    /// paper over: `select-checks-worker-before-dispatch` seeds a Ready
+    /// (never dispatched) card, so nothing here is actually a dispatched
+    /// worker yet — a worker-status-shaped ask must stay open rather than
+    /// being waved through on text alone.
+    #[tokio::test]
+    async fn headless_worker_status_answer_policy_never_fires_without_a_dispatched_card() {
+        use crate::decision_inbox::escalate::DecisionSink;
+        let pool = test_pool().await;
+        let session_id = "r40a-status-2";
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = worker_status_escalation_draft(session_id);
+        let id = sink.record(draft).await.unwrap().decision_id;
+
+        let answer = headless_worker_status_answer_policy(&pool, &id, Some(session_id), true, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            answer, None,
+            "a worker-status-shaped ask must stay open when nothing is actually dispatched"
+        );
+    }
+
+    /// A genuine scope/credential escalation is never touched by this
+    /// policy even when a dispatched card happens to exist elsewhere in
+    /// the session — the text itself must read as a status question first.
+    #[tokio::test]
+    async fn headless_worker_status_answer_policy_ignores_non_status_text() {
+        use crate::decision_inbox::escalate::DecisionSink;
+        let pool = test_pool().await;
+        let session_id = "r40a-status-3";
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, \
+             '$.created_by_session_id', ?) WHERE id = ?",
+        )
+        .bind(session_id)
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = credential_escalation_draft(session_id);
+        let id = sink.record(draft).await.unwrap().decision_id;
+
+        let answer = headless_worker_status_answer_policy(&pool, &id, Some(session_id), true, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            answer, None,
+            "a credential escalation must never be reclassified as worker_status"
+        );
     }
 
     // ── Lane R24a (M26 DeepSeek m1, harness loop): an unsupported `kind`
