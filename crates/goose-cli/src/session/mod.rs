@@ -1520,6 +1520,19 @@ impl CliSession {
     /// the same finished run. Q-routing's `result`-capturing rewrite of
     /// `headless()` is kept (it also fixed `print_harness_overhead_line` being
     /// skipped on the error path via `?`); only its `println!` moved here.
+    ///
+    /// Lane R22b (M24 `dschat-select-existing-roadmap-resumes-not-
+    /// redecomposes` forensics — a resume-path run that finished with no
+    /// `receipt cost_routing …` line at all): audited this call site again.
+    /// The cost_routing print below is unconditional — no snapshot/audit
+    /// gate, no dispatch-count check — so it always fires, on every headless
+    /// run, whether or not this run's `resume_roadmap` / `goal_advance
+    /// (dispatch)` / decompose path actually dispatched anything (see the
+    /// `cost_router::routing_receipt` module's `Snapshot::format_line` for
+    /// the honest zero-value line an unrouted run prints instead of omitting
+    /// the line entirely). No change needed at this site; the actual gap
+    /// this lane fixed was that module never resetting its counters between
+    /// runs (see `receipts::begin_run`).
     pub fn print_harness_receipts(&self) {
         println!("{}", permagent::cost_router::routing_receipt::format_line());
         for line in permagent::receipts::snapshot().lines() {

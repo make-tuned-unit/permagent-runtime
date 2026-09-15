@@ -221,6 +221,19 @@ static LAST_OVERHEAD_LINE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mu
 pub fn begin_run() {
     ACTIVE.store(false, Ordering::Relaxed);
     REGISTRY.reset();
+    // Lane R22b (M24 `dschat-select-existing-roadmap-resumes-not-
+    // redecomposes` forensics): cost_routing's counters
+    // (`cost_router::routing_receipt`) are a SEPARATE process-wide registry
+    // from this module's own `REGISTRY` — before this, nothing ever zeroed
+    // them, so a process that ran more than one headless session (unlike
+    // today's one-shot-per-invocation `permagent-eval` subprocess model)
+    // would carry a prior run's dispatch counts into this run's printed
+    // line and sidecar. Reset alongside `REGISTRY` so every headless run's
+    // cost_routing receipt reflects only THIS run's dispatches, on every
+    // path that reaches `orchestrator::dispatch_goal_fn` (decompose's
+    // nudge-dispatch hook, `resume_roadmap`'s `dispatch_eligible_goals`, and
+    // `goal_advance(dispatch)` alike — all three share that one seam).
+    crate::cost_router::routing_receipt::reset();
     *SIDECAR_PATH.lock().unwrap_or_else(|e| e.into_inner()) =
         std::env::var_os("PERMAGENT_RECEIPTS_SIDECAR").map(PathBuf::from);
     *LAST_OVERHEAD_LINE.lock().unwrap_or_else(|e| e.into_inner()) = None;
