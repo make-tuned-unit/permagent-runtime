@@ -1943,6 +1943,12 @@ mod tests {
             oracle_timed_out: None,
             oracle_secs: None,
             cost_usd: Some(cost_usd),
+            // K18's split-cost fields: this test helper builds a
+            // coordinator-only shape, so the worker halves are unknown.
+            coordinator_usd: None,
+            worker_usd: None,
+            worker_local_tokens: None,
+            worker_offset_usd: None,
             input_tokens: None,
             output_tokens: None,
             cache_read_tokens: None,

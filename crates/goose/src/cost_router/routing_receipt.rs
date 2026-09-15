@@ -241,9 +241,11 @@ mod tests {
         assert!(after.cheapest_capable >= baseline.cheapest_capable + 1);
         assert!(after.pack_honored >= baseline.pack_honored + 1);
 
+        // NOTE: a `\`-newline continuation does NOT join lines inside a RAW
+        // string — the backslash, newline and indentation all become literal
+        // regex characters and nothing matches. Keep this pattern on one line.
         let re = regex::Regex::new(
-            r"^receipt cost_routing dispatches=\d+ cheapest_capable=\d+ pack_honored=\d+ \
-             planner=\S+ routed_local=\d+ routed_cloud=\d+ fallbacks=\d+$",
+            r"^receipt cost_routing dispatches=\d+ cheapest_capable=\d+ pack_honored=\d+ planner=\S+ routed_local=\d+ routed_cloud=\d+ fallbacks=\d+$",
         )
         .unwrap();
         let line = format_line();

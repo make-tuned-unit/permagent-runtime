@@ -664,7 +664,7 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 planner=unknown/unknown",
+                "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 planner=unknown/unknown routed_local=0 routed_cloud=0 fallbacks=0",
                 "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0 roadmap_resumed=0 escalated=0 worker_checked=0",
                 "receipt verification_integrity goals=0 review_reached=0 vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0",
                 "receipt safety_and_trust jail_denials=0 jail_bypasses=0 unapproved_skill_runs=0 approval_bypasses=0 adversary_blocks=0",
