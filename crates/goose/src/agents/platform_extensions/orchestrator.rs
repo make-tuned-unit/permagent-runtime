@@ -15523,6 +15523,7 @@ async fn hand_salvaged_work_to_review_unverified(
         worktree_path,
         baseline,
         verify_note,
+        calling_session_id,
     )
     .await
     {
@@ -15547,6 +15548,13 @@ async fn hand_salvaged_work_to_review_unverified(
         }
         ReviewerGateOutcome::Refused { reason } => {
             park_salvage_the_reviewer_rejected(pool, card, ahead, verify_note, &reason).await
+        }
+        // Lane R28b (A27 Miss 3): the provider itself never answered — a
+        // distinct outcome string from a genuine reviewer decline, so the
+        // decision_audit tells the two apart without re-deriving it from
+        // git state.
+        ReviewerGateOutcome::Unreachable { reason } => {
+            park_salvage_the_reviewer_unreachable(pool, card, ahead, verify_note, &reason).await
         }
         // Lane R22c-e (G26 MED-2): a distinct outcome from an ordinary
         // reviewer refusal — the reviewer was never even asked, because the
@@ -15665,12 +15673,14 @@ async fn hand_to_review_for_a_human(
 
 /// Lane R22c-c: the outcome of routing an unverified salvage through the
 /// cross-family reviewer gate. `Approved` means the reviewer signed off ON
-/// THE MERITS with no automated check to lean on; `Refused` covers
-/// everything else the gate can produce (no reviewer available, spend
-/// refused, unreachable/timed out, REQUEST_CHANGES, UNCERTAIN, or a
-/// repeated-finding escalation) — every one of these parks, never lands,
-/// per the coordinator's own rule: never land without the reviewer's
-/// approval.
+/// THE MERITS with no automated check to lean on; `Refused` covers a
+/// genuine reviewer verdict that was not an approval (REQUEST_CHANGES,
+/// UNCERTAIN, or a repeated-finding escalation — a response DID come back)
+/// plus non-retryable infra refusals (no reviewer candidate at all, spend
+/// refused); `Unreachable` (Lane R28b, A27 Miss 3) is its own case — the
+/// reviewer's PROVIDER never answered at all, no verdict was ever obtained.
+/// Every one of these parks, never lands, per the coordinator's own rule:
+/// never land without the reviewer's approval.
 #[derive(Debug)]
 enum ReviewerGateOutcome {
     Approved {
@@ -15679,6 +15689,19 @@ enum ReviewerGateOutcome {
         reviewer_model: String,
     },
     Refused {
+        reason: String,
+    },
+    /// Lane R28b (A27 Miss 3): the reviewer's PROVIDER could not be used —
+    /// the completion call (or provider construction) failed with a
+    /// provider-unavailable/billing/auth-class error and the one same-
+    /// session-tier-model retry (`resolve_session_tier_fallback`) either
+    /// was not available or failed too — OR a non-retryable infra problem
+    /// (no worker session recorded, no reviewer candidate at all, the
+    /// budget gate refused) meant no reviewer call was ever attempted.
+    /// Distinct from `Refused` on purpose: nothing ever actually looked at
+    /// the diff here, so the card must never read as "reviewed and
+    /// declined" — see `park_salvage_the_reviewer_unreachable`.
+    Unreachable {
         reason: String,
     },
     /// Lane R22c-e (G26 MED-2): the diff is larger than the reviewer's
@@ -15721,6 +15744,171 @@ fn count_diff_changed_lines(diff: &str) -> usize {
         .count()
 }
 
+/// Lane R28b (A27 Miss 3): markers for "this specific provider cannot be
+/// used right now" — billing/credits, an auth rejection, rate limiting, a
+/// provider-side server error, an unreachable network, or a call that timed
+/// out entirely. Reuses [`crate::providers::errors::is_billing_message`]
+/// (the exact function that already recognizes Anthropic's "credit balance
+/// is too low" 400, the failure A27 Miss 3 traced) plus the same
+/// auth/5xx/network/rate-limit set `ProviderError::is_permanent`
+/// (`crates/goose/src/providers/errors.rs`) documents as permanent-or-
+/// worth-trying-elsewhere. Deliberately narrow: a malformed request or an
+/// unknown model id would fail identically against a DIFFERENT provider
+/// too, so those are NOT included here — retrying them would just spend a
+/// second call proving nothing.
+const REVIEWER_PROVIDER_UNAVAILABLE_MARKERS: &[&str] = &[
+    "unauthorized",
+    "invalid api key",
+    "invalid x-api-key",
+    "authentication error",
+    "rate limit",
+    "rate-limit",
+    "too many requests",
+    "server error",
+    "internal server error",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    "could not be reached",
+    "connection refused",
+    "connection reset",
+    "network error",
+    "timed out",
+    "did not respond within",
+];
+
+/// True when `detail` (a failed reviewer-provider call's error text)
+/// describes the PROVIDER being unavailable right now, rather than a
+/// failure that would recur identically against any provider. See
+/// [`REVIEWER_PROVIDER_UNAVAILABLE_MARKERS`] for what is and is not
+/// included and why.
+fn reviewer_provider_is_unavailable(detail: &str) -> bool {
+    if crate::providers::errors::is_billing_message(detail) {
+        return true;
+    }
+    let lower = detail.to_ascii_lowercase();
+    REVIEWER_PROVIDER_UNAVAILABLE_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+/// A single reviewer-provider call attempt's failure, classified for the
+/// retry decision: [`Unavailable`](Self::Unavailable) is worth one retry on
+/// a different provider; [`Other`](Self::Other) is not.
+#[derive(Debug)]
+enum ReviewerCallFailure {
+    Unavailable(String),
+    Other(String),
+}
+
+/// Build the model config + provider for `(provider_id, model_id)` and run
+/// ONE salvage-reviewer completion against it, classifying any failure for
+/// the caller's retry decision. Shared by the initial reviewer pick and the
+/// one same-session-tier-model fallback attempt (Lane R28b, A27 Miss 3).
+async fn call_reviewer_provider(
+    provider_id: &str,
+    model_id: &str,
+    session: Session,
+    task_spec: &str,
+    diff_for_prompt: &str,
+    verify_note: &str,
+) -> Result<crate::conversation::message::Message, ReviewerCallFailure> {
+    let model_config = crate::model::ModelConfig::new(model_id)
+        .map(|c| c.with_canonical_limits(provider_id))
+        .map_err(|e| {
+            ReviewerCallFailure::Other(format!(
+                "could not build a model config for the reviewer {provider_id}/{model_id}: {e}"
+            ))
+        })?;
+    let provider = providers::create(provider_id, model_config, Vec::new())
+        .await
+        .map_err(|e| {
+            let detail = e.to_string();
+            let reason = format!(
+                "could not create the reviewer provider {provider_id}/{model_id}: {detail}"
+            );
+            if reviewer_provider_is_unavailable(&detail) {
+                ReviewerCallFailure::Unavailable(reason)
+            } else {
+                ReviewerCallFailure::Other(reason)
+            }
+        })?;
+
+    let prompt = crate::cost_router::build_review_prompt(
+        task_spec,
+        diff_for_prompt,
+        &format!("no automated checks ran; review the diff on its merits ({verify_note})"),
+        &[],
+    );
+    let user_message = Message::user().with_text(prompt);
+
+    let completion = tokio::time::timeout(
+        REVIEWER_GATE_TIMEOUT,
+        AccountedFastCompletion::complete_fast_accounted(
+            std::sync::Arc::new(SessionManager::instance()),
+            session,
+            provider,
+            crate::cost_router::REVIEW_SYSTEM_PROMPT,
+            &[user_message],
+            &[],
+            false,
+        ),
+    )
+    .await;
+
+    match completion {
+        Ok(Ok((response, _usage))) => Ok(response),
+        Ok(Err(e)) => {
+            let detail = e.to_string();
+            let reason = format!("the independent reviewer could not be reached: {detail}");
+            if reviewer_provider_is_unavailable(&detail) {
+                Err(ReviewerCallFailure::Unavailable(reason))
+            } else {
+                Err(ReviewerCallFailure::Other(reason))
+            }
+        }
+        Err(_) => Err(ReviewerCallFailure::Unavailable(format!(
+            "the independent reviewer did not respond within {}s",
+            REVIEWER_GATE_TIMEOUT.as_secs()
+        ))),
+    }
+}
+
+/// Lane R28b (A27 Miss 3): resolve the ONE fallback reviewer candidate for a
+/// provider-unavailable failure — the CALLING session's own provider/model
+/// (the tier the current harness run is already operating on), mirroring
+/// the planner's existing "escalate to the session's default provider"
+/// fallback (`resolve_decomposition_provider`). Independence (the G-lane
+/// rule: the reviewer must not be the mutating session; a different model
+/// on the SAME provider is fine) is preserved by construction: this never
+/// resolves to the worker/mutating session, and never to the exact
+/// `(provider, model)` pair that already failed — retrying the identical
+/// pair would prove nothing.
+async fn resolve_session_tier_fallback(
+    calling_session_id: Option<&str>,
+    worker_session_id: &str,
+    failed_provider: &str,
+    failed_model: &str,
+) -> Option<(String, String)> {
+    let calling_id = calling_session_id?;
+    if calling_id == worker_session_id {
+        return None;
+    }
+    let session = SessionManager::instance()
+        .get_session(calling_id, false)
+        .await
+        .ok()?;
+    let provider = session.provider_name?;
+    let model = session.model_config?.model_name;
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    if provider.eq_ignore_ascii_case(failed_provider) && model == failed_model {
+        return None;
+    }
+    Some((provider, model))
+}
+
 /// Lane R22c-c: dispatch the SAME cross-family reviewer gate a live
 /// `permagent-coding` turn's `ReviewerMandate` would use before finishing
 /// (`after_turn::ReviewerMandate::assess`'s own composition of
@@ -15740,6 +15928,7 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     worktree_path: &std::path::Path,
     baseline: &str,
     verify_note: &str,
+    calling_session_id: Option<&str>,
 ) -> ReviewerGateOutcome {
     // Lane R22g: the diff-size check runs BEFORE any reviewer-selection
     // work — including the worker-session lookup that picks it (`select_
@@ -15856,72 +16045,71 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         return ReviewerGateOutcome::Refused { reason };
     }
 
-    let model_config = match crate::model::ModelConfig::new(&pick.model)
-        .map(|c| c.with_canonical_limits(&pick.provider))
-    {
-        Ok(mc) => mc,
-        Err(e) => {
-            return ReviewerGateOutcome::Refused {
-                reason: format!(
-                    "could not build a model config for the chosen reviewer {}/{}: {e}",
-                    pick.provider, pick.model
-                ),
-            };
-        }
-    };
-    let provider = match providers::create(&pick.provider, model_config, Vec::new()).await {
-        Ok(p) => p,
-        Err(e) => {
-            return ReviewerGateOutcome::Refused {
-                reason: format!(
-                    "could not create the chosen reviewer provider {}/{}: {e}",
-                    pick.provider, pick.model
-                ),
-            };
-        }
-    };
-
     let task_spec = format!(
         "{}\n\n{}",
         card.title,
         collect_acceptance_criteria(&card.metadata_json, &card.description).join("\n")
     );
-    let prompt = crate::cost_router::build_review_prompt(
+
+    // Lane R28b (A27 Miss 3): the first attempt is always the selected
+    // `pick`. On a provider-unavailable/billing/auth-class failure (the
+    // SAME "credit balance is too low" shape the planner's
+    // `resolve_decomposition_provider` escalation already treats as "try a
+    // different provider, don't fail the whole call"), retry ONCE on the
+    // calling session's own tier provider/model before parking unlanded.
+    // Any other failure (a bad model id, a malformed request) would recur
+    // identically on a different provider too, so it is not retried.
+    let (response, reviewer_provider, reviewer_model) = match call_reviewer_provider(
+        &pick.provider,
+        &pick.model,
+        session.clone(),
         &task_spec,
         &diff_for_prompt,
-        &format!("no automated checks ran; review the diff on its merits ({verify_note})"),
-        &[],
-    );
-    let user_message = Message::user().with_text(prompt);
-
-    let completion = tokio::time::timeout(
-        REVIEWER_GATE_TIMEOUT,
-        AccountedFastCompletion::complete_fast_accounted(
-            std::sync::Arc::new(SessionManager::instance()),
-            session,
-            provider,
-            crate::cost_router::REVIEW_SYSTEM_PROMPT,
-            &[user_message],
-            &[],
-            false,
-        ),
+        verify_note,
     )
-    .await;
-    let response = match completion {
-        Ok(Ok((response, _usage))) => response,
-        Ok(Err(e)) => {
-            return ReviewerGateOutcome::Refused {
-                reason: format!("the independent reviewer could not be reached: {e}"),
-            };
+    .await
+    {
+        Ok(response) => (response, pick.provider.clone(), pick.model.clone()),
+        Err(ReviewerCallFailure::Other(reason)) => {
+            return ReviewerGateOutcome::Unreachable { reason };
         }
-        Err(_) => {
-            return ReviewerGateOutcome::Refused {
-                reason: format!(
-                    "the independent reviewer did not respond within {}s",
-                    REVIEWER_GATE_TIMEOUT.as_secs()
-                ),
-            };
-        }
+        Err(ReviewerCallFailure::Unavailable(first_reason)) => match resolve_session_tier_fallback(
+            calling_session_id,
+            &worker_session_id,
+            &pick.provider,
+            &pick.model,
+        )
+        .await
+        {
+            Some((fb_provider, fb_model)) => {
+                match call_reviewer_provider(
+                    &fb_provider,
+                    &fb_model,
+                    session.clone(),
+                    &task_spec,
+                    &diff_for_prompt,
+                    verify_note,
+                )
+                .await
+                {
+                    Ok(response) => (response, fb_provider, fb_model),
+                    Err(ReviewerCallFailure::Unavailable(second_reason))
+                    | Err(ReviewerCallFailure::Other(second_reason)) => {
+                        return ReviewerGateOutcome::Unreachable {
+                            reason: format!(
+                                "{first_reason}; retried on the session's own tier model \
+                                     {fb_provider}/{fb_model}, which also failed: {second_reason}"
+                            ),
+                        };
+                    }
+                }
+            }
+            None => {
+                return ReviewerGateOutcome::Unreachable {
+                    reason: first_reason,
+                };
+            }
+        },
     };
 
     let outcome = crate::cost_router::parse_review(&response.as_concat_text());
@@ -15929,8 +16117,8 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     match crate::cost_router::gate_decision(&outcome, diff_substantive, 0) {
         crate::cost_router::GateDecision::Proceed { .. } => ReviewerGateOutcome::Approved {
             checked: outcome.checked.clone(),
-            reviewer_provider: pick.provider.clone(),
-            reviewer_model: pick.model.clone(),
+            reviewer_provider,
+            reviewer_model,
         },
         crate::cost_router::GateDecision::RequestChanges { findings } => {
             let summary = findings
@@ -16146,11 +16334,20 @@ async fn land_salvage_approved_by_reviewer(
     SalvageOutcome::Salvaged { note }
 }
 
-/// Lane R22c-c: the reviewer did not approve (or could not be reached at
-/// all) — park honestly with the reviewer's own reason. Never a "hand to a
-/// human" outcome: headless has nobody to hand it to, and the coordinator's
-/// rule is explicit — never land without approval, never require a human
-/// when auto-land is on.
+/// Lane R22c-c: the reviewer DID run and did not approve — park honestly
+/// with the reviewer's own reason. Never a "hand to a human" outcome:
+/// headless has nobody to hand it to, and the coordinator's rule is
+/// explicit — never land without approval, never require a human when
+/// auto-land is on.
+///
+/// Lane R28b (A27 Miss 3): stamps its OWN outcome string
+/// (`salvage_reviewer_rejected`), distinct from both the success string
+/// (`salvaged_on_park_unverified_reviewed`) and from
+/// [`park_salvage_the_reviewer_unreachable`]'s — this function previously
+/// reused the success string for a genuinely rejected/unlanded fix, so a
+/// `decision_audit` reader (or the next A-series analysis) could not tell
+/// "reviewed and declined" apart from "reviewed and landed" without
+/// re-deriving it from git state.
 async fn park_salvage_the_reviewer_rejected(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
@@ -16162,13 +16359,28 @@ async fn park_salvage_the_reviewer_rejected(
         "{ahead} commit(s) past baseline could not be checked automatically ({verify_note}); \
          the independent reviewer did not approve: {reviewer_reason}"
     );
-    record_salvage_receipt(
-        pool,
-        &card.id,
-        "salvaged_on_park_unverified_reviewed",
-        &note,
-    )
-    .await;
+    record_salvage_receipt(pool, &card.id, "salvage_reviewer_rejected", &note).await;
+    SalvageOutcome::NotSalvaged { note }
+}
+
+/// Lane R28b (A27 Miss 3): the reviewer's PROVIDER never answered at all —
+/// no verdict was ever obtained, unlike [`park_salvage_the_reviewer_rejected`]
+/// where a real response came back and simply wasn't an approval. Parks
+/// honestly with its own outcome string (`salvage_reviewer_unreachable`),
+/// never the success string and never the rejected one: nothing here ever
+/// looked at the diff, so the card must not read as "reviewed".
+async fn park_salvage_the_reviewer_unreachable(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    ahead: u64,
+    verify_note: &str,
+    reviewer_reason: &str,
+) -> SalvageOutcome {
+    let note = format!(
+        "{ahead} commit(s) past baseline could not be checked automatically ({verify_note}); \
+         the independent reviewer's provider could not be reached: {reviewer_reason}"
+    );
+    record_salvage_receipt(pool, &card.id, "salvage_reviewer_unreachable", &note).await;
     SalvageOutcome::NotSalvaged { note }
 }
 
@@ -23236,7 +23448,9 @@ mod tests {
             .expect("a reviewer rejection must still leave a card-metadata breadcrumb");
         assert_eq!(
             receipt.get("outcome").and_then(|v| v.as_str()),
-            Some("salvaged_on_park_unverified_reviewed")
+            Some("salvage_reviewer_rejected"),
+            "a genuine reviewer decline must stamp its own outcome string, never the success \
+             string a landed salvage uses"
         );
         assert!(
             updated
@@ -23247,10 +23461,137 @@ mod tests {
              verify-evidence gate"
         );
         let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(outcomes, vec!["salvage_reviewer_rejected".to_string()]);
+    }
+
+    /// Lane R28b (A27 Miss 3): the reviewer's provider being unreachable
+    /// must stamp `salvage_reviewer_unreachable` — never the rejected
+    /// string (a rejection implies a real verdict came back) and never the
+    /// success string.
+    #[tokio::test]
+    async fn park_salvage_the_reviewer_unreachable_names_its_own_outcome() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        let outcome = park_salvage_the_reviewer_unreachable(
+            &pool,
+            &card,
+            1,
+            "no automated checks ran; review the diff on its merits",
+            "the independent reviewer could not be reached: credit balance is too low",
+        )
+        .await;
+        match outcome {
+            SalvageOutcome::NotSalvaged { note } => {
+                assert!(
+                    note.contains("credit balance is too low"),
+                    "the provider's own failure must be named in the park note: {note}"
+                );
+            }
+            SalvageOutcome::Salvaged { .. } => {
+                panic!("an unreachable reviewer provider must never be reported as salvaged")
+            }
+        }
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("an unreachable reviewer must still leave a card-metadata breadcrumb");
         assert_eq!(
-            outcomes,
-            vec!["salvaged_on_park_unverified_reviewed".to_string()]
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvage_reviewer_unreachable")
         );
+        assert!(
+            updated
+                .metadata_json
+                .get(goal_transition::UNVERIFIED_REVIEWER_APPROVAL_METADATA_KEY)
+                .is_none(),
+            "an unreachable reviewer must never stamp the approval marker that bypasses \
+             auto-land's verify-evidence gate"
+        );
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(outcomes, vec!["salvage_reviewer_unreachable".to_string()]);
+    }
+
+    /// Lane R28b (A27 Miss 3): the three salvage-reviewer outcome strings
+    /// must never collide — this is the exact ambiguity A27 Miss 3 found
+    /// (`salvaged_on_park_unverified_reviewed` stamped by both a genuine
+    /// land and a reviewer-rejected/unreachable park).
+    #[test]
+    fn salvage_reviewer_outcome_strings_are_pairwise_distinct() {
+        let success = "salvaged_on_park_unverified_reviewed";
+        let rejected = "salvage_reviewer_rejected";
+        let unreachable = "salvage_reviewer_unreachable";
+        assert_ne!(success, rejected);
+        assert_ne!(success, unreachable);
+        assert_ne!(rejected, unreachable);
+    }
+
+    /// Lane R28b (A27 Miss 3): the fallback decision — reused from the same
+    /// provider-unavailable/billing/auth framing `resolve_decomposition_
+    /// provider`'s planner escalation and `ProviderError::is_permanent`
+    /// already use. A provider-unavailable-class failure is worth one retry
+    /// on a different provider; anything else (a malformed request, a bad
+    /// model id) would fail identically elsewhere and must not retry.
+    #[test]
+    fn reviewer_provider_unavailable_classifies_billing_auth_and_outage_as_retryable() {
+        for detail in [
+            "Your credit balance is too low to access the Anthropic API",
+            "429 Too Many Requests: rate limit exceeded",
+            "401 Unauthorized: invalid x-api-key",
+            "500 Internal Server Error",
+            "503 Service Unavailable",
+            "the independent reviewer did not respond within 120s",
+            "connection refused",
+        ] {
+            assert!(
+                reviewer_provider_is_unavailable(detail),
+                "expected {detail:?} to classify as provider-unavailable (retry candidate)"
+            );
+        }
+    }
+
+    #[test]
+    fn reviewer_provider_unavailable_does_not_classify_request_shaped_failures_as_retryable() {
+        for detail in [
+            "could not build a model config for the chosen reviewer acme/bad-model: unknown \
+             model",
+            "the independent reviewer requested changes: [CORRECTNESS] off-by-one",
+            "no model from a family other than the worker's is available to review this work",
+        ] {
+            assert!(
+                !reviewer_provider_is_unavailable(detail),
+                "expected {detail:?} to NOT classify as provider-unavailable — retrying a \
+                 different provider would not fix a request-shaped failure"
+            );
+        }
+    }
+
+    /// Lane R28b (A27 Miss 3): the fallback candidate must never be the
+    /// mutating/worker session (G-lane independence rule) and must never be
+    /// the exact (provider, model) pair that already failed — retrying the
+    /// identical pair proves nothing.
+    #[tokio::test]
+    async fn session_tier_fallback_refuses_the_worker_session_and_the_identical_pair() {
+        // No calling session at all ⇒ no candidate.
+        assert!(
+            resolve_session_tier_fallback(None, "worker-1", "anthropic", "claude-fable-5")
+                .await
+                .is_none()
+        );
+
+        // The calling session IS the worker/mutating session ⇒ refused, even
+        // though nothing here can check its provider/model — independence is
+        // decided by identity alone.
+        assert!(resolve_session_tier_fallback(
+            Some("worker-1"),
+            "worker-1",
+            "anthropic",
+            "claude-fable-5"
+        )
+        .await
+        .is_none());
     }
 
     /// Lane R22c-e (G26 MED-2): a diff over the reviewer's prompt window
@@ -23309,6 +23650,7 @@ mod tests {
             dir.path(),
             &baseline,
             "no automated checks ran; review the diff on its merits",
+            None,
         )
         .await;
         match outcome {
