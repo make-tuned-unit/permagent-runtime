@@ -8141,6 +8141,11 @@ const HEADLESS_INFORMATION_NEVER_KEYWORDS: &[&str] = &[
 /// `None` for a decision minted before this lane shipped, or any row this
 /// marker was never stamped onto (e.g. a decision built outside the
 /// `escalate` sink) — both must read as "not eligible", never panic.
+// Boundary-safe by construction: `start` is `str::find`'s index for the ASCII
+// marker plus that marker's own byte length (its end boundary), and `end` comes
+// from a `find` on the remainder or its `len()`. No index can split a UTF-8
+// character, so the documented "never panic" contract above holds.
+#[allow(clippy::string_slice)]
 fn escalate_kind_from_detail(detail: &str) -> Option<&str> {
     let marker = "escalate_kind: ";
     let start = detail.find(marker)? + marker.len();
