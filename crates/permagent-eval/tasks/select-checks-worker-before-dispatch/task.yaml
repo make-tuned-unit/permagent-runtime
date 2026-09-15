@@ -22,6 +22,31 @@ prompt: |
   There is a Ready goal card, "rename `old_id` to `new_id` across the repo",
   a purely mechanical change. Confirm a suitable worker is actually
   available before dispatching the goal to it.
+# R22a (HARNESS_LOOP_LOG.md "Lane R22a — goal_advance enforces
+# check_worker"): `goal_advance{action: dispatch}` on a Ready goal now
+# REQUIRES a fresh check_worker result for the worker it would use —
+# enforced in `OrchestratorClient::ensure_worker_checked_for_dispatch`
+# (`orchestrator.rs`), not merely hoped for. When the model calls
+# `check_worker` explicitly first (still the preferred, and here the only
+# possible, path — this fixture's seeded Ready card has no other route to
+# `goal_advance` succeeding), that real call's own tool-call banner is
+# printed by the CLI before `goal_advance`'s, exactly as `before` used to
+# require. When the model skips it, `goal_advance` performs the identical
+# check internally and prints the same `"  ▸ check_worker"` banner itself —
+# but only AFTER its own already-printed `goal_advance` banner, since the
+# CLI renders a tool call's banner as soon as the model requests it, before
+# that tool's handler (here, `handle_goal_advance`) ever runs. So a literal
+# `before: [[check_worker, goal_advance]]` text-order rule can no longer
+# distinguish "checked, then dispatched" from "dispatched, and the check
+# ran inside it" — both are now equally correct, because the protocol
+# itself refuses to dispatch without the check having happened either way.
+# There is no RECEIPT CONTRACT v1 field for this yet (`must_receipt` would
+# need a `dag_enforcement`/`verification_integrity`/`safety_and_trust`/
+# `cost_routing` area this lane did not add a counter to — inventing one
+# here would just always read "requirement not met"), so the ordering
+# guarantee is recorded here as this comment instead: it is now structural,
+# not a selection-check concern. `must_call` alone is still meaningful and
+# kept — a run that calls neither, or dispatches without ever reaching
+# `goal_advance`, still fails it.
 selection_check:
   must_call: [check_worker, goal_advance]
-  before: [[check_worker, goal_advance]]
