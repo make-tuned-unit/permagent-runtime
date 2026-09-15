@@ -52,6 +52,19 @@ pub enum EscalationKind {
     Approval,
 }
 
+impl EscalationKind {
+    /// Wire representation — matches `#[serde(rename_all = "lowercase")]`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EscalationKind::Credential => "credential",
+            EscalationKind::Decision => "decision",
+            EscalationKind::Capability => "capability",
+            EscalationKind::Information => "information",
+            EscalationKind::Approval => "approval",
+        }
+    }
+}
+
 /// Resume behavior after the decision is acted on. Phase 1 supports only "auto".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -95,8 +108,18 @@ pub fn has_resumable_option(options: &[EscalationOption]) -> bool {
 /// Parameters for the `escalate` tool.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EscalateParams {
-    /// What is being asked for: "credential", "decision", "capability",
-    /// "information", or "approval".
+    /// What is being asked for: "credential" (a secret is needed),
+    /// "decision" (a choice between options), "capability" (a new
+    /// permission is needed), "information" (a question must be
+    /// answered), or "approval" (sign-off is needed). Any other value —
+    /// including a missing or unrecognized kind — is coerced to the
+    /// closest of these five rather than rejected (e.g.
+    /// "question"/"clarification"/"info" -> "information",
+    /// "choice"/"option" -> "decision", "blocked"/"missing" ->
+    /// "credential", anything else -> "information"); the value you
+    /// actually sent is preserved on the recorded decision as
+    /// `requested_kind`, so an approximate kind still gets the escalation
+    /// recorded rather than thrown away.
     pub kind: EscalationKind,
     /// The one-line "add X so I can proceed" ask. This becomes the
     /// plain-language headline the user sees: max 80 characters, no PR numbers,
@@ -191,6 +214,13 @@ pub struct DecisionDraft {
     pub raw_payload: Option<serde_json::Value>,
     /// Validation errors — non-empty iff kind is `Malformed`.
     pub validation_errors: Vec<String>,
+    /// Lane R24a: the exact `kind` value the caller sent, when [`resolve_kind`]
+    /// had to coerce it to reach [`DecisionDraft::kind`] — `None` means the
+    /// caller's `kind` was already one of the five supported values verbatim
+    /// (or, for a `Malformed` draft, that `kind` itself was never the
+    /// problem). Never dropped: an unrecognized kind is evidence a human
+    /// reviewing the decision may want, not noise.
+    pub requested_kind: Option<String>,
 }
 
 // ── Validation ──────────────────────────────────────────────────────────
@@ -476,19 +506,102 @@ pub fn map_kind(kind: EscalationKind) -> DecisionKind {
     }
 }
 
+/// Resolve a raw `kind` JSON value to a supported [`EscalationKind`],
+/// coercing anything unrecognized instead of failing validation.
+///
+/// Lane R24a (harness loop, M26 DeepSeek m1
+/// `dschat-select-checks-worker-before-dispatch`): a coordinator's
+/// `escalate{kind: "malformed"}` used to fail `EscalateParams`'s typed
+/// deserialization (not one of the five `EscalationKind` variants), route to
+/// `DecisionKind::Malformed`, and then get rejected a SECOND time by L1's
+/// `decisions::validate_new_decision` — `"malformed"` is not itself a
+/// creatable decisions-table kind (see `sink::SqlDecisionSink::record`'s
+/// doc comment on that exact hand-off). The net effect: an honest escalation
+/// attempt, thrown away by a schema mismatch — `Rejected decision request
+/// (kind 'malformed'): unknown decision kind 'malformed'`, no roadmap, no
+/// recorded escalation, `dag_enforcement.escalated` stayed 0. Coercing the
+/// kind HERE, before typed deserialization ever runs, means an unrecognized
+/// `kind` string always resolves to one of the five real, creatable kinds —
+/// it can no longer reach that dead end on the strength of `kind` alone.
+///
+/// Exact (case-/whitespace-insensitive) matches against the five supported
+/// values pass through unchanged. A short list of synonyms maps to the
+/// closest supported kind; anything else — including a missing, null, or
+/// entirely unrecognized `kind` — falls back to `"information"`, the
+/// broadest bucket and the one every other unresolved ask is closest to in
+/// spirit.
+///
+/// Returns the resolved kind, plus `Some(original)` when the caller's value
+/// was NOT already one of the five supported kinds verbatim — `None` means
+/// nothing was coerced.
+pub fn resolve_kind(raw_kind: Option<&serde_json::Value>) -> (EscalationKind, Option<String>) {
+    let original_display = raw_kind.and_then(|v| match v {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => Some(s.clone()),
+        other => Some(other.to_string()),
+    });
+    let normalized = original_display
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase);
+
+    let kind = match normalized.as_deref() {
+        Some("credential") => EscalationKind::Credential,
+        Some("decision") => EscalationKind::Decision,
+        Some("capability") => EscalationKind::Capability,
+        Some("information") => EscalationKind::Information,
+        Some("approval") => EscalationKind::Approval,
+        // Synonyms mapped to the closest supported kind.
+        Some("question") | Some("clarification") | Some("info") => EscalationKind::Information,
+        Some("choice") | Some("option") => EscalationKind::Decision,
+        Some("blocked") | Some("missing") => EscalationKind::Credential,
+        // Anything else, including a missing/empty/null kind.
+        _ => EscalationKind::Information,
+    };
+
+    let was_verbatim = normalized.as_deref() == Some(kind.as_str());
+    let requested_kind = if was_verbatim {
+        None
+    } else {
+        Some(original_display.unwrap_or_else(|| "(missing)".to_string()))
+    };
+    (kind, requested_kind)
+}
+
 /// Validate a raw payload and produce the typed [`DecisionDraft`].
 ///
 /// Malformed payloads produce a `Malformed` draft carrying the raw payload
-/// and the error list — recorded for human review, never dropped.
+/// and the error list — recorded for human review, never dropped. `kind` is
+/// resolved (and, if necessary, coerced — see [`resolve_kind`]) BEFORE
+/// typed deserialization runs, so an unrecognized `kind` string alone never
+/// produces a `Malformed` draft; only unusable content (missing question
+/// text, invalid options, oversized fields, a headline that leaks
+/// identifiers) does.
 pub fn draft_from_payload(raw: serde_json::Value, source: &DraftSource) -> DecisionDraft {
     let requested_by_display = worker_display_name(source.worker_roster_name.as_deref());
-    match validate_escalation(&raw) {
+    let (resolved_kind, requested_kind) = resolve_kind(raw.get("kind"));
+    let mut normalized = raw.clone();
+    if let Some(obj) = normalized.as_object_mut() {
+        obj.insert(
+            "kind".to_string(),
+            serde_json::Value::String(resolved_kind.as_str().to_string()),
+        );
+    }
+    match validate_escalation(&normalized) {
         EscalationOutcome::Valid(params) => {
             let kind = map_kind(params.kind);
+            let mut detail = params.why_blocked.trim().to_string();
+            if let Some(ref rk) = requested_kind {
+                detail.push_str(&format!(
+                    "\n\nrequested_kind: {rk} (coerced to '{}')",
+                    params.kind.as_str()
+                ));
+            }
             DecisionDraft {
                 kind,
                 headline: params.specific_ask.trim().to_string(),
-                detail: params.why_blocked.trim().to_string(),
+                detail,
                 evidence_refs: params.evidence_refs.clone(),
                 options: match kind {
                     // `unwrap_or_default()` would yield an EMPTY choice list —
@@ -507,6 +620,7 @@ pub fn draft_from_payload(raw: serde_json::Value, source: &DraftSource) -> Decis
                 requested_by_display,
                 raw_payload: None,
                 validation_errors: Vec::new(),
+                requested_kind,
             }
         }
         EscalationOutcome::Malformed { errors } => {
@@ -535,6 +649,7 @@ pub fn draft_from_payload(raw: serde_json::Value, source: &DraftSource) -> Decis
                 requested_by_display,
                 raw_payload: Some(raw),
                 validation_errors: errors,
+                requested_kind,
             }
         }
     }
@@ -777,11 +892,123 @@ mod tests {
         assert!(headline_violations(&draft.headline).is_empty());
     }
 
+    // ── Lane R24a: unknown/missing kind is coerced, never rejected ──
+
+    /// Repairs the exact M26 defect (harness loop, Lane R24a, DeepSeek m1):
+    /// an otherwise-valid escalation with an unsupported `kind` used to be
+    /// malformed on that basis alone. It must now be recorded as a real,
+    /// answerable decision, with the original value preserved.
     #[test]
-    fn unknown_kind_is_malformed_with_raw_payload() {
+    fn unknown_kind_is_coerced_not_malformed() {
         let mut payload = valid_approval();
-        payload["kind"] = json!("vibes");
-        assert_malformed(payload, "does not match the escalate schema");
+        payload["kind"] = json!("malformed");
+        let draft = draft_from_payload(payload, &source());
+        assert_eq!(
+            draft.kind,
+            DecisionKind::Unblock,
+            "an unrecognized kind must coerce to a real, creatable kind (information -> \
+             Unblock), never fall through to Malformed: {:?}",
+            draft
+        );
+        assert!(draft.validation_errors.is_empty());
+        assert_eq!(draft.requested_kind.as_deref(), Some("malformed"));
+    }
+
+    #[test]
+    fn kind_synonyms_coerce_to_the_documented_target() {
+        let cases = [
+            ("question", EscalationKind::Information),
+            ("clarification", EscalationKind::Information),
+            ("info", EscalationKind::Information),
+            ("choice", EscalationKind::Decision),
+            ("option", EscalationKind::Decision),
+            ("blocked", EscalationKind::Credential),
+            ("missing", EscalationKind::Credential),
+            // Anything not covered falls back to the broadest bucket.
+            ("totally-unrecognized", EscalationKind::Information),
+        ];
+        for (raw, expected) in cases {
+            let (kind, requested) = resolve_kind(Some(&json!(raw)));
+            assert_eq!(kind, expected, "kind for '{raw}'");
+            assert_eq!(
+                requested.as_deref(),
+                Some(raw),
+                "the original value must be preserved as requested_kind for '{raw}'"
+            );
+        }
+    }
+
+    #[test]
+    fn known_kinds_pass_through_unchanged_with_no_requested_kind() {
+        for raw in [
+            "credential",
+            "decision",
+            "capability",
+            "information",
+            "approval",
+        ] {
+            let (kind, requested) = resolve_kind(Some(&json!(raw)));
+            assert_eq!(kind.as_str(), raw);
+            assert_eq!(
+                requested, None,
+                "a verbatim supported kind must not be reported as coerced: {raw}"
+            );
+        }
+    }
+
+    /// Case and surrounding whitespace are cosmetic, not a different kind —
+    /// they must resolve to the same kind AND count as "known, not coerced"
+    /// (no information was actually lost by normalizing them).
+    #[test]
+    fn known_kinds_are_case_and_whitespace_insensitive() {
+        for (raw, expected) in [
+            ("  Approval  ", EscalationKind::Approval),
+            ("CAPABILITY", EscalationKind::Capability),
+        ] {
+            let (kind, requested) = resolve_kind(Some(&json!(raw)));
+            assert_eq!(kind, expected, "kind for '{raw}'");
+            assert_eq!(
+                requested, None,
+                "case/whitespace differences alone must not be reported as coerced: '{raw}'"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_kind_is_coerced_to_information() {
+        let (kind, requested) = resolve_kind(None);
+        assert_eq!(kind, EscalationKind::Information);
+        assert_eq!(requested.as_deref(), Some("(missing)"));
+
+        let (kind, requested) = resolve_kind(Some(&serde_json::Value::Null));
+        assert_eq!(kind, EscalationKind::Information);
+        assert_eq!(requested.as_deref(), Some("(missing)"));
+    }
+
+    /// The decision detail carries `requested_kind` so a human reviewing the
+    /// decision (or reading it back out of the `decisions` table) can see
+    /// exactly what the caller asked for, not just what it was coerced to.
+    #[test]
+    fn coerced_draft_records_requested_kind_in_detail() {
+        let mut payload = valid_approval();
+        payload["kind"] = json!("malformed");
+        let draft = draft_from_payload(payload, &source());
+        assert!(
+            draft.detail.contains("requested_kind: malformed"),
+            "detail must carry the original kind: {}",
+            draft.detail
+        );
+    }
+
+    /// A missing `kind` field is coerced the same way — never `Malformed` on
+    /// that basis alone, as long as the rest of the payload is usable.
+    #[test]
+    fn absent_kind_field_is_coerced_not_malformed() {
+        let mut payload = valid_approval();
+        payload.as_object_mut().unwrap().remove("kind");
+        let draft = draft_from_payload(payload, &source());
+        assert_eq!(draft.kind, DecisionKind::Unblock);
+        assert_eq!(draft.requested_kind.as_deref(), Some("(missing)"));
     }
 
     #[test]
