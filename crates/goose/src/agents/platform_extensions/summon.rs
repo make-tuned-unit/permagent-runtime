@@ -1753,36 +1753,70 @@ impl SummonClient {
     /// (`restrict_to_non_mutating`), it does not refuse the call — fx04's own
     /// `analyze`/`search` scope audit would pass through untouched.
     ///
-    /// Returns a note for the delegate's result text when it restricts,
-    /// per the brief: a session that loses `write`/`edit` here must be told
-    /// why, not left to guess from a suddenly-refusing tool.
-    async fn restrict_delegate_for_active_roadmap(
+    /// R27b (harness loop, "A26 analysis" section 1 Q2/Q3): the identity/
+    /// state check above — EITHER identity, both windows — is pulled out to
+    /// this standalone associated function so `orchestrator.rs`'s
+    /// `start_agent`/`send_message` handlers (harness loop lever 3: "scope
+    /// start_agent/send_message targets to the lean coding profile ...
+    /// matching what restrict_delegate_for_active_roadmap already does for
+    /// delegate") can share the EXACT same gate rather than growing a
+    /// second, parallel predicate that could quietly drift from this one on
+    /// WHEN to fire. `restrict_delegate_for_active_roadmap` below is now a
+    /// thin wrapper around this — same conditions, same messages, unchanged
+    /// behavior; the full rationale above (Lane R/M3, Y10c) still applies.
+    ///
+    /// Returns `Ok(None)` when nothing should be restricted; `Ok(Some(why))`
+    /// with a human-readable reason fragment (no trailing punctuation, meant
+    /// to be embedded in a caller's own sentence) otherwise.
+    pub(crate) async fn active_coding_roadmap_gate_reason(
         pool: &sqlx::Pool<sqlx::Sqlite>,
         session: &crate::session::Session,
         worker_persona: Option<&str>,
-        extensions: &mut [ExtensionConfig],
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<&'static str>, String> {
         let is_reviewer = worker_persona.is_some_and(|p| p.eq_ignore_ascii_case("reviewer"));
         if is_reviewer || session.session_type == SessionType::SubAgent {
             return Ok(None);
         }
 
         let recipe_title = session.recipe.as_ref().map(|recipe| recipe.title.as_str());
-        let why = if crate::tool_inspection::is_top_level_coding_harness(
+        if crate::tool_inspection::is_top_level_coding_harness(
             recipe_title,
             session.parent_session_id.as_deref(),
         ) {
-            "this session is the coding-harness coordinator, which plans and dispatches \
-             rather than edits — decompose the work with `create_roadmap` and dispatch its \
-             goals with `goal_advance` (action: dispatch)"
-        } else {
-            let cards = crate::cards::goal_cards_created_by_session(pool, &session.id).await?;
-            if !crate::cards::session_has_an_active_roadmap(&cards) {
-                return Ok(None);
-            }
+            return Ok(Some(
+                "this session is the coding-harness coordinator, which plans and dispatches \
+                 rather than edits — decompose the work with `create_roadmap` and dispatch its \
+                 goals with `goal_advance` (action: dispatch)",
+            ));
+        }
+
+        let cards = crate::cards::goal_cards_created_by_session(pool, &session.id).await?;
+        if !crate::cards::session_has_an_active_roadmap(&cards) {
+            return Ok(None);
+        }
+        Ok(Some(
             "this session has an active roadmap of its own — dispatch its goals with \
              `goal_advance` (action: dispatch) instead of editing directly through a \
-             delegated worker"
+             delegated worker",
+        ))
+    }
+
+    /// Restricts `extensions` (see `restrict_to_non_mutating`) when
+    /// `active_coding_roadmap_gate_reason` (above — the shared gate) fires
+    /// for `session`; otherwise a no-op. The rationale for WHEN it fires
+    /// lives on that function now; this keeps the WHAT (strip mutating
+    /// developer tools, record the bypass-attempt receipt, return an
+    /// explanatory note) that is specific to `delegate`.
+    async fn restrict_delegate_for_active_roadmap(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session: &crate::session::Session,
+        worker_persona: Option<&str>,
+        extensions: &mut [ExtensionConfig],
+    ) -> Result<Option<String>, String> {
+        let Some(why) =
+            Self::active_coding_roadmap_gate_reason(pool, session, worker_persona).await?
+        else {
+            return Ok(None);
         };
 
         let strips_mutating_tools = extensions.iter().any(|ext| {
