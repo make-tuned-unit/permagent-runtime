@@ -80,6 +80,15 @@ def simple(name,rgb,rough=.5,metal=0):
     return finish(mat)
 bronze=simple('M_BurnishedBronze',(.34,.23,.105),.31,.83)
 dark=simple('M_Basalt',(.022,.026,.042),.72)
+def emissive(name,rgb,strength=4.0):
+    mat=newmat(name)
+    prop(color(mat,rgb),'',mat,u.MaterialProperty.MP_BASE_COLOR)
+    prop(scalar(mat,.28),'',mat,u.MaterialProperty.MP_ROUGHNESS)
+    e=color(mat,tuple(c*strength for c in rgb))
+    prop(e,'',mat,u.MaterialProperty.MP_EMISSIVE_COLOR)
+    return finish(mat)
+amber=emissive('M_EmissiveAmber',(.95,.22,.035),3.5)
+cyan=emissive('M_EmissiveCyan',(.02,.65,.95),3.0)
 water=newmat('M_LivingWater');prop(color(water,(.017,.09,.095)),'',water,u.MaterialProperty.MP_BASE_COLOR)
 prop(scalar(water,.08),'',water,u.MaterialProperty.MP_ROUGHNESS);prop(scalar(water,.35),'',water,u.MaterialProperty.MP_METALLIC)
 wp=node(water,u.MaterialExpressionWorldPosition);mask=node(water,u.MaterialExpressionComponentMask,r=True,g=True)
@@ -113,7 +122,9 @@ def native_mapping(key):
     if any(token in key for token in preserve): return None, None
     if any(token in key for token in ('forum white sandstone masonry','white sandstone masonry','limestone','travertine')): return scannedstone, 'scannedstone'
     if any(token in key for token in ('forum geological strata','geological strata','basalt stratum','forum coastal rock','coastal rock','weathered coastal rock','mossy rock')): return scannedrock, 'scannedrock'
-    if any(token in key for token in ('forum architectural glass','architectural glass','conservatory glass','glazed vault')): return glass, 'architectural glass'
+    if any(token in key for token in ('hologram','cyan exedra','cyan display','horizonblue','unlit channel')): return cyan, 'emissive cyan'
+    if any(token in key for token in ('emissive window','window strip','amber lantern','lantern amber','amber core','amber head','lantern head','strand light','light bead')): return amber, 'emissive amber'
+    if 'glass' in key or any(token in key for token in ('architectural glass','conservatory glass','glazed vault')): return glass, 'architectural glass'
     if any(token in key for token in ('forum oiled timber grain','oiled timber grain','oiled structural timber','timber')): return timber, 'original warm timber tone'
     if 'bronze' in key: return bronze, 'burnished bronze'
     if 'water' in key: return water, 'living water'

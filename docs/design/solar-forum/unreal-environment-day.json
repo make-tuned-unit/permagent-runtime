@@ -24,7 +24,7 @@
       ]
     }
   },
-  "environmentActors": 249,
+  "environmentActors": 269,
   "materialAssignments": {
     "burnished bronze": [
       "Aged bronze"
@@ -39,7 +39,11 @@
     ],
     "living water": [
       "Water",
-      "Celestial waterfall mist"
+      "Celestial waterfall mist",
+      "Forum Lagoon Island Shallow Water",
+      "Forum Lagoon Island Shallow Water_001",
+      "Forum Lagoon Island Shallow Water_002",
+      "Forum Plunge Pool Dark Water"
     ],
     "architectural glass": [
       "Conservatory glass",
@@ -47,7 +51,8 @@
     ],
     "original warm timber tone": [
       "Oiled structural timber",
-      "Forum Oiled Timber Grain"
+      "Forum Oiled Timber Grain",
+      "Forum Oiled Timber"
     ],
     "scannedrock": [
       "Weathered coastal rock",
@@ -56,6 +61,17 @@
       "Forum Basalt stratum 2",
       "Forum Basalt stratum 3",
       "Forum Mossy Coastal Rock"
+    ],
+    "emissive cyan": [
+      "Forum Hologram",
+      "Forum Hologram Continents",
+      "Forum Hologram Glass",
+      "Forum Hologram Light Cone",
+      "Mesh gate HorizonBlue Inlay",
+      "Mesh gate cyan display glass"
+    ],
+    "emissive amber": [
+      "Forum Lantern Amber"
     ]
   },
   "resetImportedMaterialSlots": [
@@ -72,7 +88,32 @@
     "Forum Basalt stratum 3",
     "Forum Mossy Coastal Rock",
     "Forum Oiled Timber Grain",
-    "Forum White Sandstone Masonry"
+    "Forum White Sandstone Masonry",
+    "Forum Brazier Amber Embers",
+    "Forum Harbour Amber",
+    "Forum Harbour Rope",
+    "Forum Hologram",
+    "Forum Hologram Continents",
+    "Forum Hologram Glass",
+    "Forum Hologram Light Cone",
+    "Forum Info Display Line",
+    "Forum Island Quay Amber",
+    "Forum Lagoon Island Shallow Water",
+    "Forum Lagoon Island Shallow Water_001",
+    "Forum Lagoon Island Shallow Water_002",
+    "Forum Lagoon Shallow Teal",
+    "Forum Lantern Amber",
+    "Forum Oiled Timber",
+    "Forum Planter Moss",
+    "Forum Plunge Pool Dark Water",
+    "Forum Quay Rope",
+    "Forum Sand Fabric",
+    "Forum Strand Amber",
+    "Forum Warm Window Emission",
+    "Mesh gate Chitin engraved channel",
+    "Mesh gate Chitin stone",
+    "Mesh gate HorizonBlue Inlay",
+    "Mesh gate cyan display glass"
   ],
   "obsoleteProxySlotsHidden": [],
   "renderVerified": true,
