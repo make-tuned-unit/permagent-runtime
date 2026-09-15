@@ -10953,7 +10953,25 @@ pub async fn handle_goal_completion(
                 // NOT salvaged (nothing committed, budget too tight, verify
                 // failed, …) is never lost, exactly as this function's own
                 // doc comment already promised.
-                let salvage_note = match maybe_salvage_committed_work(pool, &card, None).await {
+                // R22c-c: same derivation the Ok(()) arm above uses for its
+                // own `coordinator_session_id` — needed so a reviewer-
+                // approved unverified salvage lands under the SAME identity
+                // an ordinary auto-land would.
+                let coordinator_session_id = if headless_auto_land {
+                    HEADLESS_DISPATCH_POLICY_CONFIG
+                        .get()
+                        .map(|c| c.coordinator_session_id.clone())
+                } else {
+                    None
+                };
+                let salvage_note = match maybe_salvage_committed_work(
+                    pool,
+                    &card,
+                    None,
+                    coordinator_session_id.as_deref(),
+                )
+                .await
+                {
                     SalvageOutcome::Salvaged { note } => {
                         tracing::info!(
                             target: "permagentd::brain",
@@ -11129,6 +11147,52 @@ async fn auto_land_headless_goal(
                 goal_id = %card.id,
                 "headless Auto: could not record the read-only auto-land receipt for goal '{}' \
                  ({e}) — leaving the approve_review decision open",
+                card.title
+            );
+            return;
+        }
+        finish_headless_auto_land(
+            pool,
+            decision_id,
+            card,
+            auto_land_allowed,
+            calling_session_id,
+        )
+        .await;
+        return;
+    }
+
+    // Lane R22c-c: an unverified salvage (`hand_salvaged_work_to_review_
+    // unverified`'s headless branch, via `land_salvage_approved_by_
+    // reviewer`) that a cross-family reviewer already inspected and
+    // approved — there IS no verify evidence by construction (nothing
+    // automated ran), so the `session_verify_evidence` gate below would
+    // otherwise refuse it exactly like a goal nobody ever reviewed. The
+    // reviewer's own sign-off is what stands in for that evidence, the same
+    // way the `read_only_review` receipt above stands in for one. `status:
+    // "pass"` (not a new status string) because `approve_review_
+    // verification_status` — the retryable-effect race-closer
+    // `apply_decision_effect_with_auto_land` consults — accepts ONLY that
+    // literal value; anything else silently declines to land the approval.
+    if let Some(approval) = card.metadata_json.get("unverified_reviewer_approval") {
+        if let Err(e) = cards::set_goal_verdict_and_program_receipts(
+            pool,
+            &card.id,
+            serde_json::json!({
+                "status": "pass",
+                "source": "headless_auto_unverified_reviewer_approval",
+                "reviewer": approval.clone(),
+                "recorded_at": chrono::Utc::now().to_rfc3339(),
+            }),
+            None,
+        )
+        .await
+        {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "headless Auto: could not record the reviewer-approved auto-land receipt for \
+                 goal '{}' ({e}) — leaving the approve_review decision open",
                 card.title
             );
             return;
@@ -11521,7 +11585,11 @@ pub async fn handle_goal_timeout(
     // review and land before parking — see `maybe_salvage_committed_work`.
     // G25/M21: fold `NotSalvaged`'s `note` into the park reason instead of
     // discarding it — see `handle_goal_completion`'s sibling fix for why.
-    let salvage_note = match maybe_salvage_committed_work(pool, &card, grace_deadline).await {
+    // R22c-c: `handle_goal_timeout` is the drain/cap-expiry sweep — no live
+    // calling session exists here, so a reviewer-approved unverified
+    // salvage lands under no particular attributed session (`None`), same
+    // as every other caller that has none to give.
+    let salvage_note = match maybe_salvage_committed_work(pool, &card, grace_deadline, None).await {
         SalvageOutcome::Salvaged { note } => {
             tracing::info!(
                 target: "permagentd::brain",
@@ -13839,6 +13907,129 @@ async fn commits_ahead_of_baseline(
         .map_err(|e| format!("unexpected `git rev-list --count` output {out:?}: {e}"))
 }
 
+/// Like [`git_in_worktree`], but for a git subcommand (`merge-base
+/// --is-ancestor`) whose EXIT CODE is the answer, not a failure signal —
+/// exit 1 there means "not an ancestor" (a plain `false`), not "the
+/// inspection broke." `git_in_worktree` would wrongly turn that into an
+/// `Err`. Mirrors `goal_landing::git`'s own exact exit-code-preserving
+/// contract (that copy is private to `goal_landing.rs`; this one exists so
+/// `orchestrator.rs`'s salvage path does not need a third `git` runner).
+async fn git_bool_in_worktree(worktree: &std::path::Path, args: &[&str]) -> Result<bool, String> {
+    let mut command = tokio::process::Command::new("git");
+    command
+        .arg("-C")
+        .arg(worktree)
+        .args(args)
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(20), command.output())
+        .await
+        .map_err(|_| "git inspection timed out after 20 s".to_string())?
+        .map_err(|e| format!("cannot run git in {}: {e}", worktree.display()))?;
+    Ok(output.status.success())
+}
+
+/// Lane R22d (A24 Q1/Q3): resolve the SAME trusted repo root
+/// `decisions_effects::land_approved_goal` would actually fast-forward onto
+/// for this goal — `project.root_path` when configured, else the H1-guarded
+/// worktree-derived fallback (`goal_landing::resolve_primary_checkout_from_
+/// worktree` + `goal_landing::verify_worktree_landing_target`, the EXACT
+/// composition `land_approved_goal` itself uses, reused rather than
+/// re-derived so salvage's notion of "already landed" can never disagree
+/// with the real landing decision). `Err` when no trusted root can be
+/// resolved at all (no `root_path`, and the worktree-derived candidate
+/// fails verification or the worktree is gone) — the caller falls back to
+/// the rolling-baseline count as the best remaining signal rather than
+/// refusing salvage outright for a goal whose project was simply never
+/// given a root path.
+async fn resolve_trusted_landing_root(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    worktree_path: &std::path::Path,
+) -> Result<String, String> {
+    let configured_root = crate::projects::get_project_by_id_or_slug(pool, &card.project_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|project| project.root_path)
+        .filter(|root| !root.is_empty());
+    if let Some(root) = configured_root {
+        return Ok(root);
+    }
+
+    let worktree_str = worktree_path.to_string_lossy().into_owned();
+    let Some(candidate) =
+        crate::goal_landing::resolve_primary_checkout_from_worktree(&worktree_str).await
+    else {
+        return Err(format!(
+            "project '{}' has no root_path and the goal's own worktree ('{worktree_str}') \
+             could not resolve a primary checkout via git",
+            card.project_id
+        ));
+    };
+    let baseline_commit = card
+        .metadata_json
+        .pointer("/dispatch_evidence/baseline_commit")
+        .and_then(|v| v.as_str());
+    let known_working_dir =
+        crate::decisions_effects::goal_dispatching_session_working_dir(pool, &card.metadata_json)
+            .await;
+    crate::goal_landing::verify_worktree_landing_target(
+        &candidate,
+        baseline_commit,
+        known_working_dir.as_deref(),
+    )
+    .await
+    .map(|()| candidate)
+    .map_err(|reason| format!("landing target is not the goal's repo ({reason})"))
+}
+
+/// Lane R22d (A24 Q1/Q3): how many commits the goal branch's tip carries
+/// that have NOT reached the project's trunk yet — the question salvage
+/// actually needs answered, as opposed to [`commits_ahead_of_baseline`]'s
+/// count against the ROLLING per-redispatch baseline. Y16b resumes every
+/// redispatch from the branch's OWN prior tip, so once one attempt's fix is
+/// committed, every LATER attempt's `baseline_commit` already equals that
+/// commit — `commits_ahead_of_baseline` reading 0 there means only "nothing
+/// NEW since the last redispatch," never "nothing was ever committed" or
+/// "this already reached `main`." A24 traced this to two confirmed misses
+/// (`refactor-shipping-quote-signature` m2/m3, `editapply-duplicate-
+/// discount-blocks` m2): a genuinely correct fix landed on the goal branch
+/// at attempt 1, a later hold-exhaustion park's salvage read the rolling
+/// `ahead == 0` and bailed with "nothing past the dispatch baseline —
+/// nothing to salvage" while the fix sat one un-fast-forwarded merge away
+/// from grading.
+///
+/// `Ok(0)` when the tip is already an ancestor of the trunk's HEAD (already
+/// landed — by an earlier salvage, a human's own manual merge, or anything
+/// else). Otherwise `git rev-list --count <trunk-HEAD>..HEAD` in the goal's
+/// own worktree (which shares the trunk's object store as a linked
+/// worktree, so the trunk's sha is always resolvable there once known).
+/// `Err` when [`resolve_trusted_landing_root`] cannot resolve a trusted
+/// trunk at all — the caller falls back to the rolling-baseline count.
+async fn commits_unlanded_at_trunk(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    worktree_path: &std::path::Path,
+) -> Result<u32, String> {
+    let root = resolve_trusted_landing_root(pool, card, worktree_path).await?;
+    let trunk_head = git_in_worktree(std::path::Path::new(&root), &["rev-parse", "HEAD"]).await?;
+
+    let already_landed = git_bool_in_worktree(
+        worktree_path,
+        &["merge-base", "--is-ancestor", "HEAD", &trunk_head],
+    )
+    .await?;
+    if already_landed {
+        return Ok(0);
+    }
+
+    let range = format!("{trunk_head}..HEAD");
+    let out = git_in_worktree(worktree_path, &["rev-list", "--count", &range]).await?;
+    out.trim()
+        .parse::<u32>()
+        .map_err(|e| format!("unexpected `git rev-list --count` output {out:?}: {e}"))
+}
+
 // ── Lane R20b: salvage committed goal work before a budget/wall park ────────
 //
 // A20's Q1 forensics (HARNESS_LOOP_LOG.md "## A20 analysis — M19 zai z2")
@@ -13880,6 +14071,7 @@ const ASSUMED_SIGTERM_GRACE: std::time::Duration = std::time::Duration::from_sec
 /// The `note` — always logged and, on `NotSalvaged`, folded into the park
 /// reason the caller already builds — carries the "why" for a human without
 /// forcing every call site to pattern-match a wider enum.
+#[derive(Debug)]
 enum SalvageOutcome {
     NotSalvaged { note: String },
     Salvaged { note: String },
@@ -13940,6 +14132,7 @@ async fn maybe_salvage_committed_work(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
     grace_deadline: Option<std::time::Instant>,
+    calling_session_id: Option<&str>,
 ) -> SalvageOutcome {
     // Same derivation `handle_goal_completion`'s own callers already use
     // (`dispatch_goal_fn` passes `policy.is_some_and(|p| p.auto_land)`) —
@@ -13955,22 +14148,56 @@ async fn maybe_salvage_committed_work(
         match resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await {
             Ok(v) => v,
             Err(e) => {
-                return not_salvaged(format!("could not resolve the goal's worktree: {e}"));
+                let note = format!("could not resolve the goal's worktree: {e}");
+                record_salvage_receipt(pool, &card.id, "salvage_skipped_no_worktree", &note).await;
+                return not_salvaged(note);
             }
         };
     let Some((baseline, worktree)) = baseline_and_worktree else {
-        return not_salvaged("no dispatch baseline recorded — nothing to salvage".to_string());
+        let note = "no dispatch baseline recorded — nothing to salvage".to_string();
+        record_salvage_receipt(pool, &card.id, "salvage_skipped_no_baseline", &note).await;
+        return not_salvaged(note);
     };
     let worktree_path = std::path::Path::new(&worktree);
 
-    let ahead = match commits_ahead_of_baseline(worktree_path, &baseline).await {
+    let rolling_ahead = match commits_ahead_of_baseline(worktree_path, &baseline).await {
         Ok(n) => n,
         Err(e) => {
-            return not_salvaged(format!("could not inspect the goal branch: {e}"));
+            let note = format!("could not inspect the goal branch: {e}");
+            record_salvage_receipt(
+                pool,
+                &card.id,
+                "salvage_skipped_branch_inspect_failed",
+                &note,
+            )
+            .await;
+            return not_salvaged(note);
         }
     };
+    // Lane R22d (A24 Q1/Q3): `rolling_ahead` counts commits past the
+    // ROLLING per-redispatch baseline (Y16b resumes each redispatch from
+    // the branch's own prior tip) — reading 0 there means only "nothing NEW
+    // since the last redispatch," never "nothing was ever committed" or
+    // "this already reached the trunk." Measure against the project's
+    // trunk instead, when a trusted trunk can be resolved at all; fall back
+    // to the rolling count (the pre-R22d signal, unchanged) when it cannot
+    // — never refuse salvage outright just because trunk resolution failed.
+    let ahead = match commits_unlanded_at_trunk(pool, card, worktree_path).await {
+        Ok(unlanded) => unlanded,
+        Err(_) => rolling_ahead,
+    };
     if ahead == 0 {
-        return not_salvaged("no commits past the dispatch baseline — nothing to salvage".into());
+        if rolling_ahead == 0 {
+            let note = "no commits past the dispatch baseline — nothing to salvage".to_string();
+            record_salvage_receipt(pool, &card.id, "salvage_skipped_no_commits", &note).await;
+            return not_salvaged(note);
+        }
+        let note = format!(
+            "{rolling_ahead} commit(s) past the rolling redispatch baseline, but the branch \
+             tip is already an ancestor of the project's trunk — nothing left to land"
+        );
+        record_salvage_receipt(pool, &card.id, "salvage_skipped_already_landed", &note).await;
+        return not_salvaged(note);
     }
 
     // G25 MED: only past this point is there actually anything worth
@@ -13984,7 +14211,15 @@ async fn maybe_salvage_committed_work(
         .unwrap_or(0)
         >= 1;
     if already_attempted {
-        return not_salvaged("salvage already attempted once for this goal".to_string());
+        let note = "salvage already attempted once for this goal".to_string();
+        // Lane R22c: audit-only here (not `record_salvage_receipt`) — a
+        // repeat call means the FIRST attempt already left the real outcome
+        // in the card's `salvage_receipt` metadata key; overwriting it with
+        // "already attempted" would destroy that history. The
+        // `decision_audit` row still needs to exist so this refusal is
+        // visible without cross-referencing card metadata.
+        record_salvage_audit(pool, &card.id, "salvage_refused_already_attempted", &note).await;
+        return not_salvaged(note);
     }
     if let Err(e) = persist_card_meta(pool, &card.id, |m| {
         let count = m
@@ -14025,7 +14260,15 @@ async fn maybe_salvage_committed_work(
         }
         Ok(_) => {}
         Err(e) => {
-            return not_salvaged(format!("could not confirm the worktree was clean: {e}"));
+            let note = format!("could not confirm the worktree was clean: {e}");
+            record_salvage_receipt(
+                pool,
+                &card.id,
+                "salvage_skipped_worktree_check_failed",
+                &note,
+            )
+            .await;
+            return not_salvaged(note);
         }
     }
 
@@ -14122,7 +14365,84 @@ async fn maybe_salvage_committed_work(
     };
 
     if !crate::agents::platform_extensions::developer::verify::is_genuine_pass(&result) {
-        let note = "salvage verify did not report a genuine, non-vacuous pass".to_string();
+        // Lane R22c-b: `is_genuine_pass` alone cannot tell a REAL code
+        // failure apart from three honest non-pass shapes that are never
+        // the committed code's fault. Traced against the exact M24
+        // `editapply` record this lane was asked to explain
+        // (`dschat-harness-editapply-duplicate-discount-blocks`,
+        // `salvage_receipt.outcome: "salvage_verify_failed"` on commit
+        // `416550b`, while the SAME fix content passed the fixture's oracle
+        // in other records): the worktree's `package.json` declares no
+        // `build`/`test` script at all — not a placeholder, none — so
+        // `node_checks` (`developer/verify.rs`) returns a hard `Err(..)`,
+        // which `verify_with_cwd` reports as `verdict: "error"`, NOT
+        // `verdict: "no_checks"`. R21c-b's acceptance-criteria probe
+        // synthesis is never even consulted for this shape (`would_use_
+        // criteria` only fires for `NoChecksConfigured` or an all-smoke
+        // `Checks` outcome, `verify.rs:496-499`) — cwd and scope were
+        // already correct (this call already runs in the goal worktree
+        // with `scope: None`/Auto, Y11's fork-point fallback included; ruled
+        // out by inspection), and `node_modules` never entered into it: the
+        // gap is a package.json with nothing runnable declared, reached via
+        // `error_result` instead of `no_checks_result`. Before this lane,
+        // EVERY non-pass verdict funneled into one generic
+        // `salvage_verify_failed`, so this genuinely correct, committed fix
+        // was branded a failure when nothing ever ran against its code.
+        let observation = result.structured_content.as_ref().and_then(|v| {
+            serde_json::from_value::<
+                crate::agents::platform_extensions::developer::verify::VerificationObservation,
+            >(v.clone())
+            .ok()
+        });
+        let verdict = observation.as_ref().and_then(|o| o.verdict.as_deref());
+        let evidence = observation
+            .as_ref()
+            .and_then(|o| o.evidence.clone())
+            .unwrap_or_else(|| {
+                "salvage verify did not report a genuine, non-vacuous pass".to_string()
+            });
+
+        // R18h: a check ran and hit a missing interpreter/runtime
+        // dependency for THIS run — never a defect in the committed code.
+        // Coordinator's explicit instruction: skip, not a failure.
+        if verdict == Some("environment") {
+            record_salvage_receipt(pool, &card.id, "salvage_skipped_environment", &evidence).await;
+            return not_salvaged(evidence);
+        }
+
+        // Neither a pass nor a fail: no check ever ran against the code at
+        // all — either R21c's honest `NO_CHECKS_VERDICT` (a recognized
+        // project with nothing runnable, and no acceptance-criterion probe
+        // could stand in), or the `error_result` shape above that reaches
+        // the exact same place through `node_checks`'/`select_checks`'s own
+        // `Err(..)` branches (a project verify could not even determine how
+        // to check at all — the M24 record's actual cause). Both are
+        // UNVERIFIED, not FAILED: hand the committed work to a human
+        // reviewer instead of discarding it, never auto-landed.
+        if matches!(verdict, Some("no_checks") | Some("error")) {
+            return hand_salvaged_work_to_review_unverified(
+                pool,
+                card,
+                ahead,
+                &evidence,
+                worktree_path,
+                &baseline,
+                headless_auto_land,
+                calling_session_id,
+            )
+            .await;
+        }
+
+        // A genuine FAIL (a real check ran and reported a defect) or a
+        // vacuous PASS (ran, but only a syntax-only smoke check or a
+        // zero-test run) — name the failing check so the audit row and the
+        // next analysis never have to re-derive it from raw verify output.
+        let note = match observation.as_ref().and_then(|o| o.command.clone()) {
+            Some(check) => format!("salvage verify failed for `{check}`: {evidence}"),
+            None => {
+                format!("salvage verify did not report a genuine, non-vacuous pass: {evidence}")
+            }
+        };
         record_salvage_receipt(pool, &card.id, "salvage_verify_failed", &note).await;
         return not_salvaged(note);
     }
@@ -14185,12 +14505,16 @@ async fn maybe_salvage_committed_work(
         // hands-on role still spinning) and requeued or parked the goal
         // itself — nothing left for THIS caller to do; it must not also
         // park a card that already moved.
-        return SalvageOutcome::Salvaged {
-            note: format!(
-                "salvaged {ahead} commit(s): verify passed and the goal was handed back to the \
-                 ordinary Hold/Park pipeline instead of being stranded unparked"
-            ),
-        };
+        let note = format!(
+            "salvaged {ahead} commit(s): verify passed and the goal was handed back to the \
+             ordinary Hold/Park pipeline instead of being stranded unparked"
+        );
+        // Lane R22c: this Salvaged sub-case never wrote card metadata OR an
+        // audit row before — `record_salvage_receipt`'s name says "did NOT
+        // land" but it is reused here purely for its persistence/audit
+        // side effects (the outcome string is what actually says "salvaged").
+        record_salvage_receipt(pool, &card.id, "salvaged_on_park_handed_to_pipeline", &note).await;
+        return SalvageOutcome::Salvaged { note };
     }
 
     let landed = after_state.as_ref().is_some_and(|c| {
@@ -14238,11 +14562,617 @@ async fn maybe_salvage_committed_work(
     SalvageOutcome::Salvaged { note }
 }
 
+/// Lane R22c-b/R22c-c: NO_CHECKS (R21c) — and the `error_result` shape that
+/// reaches the same honest place ("nothing could be checked") through
+/// `node_checks`'/`select_checks`'s own `Err(..)` branches — are not a pass
+/// (R21c's own doc comment on `NO_CHECKS_VERDICT` already established
+/// that), but they are also not a code failure: nothing ever ran against
+/// the committed code, so nothing disputes it either.
+/// `decide_goal_done_hold` (`hold_done.rs`) has no NO_CHECKS concept at all
+/// — routing back through it (the way a genuine pass recurses through
+/// `handle_goal_completion`) would just Hold asking for a verify that
+/// structurally cannot happen here.
+///
+/// R22c-b left this ALWAYS parked in Review for a human. R22c-c: in a
+/// headless auto-land run there is no human — the card would dead-end in
+/// Review while the oracle still sees an unchanged trunk, and the salvage
+/// buys nothing (the exact gap the coordinator flagged). So: non-headless
+/// (or headless with auto-land not configured) keeps R22c-b's behavior
+/// unchanged — [`hand_to_review_for_a_human`] moves InProgress → Review and
+/// leaves it there. Headless WITH auto-land dispatches the SAME
+/// cross-family reviewer gate a live `permagent-coding` turn's
+/// `ReviewerMandate` would use before finishing (`cost_router::
+/// reviewer_pick`/`cost_router::review_gate` — reused here as a standalone
+/// call since salvage has no live turn to inject a mandate into; see
+/// [`dispatch_cross_family_reviewer_for_salvage`]) with an explicit "no
+/// automated checks ran; review the diff on its merits" note folded into
+/// the SAME `BEGIN_VERIFY_OUTPUT` slot a real verify pass would occupy. The
+/// reviewer's own verdict, never salvage itself, decides: `Approved` lands
+/// through the EXISTING `auto_land_headless_goal`/`PERMAGENT_HEADLESS_
+/// AUTOLAND` policy (the operator's launch is the approval, exactly as for
+/// a verified goal); anything else (`RequestChanges`/`Uncertain`/no
+/// reviewer available/spend refused/timed out) parks with the reviewer's
+/// own reason. Never lands without that approval; never leaves a headless
+/// run waiting on a human who does not exist.
+async fn hand_salvaged_work_to_review_unverified(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    ahead: u64,
+    verify_note: &str,
+    worktree_path: &std::path::Path,
+    baseline: &str,
+    headless_auto_land: bool,
+    calling_session_id: Option<&str>,
+) -> SalvageOutcome {
+    if !headless_auto_land {
+        return hand_to_review_for_a_human(pool, card, ahead, verify_note).await;
+    }
+
+    match dispatch_cross_family_reviewer_for_salvage(
+        pool,
+        card,
+        worktree_path,
+        baseline,
+        verify_note,
+    )
+    .await
+    {
+        ReviewerGateOutcome::Approved {
+            checked,
+            reviewer_provider,
+            reviewer_model,
+        } => {
+            land_salvage_approved_by_reviewer(
+                pool,
+                card,
+                ahead,
+                verify_note,
+                &checked,
+                &reviewer_provider,
+                &reviewer_model,
+                calling_session_id,
+            )
+            .await
+        }
+        ReviewerGateOutcome::Refused { reason } => {
+            park_salvage_the_reviewer_rejected(pool, card, ahead, verify_note, &reason).await
+        }
+    }
+}
+
+/// R22c-b's original behavior, unchanged: a human exists (interactive/
+/// daemon, or headless without auto-land configured) — move InProgress →
+/// Review, mint (or reuse) the ordinary `approve_review` decision, and stop.
+/// Never auto-landed from here.
+async fn hand_to_review_for_a_human(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    ahead: u64,
+    verify_note: &str,
+) -> SalvageOutcome {
+    let mut patch = serde_json::Map::new();
+    patch.insert(
+        "completed_at".to_string(),
+        serde_json::json!(chrono::Utc::now().to_rfc3339()),
+    );
+    if let Err(e) = goal_transition::advance_goal_checked(
+        pool,
+        &card.id,
+        GoalAction::Review,
+        decisions::ACTOR_SYSTEM,
+        None,
+        TransitionEffects {
+            metadata_patch: patch,
+            ..Default::default()
+        },
+    )
+    .await
+    {
+        let e = String::from(e);
+        let note = format!(
+            "{ahead} commit(s) past baseline could not be checked ({verify_note}), and the \
+             goal could not be moved to Review either: {e}"
+        );
+        record_salvage_receipt(
+            pool,
+            &card.id,
+            "salvage_skipped_review_transition_failed",
+            &note,
+        )
+        .await;
+        return SalvageOutcome::NotSalvaged { note };
+    }
+
+    let note = format!(
+        "salvaged {ahead} commit(s): no automatic check could run against them ({verify_note}) \
+         — moved to Review UNVERIFIED for a human to inspect the diff directly, never auto-landed"
+    );
+    let already_has_review_decision =
+        decisions::find_open_decision_for_goal(pool, &card.id, "approve_review")
+            .await
+            .unwrap_or(None)
+            .is_some();
+    if !already_has_review_decision {
+        let headline = format!(
+            "\"{}\" needs review — verify could not check it automatically",
+            card.title
+        );
+        let headline: String = headline
+            .chars()
+            .take(decisions::MAX_HEADLINE_CHARS)
+            .collect();
+        let detail = format!(
+            "{ahead} commit(s) committed past the dispatch baseline. Salvage ran verify, but \
+             {verify_note} Inspect the diff directly before approving — this was never \
+             automatically verified."
+        );
+        if let Err(e) = create_decision_with_retry(
+            pool,
+            decisions::NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(card.project_id.clone()),
+                headline: Some(headline),
+                detail: Some(detail),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        {
+            tracing::error!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "goal salvaged unverified to Review but its approve_review decision could not \
+                 be created: {e}"
+            );
+            record_decision_create_failure(pool, &card.id, "approve_review", &e).await;
+        }
+    }
+    // Lane L2: same post-Review verification hook an ordinary completion
+    // kicks off — absent hook or hook failure never affects this path.
+    if let Some(hook) = GOAL_REVIEW_HOOK.get() {
+        hook(pool.clone(), card.id.clone());
+    }
+    record_salvage_receipt(pool, &card.id, "salvaged_on_park_unverified", &note).await;
+    SalvageOutcome::Salvaged { note }
+}
+
+/// Lane R22c-c: the outcome of routing an unverified salvage through the
+/// cross-family reviewer gate. `Approved` means the reviewer signed off ON
+/// THE MERITS with no automated check to lean on; `Refused` covers
+/// everything else the gate can produce (no reviewer available, spend
+/// refused, unreachable/timed out, REQUEST_CHANGES, UNCERTAIN, or a
+/// repeated-finding escalation) — every one of these parks, never lands,
+/// per the coordinator's own rule: never land without the reviewer's
+/// approval.
+enum ReviewerGateOutcome {
+    Approved {
+        checked: String,
+        reviewer_provider: String,
+        reviewer_model: String,
+    },
+    Refused {
+        reason: String,
+    },
+}
+
+/// Bounds how long the reviewer's own completion call may run — independent
+/// of [`SALVAGE_TIME_BOX`] (the verify step's own budget, already spent by
+/// the time this runs).
+const REVIEWER_GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// A diff this large is truncated before it goes into the reviewer prompt —
+/// bounds the request size without changing what the diff-substantive check
+/// (`changed_lines`, computed from the FULL diff before truncation) sees.
+const REVIEWER_GATE_MAX_DIFF_CHARS: usize = 40_000;
+
+/// The number of `+`/`-` content lines in a unified diff (`+++`/`---`
+/// headers excluded) — the SAME "how big is this change" signal
+/// `cost_router::select_reviewer`'s capability floor and `review_gate::
+/// gate_decision`'s anti-rubber-stamp check both key off.
+fn count_diff_changed_lines(diff: &str) -> usize {
+    diff.lines()
+        .filter(|l| {
+            (l.starts_with('+') && !l.starts_with("+++"))
+                || (l.starts_with('-') && !l.starts_with("---"))
+        })
+        .count()
+}
+
+/// Lane R22c-c: dispatch the SAME cross-family reviewer gate a live
+/// `permagent-coding` turn's `ReviewerMandate` would use before finishing
+/// (`after_turn::ReviewerMandate::assess`'s own composition of
+/// `cost_router` primitives, repeated here rather than reached for — this
+/// module cannot depend on a live session's turn loop, and `ReviewerMandate`
+/// is an `AfterTurn` hook with nothing to inject into here) — but as a
+/// standalone, one-shot completion call rather than the `delegate` tool a
+/// live model would call itself. The prompt is the SAME data-fenced shape
+/// `build_review_prompt` always builds; the coordinator's required "no
+/// automated checks ran; review the diff on its merits" note rides in the
+/// `BEGIN_VERIFY_OUTPUT` slot a real verify pass's output would otherwise
+/// occupy, so the reviewer sees explicitly that it must judge the diff on
+/// its own merits, not a fabricated test run.
+async fn dispatch_cross_family_reviewer_for_salvage(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    worktree_path: &std::path::Path,
+    baseline: &str,
+    verify_note: &str,
+) -> ReviewerGateOutcome {
+    let Some(worker_session_id) = card
+        .metadata_json
+        .get("worker_session_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
+        return ReviewerGateOutcome::Refused {
+            reason: "no worker session recorded to attribute the review to".to_string(),
+        };
+    };
+    let manager = SessionManager::instance();
+    let session = match manager.get_session(&worker_session_id, false).await {
+        Ok(s) => s,
+        Err(e) => {
+            return ReviewerGateOutcome::Refused {
+                reason: format!(
+                    "the goal's worker session could not be read to pick an independent \
+                     reviewer: {e}"
+                ),
+            };
+        }
+    };
+    let worker = match (
+        session.provider_name.as_deref(),
+        session.model_config.as_ref().map(|m| m.model_name.as_str()),
+    ) {
+        (Some(p), Some(m)) if !p.is_empty() && !m.is_empty() => {
+            Some((p.to_string(), m.to_string()))
+        }
+        _ => None,
+    };
+
+    // Lane R22d: show the reviewer the FULL unlanded diff, not just what
+    // changed since the last redispatch — when this arm is reached via a
+    // rolling-baseline-equals-tip goal (an earlier attempt's fix already
+    // committed, nothing new since), `baseline..HEAD` alone would read
+    // empty even though real, unlanded work exists. Prefer the trunk-
+    // relative range when a trusted trunk can be resolved; fall back to
+    // the rolling `baseline..HEAD` otherwise (the pre-R22d range).
+    let diff_range_base = match resolve_trusted_landing_root(pool, card, worktree_path).await {
+        Ok(root) => git_in_worktree(std::path::Path::new(&root), &["rev-parse", "HEAD"])
+            .await
+            .unwrap_or_else(|_| baseline.to_string()),
+        Err(_) => baseline.to_string(),
+    };
+    let diff = git_in_worktree(
+        worktree_path,
+        &["diff", &format!("{diff_range_base}..HEAD")],
+    )
+    .await
+    .unwrap_or_default();
+    let changed_lines = count_diff_changed_lines(&diff);
+    let diff_for_prompt = if diff.len() > REVIEWER_GATE_MAX_DIFF_CHARS {
+        format!(
+            "{}\n\n[diff truncated at {REVIEWER_GATE_MAX_DIFF_CHARS} chars]",
+            &diff[..REVIEWER_GATE_MAX_DIFF_CHARS]
+        )
+    } else {
+        diff
+    };
+
+    let configured = crate::cost_router::role_model(crate::cost_router::WorkflowRole::Review);
+    let derived_map = crate::cost_router::derived_role_map().await;
+    let derived = derived_map
+        .get(crate::cost_router::WorkflowRole::Review)
+        .map(|(rm, _)| rm.clone());
+    let available = crate::cost_router::discover_available_models_async().await;
+    let selection = crate::cost_router::select_reviewer(
+        worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
+        configured.as_ref(),
+        derived.as_ref(),
+        &available,
+        changed_lines,
+    );
+    let pick = match selection {
+        crate::cost_router::ReviewerSelection::Unavailable { reason } => {
+            return ReviewerGateOutcome::Refused { reason };
+        }
+        crate::cost_router::ReviewerSelection::Reviewer(pick) => pick,
+    };
+
+    // No live cost tracker for a completed, abandoned worker session at this
+    // point — 0.0 is the same "nothing spent in this scope yet" a fresh
+    // budget scope reads; a genuinely exhausted Hard/Gate band was already
+    // the reason `check_budget` refused another dispatch attempt upstream
+    // of this call.
+    let cfg = crate::cost_router::budget::load_budget_config();
+    let verdict = crate::cost_router::budget_verdict(0.0, 0.0, &cfg);
+    if let crate::cost_router::SpendDecision::Refuse { reason } =
+        crate::cost_router::reviewer_spend_gate(&pick, &verdict)
+    {
+        return ReviewerGateOutcome::Refused { reason };
+    }
+
+    let model_config = match crate::model::ModelConfig::new(&pick.model)
+        .map(|c| c.with_canonical_limits(&pick.provider))
+    {
+        Ok(mc) => mc,
+        Err(e) => {
+            return ReviewerGateOutcome::Refused {
+                reason: format!(
+                    "could not build a model config for the chosen reviewer {}/{}: {e}",
+                    pick.provider, pick.model
+                ),
+            };
+        }
+    };
+    let provider = match providers::create(&pick.provider, model_config, Vec::new()).await {
+        Ok(p) => p,
+        Err(e) => {
+            return ReviewerGateOutcome::Refused {
+                reason: format!(
+                    "could not create the chosen reviewer provider {}/{}: {e}",
+                    pick.provider, pick.model
+                ),
+            };
+        }
+    };
+
+    let task_spec = format!(
+        "{}\n\n{}",
+        card.title,
+        collect_acceptance_criteria(&card.metadata_json, &card.description).join("\n")
+    );
+    let prompt = crate::cost_router::build_review_prompt(
+        &task_spec,
+        &diff_for_prompt,
+        &format!("no automated checks ran; review the diff on its merits ({verify_note})"),
+        &[],
+    );
+    let user_message = Message::user().with_text(prompt);
+
+    let completion = tokio::time::timeout(
+        REVIEWER_GATE_TIMEOUT,
+        AccountedFastCompletion::complete_fast_accounted(
+            std::sync::Arc::new(SessionManager::instance()),
+            session,
+            provider,
+            crate::cost_router::REVIEW_SYSTEM_PROMPT,
+            &[user_message],
+            &[],
+            false,
+        ),
+    )
+    .await;
+    let response = match completion {
+        Ok(Ok((response, _usage))) => response,
+        Ok(Err(e)) => {
+            return ReviewerGateOutcome::Refused {
+                reason: format!("the independent reviewer could not be reached: {e}"),
+            };
+        }
+        Err(_) => {
+            return ReviewerGateOutcome::Refused {
+                reason: format!(
+                    "the independent reviewer did not respond within {}s",
+                    REVIEWER_GATE_TIMEOUT.as_secs()
+                ),
+            };
+        }
+    };
+
+    let outcome = crate::cost_router::parse_review(&response.as_concat_text());
+    let diff_substantive = changed_lines > crate::cost_router::review_gate::TRIVIAL_MAX_LINES;
+    match crate::cost_router::gate_decision(&outcome, diff_substantive, 0) {
+        crate::cost_router::GateDecision::Proceed { .. } => ReviewerGateOutcome::Approved {
+            checked: outcome.checked.clone(),
+            reviewer_provider: pick.provider.clone(),
+            reviewer_model: pick.model.clone(),
+        },
+        crate::cost_router::GateDecision::RequestChanges { findings } => {
+            let summary = findings
+                .iter()
+                .map(|f| format!("[{}] {} ({})", f.lens.as_str(), f.summary, f.evidence))
+                .collect::<Vec<_>>()
+                .join("; ");
+            ReviewerGateOutcome::Refused {
+                reason: format!("the independent reviewer requested changes: {summary}"),
+            }
+        }
+        crate::cost_router::GateDecision::Block { reason }
+        | crate::cost_router::GateDecision::Escalate { reason }
+        | crate::cost_router::GateDecision::ReviewUnavailable { reason } => {
+            ReviewerGateOutcome::Refused { reason }
+        }
+    }
+}
+
+/// Lane R22c-c: the reviewer approved — land through the SAME
+/// `auto_land_headless_goal`/`PERMAGENT_HEADLESS_AUTOLAND` policy a
+/// genuinely verified goal lands through (the operator's launch is the
+/// approval, exactly as for a verified goal). `auto_land_headless_goal`
+/// itself gates on `session_verify_evidence`, which reads `None` here BY
+/// CONSTRUCTION (nothing ever verified) — stamping `unverified_reviewer_
+/// approval` on the card metadata BEFORE transitioning is what makes
+/// `auto_land_headless_goal`'s new bypass branch skip that gate, mirroring
+/// the pre-existing `read_only_review` bypass immediately above it.
+async fn land_salvage_approved_by_reviewer(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    ahead: u64,
+    verify_note: &str,
+    checked: &str,
+    reviewer_provider: &str,
+    reviewer_model: &str,
+    calling_session_id: Option<&str>,
+) -> SalvageOutcome {
+    if let Err(e) = persist_card_meta(pool, &card.id, |m| {
+        m.insert(
+            "unverified_reviewer_approval".to_string(),
+            serde_json::json!({
+                "checked": checked,
+                "reviewer_provider": reviewer_provider,
+                "reviewer_model": reviewer_model,
+                "note": verify_note,
+                "recorded_at": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+    })
+    .await
+    {
+        let note = format!(
+            "the independent reviewer approved {ahead} commit(s), but the approval receipt \
+             could not be recorded: {e}"
+        );
+        record_salvage_receipt(
+            pool,
+            &card.id,
+            "salvage_skipped_review_transition_failed",
+            &note,
+        )
+        .await;
+        return SalvageOutcome::NotSalvaged { note };
+    }
+
+    let mut patch = serde_json::Map::new();
+    patch.insert(
+        "completed_at".to_string(),
+        serde_json::json!(chrono::Utc::now().to_rfc3339()),
+    );
+    if let Err(e) = goal_transition::advance_goal_checked(
+        pool,
+        &card.id,
+        GoalAction::Review,
+        decisions::ACTOR_SYSTEM,
+        None,
+        TransitionEffects {
+            metadata_patch: patch,
+            ..Default::default()
+        },
+    )
+    .await
+    {
+        let e = String::from(e);
+        let note = format!(
+            "the independent reviewer approved {ahead} commit(s), but the goal could not be \
+             moved to Review to land it: {e}"
+        );
+        record_salvage_receipt(
+            pool,
+            &card.id,
+            "salvage_skipped_review_transition_failed",
+            &note,
+        )
+        .await;
+        return SalvageOutcome::NotSalvaged { note };
+    }
+
+    let headline = format!(
+        "\"{}\" was reviewed and approved (no automated checks ran)",
+        card.title
+    );
+    let headline: String = headline
+        .chars()
+        .take(decisions::MAX_HEADLINE_CHARS)
+        .collect();
+    let detail = format!(
+        "{ahead} commit(s) committed past the dispatch baseline. No automated check could run \
+         ({verify_note}); an independent reviewer ({reviewer_provider}/{reviewer_model}) \
+         inspected the diff on its merits and approved it. Checked: {checked}"
+    );
+    let decision = match create_decision_with_retry(
+        pool,
+        decisions::NewDecision {
+            kind: "approve_review".to_string(),
+            goal_id: Some(card.id.clone()),
+            project_id: Some(card.project_id.clone()),
+            headline: Some(headline),
+            detail: Some(detail),
+            payload: serde_json::json!({}),
+            ..Default::default()
+        },
+    )
+    .await
+    {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "goal salvaged with reviewer approval but its approve_review decision could not \
+                 be created: {e}"
+            );
+            record_decision_create_failure(pool, &card.id, "approve_review", &e).await;
+            let note = format!(
+                "the independent reviewer approved {ahead} commit(s), but the approve_review \
+                 decision could not be created: {e}"
+            );
+            record_salvage_receipt(
+                pool,
+                &card.id,
+                "salvaged_on_park_unverified_reviewed",
+                &note,
+            )
+            .await;
+            return SalvageOutcome::Salvaged { note };
+        }
+    };
+
+    let refreshed = cards::get_card(pool, &card.id).await.ok().flatten();
+    if let Some(refreshed) = refreshed {
+        auto_land_headless_goal(pool, &decision.id, &refreshed, true, calling_session_id).await;
+    }
+
+    let note = format!(
+        "salvaged {ahead} commit(s): no automatic check could run against them ({verify_note}), \
+         but an independent reviewer ({reviewer_provider}/{reviewer_model}) approved the diff \
+         on its merits and the goal was auto-landed"
+    );
+    record_salvage_receipt(
+        pool,
+        &card.id,
+        "salvaged_on_park_unverified_reviewed",
+        &note,
+    )
+    .await;
+    SalvageOutcome::Salvaged { note }
+}
+
+/// Lane R22c-c: the reviewer did not approve (or could not be reached at
+/// all) — park honestly with the reviewer's own reason. Never a "hand to a
+/// human" outcome: headless has nobody to hand it to, and the coordinator's
+/// rule is explicit — never land without approval, never require a human
+/// when auto-land is on.
+async fn park_salvage_the_reviewer_rejected(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    ahead: u64,
+    verify_note: &str,
+    reviewer_reason: &str,
+) -> SalvageOutcome {
+    let note = format!(
+        "{ahead} commit(s) past baseline could not be checked automatically ({verify_note}); \
+         the independent reviewer did not approve: {reviewer_reason}"
+    );
+    record_salvage_receipt(
+        pool,
+        &card.id,
+        "salvaged_on_park_unverified_reviewed",
+        &note,
+    )
+    .await;
+    SalvageOutcome::NotSalvaged { note }
+}
+
 /// Best-effort breadcrumb for a salvage attempt that did NOT land the goal
-/// (skipped, failed, timed out) — logged and, best-effort, folded onto the
-/// card's `salvage_receipt` metadata key so a human (or the next A-series
-/// analysis) can see why a park went the ordinary route instead of being
-/// salvaged. Never fails the caller: a write error here only warns.
+/// (skipped, failed, timed out) — logged, best-effort folded onto the
+/// card's `salvage_receipt` metadata key, AND (Lane R22c) written to
+/// `decision_audit` via [`record_salvage_audit`] so a human (or the next
+/// A-series analysis) can see why a park went the ordinary route instead of
+/// being salvaged from the audit trail alone, without needing the card
+/// metadata to still be intact. Never fails the caller: a write error here
+/// only warns.
 async fn record_salvage_receipt(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
@@ -14271,6 +15201,71 @@ async fn record_salvage_receipt(
             target: "permagentd::brain",
             goal_id = %card_id,
             "could not record the salvage receipt ({outcome}): {e}"
+        );
+    }
+    record_salvage_audit(pool, card_id, outcome, note).await;
+}
+
+/// Lane R22c: every salvage decision at a park site — attempted, landed
+/// (`salvaged_on_park`), or any skipped/refused/failed reason, INCLUDING the
+/// common "nothing committed, nothing to salvage" case — writes a
+/// `decision_audit` row here, not just the best-effort card-metadata
+/// breadcrumb [`record_salvage_receipt`] also leaves. Before this lane,
+/// `maybe_salvage_committed_work` could run, correctly decline (e.g. a
+/// genuine `salvage_verify_failed`), and leave the `decision_audit`
+/// sequence around a park completely silent about it — indistinguishable
+/// from salvage never having been reached at all (A23/M24 evidence: a
+/// `headless_unblock_refused → created → park` sequence with no salvage row
+/// between them, even though card metadata showed salvage DID run and
+/// genuinely fail its verify). Mirrors `record_headless_unblock_refusal`'s
+/// synthetic-decision-id pattern: `decision_audit.decision_id` is `NOT
+/// NULL` but carries no real foreign key at most of these sites (see
+/// `spectral_schema.rs`'s own "FK-safe" note), so this writes a stable
+/// synthetic id scoped to the goal rather than a real `decisions.id`. A
+/// write failure here only warns: it must never fail the caller's own
+/// park/hold decision.
+async fn record_salvage_audit(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    outcome: &str,
+    evidence: &str,
+) {
+    let synthetic_decision_id = format!("salvage-gate:{card_id}");
+    let mut tx = match pool.begin_with("BEGIN IMMEDIATE").await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                "could not open a transaction to record the salvage decision_audit row \
+                 ({outcome}): {e}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = decisions::append_audit_tx(
+        &mut tx,
+        &synthetic_decision_id,
+        Some(card_id),
+        decisions::ACTOR_SALVAGE_POLICY,
+        1,
+        outcome,
+        Some(evidence),
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            "could not record the salvage decision_audit row ({outcome}): {e}"
+        );
+        return;
+    }
+    if let Err(e) = tx.commit().await {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            "could not commit the salvage decision_audit row ({outcome}): {e}"
         );
     }
 }
@@ -14509,7 +15504,14 @@ async fn maybe_hold_review(
                 // G25/M21: fold `NotSalvaged`'s `note` into the park reason
                 // instead of discarding it — see `handle_goal_completion`'s
                 // sibling fix for why.
-                let salvage_note = match maybe_salvage_committed_work(pool, card, None).await {
+                let salvage_note = match maybe_salvage_committed_work(
+                    pool,
+                    card,
+                    None,
+                    calling_session_id,
+                )
+                .await
+                {
                     SalvageOutcome::Salvaged { note } => {
                         tracing::info!(
                             target: "permagentd::brain",
@@ -14663,19 +15665,20 @@ async fn maybe_hold_review(
             // work already committed one honest chance to verify, review and
             // land before parking it unread — see
             // `maybe_salvage_committed_work`'s own doc comment.
-            let salvage_note = match maybe_salvage_committed_work(pool, card, None).await {
-                SalvageOutcome::Salvaged { note } => {
-                    tracing::info!(
-                        target: "permagentd::brain",
-                        goal_id = %card.id,
-                        "Goal '{}' held twice ({reason}), but its committed work was salvaged \
-                         instead of parked: {note}",
-                        card.title
-                    );
-                    return Ok(Some(note));
-                }
-                SalvageOutcome::NotSalvaged { note } => note,
-            };
+            let salvage_note =
+                match maybe_salvage_committed_work(pool, card, None, calling_session_id).await {
+                    SalvageOutcome::Salvaged { note } => {
+                        tracing::info!(
+                            target: "permagentd::brain",
+                            goal_id = %card.id,
+                            "Goal '{}' held twice ({reason}), but its committed work was salvaged \
+                             instead of parked: {note}",
+                            card.title
+                        );
+                        return Ok(Some(note));
+                    }
+                    SalvageOutcome::NotSalvaged { note } => note,
+                };
             let reason = format!("{reason}; salvage: {salvage_note}");
             persist_card_meta(pool, &card.id, |m| {
                 crate::cost_router::RoutingSnapshot::from_signals(&signals, Some(&reason))
@@ -19717,6 +20720,99 @@ mod tests {
         (card, dir, head)
     }
 
+    /// Lane R22c (A23/M24 evidence): the exact shape of the DeepSeek
+    /// `editapply` misses — a 3rd dispatch whose session made zero further
+    /// changes (`"commits":[],"files_changed":0` in the real records; here,
+    /// a `goal/<run_id>` branch checked out but never advanced past the
+    /// base commit). `baseline == head`, so `commits_ahead_of_baseline`
+    /// reads 0 — the "nothing to salvage" case `maybe_salvage_committed_
+    /// work` must still audit, not silently swallow.
+    fn r20b_worktree_with_no_commits_past_baseline(run_id: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        r20b_git(root, &["init", "-q", "-b", "main"]);
+        r20b_git(root, &["config", "user.email", "test@example.com"]);
+        r20b_git(root, &["config", "user.name", "Test"]);
+        r20b_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"r20b-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "base"]);
+        let baseline = r20b_git(root, &["rev-parse", "HEAD"]);
+        let branch = format!("goal/{run_id}");
+        r20b_git(root, &["checkout", "-q", "-b", &branch]);
+        (dir, baseline)
+    }
+
+    /// Lane R22c: same shape as [`r20b_setup_goal_with_committed_work`], but
+    /// the worker's branch never advanced past the dispatch baseline —
+    /// `commits_ahead_of_baseline` reads 0, so salvage must skip (not
+    /// crash, not silently return) and still leave an audit trail.
+    async fn r20b_setup_goal_with_no_commits(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        run_id: &str,
+    ) -> (cards::Card, tempfile::TempDir) {
+        let (dir, baseline) = r20b_worktree_with_no_commits_past_baseline(run_id);
+        let card = setup_goal_in_state(pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": baseline,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 0,
+                "insertions": 0,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r20b-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(dir.path().to_string_lossy().as_ref())
+            .execute(pool)
+            .await
+            .unwrap();
+        persist_card_meta(pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(pool, &card.id).await.unwrap().unwrap();
+        (card, dir)
+    }
+
+    /// Lane R22c: the `decision_audit` rows written for a goal by
+    /// [`record_salvage_receipt`]/[`record_salvage_audit`], in `seq` order —
+    /// scoped to `acted_by = ACTOR_SALVAGE_POLICY` so this never picks up an
+    /// unrelated row (e.g. `headless_unblock_refused`, `park`) from the same
+    /// goal.
+    async fn salvage_audit_outcomes(pool: &sqlx::Pool<sqlx::Sqlite>, goal_id: &str) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT outcome FROM decision_audit WHERE goal_id = ? AND acted_by = ? ORDER BY seq ASC",
+        )
+        .bind(goal_id)
+        .bind(decisions::ACTOR_SALVAGE_POLICY)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
     /// A20 Q1 Mechanism A (`editapply`): a goal held with too little wall
     /// budget for another attempt, but its branch already carries a real,
     /// committed, verifiable fix — must be salvaged (verified, reviewed, and
@@ -19884,7 +20980,7 @@ mod tests {
 
         let almost_out_of_grace =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
-        let outcome = maybe_salvage_committed_work(&pool, &card, almost_out_of_grace).await;
+        let outcome = maybe_salvage_committed_work(&pool, &card, almost_out_of_grace, None).await;
         assert!(matches!(outcome, SalvageOutcome::NotSalvaged { .. }));
 
         let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
@@ -19915,7 +21011,7 @@ mod tests {
         .unwrap();
         let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
 
-        let outcome = maybe_salvage_committed_work(&pool, &card, None).await;
+        let outcome = maybe_salvage_committed_work(&pool, &card, None, None).await;
         match outcome {
             SalvageOutcome::NotSalvaged { note } => {
                 assert!(note.contains("already attempted"));
@@ -20094,6 +21190,952 @@ mod tests {
             unblock.detail.contains("salvage"),
             "the skip note must be folded into the park detail, not discarded: {}",
             unblock.detail
+        );
+    }
+
+    // ── Lane R22c: salvage on the attempt-cap park, always audited ──────────
+    //
+    // A23/M24 evidence: a real `editapply`-shaped run showed the exact
+    // sequence `transition:dispatch, requeue, transition:dispatch, requeue,
+    // transition:dispatch, headless_unblock_refused(attempt_cap_exhausted),
+    // created, park` in `decision_audit`, with NO salvage row anywhere in
+    // between — even though the card's own metadata showed
+    // `maybe_salvage_committed_work` DID run (a `salvage_receipt` or
+    // `salvaged_on_park` key was present). Traced to source: the
+    // `HoldOutcome::Park` arm of `maybe_hold_review`
+    // (`maybe_headless_unblock_verify_gap` then `maybe_salvage_committed_
+    // work`, unconditionally, with no early return between them) was never
+    // the bug — `record_salvage_receipt`/the final `salvaged_on_park` write
+    // only ever touched card metadata, never `decision_audit`. These two
+    // tests pin the fix: every salvage outcome at this park site — landed
+    // or skipped — now leaves a `decision_audit` row, queried independently
+    // of card metadata so a future analysis never has to guess again.
+
+    /// Reproduces the evidence shape as closely as the existing R20b-d test
+    /// harness allows: `attempt_count` at `DEFAULT_ATTEMPT_CAP` (3) — the
+    /// same dimension the real `check_budget` refusal hit — a hold-exhausted
+    /// goal, and a genuinely committed, verifiable fix on the branch. Must
+    /// land via salvage (not park) AND leave a `salvaged_on_park`
+    /// `decision_audit` row, independent of the card-metadata receipt.
+    #[tokio::test]
+    async fn hold_exhaustion_park_at_attempt_cap_salvages_and_audits() {
+        let pool = test_pool().await;
+        let (card, _dir, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "r22c-attempt-cap-salvage", None).await;
+        persist_card_meta(&pool, &card.id, |m| {
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            // Pre-spend R18g's own once-per-goal gate — same reasoning as
+            // every other test in this section: makes `maybe_headless_
+            // unblock_verify_gap`'s refusal deterministic regardless of
+            // whether some OTHER test already flipped the process-global
+            // `HEADLESS_DISPATCH_POLICY_CONFIG` `OnceLock`, without this
+            // test mutating that global itself.
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+        // Three dispatches, attempt cap reached — the exact `spent: 3, cap:
+        // 3` dimension A23 traced the real refusal to (DEFAULT_ATTEMPT_CAP).
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "a salvaged goal must never be left in_progress"
+        );
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "committed, verifiable work at attempt-cap exhaustion must be salvaged, not parked"
+        );
+        assert!(
+            updated.metadata_json.get("salvaged_on_park").is_some(),
+            "the card-metadata receipt must still be written, exactly as before this lane"
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(
+            outcomes,
+            vec!["salvaged_on_park".to_string()],
+            "a landed salvage must leave exactly one decision_audit row naming the real outcome, \
+             not silence — the pre-fix defect A23/M24 found"
+        );
+    }
+
+    /// The no-commits variant of the same park: `attempt_count` at the cap,
+    /// but the branch never advanced past its dispatch baseline — the exact
+    /// shape A23 flagged as needing its own explanation ("why did the worker
+    /// not commit"), not a silent swallow. Salvage must skip (never crash,
+    /// never claim a commit that does not exist) and the goal must still
+    /// park — but now with a `salvage_skipped_no_commits` `decision_audit`
+    /// row a future analysis can find without cross-referencing card
+    /// metadata or the goal worktree's own git history.
+    #[tokio::test]
+    async fn hold_exhaustion_park_at_attempt_cap_with_no_commits_skips_and_audits() {
+        let pool = test_pool().await;
+        let (card, _dir) =
+            r20b_setup_goal_with_no_commits(&pool, "r22c-attempt-cap-no-commit").await;
+        persist_card_meta(&pool, &card.id, |m| {
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "nothing committed past baseline must still park the goal, exactly as before this \
+             lane"
+        );
+        assert!(updated.metadata_json.get("salvaged_on_park").is_none());
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("a no-commits skip must still leave the card-metadata breadcrumb");
+        assert_eq!(
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvage_skipped_no_commits")
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(
+            outcomes,
+            vec!["salvage_skipped_no_commits".to_string()],
+            "even the common 'nothing to salvage' case must leave a decision_audit row, not \
+             just a card-metadata breadcrumb — the pre-fix defect A23/M24 found"
+        );
+    }
+
+    // ── Lane R22c-b: salvage verify honestly distinguishes NO_CHECKS/error ──
+    // from ENVIRONMENT from a real FAIL, instead of branding every non-pass
+    // as `salvage_verify_failed`.
+    //
+    // Root cause traced against the exact M24 `editapply` record the
+    // coordinator named (`dschat-harness-editapply-duplicate-discount-
+    // blocks`, `salvage_receipt.outcome: "salvage_verify_failed"` on commit
+    // `416550b`): NOT wrong cwd/scope (salvage already runs `verify_with_cwd`
+    // in the goal worktree with `scope: None`/Auto, ruled out by inspection
+    // of `maybe_salvage_committed_work`'s `verify_params`), NOT a missing
+    // `node_modules` (nothing was ever spawned to hit that), but the
+    // worktree's `package.json` declaring no `build`/`test` script at all —
+    // `node_checks` (`developer/verify.rs`) returns a hard `Err(..)` for
+    // that shape, which `verify_with_cwd` reports as `verdict: "error"`, a
+    // DIFFERENT tag than R21c's `verdict: "no_checks"`. Both are honestly
+    // "nothing ran against the code", so both now route the same way.
+
+    /// A worktree with a real `package.json` but no `build`/`test` script at
+    /// all (no scripts object — the exact M24 shape, not the `npm init`
+    /// placeholder `NoChecksConfigured` already covers) and no Cargo/Go/
+    /// Python markers to fall back to. `node_checks` returns `Err(..)`, so
+    /// `verify_with_cwd` reports `verdict: "error"` — deterministic and
+    /// dependency-free (`read_package_scripts` only parses the file, no
+    /// `node`/`npm` binary is ever spawned for this shape).
+    fn r22c_b_worktree_with_committed_fix_no_checks(
+        run_id: &str,
+    ) -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        r20b_git(root, &["init", "-q", "-b", "main"]);
+        r20b_git(root, &["config", "user.email", "test@example.com"]);
+        r20b_git(root, &["config", "user.name", "Test"]);
+        r20b_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(
+            root.join("package.json"),
+            "{\n  \"name\": \"r22c-b-fixture\",\n  \"private\": true,\n  \"type\": \"module\"\n}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/pricing.ts"),
+            "export const percentOff = 0.15;\n",
+        )
+        .unwrap();
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "base"]);
+        let baseline = r20b_git(root, &["rev-parse", "HEAD"]);
+
+        let branch = format!("goal/{run_id}");
+        r20b_git(root, &["checkout", "-q", "-b", &branch]);
+        std::fs::write(
+            root.join("src/pricing.ts"),
+            "export const percentOff = 0.20;\n",
+        )
+        .unwrap();
+        r20b_git(
+            root,
+            &["commit", "-q", "-am", "fix: correct the discount percent"],
+        );
+        let head = r20b_git(root, &["rev-parse", "HEAD"]);
+        (dir, baseline, head)
+    }
+
+    async fn r22c_b_setup_goal_with_no_checks_fix(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        run_id: &str,
+    ) -> (cards::Card, tempfile::TempDir) {
+        let (dir, baseline, head) = r22c_b_worktree_with_committed_fix_no_checks(run_id);
+        let card = setup_goal_in_state(pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": head,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 1,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r22c-b-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(dir.path().to_string_lossy().as_ref())
+            .execute(pool)
+            .await
+            .unwrap();
+        persist_card_meta(pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(pool, &card.id).await.unwrap().unwrap();
+        (card, dir)
+    }
+
+    /// A20/R20b-shaped Rust fixture, but the committed "fix" is intentionally
+    /// wrong (`assert_eq!(add(2, 2), 5)`), so `cargo test` — the check
+    /// `detect_checks` picks for a Cargo project — genuinely fails.
+    fn r22c_b_worktree_with_committed_failing_fix(
+        run_id: &str,
+    ) -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        r20b_git(root, &["init", "-q", "-b", "main"]);
+        r20b_git(root, &["config", "user.email", "test@example.com"]);
+        r20b_git(root, &["config", "user.name", "Test"]);
+        r20b_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"r22c-b-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "base"]);
+        let baseline = r20b_git(root, &["rev-parse", "HEAD"]);
+
+        let branch = format!("goal/{run_id}");
+        r20b_git(root, &["checkout", "-q", "-b", &branch]);
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n\n#[test]\nfn it_adds() { \
+             assert_eq!(add(2, 2), 5); }\n",
+        )
+        .unwrap();
+        r20b_git(
+            root,
+            &[
+                "commit",
+                "-q",
+                "-am",
+                "fix: intentionally wrong, for the salvage-failure test",
+            ],
+        );
+        let head = r20b_git(root, &["rev-parse", "HEAD"]);
+        (dir, baseline, head)
+    }
+
+    async fn r22c_b_setup_goal_with_committed_failing_fix(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        run_id: &str,
+    ) -> (cards::Card, tempfile::TempDir) {
+        let (dir, baseline, head) = r22c_b_worktree_with_committed_failing_fix(run_id);
+        let card = setup_goal_in_state(pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": head,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r22c-b-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(dir.path().to_string_lossy().as_ref())
+            .execute(pool)
+            .await
+            .unwrap();
+        persist_card_meta(pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(pool, &card.id).await.unwrap().unwrap();
+        (card, dir)
+    }
+
+    /// The coordinator's first required test: a committed goal in a repo
+    /// with no detectable checks must be handed to Review, never branded a
+    /// failed salvage.
+    #[tokio::test]
+    async fn hold_exhaustion_park_with_no_detectable_checks_hands_to_review() {
+        let pool = test_pool().await;
+        let (card, _dir) = r22c_b_setup_goal_with_no_checks_fix(&pool, "r22c-b-no-checks").await;
+        persist_card_meta(&pool, &card.id, |m| {
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("review"),
+            "no detectable checks must hand the goal to Review, never park it as a failure"
+        );
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("an unverified salvage must still leave a card-metadata breadcrumb");
+        assert_eq!(
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvaged_on_park_unverified")
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+                .await
+                .unwrap()
+                .is_some(),
+            "an unverified salvage must still raise an approve_review decision — a human \
+             inspects the diff, it is never auto-landed"
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_none(),
+            "a goal handed to Review must never also raise an unblock decision"
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(outcomes, vec!["salvaged_on_park_unverified".to_string()]);
+    }
+
+    /// The coordinator's second required test: a REAL failing check must
+    /// still be `salvage_verify_failed`, with the failing check itself named
+    /// in the note and the `decision_audit` row's evidence — never confused
+    /// with the honest "nothing could run" cases above.
+    #[tokio::test]
+    async fn hold_exhaustion_park_with_a_real_test_failure_names_the_failing_check() {
+        let pool = test_pool().await;
+        let (card, _dir) =
+            r22c_b_setup_goal_with_committed_failing_fix(&pool, "r22c-b-real-fail").await;
+        persist_card_meta(&pool, &card.id, |m| {
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "a real test failure must still park the goal, exactly as before this lane"
+        );
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("a failed salvage must still leave a card-metadata breadcrumb");
+        assert_eq!(
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvage_verify_failed")
+        );
+        let note = receipt.get("note").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            note.contains("cargo test"),
+            "the failing check must be named in the note: {note}"
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(outcomes, vec!["salvage_verify_failed".to_string()]);
+        let evidence: String = sqlx::query_scalar(
+            "SELECT evidence_digest FROM decision_audit WHERE goal_id = ? AND \
+             outcome = 'salvage_verify_failed'",
+        )
+        .bind(&card.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            evidence.contains("cargo test"),
+            "the audit row's evidence must name the failing check too: {evidence}"
+        );
+    }
+
+    // ── Lane R22c-c: unverified salvage under headless auto-land goes ───────
+    // through the reviewer, never dead-ends in Review with nobody to answer
+    // it, and never lands without approval.
+    //
+    // `dispatch_cross_family_reviewer_for_salvage` itself makes a live LLM
+    // completion call — not mockable here without a test-only provider seam
+    // this lane does not add — so, mirroring this codebase's OWN convention
+    // for exactly this shape (`after_turn::ReviewerMandate`'s doc comment:
+    // "the live async half... the actual decision is a pure function of
+    // already-resolved inputs, exercised directly by the unit tests"), these
+    // two tests drive the deterministic HALVES directly:
+    // `land_salvage_approved_by_reviewer` (real git landing mechanics, a
+    // CANNED reviewer verdict standing in for the live call) and
+    // `park_salvage_the_reviewer_rejected` (pure). "non-headless → stays in
+    // Review for a human" is already covered by
+    // `hold_exhaustion_park_with_no_detectable_checks_hands_to_review`
+    // above, unchanged by this lane (`headless_auto_land: false` routes
+    // through `hand_to_review_for_a_human`, byte-identical to R22c-b).
+
+    /// A reviewer approval must land the goal through the SAME
+    /// `auto_land_headless_goal` mechanics a genuinely verified goal lands
+    /// through: the working directory fast-forwards onto the goal branch's
+    /// commit, the card reaches Complete, and the `approve_review` decision
+    /// is resolved rather than left open for a nonexistent human.
+    #[tokio::test]
+    async fn land_salvage_approved_by_reviewer_auto_lands_like_a_verified_goal() {
+        let (repo, head) = v1_repo_with_finished_goal_branch("r22c-c-reviewer-land");
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(&root)
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "r22c-c-reviewer-land", &head).await;
+        let session_id = format!("r22c-c-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(&root)
+            .execute(&pool)
+            .await
+            .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        let outcome = land_salvage_approved_by_reviewer(
+            &pool,
+            &card,
+            1,
+            "no automated checks ran; review the diff on its merits",
+            "read the diff end to end; the change matches the task and adds no new risk",
+            "test-reviewer-provider",
+            "test-reviewer-model",
+            Some("coord-session-1"),
+        )
+        .await;
+        assert!(
+            matches!(outcome, SalvageOutcome::Salvaged { .. }),
+            "a reviewer approval must be reported as salvaged: {outcome:?}"
+        );
+
+        assert_eq!(
+            git_v1(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "a reviewer-approved unverified salvage must fast-forward the working directory \
+             onto the goal's commit, exactly like a verified auto-land"
+        );
+        assert!(
+            repo.path().join("work.txt").exists(),
+            "the worker's file must be present in the working directory after auto-landing"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("complete"),
+            "a reviewer-approved unverified salvage must reach Complete, not sit in Review"
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .pointer("/dispatch_evidence/verdict/status")
+                .and_then(|v| v.as_str()),
+            Some("pass"),
+            "the bypass must write the literal status `approve_review_verification_status` \
+             requires to actually land the approval"
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .pointer("/dispatch_evidence/verdict/source")
+                .and_then(|v| v.as_str()),
+            Some("headless_auto_unverified_reviewer_approval"),
+            "the receipt must say HOW this pass was earned, distinct from a genuine verify"
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+                .await
+                .unwrap()
+                .is_none(),
+            "the approve_review decision must be resolved (answered), not left open"
+        );
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(
+            outcomes,
+            vec!["salvaged_on_park_unverified_reviewed".to_string()]
+        );
+    }
+
+    /// A reviewer refusal (REQUEST_CHANGES/UNCERTAIN/unavailable — all
+    /// funnel here as one `reviewer_reason` string) must park the goal with
+    /// that reason named, never land it, and never leave it open for a
+    /// human a headless run has none of.
+    #[tokio::test]
+    async fn park_salvage_the_reviewer_rejected_names_the_reason_and_never_lands() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        let outcome = park_salvage_the_reviewer_rejected(
+            &pool,
+            &card,
+            1,
+            "no automated checks ran; review the diff on its merits",
+            "the independent reviewer requested changes: [CORRECTNESS] off-by-one in the \
+             loop bound (src/pricing.ts:42)",
+        )
+        .await;
+        match outcome {
+            SalvageOutcome::NotSalvaged { note } => {
+                assert!(
+                    note.contains("off-by-one"),
+                    "the reviewer's own reason must be named in the park note: {note}"
+                );
+            }
+            SalvageOutcome::Salvaged { .. } => {
+                panic!("a reviewer rejection must never be reported as salvaged")
+            }
+        }
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("a reviewer rejection must still leave a card-metadata breadcrumb");
+        assert_eq!(
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvaged_on_park_unverified_reviewed")
+        );
+        assert!(
+            updated
+                .metadata_json
+                .get("unverified_reviewer_approval")
+                .is_none(),
+            "a rejection must never stamp the approval marker that bypasses auto-land's \
+             verify-evidence gate"
+        );
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(
+            outcomes,
+            vec!["salvaged_on_park_unverified_reviewed".to_string()]
+        );
+    }
+
+    // ── Lane R22d (A24 Q1/Q3): salvage measures unlanded commits against ────
+    // the trunk, not the rolling per-redispatch baseline.
+
+    /// A REAL trunk repo (`project.root_path`) plus a goal worktree that is
+    /// a genuine `git clone` of it (sharing full object history, the same
+    /// property a linked `git worktree add` checkout has) — one commit
+    /// ahead on a `goal/<run_id>` branch with a real, passing Rust test.
+    /// Returns (trunk dir, goal worktree dir, the base commit's sha, the
+    /// fix commit's sha).
+    fn r22d_trunk_and_goal_worktree(
+        run_id: &str,
+    ) -> (tempfile::TempDir, tempfile::TempDir, String, String) {
+        let trunk = tempfile::tempdir().unwrap();
+        let troot = trunk.path();
+        r20b_git(troot, &["init", "-q", "-b", "main"]);
+        r20b_git(troot, &["config", "user.email", "test@example.com"]);
+        r20b_git(troot, &["config", "user.name", "Test"]);
+        r20b_git(troot, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(
+            troot.join("Cargo.toml"),
+            "[package]\nname = \"r22d-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(troot.join("src")).unwrap();
+        std::fs::write(
+            troot.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
+        r20b_git(troot, &["add", "-A"]);
+        r20b_git(troot, &["commit", "-q", "-m", "base"]);
+        let base_sha = r20b_git(troot, &["rev-parse", "HEAD"]);
+
+        let goal_dir = tempfile::tempdir().unwrap();
+        let clone_out = std::process::Command::new("git")
+            .args(["clone", "-q"])
+            .arg(troot)
+            .arg(goal_dir.path())
+            .output()
+            .expect("git clone must succeed for this test");
+        assert!(
+            clone_out.status.success(),
+            "git clone failed: {}",
+            String::from_utf8_lossy(&clone_out.stderr)
+        );
+        let gpath = goal_dir.path();
+        r20b_git(gpath, &["config", "user.email", "test@example.com"]);
+        r20b_git(gpath, &["config", "user.name", "Test"]);
+        r20b_git(gpath, &["config", "commit.gpgsign", "false"]);
+        let branch = format!("goal/{run_id}");
+        r20b_git(gpath, &["checkout", "-q", "-b", &branch]);
+        std::fs::write(
+            gpath.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n\n#[test]\nfn it_adds() { \
+             assert_eq!(add(2, 2), 4); }\n",
+        )
+        .unwrap();
+        r20b_git(gpath, &["commit", "-q", "-am", "fix: the salvageable work"]);
+        let fix_sha = r20b_git(gpath, &["rev-parse", "HEAD"]);
+        (trunk, goal_dir, base_sha, fix_sha)
+    }
+
+    /// The coordinator's first required test: attempt 1 committed a real
+    /// fix; a later redispatch's ROLLING baseline (Y16b resumes from the
+    /// branch's own prior tip) now equals that same commit, so
+    /// `commits_ahead_of_baseline` reads 0 — but the trunk never moved, so
+    /// `commits_unlanded_at_trunk` must still find 1 unlanded commit and
+    /// salvage must fire.
+    #[tokio::test]
+    async fn hold_exhaustion_park_salvages_against_unlanded_trunk_when_rolling_baseline_equals_tip()
+    {
+        let pool = test_pool().await;
+        let (trunk, goal_dir, _base_sha, fix_sha) = r22d_trunk_and_goal_worktree("r22d-unlanded");
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(trunk.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": goal_dir.path().to_string_lossy(),
+                "head_commit": fix_sha,
+                "commits": [],
+                // The rolling redispatch baseline: a later attempt resumed
+                // from the branch's own prior tip, which IS this same fix
+                // commit — the exact A24 shape.
+                "baseline_commit": fix_sha,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r22d-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(goal_dir.path().to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "a rolling baseline reading 0 must not park a goal with real, unlanded work — the \
+             A24 defect this lane fixes"
+        );
+        assert_ne!(col.state_binding.as_deref(), Some("in_progress"));
+        assert!(
+            updated.metadata_json.get("salvaged_on_park").is_some(),
+            "expected the genuine-pass salvage path to record salvaged_on_park"
+        );
+        let receipt = updated.metadata_json.get("salvaged_on_park").unwrap();
+        assert_eq!(
+            receipt.get("commits_ahead").and_then(|v| v.as_u64()),
+            Some(1),
+            "the trunk-relative count (1 unlanded commit), not the rolling count (0), must be \
+             what salvage reports"
+        );
+    }
+
+    /// The coordinator's second required test: the goal branch's tip has
+    /// ALREADY reached the trunk (landed by an earlier salvage, or a
+    /// human's own merge) — salvage must skip cleanly with
+    /// `salvage_skipped_already_landed`, never re-attempt landing work
+    /// that is already there.
+    #[tokio::test]
+    async fn hold_exhaustion_park_skips_salvage_when_the_tip_already_landed_on_trunk() {
+        let pool = test_pool().await;
+        let (trunk, goal_dir, base_sha, fix_sha) =
+            r22d_trunk_and_goal_worktree("r22d-already-landed");
+
+        // Land the fix onto the trunk directly (fetch + fast-forward merge)
+        // — simulates an earlier salvage, or a human's own manual merge,
+        // having already landed this exact commit.
+        r20b_git(
+            trunk.path(),
+            &[
+                "fetch",
+                "-q",
+                goal_dir.path().to_str().unwrap(),
+                "goal/r22d-already-landed",
+            ],
+        );
+        r20b_git(trunk.path(), &["merge", "-q", "--ff-only", "FETCH_HEAD"]);
+        assert_eq!(
+            r20b_git(trunk.path(), &["rev-parse", "HEAD"]),
+            fix_sha,
+            "precondition: the trunk must actually carry the fix commit"
+        );
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(trunk.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": goal_dir.path().to_string_lossy(),
+                "head_commit": fix_sha,
+                "commits": [],
+                // A rolling baseline distinct from the tip, so
+                // `commits_ahead_of_baseline` alone would (wrongly) say
+                // "1 ahead, go salvage it" — the trunk check must override
+                // that with "already landed."
+                "baseline_commit": base_sha,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r22d-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(goal_dir.path().to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "an already-landed tip must still park (nothing left to salvage), exactly like an \
+             ordinary hold-exhaustion park"
+        );
+        assert!(updated.metadata_json.get("salvaged_on_park").is_none());
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("an already-landed skip must still leave a card-metadata breadcrumb");
+        assert_eq!(
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvage_skipped_already_landed")
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(
+            outcomes,
+            vec!["salvage_skipped_already_landed".to_string()],
+            "an already-landed tip must still leave a decision_audit row, not just a \
+             card-metadata breadcrumb"
         );
     }
 
