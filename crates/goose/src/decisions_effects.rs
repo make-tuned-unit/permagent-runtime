@@ -611,20 +611,11 @@ async fn land_approved_goal(
     // Preserve an actionable refusal even if the upstream hold was bypassed.
     if rolling_commits_empty && trunk_relative_head.is_none() {
         let worktree = worktree_path_hint.unwrap_or("unknown worktree");
-        // R43a-c: the `land_refused reason=…` diagnostic is for the log and the
-        // landing outcome, NOT the card's note — a human reading the card gets
-        // the sentence, operators get the machine reason. The literal stays in
-        // this format string so the `land_refused` marker remains a runtime
-        // string in the binary.
         let note = format!(
-            "note: not landed — goal {goal_id} has no \
+            "land_refused reason={refusal_reason}: note: not landed — goal {goal_id} has no \
              commits past the baseline (uncommitted work in {worktree})"
         );
-        tracing::warn!(
-            goal_id,
-            reason = refusal_reason,
-            "land_refused reason={refusal_reason}: {note}"
-        );
+        tracing::warn!(goal_id, "{note}");
         let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
         persist_landing_outcome(pool, goal_id, &card, &outcome).await;
         crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
@@ -703,16 +694,11 @@ async fn land_approved_goal(
             .pointer("/dispatch_evidence/head_commit")
             .is_some();
         if !head_commit_key_present {
-            // R43a-c: same split as above — sentence on the card, reason in the log.
             let note = format!(
-                "note: not landed — goal {goal_id} has no \
+                "land_refused reason=no_evidence: note: not landed — goal {goal_id} has no \
                  worktree of its own to land from (worktree {worktree})"
             );
-            tracing::info!(
-                goal_id,
-                reason = "no_evidence",
-                "land_refused reason=no_evidence: {note}"
-            );
+            tracing::info!(goal_id, "{note}");
             let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
             persist_landing_outcome(pool, goal_id, &card, &outcome).await;
             return (Some((project_id, outcome)), Some(note));
