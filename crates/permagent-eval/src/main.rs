@@ -15,6 +15,9 @@
 //! - `list`     — list the bundled tasks.
 //! - `validate` — load and validate every task spec.
 //! - `qualify`  — validate retained held-out evidence and emit a scorecard.
+//! - `regrade`  — re-grade a report file's pre-K15 `errored: provider
+//!   unavailable` verdicts from its already-paid-for run directories (no
+//!   models are called, nothing is spent).
 //! - `graduate` — fold retained run reports into the capability directory's
 //!   durable per-role evidence (D1, `docs/orchestrator/
 //!   CODING_HARNESS_ROLE_GRADUATION_DAG.md` G2).
@@ -41,6 +44,7 @@ use permagent_eval::graduate::{
 };
 use permagent_eval::invocation::build_invocation;
 use permagent_eval::metrics::TaskResult;
+use permagent_eval::provider_unavailable;
 use permagent_eval::qualification::{
     build_run_qualification_record, build_token_verdict,
     qualification_input_with_token_comparisons, BinaryProvenance, CapabilityVerdict,
@@ -93,6 +97,10 @@ enum Command {
     Validate(TasksDirArg),
     /// Validate retained held-out evidence and emit its derived scorecard.
     Qualify(QualifyArgs),
+    /// K16: re-grade pre-K15 `errored: provider unavailable` tasks against
+    /// K15's own-provider rule, from an existing `--record`'s run
+    /// directories — no models are called, nothing is spent.
+    Regrade(RegradeArgs),
     /// D1: fold retained run reports into the capability directory's
     /// durable per-role evidence (`docs/orchestrator/
     /// CODING_HARNESS_ROLE_GRADUATION_DAG.md` G2).
@@ -263,6 +271,34 @@ struct QualifyArgs {
     /// Also write the derived scorecard to this file.
     #[arg(long, value_name = "FILE")]
     out: Option<PathBuf>,
+}
+
+/// K16: re-grade a report file's pre-K15 `errored: provider unavailable`
+/// verdicts, from the run directories the original invocation already paid
+/// for. See `cmd_regrade`'s doc for the full rule.
+#[derive(Args, Debug)]
+struct RegradeArgs {
+    /// A report JSON file written by `run --format json --out FILE` (the
+    /// `tiers[].tasks[]` shape `report::render_json` produces). Never
+    /// modified.
+    #[arg(long, value_name = "FILE")]
+    record: PathBuf,
+
+    /// The `--runs-dir` scratch directory the original `run` invocation used
+    /// (must have been run with `--keep`, or otherwise still hold its
+    /// `<tier>-<task_id>-<nanos>-<n>` run directories).
+    #[arg(long, value_name = "DIR")]
+    runs_dir: PathBuf,
+
+    /// The `tiers[].tier` name (in --record) to re-grade.
+    #[arg(long, value_name = "NAME")]
+    tier: String,
+
+    /// Where to write the regraded record. A sibling `<out>.qual.json` is
+    /// also written when `<record>.qual.json` exists (see `cmd_regrade`'s
+    /// doc). Never the same path as --record.
+    #[arg(long, value_name = "FILE")]
+    out: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -693,6 +729,7 @@ fn main() -> Result<()> {
         Command::List(arg) => cmd_list(&resolve_tasks_dir(&arg)),
         Command::Validate(arg) => cmd_validate(&resolve_tasks_dir(&arg)),
         Command::Qualify(args) => cmd_qualify(args),
+        Command::Regrade(args) => cmd_regrade(args),
         Command::Graduate(args) => cmd_graduate(args),
         Command::DispatchInventory(args) => cmd_dispatch_inventory(args),
         Command::Program { command } => cmd_program(command),
@@ -2146,6 +2183,281 @@ fn cmd_report(args: ReportArgs) -> Result<()> {
     Ok(())
 }
 
+// --- K16: re-grade pre-K15 `errored: provider unavailable` verdicts from an
+// existing --record's already-paid-for run directories --------------------
+
+/// Find one task's run directory under `runs_dir`, matching
+/// `crate::runner::run_task`'s own `"{tier}-{task_id}-{nanos}-{n}"` naming
+/// (`run_dir = cfg.runs_root.join(format!("{}-{}-{}", tier.name,
+/// task.spec.id, unique_stamp()))`, where `unique_stamp()` is
+/// `"{nanos}-{n}"`). Matched by EXACT prefix equality after stripping the
+/// trailing `-<nanos>-<n>` — a plain substring/suffix check would
+/// mismatch when one task id is itself a suffix of another (e.g. a
+/// `...-roadmap` task against a `...-skips-roadmap` one). "Newest" (Lane K16
+/// brief) is the directory with the largest embedded nanosecond timestamp,
+/// so a re-run of the same task under the same `--runs-dir` always wins over
+/// an older attempt.
+fn find_run_dir(runs_dir: &Path, tier_name: &str, task_id: &str) -> Result<Option<PathBuf>> {
+    static RUN_DIR_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"^(.+)-(\d+)-(\d+)$").expect("valid regex"));
+    let wanted = format!("{tier_name}-{task_id}");
+    let entries = match fs::read_dir(runs_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(None),
+    };
+    let mut best: Option<(u128, PathBuf)> = None;
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(caps) = RUN_DIR_RE.captures(name) else {
+            continue;
+        };
+        if &caps[1] != wanted.as_str() {
+            continue;
+        }
+        let nanos: u128 = caps[2].parse().unwrap_or(0);
+        if best.as_ref().is_none_or(|(n, _)| nanos > *n) {
+            best = Some((nanos, entry.path()));
+        }
+    }
+    Ok(best.map(|(_, path)| path))
+}
+
+/// K15's own rule (`crate::provider_unavailable::classify_in_run`), applied
+/// to one task's run directory: `<run_dir>/logs/harness.log` (missing is not
+/// an error — an empty log, like `runner::run_task`'s own
+/// `unwrap_or_default()`) plus every `<run_dir>/data/logs/llm_request.*
+/// .jsonl`.
+fn regrade_classify(run_dir: &Path, tier_provider: &str) -> provider_unavailable::Classification {
+    let harness_log_text =
+        fs::read_to_string(run_dir.join("logs").join("harness.log")).unwrap_or_default();
+    let data_root = run_dir.join("data");
+    provider_unavailable::classify_in_run(tier_provider, &harness_log_text, &data_root)
+}
+
+/// `permagent-eval regrade`: for a `--record` report JSON's `--tier` entry,
+/// re-grade every `oracle: "errored"` task whose run directory (under
+/// `--runs-dir`) shows, under K15's `classify_in_run`, that its
+/// provider-unavailable evidence does NOT name the tier's own provider and
+/// is not a terminal exit — i.e. K15 would never have forced it to
+/// `errored` in the first place. Such a task is re-graded from its own
+/// `oracle_exit` (`0` -> `pass`, anything else -> `fail`), `solved` is set to
+/// match, `note` is cleared, `signals.provider_unavailable_ignored` is set
+/// from the classification's ignored-marker count, and a `regraded: {rule:
+/// "K15", from: "errored"}` marker is appended so a report reader can see
+/// this task's grade was derived, not originally measured. A task whose
+/// evidence DOES name the tier's provider (or is terminal) is left
+/// `errored`, unchanged — K15 would still force it today.
+///
+/// Never touches `--record` (or its `--runs-dir` evidence): the regraded
+/// record — with its tier's `summary.solved`/`pass_rate`/
+/// `dollars_per_solved` recomputed from the new verdicts (`total_cost_usd`
+/// and every other cost figure are left exactly as measured; nothing here
+/// re-derives spend) — is written to `--out`. When `<record>.qual.json`
+/// exists (the sidecar every `run` invocation already writes alongside its
+/// own `--out`, via `write_qualification_records` — reused here verbatim,
+/// "the same serializer"), the matching provider's
+/// `TaskQualificationEvidence` entries are patched the same way (`result`,
+/// `errored`, `provider_error`) and the whole array is written to
+/// `<out>.qual.json`, so `qualify --record <out>.qual.json` reads the
+/// regraded verdicts.
+fn cmd_regrade(args: RegradeArgs) -> Result<()> {
+    let raw = fs::read_to_string(&args.record)
+        .with_context(|| format!("reading record {}", args.record.display()))?;
+    let mut value: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing record {}", args.record.display()))?;
+
+    let tiers = value
+        .get_mut("tiers")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| anyhow::anyhow!("{} has no `tiers` array", args.record.display()))?;
+
+    let mut matched_tier = false;
+    let mut tier_provider = String::new();
+    let mut examined = 0usize;
+    let mut promoted_pass = 0usize;
+    let mut promoted_fail = 0usize;
+    let mut kept_errored = 0usize;
+    // Every task actually regraded here (never one left `errored`), keyed by
+    // task id — reused for the `.qual.json` pass below so the SAME verdict
+    // is applied there without re-running `classify_in_run`'s file scan.
+    let mut regrades: std::collections::HashMap<String, (&'static str, usize)> =
+        std::collections::HashMap::new();
+
+    for tier_value in tiers.iter_mut() {
+        if tier_value.get("tier").and_then(|v| v.as_str()) != Some(args.tier.as_str()) {
+            continue;
+        }
+        matched_tier = true;
+        tier_provider = tier_value
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("tier {:?} entry has no `provider`", args.tier))?
+            .to_string();
+
+        let tasks = tier_value
+            .get_mut("tasks")
+            .and_then(|v| v.as_array_mut())
+            .ok_or_else(|| anyhow::anyhow!("tier {:?} entry has no `tasks` array", args.tier))?;
+
+        for task in tasks.iter_mut() {
+            if task.get("oracle").and_then(|v| v.as_str()) != Some("errored") {
+                continue;
+            }
+            examined += 1;
+            let task_id = task
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("task in {:?} is missing task_id", args.tier))?
+                .to_string();
+            let Some(run_dir) = find_run_dir(&args.runs_dir, &args.tier, &task_id)? else {
+                eprintln!(
+                    "warning: no run dir for task {task_id:?} under {} — leaving errored",
+                    args.runs_dir.display()
+                );
+                kept_errored += 1;
+                continue;
+            };
+            let classification = regrade_classify(&run_dir, &tier_provider);
+            if classification.unavailable {
+                kept_errored += 1;
+                continue;
+            }
+            let oracle_exit = task.get("oracle_exit").and_then(|v| v.as_i64());
+            let new_oracle = if oracle_exit == Some(0) {
+                "pass"
+            } else {
+                "fail"
+            };
+            if new_oracle == "pass" {
+                promoted_pass += 1;
+            } else {
+                promoted_fail += 1;
+            }
+            regrades.insert(task_id.clone(), (new_oracle, classification.ignored_count));
+            let obj = task
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("task {task_id:?} is not a JSON object"))?;
+            obj.insert("oracle".to_string(), serde_json::json!(new_oracle));
+            obj.insert(
+                "solved".to_string(),
+                serde_json::json!(new_oracle == "pass"),
+            );
+            obj.insert("note".to_string(), serde_json::Value::Null);
+            if let Some(signals) = obj.get_mut("signals").and_then(|v| v.as_object_mut()) {
+                signals.insert(
+                    "provider_unavailable_ignored".to_string(),
+                    serde_json::json!(classification.ignored_count),
+                );
+            }
+            obj.insert(
+                "regraded".to_string(),
+                serde_json::json!({ "rule": "K15", "from": "errored" }),
+            );
+        }
+
+        // Recompute only what depends on the new verdicts. `total_cost_usd`
+        // (and every other cost figure) is left exactly as measured — K16
+        // re-grades PAST verdicts from evidence already on disk, it never
+        // re-derives spend.
+        let solved = tasks
+            .iter()
+            .filter(|t| t.get("solved").and_then(|v| v.as_bool()) == Some(true))
+            .count();
+        let attempted = tasks
+            .iter()
+            .filter(|t| t.get("oracle").and_then(|v| v.as_str()) != Some("not_run"))
+            .count();
+        let pass_rate = if attempted == 0 {
+            0.0
+        } else {
+            solved as f64 / attempted as f64
+        };
+        if let Some(summary) = tier_value
+            .get_mut("summary")
+            .and_then(|v| v.as_object_mut())
+        {
+            summary.insert("solved".to_string(), serde_json::json!(solved));
+            summary.insert("pass_rate".to_string(), serde_json::json!(pass_rate));
+            let total_cost_usd = summary.get("total_cost_usd").and_then(|v| v.as_f64());
+            let dollars_per_solved = if solved == 0 {
+                None
+            } else {
+                total_cost_usd.map(|t| t / solved as f64)
+            };
+            summary.insert(
+                "dollars_per_solved".to_string(),
+                dollars_per_solved.map_or(serde_json::Value::Null, |v| serde_json::json!(v)),
+            );
+        }
+    }
+
+    if !matched_tier {
+        bail!(
+            "no tier named {:?} found in {} (see `tiers[].tier`)",
+            args.tier,
+            args.record.display()
+        );
+    }
+    if args.out == args.record {
+        bail!("--out must not be the same path as --record");
+    }
+
+    if let Some(parent) = args.out.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+    }
+    fs::write(&args.out, serde_json::to_string_pretty(&value)?)
+        .with_context(|| format!("writing regraded record to {}", args.out.display()))?;
+
+    // Companion .qual.json: patch the SAME result/errored/provider_error
+    // fields on the sidecar `run` already wrote next to --record (never
+    // rebuilt from scratch — it carries provenance/signal fields, e.g.
+    // `harness_overhead`/`landed_goals`/`dag_enforcement`, that the report
+    // JSON `--record` never serializes at all).
+    let input_qual_path = qualification_sibling_path(&args.record);
+    let qual_out_path = if input_qual_path.is_file() {
+        let mut records = read_qualification_records(&input_qual_path)?;
+        for record in records.iter_mut().filter(|r| r.provider == tier_provider) {
+            for task in record.tasks.iter_mut() {
+                if !task.errored {
+                    continue;
+                }
+                let Some((new_oracle, _ignored_count)) = regrades.get(task.task_id.as_str()) else {
+                    continue;
+                };
+                task.result = (*new_oracle).to_string();
+                task.errored = false;
+                task.provider_error = None;
+            }
+            record.provider_unavailable = record.tasks.iter().any(|t| t.provider_error.is_some());
+        }
+        let out_qual_path = qualification_sibling_path(&args.out);
+        write_qualification_records(&out_qual_path, &records)?;
+        Some(out_qual_path)
+    } else {
+        None
+    };
+
+    eprintln!(
+        "regrade[{}]: {examined} errored task(s) examined -> {promoted_pass} promoted to pass, \
+         {promoted_fail} promoted to fail, {kept_errored} left errored; wrote {}{}",
+        args.tier,
+        args.out.display(),
+        qual_out_path
+            .map(|p| format!(", {}", p.display()))
+            .unwrap_or_default()
+    );
+    Ok(())
+}
+
 /// Decide whether a `--fail-under PERCENT` threshold is violated. Returns
 /// `Ok(Some((best_pct, threshold_pct)))` when the best tier's pass-rate is below
 /// the threshold (the caller should fail), `Ok(None)` when the bar is met, and
@@ -3515,5 +3827,272 @@ nodes:
         .expect_err("missing provider/model with no flags must be refused");
         let msg = err.to_string();
         assert!(msg.contains("never guessed"), "{msg}");
+    }
+
+    // --- K16: `regrade` ----------------------------------------------------
+
+    const REGRADE_ANTHROPIC_CREDIT_LINE: &str =
+        "Planner decomposition failed (LLM decomposition failed: complete_fast \
+         physical attempt failed: Credits exhausted: Your credit balance is too \
+         low to access the Anthropic API. Please go to Plans & Billing to upgrade \
+         or purchase credits.); escalating to default provider";
+
+    const REGRADE_DEEPSEEK_CREDIT_LINE: &str =
+        "deepseek request failed: credits exhausted, please recharge your account";
+
+    /// Build one `<runs_dir>/<tier>-<task_id>-<nanos>-0` run directory with a
+    /// harness log and (optionally) one `llm_request.0.jsonl`, mirroring
+    /// `runner::run_task`'s own layout closely enough for `find_run_dir`/
+    /// `classify_in_run` to read it.
+    fn regrade_write_run_dir(
+        runs_dir: &Path,
+        tier: &str,
+        task_id: &str,
+        nanos: u64,
+        harness_log: &str,
+        llm_log: Option<&str>,
+    ) -> PathBuf {
+        let dir = runs_dir.join(format!("{tier}-{task_id}-{nanos}-0"));
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::create_dir_all(dir.join("data").join("logs")).unwrap();
+        std::fs::write(dir.join("logs").join("harness.log"), harness_log).unwrap();
+        if let Some(text) = llm_log {
+            std::fs::write(
+                dir.join("data").join("logs").join("llm_request.0.jsonl"),
+                text,
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    /// One `errored: "provider unavailable"` task, `render_json`-shaped, as
+    /// the pre-K15 driver would have written it.
+    fn regrade_errored_task_json(task_id: &str, oracle_exit: i64) -> serde_json::Value {
+        serde_json::json!({
+            "task_id": task_id,
+            "category": "classic",
+            "solved": false,
+            "oracle": "errored",
+            "cost_usd": 0.01,
+            "cost_estimated": false,
+            "ledger_rows": 1,
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "cache_hit_rate": null,
+            "duration_secs": 1.0,
+            "harness_exit": 0,
+            "harness_timed_out": false,
+            "oracle_exit": oracle_exit,
+            "oracle_timed_out": false,
+            "oracle_secs": 0.1,
+            "harness_timeout_secs": 900,
+            "note": "provider unavailable: credits exhausted",
+            "seed_commit": null,
+            "selection_correct": null,
+            "selection_check_failures": [],
+            "signals": {
+                "tool_calls": 1,
+                "tool_names": [],
+                "executed_tool_names": [],
+                "refused_tool_calls": [],
+                "rate_limit_events": 0,
+                "rate_limit_examples": [],
+                "max_turns_hit": false,
+                "provider_unavailable_ignored": 1,
+            },
+        })
+    }
+
+    fn regrade_record_json(tasks: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({
+            "tiers": [{
+                "tier": "dschat",
+                "provider": "custom_deepseek",
+                "model": "deepseek-chat",
+                "pinned_packs": true,
+                "summary": {
+                    "total": tasks.len(),
+                    "attempted": tasks.len(),
+                    "not_run": 0,
+                    "solved": 0,
+                    "pass_rate": 0.0,
+                    "dollars_per_solved": null,
+                    "median_cost_per_task": 0.01,
+                    "total_cost_usd": 0.03,
+                    "any_cost_unknown": false,
+                    "any_estimated": false,
+                    "median_duration_secs": 1.0,
+                    "total_tool_calls": tasks.len(),
+                    "total_rate_limit_events": 0,
+                    "cache_hit_rate": null,
+                    "dag_selection_pct": null,
+                },
+                "tasks": tasks,
+            }],
+            "run_id": "run-test-dschat",
+            "generated_at": "2026-01-01T00:00:00Z",
+        })
+    }
+
+    /// The Lane K16 brief's three-task contract: a non-tier-provider marker
+    /// with `oracle_exit: 0` promotes to `pass`, a marker naming the tier's
+    /// own provider stays `errored`, and a non-tier-provider marker with a
+    /// nonzero `oracle_exit` promotes to `fail`.
+    #[test]
+    fn regrade_applies_the_k15_rule_from_existing_run_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs_dir = dir.path().join("runs");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+
+        regrade_write_run_dir(
+            &runs_dir,
+            "dschat",
+            "t-pass",
+            1,
+            "",
+            Some(REGRADE_ANTHROPIC_CREDIT_LINE),
+        );
+        regrade_write_run_dir(
+            &runs_dir,
+            "dschat",
+            "t-stays-errored",
+            2,
+            "",
+            Some(REGRADE_DEEPSEEK_CREDIT_LINE),
+        );
+        regrade_write_run_dir(
+            &runs_dir,
+            "dschat",
+            "t-fail",
+            3,
+            "",
+            Some(REGRADE_ANTHROPIC_CREDIT_LINE),
+        );
+
+        let record = regrade_record_json(vec![
+            regrade_errored_task_json("t-pass", 0),
+            regrade_errored_task_json("t-stays-errored", 1),
+            regrade_errored_task_json("t-fail", 1),
+        ]);
+        let record_path = dir.path().join("m.json");
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+
+        let out_path = dir.path().join("m-regraded.json");
+        cmd_regrade(RegradeArgs {
+            record: record_path,
+            runs_dir,
+            tier: "dschat".to_string(),
+            out: out_path.clone(),
+        })
+        .unwrap();
+
+        let regraded: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
+        let tasks = regraded["tiers"][0]["tasks"].as_array().unwrap();
+        let by_id = |id: &str| tasks.iter().find(|t| t["task_id"] == id).unwrap();
+
+        let pass = by_id("t-pass");
+        assert_eq!(pass["oracle"], "pass");
+        assert_eq!(pass["solved"], true);
+        assert!(pass["note"].is_null());
+        assert_eq!(pass["signals"]["provider_unavailable_ignored"], 1);
+        assert_eq!(pass["regraded"]["rule"], "K15");
+        assert_eq!(pass["regraded"]["from"], "errored");
+
+        let stays = by_id("t-stays-errored");
+        assert_eq!(stays["oracle"], "errored");
+        assert_eq!(stays["solved"], false);
+        assert!(stays.get("regraded").is_none());
+
+        let fail = by_id("t-fail");
+        assert_eq!(fail["oracle"], "fail");
+        assert_eq!(fail["solved"], false);
+        assert_eq!(fail["regraded"]["rule"], "K15");
+
+        // Summary: 1 of 3 solved, cost untouched.
+        let summary = &regraded["tiers"][0]["summary"];
+        assert_eq!(summary["solved"], 1);
+        assert_eq!(summary["attempted"], 3);
+        assert!((summary["pass_rate"].as_f64().unwrap() - (1.0 / 3.0)).abs() < 1e-12);
+        assert_eq!(summary["total_cost_usd"], 0.03);
+        assert!((summary["dollars_per_solved"].as_f64().unwrap() - 0.03).abs() < 1e-12);
+
+        // The input record is never touched.
+        let original: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("m.json")).unwrap())
+                .unwrap();
+        assert_eq!(original["tiers"][0]["tasks"][0]["oracle"], "errored");
+    }
+
+    #[test]
+    fn regrade_patches_the_companion_qual_json_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs_dir = dir.path().join("runs");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        regrade_write_run_dir(
+            &runs_dir,
+            "dschat",
+            "t-pass",
+            1,
+            "",
+            Some(REGRADE_ANTHROPIC_CREDIT_LINE),
+        );
+
+        let record = regrade_record_json(vec![regrade_errored_task_json("t-pass", 0)]);
+        let record_path = dir.path().join("m.json");
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+
+        // The sidecar `run` would have written alongside it — same shape as
+        // `build_run_qualification_record` produces for one errored task.
+        let qual_record = build_run_qualification_record(
+            "run-test-dschat",
+            None,
+            BinaryProvenance {
+                path: "unused".to_string(),
+                version: None,
+                git_sha: None,
+            },
+            "custom_deepseek",
+            "deepseek-chat",
+            true,
+            &[permagent_eval::metrics::TaskResult {
+                provider_error: Some("credits exhausted".to_string()),
+                ..permagent_eval::metrics::TaskResult::new(
+                    "t-pass",
+                    "classic",
+                    permagent_eval::oracle::OracleOutcome::Errored,
+                    permagent_eval::cost::CostReading::known(0.01, false, 1),
+                )
+            }],
+        );
+        assert!(qual_record.provider_unavailable);
+        std::fs::write(
+            qualification_sibling_path(&record_path),
+            serde_json::to_vec(&vec![qual_record]).unwrap(),
+        )
+        .unwrap();
+
+        let out_path = dir.path().join("m-regraded.json");
+        cmd_regrade(RegradeArgs {
+            record: record_path,
+            runs_dir,
+            tier: "dschat".to_string(),
+            out: out_path.clone(),
+        })
+        .unwrap();
+
+        let qual_out = qualification_sibling_path(&out_path);
+        assert!(qual_out.is_file(), "companion .qual.json was not written");
+        let records: Vec<RunQualificationRecord> =
+            serde_json::from_str(&std::fs::read_to_string(&qual_out).unwrap()).unwrap();
+        assert_eq!(records.len(), 1);
+        let task = &records[0].tasks[0];
+        assert_eq!(task.result, "pass");
+        assert!(!task.errored);
+        assert!(task.provider_error.is_none());
+        assert!(!records[0].provider_unavailable);
     }
 }
