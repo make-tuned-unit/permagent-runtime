@@ -2072,6 +2072,10 @@ fn structured_probe(text: &str) -> Option<Check> {
 /// Extract `key=<token>` (ends at the next whitespace, or the end of the
 /// string) from a `probe:*` grammar tail. `None` when the key is absent or
 /// its value is empty.
+// Boundary-safe by construction: `start` is `str::find`'s match index plus the
+// marker's own byte length (the marker's end boundary), and `end` comes from a
+// `find` on the remainder or its `len()`. No index can split a UTF-8 character.
+#[allow(clippy::string_slice)]
 fn probe_kv(text: &str, key: &str) -> Option<String> {
     let marker = format!("{key}=");
     let start = text.find(&marker)? + marker.len();
@@ -2087,6 +2091,10 @@ fn probe_kv(text: &str, key: &str) -> Option<String> {
 
 /// Extract `key="<value>"` (double-quoted, may itself contain whitespace)
 /// from a `probe:*` grammar tail.
+// Boundary-safe by construction: `start` is `str::find`'s match index plus the
+// marker's own byte length (the marker's end boundary), and `end` comes from a
+// `find` on the remainder or its `len()`. No index can split a UTF-8 character.
+#[allow(clippy::string_slice)]
 fn probe_quoted_kv(text: &str, key: &str) -> Option<String> {
     let marker = format!("{key}=\"");
     let start = text.find(&marker)? + marker.len();
