@@ -11579,13 +11579,39 @@ pub async fn handle_goal_timeout(
         .ok_or_else(|| format!("Card '{}' not found during timeout handling", card_id))?;
 
     // Only act while the goal is still InProgress (mirrors handle_goal_completion:
-    // a manual intervention since dispatch is respected).
+    // a manual intervention since dispatch is respected) — Lane R26b widens
+    // this to ALSO catch a Ready card whose own budget is already spent
+    // (R18g's headless-unblock resume flips Held → Ready without ever
+    // redispatching; if the drain's re-dispatch sweep also loses that race
+    // — see `handle_refused_redispatch` — this cap-expiry sweep is the
+    // last backstop before the goal sits Ready forever with nothing left
+    // to ever act on it again). Any OTHER non-in_progress state (Review,
+    // Complete, Failed, or a Ready goal that is NOT yet exhausted and is
+    // legitimately just waiting its turn) stays a pure no-op, exactly as
+    // before.
     let current_col = cards::get_column(pool, &card.column_id).await?;
-    if current_col
+    let state = current_col
         .as_ref()
-        .and_then(|c| c.state_binding.as_deref())
-        != Some("in_progress")
-    {
+        .and_then(|c| c.state_binding.as_deref());
+    if state == Some("ready") {
+        if let Some(exhaustion) = goal_transition::check_budget(pool, &card.metadata_json).await? {
+            return salvage_or_park_stranded_ready_goal(
+                pool,
+                &card,
+                exhaustion,
+                grace_deadline,
+                "cap-expiry sweep found a Ready goal with a spent budget",
+            )
+            .await;
+        }
+        tracing::info!(
+            target: "permagentd::brain",
+            "Goal '{}' timeout handler: card is Ready but not budget-exhausted — skipping",
+            card.title
+        );
+        return Ok(());
+    }
+    if state != Some("in_progress") {
         tracing::info!(
             target: "permagentd::brain",
             "Goal '{}' timeout handler: card no longer in_progress — skipping",
@@ -11644,6 +11670,200 @@ pub async fn handle_goal_timeout(
         decision_id
     );
     Ok(())
+}
+
+/// Lane R26b (A25 analysis): the shared "claim, salvage, park honestly"
+/// path for a goal sitting in READY with a spent budget — used by both
+/// `handle_goal_timeout`'s Ready+exhausted branch above and
+/// `handle_refused_redispatch` below, the two backstops that must not let
+/// a Ready card with committed, unlanded work sit stranded forever (the
+/// exact A25 shape: R18g's headless unblock flips Held → Ready without
+/// ever redispatching the goal itself).
+///
+/// A Ready card cannot be handed to [`maybe_salvage_committed_work`]
+/// directly: its success tail recurses into [`handle_goal_completion`],
+/// which no-ops on anything but `in_progress` (see that function's own
+/// top guard) — calling it on a Ready card would silently skip the real
+/// Hold/Park re-evaluation while `maybe_salvage_committed_work` still
+/// reports `Salvaged` from its own after-the-fact "is it still
+/// in_progress" check, discarding the goal into a false "salvaged" state
+/// that never actually touched the pipeline. `GoalAction::Dispatch`
+/// (Ready → InProgress) is Tier-0 — "selects no worker, spawns no
+/// process" (`credit_complete_sibling_goal` mirrors the exact same
+/// metadata-only claim for the same reason, see its own doc comment) —
+/// so claiming here needs no proof and starts no session; it exists
+/// purely so the salvage/park pipeline sees the state it already assumes
+/// everywhere else it is called from.
+///
+/// If the claim itself is refused (a genuine dispatcher won the race and
+/// moved the card first), this is a no-op: the goal is no longer
+/// stranded, so there is nothing left for this path to do.
+async fn salvage_or_park_stranded_ready_goal(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    exhaustion: goal_transition::BudgetExhaustion,
+    grace_deadline: Option<std::time::Instant>,
+    context: &str,
+) -> Result<(), String> {
+    if let Err(e) = goal_transition::advance_goal_checked(
+        pool,
+        &card.id,
+        GoalAction::Dispatch,
+        decisions::ACTOR_SYSTEM,
+        None,
+        TransitionEffects::default(),
+    )
+    .await
+    {
+        tracing::debug!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "could not claim Ready goal '{}' for stranded-goal salvage ({context}): {e}",
+            card.title
+        );
+        return Ok(());
+    }
+
+    let Some(claimed) = cards::get_card(pool, &card.id).await? else {
+        return Ok(());
+    };
+
+    let salvage_note =
+        match maybe_salvage_committed_work(pool, &claimed, grace_deadline, None).await {
+            SalvageOutcome::Salvaged { note } => {
+                tracing::info!(
+                    target: "permagentd::brain",
+                    "Ready goal '{}' ({context}) had committed work salvaged instead of being \
+                     left stranded: {note}",
+                    claimed.title
+                );
+                return Ok(());
+            }
+            SalvageOutcome::NotSalvaged { note } => note,
+        };
+
+    let last_error = format!("{context}; salvage: {salvage_note}");
+    let decision_id = goal_transition::exhaust_and_park(
+        pool,
+        &claimed.id,
+        &claimed.title,
+        &claimed.project_id,
+        exhaustion,
+        Some(&last_error),
+    )
+    .await?;
+    tracing::warn!(
+        target: "permagentd::brain",
+        "Ready goal '{}' ({context}) parked with unblock decision {}",
+        claimed.title,
+        decision_id
+    );
+    Ok(())
+}
+
+/// Lane R26b item 1 (A25 analysis): `redispatch_ready_goals`'s dispatch
+/// closure returned `Err` for a Ready goal. Before this lane that fell
+/// straight through to a `tracing::debug!` and nothing else — the goal
+/// stayed Ready and retried on every future sweep, silently losing the
+/// race against its own attempt/token/wall cap forever (R18g's headless
+/// unblock resume is the dominant way a goal reaches this exact shape: it
+/// flips Held → Ready without ever redispatching, so the very FIRST sweep
+/// after a resume can already be refused). Distinguish a genuine budget
+/// refusal (auditable, and worth a salvage-or-park attempt) from any
+/// other dispatch failure (no eligible worker, a transient error) — that
+/// broader case is left to the next sweep exactly as before; this lane's
+/// brief is specifically "refused by the attempt/token/wall cap".
+async fn handle_refused_redispatch(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    dispatch_error: &str,
+) {
+    let card = match cards::get_card(pool, card_id).await {
+        Ok(Some(c)) => c,
+        Ok(None) | Err(_) => return,
+    };
+    let exhaustion = match goal_transition::check_budget(pool, &card.metadata_json).await {
+        Ok(Some(e)) => e,
+        Ok(None) | Err(_) => return,
+    };
+    let (spent, cap) = exhaustion.spent_and_cap();
+    let outcome = format!("redispatch_refused:{}", exhaustion.gate_label());
+    let evidence = format!("spent={spent},cap={cap}; dispatch error: {dispatch_error}");
+    record_redispatch_refusal_audit(pool, &card, &outcome, &evidence).await;
+
+    if let Err(e) = salvage_or_park_stranded_ready_goal(
+        pool,
+        &card,
+        exhaustion,
+        None,
+        "redispatch refused by the attempt/token/wall cap",
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "could not salvage/park the Ready goal refused re-dispatch: {e}"
+        );
+    }
+}
+
+/// Mirrors `record_headless_unblock_refusal`'s synthetic-decision-id,
+/// hash-chained audit pattern for the drain's re-dispatch refusal (Lane
+/// R26b item 1) — a distinct `decision_id` namespace (`redispatch-gate:`)
+/// so this never collides with a `headless_unblock_refused` or
+/// `salvage-gate` row for the same goal.
+async fn record_redispatch_refusal_audit(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    outcome: &str,
+    evidence: &str,
+) {
+    tracing::info!(
+        target: "permagentd::brain",
+        goal_id = %card.id,
+        outcome,
+        "drain re-dispatch refused for goal '{}': {outcome}",
+        card.title
+    );
+    let synthetic_decision_id = format!("redispatch-gate:{}", card.id);
+    let mut tx = match pool.begin_with("BEGIN IMMEDIATE").await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "could not open a transaction to record the redispatch_refused audit row \
+                 ({outcome}): {e}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = decisions::append_audit_tx(
+        &mut tx,
+        &synthetic_decision_id,
+        Some(card.id.as_str()),
+        decisions::ACTOR_SYSTEM,
+        1,
+        outcome,
+        Some(evidence),
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "could not record the redispatch_refused audit row ({outcome}): {e}"
+        );
+        return;
+    }
+    if let Err(e) = tx.commit().await {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "could not commit the redispatch_refused audit row ({outcome}): {e}"
+        );
+    }
 }
 
 // ── Harness loop, Lane T / T3: bounded post-run drain ───────────────────────
@@ -12003,7 +12223,24 @@ async fn redispatch_ready_goals(
     let mut attempted = 0u32;
     for project_id in project_ids {
         let ready = match eligible_ready_goals(pool, project_id).await {
-            Ok(goals) => run_scoped_ready_goals(&goals, awaited_cards),
+            Ok(mut goals) => {
+                // Lane R26b item 3: a goal resumed by R18g's headless
+                // unblock already burned real attempts getting back to
+                // Ready — prioritise it over an ordinary Ready goal in
+                // this project's own eligible set so it is the first
+                // candidate `next_dispatch_actions` considers below,
+                // rather than losing every scheduling tie to goals that
+                // have not yet spent anything. Stable sort: relative
+                // order among goals that agree on this key (both stamped,
+                // or neither) is unchanged from `eligible_ready_goals`'
+                // own order.
+                goals.sort_by_key(|c| {
+                    c.metadata_json
+                        .get("resumed_by_headless_unblock_at")
+                        .is_none()
+                });
+                run_scoped_ready_goals(&goals, awaited_cards)
+            }
             Err(e) => {
                 tracing::warn!(
                     target: "permagentd::brain",
@@ -12029,12 +12266,20 @@ async fn redispatch_ready_goals(
                     "drain re-dispatched a Ready goal (attempt {})",
                     redispatch_counts[&card_id]
                 ),
-                Err(e) => tracing::debug!(
-                    target: "permagentd::brain",
-                    goal_id = %card_id,
-                    project_id = %project_id,
-                    "drain re-dispatch did not start goal: {e}"
-                ),
+                Err(e) => {
+                    tracing::debug!(
+                        target: "permagentd::brain",
+                        goal_id = %card_id,
+                        project_id = %project_id,
+                        "drain re-dispatch did not start goal: {e}"
+                    );
+                    // Lane R26b item 1: do not silently drop a refusal
+                    // that is actually the goal's own attempt/token/wall
+                    // cap — audit it and give it one honest salvage-or-
+                    // park chance instead of leaving it Ready to lose
+                    // this exact race on every future sweep.
+                    handle_refused_redispatch(pool, &card_id, &e).await;
+                }
             }
         }
     }
@@ -16271,12 +16516,29 @@ async fn maybe_headless_unblock_verify_gap(
     .await?;
 
     let attempt = current_attempt_count(&card.metadata_json);
-    goal_transition::requeue_goal(
+    // Lane R26b (A25 Q1/Q4 #3): stamp WHEN this resume happened — this
+    // requeue moves the card Held → Ready, but (unlike an ordinary
+    // requeue) never itself redispatches a worker; the drain's OWN
+    // re-dispatch sweep has to pick it up separately, and by then its
+    // attempt/token/wall budget is often already spent (the exact A25
+    // shape this lane's other two fixes close). The sweep reads this key
+    // to prioritise the goal over an ordinary Ready one — it already
+    // burned real attempts getting here — and it is what tells the next
+    // A-series read "this Ready card is not a stranger waiting its turn,
+    // it is R18g's own resume, still Ready" without cross-referencing
+    // `headless_unblock_count`'s bump above against the goal's whole
+    // decision_audit history.
+    goal_transition::requeue_goal_with_meta(
         pool,
         &card.id,
         decisions::ACTOR_HEADLESS_POLICY,
         attempt,
         &note,
+        &[(
+            "resumed_by_headless_unblock_at",
+            serde_json::json!(chrono::Utc::now().to_rfc3339()),
+        )],
+        false,
     )
     .await
     .map_err(String::from)?;
@@ -32752,4 +33014,315 @@ mod tests {
     // `provider_registry.rs`'s own `replay_mode_never_constructs_the_real_
     // provider` / `record_mode_still_constructs_and_guards_the_real_
     // provider`.
+
+    // ── Lane R26b (A25 analysis): a Ready goal refused re-dispatch by the
+    // attempt cap is salvaged, never stranded ──────────────────────────────
+    //
+    // Mechanism: R18g's headless unblock (`maybe_headless_unblock_verify_
+    // gap`) resumes a Held goal by flipping it straight to Ready — it never
+    // redispatches the goal itself. The drain's own re-dispatch sweep
+    // (`redispatch_ready_goals`) picks Ready goals up separately, and by
+    // then the goal's attempt cap is often already spent (three real
+    // dispatch/hold cycles got it to R18g's resume in the first place). Before
+    // this lane, a `dispatch(...)` refusal in that sweep fell straight
+    // through to a bare `tracing::debug!` — no audit row, no salvage
+    // attempt — and `handle_goal_timeout` (the OTHER backstop, the cap-
+    // expiry sweep) only ever acted on `in_progress` cards, so nothing in
+    // the whole drain could ever act on a Ready card again. The goal sat
+    // Ready forever with a committed, unlanded, genuinely verifiable fix on
+    // its branch and zero trace in `decision_audit` explaining why.
+
+    /// The exact A25 shape (mechanism above), reproduced as directly as
+    /// `handle_refused_redispatch` allows: a Ready goal at the attempt cap
+    /// with a genuinely committed, verifiable fix on its branch. Must leave
+    /// a `redispatch_refused:attempt_cap_exhausted` audit row AND salvage
+    /// the committed work — claim it (Ready → InProgress, Tier-0, no
+    /// proof needed) and run it through the SAME verify → Review pipeline
+    /// any other salvage site uses — instead of leaving it to lose this
+    /// exact race on every future sweep.
+    #[tokio::test]
+    async fn ready_goal_refused_redispatch_salvages_committed_work() {
+        let pool = test_pool().await;
+        let (dir, baseline, head) = r20b_worktree_with_committed_fix("r26b-redispatch-salvage");
+        let card = setup_goal_in_state(&pool, "ready", 3).await; // attempt_count == DEFAULT_ATTEMPT_CAP
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": head,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r26b-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(dir.path().to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+            // Item 3: R18g's own resume already stamped this before this
+            // sweep ran — present here purely as a realistic fixture detail,
+            // not itself asserted on (the sort it drives is a scheduling
+            // concern of `redispatch_ready_goals`, exercised separately).
+            m.insert(
+                "resumed_by_headless_unblock_at".to_string(),
+                serde_json::json!(chrono::Utc::now().to_rfc3339()),
+            );
+        })
+        .await
+        .unwrap();
+
+        handle_refused_redispatch(
+            &pool,
+            &card.id,
+            "budget exhausted: attempt cap reached (simulated dispatch refusal)",
+        )
+        .await;
+
+        let audited: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decision_audit WHERE goal_id = ? AND outcome = ?",
+        )
+        .bind(&card.id)
+        .bind("redispatch_refused:attempt_cap_exhausted")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            audited, 1,
+            "the refusal itself must leave an audit row naming the gate"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "a Ready goal refused re-dispatch by its own budget must never be left Ready — \
+             the A25 defect this lane fixes"
+        );
+        let receipt = updated
+            .metadata_json
+            .get("salvaged_on_park")
+            .expect("the committed, unlanded fix must be salvaged instead of stranded");
+        assert_eq!(
+            receipt.get("commits_ahead").and_then(|v| v.as_u64()),
+            Some(1)
+        );
+    }
+
+    /// The complementary A25 shape: a Ready goal refused re-dispatch by the
+    /// same attempt cap, but with NOTHING committed past the dispatch
+    /// baseline. Must still audit the refusal itself, AND leave salvage's
+    /// own honest `salvage_skipped_no_commits` row — never silently drop
+    /// the refusal, and never invent committed work that was never there —
+    /// then park for a human exactly as an ordinary attempt-cap exhaustion
+    /// always has.
+    #[tokio::test]
+    async fn ready_goal_refused_redispatch_with_nothing_committed_parks_and_audits() {
+        let pool = test_pool().await;
+        let (dir, baseline) =
+            r20b_worktree_with_no_commits_past_baseline("r26b-redispatch-nothing");
+        let card = setup_goal_in_state(&pool, "ready", 3).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": baseline,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 0,
+                "insertions": 0,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r26b-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(dir.path().to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+
+        handle_refused_redispatch(
+            &pool,
+            &card.id,
+            "budget exhausted: attempt cap reached (simulated dispatch refusal)",
+        )
+        .await;
+
+        let redispatch_audited: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decision_audit WHERE goal_id = ? AND outcome = ?",
+        )
+        .bind(&card.id)
+        .bind("redispatch_refused:attempt_cap_exhausted")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            redispatch_audited, 1,
+            "the refusal itself must be audited even when nothing ends up salvaged"
+        );
+
+        let salvage_outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert!(
+            salvage_outcomes.contains(&"salvage_skipped_no_commits".to_string()),
+            "expected an honest 'nothing to salvage' audit row, got {salvage_outcomes:?}"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "with nothing to salvage, the goal must be parked for a human, not left Ready"
+        );
+        assert!(updated.metadata_json.get("salvaged_on_park").is_none());
+    }
+
+    /// Regression: the widened `handle_goal_timeout` must not change
+    /// behavior for an in_progress goal AT ALL — even one whose attempt cap
+    /// is already spent (the exact metadata shape the NEW Ready-only branch
+    /// keys on) must still take the ORIGINAL in_progress path (salvage
+    /// against the wall-clock exhaustion this function itself is called
+    /// for), never the new `check_budget`/attempt-cap branch, which only
+    /// ever inspects `ready` cards.
+    #[tokio::test]
+    async fn handle_goal_timeout_in_progress_path_unchanged_even_at_attempt_cap() {
+        let pool = test_pool().await;
+        let (card, _dir, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "r26b-in-progress-unchanged", None).await;
+        // Attempt cap spent too — before this lane this was irrelevant to
+        // `handle_goal_timeout` (it never read `attempt_count` at all);
+        // after this lane it must still be irrelevant for an in_progress
+        // card, since the new branch only ever fires for `ready`.
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "a salvaged goal must never be left in_progress"
+        );
+        assert!(
+            updated.metadata_json.get("salvaged_on_park").is_some(),
+            "the ORIGINAL in_progress salvage-then-park path must still fire, unchanged by \
+             the new Ready-only branch this lane adds"
+        );
+        // No redispatch-refusal audit row: that outcome belongs exclusively
+        // to the Ready-card paths this lane adds, never to `handle_goal_
+        // timeout`'s pre-existing in_progress branch.
+        let redispatch_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decision_audit WHERE goal_id = ? AND outcome LIKE \
+             'redispatch_refused:%'",
+        )
+        .bind(&card.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(redispatch_rows, 0);
+    }
+
+    /// Additional coverage for item 2 directly (beyond the coordinator's
+    /// three named scenarios above): `handle_goal_timeout` itself — the
+    /// cap-expiry sweep's own handler — must also salvage a Ready goal
+    /// whose budget is spent, so DrainAction::Park's cap-expiry loop cannot
+    /// leave a Ready card behind even if the earlier re-dispatch sweep
+    /// never got to it this cycle.
+    #[tokio::test]
+    async fn handle_goal_timeout_salvages_a_ready_goal_whose_budget_is_spent() {
+        let pool = test_pool().await;
+        let (dir, baseline, head) = r20b_worktree_with_committed_fix("r26b-timeout-ready-salvage");
+        let card = setup_goal_in_state(&pool, "ready", 3).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": head,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r26b-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(dir.path().to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "the cap-expiry sweep's own timeout handler must not leave a budget-exhausted \
+             Ready goal sitting Ready forever — the A25 backstop item 2 of this lane adds"
+        );
+        assert!(updated.metadata_json.get("salvaged_on_park").is_some());
+    }
 }
