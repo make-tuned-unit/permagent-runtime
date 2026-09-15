@@ -8493,17 +8493,54 @@ const HEADLESS_WORKER_STATUS_KEYWORDS: &[&str] = &[
     "worker available",
     "wait for the worker",
     "check on the worker",
+    "progress of the worker",
 ];
 
+/// Lane R40a-b (G29 review HIGH-2; HARNESS_LOOP_LOG.md "Lane R40a-b"): text
+/// signals that the decision's own headline/detail explicitly names the
+/// dispatched worker, its goal, or its card — required, together with a
+/// [`HEADLESS_WORKER_STATUS_KEYWORDS`] match, before
+/// [`is_worker_status_question`] will classify anything. Without this, the
+/// substring "worker" alone (e.g. a genuine product decision about "a
+/// worker queue feature") was enough to match, which is exactly the
+/// overreach HIGH-2 flagged.
+const HEADLESS_WORKER_REFERENCE_KEYWORDS: &[&str] = &["worker", "goal", "card"];
+
+/// Lane R40a-b: text signals that the decision itself reads as listing
+/// options for a human to pick between — a real choice/product ask, never
+/// a status check, however it happens to be phrased. Checked in addition
+/// to (not instead of) the structured `payload.options` array being
+/// non-empty ([`headless_worker_status_answer_policy`]'s own guard), since
+/// free text can enumerate options without that array being populated
+/// (e.g. a rule-5-minted question restating the choice inline).
+const HEADLESS_OPTIONS_LISTED_PATTERNS: &[&str] = &["a)", "b)", "or should"];
+
 /// True when `headline`/`detail` reads as a worker/goal-status question —
-/// see [`HEADLESS_WORKER_STATUS_KEYWORDS`]. Does not by itself decide
-/// anything is answerable; [`headless_worker_status_answer_policy`] also
-/// requires a real dispatched/in-progress card to back the answer.
+/// see [`HEADLESS_WORKER_STATUS_KEYWORDS`]. Requires BOTH an explicit
+/// worker/goal/card reference ([`HEADLESS_WORKER_REFERENCE_KEYWORDS`]) AND
+/// a status/wait/redispatch question pattern — the substring "worker"
+/// appearing anywhere in a genuine product decision's text is never
+/// enough by itself. Also refuses any text that itself reads as listing
+/// options ([`HEADLESS_OPTIONS_LISTED_PATTERNS`]) — that is a real
+/// choice, not a status check. Does not by itself decide anything is
+/// answerable; [`headless_worker_status_answer_policy`] also requires
+/// `kind == "unblock"`, an empty structured `options` list, and a real
+/// dispatched/in-progress card to back the answer.
 fn is_worker_status_question(headline: &str, detail: &str) -> bool {
     let haystack = format!("{headline} {detail}").to_ascii_lowercase();
-    HEADLESS_WORKER_STATUS_KEYWORDS
+    if HEADLESS_OPTIONS_LISTED_PATTERNS
         .iter()
         .any(|kw| haystack.contains(kw))
+    {
+        return false;
+    }
+    let references_worker = HEADLESS_WORKER_REFERENCE_KEYWORDS
+        .iter()
+        .any(|kw| haystack.contains(kw));
+    references_worker
+        && HEADLESS_WORKER_STATUS_KEYWORDS
+            .iter()
+            .any(|kw| haystack.contains(kw))
 }
 
 /// Lane R40a: the fixed, honest auto-answer for a worker/goal-status
@@ -8729,9 +8766,24 @@ async fn answer_decision_headlessly(
 /// Never fires on a Ready card that has not been dispatched yet, so a
 /// genuine scope/credential escalation raised before dispatch is untouched.
 /// Shares [`HEADLESS_INFORMATION_NEVER_KEYWORDS`] so a miscategorized
-/// credential/provider ask is never auto-answered here either, and is NOT
-/// restricted to `kind == "unblock"` — a status question can just as
-/// easily arrive as a `choice`/`decision` escalation.
+/// credential/provider ask is never auto-answered here either.
+///
+/// Lane R40a-b (G29 review HIGH-2): scoped to `d.kind == "unblock"`, and —
+/// same as [`headless_information_answer_policy`]'s own further narrowing
+/// — only the RESOLVED escalate-level kind `information` is ever
+/// auto-answered here (see [`escalate_kind_from_detail`]); `credential`
+/// (still `d.kind == "unblock"` at the decisions-table level, per
+/// `decision_inbox::escalate::map_kind`/`DecisionKind::Unblock`'s own doc
+/// comment) is never touched, by kind alone, same as R26a. Never `choice`
+/// (a real pick between options), `risk_gate`/`approve_review`, or
+/// anything else. R40a's original cut fired on ANY open decision kind, so
+/// a genuine `choice` product decision that merely mentioned "worker" in
+/// its text (e.g. "a worker queue feature") could be silently overwritten
+/// with worker-liveness boilerplate. Also refuses any decision whose
+/// structured `payload.options` array is non-empty — belt-and-suspenders
+/// alongside the kind gate and [`is_worker_status_question`]'s own
+/// options-text refusal, since a real choice is never answered here
+/// regardless of how it got minted.
 pub(crate) async fn headless_worker_status_answer_policy(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     decision_id: &str,
@@ -8748,7 +8800,18 @@ pub(crate) async fn headless_worker_status_answer_policy(
     let d = decisions::get_decision(pool, decision_id)
         .await?
         .ok_or("Missing escalation")?;
-    if d.status != "open" {
+    if d.status != "open" || d.kind != "unblock" {
+        return Ok(None);
+    }
+    if escalate_kind_from_detail(&d.detail) != Some("information") {
+        return Ok(None);
+    }
+    let has_listed_options = d
+        .payload
+        .get("options")
+        .and_then(|v| v.as_array())
+        .is_some_and(|opts| !opts.is_empty());
+    if has_listed_options {
         return Ok(None);
     }
     if !is_worker_status_question(&d.headline, &d.detail) {
@@ -21266,18 +21329,45 @@ mod tests {
     // dispatched/in-progress card backs it — `check_worker`/`goal_status`
     // answers it, not a person. ─────────────────────────────────────────
 
+    /// Lane R40a-b: an `unblock`-kind (`information`) ask, never a
+    /// `choice`/`decision` — see `headless_worker_status_answer_policy`'s
+    /// doc comment for why R40a's original `kind: "decision"` +
+    /// `options` fixture here was itself an instance of the HIGH-2
+    /// overreach it is now scoped away from.
     fn worker_status_escalation_draft(
         session_id: &str,
     ) -> crate::decision_inbox::escalate::DecisionDraft {
         crate::decision_inbox::escalate::draft_from_payload(
             serde_json::json!({
-                "kind": "decision",
-                "specific_ask": "Is the worker still running, or should I wait before redispatching?",
+                "kind": "information",
+                "specific_ask": "Is the worker still running? Should I wait before redispatching?",
                 "why_blocked": "The dispatched worker has not reported back yet.",
                 "evidence_refs": [],
+                "resume": "auto",
+            }),
+            &crate::decision_inbox::escalate::DraftSource {
+                session_id: Some(session_id.to_string()),
+                worker_roster_name: None,
+            },
+        )
+    }
+
+    /// Lane R40a-b (G29 review HIGH-2): the exact shape the original,
+    /// unscoped policy would have silently overwritten — a genuine
+    /// `choice` product decision whose text happens to mention "worker"
+    /// and lists real options for a human to pick between.
+    fn worker_queue_choice_escalation_draft(
+        session_id: &str,
+    ) -> crate::decision_inbox::escalate::DecisionDraft {
+        crate::decision_inbox::escalate::draft_from_payload(
+            serde_json::json!({
+                "kind": "decision",
+                "specific_ask": "Should we build the worker queue feature with Redis or in-memory?",
+                "why_blocked": "A) Redis-backed queue B) In-memory queue, or should we defer this quarter?",
+                "evidence_refs": [],
                 "options": [
-                    {"id": "wait", "label": "Wait for the worker", "consequence": "No action taken now."},
-                    {"id": "redispatch", "label": "Redispatch now", "consequence": "A second worker starts on the same goal."}
+                    {"id": "redis", "label": "Redis-backed queue", "consequence": "Adds a Redis dependency."},
+                    {"id": "memory", "label": "In-memory queue", "consequence": "Simpler, but not durable across restarts."}
                 ],
                 "resume": "auto",
             }),
@@ -21301,6 +21391,14 @@ mod tests {
                  disagree by a cent at fractional weights."
             ),
             "a scope/implementation-detail question must not classify as worker_status"
+        );
+        assert!(
+            !is_worker_status_question(
+                "Should we build the worker queue feature with Redis or in-memory?",
+                "A) Redis-backed queue B) In-memory queue, or should we defer this quarter?"
+            ),
+            "a choice decision that merely mentions \"worker\" and lists options must not \
+             classify as worker_status"
         );
     }
 
@@ -21404,6 +21502,45 @@ mod tests {
             answer, None,
             "a credential escalation must never be reclassified as worker_status"
         );
+    }
+
+    /// Lane R40a-b (G29 review HIGH-2): the defect this lane closes — a
+    /// genuine `choice` product decision about a worker/job/queue feature,
+    /// carrying real options for a human to pick between, must never be
+    /// silently overwritten with worker-liveness boilerplate just because
+    /// its text mentions "worker" and a dispatched/in-progress card exists
+    /// elsewhere in the session.
+    #[tokio::test]
+    async fn headless_worker_status_answer_policy_never_fires_on_a_choice_decision() {
+        use crate::decision_inbox::escalate::DecisionSink;
+        let pool = test_pool().await;
+        let session_id = "r40a-b-choice-1";
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, \
+             '$.created_by_session_id', ?) WHERE id = ?",
+        )
+        .bind(session_id)
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = worker_queue_choice_escalation_draft(session_id);
+        let id = sink.record(draft).await.unwrap().decision_id;
+
+        let answer = headless_worker_status_answer_policy(&pool, &id, Some(session_id), true, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            answer, None,
+            "a choice decision about a worker/job/queue feature must stay open for a human, \
+             never be auto-answered as worker liveness"
+        );
+
+        let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
+        assert_eq!(d.status, "open", "the real product decision must stay open");
     }
 
     // ── Lane R24a (M26 DeepSeek m1, harness loop): an unsupported `kind`
