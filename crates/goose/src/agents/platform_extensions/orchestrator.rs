@@ -2240,6 +2240,39 @@ async fn clear_roadmap_ac_validation_state(
     .await;
 }
 
+/// R45a (harness loop, A42 analysis finding 1): best-effort audit note that
+/// a `create_roadmap` call was accepted purely because its `goals_json`
+/// matched the pending proposal byte-for-byte after canonical
+/// serialisation, even though the caller's own `proposal_hash` argument did
+/// not match — so the tolerance is visible in `projects.metadata_json`
+/// afterward, not just a silent accept. Best-effort like its R21b sibling
+/// above: losing this write changes nothing about whether the roadmap gets
+/// created.
+async fn record_proposal_hash_tolerated(pool: &sqlx::Pool<sqlx::Sqlite>, project_id: &str) {
+    let _ = sqlx::query(
+        "UPDATE projects SET metadata_json = json_set(metadata_json, '$.roadmap_proposal.proposal_hash_tolerated', 1) \
+         WHERE id = ? AND json_extract(metadata_json, '$.roadmap_proposal') IS NOT NULL",
+    )
+    .bind(project_id)
+    .execute(pool)
+    .await;
+}
+
+/// R45a: whether `decision_id` is (now) an answered roadmap approval that
+/// chose "approve-roadmap" — used both for a fresh
+/// `auto_approve_roadmap_launch` success and for the case its
+/// `AlreadyResolved` error means `decompose_roadmap`'s own R1 auto-launch
+/// already answered it before this call ever ran.
+async fn roadmap_decision_is_approved(pool: &sqlx::Pool<sqlx::Sqlite>, decision_id: &str) -> bool {
+    crate::decisions::get_decision(pool, decision_id)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|d| {
+            d.status == "answered" && d.answer_choice_id.as_deref() == Some("approve-roadmap")
+        })
+}
+
 /// `handle_create_roadmap`'s own R21b entry point: validates `goals`'
 /// acceptance criteria against `facts`, mutating `goals` in place ONLY when
 /// this is an accepted retry-with-rewrite (a prior call for this exact
@@ -2752,6 +2785,18 @@ impl KanbanContextCache {
     }
 }
 
+/// R45a: outcome of `OrchestratorClient::resolve_create_roadmap_proposal_hash`.
+enum ProposalHashOutcome {
+    /// `handle_create_roadmap` should continue materialization with this
+    /// effective `proposal_hash`.
+    Proceed(String),
+    /// The headless auto-approve fired; `handle_create_roadmap` should
+    /// return this result directly.
+    Respond(CallToolResult),
+    /// The ordinary mismatch error.
+    Error(String),
+}
+
 pub struct OrchestratorClient {
     info: InitializeResult,
     context: PlatformExtensionContext,
@@ -2766,6 +2811,16 @@ pub struct OrchestratorClient {
     /// own internal fallback from re-probing a worker it already checked
     /// earlier this same session.
     checked_workers_this_session: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
+    /// R45a (harness loop, A42 analysis finding 1): consecutive `create_roadmap`
+    /// `proposal_hash` mismatches per project id, for THIS session only --
+    /// same "never persisted, never TTL'd, this same session" contract as
+    /// `checked_workers_this_session` above. Reset the moment a call for
+    /// that project either matches the pending proposal outright or is
+    /// otherwise self-consistent; exists only so a headless session that
+    /// genuinely cannot reproduce the server hash stops re-guessing it
+    /// forever instead of burning its whole action budget.
+    roadmap_hash_mismatches_this_session:
+        Arc<tokio::sync::Mutex<std::collections::HashMap<String, u32>>>,
 }
 
 impl OrchestratorClient {
@@ -2901,6 +2956,9 @@ impl OrchestratorClient {
             kanban_cache: Arc::new(tokio::sync::Mutex::new(KanbanContextCache::new())),
             checked_workers_this_session: Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashSet::new(),
+            )),
+            roadmap_hash_mismatches_this_session: Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
             )),
         };
 
@@ -6628,6 +6686,130 @@ impl OrchestratorClient {
         crate::receipts::record_count("dag_enforcement", "worker_checked", 1);
     }
 
+    /// R45a (harness loop, A42 analysis finding 1): record one more
+    /// consecutive `create_roadmap` `proposal_hash` mismatch for
+    /// `project_id` in THIS session, returning the new count. See
+    /// `roadmap_hash_mismatches_this_session`'s own doc for why this is
+    /// session-local, in-memory state rather than anything persisted.
+    async fn record_roadmap_hash_mismatch(&self, project_id: &str) -> u32 {
+        let mut counts = self.roadmap_hash_mismatches_this_session.lock().await;
+        let entry = counts.entry(project_id.to_string()).or_insert(0);
+        *entry += 1;
+        *entry
+    }
+
+    /// R45a: clear this session's `create_roadmap` mismatch count for
+    /// `project_id` — called the moment a call for that project either
+    /// matches the pending proposal outright or is otherwise
+    /// self-consistent, so an old streak never counts against a later,
+    /// unrelated attempt.
+    async fn reset_roadmap_hash_mismatches(&self, project_id: &str) {
+        self.roadmap_hash_mismatches_this_session
+            .lock()
+            .await
+            .remove(project_id);
+    }
+
+    /// R45a (harness loop, A42 analysis finding 1): `handle_create_roadmap`'s
+    /// own `proposal_hash` reconciliation, pulled out of the handler body so
+    /// it is directly unit-testable against a real pool with an explicit
+    /// `headless` flag — instead of needing the process-global headless
+    /// dispatch policy `OnceLock` (`install_dispatch_hook_for_headless_
+    /// session`) a test must never install more than once per binary (see
+    /// the long warning above `roadmap_handler_fixture`). The real
+    /// `handle_create_roadmap` supplies `headless` from its own live
+    /// `current_headless_dispatch_policy(...).is_some()` read.
+    ///
+    /// DeepSeek burned its entire action budget calling `create_roadmap` 5x
+    /// with a hand-typed `proposal_hash` that never matched the server's own
+    /// hash, while submitting the SAME `goals_json` every time — content
+    /// identical to the latest pending proposal (after the same canonical
+    /// serialisation `roadmap_proposal_hash` already applies) is a stronger
+    /// proof than a copied token, so this accepts the call outright
+    /// regardless of the submitted hash value. Only when the goals are NOT
+    /// byte-identical to what is pending does it fall back to the ordinary
+    /// self-consistency check, and — headless only, capped at the 3rd
+    /// consecutive mismatch — auto-approves the pending proposal so a model
+    /// that truly cannot reproduce the hash stops looping forever.
+    ///
+    /// Returns [`ProposalHashOutcome::Proceed`] when `handle_create_roadmap`
+    /// should continue materialization with the wrapped effective hash;
+    /// [`ProposalHashOutcome::Respond`] when the headless auto-approve fired
+    /// and `handle_create_roadmap` should return the wrapped result
+    /// directly; [`ProposalHashOutcome::Error`] for the ordinary mismatch
+    /// error.
+    #[allow(clippy::too_many_arguments)]
+    async fn resolve_create_roadmap_proposal_hash(
+        &self,
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        project: &crate::projects::Project,
+        computed_hash: &str,
+        submitted_proposal_hash: String,
+        approval_decision_id: &str,
+        headless: bool,
+    ) -> ProposalHashOutcome {
+        let pending_proposal = project.metadata_json.get(ROADMAP_PROPOSAL_METADATA_KEY);
+        let pending_hash = pending_proposal
+            .and_then(|v| v.get("hash"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let pending_decision_id = pending_proposal
+            .and_then(|v| v.get("approval_decision_id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        if pending_hash.as_deref() == Some(computed_hash) {
+            // Identical to the pending proposal: tolerate whatever hash the
+            // caller sent, and note it in the audit trail when it differed.
+            if submitted_proposal_hash != computed_hash {
+                record_proposal_hash_tolerated(pool, &project.id).await;
+            }
+            self.reset_roadmap_hash_mismatches(&project.id).await;
+            return ProposalHashOutcome::Proceed(computed_hash.to_string());
+        }
+        if submitted_proposal_hash == computed_hash {
+            // Self-consistent, but for goals that are not (or no longer) the
+            // pending proposal -- unchanged behaviour: the real proof check
+            // in materialize_roadmap_transaction_with_budget decides
+            // whether this can actually proceed.
+            self.reset_roadmap_hash_mismatches(&project.id).await;
+            return ProposalHashOutcome::Proceed(submitted_proposal_hash);
+        }
+
+        let mismatches = self.record_roadmap_hash_mismatch(&project.id).await;
+        if headless && mismatches >= 3 {
+            if let Some(expected) = pending_hash.as_deref() {
+                let decision_id = pending_decision_id
+                    .as_deref()
+                    .unwrap_or(approval_decision_id);
+                let approved =
+                    match crate::decisions::auto_approve_roadmap_launch(pool, decision_id).await {
+                        Ok(_) => true,
+                        Err(crate::decisions::AnswerError::AlreadyResolved(_)) => {
+                            roadmap_decision_is_approved(pool, decision_id).await
+                        }
+                        Err(_) => false,
+                    };
+                if approved {
+                    self.reset_roadmap_hash_mismatches(&project.id).await;
+                    return ProposalHashOutcome::Respond(CallToolResult::success(vec![
+                        Content::text(format!(
+                            "The pending roadmap proposal now exists as an approved decision \
+                             ({decision_id}) after repeated proposal_hash mismatches -- resend \
+                             create_roadmap with proposal_hash={expected} and the identical \
+                             goals_json from decompose_roadmap to finish creating it."
+                        )),
+                    ]));
+                }
+            }
+        }
+        ProposalHashOutcome::Error(format!(
+            "Expected proposal_hash {computed_hash} for this exact goals_json; resend \
+             create_roadmap with proposal_hash={computed_hash} and the identical goals_json; \
+             do not edit the goals between calls."
+        ))
+    }
+
     /// Lane R22a (defect: M24 DeepSeek m1
     /// `select-checks-worker-before-dispatch`, HARNESS_LOOP_LOG.md): the
     /// coordinator found a seeded Ready goal and called
@@ -8289,7 +8471,7 @@ impl OrchestratorClient {
         let args = arguments.ok_or("Missing arguments")?;
         let id_or_slug = extract_string(&args, "project_id_or_slug")?;
         let goals_json = extract_string(&args, "goals_json")?;
-        let proposal_hash = extract_string(&args, "proposal_hash")?;
+        let submitted_proposal_hash = extract_string(&args, "proposal_hash")?;
         let approval_decision_id = extract_string(&args, "approval_decision_id")?;
 
         let mut goals: Vec<goal_state::ProposedGoal> =
@@ -8298,11 +8480,6 @@ impl OrchestratorClient {
         validate_roadmap_goals(&goals)?;
 
         let computed_hash = roadmap_proposal_hash(&goals);
-        if proposal_hash != computed_hash {
-            return Err(format!(
-                "Roadmap proposal hash mismatch: expected the hash of the exact goals_json ({computed_hash})"
-            ));
-        }
 
         let order = goal_state::topological_order(&goals).map_err(|e| e.to_string())?;
 
@@ -8316,6 +8493,25 @@ impl OrchestratorClient {
         let project = crate::projects::get_project_by_id_or_slug(&pool, &id_or_slug)
             .await?
             .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
+
+        let headless = current_headless_dispatch_policy(&self.context.session_manager)
+            .await
+            .is_some();
+        let proposal_hash = match self
+            .resolve_create_roadmap_proposal_hash(
+                &pool,
+                &project,
+                &computed_hash,
+                submitted_proposal_hash,
+                &approval_decision_id,
+                headless,
+            )
+            .await
+        {
+            ProposalHashOutcome::Proceed(hash) => hash,
+            ProposalHashOutcome::Respond(result) => return Ok(result),
+            ProposalHashOutcome::Error(message) => return Err(message),
+        };
 
         // R21b (harness loop, A21 Q1): `decompose_roadmap` grounds its own
         // LLM proposal against this repo (Z1 above), but `create_roadmap`
@@ -37367,6 +37563,180 @@ mod tests {
         assert_eq!(
             err,
             "Roadmap creation requires an answered Decision Inbox approval by the user"
+        );
+    }
+
+    // ── R45a (harness loop, A42 analysis finding 1): create_roadmap's own
+    // proposal_hash mismatch handling ─────────────────────────────────────
+
+    /// `goals_json` byte-identical to the latest pending proposal (after the
+    /// same canonical serialisation `roadmap_proposal_hash` applies) must be
+    /// accepted regardless of the submitted `proposal_hash` — DeepSeek's own
+    /// failure mode (HARNESS_LOOP_LOG.md A42 analysis, finding 1): a
+    /// hand-typed hash that never matched the server's own hash, while the
+    /// resubmitted goals were the exact same proposal every time.
+    #[tokio::test]
+    async fn identical_goals_json_is_accepted_despite_a_wrong_proposal_hash() {
+        let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        let (_decompose_result, approval_decision_id, goals_json, proposal_hash) =
+            decompose_then_read_proof(&client, &pool, &session.id).await;
+
+        let wrong_hash = "f".repeat(64);
+        assert_ne!(wrong_hash, proposal_hash);
+
+        let result = client
+            .handle_create_roadmap(Some(create_roadmap_args(
+                &goals_json,
+                &wrong_hash,
+                &approval_decision_id,
+            )))
+            .await
+            .expect(
+                "goals_json byte-identical to the pending proposal must be accepted regardless \
+                 of the submitted proposal_hash",
+            );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("Goal cards:") && text.contains("id="),
+            "a tolerated hash must still materialize the roadmap: {text}"
+        );
+    }
+
+    /// The tolerance above must NOT swallow a genuine mismatch: `goals_json`
+    /// that differs from the pending proposal, paired with a wrong hash,
+    /// still fails — and the error names the exact hash expected for the
+    /// goals actually submitted, so a model can recover in one more call.
+    #[tokio::test]
+    async fn goals_json_that_differs_from_the_pending_proposal_still_requires_the_correct_hash() {
+        let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        let (_decompose_result, approval_decision_id, _goals_json, _proposal_hash) =
+            decompose_then_read_proof(&client, &pool, &session.id).await;
+
+        let mut different_goals = roadmap_fixture_goals();
+        different_goals[0].title = "A goal decompose_roadmap never proposed".to_string();
+        let different_goals_json = serde_json::to_string(&different_goals).unwrap();
+        let expected_hash = roadmap_proposal_hash(&different_goals);
+        let wrong_hash = "f".repeat(64);
+        assert_ne!(wrong_hash, expected_hash);
+
+        let err = client
+            .handle_create_roadmap(Some(create_roadmap_args(
+                &different_goals_json,
+                &wrong_hash,
+                &approval_decision_id,
+            )))
+            .await
+            .expect_err("goals that do not match the pending proposal and a wrong hash must fail");
+        assert!(
+            err.contains(&expected_hash),
+            "the error must name the exact expected hash for these goals: {err}"
+        );
+    }
+
+    /// A headless session that genuinely cannot reproduce the hash (goals
+    /// that never match the pending proposal, three times in a row) must
+    /// stop looping: the 3rd consecutive mismatch auto-approves the pending
+    /// proposal instead of returning a 4th error. Drives
+    /// `resolve_create_roadmap_proposal_hash` directly with `headless: true`
+    /// passed explicitly — never the process-global headless dispatch
+    /// policy `OnceLock` (`install_dispatch_hook_for_headless_session`),
+    /// which a test must not install more than once per binary (see the
+    /// warning above `roadmap_handler_fixture`). `GooseMode::Approve` (not
+    /// `Auto`) keeps the decision genuinely `open` at decompose time, so the
+    /// auto-approve this test observes is this lane's own, not
+    /// `decompose_roadmap`'s pre-existing R1 self-approval.
+    #[tokio::test]
+    async fn headless_third_consecutive_mismatch_auto_approves_the_pending_proposal() {
+        let (_tmp, sm, session, _em, client) =
+            roadmap_handler_fixture(GooseMode::Approve, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        let (_decompose_result, approval_decision_id, _goals_json, _proposal_hash) =
+            decompose_then_read_proof(&client, &pool, &session.id).await;
+
+        let decision = crate::decisions::get_decision(&pool, &approval_decision_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            decision.status, "open",
+            "Approve-mode decomposition must not self-approve"
+        );
+
+        let project = crate::projects::get_project(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Goals that never match the pending proposal, paired with a wrong
+        // hash — a genuine, non-tolerated mismatch on every call.
+        let mut mismatched_goals = roadmap_fixture_goals();
+        mismatched_goals[0].title = "Not the pending proposal".to_string();
+        let computed_hash = roadmap_proposal_hash(&mismatched_goals);
+        let wrong_hash = "0".repeat(64);
+        assert_ne!(computed_hash, wrong_hash);
+
+        for attempt in 1..=2 {
+            let outcome = client
+                .resolve_create_roadmap_proposal_hash(
+                    &pool,
+                    &project,
+                    &computed_hash,
+                    wrong_hash.clone(),
+                    &approval_decision_id,
+                    true,
+                )
+                .await;
+            match outcome {
+                ProposalHashOutcome::Error(_) => {}
+                ProposalHashOutcome::Respond(_) => {
+                    panic!("attempt {attempt} auto-approved too early")
+                }
+                ProposalHashOutcome::Proceed(_) => {
+                    panic!("attempt {attempt} must not be accepted")
+                }
+            }
+        }
+
+        let outcome = client
+            .resolve_create_roadmap_proposal_hash(
+                &pool,
+                &project,
+                &computed_hash,
+                wrong_hash,
+                &approval_decision_id,
+                true,
+            )
+            .await;
+        match outcome {
+            ProposalHashOutcome::Respond(result) => {
+                let text = result.content[0].as_text().unwrap().text.clone();
+                assert!(
+                    text.contains("now exists as an approved decision"),
+                    "expected the loop-capping success message, got: {text}"
+                );
+            }
+            ProposalHashOutcome::Error(message) => {
+                panic!("expected the 3rd mismatch to auto-approve: {message}")
+            }
+            ProposalHashOutcome::Proceed(hash) => {
+                panic!("expected the 3rd mismatch to auto-approve, got accepted: {hash}")
+            }
+        }
+
+        let decision = crate::decisions::get_decision(&pool, &approval_decision_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(decision.status, "answered");
+        assert_eq!(
+            decision.answer_choice_id.as_deref(),
+            Some("approve-roadmap"),
+            "the pending proposal must now be approved"
         );
     }
 
