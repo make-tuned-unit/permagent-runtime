@@ -13949,6 +13949,30 @@ async fn resolve_trusted_landing_root(
     card: &cards::Card,
     worktree_path: &std::path::Path,
 ) -> Result<String, String> {
+    let worktree_str = worktree_path.to_string_lossy().into_owned();
+    // Lane R22f: a resolved root that turns out to BE the goal's own
+    // worktree can never answer "has this landed anywhere else" — trusting
+    // it makes `commits_unlanded_at_trunk`'s `merge-base --is-ancestor`
+    // check trivially true (a commit is its own ancestor), misreporting
+    // EVERY such goal as "already landed." This is the degenerate shape
+    // EVERY non-linked-worktree test fixture in this file hits (a plain
+    // `git init` in its own tempdir, not a real `git worktree add` checkout
+    // — `resolve_primary_checkout_from_worktree`'s `git rev-parse
+    // --git-common-dir` for a non-linked repo is just its own `.git`, so
+    // its `.parent()` is the worktree's own root) — the root cause the M26
+    // gate's 10 failing tests all traced back to. Checked against BOTH the
+    // configured and the worktree-derived path, defensively.
+    let refuse_if_worktree_itself = |root: String| -> Result<String, String> {
+        if crate::goal_landing::paths_match(&root, &worktree_str) {
+            return Err(format!(
+                "resolved landing root '{root}' is the goal's own worktree — a trunk that IS \
+                 the goal branch's own checkout can never answer whether this work has \
+                 reached anywhere else"
+            ));
+        }
+        Ok(root)
+    };
+
     let configured_root = crate::projects::get_project_by_id_or_slug(pool, &card.project_id)
         .await
         .ok()
@@ -13956,10 +13980,9 @@ async fn resolve_trusted_landing_root(
         .and_then(|project| project.root_path)
         .filter(|root| !root.is_empty());
     if let Some(root) = configured_root {
-        return Ok(root);
+        return refuse_if_worktree_itself(root);
     }
 
-    let worktree_str = worktree_path.to_string_lossy().into_owned();
     let Some(candidate) =
         crate::goal_landing::resolve_primary_checkout_from_worktree(&worktree_str).await
     else {
@@ -13969,6 +13992,7 @@ async fn resolve_trusted_landing_root(
             card.project_id
         ));
     };
+    let candidate = refuse_if_worktree_itself(candidate)?;
     let baseline_commit = card
         .metadata_json
         .pointer("/dispatch_evidence/baseline_commit")
@@ -14147,66 +14171,23 @@ async fn maybe_salvage_committed_work(
         .is_some_and(|c| c.auto_land);
     let not_salvaged = |note: String| SalvageOutcome::NotSalvaged { note };
 
-    let baseline_and_worktree =
-        match resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await {
-            Ok(v) => v,
-            Err(e) => {
-                let note = format!("could not resolve the goal's worktree: {e}");
-                record_salvage_receipt(pool, &card.id, "salvage_skipped_no_worktree", &note).await;
-                return not_salvaged(note);
-            }
-        };
-    let Some((baseline, worktree)) = baseline_and_worktree else {
-        let note = "no dispatch baseline recorded — nothing to salvage".to_string();
-        record_salvage_receipt(pool, &card.id, "salvage_skipped_no_baseline", &note).await;
-        return not_salvaged(note);
-    };
-    let worktree_path = std::path::Path::new(&worktree);
+    // Lane R22f: guards run in this documented order — attempted-once →
+    // grace → commits present → unlanded-at-trunk — cheapest and most
+    // fundamental first. The M26 gate found the pre-R22f order let the NEW
+    // trunk check (added last, textually) run FIRST at the top of the
+    // function, ahead of even the grace/attempted checks it should have
+    // deferred to: `drain_shutdown_salvage_skips_with_insufficient_grace`
+    // expected `salvage_skipped_no_grace` but got `salvage_skipped_already_
+    // landed` because the trunk check fired before grace was ever
+    // consulted. Neither `already_attempted` nor `grace_deadline` needs
+    // `baseline`/`worktree` at all, so both run before that resolution too
+    // — the fastest possible short-circuit for a goal that cannot be
+    // salvaged regardless of what its branch contains.
 
-    let rolling_ahead = match commits_ahead_of_baseline(worktree_path, &baseline).await {
-        Ok(n) => n,
-        Err(e) => {
-            let note = format!("could not inspect the goal branch: {e}");
-            record_salvage_receipt(
-                pool,
-                &card.id,
-                "salvage_skipped_branch_inspect_failed",
-                &note,
-            )
-            .await;
-            return not_salvaged(note);
-        }
-    };
-    // Lane R22d (A24 Q1/Q3): `rolling_ahead` counts commits past the
-    // ROLLING per-redispatch baseline (Y16b resumes each redispatch from
-    // the branch's own prior tip) — reading 0 there means only "nothing NEW
-    // since the last redispatch," never "nothing was ever committed" or
-    // "this already reached the trunk." Measure against the project's
-    // trunk instead, when a trusted trunk can be resolved at all; fall back
-    // to the rolling count (the pre-R22d signal, unchanged) when it cannot
-    // — never refuse salvage outright just because trunk resolution failed.
-    let ahead = match commits_unlanded_at_trunk(pool, card, worktree_path).await {
-        Ok(unlanded) => unlanded,
-        Err(_) => rolling_ahead,
-    };
-    if ahead == 0 {
-        if rolling_ahead == 0 {
-            let note = "no commits past the dispatch baseline — nothing to salvage".to_string();
-            record_salvage_receipt(pool, &card.id, "salvage_skipped_no_commits", &note).await;
-            return not_salvaged(note);
-        }
-        let note = format!(
-            "{rolling_ahead} commit(s) past the rolling redispatch baseline, but the branch \
-             tip is already an ancestor of the project's trunk — nothing left to land"
-        );
-        record_salvage_receipt(pool, &card.id, "salvage_skipped_already_landed", &note).await;
-        return not_salvaged(note);
-    }
-
-    // G25 MED: only past this point is there actually anything worth
-    // salvaging — a trivial "nothing committed" call (the common case for
-    // most parks) must never spend the one-per-goal budget. From here on,
-    // this goal gets AT MOST ONE salvage attempt, ever.
+    // 1. Attempted-once (G25 MED): at most one salvage attempt per goal,
+    // ever. Read-only — the stamp-write stays deferred to AFTER every
+    // cheap "nothing to do" guard below, so a call that bails early never
+    // spends the one-shot budget.
     let already_attempted = card
         .metadata_json
         .get(SALVAGE_ATTEMPTED_METADATA_KEY)
@@ -14224,6 +14205,91 @@ async fn maybe_salvage_committed_work(
         record_salvage_audit(pool, &card.id, "salvage_refused_already_attempted", &note).await;
         return not_salvaged(note);
     }
+
+    // 2. Grace (G25 HIGH-2): the drain-shutdown caller is racing a real
+    // SIGTERM/SIGKILL clock — skip entirely when there is too little grace
+    // left to be worth starting ANY inspection, before spending any of it
+    // on git calls. The box-TIGHTENING half of this check (once a wall
+    // budget is known) still runs later, near the verify call itself.
+    if let Some(deadline) = grace_deadline {
+        let grace_remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if grace_remaining < std::time::Duration::from_secs(10) {
+            let note = format!(
+                "the committed work could not be checked — only {}s of shutdown grace remain",
+                grace_remaining.as_secs()
+            );
+            record_salvage_receipt(pool, &card.id, "salvage_skipped_no_grace", &note).await;
+            return not_salvaged(
+                "too little SIGTERM grace remains to verify the committed work".into(),
+            );
+        }
+    }
+
+    let baseline_and_worktree =
+        match resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await {
+            Ok(v) => v,
+            Err(e) => {
+                let note = format!("could not resolve the goal's worktree: {e}");
+                record_salvage_receipt(pool, &card.id, "salvage_skipped_no_worktree", &note).await;
+                return not_salvaged(note);
+            }
+        };
+    let Some((baseline, worktree)) = baseline_and_worktree else {
+        let note = "no dispatch baseline recorded — nothing to salvage".to_string();
+        record_salvage_receipt(pool, &card.id, "salvage_skipped_no_baseline", &note).await;
+        return not_salvaged(note);
+    };
+    let worktree_path = std::path::Path::new(&worktree);
+
+    // 3. Commits present: does the branch carry ANY commit past the
+    // rolling per-redispatch baseline at all? A cheap, single `git
+    // rev-list` — if this is 0, there is nothing to salvage regardless of
+    // trunk state, so the (potentially slower — resolves a repo root,
+    // shells out again) trunk check below never even runs.
+    let rolling_ahead = match commits_ahead_of_baseline(worktree_path, &baseline).await {
+        Ok(n) => n,
+        Err(e) => {
+            let note = format!("could not inspect the goal branch: {e}");
+            record_salvage_receipt(
+                pool,
+                &card.id,
+                "salvage_skipped_branch_inspect_failed",
+                &note,
+            )
+            .await;
+            return not_salvaged(note);
+        }
+    };
+    if rolling_ahead == 0 {
+        let note = "no commits past the dispatch baseline — nothing to salvage".to_string();
+        record_salvage_receipt(pool, &card.id, "salvage_skipped_no_commits", &note).await;
+        return not_salvaged(note);
+    }
+
+    // 4. Unlanded-at-trunk (A24 Q1/Q3): `rolling_ahead` counts commits past
+    // the ROLLING per-redispatch baseline (Y16b resumes each redispatch
+    // from the branch's own prior tip) — a NON-zero reading here only means
+    // "something is committed," never "it has not already reached the
+    // trunk." Measure against the project's trunk instead, when a trusted
+    // trunk can be resolved at all; fall back to the rolling count (the
+    // pre-R22d signal, unchanged) when it cannot — never refuse salvage
+    // outright just because trunk resolution failed.
+    let ahead = match commits_unlanded_at_trunk(pool, card, worktree_path).await {
+        Ok(unlanded) => unlanded,
+        Err(_) => rolling_ahead,
+    };
+    if ahead == 0 {
+        let note = format!(
+            "{rolling_ahead} commit(s) past the rolling redispatch baseline, but the branch \
+             tip is already an ancestor of the project's trunk — nothing left to land"
+        );
+        record_salvage_receipt(pool, &card.id, "salvage_skipped_already_landed", &note).await;
+        return not_salvaged(note);
+    }
+
+    // G25 MED: only past all four guards above is there actually anything
+    // worth salvaging — from here on, this goal gets AT MOST ONE salvage
+    // attempt, ever.
     if let Err(e) = persist_card_meta(pool, &card.id, |m| {
         let count = m
             .get(SALVAGE_ATTEMPTED_METADATA_KEY)
@@ -14294,25 +14360,13 @@ async fn maybe_salvage_committed_work(
 
     // G25 HIGH-2: the drain-shutdown caller is racing a real SIGTERM/SIGKILL
     // clock, not just the goal's own wall budget — bound the box further so
-    // a salvage attempt cannot itself get killed mid-flight, and skip
-    // entirely when there is too little grace left to be worth starting.
+    // a salvage attempt cannot itself get killed mid-flight. The BAIL half
+    // of this check (too little grace to be worth starting at all) already
+    // ran as guard 2, before any git inspection — this is only the
+    // box-tightening half, now that a wall-budget-derived `time_box` exists
+    // to tighten.
     if let Some(deadline) = grace_deadline {
         let grace_remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if grace_remaining < std::time::Duration::from_secs(10) {
-            record_salvage_receipt(
-                pool,
-                &card.id,
-                "salvage_skipped_no_grace",
-                &format!(
-                    "{ahead} commit(s) past baseline, but only {}s of shutdown grace remain",
-                    grace_remaining.as_secs()
-                ),
-            )
-            .await;
-            return not_salvaged(
-                "too little SIGTERM grace remains to verify the committed work".into(),
-            );
-        }
         let safety_margin = std::time::Duration::from_secs(5);
         time_box = time_box.min(grace_remaining.saturating_sub(safety_margin));
     }
@@ -15087,6 +15141,21 @@ async fn land_salvage_approved_by_reviewer(
         reviewer_provider,
         reviewer_model,
     } = approval;
+    // Lane R22f: the identity that will need to match `goal_transition::
+    // check_proof`'s Tier-1 `ACTOR_AUTO_LAUNCH` comparison at land time —
+    // resolved ONCE, here, and reused for BOTH the decision payload below
+    // and the final `auto_land_headless_goal` call, so the two can never
+    // silently diverge. Prefers the threaded `calling_session_id` (the
+    // identity every other salvage call site already derives); falls back
+    // to the SAME `HEADLESS_DISPATCH_POLICY_CONFIG` read `handle_goal_
+    // completion`'s Ok(()) arm uses, for the one call path
+    // (`handle_goal_timeout`, the drain/cap-expiry sweep) that has no live
+    // calling session to thread through at all.
+    let minting_session_id: Option<String> = calling_session_id.map(str::to_string).or_else(|| {
+        HEADLESS_DISPATCH_POLICY_CONFIG
+            .get()
+            .map(|c| c.coordinator_session_id.clone())
+    });
     // Lane R22c-e (G26 MED-1): `unverified_reviewer_approval` is now in
     // `goal_transition::PROTECTED_GOAL_METADATA_KEYS` — its PRESENCE is
     // what makes `auto_land_headless_goal` bypass the ordinary verify-
@@ -15152,6 +15221,26 @@ async fn land_salvage_approved_by_reviewer(
          ({verify_note}); an independent reviewer ({reviewer_provider}/{reviewer_model}) \
          inspected the diff on its merits and approved it. Checked: {checked}"
     );
+    // Lane R22f: stamp `minting_session_id` onto the payload BEFORE the
+    // decision is ever answered — the EXACT same binding `handle_goal_
+    // completion`'s Ok(()) arm stamps for a genuinely verified goal
+    // (`orchestrator.rs`, "Harness loop, Lane V2"). Without it,
+    // `goal_transition::check_proof`'s Tier-1 arm refuses ANY
+    // `ACTOR_AUTO_LAUNCH` answer outright ("headless auto-land proof is not
+    // bound to the calling session") — `finish_headless_auto_land`'s
+    // `auto_approve_headless_goal_review` answers this decision as
+    // `ACTOR_AUTO_LAUNCH` regardless, so a missing `minting_session_id` here
+    // silently consumed the decision (marked it answered) while the actual
+    // `GoalAction::Approve` transition — and the fast-forward that depends
+    // on it — was refused underneath, with `land_salvage_approved_by_
+    // reviewer` never checking that refusal and reporting `Salvaged`
+    // anyway. This was the M26 gate's `land_salvage_approved_by_reviewer_
+    // auto_lands_like_a_verified_goal` failure (working dir never
+    // fast-forwarded, despite a reported `Salvaged` outcome).
+    let mut payload = serde_json::json!({});
+    if let Some(session_id) = minting_session_id.as_deref() {
+        payload["minting_session_id"] = serde_json::json!(session_id);
+    }
     let decision = match create_decision_with_retry(
         pool,
         decisions::NewDecision {
@@ -15160,7 +15249,7 @@ async fn land_salvage_approved_by_reviewer(
             project_id: Some(card.project_id.clone()),
             headline: Some(headline),
             detail: Some(detail),
-            payload: serde_json::json!({}),
+            payload,
             ..Default::default()
         },
     )
@@ -15192,7 +15281,14 @@ async fn land_salvage_approved_by_reviewer(
 
     let refreshed = cards::get_card(pool, &card.id).await.ok().flatten();
     if let Some(refreshed) = refreshed {
-        auto_land_headless_goal(pool, &decision.id, &refreshed, true, calling_session_id).await;
+        auto_land_headless_goal(
+            pool,
+            &decision.id,
+            &refreshed,
+            true,
+            minting_session_id.as_deref(),
+        )
+        .await;
     }
 
     let note = format!(
