@@ -354,6 +354,18 @@ impl Tier {
             ));
             env.push((format!("PERMAGENT_PACK_{role}_MODEL"), model.to_string()));
         }
+        // R48f (G33): a local/ollama worker runs a much smaller context than the
+        // cloud coordinator, so it needs R48c's compact worker profile — export it
+        // alongside the pack pins rather than leaving the worker on the default.
+        if matches!(
+            self.worker_provider.as_deref(),
+            Some("ollama") | Some("local")
+        ) {
+            env.push((
+                "PERMAGENT_WORKER_PROFILE".to_string(),
+                "compact".to_string(),
+            ));
+        }
         env
     }
 }
@@ -498,6 +510,33 @@ mod tests {
         assert!(env
             .iter()
             .any(|(k, v)| k == "PERMAGENT_PACK_LOCAL_MODEL" && v == "claude-opus-4-8"));
+    }
+
+    /// R48f (G33): a tier whose WORKER is local/ollama also gets R48c's compact
+    /// worker profile; a cloud-only tier must not.
+    #[test]
+    fn pack_env_exports_the_compact_profile_for_a_local_worker() {
+        let local_worker = Tier::builtin("dschat+minicpm").unwrap();
+        assert_eq!(local_worker.worker_provider.as_deref(), Some("ollama"));
+        let env = local_worker.pack_env();
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "PERMAGENT_WORKER_PROFILE" && v == "compact"),
+            "a local worker must get the compact profile: {env:?}"
+        );
+
+        let cloud_only = Tier::builtin("frontier").unwrap();
+        assert!(
+            cloud_only.worker_provider.is_none(),
+            "fixture assumption: frontier has no separate worker"
+        );
+        assert!(
+            !cloud_only
+                .pack_env()
+                .iter()
+                .any(|(k, _)| k == "PERMAGENT_WORKER_PROFILE"),
+            "a cloud-only tier must not export a worker profile"
+        );
     }
 
     #[test]

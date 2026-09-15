@@ -113,7 +113,13 @@ impl WorkflowRole {
     /// overrides and `permagent packs set --role`.
     pub fn from_tag(tag: &str) -> Option<WorkflowRole> {
         match tag.trim().to_ascii_lowercase().as_str() {
-            "orchestrate" | "hard" | "plan" | "planning" => Some(WorkflowRole::Orchestrate),
+            // R48f (G33): `cloud` is the roster's own word for the non-local
+            // worker rung, and `default_worker_tier_for_goal` returns
+            // `Orchestrate` for multi-file work — so a roster value of
+            // `local_or_cloud` round-trips back through this parser.
+            "orchestrate" | "hard" | "plan" | "planning" | "cloud" => {
+                Some(WorkflowRole::Orchestrate)
+            }
             "edit" | "code_edit" => Some(WorkflowRole::Edit),
             "mechanical" | "read_only" => Some(WorkflowRole::Mechanical),
             "review" | "verify" => Some(WorkflowRole::Review),
