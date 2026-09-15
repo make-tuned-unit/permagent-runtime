@@ -611,13 +611,25 @@ async fn land_approved_goal(
     // Preserve an actionable refusal even if the upstream hold was bypassed.
     if rolling_commits_empty && trunk_relative_head.is_none() {
         let worktree = worktree_path_hint.unwrap_or("unknown worktree");
+        // R43a-c: the card note stays exactly the human sentence it always
+        // was — `refusal_reason` is a machine diagnostic and goes to
+        // tracing plus the persisted, structured landing outcome below,
+        // never prepended onto user-visible text (two pre-existing tests,
+        // `land_empty_commit_evidence_reports_note_and_unblock` and
+        // `land_approved_goal_requires_a_verified_head_for_the_trunk_
+        // relative_override`, want the same note shape for different
+        // reasons — only the structured field can distinguish them).
         let note = format!(
-            "land_refused reason={refusal_reason}: note: not landed — goal {goal_id} has no \
-             commits past the baseline (uncommitted work in {worktree})"
+            "note: not landed — goal {goal_id} has no commits past the baseline \
+             (uncommitted work in {worktree})"
         );
-        tracing::warn!(goal_id, "{note}");
+        tracing::warn!(
+            goal_id,
+            reason = refusal_reason,
+            "land_refused reason={refusal_reason}: {note}"
+        );
         let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
-        persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+        persist_landing_outcome(pool, goal_id, &card, &outcome, Some(refusal_reason)).await;
         crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
             .await;
         return (Some((project_id, outcome)), Some(note));
@@ -700,7 +712,7 @@ async fn land_approved_goal(
             );
             tracing::info!(goal_id, "{note}");
             let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
-            persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+            persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
             return (Some((project_id, outcome)), Some(note));
         }
         let note = format!(
@@ -709,7 +721,7 @@ async fn land_approved_goal(
         );
         tracing::warn!(goal_id, "{note}");
         let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
-        persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+        persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
         crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
             .await;
         return (Some((project_id, outcome)), Some(note));
@@ -773,7 +785,7 @@ async fn land_approved_goal(
                              verification; refusing to land rather than trust an unverified \
                              fallback"
                         );
-                        persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+                        persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
                         return (Some((project_id, outcome)), None);
                     }
                 }
@@ -800,7 +812,7 @@ async fn land_approved_goal(
             "land_approved_goal: no landing target could be resolved; recording an \
              honest failure instead of the old silent no-op"
         );
-        persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+        persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
         return (Some((project_id, outcome)), None);
     };
 
@@ -820,7 +832,7 @@ async fn land_approved_goal(
         );
         tracing::warn!(goal_id, "{note}");
         let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
-        persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+        persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
         crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
             .await;
         return (Some((project_id, outcome)), Some(note));
@@ -838,7 +850,7 @@ async fn land_approved_goal(
     // under the worker (e.g. a second goal in the same roadmap landing
     // first). Persist it onto the card so those readers can gate on whether
     // landing actually happened, not merely whether it was attempted.
-    persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+    persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
 
     let warning = if let crate::goal_landing::LandOutcome::NeedsMerge { branch, trunk } = &outcome {
         ensure_needs_merge_decision(pool, goal_id, &card.title, &card.project_id, branch, trunk)
@@ -864,6 +876,7 @@ async fn persist_landing_outcome(
     goal_id: &str,
     card: &crate::cards::Card,
     outcome: &crate::goal_landing::LandOutcome,
+    refusal_reason: Option<&str>,
 ) {
     let landing_json = serde_json::json!({
         "outcome": outcome.outcome_key(),
@@ -876,6 +889,14 @@ async fn persist_landing_outcome(
         "trunk_state": outcome.trunk_state(),
         "landed_head": outcome.landed_head(),
         "describe": outcome.describe(),
+        // R43a-c (M38 gate, 2026-09-15 20:20): machine diagnostics never go
+        // into the human-readable card note (two pre-existing tests want
+        // opposite note text depending only on WHY landing was refused) —
+        // the reason lives here instead, as a durable, structured field a
+        // reader can match on without re-parsing prose. `None` (persisted
+        // as `null`) for every non-refusal outcome and for refusals that
+        // predate this field's introduction.
+        "refusal_reason": refusal_reason,
         "at": chrono::Utc::now().to_rfc3339(),
     });
     if let Some(mut evidence) = card
@@ -2566,6 +2587,23 @@ mod tests {
             card.id
         );
         assert_eq!(note.as_deref(), Some(expected.as_str()));
+        // R43a-c: the machine reason behind an identically-shaped note lives
+        // on the structured landing outcome, not the note text itself —
+        // `/missing/goal-worktree` doesn't exist, so no trusted trunk root
+        // resolves.
+        let refreshed = crate::cards::get_card(&pool, &card.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = refreshed
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("the refusal must still be persisted onto dispatch_evidence.landing");
+        assert_eq!(
+            landing.get("refusal_reason").and_then(|v| v.as_str()),
+            Some("no_trunk"),
+            "landing: {landing:?}"
+        );
         assert_eq!(goal_state_of(&pool, &card.id).await, "failed");
         let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
             .await
@@ -3941,9 +3979,29 @@ mod tests {
              {landing:?}"
         );
         let note = note.expect("a genuine refusal must report a note");
-        assert!(
-            note.contains("land_refused reason=unverified_head"),
-            "note: {note}"
+        assert_eq!(
+            note,
+            format!(
+                "note: not landed — goal {} has no commits past the baseline \
+                 (uncommitted work in {})",
+                goal_unverified.id,
+                worktree_path.to_string_lossy()
+            ),
+            "the card note stays the human sentence — the machine reason lives on the \
+             structured landing outcome, not prepended here (R43a-c)"
+        );
+        let refreshed = crate::cards::get_card(&pool, &goal_unverified.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = refreshed
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("the refusal must still be persisted onto dispatch_evidence.landing");
+        assert_eq!(
+            landing.get("refusal_reason").and_then(|v| v.as_str()),
+            Some("unverified_head"),
+            "landing: {landing:?}"
         );
         assert_eq!(goal_state_of(&pool, &goal_unverified.id).await, "failed");
         assert_ne!(
