@@ -1,6 +1,7 @@
 use super::execution_receipt::{self, ExecutionReceipt, ReceiptState};
 use super::goal_engine;
 use super::publish_sequence;
+use super::summon;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::reply_parts::AccountedFastCompletion;
@@ -2606,6 +2607,43 @@ impl OrchestratorClient {
         parent_extensions_fn(&self.context)
     }
 
+    /// R27b (harness loop, "A26 analysis" section 1 Q2/Q3, lever 3):
+    /// `start_agent`/`send_message` used to hand a spawned/addressed
+    /// session `parent_extensions()` completely unscoped — the FULL default
+    /// "Aria" roster (finance/CRM/social/apps, ~151 tools) whenever the
+    /// calling session's own extension set falls back to the global
+    /// default. Live evidence: a MiniCPM5-2B coding-harness coordinator's
+    /// `send_message` target measured 59,020 prompt tokens against a
+    /// 32,768 `n_ctx` local-model ceiling from just 2 messages — a
+    /// guaranteed context-overflow dead end (HARNESS_LOOP_LOG.md "A26
+    /// analysis" section 2). `delegate` already closes an equivalent side
+    /// door for an active coding roadmap
+    /// (`summon::SummonClient::restrict_delegate_for_active_roadmap`) by
+    /// stripping mutating tools out of whatever base list it started from;
+    /// this reuses the EXACT SAME gate
+    /// (`summon::SummonClient::active_coding_roadmap_gate_reason`) so the
+    /// two mechanisms can never disagree about WHEN to restrict, but
+    /// narrows a different dimension — the base list itself, down to the
+    /// coordinator's own declared extension keys
+    /// (`LEAN_CODING_PROFILE_EXTENSION_KEYS`) — via `narrow_extensions_
+    /// for_agent`, the same allowlist mechanism `dispatch_goal_fn`'s
+    /// internal-subagent path already uses for a worker's
+    /// `extension_grants`. Not a new enforcement path, just a new caller of
+    /// two existing ones.
+    ///
+    /// Outside the gate (no active roadmap / not the top-level coding-
+    /// harness coordinator), or when the roadmap-cards lookup itself
+    /// cannot be reached (best-effort, matching `restrict_delegate_for_
+    /// active_roadmap`'s own fallback), this returns `parent_extensions()`
+    /// completely unchanged — never MORE restrictive than today, only
+    /// narrower under the same conditions `delegate` already narrows for.
+    async fn scoped_child_session_extensions(
+        &self,
+        worker_persona: Option<&str>,
+    ) -> Vec<ExtensionConfig> {
+        scoped_child_session_extensions_fn(&self.context, worker_persona).await
+    }
+
     /// Refresh the cached board summary from the database.
     async fn refresh_kanban_context(&self) -> Result<String, String> {
         let pool = self
@@ -2952,6 +2990,58 @@ fn parent_extensions_fn(context: &PlatformExtensionContext) -> Vec<ExtensionConf
     let extension_data = context.session.as_ref().map(|s| &s.extension_data);
     EnabledExtensionsState::extensions_or_default(extension_data, Config::global())
 }
+
+/// Free-fn form of `OrchestratorClient::scoped_child_session_extensions`
+/// (mirrors `parent_extensions`/`parent_extensions_fn`'s own split) so it is
+/// directly testable against a hand-built `PlatformExtensionContext`,
+/// without standing up a whole `OrchestratorClient`.
+async fn scoped_child_session_extensions_fn(
+    context: &PlatformExtensionContext,
+    worker_persona: Option<&str>,
+) -> Vec<ExtensionConfig> {
+    let parent = parent_extensions_fn(context);
+
+    let Some(session) = context.session.as_ref() else {
+        return parent;
+    };
+    let Ok(pool) = context.session_manager.pool_clone().await else {
+        return parent;
+    };
+
+    let gated = matches!(
+        summon::SummonClient::active_coding_roadmap_gate_reason(&pool, session, worker_persona)
+            .await,
+        Ok(Some(_))
+    );
+    if !gated {
+        return parent;
+    }
+
+    let grants: Vec<String> = LEAN_CODING_PROFILE_EXTENSION_KEYS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    narrow_extensions_for_agent(parent, Some(grants.as_slice()))
+}
+
+/// R27b: the coordinator's own declared extension set —
+/// `crates/goose-cli/src/recipes/builtin/permagent-coding.yaml`'s
+/// `extensions:` list — kept here as a standalone allowlist so
+/// `OrchestratorClient::scoped_child_session_extensions` can narrow a
+/// spawned/addressed session down to it (via `narrow_extensions_for_agent`)
+/// instead of the full default extension roster. Kept in sync with the real
+/// recipe file by
+/// `lean_coding_profile_extension_keys_match_the_real_recipes_declared_extensions`
+/// (test, below) — a drift here would silently widen or narrow what
+/// start_agent/send_message can reach under an active coding roadmap.
+const LEAN_CODING_PROFILE_EXTENSION_KEYS: &[&str] = &[
+    "developer",
+    "analyze",
+    "summon",
+    "orchestrator",
+    "deliberate",
+    "extensionmanager",
+];
 
 /// The outcome of worker selection: the chosen worker plus a routing snapshot
 /// (#211) capturing WHY it was chosen — the required capabilities, and every
@@ -5555,7 +5645,11 @@ impl OrchestratorClient {
             .map_err(|e| format!("Failed to create agent: {}", e))?;
 
         let parent_provider = self.get_provider().await?;
-        let extensions = self.parent_extensions();
+        // R27b: scoped to the coordinator's own lean tool profile under an
+        // active coding roadmap — see `scoped_child_session_extensions`.
+        let extensions = self
+            .scoped_child_session_extensions(worker_persona.as_deref())
+            .await;
         let provider = providers::create(
             parent_provider.get_name(),
             parent_provider.get_model_config(),
@@ -5660,7 +5754,14 @@ impl OrchestratorClient {
 
         if agent.provider().await.is_err() {
             if let Ok(parent_provider) = self.get_provider().await {
-                let extensions = self.parent_extensions();
+                // R27b: scoped to the coordinator's own lean tool profile
+                // under an active coding roadmap — see
+                // `scoped_child_session_extensions`. `send_message` carries
+                // no `worker_persona` of its own (that was set, if at all,
+                // when the target session was first created), so this gates
+                // purely on the CALLING session's identity/roadmap state —
+                // the same signal `delegate` uses.
+                let extensions = self.scoped_child_session_extensions(None).await;
                 if let Ok(provider) = providers::create(
                     parent_provider.get_name(),
                     parent_provider.get_model_config(),
@@ -34399,5 +34500,202 @@ mod tests {
              Ready goal sitting Ready forever — the A25 backstop item 2 of this lane adds"
         );
         assert!(updated.metadata_json.get("salvaged_on_park").is_some());
+    }
+
+    // ── R27b (harness loop, "A26 analysis" section 1 Q2/Q3, lever 3):
+    // start_agent/send_message must scope a spawned/addressed session to
+    // the coordinator's own lean extension profile under an active coding
+    // roadmap, the same gate `delegate` already uses ─────────────────────
+
+    /// Builtin (not Platform) fixtures, matching the real recipe's own
+    /// shape — `Platform`-variant configs are filtered by
+    /// `is_extension_available` against a real platform-extension
+    /// registry (`crate::config::extensions::is_extension_available`),
+    /// which "finance"/"crm"/"social_content" below are not, and that
+    /// filtering would hide the very thing this test needs to prove was
+    /// narrowed away rather than never present.
+    fn r27b_builtin_extension(name: &str) -> ExtensionConfig {
+        ExtensionConfig::Builtin {
+            name: name.to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: None,
+            available_tools: Vec::new(),
+        }
+    }
+
+    /// The lean coding profile's own six extensions, plus three unrelated
+    /// ones standing in for the observed live overflow (finance/CRM/social
+    /// — HARNESS_LOOP_LOG.md "A26 analysis" section 2 names `finance_*`,
+    /// `card_*`/`column_*`/`create_person`, and social/TikTok tools among
+    /// the 110 extra). A session carrying exactly this list is the fixture
+    /// shape `parent_extensions()` would return before any narrowing.
+    fn r27b_lean_profile_plus_unrelated_extras() -> Vec<ExtensionConfig> {
+        let mut extensions: Vec<ExtensionConfig> = LEAN_CODING_PROFILE_EXTENSION_KEYS
+            .iter()
+            .map(|name| r27b_builtin_extension(name))
+            .collect();
+        for extra in ["finance", "crm", "social_content"] {
+            extensions.push(r27b_builtin_extension(extra));
+        }
+        extensions
+    }
+
+    /// Stashes `extensions` into `session.extension_data` the same way a
+    /// live agent's `save_extension_state`/`persist_extension_state`
+    /// would, so `parent_extensions_fn` (and therefore
+    /// `scoped_child_session_extensions_fn`) reads a controlled, known
+    /// extension set instead of falling back to this test process's
+    /// ambient global config.
+    fn r27b_stash_extensions(
+        session: &mut crate::session::Session,
+        extensions: Vec<ExtensionConfig>,
+    ) {
+        use crate::session::extension_data::ExtensionState;
+        EnabledExtensionsState::new(extensions)
+            .to_extension_data(&mut session.extension_data)
+            .unwrap();
+    }
+
+    /// Headline case: a top-level coding-harness coordinator (the same
+    /// identity `is_top_level_coding_harness`/`restrict_delegate_for_
+    /// active_roadmap` key off) calling `start_agent`/`send_message` must
+    /// get back EXACTLY the lean coding profile — no finance/CRM/social —
+    /// even though its own `parent_extensions()` carried them.
+    #[tokio::test]
+    async fn scoped_child_session_extensions_fn_narrows_to_the_lean_coding_profile_for_the_top_level_coordinator(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        // Isolates `Config::global()` from this machine's real config, so
+        // the assertions below depend only on the fixture's own extensions,
+        // not on whatever the ambient environment happens to have enabled.
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let mut session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "r27b-coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        session.recipe = Some(
+            crate::recipe::Recipe::builder()
+                .version("1.0.0")
+                .title(crate::tool_inspection::CODING_HARNESS_RECIPE_TITLE)
+                .description("coding harness")
+                .prompt("plan and dispatch")
+                .build()
+                .unwrap(),
+        );
+        assert!(session.parent_session_id.is_none(), "top-level by fixture");
+        r27b_stash_extensions(&mut session, r27b_lean_profile_plus_unrelated_extras());
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm,
+            session: Some(Arc::new(session)),
+        };
+
+        let narrowed = scoped_child_session_extensions_fn(&context, None).await;
+        let names: std::collections::HashSet<String> =
+            narrowed.iter().map(|ext| ext.name()).collect();
+        let expected: std::collections::HashSet<String> = LEAN_CODING_PROFILE_EXTENSION_KEYS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            names, expected,
+            "start_agent/send_message under a top-level coding-harness coordinator must be \
+             scoped to exactly the coordinator's own declared extensions, got: {names:?}"
+        );
+        for unrelated in ["finance", "crm", "social_content"] {
+            assert!(
+                !names.contains(unrelated),
+                "must not carry the unrelated '{unrelated}' extension, got: {names:?}"
+            );
+        }
+    }
+
+    /// No active roadmap and no coding-harness identity → unchanged, per
+    /// the same "no active roadmap" contract `restrict_delegate_for_
+    /// active_roadmap`'s own tests pin for `delegate`.
+    #[tokio::test]
+    async fn scoped_child_session_extensions_fn_is_unchanged_without_an_active_coding_roadmap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let mut session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "r27b-ordinary-session".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        // Deliberately no recipe and no roadmap cards attributed to this
+        // session: neither identity `active_coding_roadmap_gate_reason`
+        // fires on.
+        r27b_stash_extensions(&mut session, r27b_lean_profile_plus_unrelated_extras());
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm,
+            session: Some(Arc::new(session)),
+        };
+
+        let unrestricted = scoped_child_session_extensions_fn(&context, None).await;
+        let names: std::collections::HashSet<String> =
+            unrestricted.iter().map(|ext| ext.name()).collect();
+        for unrelated in ["finance", "crm", "social_content"] {
+            assert!(
+                names.contains(unrelated),
+                "no active coding roadmap must leave the full extension set untouched \
+                 (including unrelated '{unrelated}'), got: {names:?}"
+            );
+        }
+        assert_eq!(
+            unrestricted.len(),
+            r27b_lean_profile_plus_unrelated_extras().len(),
+            "must be identical to parent_extensions_fn's own output, not narrowed at all"
+        );
+    }
+
+    /// `LEAN_CODING_PROFILE_EXTENSION_KEYS` must never silently drift from
+    /// the real recipe's own declared extensions — a stale constant would
+    /// either widen what start_agent/send_message can reach (if it grows
+    /// stale-narrow, missing a tool the coordinator itself has) or narrow
+    /// it below what the coordinator itself is trusted with (if the recipe
+    /// grows a new extension this constant never learns about).
+    #[test]
+    fn lean_coding_profile_extension_keys_match_the_real_recipes_declared_extensions() {
+        const RECIPE_YAML: &str =
+            include_str!("../../../../goose-cli/src/recipes/builtin/permagent-coding.yaml");
+        let recipe: crate::recipe::Recipe =
+            serde_yaml::from_str(RECIPE_YAML).expect("the shipped recipe must parse as YAML");
+        let declared: std::collections::HashSet<String> = recipe
+            .extensions
+            .expect("permagent-coding.yaml declares an extensions list")
+            .iter()
+            .map(|ext| ext.name())
+            .collect();
+        let constant: std::collections::HashSet<String> = LEAN_CODING_PROFILE_EXTENSION_KEYS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            constant, declared,
+            "LEAN_CODING_PROFILE_EXTENSION_KEYS has drifted from permagent-coding.yaml's own \
+             extensions list — update the constant to match"
+        );
     }
 }
