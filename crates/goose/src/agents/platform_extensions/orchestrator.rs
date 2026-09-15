@@ -16684,7 +16684,13 @@ async fn resolve_trusted_landing_root(
 /// coinciding with HEAD reads as "nothing committed" there too — the exact
 /// A24 shape, now surfacing on the RE-ENTERED evaluation instead of the
 /// original salvage gate the earlier lanes already fixed.
-async fn commits_unlanded_at_trunk(
+///
+/// R43a: `pub(crate)` — `decisions_effects::land_approved_goal` now consults
+/// this same trunk-relative count before refusing to land on an empty
+/// ROLLING `dispatch_evidence.commits` (A38 Miss 2), the identical
+/// substitution this function already made for `maybe_hold_review`'s Allow/
+/// Hold gate and for the read-only-landing refusal above.
+pub(crate) async fn commits_unlanded_at_trunk(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
     worktree_path: &std::path::Path,
@@ -16708,6 +16714,22 @@ async fn commits_unlanded_at_trunk(
         .parse::<u32>()
         .map_err(|e| format!("unexpected `git rev-list --count` output {out:?}: {e}"))?;
     Ok((unlanded, trunk_head))
+}
+
+/// R43a (A38 Miss 2): the goal worktree's CURRENT head, read live. Used by
+/// `land_approved_goal`'s trunk-relative override in place of the ROLLING
+/// `dispatch_evidence.head_commit` field — that field is stamped at dispatch
+/// time and, per `maybe_hold_review`'s own R42a-b comparison, can go stale
+/// relative to the worktree's true HEAD (e.g. a teardown checkpoint commit
+/// landing after the field was last written). `None` on any git failure or
+/// an empty result — the caller falls back to refusing exactly as it did
+/// before this override existed.
+pub(crate) async fn worktree_head_commit(worktree_path: &std::path::Path) -> Option<String> {
+    git_in_worktree(worktree_path, &["rev-parse", "HEAD"])
+        .await
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 // ── Lane R20b: salvage committed goal work before a budget/wall park ────────
@@ -18350,6 +18372,7 @@ async fn land_salvage_approved_by_reviewer(
     };
 
     let refreshed = cards::get_card(pool, &card.id).await.ok().flatten();
+    let had_worktree_to_land = refreshed.is_some();
     if let Some(refreshed) = refreshed {
         auto_land_headless_goal(
             pool,
@@ -18359,6 +18382,66 @@ async fn land_salvage_approved_by_reviewer(
             minting_session_id.as_deref(),
         )
         .await;
+    }
+
+    // R43a (A38 Miss 2): `auto_land_headless_goal` returns `()` regardless
+    // of whether the nested `land_approved_goal` call it drives actually
+    // fast-forwarded the trunk, was refused (e.g. `land_approved_goal`'s
+    // own "no commits past the baseline" gate — exactly what an approval
+    // minted on THIS attempt's rolling evidence can still hit underneath),
+    // or needed a merge a human must resolve. This function used to write
+    // the success receipt / "...and the goal was auto-landed" note
+    // unconditionally right after the call, so the `decision_audit` trail
+    // claimed `landed` even on a run where `main` never moved (confirmed:
+    // `git rev-parse main` unchanged, card ended `goal_state: "failed"`).
+    // `persist_landing_outcome` (`decisions_effects.rs`) durably stamps
+    // `dispatch_evidence.landing.outcome` on EVERY path through
+    // `land_approved_goal` — `FastForwarded`/`AlreadyLanded` only for
+    // `"landed"`, `NeedsMerge`/`Skipped` for anything else — so re-read the
+    // card after the call and trust that field instead of assuming.
+    let after = cards::get_card(pool, &card.id).await.ok().flatten();
+    let landing = after
+        .as_ref()
+        .and_then(|c| c.metadata_json.pointer("/dispatch_evidence/landing"));
+    let landed = had_worktree_to_land
+        && landing
+            .and_then(|l| l.get("outcome"))
+            .and_then(|v| v.as_str())
+            == Some("landed");
+
+    if !landed {
+        let reason = landing
+            .and_then(|l| l.get("describe"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                after.as_ref().and_then(|c| {
+                    c.metadata_json
+                        .get("last_error")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+            })
+            .unwrap_or_else(|| "no landing outcome was recorded for this approval".to_string());
+        let note = format!(
+            "the independent reviewer ({reviewer_provider}/{reviewer_model}) approved {ahead} \
+             commit(s), but the landing attempt did not reach the trunk: {reason}"
+        );
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            reason = %reason,
+            "salvage_land_refused: reviewer approval did not translate into a landed goal — \
+             leaving the audit trail honest rather than claiming landed"
+        );
+        record_salvage_audit(
+            pool,
+            &card.id,
+            "salvage_land_refused",
+            &format!("reason={reason}"),
+        )
+        .await;
+        return SalvageOutcome::NotSalvaged { note };
     }
 
     let note = format!(
@@ -25935,6 +26018,111 @@ mod tests {
         assert_eq!(
             outcomes,
             vec!["salvaged_on_park_unverified_reviewed".to_string()]
+        );
+    }
+
+    /// R43a (A38 Miss 2): a reviewer APPROVAL is not the same thing as a
+    /// successful LAND — `land_approved_goal`'s own git-level fast-forward
+    /// can still refuse underneath (here: the trunk moved between the
+    /// salvage decision and the land attempt, so `goal_landing::land`
+    /// returns `NeedsMerge`). Before this lane, `land_salvage_approved_by_
+    /// reviewer` wrote the success receipt / "...and the goal was
+    /// auto-landed" note unconditionally right after calling `auto_land_
+    /// headless_goal`, regardless of whether the nested land call actually
+    /// reached the trunk. This pins the fix: the outcome must be
+    /// `NotSalvaged`, the audit trail must say `salvage_land_refused`
+    /// (never the success string), and the trunk must be exactly where the
+    /// forced divergence left it — never fast-forwarded, never silently
+    /// reported as landed.
+    #[tokio::test]
+    async fn land_salvage_approved_by_reviewer_reports_refusal_when_the_nested_land_call_fails() {
+        let (repo, head) = v1_repo_with_finished_goal_branch("r43a-forced-refusal");
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(&root)
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "r43a-forced-refusal", &head).await;
+        let session_id = format!("r43a-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(&root)
+            .execute(&pool)
+            .await
+            .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        // FORCE the land refusal: advance the trunk past the point the goal
+        // branch forked from, so it is no longer a fast-forward target
+        // (`goal_landing::land` returns `NeedsMerge`, not `FastForwarded`).
+        git_v1(repo.path(), &["checkout", "-q", "main"]);
+        std::fs::write(
+            repo.path().join("trunk-moved.txt"),
+            "someone else landed first\n",
+        )
+        .unwrap();
+        git_v1(repo.path(), &["add", "-A"]);
+        git_v1(
+            repo.path(),
+            &["commit", "-q", "-m", "trunk moved on without the goal"],
+        );
+        let trunk_head_before = git_v1(repo.path(), &["rev-parse", "HEAD"]);
+        assert_ne!(
+            trunk_head_before, head,
+            "the fixture must genuinely diverge for this test to force a refusal"
+        );
+
+        let outcome = land_salvage_approved_by_reviewer(
+            &pool,
+            &card,
+            1,
+            "no automated checks ran; review the diff on its merits",
+            SalvageReviewerApproval {
+                checked: "read the diff end to end; the change matches the task and adds no \
+                          new risk",
+                reviewer_provider: "test-reviewer-provider",
+                reviewer_model: "test-reviewer-model",
+            },
+            Some("coord-session-1"),
+        )
+        .await;
+        match &outcome {
+            SalvageOutcome::NotSalvaged { note } => {
+                assert!(
+                    note.contains("did not reach the trunk"),
+                    "the refusal note must be honest about what happened: {note}"
+                );
+            }
+            SalvageOutcome::Salvaged { note } => {
+                panic!("a refused land call must never be reported as Salvaged: {note}");
+            }
+        }
+
+        assert_eq!(
+            git_v1(repo.path(), &["rev-parse", "HEAD"]),
+            trunk_head_before,
+            "the trunk must be untouched by a refused landing attempt"
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(
+            outcomes,
+            vec!["salvage_land_refused".to_string()],
+            "the audit trail must say the land was refused, never the success string"
         );
     }
 
