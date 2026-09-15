@@ -3154,6 +3154,17 @@ impl OrchestratorClient {
     /// active_roadmap`'s own fallback), this returns `parent_extensions()`
     /// completely unchanged — never MORE restrictive than today, only
     /// narrower under the same conditions `delegate` already narrows for.
+    ///
+    /// R50a (H2 closure): narrowing the extension SET to
+    /// `LEAN_CODING_PROFILE_EXTENSION_KEYS` left `developer`'s OWN tools —
+    /// `write`/`edit`/`shell` included — completely unrestricted, and
+    /// `CodingDagInspector` never sees this session either (it has a
+    /// parent), so a gated `start_agent`/`send_message` child had zero
+    /// enforcement on what it could do once spawned. `scoped_child_session_
+    /// extensions_fn` now also calls `summon::SummonClient::
+    /// restrict_to_non_mutating`, the same call `delegate`'s gated child
+    /// gets, so a child without a dispatched goal card loses write/edit AND
+    /// shell here too.
     async fn scoped_child_session_extensions(
         &self,
         worker_persona: Option<&str>,
@@ -3824,7 +3835,23 @@ async fn scoped_child_session_extensions_fn(
         .iter()
         .map(|s| s.to_string())
         .collect();
-    narrow_extensions_for_agent(parent, Some(grants.as_slice()))
+    let mut narrowed = narrow_extensions_for_agent(parent, Some(grants.as_slice()));
+
+    // R50a (H2 closure): the extension-SET narrowing above leaves `developer`
+    // itself fully armed (write/edit/shell) — strip it to the same
+    // non-mutating, non-shell allowlist `delegate`'s gated child gets, and
+    // record the same bypass-attempt/trace signals when it actually removes
+    // something this child previously had.
+    if summon::SummonClient::restrict_to_non_mutating(&mut narrowed) {
+        crate::receipts::record("dag_enforcement", "bypass_attempts");
+        tracing::info!(
+            target: "permagentd::brain",
+            session_id = %session.id,
+            worker_persona = ?worker_persona,
+            "child_mutation_denied"
+        );
+    }
+    narrowed
 }
 
 /// R27b: the coordinator's own declared extension set —
@@ -41224,6 +41251,31 @@ mod tests {
                 "must not carry the unrelated '{unrelated}' extension, got: {names:?}"
             );
         }
+
+        // R50a (H2 closure): the extension-SET narrowing above is not
+        // enough on its own — `developer`'s own `write`/`edit`/`shell` must
+        // also be gone, since this session has no dispatched goal card of
+        // its own (`CodingDagInspector` never sees it either, being a
+        // child).
+        let developer_ext = narrowed
+            .iter()
+            .find(|ext| ext.name() == crate::agents::platform_extensions::developer::EXTENSION_NAME)
+            .expect("developer must survive the lean coding profile");
+        let allowed: std::collections::HashSet<&str> = developer_ext
+            .available_tools()
+            .iter()
+            .map(String::as_str)
+            .collect();
+        for denied in ["write", "edit", "shell"] {
+            assert!(
+                !allowed.contains(denied),
+                "a gated start_agent/send_message child must not keep '{denied}', got: {allowed:?}"
+            );
+        }
+        assert!(
+            allowed.contains("read"),
+            "read-only developer tools must still be available, got: {allowed:?}"
+        );
     }
 
     /// No active roadmap and no coding-harness identity → unchanged, per
@@ -41349,6 +41401,32 @@ mod tests {
             allowed_tools, expected_tools,
             "the default lean set must also cut orchestrator's own tool surface down to \
              GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST, got: {allowed_tools:?}"
+        );
+    }
+
+    /// R50a (H2 closure): a dispatched goal worker — the ONE path that
+    /// legitimately owns a reviewed, dispatched goal card — must keep
+    /// `shell`. `goal_worker_extensions_for_dispatch` (used by
+    /// `dispatch_goal_fn`) never calls `summon::SummonClient::
+    /// restrict_to_non_mutating`, unlike the gated `delegate`/`start_agent`
+    /// child paths this lane closes; `developer`'s own tool list here must
+    /// come through exactly as the parent handed it (empty allowlist ==
+    /// every tool, `shell` included), not narrowed.
+    #[test]
+    fn goal_worker_extensions_for_dispatch_never_strips_developers_own_tools() {
+        let parent = r27b_lean_profile_plus_unrelated_extras();
+
+        let narrowed = goal_worker_extensions_for_dispatch(parent, None, None);
+
+        let developer_ext = narrowed
+            .iter()
+            .find(|ext| ext.name() == crate::agents::platform_extensions::developer::EXTENSION_NAME)
+            .expect("developer must be present in the default lean set");
+        assert!(
+            developer_ext.available_tools().is_empty(),
+            "a dispatched goal worker's developer tools must be untouched (empty allowlist == \
+             every tool, including shell), got: {:?}",
+            developer_ext.available_tools()
         );
     }
 

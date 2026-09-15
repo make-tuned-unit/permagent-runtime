@@ -1634,15 +1634,28 @@ impl SummonClient {
     }
 
     /// The `developer` extension's own tool names, minus whatever
-    /// `after_turn::is_mutating_tool_name` calls a mutation. Derived from the
-    /// extension's real tool surface (not a second hand-kept list), so a new
-    /// read-only developer tool is granted to the reviewer automatically and
-    /// a new mutating one is withheld from it automatically.
-    fn reviewer_safe_developer_tools() -> Vec<String> {
+    /// `tool_inspection::requires_dispatched_coding_worker` calls a mutation —
+    /// the broader set `CodingDagInspector` already denies the top-level
+    /// coordinator for (write tools ∪ `shell`/`bash`/`execute_command`/
+    /// `run_command`/`terminal`), not just `after_turn::is_mutating_tool_name`'s
+    /// named write tools. Derived from the extension's real tool surface (not
+    /// a second hand-kept list), so a new read-only developer tool is granted
+    /// automatically and a new mutating (or shell-shaped) one is withheld
+    /// automatically.
+    ///
+    /// R50a: widened from `is_mutating_tool_name` to close H2 (see
+    /// `restrict_reviewer_tools`'s doc comment below) — `shell` used to
+    /// survive this filter untouched, so every caller of
+    /// `restrict_to_non_mutating` (the reviewer persona, and a gated
+    /// `delegate`/`delegate_many`/`start_agent` child) kept full shell
+    /// access. The `verify` tool (deterministic test/build/lint execution)
+    /// remains available, so a scoped session can still run checks without
+    /// raw shell.
+    fn non_mutating_developer_tools() -> Vec<String> {
         super::developer::DeveloperClient::get_tools()
             .into_iter()
             .map(|tool| tool.name.to_string())
-            .filter(|name| !crate::after_turn::is_mutating_tool_name(name))
+            .filter(|name| !crate::tool_inspection::requires_dispatched_coding_worker(name))
             .collect()
     }
 
@@ -1670,14 +1683,24 @@ impl SummonClient {
     /// so a future extension-config shape is included automatically rather
     /// than needing a matching update here.
     ///
-    /// Known residual (H2): the reviewer keeps `shell` (needed to run
-    /// verify/tests), and `shell` is not itself read-only-enforced — a
-    /// reviewer can still mutate the tree via `sed -i`, redirection, `rm`,
-    /// or `git commit`/`checkout --` through it. There is no read-only shell
-    /// here; the mandate text (`config/agent_identity.rs`'s `reviewer`
-    /// persona `role`) instead states explicitly that READ-ONLY covers shell
-    /// too, and `is_tool_available` still blocks `write`/`edit` outright
-    /// regardless of what the model attempts through shell.
+    /// H2 (harness loop "A47 analysis"): CLOSED. The reviewer used to keep
+    /// `shell` (needed to run verify/tests) with no read-only enforcement on
+    /// it at all — a reviewer could mutate the tree via `sed -i`,
+    /// redirection, `rm`, or `git commit`/`checkout --` through it, and the
+    /// same gap let a `delegate`/`delegate_many`/`start_agent` child under
+    /// the coding recipe run `shell` unrestricted too (A47: MiniCPM p5's
+    /// `[subagent:2]` wrote the passing file via a `shell` heredoc after
+    /// every `write`/`edit` call on it was denied). `restrict_to_non_mutating`
+    /// now filters on `tool_inspection::requires_dispatched_coding_worker`'s
+    /// broader set (write tools ∪ shell/bash/execute_command/run_command/
+    /// terminal — the same set `CodingDagInspector` denies the top-level
+    /// coordinator for), so `shell` no longer survives this scoping for the
+    /// reviewer OR a gated delegate/start_agent child. The `verify` tool
+    /// (deterministic test/build/lint execution, not raw shell) remains
+    /// available, so read-only sessions can still run checks. A dispatched
+    /// goal worker (`dispatch_goal_fn`'s `GOAL_WORKER_EXTENSION_KEYS` path)
+    /// never calls `restrict_to_non_mutating` and keeps shell, since that is
+    /// the one path that legitimately owns a reviewed, dispatched goal card.
     fn restrict_reviewer_tools(worker_persona: Option<&str>, extensions: &mut [ExtensionConfig]) {
         let is_reviewer = worker_persona.is_some_and(|p| p.eq_ignore_ascii_case("reviewer"));
         if !is_reviewer {
@@ -1687,12 +1710,21 @@ impl SummonClient {
     }
 
     /// X-dag-1 (harness loop, coding-harness excellence iteration): the same
-    /// mechanism `restrict_reviewer_tools` uses, generalised so a second
-    /// caller — `restrict_delegate_for_active_roadmap`, below — can scope a
-    /// NON-reviewer delegate down to non-mutating tools too, rather than
+    /// mechanism `restrict_reviewer_tools` uses, generalised so other
+    /// callers — `restrict_delegate_for_active_roadmap` below, and
+    /// `orchestrator::scoped_child_session_extensions_fn` (R50a) — can scope
+    /// a NON-reviewer child down to non-mutating tools too, rather than
     /// growing a second, parallel allowlist implementation.
-    fn restrict_to_non_mutating(extensions: &mut [ExtensionConfig]) {
-        let allowed = Self::reviewer_safe_developer_tools();
+    ///
+    /// Returns `true` when `extensions` carried a `developer` extension that
+    /// previously exposed a tool this call just removed (i.e. this scoping
+    /// was not a no-op) — callers on a GATED path (a delegate/start_agent
+    /// child escaping an active roadmap, not the always-scoped reviewer
+    /// persona) use this to record a `bypass_attempts` receipt and a
+    /// `child_mutation_denied` trace, matching what `CodingDagInspector`
+    /// already records for the coordinator's own denied calls.
+    pub(crate) fn restrict_to_non_mutating(extensions: &mut [ExtensionConfig]) -> bool {
+        let allowed = Self::non_mutating_developer_tools();
         debug_assert!(
             !allowed.is_empty(),
             "an empty available_tools list means EVERY tool is available \
@@ -1702,15 +1734,23 @@ impl SummonClient {
         );
         // Defensive fail-closed fallback: an empty `available_tools` reads as
         // "every tool available" to `is_tool_available` — the exact opposite
-        // of what this function exists to do. If `reviewer_safe_developer_
+        // of what this function exists to do. If `non_mutating_developer_
         // tools` ever legitimately returns nothing (e.g. every developer
         // tool becomes "mutating"), hand out a list that matches no real
         // tool name instead of an empty one, so the caller loses `developer`
         // entirely rather than silently regaining full access to it.
         const NO_SAFE_TOOLS_SENTINEL: &str = "__no_read_only_developer_tools_available__";
+        let mut removed_a_denied_tool = false;
         for ext in extensions.iter_mut() {
             if ext.name() == super::developer::EXTENSION_NAME {
                 if let Some(available_tools) = ext.available_tools_mut() {
+                    let had_denied_tool = available_tools.is_empty()
+                        || available_tools.iter().any(|name| {
+                            crate::tool_inspection::requires_dispatched_coding_worker(name)
+                        });
+                    if had_denied_tool {
+                        removed_a_denied_tool = true;
+                    }
                     *available_tools = if allowed.is_empty() {
                         vec![NO_SAFE_TOOLS_SENTINEL.to_string()]
                     } else {
@@ -1719,6 +1759,7 @@ impl SummonClient {
                 }
             }
         }
+        removed_a_denied_tool
     }
 
     /// X-dag-1: while a roadmap THIS session created (`create_roadmap`,
@@ -1854,15 +1895,6 @@ impl SummonClient {
             return Ok(None);
         };
 
-        let strips_mutating_tools = extensions.iter().any(|ext| {
-            ext.name() == super::developer::EXTENSION_NAME
-                && (ext.available_tools().is_empty()
-                    || ext
-                        .available_tools()
-                        .iter()
-                        .any(|name| crate::after_turn::is_mutating_tool_name(name)))
-        });
-
         let lean_worker_grants: Vec<String> = orchestrator::GOAL_WORKER_EXTENSION_KEYS
             .iter()
             .map(|s| s.to_string())
@@ -1873,9 +1905,22 @@ impl SummonClient {
         );
         orchestrator::narrow_goal_worker_orchestrator_tools(extensions);
 
-        Self::restrict_to_non_mutating(extensions);
-        if strips_mutating_tools {
+        // R50a: `restrict_to_non_mutating` now reports whether it actually
+        // removed a tool this child had (write/edit/... OR shell/bash/
+        // execute_command/run_command/terminal — H2's own gap) — this is a
+        // GATED narrowing (the child is escaping an active roadmap or a
+        // top-level coordinator identity), so a real removal is counted as a
+        // bypass attempt via the same `dag_enforcement`/`bypass_attempts`
+        // counter `CodingDagInspector` uses for the coordinator's own denied
+        // calls, and traced as `child_mutation_denied` for the same reason.
+        if Self::restrict_to_non_mutating(extensions) {
             crate::receipts::record("dag_enforcement", "bypass_attempts");
+            tracing::info!(
+                target: "permagentd::brain",
+                session_id = %session.id,
+                worker_persona = ?worker_persona,
+                "child_mutation_denied"
+            );
         }
         Ok(Some(format!(
             "Note: this delegate call was restricted to a lean, non-mutating tool set because \
@@ -3489,6 +3534,11 @@ mod tests {
     /// `edit` on `src/cache.rs` and the change shipped). `restrict_reviewer_tools`
     /// must scope `developer` down to read-only tools for the literal
     /// `reviewer` persona, and must not touch any other extension.
+    ///
+    /// R50a (H2 closure): `shell` moved from "must keep" to "must not be
+    /// granted" — the reviewer used to keep unrestricted shell (the
+    /// documented H2 residual); `verify` (deterministic check execution)
+    /// remains so the reviewer can still run tests without raw shell.
     #[test]
     fn restrict_reviewer_tools_scopes_developer_to_read_only_for_the_reviewer_persona() {
         let mut extensions = sample_extensions();
@@ -3497,13 +3547,13 @@ mod tests {
 
         let allowed = developer_available_tools(&extensions);
         assert!(!allowed.is_empty(), "reviewer must get a real allowlist");
-        for mutating in ["write", "edit"] {
+        for mutating in ["write", "edit", "shell"] {
             assert!(
                 !allowed.iter().any(|t| t == mutating),
                 "reviewer must not be granted '{mutating}', got: {allowed:?}"
             );
         }
-        for read_only in ["read", "shell", "tree", "search", "verify"] {
+        for read_only in ["read", "tree", "search", "verify"] {
             assert!(
                 allowed.iter().any(|t| t == read_only),
                 "reviewer must keep '{read_only}', got: {allowed:?}"
@@ -3569,14 +3619,14 @@ mod tests {
             "reviewer must get a real allowlist on the recipe's own builtin \
              developer extension"
         );
-        for mutating in ["write", "edit", "apply_patch"] {
+        for mutating in ["write", "edit", "apply_patch", "shell"] {
             assert!(
                 !allowed.iter().any(|t| t == mutating),
                 "reviewer must not be granted '{mutating}' on the real recipe's \
                  builtin developer extension, got: {allowed:?}"
             );
         }
-        for read_only in ["read", "shell", "tree", "search", "verify"] {
+        for read_only in ["read", "tree", "search", "verify"] {
             assert!(
                 allowed.iter().any(|t| t == read_only),
                 "reviewer must keep '{read_only}', got: {allowed:?}"
@@ -3778,7 +3828,10 @@ mod tests {
             "the note must name the identity that restricted it, got {note:?}"
         );
         let allowed = developer_available_tools(&extensions);
-        for mutating in ["write", "edit", "apply_patch"] {
+        // R50a (H2 closure): `shell` joins the denied set here — it used to
+        // survive this restriction (see `non_mutating_developer_tools`'s
+        // doc comment).
+        for mutating in ["write", "edit", "apply_patch", "shell"] {
             assert!(
                 !allowed.iter().any(|t| t == mutating),
                 "must not be granted '{mutating}', got: {allowed:?}"
@@ -3786,7 +3839,7 @@ mod tests {
         }
         // Read-only sources stay available — the gate strips mutation, it does
         // not refuse the delegate (fx04's own `analyze` scope audit).
-        for readonly in ["search", "read", "shell"] {
+        for readonly in ["search", "read"] {
             assert!(
                 allowed.iter().any(|t| t == readonly),
                 "a read-only '{readonly}' must survive the restriction, got: {allowed:?}"
@@ -3974,6 +4027,72 @@ mod tests {
             "orchestrator's own tool surface must be cut to \
              GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST (escalate + message_goal), not the full \
              roster it started with, got: {allowed_tools:?}"
+        );
+
+        // R50a (H2 closure): `developer` survives set-narrowing above, but
+        // its OWN tools must also be non-mutating AND shell-free — a
+        // delegate child without a dispatched goal card must not be able to
+        // reach `write`/`edit` OR `shell`/`bash`/`execute_command`/
+        // `run_command`/`terminal`.
+        let developer_ext = extensions
+            .iter()
+            .find(|ext| ext.name() == crate::agents::platform_extensions::developer::EXTENSION_NAME)
+            .expect("developer must survive narrowing to GOAL_WORKER_EXTENSION_KEYS");
+        let developer_tools: HashSet<&str> = developer_ext
+            .available_tools()
+            .iter()
+            .map(String::as_str)
+            .collect();
+        for denied in ["write", "edit", "shell"] {
+            assert!(
+                !developer_tools.contains(denied),
+                "a gated delegate child must not keep '{denied}', got: {developer_tools:?}"
+            );
+        }
+        assert!(
+            developer_tools.contains("read") && developer_tools.contains("verify"),
+            "read-only developer tools (including verify, for running checks without raw \
+             shell) must still be available, got: {developer_tools:?}"
+        );
+    }
+
+    /// R50a (H2 closure, "A47 analysis"): the smallest repair the analysis
+    /// names — a gated delegate child whose pre-narrowed `developer` tools
+    /// would have included `shell` (even with no `write`/`edit` at all, the
+    /// exact MiniCPM p5 shape: both denied at the top level, `shell` still
+    /// reached one level down) must be counted as a `bypass_attempts`
+    /// receipt, not a pass — the same counter `CodingDagInspector` uses for
+    /// the coordinator's own denied calls, so the qualification gate's
+    /// `dag_enforcement` record sees this escape attempt even though it
+    /// never reaches the coordinator-only inspector.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn a_gated_delegate_childs_denied_shell_call_counts_as_a_bypass_attempt() {
+        crate::receipts::begin_run();
+        let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::User).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions_with_orchestrator_and_extras();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+        assert!(note.is_some());
+
+        let line = crate::receipts::snapshot().lines()[0].clone();
+        crate::receipts::end_run();
+        assert!(
+            line.contains("bypass_attempts=1"),
+            "a gated delegate child that would have kept shell/write must count as exactly \
+             one bypass attempt: {line}"
+        );
+        assert!(
+            line.contains("bypass_passes=0"),
+            "a denied tool is a bypass ATTEMPT, never a bypass_passes count: {line}"
         );
     }
 
