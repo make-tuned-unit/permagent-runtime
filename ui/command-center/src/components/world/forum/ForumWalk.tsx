@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { Euler, Vector3 } from 'three';
+import { Euler, PerspectiveCamera, Vector3 } from 'three';
 import { attemptWalk } from './walkCollision';
 import { ROSTER, getAgentPosition } from '../agents';
 import { crossedGatePlane, inExedra } from './meshPortal';
+import { FORUM_WALK_FOV } from './vistaCamera';
 
 export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, onMeshPrompt, inMesh = false }: {
   start:[number,number,number];
@@ -36,6 +37,10 @@ export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, o
     feet.current.set(...start);
     previous.current.set(...start);
     nearGate.current = false;
+    // Walking has its own field. The overview camera now carries the vista's
+    // 72 degrees (`vistaCamera.ts`), which is a landscape lens, not a pair of
+    // eyes; restore the field walk mode has always been framed for.
+    if (camera instanceof PerspectiveCamera && camera.fov !== FORUM_WALK_FOV) { camera.fov = FORUM_WALK_FOV; camera.updateProjectionMatrix(); }
     camera.position.set(start[0],start[1]+1.7,start[2]);camera.lookAt(start[0],start[1]+1.7,start[2]-10);
     angles.current.setFromQuaternion(camera.quaternion,'YXZ');
   },[camera,start]);

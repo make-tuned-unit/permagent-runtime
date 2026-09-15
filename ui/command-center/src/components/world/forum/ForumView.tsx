@@ -30,6 +30,7 @@ import { MeshAgora } from './MeshAgora';
 import { ForumPostProcessing } from './ForumPostProcessing';
 import { gateApproachPoint } from './meshPortal';
 import { extendForumLoader } from './forumGltf';
+import { FORUM_VISTA } from './vistaCamera';
 
 const lessons = [
   ['A brief becomes a plan', 'An agent starts with your outcome, context and constraints. It chooses steps and tools. A useful brief also says what evidence would count as success.', 'Explain how you would turn my request into a plan. Identify missing context before taking action.'],
@@ -182,7 +183,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           warnings per load in job 18. Asking for `PCFShadowMap` outright is
           the same shadows the scene has actually been getting, without the
           deprecation path. */}
-      <Canvas frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [29, 29, 36], fov: 48, far: 10000 }} gl={{ antialias: true }}>
+      <Canvas frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...FORUM_VISTA.position] as [number,number,number], fov: FORUM_VISTA.fov, far: 10000 }} gl={{ antialias: true }}>
         {agoraOpen ? <MeshAgora walking={walking} /> : <ForumLighting appearance={appearance} />}
         {/* The forum is hidden rather than unmounted while the Agora is open:
             an invisible group costs no draw calls, and keeping it mounted means

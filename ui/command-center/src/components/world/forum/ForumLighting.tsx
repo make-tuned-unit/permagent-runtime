@@ -3,11 +3,22 @@ import { ENV } from '../shared/palette';
 
 // Day is a sunrise: a warm key held low (~15 degrees) on a north-westerly
 // bearing, so the commons overlook and the west face of everything catches it,
-// with a cooler sky fill opposite. Night is untouched — the system-appearance
-// switch still lands on exactly the look it had before.
+// with a cooler sky fill opposite.
+//
+// Night is moonlight. It used to be a violet hemisphere sky over an *amber*
+// directional fill, and the two mixed on the pale paving into the lavender-pink
+// commons floor of `assets/world/forum/browser/v3-world-night.webp` — a warm
+// cast on every lit surface, where the reference
+// (`docs/design/solar-forum/north-star.png`) is a deep blue night whose only
+// warmth comes from the emissives themselves. Both broad lights are cool now
+// and the ground bounce is a deep blue rather than a violet grey. The warmth
+// is where it belongs: the nine amber point lights below are the lanterns, the
+// braziers and the strand lights, and they are untouched. So are the
+// emissives, which take no light at all — `emissiveIntensity` is independent
+// of every light in this file, so nothing here can dim them.
 export const FORUM_LIGHT = {
   day: { background: ENV.marble, sky: '#FFE9CC', ground: ENV.marbleVein, ambient: 1.2, key: '#FFD9A8', strength: 2.6, fill: '#9FC0E8', fillStrength: .55 },
-  night: { background: ENV.deepVoid, sky: '#899CCB', ground: ENV.darkStone, ambient: .48, key: '#B3C8FF', strength: .85, fill: ENV.neonAmber, fillStrength: .35 },
+  night: { background: ENV.deepVoid, sky: '#7FA0DE', ground: '#16233C', ambient: .48, key: '#A8C4FF', strength: .85, fill: '#5C7FC6', fillStrength: .34 },
 } as const;
 /** Sun bearing, matching the sunrise sun drawn in ForumSky. asin(.274) ~= 15.9 deg. */
 const DAY_KEY_POSITION: [number,number,number] = [-104,30,-18];

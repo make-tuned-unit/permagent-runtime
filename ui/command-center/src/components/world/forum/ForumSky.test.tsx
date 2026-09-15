@@ -10,6 +10,8 @@ import { act } from 'react-dom/test-utils';
 import * as THREE from 'three';
 vi.mock('@react-three/fiber', () => ({ useFrame: () => {} }));
 vi.mock('@react-three/drei', () => ({ useGLTF: Object.assign(() => ({ scene: new THREE.Group() }), { preload: () => {} }) }));
+import { projectPoint } from './vistaCamera';
+import { FORUM_LIGHT } from './ForumLighting';
 import { ForumSky, createCelestialBodies, CELESTIAL_NAMES, SKY_RENDER_ORDER, GAS_GIANT_POS, MOON_POS, GAS_GIANT_RADIUS, MOON_RADIUS } from './ForumSky';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -60,15 +62,30 @@ it('lights both bodies from their own bearing rather than from the sun', () => {
   expect(gasGiant.material.fragmentShader).not.toContain('sunSide');
 });
 
-it('hangs the gas giant above and clear of the ridge, over the harbour side', () => {
+it('hangs the gas giant above and clear of the ridge, and inside the default vista', () => {
   expect(elevation(GAS_GIANT_POS)).toBeGreaterThanOrEqual(26);
   expect(elevation(GAS_GIANT_POS)).toBeLessThanOrEqual(30);
+  // Still clear of the landform: the ridge mesh exists only between Blender
+  // polar 100 and 215 degrees, and the giant now sits short of 100 rather than
+  // past 215. It moved because the default vantage faces north (job 20) and a
+  // south-westerly planet is behind the viewer, not in the vista.
   const bearing = blenderBearing(GAS_GIANT_POS);
-  expect(bearing).toBeGreaterThan(RIDGE_ARC[1]);
-  expect(bearing).toBeLessThan(300);
-  // South-westerly in three.js axes: west of the forum, on the harbour's side.
-  expect(GAS_GIANT_POS.x).toBeLessThan(0);
-  expect(GAS_GIANT_POS.z).toBeGreaterThan(0);
+  expect(bearing).toBeLessThan(RIDGE_ARC[0]);
+  expect(bearing).toBeGreaterThan(60);
+  // Northerly in three.js axes: -z is the Blender +y north.
+  expect(GAS_GIANT_POS.z).toBeLessThan(0);
+  // Both bodies are in the default frame, on opposite sides of it.
+  const giant = projectPoint([GAS_GIANT_POS.x, GAS_GIANT_POS.y, GAS_GIANT_POS.z])!;
+  const satellite = projectPoint([MOON_POS.x, MOON_POS.y, MOON_POS.z])!;
+  for (const ndc of [giant, satellite]) {
+    expect(Math.abs(ndc.x)).toBeLessThan(1);
+    expect(Math.abs(ndc.y)).toBeLessThan(1);
+  }
+  // High, and separated: the giant left of the moon with a clear gap between
+  // the two discs rather than one crowding the other.
+  expect(giant.y).toBeGreaterThan(0.5);
+  expect(satellite.y).toBeGreaterThan(0.5);
+  expect(satellite.x - giant.x).toBeGreaterThan(0.3);
 });
 
 it('keeps the moon smaller, paler and off the ridge too', () => {
@@ -106,4 +123,18 @@ it('mounts both bodies in the night scene and in the day scene', () => {
     }
     act(() => root.unmount());
   }
+});
+
+it('lights the night with moonlight rather than a warm fill, without touching the emissives', () => {
+  const channels = (hex: string) => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+  for (const key of ['sky', 'key', 'fill', 'ground'] as const) {
+    const [r, , b] = channels(FORUM_LIGHT.night[key]);
+    // Cool: every broad night light is bluer than it is red. The amber fill
+    // that mixed with the violet hemisphere into lavender paving was the one
+    // that failed this.
+    expect(b, `night ${key} is not cool`).toBeGreaterThan(r);
+  }
+  // Day is untouched: its key is still the warm sunrise.
+  const [dayR, , dayB] = channels(FORUM_LIGHT.day.key);
+  expect(dayR).toBeGreaterThan(dayB);
 });

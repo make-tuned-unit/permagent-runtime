@@ -95,6 +95,14 @@ function Birds() {
   }));
   return <group>{birds.map((bird,i)=><primitive key={i} object={bird} dispose={null}/>)}</group>;
 }
+// A thinner, higher-contrast cloud deck than the one this shipped with.
+// The plane sits at y = 105 over a 650 m square, so from a camera at terrace
+// height it covers every sight line above about 17 degrees of elevation —
+// which is where both sky bodies hang. At the old `smoothstep(.47,.7)` and
+// 0.78 alpha it was an overcast lid, and it was a large part of why the gas
+// giant measured *darker* than the day sky (job 19, bug 1): the disc was being
+// painted over by cloud. Sparser and more transparent, it reads as weather
+// rather than as a ceiling, and the sky gradient and the bodies come through.
 function Clouds() {
   const material=useRef<THREE.ShaderMaterial>(null);
   const uniforms=useMemo(()=>({time:{value:0}}),[]);
@@ -106,7 +114,7 @@ function Clouds() {
       fragmentShader={`uniform float time;varying vec2 vUv;
 float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
 float noise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);}
-void main(){vec2 p=vUv*8.+vec2(time*.002,0);float n=0.,a=.5;for(int i=0;i<5;i++){n+=noise(p)*a;p=p*2.03+1.7;a*=.5;}float edge=smoothstep(0.,.12,vUv.x)*smoothstep(0.,.12,vUv.y)*smoothstep(0.,.12,1.-vUv.x)*smoothstep(0.,.12,1.-vUv.y);float alpha=smoothstep(.47,.7,n)*edge*.78;gl_FragColor=vec4(mix(vec3(.69,.76,.82),vec3(1.),n),alpha);}`}/>
+void main(){vec2 p=vUv*8.+vec2(time*.002,0);float n=0.,a=.5;for(int i=0;i<5;i++){n+=noise(p)*a;p=p*2.03+1.7;a*=.5;}float edge=smoothstep(0.,.12,vUv.x)*smoothstep(0.,.12,vUv.y)*smoothstep(0.,.12,1.-vUv.x)*smoothstep(0.,.12,1.-vUv.y);float alpha=smoothstep(.58,.86,n)*edge*.46;gl_FragColor=vec4(mix(vec3(.69,.76,.82),vec3(1.),n),alpha);}`}/>
   </mesh>;
 }
 // Celestial neighbours (north-star direction, job 12 P3/browser-side): a banded
@@ -148,12 +156,66 @@ function selfLight(position: THREE.Vector3) {
   return position.clone().negate().normalize().add(new THREE.Vector3(0, .55, 0)).normalize();
 }
 
+/** The daylight sky.
+ *
+ * Day used to be a flat `<color attach="background">` of `ENV.marble` behind
+ * an exponential haze — one cream tone from the horizon to the zenith, luma
+ * ~233 everywhere. That is what made job 19 bug 1 unfixable by brightening:
+ * the frame is 8-bit, so a disc can never be more than 255/233 = 1.09 times a
+ * 233 sky, whatever the shader does. A sky with a real vertical gradient — the
+ * deep blue overhead and the warm sunrise band at the horizon of
+ * `docs/design/solar-forum/north-star.png` — puts the bodies' own elevations
+ * at a luma the disc can clear, and is closer to the reference besides.
+ *
+ * The mix runs in three's linear working space and the exponent is tuned so
+ * the band at 24-30 degrees of elevation — where the gas giant and the moon
+ * hang — lands near half the horizon's luminance, while the first few degrees
+ * above the horizon stay the warm tone the fog and the low key are matched to.
+ */
+function DaySky() {
+  const uniforms=useMemo(()=>({
+    uHorizon:{value:new THREE.Color('#FFE3BE')},
+    uZenith:{value:new THREE.Color('#0B2454')},
+    uSunGlow:{value:new THREE.Color('#FFD9A0')},
+    uSun:{value:SUNRISE_DIR.clone()},
+  }),[]);
+  return <mesh renderOrder={SKY_RENDER_ORDER.dome}>
+    <sphereGeometry args={[4800,48,32]}/>
+    <shaderMaterial side={THREE.BackSide} depthWrite={false} toneMapped={false} uniforms={uniforms}
+      vertexShader={`varying vec3 direction;void main(){direction=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`}
+      fragmentShader={`uniform vec3 uHorizon;uniform vec3 uZenith;uniform vec3 uSunGlow;uniform vec3 uSun;varying vec3 direction;
+void main(){vec3 d=normalize(direction);
+ float height=pow(clamp(d.y,0.,1.),.30);
+ vec3 color=mix(uHorizon,uZenith,height);
+ // A soft warm bloom around the low sun, so the sunrise still reads as a
+ // direction rather than as an even blue bowl.
+ float sun=pow(max(dot(d,normalize(uSun)),0.),6.);
+ color+=uSunGlow*sun*.55;
+ gl_FragColor=vec4(color,1.);}`}/>
+  </mesh>;
+}
+// Radii are load-bearing beyond the look: the in-app harnesses identify the
+// two bodies by sphere radius alone (`verify-world-in-app-v2.mjs`
+// `__celestialProbe`), so day legibility is bought with the shading floor
+// below, never by resizing them.
 export const GAS_GIANT_RADIUS = 140;
 export const MOON_RADIUS = 46;
-// 28 degrees up on a south-westerly bearing over the lagoon and the harbour
-// approach: the ridge spans Blender polar 100-215 degrees (three.js x<0 from
-// z<0 round to z>0) and has no geometry at all past 215, so this clears it.
-export const GAS_GIANT_POS = bearing(-0.342, 0.940, 28).multiplyScalar(900);
+// 26.5 degrees up, 19.6 degrees east of due north — over the lagoon, inside
+// the first orbital ring's hoop, and inside the default vista's frame
+// (`vistaCamera.ts`).
+//
+// It used to hang on a *south-westerly* bearing, which puts it squarely behind
+// the viewer of the new default vantage. North is the only side of the world
+// that reads like `docs/design/solar-forum/north-star.png` — ridge, rings,
+// floating gardens — and the ridge mesh spans Blender polar 100-215 degrees,
+// so a bearing short of 100 (this one is 70.4) is north of the forum and still
+// has no landform anywhere near it.
+//
+// The exact bearing is composition, not astronomy: due north put the disc
+// squarely behind the "The Solar Forum" title card, and this is the bearing
+// that clears it while staying left of the moon, which keeps its own
+// north-easterly bearing at the top right of the frame.
+export const GAS_GIANT_POS = bearing(0.336, -0.942, 26.5).multiplyScalar(900);
 // Unchanged: the moon was never occluded, only overpainted and unlit.
 export const MOON_POS = new THREE.Vector3(0.6, 0.55, -1).normalize().multiplyScalar(1080);
 
@@ -177,10 +239,13 @@ void main(){
   // face turned to the forum is always the modelled one and the floor under
   // the shading keeps the belts legible against both skies.
   float shade=clamp(dot(vLocal,uLight)*.5+.5,0.,1.);
-  vec3 body=base*(.78+.46*shade);
+  // The floor is a *day* number. Against the night sky anything reads; against
+  // a lit sky the disc has to out-run it, and 8-bit output caps the ratio at
+  // 255/sky, so the unlit side cannot be allowed to fall away (job 20).
+  vec3 body=base*(1.06+.56*shade);
   vec3 view=normalize(cameraPosition-vWorld);
   float rim=pow(1.-max(dot(vLocal,view),0.),3.0);           // limb glow, all round
-  gl_FragColor=vec4(body+uRim*rim*.9,1.);
+  gl_FragColor=vec4(body+uRim*rim*1.15,1.);
 }`;
 
 const MOON_FRAG = `
@@ -193,7 +258,7 @@ void main(){
   float shade=clamp(dot(vLocal,uLight)*.5+.5,0.,1.);
   vec3 view=normalize(cameraPosition-vWorld);
   float rim=pow(1.-max(dot(vLocal,view),0.),2.4);           // its own faint halo
-  gl_FragColor=vec4(base*(.84+.3*shade)+uGlow*rim*.4,1.);
+  gl_FragColor=vec4(base*(.95+.34*shade)+uGlow*rim*.55,1.);
 }`;
 
 function body(name: string, position: THREE.Vector3, radius: number, segments: [number,number], fragmentShader: string, uniforms: Record<string, { value: THREE.Color | THREE.Vector3 }>) {
@@ -224,9 +289,12 @@ export const CELESTIAL_NAMES = { gasGiant: 'Forum gas giant', moon: 'Forum moon'
 
 export function createCelestialBodies() {
   const gasGiant = body(CELESTIAL_NAMES.gasGiant, GAS_GIANT_POS, GAS_GIANT_RADIUS, [48,32], GAS_GIANT_FRAG, {
-    uWarm: { value: new THREE.Color('#E8B57A') },
-    uCool: { value: new THREE.Color('#7A6488') },
-    uRim: { value: new THREE.Color('#FFCE9B') },
+    // Raised together with the shading floor: the dark belts were what pulled
+    // the disc mean down to the day sky's own luminance (job 19, bug 1). The
+    // warm/cool hue split that makes it read as a banded planet is kept.
+    uWarm: { value: new THREE.Color('#F8D6A4') },
+    uCool: { value: new THREE.Color('#B295C6') },
+    uRim: { value: new THREE.Color('#FFDDB4') },
   });
   const moon = body(CELESTIAL_NAMES.moon, MOON_POS, MOON_RADIUS, [32,24], MOON_FRAG, {
     uHigh: { value: new THREE.Color('#E4E0D8') },
@@ -251,7 +319,7 @@ export function ForumSky({ appearance }: { appearance: 'day' | 'night' }) {
   return <>
     <CelestialBodies/>
     {appearance === 'night' ? <NightSky/> : <>
-      <Clouds/><Suspense fallback={null}><Birds/></Suspense>
+      <DaySky/><Clouds/><Suspense fallback={null}><Birds/></Suspense>
       {/* The low sunrise sun, on the same bearing as ForumLighting's key. */}
       <mesh position={SUNRISE_DIR.clone().multiplyScalar(760)}><sphereGeometry args={[5.2,24,16]}/><meshBasicMaterial color="#FFF0CE" fog={false} toneMapped={false}/></mesh>
     </>}
