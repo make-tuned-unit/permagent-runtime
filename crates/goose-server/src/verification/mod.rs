@@ -1112,6 +1112,17 @@ async fn run_independent_review(
         })
         .unwrap_or_default();
 
+    // R43b (`orchestrator::AC_EXISTENCE_ONLY_METADATA_KEY` — the SAME key
+    // name `create_roadmap`/`decompose_roadmap` write, not a re-derived
+    // literal): every acceptance criterion above claims code exists, never
+    // what running it produces, and no behavioural check could be derived
+    // from the task text either. Missing/absent means "no", same as every
+    // other optional card-metadata flag this module already reads.
+    let ac_existence_only = meta
+        .get(permagent::agents::platform_extensions::orchestrator::AC_EXISTENCE_ONLY_METADATA_KEY)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     let worker = review::worker_model(pool, meta).await;
     let selection = match &deps.selection {
         Some(s) => s.clone(),
@@ -1142,6 +1153,7 @@ async fn run_independent_review(
         worker,
         prior: review::IndependentReview::from_metadata(meta),
         call_site_enumerations,
+        ac_existence_only,
     };
 
     Some(review::run_review(&inputs, &selection, spend.as_ref(), deps.client).await)

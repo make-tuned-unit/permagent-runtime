@@ -438,6 +438,16 @@ pub struct ReviewInputs {
     /// could not be read — `run_review` then defers entirely to the ordinary
     /// (pre-E7) prompt and gate.
     pub call_site_enumerations: Vec<CallSiteEnumeration>,
+    /// R43b (`orchestrator::AC_EXISTENCE_ONLY_METADATA_KEY`): every one of
+    /// this goal's acceptance criteria reads as a claim that some code
+    /// EXISTS ("contains validation that ...", "the function is defined"),
+    /// never a claim about what running the change actually produces — the
+    /// A38 miss-1 shape, where a worker's own verify call found a genuine
+    /// pass against criteria that never exercised the real bug. When
+    /// `true`, [`ReviewInputs::task_spec`] appends an explicit instruction
+    /// requiring the reviewer to check real behavior, not just that code
+    /// was added, before it may APPROVE.
+    pub ac_existence_only: bool,
 }
 
 impl ReviewInputs {
@@ -452,6 +462,16 @@ impl ReviewInputs {
             for (i, c) in self.acceptance_criteria.iter().enumerate() {
                 s.push_str(&format!("{}. {}\n", i + 1, c.trim()));
             }
+        }
+        if self.ac_existence_only {
+            s.push_str(
+                "\n\nR43b NOTE: every acceptance criterion above only claims that some code \
+                 exists (\"contains validation that ...\", \"the function is defined\") — none \
+                 of them says what running the change actually produces. Do not APPROVE on the \
+                 strength of these criteria alone: find and state, in CHECKED, what you \
+                 confirmed about the change's REAL runtime behavior (an actual input and its \
+                 observed output/exit code), not merely that supporting code was added.",
+            );
         }
         s
     }
@@ -902,7 +922,29 @@ mod tests {
             worker: Some(("workerco".into(), "worker-1".into())),
             prior: None,
             call_site_enumerations: Vec::new(),
+            ac_existence_only: false,
         }
+    }
+
+    // ── R43b: existence-only ACs must push the reviewer toward a real check ──
+
+    #[test]
+    fn task_spec_is_unchanged_when_acceptance_criteria_are_behavioural() {
+        let inputs = code_inputs();
+        assert!(!inputs.task_spec().contains("R43b NOTE"));
+    }
+
+    #[test]
+    fn task_spec_appends_an_explicit_behavioural_check_requirement_when_flagged() {
+        let mut inputs = code_inputs();
+        inputs.ac_existence_only = true;
+        let spec = inputs.task_spec();
+        assert!(spec.contains("R43b NOTE"));
+        assert!(spec.contains("REAL runtime behavior"));
+        // The ordinary sections are still present -- this is an addition,
+        // not a replacement.
+        assert!(spec.contains("ACCEPTANCE CRITERIA"));
+        assert!(spec.contains("Do the thing"));
     }
 
     #[tokio::test]
@@ -1087,6 +1129,7 @@ mod tests {
             worker: Some(("workerco".into(), "worker-1".into())),
             prior: None,
             call_site_enumerations: Vec::new(),
+            ac_existence_only: false,
         }
     }
 
