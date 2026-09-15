@@ -13770,22 +13770,36 @@ async fn maybe_salvage_committed_work(
         match resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await {
             Ok(v) => v,
             Err(e) => {
-                return not_salvaged(format!("could not resolve the goal's worktree: {e}"));
+                let note = format!("could not resolve the goal's worktree: {e}");
+                record_salvage_receipt(pool, &card.id, "salvage_skipped_no_worktree", &note).await;
+                return not_salvaged(note);
             }
         };
     let Some((baseline, worktree)) = baseline_and_worktree else {
-        return not_salvaged("no dispatch baseline recorded — nothing to salvage".to_string());
+        let note = "no dispatch baseline recorded — nothing to salvage".to_string();
+        record_salvage_receipt(pool, &card.id, "salvage_skipped_no_baseline", &note).await;
+        return not_salvaged(note);
     };
     let worktree_path = std::path::Path::new(&worktree);
 
     let ahead = match commits_ahead_of_baseline(worktree_path, &baseline).await {
         Ok(n) => n,
         Err(e) => {
-            return not_salvaged(format!("could not inspect the goal branch: {e}"));
+            let note = format!("could not inspect the goal branch: {e}");
+            record_salvage_receipt(
+                pool,
+                &card.id,
+                "salvage_skipped_branch_inspect_failed",
+                &note,
+            )
+            .await;
+            return not_salvaged(note);
         }
     };
     if ahead == 0 {
-        return not_salvaged("no commits past the dispatch baseline — nothing to salvage".into());
+        let note = "no commits past the dispatch baseline — nothing to salvage".to_string();
+        record_salvage_receipt(pool, &card.id, "salvage_skipped_no_commits", &note).await;
+        return not_salvaged(note);
     }
 
     // G25 MED: only past this point is there actually anything worth
@@ -13799,7 +13813,15 @@ async fn maybe_salvage_committed_work(
         .unwrap_or(0)
         >= 1;
     if already_attempted {
-        return not_salvaged("salvage already attempted once for this goal".to_string());
+        let note = "salvage already attempted once for this goal".to_string();
+        // Lane R22c: audit-only here (not `record_salvage_receipt`) — a
+        // repeat call means the FIRST attempt already left the real outcome
+        // in the card's `salvage_receipt` metadata key; overwriting it with
+        // "already attempted" would destroy that history. The
+        // `decision_audit` row still needs to exist so this refusal is
+        // visible without cross-referencing card metadata.
+        record_salvage_audit(pool, &card.id, "salvage_refused_already_attempted", &note).await;
+        return not_salvaged(note);
     }
     if let Err(e) = persist_card_meta(pool, &card.id, |m| {
         let count = m
@@ -13840,7 +13862,15 @@ async fn maybe_salvage_committed_work(
         }
         Ok(_) => {}
         Err(e) => {
-            return not_salvaged(format!("could not confirm the worktree was clean: {e}"));
+            let note = format!("could not confirm the worktree was clean: {e}");
+            record_salvage_receipt(
+                pool,
+                &card.id,
+                "salvage_skipped_worktree_check_failed",
+                &note,
+            )
+            .await;
+            return not_salvaged(note);
         }
     }
 
@@ -14000,12 +14030,16 @@ async fn maybe_salvage_committed_work(
         // hands-on role still spinning) and requeued or parked the goal
         // itself — nothing left for THIS caller to do; it must not also
         // park a card that already moved.
-        return SalvageOutcome::Salvaged {
-            note: format!(
-                "salvaged {ahead} commit(s): verify passed and the goal was handed back to the \
-                 ordinary Hold/Park pipeline instead of being stranded unparked"
-            ),
-        };
+        let note = format!(
+            "salvaged {ahead} commit(s): verify passed and the goal was handed back to the \
+             ordinary Hold/Park pipeline instead of being stranded unparked"
+        );
+        // Lane R22c: this Salvaged sub-case never wrote card metadata OR an
+        // audit row before — `record_salvage_receipt`'s name says "did NOT
+        // land" but it is reused here purely for its persistence/audit
+        // side effects (the outcome string is what actually says "salvaged").
+        record_salvage_receipt(pool, &card.id, "salvaged_on_park_handed_to_pipeline", &note).await;
+        return SalvageOutcome::Salvaged { note };
     }
 
     let landed = after_state.as_ref().is_some_and(|c| {
@@ -14054,10 +14088,13 @@ async fn maybe_salvage_committed_work(
 }
 
 /// Best-effort breadcrumb for a salvage attempt that did NOT land the goal
-/// (skipped, failed, timed out) — logged and, best-effort, folded onto the
-/// card's `salvage_receipt` metadata key so a human (or the next A-series
-/// analysis) can see why a park went the ordinary route instead of being
-/// salvaged. Never fails the caller: a write error here only warns.
+/// (skipped, failed, timed out) — logged, best-effort folded onto the
+/// card's `salvage_receipt` metadata key, AND (Lane R22c) written to
+/// `decision_audit` via [`record_salvage_audit`] so a human (or the next
+/// A-series analysis) can see why a park went the ordinary route instead of
+/// being salvaged from the audit trail alone, without needing the card
+/// metadata to still be intact. Never fails the caller: a write error here
+/// only warns.
 async fn record_salvage_receipt(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
@@ -14086,6 +14123,71 @@ async fn record_salvage_receipt(
             target: "permagentd::brain",
             goal_id = %card_id,
             "could not record the salvage receipt ({outcome}): {e}"
+        );
+    }
+    record_salvage_audit(pool, card_id, outcome, note).await;
+}
+
+/// Lane R22c: every salvage decision at a park site — attempted, landed
+/// (`salvaged_on_park`), or any skipped/refused/failed reason, INCLUDING the
+/// common "nothing committed, nothing to salvage" case — writes a
+/// `decision_audit` row here, not just the best-effort card-metadata
+/// breadcrumb [`record_salvage_receipt`] also leaves. Before this lane,
+/// `maybe_salvage_committed_work` could run, correctly decline (e.g. a
+/// genuine `salvage_verify_failed`), and leave the `decision_audit`
+/// sequence around a park completely silent about it — indistinguishable
+/// from salvage never having been reached at all (A23/M24 evidence: a
+/// `headless_unblock_refused → created → park` sequence with no salvage row
+/// between them, even though card metadata showed salvage DID run and
+/// genuinely fail its verify). Mirrors `record_headless_unblock_refusal`'s
+/// synthetic-decision-id pattern: `decision_audit.decision_id` is `NOT
+/// NULL` but carries no real foreign key at most of these sites (see
+/// `spectral_schema.rs`'s own "FK-safe" note), so this writes a stable
+/// synthetic id scoped to the goal rather than a real `decisions.id`. A
+/// write failure here only warns: it must never fail the caller's own
+/// park/hold decision.
+async fn record_salvage_audit(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    outcome: &str,
+    evidence: &str,
+) {
+    let synthetic_decision_id = format!("salvage-gate:{card_id}");
+    let mut tx = match pool.begin_with("BEGIN IMMEDIATE").await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                "could not open a transaction to record the salvage decision_audit row \
+                 ({outcome}): {e}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = decisions::append_audit_tx(
+        &mut tx,
+        &synthetic_decision_id,
+        Some(card_id),
+        decisions::ACTOR_SALVAGE_POLICY,
+        1,
+        outcome,
+        Some(evidence),
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            "could not record the salvage decision_audit row ({outcome}): {e}"
+        );
+        return;
+    }
+    if let Err(e) = tx.commit().await {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            "could not commit the salvage decision_audit row ({outcome}): {e}"
         );
     }
 }
@@ -19532,6 +19634,99 @@ mod tests {
         (card, dir, head)
     }
 
+    /// Lane R22c (A23/M24 evidence): the exact shape of the DeepSeek
+    /// `editapply` misses — a 3rd dispatch whose session made zero further
+    /// changes (`"commits":[],"files_changed":0` in the real records; here,
+    /// a `goal/<run_id>` branch checked out but never advanced past the
+    /// base commit). `baseline == head`, so `commits_ahead_of_baseline`
+    /// reads 0 — the "nothing to salvage" case `maybe_salvage_committed_
+    /// work` must still audit, not silently swallow.
+    fn r20b_worktree_with_no_commits_past_baseline(run_id: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        r20b_git(root, &["init", "-q", "-b", "main"]);
+        r20b_git(root, &["config", "user.email", "test@example.com"]);
+        r20b_git(root, &["config", "user.name", "Test"]);
+        r20b_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"r20b-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "base"]);
+        let baseline = r20b_git(root, &["rev-parse", "HEAD"]);
+        let branch = format!("goal/{run_id}");
+        r20b_git(root, &["checkout", "-q", "-b", &branch]);
+        (dir, baseline)
+    }
+
+    /// Lane R22c: same shape as [`r20b_setup_goal_with_committed_work`], but
+    /// the worker's branch never advanced past the dispatch baseline —
+    /// `commits_ahead_of_baseline` reads 0, so salvage must skip (not
+    /// crash, not silently return) and still leave an audit trail.
+    async fn r20b_setup_goal_with_no_commits(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        run_id: &str,
+    ) -> (cards::Card, tempfile::TempDir) {
+        let (dir, baseline) = r20b_worktree_with_no_commits_past_baseline(run_id);
+        let card = setup_goal_in_state(pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": baseline,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 0,
+                "insertions": 0,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r20b-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(dir.path().to_string_lossy().as_ref())
+            .execute(pool)
+            .await
+            .unwrap();
+        persist_card_meta(pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(pool, &card.id).await.unwrap().unwrap();
+        (card, dir)
+    }
+
+    /// Lane R22c: the `decision_audit` rows written for a goal by
+    /// [`record_salvage_receipt`]/[`record_salvage_audit`], in `seq` order —
+    /// scoped to `acted_by = ACTOR_SALVAGE_POLICY` so this never picks up an
+    /// unrelated row (e.g. `headless_unblock_refused`, `park`) from the same
+    /// goal.
+    async fn salvage_audit_outcomes(pool: &sqlx::Pool<sqlx::Sqlite>, goal_id: &str) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT outcome FROM decision_audit WHERE goal_id = ? AND acted_by = ? ORDER BY seq ASC",
+        )
+        .bind(goal_id)
+        .bind(decisions::ACTOR_SALVAGE_POLICY)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
     /// A20 Q1 Mechanism A (`editapply`): a goal held with too little wall
     /// budget for another attempt, but its branch already carries a real,
     /// committed, verifiable fix — must be salvaged (verified, reviewed, and
@@ -19909,6 +20104,167 @@ mod tests {
             unblock.detail.contains("salvage"),
             "the skip note must be folded into the park detail, not discarded: {}",
             unblock.detail
+        );
+    }
+
+    // ── Lane R22c: salvage on the attempt-cap park, always audited ──────────
+    //
+    // A23/M24 evidence: a real `editapply`-shaped run showed the exact
+    // sequence `transition:dispatch, requeue, transition:dispatch, requeue,
+    // transition:dispatch, headless_unblock_refused(attempt_cap_exhausted),
+    // created, park` in `decision_audit`, with NO salvage row anywhere in
+    // between — even though the card's own metadata showed
+    // `maybe_salvage_committed_work` DID run (a `salvage_receipt` or
+    // `salvaged_on_park` key was present). Traced to source: the
+    // `HoldOutcome::Park` arm of `maybe_hold_review`
+    // (`maybe_headless_unblock_verify_gap` then `maybe_salvage_committed_
+    // work`, unconditionally, with no early return between them) was never
+    // the bug — `record_salvage_receipt`/the final `salvaged_on_park` write
+    // only ever touched card metadata, never `decision_audit`. These two
+    // tests pin the fix: every salvage outcome at this park site — landed
+    // or skipped — now leaves a `decision_audit` row, queried independently
+    // of card metadata so a future analysis never has to guess again.
+
+    /// Reproduces the evidence shape as closely as the existing R20b-d test
+    /// harness allows: `attempt_count` at `DEFAULT_ATTEMPT_CAP` (3) — the
+    /// same dimension the real `check_budget` refusal hit — a hold-exhausted
+    /// goal, and a genuinely committed, verifiable fix on the branch. Must
+    /// land via salvage (not park) AND leave a `salvaged_on_park`
+    /// `decision_audit` row, independent of the card-metadata receipt.
+    #[tokio::test]
+    async fn hold_exhaustion_park_at_attempt_cap_salvages_and_audits() {
+        let pool = test_pool().await;
+        let (card, _dir, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "r22c-attempt-cap-salvage", None).await;
+        persist_card_meta(&pool, &card.id, |m| {
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            // Pre-spend R18g's own once-per-goal gate — same reasoning as
+            // every other test in this section: makes `maybe_headless_
+            // unblock_verify_gap`'s refusal deterministic regardless of
+            // whether some OTHER test already flipped the process-global
+            // `HEADLESS_DISPATCH_POLICY_CONFIG` `OnceLock`, without this
+            // test mutating that global itself.
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+        // Three dispatches, attempt cap reached — the exact `spent: 3, cap:
+        // 3` dimension A23 traced the real refusal to (DEFAULT_ATTEMPT_CAP).
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "a salvaged goal must never be left in_progress"
+        );
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "committed, verifiable work at attempt-cap exhaustion must be salvaged, not parked"
+        );
+        assert!(
+            updated.metadata_json.get("salvaged_on_park").is_some(),
+            "the card-metadata receipt must still be written, exactly as before this lane"
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(
+            outcomes,
+            vec!["salvaged_on_park".to_string()],
+            "a landed salvage must leave exactly one decision_audit row naming the real outcome, \
+             not silence — the pre-fix defect A23/M24 found"
+        );
+    }
+
+    /// The no-commits variant of the same park: `attempt_count` at the cap,
+    /// but the branch never advanced past its dispatch baseline — the exact
+    /// shape A23 flagged as needing its own explanation ("why did the worker
+    /// not commit"), not a silent swallow. Salvage must skip (never crash,
+    /// never claim a commit that does not exist) and the goal must still
+    /// park — but now with a `salvage_skipped_no_commits` `decision_audit`
+    /// row a future analysis can find without cross-referencing card
+    /// metadata or the goal worktree's own git history.
+    #[tokio::test]
+    async fn hold_exhaustion_park_at_attempt_cap_with_no_commits_skips_and_audits() {
+        let pool = test_pool().await;
+        let (card, _dir) =
+            r20b_setup_goal_with_no_commits(&pool, "r22c-attempt-cap-no-commit").await;
+        persist_card_meta(&pool, &card.id, |m| {
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "nothing committed past baseline must still park the goal, exactly as before this \
+             lane"
+        );
+        assert!(updated.metadata_json.get("salvaged_on_park").is_none());
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("a no-commits skip must still leave the card-metadata breadcrumb");
+        assert_eq!(
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvage_skipped_no_commits")
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(
+            outcomes,
+            vec!["salvage_skipped_no_commits".to_string()],
+            "even the common 'nothing to salvage' case must leave a decision_audit row, not \
+             just a card-metadata breadcrumb — the pre-fix defect A23/M24 found"
         );
     }
 

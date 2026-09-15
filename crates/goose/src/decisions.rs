@@ -62,6 +62,18 @@ pub const ACTOR_AUTO_LAUNCH: &str = "auto-mode-launch";
 /// [`answer_decision`]/[`answer_decision_as_session`] family.
 pub const ACTOR_HEADLESS_POLICY: &str = "headless_policy";
 
+/// Attribution for the audit-only `decision_audit` rows `orchestrator.rs`'s
+/// `maybe_salvage_committed_work` writes for every outcome (attempted,
+/// landed, or any skipped/refused/failed reason) — Lane R22c: an
+/// offline analysis could not tell a salvage attempt happened at all when it
+/// correctly declined (the breadcrumb was card metadata only, never the
+/// audit log). Same shape as [`ACTOR_HEADLESS_POLICY`]: no real
+/// `decisions.id` exists at most of these call sites, so a synthetic,
+/// goal-scoped decision id stands in; this actor never answers a decision
+/// through [`answer_decision`]/[`answer_decision_as_session`], only writes
+/// audit rows directly, so it is deliberately NOT in [`VALID_ACTORS`].
+pub const ACTOR_SALVAGE_POLICY: &str = "salvage_policy";
+
 const VALID_ACTORS: &[&str] = &[ACTOR_JESSE, ACTOR_HENRY, ACTOR_SYSTEM];
 // `edit` = approve-with-edits: an acceptance that ALSO carries a revised draft
 // in `answer_input` (the original lives in `payload.draft`). The delta is
