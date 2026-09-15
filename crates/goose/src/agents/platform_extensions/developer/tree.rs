@@ -140,8 +140,10 @@ fn effective_depth(depth: u32) -> usize {
 /// `safe_probe_path` idea, applied to a tree root instead of a probe file):
 /// empty or `/` defaults to the working directory; a relative path joins it
 /// but can't escape via `..`; an absolute path is only honored when it's
-/// already under the working directory, and refused otherwise rather than
-/// silently walking the host filesystem.
+/// already under the working directory. Anything else is refused as a COST
+/// guard, not a sandbox: `tree` exists to give a small, cheap map of the
+/// workspace, and walking an arbitrary host path produces output nobody asked
+/// for. `shell`/`read_file` remain the way to look at other paths.
 fn resolve_root(path: &str, working_dir: &Path) -> Result<PathBuf, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() || trimmed == "/" {
@@ -154,8 +156,9 @@ fn resolve_root(path: &str, working_dir: &Path) -> Result<PathBuf, String> {
             Ok(supplied.to_path_buf())
         } else {
             Err(format!(
-                "tree: `{trimmed}` is outside the workspace root ({}); pass a path under it, \
-                 or leave path empty to list the workspace root.",
+                "tree: `{trimmed}` is outside the workspace root ({}); tree lists only under \
+                 the workspace root to keep output small — use shell or read_file for other \
+                 paths, or leave path empty to list the workspace root.",
                 working_dir.display()
             ))
         };

@@ -19007,8 +19007,11 @@ async fn record_synthetic_verify_evidence(
 /// a stray short string can never match broadly.
 pub(crate) fn sha_matches(a: &str, b: &str) -> bool {
     let (a, b) = (a.trim(), b.trim());
-    let n = a.len().min(b.len());
-    n >= 7 && a[..n] == b[..n]
+    // R47-b (G32): compare with `starts_with` on the shorter side rather than
+    // slicing — `-D clippy::string_slice` reds a byte-index slice here, and a
+    // sha is not guaranteed to be ASCII as far as the type system knows.
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    short.len() >= 7 && long.starts_with(short)
 }
 
 async fn maybe_hold_review(

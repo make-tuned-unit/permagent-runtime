@@ -166,8 +166,8 @@ impl DeveloperClient {
                 "tree".to_string(),
                 "List a directory tree with line counts. Traversal respects .gitignore rules \
                  and always skips .git/node_modules/target-style directories. Defaults to the \
-                 working directory (path empty or \"/\"); an absolute path outside it is \
-                 refused. Output is capped (default depth 4, up to 400 entries) with a trailing \
+                 working directory (path empty or \"/\"); tree lists only under the workspace \
+                 root to keep output small - use shell or read_file for other paths. Output is capped (default depth 4, up to 400 entries) with a trailing \
                  truncation note - pass depth/limit or a subpath for more."
                     .to_string(),
                 Self::schema::<TreeParams>(),
