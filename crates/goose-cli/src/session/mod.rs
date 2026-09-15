@@ -1785,6 +1785,32 @@ impl CliSession {
                 tracing::warn!("post-run goal drain failed (non-fatal): {e}");
             }
         }
+
+        // Lane R31b (A30 analysis): this is the single point the ordinary
+        // drain and `park_dispatched_goals_now`'s shutdown-signal path both
+        // converge, and the last code this method runs before returning —
+        // so it is the last chance to land a goal that finished a headless-
+        // unblock resume (or otherwise ended up Ready/in_progress with a
+        // real, unlanded commit) too late for any earlier redispatch/park
+        // cycle to claim it. Unconditional: runs whether the drain above
+        // dispatched anything, timed out, or itself failed — a drain error
+        // does not mean nothing is stranded.
+        match permagent::agents::platform_extensions::orchestrator::run_end_salvage_sweep(
+            &pool,
+            &self.session_id,
+        )
+        .await
+        {
+            Ok((attempted, landed)) if attempted > 0 => {
+                output::render_notice(&format!(
+                    "run-end salvage sweep: {attempted} goal(s) had unlanded work, {landed} landed"
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("run-end salvage sweep failed (non-fatal): {e}");
+            }
+        }
     }
 
     async fn process_agent_response(

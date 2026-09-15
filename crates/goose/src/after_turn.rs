@@ -1822,6 +1822,47 @@ impl NoRoadmapGuard {
         })
     }
 
+    /// Lane R31b: the stranded-Ready-goal nudge's OWN once-per-session
+    /// marker — distinct from [`Self::already_nudged`]'s (a different
+    /// injected sentence entirely), so the two nudges' budgets can never be
+    /// confused with each other.
+    fn already_nudged_stranded_ready(messages: &[Message]) -> bool {
+        use crate::conversation::message::MessageContent;
+        messages.iter().flat_map(|m| m.content.iter()).any(|c| {
+            matches!(c, MessageContent::Text(text) if text.text.contains(STRANDED_READY_NUDGE_MARKER))
+        })
+    }
+
+    /// Lane R31b (A30 analysis): the first (if any) of `cards` that is
+    /// `Ready` and carries R26b's `resumed_by_headless_unblock_at` stamp —
+    /// the exact shape A30 traced (a goal that finished its one-time
+    /// headless-unblock resume with no further redispatch/refusal-audit
+    /// cycle left to claim it before the run ended). One extra
+    /// `cards::get_card` fetch per Ready candidate only — `SessionGoalCard`
+    /// itself carries no `metadata_json` — never a scan of the whole
+    /// roadmap; a card read failure is treated the same as "not stranded"
+    /// (fail open, same posture as every other lookup in this guard).
+    async fn stranded_ready_goal_id(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        cards: &[crate::cards::SessionGoalCard],
+    ) -> Option<String> {
+        for card in cards {
+            if card.state_binding != "ready" {
+                continue;
+            }
+            if let Ok(Some(full)) = crate::cards::get_card(pool, &card.card_id).await {
+                if full
+                    .metadata_json
+                    .get("resumed_by_headless_unblock_at")
+                    .is_some()
+                {
+                    return Some(card.card_id.clone());
+                }
+            }
+        }
+        None
+    }
+
     /// The whole policy as one pure fold, so every branch is unit-testable
     /// without a session store or a database — the same shape as
     /// [`decide`], `ReviewerMandate`'s pure half.
@@ -1859,6 +1900,14 @@ impl NoRoadmapGuard {
         }
     }
 }
+
+/// Lane R31b (A30 analysis): the stable substring [`NoRoadmapGuard::
+/// already_nudged_stranded_ready`] recognises and [`NoRoadmapGuard::
+/// after_turn`]'s own injected text always contains, regardless of which
+/// goal id it names — a fixed marker separate from the goal id lets the
+/// once-per-session check work without re-parsing the injected sentence.
+const STRANDED_READY_NUDGE_MARKER: &str =
+    "is Ready with unlanded work; call goal_advance(dispatch)";
 
 /// Surfaced instead of the nudge once the shared hold budget is spent. Never
 /// claims a roadmap was refused — only that none was ever requested.
@@ -1909,11 +1958,35 @@ impl AfterTurn for NoRoadmapGuard {
         let Ok(pool) = manager.pool_clone().await else {
             return AfterTurnAction::Allow;
         };
-        let Ok(has_roadmap_cards) =
-            Self::has_roadmap_cards(&pool, ctx.session_id, &session.working_dir).await
+        let Ok(roadmap_cards) =
+            goal_cards_relevant_to_session(&pool, ctx.session_id, &session.working_dir).await
         else {
             return AfterTurnAction::Allow;
         };
+        let has_roadmap_cards = !roadmap_cards.is_empty();
+
+        // Lane R31b (A30 analysis): a roadmap already exists — the branch
+        // below would otherwise just Allow — so cheaply check whether one
+        // of THIS session's own cards is `Ready` carrying R26b's
+        // `resumed_by_headless_unblock_at` stamp, the exact "finished its
+        // one-time headless-unblock resume with no further redispatch cycle
+        // left to claim it" shape A30 traced. Bounded: only the (normally 0
+        // or 1) Ready candidates get a follow-up `cards::get_card` fetch —
+        // `SessionGoalCard` itself carries no metadata — never the whole
+        // roadmap. `run_end_salvage_sweep` (orchestrator.rs) is the
+        // guaranteed last-chance backstop regardless of whether this nudge
+        // fires or is heeded; this is only a cheaper, earlier chance for the
+        // coordinator to act on it itself.
+        if has_roadmap_cards && !Self::already_nudged_stranded_ready(ctx.messages) {
+            if let Some(goal_id) = Self::stranded_ready_goal_id(&pool, &roadmap_cards).await {
+                return AfterTurnAction::Continue {
+                    inject: format!(
+                        "goal {goal_id} is Ready with unlanded work; call goal_advance(dispatch) \
+                         or let the run-end sweep land it"
+                    ),
+                };
+            }
+        }
 
         Self::decide(
             true,
@@ -5200,6 +5273,112 @@ mod tests {
             AfterTurnAction::Allow,
             "an ordinary closing summary after a resumed roadmap must not park"
         );
+    }
+
+    // ── Lane R31b (A30 analysis): stranded-Ready-goal nudge ─────────────────
+
+    /// `stranded_ready_goal_id` finds the one Ready card carrying R26b's
+    /// `resumed_by_headless_unblock_at` stamp among a roadmap that also has
+    /// an ordinary (unstamped) Ready card and a Complete one — neither of
+    /// which may be mistaken for the stranded shape.
+    #[tokio::test]
+    async fn stranded_ready_goal_id_finds_the_resumed_ready_card_only() {
+        let pool = crate::session::SessionManager::instance()
+            .pool_clone()
+            .await
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: format!("r31b-stranded-{}", uuid::Uuid::now_v7()),
+                root_path: Some(tmp.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+
+        let session_id = format!("r31b-stranded-session-{}", uuid::Uuid::now_v7());
+        insert_session_goal_card(&pool, &project.id, &session_id, "complete", true, None).await;
+        let ordinary_ready =
+            insert_session_goal_card(&pool, &project.id, &session_id, "ready", false, None).await;
+        let stranded_ready =
+            insert_session_goal_card(&pool, &project.id, &session_id, "ready", false, None).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, \
+             '$.resumed_by_headless_unblock_at', ?) WHERE id = ?",
+        )
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(&stranded_ready)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let cards = goal_cards_relevant_to_session(&pool, &session_id, tmp.path())
+            .await
+            .unwrap();
+        let found = NoRoadmapGuard::stranded_ready_goal_id(&pool, &cards).await;
+        assert_eq!(
+            found,
+            Some(stranded_ready),
+            "must find the stamped Ready card, never the plain Ready one ({ordinary_ready}) or \
+             the Complete one"
+        );
+    }
+
+    /// No card carries the stamp (the ordinary case — nothing stranded) —
+    /// `stranded_ready_goal_id` must read `None`, never a false positive off
+    /// an unrelated Ready card.
+    #[tokio::test]
+    async fn stranded_ready_goal_id_is_none_without_the_stamp() {
+        let pool = crate::session::SessionManager::instance()
+            .pool_clone()
+            .await
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: format!("r31b-unstranded-{}", uuid::Uuid::now_v7()),
+                root_path: Some(tmp.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+
+        let session_id = format!("r31b-unstranded-session-{}", uuid::Uuid::now_v7());
+        insert_session_goal_card(&pool, &project.id, &session_id, "ready", true, None).await;
+
+        let cards = goal_cards_relevant_to_session(&pool, &session_id, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            NoRoadmapGuard::stranded_ready_goal_id(&pool, &cards).await,
+            None
+        );
+    }
+
+    /// The injected nudge text always contains the fixed marker
+    /// `already_nudged_stranded_ready` looks for, and the once-per-session
+    /// check correctly recognises it once injected.
+    #[test]
+    fn stranded_ready_nudge_marker_round_trips_through_already_nudged_check() {
+        let injected = "goal some-goal-id is Ready with unlanded work; call \
+                         goal_advance(dispatch) or let the run-end sweep land it";
+        assert!(injected.contains(STRANDED_READY_NUDGE_MARKER));
+        let messages = vec![Message::user().with_text(injected)];
+        assert!(NoRoadmapGuard::already_nudged_stranded_ready(&messages));
+        assert!(!NoRoadmapGuard::already_nudged_stranded_ready(&[
+            Message::assistant().with_text("all done")
+        ]));
     }
 
     // ── Rule5HonestFailureGuard (Lane R18f, A17 analysis Class 4) ──────────
