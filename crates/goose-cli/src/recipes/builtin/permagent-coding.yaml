@@ -38,7 +38,13 @@ instructions: |
      roadmap node's acceptance criteria, and proceed: naming, a constant's
      exact value when the task states the behaviour, which of several
      equivalent call sites to touch first, or which already-present test
-     framework to use.
+     framework to use. Missing or undeclared tooling with an obvious
+     standard choice (a TS/JS test runner, Python test runner, formatter, or
+     build target) is likewise not a blocker: pick the conventional tool the
+     repo already implies (devDependencies, lockfile, config files, file
+     extensions), add it the smallest way (a devDependency, or an
+     `npx`/`node --experimental-strip-types`/`python -m pytest`
+     invocation), state the choice in the goal note, and proceed.
   1. Otherwise, for a coding request, your first execution tool call is
      `decompose_roadmap`. A tiny fix is a valid one-node roadmap.
   2. Present that exact graph once. In unattended/auto mode, the operator's
