@@ -1333,6 +1333,214 @@ fn merge_goals_into_one(goals: &[goal_state::ProposedGoal]) -> goal_state::Propo
     }
 }
 
+/// True when `token` is shaped like a filename (`word.ext`, a short
+/// alphanumeric extension) — the R52b "mechanical call-site" merge below
+/// masks these out of a goal's title/description before comparing two
+/// goals' shape, and the cap below counts distinct ones as a proxy for how
+/// many call sites the task text actually touches. Deliberately generous: a
+/// false positive only costs masking one extra token before the shape
+/// comparison, while a false negative would silently keep two genuinely
+/// mechanical goals unmerged.
+fn looks_like_file_token(token: &str) -> bool {
+    let trimmed =
+        token.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '_' && c != '/');
+    match trimmed.rsplit_once('.') {
+        Some((stem, ext))
+            if !stem.is_empty()
+                && (2..=5).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphanumeric()) =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Below this many shared (non-file) words, two goals matching only on a
+/// generic verb plus a filename ("Fix src/a.rs" / "Fix src/b.rs") must NOT
+/// read as the same mechanical shape — `ground_roadmap_goals_keeps_a_split_
+/// when_every_goal_names_a_real_file` is exactly this case (2 shared words:
+/// "fix"/"edit"), and it is a genuinely-justified split, not an
+/// over-decomposition, that right-sizing itself already proved correct to
+/// keep. The real A50 pathology shares 15+ words once its file token is
+/// masked ("update the call to quoteshipping in <file> to pass packagetype
+/// as the 3rd argument …") — comfortably clear of this floor.
+const MECHANICAL_SHAPE_MIN_WORDS: usize = 6;
+
+/// The R52b "same mechanical shape" key (A50 analysis (b),
+/// `harness-refactor-shipping-quote-signature`): a goal's title+description,
+/// lowercased, with every file-shaped token masked to a fixed placeholder.
+/// Two goals that produce the IDENTICAL key differ (if at all) only in which
+/// file/call site they name — same verb, same target, different file —
+/// which is exactly the shape `decompose_roadmap` over-splits into one goal
+/// per call site. `None` for a goal that names no file-shaped token at all
+/// (a signature-change goal naming only a function, a test goal naming a
+/// test suite rather than a call site): such a goal can never join a
+/// cluster, which is what keeps the signature and test goals standing alone.
+/// Also `None` when fewer than [`MECHANICAL_SHAPE_MIN_WORDS`] non-file words
+/// remain — a bare "verb + filename" match is too generic to trust as "the
+/// same operation", see that constant's own doc comment.
+fn mechanical_shape_key(goal: &goal_state::ProposedGoal) -> Option<String> {
+    let haystack = format!("{} {}", goal.title, goal.description).to_lowercase();
+    let mut saw_file = false;
+    let mut non_file_words = 0usize;
+    let masked: Vec<&str> = haystack
+        .split_whitespace()
+        .map(|tok| {
+            if looks_like_file_token(tok) {
+                saw_file = true;
+                "<file>"
+            } else {
+                non_file_words += 1;
+                tok
+            }
+        })
+        .collect();
+    if !saw_file || non_file_words < MECHANICAL_SHAPE_MIN_WORDS {
+        return None;
+    }
+    Some(masked.join(" "))
+}
+
+/// Fold each cluster of original goal indices in `clusters` into its first
+/// member (`merge_goals_into_one`'s union-of-criteria/tags logic, applied to
+/// the whole cluster), preserving every OTHER goal's relative order and
+/// remapping every surviving goal's `depends_on` indices from old to new.
+/// `clusters` need not cover every index — anything left out passes through
+/// as its own singleton "cluster". Shared by both R52b callers below (the
+/// same-shape merge and the scope-proportional cap) so the index bookkeeping
+/// — the part most likely to be gotten wrong — is written and reasoned about
+/// exactly once.
+fn collapse_goal_clusters(
+    goals: &[goal_state::ProposedGoal],
+    clusters: &[Vec<usize>],
+) -> Vec<goal_state::ProposedGoal> {
+    let mut slot_of: HashMap<usize, usize> = HashMap::new();
+    for cluster in clusters {
+        if let Some(&first) = cluster.first() {
+            for &i in cluster {
+                slot_of.insert(i, first);
+            }
+        }
+    }
+    let mut slot_order: Vec<usize> = Vec::new();
+    for i in 0..goals.len() {
+        let slot = *slot_of.get(&i).unwrap_or(&i);
+        if !slot_order.contains(&slot) {
+            slot_order.push(slot);
+        }
+    }
+    let new_index_of: HashMap<usize, usize> = slot_order
+        .iter()
+        .enumerate()
+        .map(|(new_i, &old_slot)| (old_slot, new_i))
+        .collect();
+
+    let mut result: Vec<goal_state::ProposedGoal> = Vec::with_capacity(slot_order.len());
+    for &slot in &slot_order {
+        let members: Vec<usize> = (0..goals.len())
+            .filter(|i| *slot_of.get(i).unwrap_or(i) == slot)
+            .collect();
+        let mut merged = if members.len() > 1 {
+            let cluster_goals: Vec<goal_state::ProposedGoal> =
+                members.iter().map(|&i| goals[i].clone()).collect();
+            merge_goals_into_one(&cluster_goals)
+        } else {
+            goals[slot].clone()
+        };
+        let mut deps: Vec<usize> = Vec::new();
+        for &i in &members {
+            for &d in &goals[i].depends_on {
+                let old_slot = *slot_of.get(&d).unwrap_or(&d);
+                if let Some(&new_i) = new_index_of.get(&old_slot) {
+                    if !deps.contains(&new_i) {
+                        deps.push(new_i);
+                    }
+                }
+            }
+        }
+        merged.depends_on = deps;
+        result.push(merged);
+    }
+    // A fold can turn a cross-cluster dependency into a self-dependency
+    // (two goals that depended on each other, now merged into the same
+    // slot) — drop it rather than leave a self-edge for `topological_order`
+    // to reject.
+    for (i, goal) in result.iter_mut().enumerate() {
+        goal.depends_on.retain(|&d| d != i);
+    }
+    result
+}
+
+/// Z1-5 (R52b, A50 analysis (b)): merge every cluster of 2+ goals that share
+/// a `mechanical_shape_key` into one goal each — "the N call sites of X"
+/// collapsed to a single dispatch/verify/review unit instead of N. Goals
+/// that share no key with anything else (including every signature-change
+/// and test goal, which never produce a key at all) are left untouched.
+/// Returns the possibly-shorter goal list plus how many goals were folded
+/// away (0 when nothing merged).
+fn merge_mechanical_call_site_goals(
+    goals: Vec<goal_state::ProposedGoal>,
+) -> (Vec<goal_state::ProposedGoal>, usize) {
+    if goals.len() < 2 {
+        return (goals, 0);
+    }
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, goal) in goals.iter().enumerate() {
+        let Some(key) = mechanical_shape_key(goal) else {
+            continue;
+        };
+        if let Some(group) = groups.iter_mut().find(|(k, _)| *k == key) {
+            group.1.push(i);
+        } else {
+            groups.push((key, vec![i]));
+        }
+    }
+    let clusters: Vec<Vec<usize>> = groups
+        .into_iter()
+        .filter(|(_, idxs)| idxs.len() >= 2)
+        .map(|(_, idxs)| idxs)
+        .collect();
+    if clusters.is_empty() {
+        return (goals, 0);
+    }
+    let merged_away: usize = clusters.iter().map(|c| c.len() - 1).sum();
+    (collapse_goal_clusters(&goals, &clusters), merged_away)
+}
+
+/// Z1-5 cap (R52b brief): a scope-proportional ceiling on total goal count,
+/// independent of whether any two goals shared a mechanical shape — `1 +
+/// <distinct file-shaped tokens named across every goal>`, clamped to
+/// `[2, 6]`. Never DROPS a goal to reach the cap: repeatedly folds the
+/// highest-indexed remaining goal into its immediate predecessor (one
+/// `collapse_goal_clusters` call per fold) until the count fits, so every
+/// acceptance criterion and tag from an over-decomposed roadmap still
+/// survives somewhere in the output, just combined.
+fn cap_roadmap_goal_count(
+    mut goals: Vec<goal_state::ProposedGoal>,
+) -> (Vec<goal_state::ProposedGoal>, usize) {
+    if goals.len() < 2 {
+        return (goals, 0);
+    }
+    let mut file_tokens: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for goal in &goals {
+        let haystack = format!("{} {}", goal.title, goal.description).to_lowercase();
+        for tok in haystack.split_whitespace() {
+            if looks_like_file_token(tok) {
+                file_tokens.insert(tok.to_string());
+            }
+        }
+    }
+    let cap = (1 + file_tokens.len()).clamp(2, 6);
+    let mut merged = 0usize;
+    while goals.len() > cap {
+        let last = goals.len() - 1;
+        goals = collapse_goal_clusters(&goals, &[vec![last - 1, last]]);
+        merged += 1;
+    }
+    (goals, merged)
+}
+
 /// Z1-3: keep only tags a currently-dispatchable roster worker declares
 /// (case-insensitive); everything else is dropped rather than left to zero
 /// out dispatch later with "No suitable worker available" (Lane M6 Defect
@@ -1466,6 +1674,44 @@ pub(crate) fn ground_roadmap_goals(
                 facts.file_count
             ));
             goals = vec![merge_goals_into_one(&goals)];
+        }
+    }
+
+    // Z1-5 (R52b, A50 analysis (b) "refactor-shipping-quote-signature"): fold
+    // goals that are the same mechanical operation repeated across N
+    // call-site files into one goal, BEFORE the per-goal criteria/tag
+    // rewrite below so the merged goal's union of criteria/tags is what gets
+    // rewritten, not just the first member's. Independent of the Z1-4 block
+    // above — that one only fires under a small-repo file-count ceiling and
+    // collapses EVERYTHING to one goal; this one fires at any repo size and
+    // only merges goals that actually share a mechanical shape, leaving a
+    // signature-change goal and a test goal standing alone (neither names a
+    // file the way a call-site edit does, so neither ever joins a cluster).
+    if goals.len() > 1 {
+        let (merged_goals, merged_mechanical) = merge_mechanical_call_site_goals(goals);
+        goals = merged_goals;
+        if merged_mechanical > 0 {
+            receipts.push(format!(
+                "merged {merged_mechanical} mechanically-identical call-site goal(s) into one \
+                 (same operation, different file — decompose_merged_mechanical={merged_mechanical})"
+            ));
+            tracing::info!(
+                target: "permagentd::orchestrator",
+                merged = merged_mechanical,
+                "decompose_merged_mechanical={merged_mechanical}"
+            );
+        }
+
+        // Z1-5 cap: even after the mechanical merge above, keep the roadmap
+        // proportional to scope — never drop a goal to get there, fold the
+        // excess instead (see `cap_roadmap_goal_count`'s own doc comment).
+        let (capped_goals, merged_for_cap) = cap_roadmap_goal_count(goals);
+        goals = capped_goals;
+        if merged_for_cap > 0 {
+            receipts.push(format!(
+                "folded {merged_for_cap} goal(s) to stay within the scope-proportional roadmap \
+                 cap (nothing dropped — merged into a neighbouring goal)"
+            ));
         }
     }
 
@@ -14652,6 +14898,20 @@ pub(crate) fn next_drain_action(
     DrainAction::Park
 }
 
+/// R52b (A50 analysis (b), `harness-refactor-shipping-quote-signature`): the
+/// median of however many goal durations this drain has actually observed
+/// finish so far. Pure and independently testable. `None` with no data yet —
+/// the caller must not treat that as "budget for anything", only as "no
+/// better estimate than the static headroom exists yet".
+pub(crate) fn median_duration(durations: &[std::time::Duration]) -> Option<std::time::Duration> {
+    if durations.is_empty() {
+        return None;
+    }
+    let mut sorted = durations.to_vec();
+    sorted.sort();
+    Some(sorted[sorted.len() / 2])
+}
+
 /// The dispatch half of the drain policy: which of the currently-eligible
 /// Ready cards this pass should start.
 ///
@@ -14879,6 +15139,21 @@ async fn drain_dispatched_goals_with(
     let completion_bound = headless_completion_inflight_from_env().min(cap);
     // Y6b (G12 HIGH-1): logged at most once per drain, not once per poll.
     let mut headroom_logged = false;
+    // R52b: when each of THIS drain's own awaited cards first joined
+    // `pending`, keyed by card id (not session id — a re-dispatch gives a
+    // card a new session, but the point is how long the CARD took). Used
+    // only to compute `finished_durations` below; never read on its own.
+    let mut goal_started_at: HashMap<String, std::time::Instant> = HashMap::new();
+    // R52b: wall-clock duration of every goal THIS drain has watched reach
+    // `DrainAction::Finished`, in observed order. A static `sweep_headroom`
+    // is a worst-case guess set once, in an env var, for every task; once
+    // this run has actually finished at least one goal, its own median is a
+    // better estimate of "can one more like it fit in what's left" — a run
+    // made of many quick, mechanical goals (same-shape call-site edits, see
+    // `merge_mechanical_call_site_goals`) should not stand the sweep down
+    // with real budget left just because that budget is under the static
+    // headroom.
+    let mut finished_durations: Vec<std::time::Duration> = Vec::new();
 
     let start = std::time::Instant::now();
     loop {
@@ -14917,6 +15192,12 @@ async fn drain_dispatched_goals_with(
             {
                 projects.insert(project_id.clone());
                 awaited_cards.insert(card_id.clone());
+                // R52b: first sighting of this CARD, not this session — a
+                // re-dispatch must not reset the clock `finished_durations`
+                // below measures against.
+                goal_started_at
+                    .entry(card_id.clone())
+                    .or_insert_with(std::time::Instant::now);
                 // It is running again — it is no longer awaiting a restart.
                 requeued.remove(&card_id);
                 pending.insert(session_id, (card_id, project_id));
@@ -14959,7 +15240,18 @@ async fn drain_dispatched_goals_with(
             let action =
                 next_drain_action(state, receipt_terminal, completion_in_flight, budget_left);
             match action {
-                DrainAction::Finished => finished += 1,
+                DrainAction::Finished => {
+                    finished += 1;
+                    // R52b: record how long this card actually took, feeding
+                    // `median_goal_duration` below. Best-effort — a card
+                    // this drain never itself saw start (should not happen,
+                    // since `card_id` only reaches `pending` via the
+                    // discover-new loop above, which always stamps it first)
+                    // simply contributes no sample rather than panicking.
+                    if let Some(started) = goal_started_at.remove(&card_id) {
+                        finished_durations.push(started.elapsed());
+                    }
+                }
                 DrainAction::Requeued => {
                     requeued.insert(card_id, project_id);
                 }
@@ -15028,7 +15320,18 @@ async fn drain_dispatched_goals_with(
         // conservative of the two. Keep both in mind together when touching
         // either: nothing enforces that they stay this way.
         let remaining = cap.saturating_sub(start.elapsed());
-        let inside_headroom = remaining < redispatch.sweep_headroom;
+        let static_headroom = remaining < redispatch.sweep_headroom;
+        // R52b (A50 analysis (b)): a goal-duration-aware override on the
+        // static headroom check above — once this drain has actually
+        // finished at least one goal, its own median wall-clock duration is
+        // real evidence "one more like it" can still land in what remains,
+        // even when that is less than the static `sweep_headroom` guess.
+        // With no history yet (`median_goal_duration` is `None`), this
+        // changes nothing: the static headroom alone decides, exactly as
+        // before this lane.
+        let median_goal_duration = median_duration(&finished_durations);
+        let median_allows_more = median_goal_duration.is_some_and(|median| remaining >= median);
+        let inside_headroom = static_headroom && !median_allows_more;
         if inside_headroom && !headroom_logged {
             headroom_logged = true;
             tracing::info!(
@@ -15054,6 +15357,21 @@ async fn drain_dispatched_goals_with(
             )
             .await
         };
+        if dispatched_now > 0 {
+            // R52b: the drain is continuing to dispatch Ready goals rather
+            // than ending the run while work and budget both remain — the
+            // exact behaviour the A50 analysis (b) miss needed and did not
+            // get. One line per pass that actually dispatches something,
+            // not per poll — a quiet pass logs nothing here.
+            tracing::info!(
+                target: "permagentd::brain",
+                ready = dispatched_now,
+                remaining_budget_secs = remaining.as_secs(),
+                "drain_continue ready={} remaining_budget={}",
+                dispatched_now,
+                remaining.as_secs(),
+            );
+        }
 
         // Stop only on a pass that found the wait set empty AND discovered
         // nothing new AND started nothing new — a pass that dispatched a goal
@@ -31384,6 +31702,38 @@ mod tests {
         );
     }
 
+    /// R52b, pure: no data, no median; one sample is its own median; an even
+    /// count picks the upper-middle element (never rounds UP past what real
+    /// data supports, since that element genuinely was observed).
+    #[test]
+    fn median_duration_of_observed_goal_durations() {
+        use std::time::Duration;
+        assert_eq!(median_duration(&[]), None);
+        assert_eq!(
+            median_duration(&[Duration::from_secs(30)]),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            median_duration(&[
+                Duration::from_secs(10),
+                Duration::from_secs(30),
+                Duration::from_secs(20),
+            ]),
+            Some(Duration::from_secs(20)),
+            "order-independent — sorted before picking the middle"
+        );
+        assert_eq!(
+            median_duration(&[
+                Duration::from_secs(10),
+                Duration::from_secs(20),
+                Duration::from_secs(30),
+                Duration::from_secs(40),
+            ]),
+            Some(Duration::from_secs(30)),
+            "even count: the upper-middle element"
+        );
+    }
+
     /// Y6, the dispatch-selection half: never a live card, never past the
     /// budget, never the same card twice in one pass, order preserved.
     #[test]
@@ -31879,6 +32229,113 @@ mod tests {
             },
             "standing the sweep down must not drop the goal — it is parked and counted, exactly \
              as the pre-Y6 drain counted it"
+        );
+    }
+
+    /// R52b (A50 analysis (b), `harness-refactor-shipping-quote-signature`):
+    /// the SAME fixture shape as the test above (a static `sweep_headroom`
+    /// far larger than the drain's own cap, so every poll is "inside the
+    /// headroom" by the old, static-only rule) — except this run has ALREADY
+    /// watched one goal finish, near-instantly, before the redispatch sweep
+    /// is ever evaluated. That real median duration is evidence one more
+    /// goal of the same shape can still land in what remains, so the sweep
+    /// must NOT stand down this time — the exact case the A50 analysis (b)
+    /// miss needed (four mechanically-identical call-site goals, each fast,
+    /// none of which should be blocked by a worst-case static guess).
+    #[tokio::test]
+    async fn drain_continues_past_static_headroom_when_the_median_goal_duration_still_fits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        // Goal A: already `complete` when the drain starts — the very first
+        // poll observes it, records it `Finished`, and (this lane's whole
+        // point) stamps a near-zero duration into `finished_durations`
+        // before the SAME iteration's redispatch decision is made.
+        let finished_child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: already done".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let finished_card = setup_goal_in_state(&pool, "complete", 1).await;
+        attach_worker_session_to_card(&pool, &finished_card.id, &finished_child.id).await;
+
+        // Goal B: the A13 fx04 shape (held, reverted to Ready, worker over)
+        // this test's sibling above proved the static headroom alone stands
+        // down.
+        let ready_child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: held and reverted".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let ready_card = setup_goal_in_state(&pool, "ready", 1).await;
+        attach_worker_session_to_card(&pool, &ready_card.id, &ready_child.id).await;
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            ready_child.id.clone(),
+            serde_json::json!({}),
+            "life-1",
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::Failed, chrono::Utc::now().to_rfc3339());
+        cards::set_goal_execution_receipt(
+            &pool,
+            &ready_card.id,
+            serde_json::to_value(&receipt).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let (dispatcher, recorded) = drain_recording_dispatcher();
+        let summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            |_, _| {},
+            None,
+            DrainRedispatch {
+                dispatch: Some(&dispatcher),
+                max_redispatch: 2,
+                // Identical to the sibling test above — larger than the cap,
+                // so the STATIC rule alone would stand the sweep down on
+                // every single poll.
+                sweep_headroom: std::time::Duration::from_secs(3_600),
+            },
+        )
+        .await
+        .unwrap();
+
+        let recorded = recorded.lock().unwrap().clone();
+        assert!(
+            recorded.contains(&ready_card.id),
+            "a real median goal duration must override the static headroom guess and let the \
+             sweep keep dispatching Ready goals while budget remains: {recorded:?}"
+        );
+        assert_eq!(
+            summary.finished, 1,
+            "the already-complete goal is still counted finished"
         );
     }
 
@@ -36177,6 +36634,186 @@ mod tests {
         let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed, None);
         assert_eq!(grounded.len(), 2);
         assert!(!receipts.iter().any(|r| r.contains("right-sized")));
+    }
+
+    /// R52b, pure: the `harness-refactor-shipping-quote-signature` fixture
+    /// itself (A50 analysis (b)) — a signature-change goal, four
+    /// mechanically-identical call-site edits (one per file, each
+    /// `depends_on: [0]`), and a test goal depending on all four call-site
+    /// goals. The four call-site goals must collapse into one; the
+    /// signature and test goals must stand alone; every surviving
+    /// `depends_on` index must still resolve correctly after the collapse.
+    #[test]
+    fn merge_mechanical_call_site_goals_collapses_identical_call_site_edits_and_leaves_signature_and_tests_alone(
+    ) {
+        let mut signature = goal(
+            "Add packageType parameter to quoteShipping",
+            "Change the quoteShipping function signature to accept a packageType parameter and \
+             use it for surcharge calculation",
+            &["`npm test` passes"],
+            &["code_edit"],
+        );
+        signature.depends_on = vec![];
+
+        let call_site = |file: &str| {
+            let title = format!("Update {file} call site");
+            let description = format!(
+                "Update the call to quoteShipping in {file} to pass packageType as the 3rd \
+                 argument"
+            );
+            let criterion = format!("{file} passes the quoteShipping call site test");
+            let mut g = goal(&title, &description, &[criterion.as_str()], &["code_edit"]);
+            g.depends_on = vec![0];
+            g
+        };
+
+        let mut tests = goal(
+            "Add tests for packageType surcharge",
+            "Add tests validating packageType surcharge behavior across all call sites",
+            &["`npm test` passes"],
+            &["code_edit"],
+        );
+        tests.depends_on = vec![1, 2, 3, 4];
+
+        let goals = vec![
+            signature,
+            call_site("checkout.ts"),
+            call_site("cartSummary.ts"),
+            call_site("quoteHandler.ts"),
+            call_site("manualQuote.ts"),
+            tests,
+        ];
+
+        let (merged, merged_away) = merge_mechanical_call_site_goals(goals);
+
+        assert_eq!(merged_away, 3, "4 call-site goals folded into 1 loses 3");
+        assert_eq!(
+            merged.len(),
+            3,
+            "signature, one merged call-site goal, tests — got: {merged:#?}"
+        );
+
+        let signature_out = &merged[0];
+        assert_eq!(
+            signature_out.title,
+            "Add packageType parameter to quoteShipping"
+        );
+        assert!(
+            signature_out.depends_on.is_empty(),
+            "the signature goal must be left alone"
+        );
+
+        let call_sites_out = &merged[1];
+        for file in [
+            "checkout.ts",
+            "cartSummary.ts",
+            "quoteHandler.ts",
+            "manualQuote.ts",
+        ] {
+            assert!(
+                call_sites_out.description.contains(file),
+                "merged call-site goal must not lose {file}: {}",
+                call_sites_out.description
+            );
+            assert!(
+                call_sites_out
+                    .acceptance_criteria
+                    .iter()
+                    .any(|c| c.contains(file)),
+                "merged call-site goal must not lose {file}'s acceptance criterion"
+            );
+        }
+        assert_eq!(
+            call_sites_out.depends_on,
+            vec![0],
+            "the merged call-site goal must still depend on the signature goal, at its new index"
+        );
+
+        let tests_out = &merged[2];
+        assert_eq!(tests_out.title, "Add tests for packageType surcharge");
+        assert_eq!(
+            tests_out.depends_on,
+            vec![1],
+            "the test goal's 4 old dependencies must collapse to the merged goal's one new index"
+        );
+
+        // Every surviving `depends_on` must resolve inside the shorter
+        // roadmap — reuse the real validator rather than re-deriving what
+        // "valid" means here.
+        assert!(goal_state::topological_order(&merged).is_ok());
+    }
+
+    /// R52b, pure: goals that share no mechanical shape at all (no file-like
+    /// token in common, or none at all) are left completely untouched — the
+    /// merge must never fold together genuinely unrelated work.
+    #[test]
+    fn merge_mechanical_call_site_goals_does_not_touch_dissimilar_goals() {
+        let goals = vec![
+            goal(
+                "Add a README",
+                "write project documentation",
+                &[],
+                &["code_edit"],
+            ),
+            goal(
+                "Fix the build",
+                "repair the broken CI pipeline",
+                &[],
+                &["shell"],
+            ),
+        ];
+        let (merged, merged_away) = merge_mechanical_call_site_goals(goals.clone());
+        assert_eq!(merged_away, 0);
+        assert_eq!(merged, goals);
+    }
+
+    /// R52b cap, pure: a scope-proportional ceiling must NEVER drop a goal —
+    /// only fold it into a neighbour. 8 goals in a straight dependency chain
+    /// (0 <- 1 <- ... <- 7), each naming its own distinct file (so the
+    /// proportional cap clamps to its stated max of 6), fold down to 6 with
+    /// every one of the 8 original acceptance criteria still present
+    /// somewhere in the output, and every remaining `depends_on` edge still
+    /// resolving (no cycle, no out-of-range index, no self-dependency).
+    #[test]
+    fn cap_roadmap_goal_count_never_drops_a_goal() {
+        let mut goals: Vec<goal_state::ProposedGoal> = (0..8)
+            .map(|i| {
+                let title = format!("Goal {i}");
+                let description = format!("do thing {i} to file{i}.rs");
+                let criterion = format!("file{i}.rs criterion");
+                goal(&title, &description, &[criterion.as_str()], &["code_edit"])
+            })
+            .collect();
+        for i in 1..goals.len() {
+            goals[i].depends_on = vec![i - 1];
+        }
+        let original_criteria: std::collections::HashSet<String> = goals
+            .iter()
+            .flat_map(|g| g.acceptance_criteria.iter().cloned())
+            .collect();
+
+        let (capped, merged_for_cap) = cap_roadmap_goal_count(goals);
+
+        assert_eq!(
+            capped.len(),
+            6,
+            "8 goals, 8 distinct file tokens -> 1+8 clamped to the brief's max of 6"
+        );
+        assert_eq!(merged_for_cap, 2, "8 - 6 = 2 folds");
+
+        let surviving_criteria: std::collections::HashSet<String> = capped
+            .iter()
+            .flat_map(|g| g.acceptance_criteria.iter().cloned())
+            .collect();
+        assert_eq!(
+            surviving_criteria, original_criteria,
+            "the cap must never drop a goal's acceptance criteria, only fold them into a neighbour"
+        );
+
+        assert!(
+            goal_state::topological_order(&capped).is_ok(),
+            "folding must leave every depends_on edge resolvable, with no cycle or self-edge"
+        );
     }
 
     /// Right-sizing is scoped to small repos (Z1-4's "≤ ~12 files"): a large
