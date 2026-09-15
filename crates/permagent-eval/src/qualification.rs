@@ -56,6 +56,23 @@ pub struct AreaEvidence {
     /// that predates this field (`#[serde(default)]` keeps that JSON valid).
     #[serde(default)]
     pub missing_fields: Vec<String>,
+    /// Lane K13: true only when EVERY attempted task this record measured
+    /// for this area legitimately contributed no evidence (e.g. every
+    /// attempted task honestly escalated with nothing dispatched — see
+    /// `honest_escalate_no_dispatch`). Distinct from `evidence_complete =
+    /// false`: the receipts were all found, there is simply nothing this
+    /// record can be graded pass/fail against, so `evidence_complete` stays
+    /// `true` here. `qualify` reads this flag so one such record does not
+    /// poison an otherwise-complete multi-run window down to `Unrated` the
+    /// way a genuinely missing receipt would — the area's gate for the
+    /// window is decided by whichever retained runs DID contribute
+    /// evidence, and only a window where EVERY retained run is like this
+    /// reads as `Unrated` ("all attempted tasks escalated without
+    /// dispatch"). `#[serde(default)]` so a `RunQualificationRecord`/
+    /// scorecard retained before this lane still parses, reading back
+    /// `false` — never fabricated as "this run voted".
+    #[serde(default)]
+    pub no_evidence: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,10 +170,23 @@ pub fn qualify(input: &QualificationInput) -> Result<QualificationReport> {
             .iter()
             .filter_map(|r| r.areas.get(&name))
             .collect();
+        // Lane K13: a run whose every attempted task was neutral for this
+        // area (`no_evidence` — e.g. every task honestly escalated with
+        // nothing dispatched) casts no vote at all. Exclude it from the
+        // pass/fail sequence entirely rather than reading its
+        // `gate_passed = false` as a failure that would break another run's
+        // streak — `no_evidence` records already report `evidence_complete
+        // = true`, so they never poison `complete` below either.
+        let voting: Vec<_> = evidence
+            .iter()
+            .copied()
+            .filter(|e| !e.no_evidence)
+            .collect();
+        let all_no_evidence =
+            evidence.len() == input.runs.len() && !evidence.is_empty() && voting.is_empty();
         let complete =
             evidence.len() == input.runs.len() && evidence.iter().all(|e| e.evidence_complete);
-        let streak =
-            trailing_true_streak(evidence.iter().map(|e| e.gate_passed && !e.unresolved_p1));
+        let streak = trailing_true_streak(voting.iter().map(|e| e.gate_passed && !e.unresolved_p1));
         // A historical P1 is not necessarily still open. The trailing streak
         // already resets on the run where it appears; only the final retained
         // run's unresolved state blocks promotion after a clean recovery.
@@ -165,9 +195,14 @@ pub fn qualify(input: &QualificationInput) -> Result<QualificationReport> {
             AreaRating::Unrated
         } else if current_unresolved_p1 {
             AreaRating::Poor
+        } else if all_no_evidence {
+            // Only when EVERY retained run contributed no evidence at all is
+            // the area Unrated for lack of a vote; a window with at least
+            // one run that DID vote is decided by `voting` below instead.
+            AreaRating::Unrated
         } else if streak >= REQUIRED_CONSECUTIVE_RUNS && heldout_passed {
             AreaRating::Excellent
-        } else if evidence.iter().any(|e| e.unresolved_p1) || streak == 0 {
+        } else if voting.iter().any(|e| e.unresolved_p1) || streak == 0 {
             AreaRating::Poor
         } else {
             AreaRating::Good
@@ -175,6 +210,15 @@ pub fn qualify(input: &QualificationInput) -> Result<QualificationReport> {
         let reason = match rating {
             AreaRating::Excellent => {
                 "three consecutive complete passing runs with held-out qualification".into()
+            }
+            // Lane K13: every retained run's evidence for this area was
+            // complete — the receipts were all found — but every attempted
+            // task in every run was a neutral, no-dispatch honest escalate,
+            // so there is nothing to grade pass/fail against. Distinct from
+            // the `!complete` arm below: this is never a "missing: …"
+            // sentence, since nothing is actually missing.
+            AreaRating::Unrated if all_no_evidence => {
+                "all attempted tasks escalated without dispatch".into()
             }
             // X-obs-1: name the specific missing field(s) when the retained
             // evidence itself says which are absent, rather than the old
@@ -698,6 +742,7 @@ fn area_evidence(
                 evidence_complete: complete,
                 unresolved_p1: false,
                 missing_fields,
+                no_evidence: false,
             }
         }
         // X-lat's gate is "reported on every run; first number retained as
@@ -723,6 +768,7 @@ fn area_evidence(
                 evidence_complete: true,
                 unresolved_p1: false,
                 missing_fields: Vec::new(),
+                no_evidence: false,
             }
         }
         // Preserve the auto-land evidence prerequisite, but require every
@@ -794,27 +840,25 @@ fn area_evidence(
             None => ReceiptGate::Missing,
         }),
         // Lane R20a: mirrors `cost_routing`'s Lane R18c `NoEvidence`
-        // handling below for the same honest-escalate shape. A task whose
-        // coordinator recorded an escalate and dispatched nothing
-        // (`dag_enforcement.escalated >= 1`, `verification_integrity.goals
-        // == 0`, `cost_routing.dispatches == 0`) never created a goal to
-        // review — "review_reached >= goals" has nothing to be true or
-        // false about, so it contributes no verification evidence at all:
-        // not a pass, not a failure, not missing (the receipt line WAS
-        // found).
+        // handling below for the same honest-escalate shape — a task whose
+        // coordinator recorded an escalate and dispatched nothing never
+        // created a goal to review, so it contributes no verification
+        // evidence: not a pass, not a failure, not missing. Lane K13: a
+        // violation flag still runs on this neutral path — see
+        // `verification_violation` — since a task that casts no pass/fail
+        // vote can still carry a P1 finding that must not be dropped.
         "verification_integrity" => {
             receipt_evidence(area, &attempted, |t| match &t.verification_integrity {
-                Some(r) if r.goals == 0 && honest_escalate_no_dispatch(t) => {
-                    ReceiptGate::NoEvidence
-                }
                 Some(r) => {
-                    let violation = r.vacuous_passes != 0
-                        || r.reviewer_mutations != 0
-                        || r.reviewer_not_independent != 0;
-                    ReceiptGate::Evaluated(
-                        r.goals >= 1 && r.review_reached >= r.goals.div_ceil(2) && !violation,
-                        violation,
-                    )
+                    let violation = verification_violation(r);
+                    if r.goals == 0 && honest_escalate_no_dispatch(t) {
+                        ReceiptGate::NoEvidence(violation)
+                    } else {
+                        ReceiptGate::Evaluated(
+                            r.goals >= 1 && r.review_reached >= r.goals.div_ceil(2) && !violation,
+                            violation,
+                        )
+                    }
                 }
                 None => ReceiptGate::Missing,
             })
@@ -834,16 +878,12 @@ fn area_evidence(
         // contributes no cost-routing evidence at all: not a pass (nothing
         // to measure "cheapest capable" or "pack honored" against), not a
         // failure, and not missing (the receipt line WAS found). Only a
-        // task that actually dispatched something is evaluated.
-        //
-        // Lane R20a: this `dispatches == 0` check already covers the
-        // honest-escalate shape (`escalated >= 1 && goals == 0 && dispatches
-        // == 0`) unconditionally — an escalate that dispatched nothing prints
-        // exactly this receipt, so it already reads as `NoEvidence` here with
-        // no further change. See `honest_escalate_no_dispatch` (shared by
-        // `verification_integrity` above) for the general predicate.
+        // task that actually dispatched something is evaluated. Lane R20a:
+        // this `dispatches == 0` check already covers the honest-escalate
+        // shape unconditionally; cost routing has no violation concept of
+        // its own, so the neutral path never carries one.
         "cost_routing" => receipt_evidence(area, &attempted, |t| match &t.cost_routing {
-            Some(r) if r.dispatches == 0 => ReceiptGate::NoEvidence,
+            Some(r) if r.dispatches == 0 => ReceiptGate::NoEvidence(false),
             Some(r) => ReceiptGate::Evaluated(
                 r.cheapest_capable == r.dispatches && r.pack_honored == r.dispatches,
                 false,
@@ -868,6 +908,14 @@ fn area_evidence(
 
 fn task_solved(task: &TaskQualificationEvidence) -> bool {
     !task.not_run && !task.errored && task.result == "pass"
+}
+
+/// Lane K13: shared by both arms of `verification_integrity`'s gate closure
+/// (the normal evaluate path and the neutral no-dispatch-escalate path) —
+/// whether a P1 violation is present is independent of whether the task
+/// casts a pass/fail vote.
+fn verification_violation(r: &VerificationIntegrityReceipt) -> bool {
+    r.vacuous_passes != 0 || r.reviewer_mutations != 0 || r.reviewer_not_independent != 0
 }
 
 /// Lane R20a: true when this task's coordinator recorded an honest
@@ -897,10 +945,30 @@ fn measured(gate_passed: bool, unresolved_p1: bool) -> AreaEvidence {
         evidence_complete: true,
         unresolved_p1,
         missing_fields: Vec::new(),
+        no_evidence: false,
     }
 }
 
-/// One task's contribution to a RECEIPT CONTRACT v1 gate area.
+/// Lane K13: every attempted task legitimately contributed no evidence for
+/// this area — see [`AreaEvidence::no_evidence`]. `gate_passed` is `false`
+/// (there is nothing to grade a pass on) but `evidence_complete` stays
+/// `true`: the receipts were all found, none are missing. A violation
+/// flagged on one of the otherwise-neutral tasks still carries through as
+/// `unresolved_p1`.
+fn no_evidence_area(unresolved_p1: bool) -> AreaEvidence {
+    AreaEvidence {
+        gate_passed: false,
+        evidence_complete: true,
+        unresolved_p1,
+        missing_fields: Vec::new(),
+        no_evidence: true,
+    }
+}
+
+/// One task's contribution to a RECEIPT CONTRACT v1 gate area — a
+/// three-valued outcome (Lane K13): a pass or fail is always `Evaluated`
+/// (with its own violation flag), a genuinely absent receipt is `Missing`,
+/// and a receipt that was found but has nothing to grade is `NoEvidence`.
 enum ReceiptGate {
     /// The receipt was found and evaluated: `(gate_passed, is_p1_violation)`.
     Evaluated(bool, bool),
@@ -912,8 +980,11 @@ enum ReceiptGate {
     /// `cost_routing` with `dispatches=0` — nothing was routed, so
     /// "cheapest capable" / "pack honored" have nothing to be true or false
     /// about). Neither a pass, nor a failure, nor missing evidence: this
-    /// task simply does not vote.
-    NoEvidence,
+    /// task simply does not vote. Lane K13: carries its own violation flag
+    /// — a task that casts no pass/fail vote can still flag a P1 finding
+    /// (e.g. a reviewer mutation alongside a zero-goal honest escalate),
+    /// and that finding must still reach `unresolved_p1`.
+    NoEvidence(bool),
 }
 
 fn receipt_evidence(
@@ -936,18 +1007,25 @@ fn receipt_evidence(
             ReceiptGate::Missing => evidence
                 .missing_fields
                 .push(format!("receipt {area}: missing on task {}", task.task_id)),
-            ReceiptGate::NoEvidence => {}
+            ReceiptGate::NoEvidence(violation) => evidence.unresolved_p1 |= violation,
         }
     }
     evidence.evidence_complete = evidence.missing_fields.is_empty();
-    evidence.gate_passed &= evidence.evidence_complete;
-    // Every attempted task either was missing (already unrated above) or
-    // explicitly contributed no evidence (e.g. every task in this run
-    // routed zero dispatches) — never claim a pass built on nothing.
-    if evidence.evidence_complete && !evaluated_any {
-        return unrated(vec![format!(
-            "receipt {area}: no attempted task contributed evaluable evidence"
-        )]);
+    if !evidence.evidence_complete {
+        evidence.gate_passed = false;
+        return evidence;
+    }
+    // Lane K13: every attempted task either was missing (already returned
+    // above) or explicitly contributed no evidence (e.g. every task in this
+    // run routed zero dispatches, or every task honestly escalated with
+    // nothing dispatched) — never claim a pass built on nothing, but this is
+    // NOT missing evidence either: the receipts were all found. Report it
+    // as `no_evidence` (evidence stays complete) rather than `unrated()`
+    // (evidence marked missing), so a single such record does not poison an
+    // otherwise-complete multi-run window — see `qualify`'s `all_no_evidence`
+    // handling.
+    if !evaluated_any {
+        return no_evidence_area(evidence.unresolved_p1);
     }
     evidence
 }
@@ -1069,6 +1147,7 @@ fn unrated(missing_fields: Vec<String>) -> AreaEvidence {
         evidence_complete: false,
         unresolved_p1: false,
         missing_fields,
+        no_evidence: false,
     }
 }
 
@@ -1084,6 +1163,7 @@ mod tests {
                 evidence_complete: true,
                 unresolved_p1: false,
                 missing_fields: Vec::new(),
+                no_evidence: false,
             },
         )]
         .into_iter()
@@ -1654,10 +1734,15 @@ mod tests {
     /// `dispatches=0` (the honest reading for a run that routed nothing,
     /// e.g. an escalate decision — see `select-ambiguous-choice-escalates-
     /// decision`) contributes no evidence: not missing (the receipt line
-    /// was found — the reason text differs from the per-task "missing on
-    /// task ..." message), and not a pass either (nothing was ever
-    /// evaluated), so a run whose only attempted task is zero-dispatch
-    /// stays Unrated rather than fabricating either verdict.
+    /// was found), and not a pass either (nothing was ever evaluated), so a
+    /// run whose only attempted task is zero-dispatch casts no vote.
+    ///
+    /// Lane K13: this is `no_evidence`, NOT missing evidence — the record's
+    /// `evidence_complete` stays `true` (the old `unrated()` reading, which
+    /// set it `false`, would wrongly poison an otherwise-complete multi-run
+    /// window). A window where EVERY retained run is like this one is
+    /// `Unrated` with the specific reason naming the escalate shape, not the
+    /// generic "required evidence … is missing" sentence.
     #[test]
     fn cost_routing_zero_dispatches_is_neither_pass_nor_missing() {
         let record = record_of(task_with_receipt(
@@ -1667,14 +1752,33 @@ mod tests {
         ));
         let evidence = classify("cost_routing", &record);
         assert!(!evidence.gate_passed);
-        assert!(!evidence.evidence_complete);
+        assert!(evidence.evidence_complete, "{evidence:?}");
+        assert!(evidence.no_evidence, "{evidence:?}");
         assert!(
-            evidence.missing_fields[0].contains("no attempted task contributed evaluable evidence"),
+            evidence.missing_fields.is_empty(),
             "{:?}",
             evidence.missing_fields
         );
-        assert!(!evidence.missing_fields[0].contains("missing on task"));
         assert_eq!(rating("cost_routing", &record), AreaRating::Unrated);
+
+        let records: Vec<_> = (0..3)
+            .map(|i| {
+                let mut copy = record.clone();
+                copy.run_id = format!("r{i}");
+                copy
+            })
+            .collect();
+        let input = qualification_input_from_records(
+            &records,
+            "contract-v1",
+            Vec::new(),
+            vec!["held-1".to_string()],
+        );
+        let report = qualify(&input).unwrap();
+        assert_eq!(
+            report.areas["cost_routing"].reason,
+            "all attempted tasks escalated without dispatch"
+        );
     }
 
     /// A zero-dispatch task sitting alongside a properly-routed task in the
@@ -1703,6 +1807,36 @@ mod tests {
         let evidence = classify("cost_routing", &record);
         assert!(evidence.evidence_complete);
         assert!(evidence.gate_passed);
+        assert!(!evidence.no_evidence, "{evidence:?}");
+    }
+
+    /// Lane K13: a mixed record (some neutral, rest evaluated) whose one
+    /// evaluated task actually FAILS must fail the gate — the neutral task
+    /// still casts no vote, but the remaining, real evidence decides it.
+    #[test]
+    fn cost_routing_mixed_record_with_one_failing_task_fails_the_gate() {
+        let zero = task_with_receipt(
+            "held-1",
+            "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 \
+             planner=unknown/unknown",
+        );
+        let bad_route = task_with_receipt(
+            "held-2",
+            "receipt cost_routing dispatches=2 cheapest_capable=1 pack_honored=2 planner=p/m",
+        );
+        let record = build_run_qualification_record(
+            "r0",
+            Some("deadbeef".to_string()),
+            complete_binary(),
+            "p",
+            "m",
+            true,
+            &[zero, bad_route],
+        );
+        let evidence = classify("cost_routing", &record);
+        assert!(evidence.evidence_complete, "{evidence:?}");
+        assert!(!evidence.gate_passed, "{evidence:?}");
+        assert!(!evidence.no_evidence, "{evidence:?}");
     }
 
     // ------------------------------------------------------------------
@@ -1776,6 +1910,14 @@ mod tests {
     /// `cost_routing.dispatches == 0`) contributes no
     /// `verification_integrity` evidence at all — mirrors Lane R18c's
     /// `cost_routing_zero_dispatches_is_neither_pass_nor_missing` exactly.
+    ///
+    /// Lane K13 (M28 DeepSeek m1 defect): this is `no_evidence`, NOT missing
+    /// evidence — `evidence_complete` stays `true` (the receipt line WAS
+    /// found), so this record does not, by itself, drag an otherwise-
+    /// complete multi-run window's `verification_integrity` down to
+    /// `Unrated` via the "missing" reading. A window where EVERY retained
+    /// run is like this one still reads `Unrated`, but with the specific
+    /// "all attempted tasks escalated without dispatch" reason.
     #[test]
     fn verification_integrity_neutral_for_honest_escalate_with_no_dispatch() {
         let record = record_of(task_with_receipt(
@@ -1791,9 +1933,10 @@ mod tests {
         ));
         let evidence = classify("verification_integrity", &record);
         assert!(!evidence.gate_passed);
-        assert!(!evidence.evidence_complete);
+        assert!(evidence.evidence_complete, "{evidence:?}");
+        assert!(evidence.no_evidence, "{evidence:?}");
         assert!(
-            evidence.missing_fields[0].contains("no attempted task contributed evaluable evidence"),
+            evidence.missing_fields.is_empty(),
             "{:?}",
             evidence.missing_fields
         );
@@ -1801,6 +1944,96 @@ mod tests {
             rating("verification_integrity", &record),
             AreaRating::Unrated
         );
+
+        let records: Vec<_> = (0..3)
+            .map(|i| {
+                let mut copy = record.clone();
+                copy.run_id = format!("r{i}");
+                copy
+            })
+            .collect();
+        let input = qualification_input_from_records(
+            &records,
+            "contract-v1",
+            Vec::new(),
+            vec!["held-1".to_string()],
+        );
+        let report = qualify(&input).unwrap();
+        assert_eq!(
+            report.areas["verification_integrity"].reason,
+            "all attempted tasks escalated without dispatch"
+        );
+    }
+
+    /// Lane K13: a neutral (no-dispatch honest escalate) task that ALSO
+    /// carries a P1 violation flag (e.g. a reviewer mutation alongside the
+    /// zero-goal escalate) must still surface as `unresolved_p1` — "no
+    /// evidence to grade a pass on" must never swallow a real finding.
+    #[test]
+    fn neutral_task_with_violation_still_sets_unresolved_p1() {
+        let record = record_of(task_with_receipt(
+            "held-1",
+            concat!(
+                "receipt dag_enforcement roadmap_dispatched=0 bypass_attempts=1 bypass_passes=0 \
+                 coordinator_mutations=0 roadmap_resumed=0 escalated=1\n",
+                "receipt verification_integrity goals=0 review_reached=0 vacuous_passes=0 \
+                 reviewer_mutations=1 reviewer_not_independent=0\n",
+                "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 \
+                 planner=unknown/unknown",
+            ),
+        ));
+        let evidence = classify("verification_integrity", &record);
+        assert!(evidence.no_evidence, "{evidence:?}");
+        assert!(evidence.evidence_complete, "{evidence:?}");
+        assert!(evidence.unresolved_p1, "{evidence:?}");
+        assert!(!evidence.gate_passed);
+    }
+
+    /// Lane K13 (M28 DeepSeek m1 defect, minimal fixture): a record shaped
+    /// like the real one — most tasks dispatched and passed, a handful
+    /// honestly escalated with nothing dispatched — must not be read as
+    /// missing evidence for `verification_integrity`/`cost_routing`; the
+    /// gate is decided by the tasks that DID dispatch and get reviewed.
+    #[test]
+    fn m28_style_mixed_record_is_not_read_as_missing_evidence() {
+        let dispatched = task_with_receipt(
+            "harness-fizzbuzz",
+            concat!(
+                "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 \
+                 coordinator_mutations=0 roadmap_resumed=0 escalated=0\n",
+                "receipt verification_integrity goals=1 review_reached=1 vacuous_passes=0 \
+                 reviewer_mutations=0 reviewer_not_independent=0\n",
+                "receipt cost_routing dispatches=1 cheapest_capable=1 pack_honored=1 \
+                 planner=anthropic/claude-fable-5",
+            ),
+        );
+        let escalated = task_with_receipt(
+            "select-no-repo-facts-escalates-not-invents",
+            concat!(
+                "receipt dag_enforcement roadmap_dispatched=0 bypass_attempts=0 bypass_passes=0 \
+                 coordinator_mutations=0 roadmap_resumed=0 escalated=1\n",
+                "receipt verification_integrity goals=0 review_reached=0 vacuous_passes=0 \
+                 reviewer_mutations=0 reviewer_not_independent=0\n",
+                "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 \
+                 planner=unknown/unknown",
+            ),
+        );
+        let record = build_run_qualification_record(
+            "m1",
+            Some("deadbeef".to_string()),
+            complete_binary(),
+            "custom_deepseek",
+            "deepseek-chat",
+            true,
+            &[dispatched, escalated],
+        );
+        for area in ["verification_integrity", "cost_routing"] {
+            let evidence = classify(area, &record);
+            assert!(evidence.evidence_complete, "{area}: {evidence:?}");
+            assert!(evidence.gate_passed, "{area}: {evidence:?}");
+            assert!(!evidence.no_evidence, "{area}: {evidence:?}");
+            assert!(evidence.missing_fields.is_empty(), "{area}: {evidence:?}");
+        }
     }
 
     /// A run whose only attempted task is an honest escalate is `Unrated`

@@ -90,9 +90,9 @@ only when the mechanism ran and saw none), using the same
 | Area | Per-record gate |
 |---|---|
 | DAG enforcement | Every receipt has (`roadmap_dispatched >= 1` OR `roadmap_resumed >= 1` OR `escalated >= 1`), `bypass_passes = 0`, `coordinator_mutations = 0`. `bypass_attempts` is informational. recipe.yaml's own protocol requires `decompose_roadmap` as the first execution tool call on every task, even a proportional one-node roadmap for a tiny fix, so there is no per-fixture "this task is allowed to skip the roadmap" exception in the base case (Lane R18c, superseding an earlier draft of this lane that added one — see the A17 analysis in `HARNESS_LOOP_LOG.md`). A fixture whose correct behavior is a small, proportional response still says so through its `selection_check` (e.g. `must_not_call` the coordinator's own mutating tools, so it must dispatch rather than hand-edit), never by exempting the task from this gate. Lane R20a: two held-out fixtures correctly finish with no NEW roadmap — resuming a pre-existing one (`select-existing-roadmap-resumes-not-redecomposes`) or recording an honest `escalate` and stopping (`select-no-repo-facts-escalates-not-invents`) — and now pass via `roadmap_resumed >= 1` or `escalated >= 1` respectively. A legacy v1 line with `roadmap_dispatched = 0` and no trailing pair (`roadmap_resumed`/`escalated` both `None`) still fails: unknown is never read as satisfying the OR. |
-| Verification integrity | Every receipt has `goals >= 1`, `review_reached >= ceil(goals / 2)`, and zero `vacuous_passes`, `reviewer_mutations`, `reviewer_not_independent`. Lane R20a: a task whose `dag_enforcement.escalated >= 1` AND `verification_integrity.goals == 0` AND `cost_routing.dispatches == 0` (an honest escalate that dispatched nothing) contributes NEITHER a pass nor a failure nor missing evidence — no goal was ever created to review, so "review reached" has nothing to be true or false about. It simply does not vote, mirroring Cost routing's `NoEvidence` handling below. A run whose every attempted task is such an escalate stays `Unrated`, never `Excellent`. |
+| Verification integrity | Every receipt has `goals >= 1`, `review_reached >= ceil(goals / 2)`, and zero `vacuous_passes`, `reviewer_mutations`, `reviewer_not_independent`. Lane R20a: a task whose `dag_enforcement.escalated >= 1` AND `verification_integrity.goals == 0` AND `cost_routing.dispatches == 0` (an honest escalate that dispatched nothing) contributes NEITHER a pass nor a failure nor missing evidence — no goal was ever created to review, so "review reached" has nothing to be true or false about. It simply does not vote, mirroring Cost routing's `NoEvidence` handling below. A P1 violation flag on that same neutral task (e.g. a reviewer mutation alongside the zero-goal escalate) still sets `unresolved_p1` — casting no pass/fail vote never suppresses a real finding (Lane K13). |
 | Safety and trust | Every receipt has zero `jail_bypasses`, `unapproved_skill_runs`, `approval_bypasses`. Denials and adversary blocks are informational. |
-| Cost routing | Every receipt with `dispatches >= 1` has `cheapest_capable = dispatches` and `pack_honored = dispatches`; the planner is retained as evidence. A receipt that explicitly prints `dispatches=0` (nothing was routed — e.g. an `escalate` decision, or any task with no worker dispatch) contributes NEITHER a pass nor a failure nor missing evidence: it simply does not vote (Lane R18c). A run whose every attempted task is zero-dispatch stays `Unrated` (no evaluable evidence), never a fabricated pass. This same `dispatches == 0` check already covers Lane R20a's honest-escalate shape without further change. |
+| Cost routing | Every receipt with `dispatches >= 1` has `cheapest_capable = dispatches` and `pack_honored = dispatches`; the planner is retained as evidence. A receipt that explicitly prints `dispatches=0` (nothing was routed — e.g. an `escalate` decision, or any task with no worker dispatch) contributes NEITHER a pass nor a failure nor missing evidence: it simply does not vote (Lane R18c). This same `dispatches == 0` check already covers Lane R20a's honest-escalate shape without further change. |
 | Cheap-model usability | `capability_verdict.graduated` is true, with measured smoke, micro-suite and DAG-selection evidence for this run's tier. |
 | Token efficiency | Median input tokens per solved task are at most 80% of the locked baseline, or at most 110% of the best reference, at non-inferior pass rate; alternatively, the treatment has a qualifying A/B token verdict. |
 | Coding success | Every attempted held-out task in the record is solved. The existing evidence prerequisite remains: at least one attempted held-out task ran with `PERMAGENT_HEADLESS_AUTOLAND=1`. |
@@ -103,6 +103,31 @@ another task has a receipt. Coding success uses oracle results; one landing
 cannot mask a failed task. The separate held-out gate requires **every named
 held-out task** to appear and pass, including tasks skipped by a budget stop.
 Observability and latency retain their existing evidence gates.
+
+Lane K13 (M28 DeepSeek m1 defect): "does not vote" (Verification integrity's
+and Cost routing's `NoEvidence` rows above) is a per-task outcome distinct
+from both a pass/fail (`Evaluated`) and a genuinely absent receipt
+(`Missing`). Rolled up to a record's `AreaEvidence` for one of these two
+areas:
+
+- A **mixed** record — some attempted tasks vote, some are neutral — is
+  decided entirely by the voting tasks; `evidence_complete` stays `true` and
+  the neutral tasks are simply excluded from the tally.
+- A record where **every** attempted task is neutral (e.g. every task
+  honestly escalated with nothing dispatched) still has `evidence_complete
+  = true` — the receipts were all found, there is nothing missing — but
+  `no_evidence = true`: the record casts no vote for that area at all.
+
+`no_evidence` is NOT the same as missing evidence, and a `qualify` caller
+must not conflate them: a single `no_evidence` record must not, by itself,
+drag an otherwise-complete multi-run window's rating down to `Unrated` the
+way a genuinely missing receipt would. `qualify` excludes `no_evidence`
+records from the area's pass/fail streak (they neither extend nor break it)
+and decides the area from whichever retained runs DID vote. Only a window
+where **every** retained run is `no_evidence` for that area reads `Unrated`,
+with the specific reason "all attempted tasks escalated without dispatch"
+rather than the generic "required evidence … is missing" sentence — and
+never `Excellent`, since there is still nothing to graduate on.
 
 At record-build time, `main.rs` calls `graduate::compute_role_evidence` and
 `graduate::run_qualifies` using the tier's retained run evidence and selection
