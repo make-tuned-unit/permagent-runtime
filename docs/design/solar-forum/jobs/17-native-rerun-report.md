@@ -102,3 +102,31 @@ revision bf06eb363adbe7d7). Native gaps seen in the day forum capture: the
 sand-fabric sofas map to a dark material, the terrace glass balustrade renders
 as opaque cyan, and the displaced ridge behind the commons reads as a black
 wall with emissive cracks; all three are `polish_forum.py` slot-mapping work.
+
+## Slot mapping fixes (pending rerun)
+
+`polish_forum.py` now creates deterministic, idempotent native materials and
+resolves slots by normalized material name rather than slot index:
+
+- `M_SandFabric` — `Forum Sand Fabric`; `Forum Oiled Timber` remains on
+  `M_OriginalWarmTone`.
+- `M_HologramGlass` — `Forum Hologram Glass` and mesh-gate cyan display glass;
+  translucent cyan-tinted glass at opacity 0.35 with faint cyan emission.
+- `M_Hologram`, `M_HologramContinents`, and `M_HologramLightCone` — their
+  corresponding hologram slots at authored translucent opacities and cyan
+  emission strengths.
+- `M_EmissiveAmber` and `M_EmissiveAmberStrong` — Job16 warm window strips,
+  amber lantern/core/head variants, strand/brazier/quay amber, and lantern
+  heads; strengths retain the authored 3.5–8 range.
+- `M_EmissiveHorizonBlue` — MESH gate `horizonBlue` inlay/channel and unlit
+  channels, colour (0.33, 0.60, 1.0), emission strength 1.5.
+- `M_BasaltStratum0` through `M_BasaltStratum3` — the four basalt stratum
+  slots with authored ochre, grey basalt, umber, and limestone colours;
+  `M_MossyRock` remains on `Ridge mossy ledge` and mossy coastal rock.
+- `M_CelestialWaterfallMist` — `Celestial waterfall mist`, translucent
+  white-cyan at opacity 0.30. The ridge cracks are authored moss vertex-colour
+  variation, not an emissive rock mapping.
+
+The mode-specific JSON report now records both all defaulted slots and
+`unmappedForumSlots` so the next completed rerun can verify zero unmapped forum
+slots.

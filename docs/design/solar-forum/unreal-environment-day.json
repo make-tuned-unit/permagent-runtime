@@ -35,14 +35,16 @@
       "Forum White Sandstone Masonry"
     ],
     "basalt": [
-      "Permagent dark stone"
+      "Permagent dark stone",
+      "Mesh gate Chitin engraved channel",
+      "Mesh gate Chitin stone"
     ],
     "living water": [
       "Water",
-      "Celestial waterfall mist",
       "Forum Lagoon Island Shallow Water",
       "Forum Lagoon Island Shallow Water_001",
       "Forum Lagoon Island Shallow Water_002",
+      "Forum Lagoon Shallow Teal",
       "Forum Plunge Pool Dark Water"
     ],
     "architectural glass": [
@@ -52,28 +54,72 @@
     "original warm timber tone": [
       "Oiled structural timber",
       "Forum Oiled Timber Grain",
-      "Forum Oiled Timber"
+      "Forum Harbour Rope",
+      "Forum Oiled Timber",
+      "Forum Quay Rope"
     ],
     "scannedrock": [
-      "Weathered coastal rock",
-      "Forum Basalt stratum 0",
-      "Forum Basalt stratum 1",
-      "Forum Basalt stratum 2",
-      "Forum Basalt stratum 3",
+      "Weathered coastal rock"
+    ],
+    "waterfall mist": [
+      "Celestial waterfall mist"
+    ],
+    "basalt stratum 0": [
+      "Forum Basalt stratum 0"
+    ],
+    "basalt stratum 1": [
+      "Forum Basalt stratum 1"
+    ],
+    "basalt stratum 2": [
+      "Forum Basalt stratum 2"
+    ],
+    "basalt stratum 3": [
+      "Forum Basalt stratum 3"
+    ],
+    "mossy rock": [
       "Forum Mossy Coastal Rock"
     ],
-    "emissive cyan": [
-      "Forum Hologram",
-      "Forum Hologram Continents",
+    "emissive amber strong": [
+      "Forum Brazier Amber Embers",
+      "Forum Harbour Amber",
+      "Forum Island Quay Amber",
+      "Forum Lantern Amber"
+    ],
+    "hologram": [
+      "Forum Hologram"
+    ],
+    "hologram continents": [
+      "Forum Hologram Continents"
+    ],
+    "hologram glass": [
       "Forum Hologram Glass",
-      "Forum Hologram Light Cone",
-      "Mesh gate HorizonBlue Inlay",
       "Mesh gate cyan display glass"
     ],
+    "hologram light cone": [
+      "Forum Hologram Light Cone"
+    ],
+    "emissive cyan": [
+      "Forum Info Display Line"
+    ],
+    "planter moss": [
+      "Forum Planter Moss"
+    ],
+    "sand fabric": [
+      "Forum Sand Fabric"
+    ],
     "emissive amber": [
-      "Forum Lantern Amber"
+      "Forum Strand Amber",
+      "Forum Warm Window Emission"
+    ],
+    "emissive horizon blue": [
+      "Mesh gate HorizonBlue Inlay"
     ]
   },
+  "defaultMaterialSlots": [
+    "Bark",
+    "Terracotta"
+  ],
+  "unmappedForumSlots": [],
   "resetImportedMaterialSlots": [
     "Coastal meadow",
     "Conservatory glass",

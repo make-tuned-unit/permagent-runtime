@@ -87,8 +87,23 @@ def emissive(name,rgb,strength=4.0):
     e=color(mat,tuple(c*strength for c in rgb))
     prop(e,'',mat,u.MaterialProperty.MP_EMISSIVE_COLOR)
     return finish(mat)
+def translucent(name,rgb,opacity,strength=0.,rough=.2):
+    mat=newmat(name);mat.set_editor_property('blend_mode',u.BlendMode.BLEND_TRANSLUCENT)
+    mat.set_editor_property('shading_model',u.MaterialShadingModel.MSM_DEFAULT_LIT)
+    prop(color(mat,rgb),'',mat,u.MaterialProperty.MP_BASE_COLOR)
+    prop(scalar(mat,rough),'',mat,u.MaterialProperty.MP_ROUGHNESS);prop(scalar(mat,0.),'',mat,u.MaterialProperty.MP_METALLIC)
+    prop(scalar(mat,opacity),'',mat,u.MaterialProperty.MP_OPACITY)
+    if strength:
+        prop(color(mat,tuple(c*strength for c in rgb)),'',mat,u.MaterialProperty.MP_EMISSIVE_COLOR)
+    return finish(mat)
 amber=emissive('M_EmissiveAmber',(.95,.22,.035),3.5)
-cyan=emissive('M_EmissiveCyan',(.02,.65,.95),3.0)
+amber_strong=emissive('M_EmissiveAmberStrong',(.95,.22,.035),8.0)
+cyan=emissive('M_EmissiveCyan',(.02,.65,.95),6.0)
+horizon_blue=emissive('M_EmissiveHorizonBlue',(.33,.60,1.0),1.5)
+hologram=translucent('M_Hologram',(.10,.85,.90),.45,6.0,.22)
+hologram_continents=translucent('M_HologramContinents',(.14,.95,.92),.70,6.0,.28)
+hologram_cone=translucent('M_HologramLightCone',(.10,.85,.90),.12,1.0,.18)
+hologram_glass=translucent('M_HologramGlass',(.345,.68,.78),.35,.4,.16)
 water=newmat('M_LivingWater');prop(color(water,(.017,.09,.095)),'',water,u.MaterialProperty.MP_BASE_COLOR)
 prop(scalar(water,.08),'',water,u.MaterialProperty.MP_ROUGHNESS);prop(scalar(water,.35),'',water,u.MaterialProperty.MP_METALLIC)
 wp=node(water,u.MaterialExpressionWorldPosition);mask=node(water,u.MaterialExpressionComponentMask,r=True,g=True)
@@ -108,6 +123,9 @@ prop(scalar(glass,.24),'',glass,u.MaterialProperty.MP_OPACITY);prop(scalar(glass
 # re-imported. The source module carries the finer grain for GLB; this native
 # factor material remains stable and lightweight for the Unreal pass.
 timber=simple('M_OriginalWarmTone',(.22,.12,.055),.62)
+moss=simple('M_PlanterMoss',(.10,.22,.065),.95)
+strata=[simple('M_BasaltStratum'+str(i),rgb,rough) for i,(rgb,rough) in enumerate([
+    ((.42,.33,.22),.90),((.30,.30,.32),.88),((.20,.15,.11),.95),((.55,.50,.42),.85)])]
 hidden=newmat('M_ReplaceBlockoutFoliage');hidden.set_editor_property('blend_mode',u.BlendMode.BLEND_MASKED)
 prop(scalar(hidden,0),'',hidden,u.MaterialProperty.MP_OPACITY_MASK);finish(hidden)
 architecture=next(a for a in actors.get_all_level_actors() if isinstance(a,u.StaticMeshActor) and a.get_actor_label().startswith('Solar Forum'))
@@ -121,16 +139,33 @@ def native_mapping(key):
     preserve=('solar','photovoltaic','memory inlay','engraved intelligence','foliage','leaves','canopy','meadow')
     if any(token in key for token in preserve): return None, None
     if any(token in key for token in ('forum white sandstone masonry','white sandstone masonry','limestone','travertine')): return scannedstone, 'scannedstone'
-    if any(token in key for token in ('forum geological strata','geological strata','basalt stratum','forum coastal rock','coastal rock','weathered coastal rock','mossy rock')): return scannedrock, 'scannedrock'
-    if any(token in key for token in ('hologram','cyan exedra','cyan display','horizonblue','unlit channel')): return cyan, 'emissive cyan'
-    if any(token in key for token in ('emissive window','window strip','amber lantern','lantern amber','amber core','amber head','lantern head','strand light','light bead')): return amber, 'emissive amber'
+    for index in range(4):
+        if 'basalt stratum '+str(index) in key: return strata[index], 'basalt stratum '+str(index)
+    if any(token in key for token in ('forum geological strata','geological strata')): return strata[0], 'basalt stratum 0'
+    if any(token in key for token in ('ridge mossy ledge','forum mossy coastal rock','mossy rock')): return rock, 'mossy rock'
+    if any(token in key for token in ('forum coastal rock','coastal rock','weathered coastal rock')): return scannedrock, 'scannedrock'
+    if 'forum sand fabric' in key: return fabric, 'sand fabric'
+    if any(token in key for token in ('hologram glass','cyan display glass')): return hologram_glass, 'hologram glass'
+    if 'hologram continents' in key: return hologram_continents, 'hologram continents'
+    if 'hologram light cone' in key: return hologram_cone, 'hologram light cone'
+    if 'hologram' in key: return hologram, 'hologram'
+    if any(token in key for token in ('horizonblue','unlit channel')): return horizon_blue, 'emissive horizon blue'
+    if any(token in key for token in ('cyan exedra','info display line')): return cyan, 'emissive cyan'
+    if any(token in key for token in ('warm window','emissive window','window strip','strand amber','strand light','light bead')): return amber, 'emissive amber'
+    if any(token in key for token in ('lantern amber','amber lantern','amber core','amber head','lantern head','island quay amber','harbour amber','brazier amber')): return amber_strong, 'emissive amber strong'
+    if 'celestial waterfall mist' in key: return waterfall_mist, 'waterfall mist'
+    if 'forum planter moss' in key: return moss, 'planter moss'
     if 'glass' in key or any(token in key for token in ('architectural glass','conservatory glass','glazed vault')): return glass, 'architectural glass'
-    if any(token in key for token in ('forum oiled timber grain','oiled timber grain','oiled structural timber','timber')): return timber, 'original warm timber tone'
+    if any(token in key for token in ('forum oiled timber grain','oiled timber grain','oiled structural timber','forum oiled timber','timber')): return timber, 'original warm timber tone'
     if 'bronze' in key: return bronze, 'burnished bronze'
-    if 'water' in key: return water, 'living water'
+    if 'water' in key or 'lagoon' in key or 'shallow teal' in key: return water, 'living water'
+    if any(token in key for token in ('harbour rope','quay rope')): return timber, 'original warm timber tone'
+    if any(token in key for token in ('chitin engraved channel','chitin stone')): return dark, 'basalt'
     if 'dark stone' in key or 'dark_stone' in key: return dark, 'basalt'
     return None, None
-material_assignments={}; reset_slots=[]; obsolete_proxy_slots=[]
+waterfall_mist=translucent('M_CelestialWaterfallMist',(.72,.92,.95),.30,0.,.18)
+fabric=simple('M_SandFabric',(.78,.66,.48),.92)
+material_assignments={}; reset_slots=[]; obsolete_proxy_slots=[]; default_slots=[]
 # Reimported FBX slots can retain component overrides from an older material
 # layout. First restore each slot's imported interface, then apply only the
 # explicit mappings above. This also leaves newly authored foliage untouched.
@@ -144,6 +179,8 @@ for i,slot in enumerate(architecture.static_mesh_component.static_mesh.static_ma
         architecture.static_mesh_component.set_material(i,material)
         material_assignments.setdefault(label,[]).append(str(slot.material_slot_name))
         if material is hidden: obsolete_proxy_slots.append(str(slot.material_slot_name))
+    elif not any(token in name for token in ('solar','photovoltaic','memory inlay','engraved intelligence','foliage','leaves','canopy','meadow')):
+        default_slots.append(str(slot.material_slot_name))
 # Native foliage materials retain scanned cutout masks and normal/roughness maps.
 models={}; model_report={}
 for asset in ['jacaranda_tree','fern_02','rock_09']:
@@ -228,6 +265,6 @@ cam=next(a for a in actors.get_all_level_actors() if isinstance(a,u.CameraActor)
 cam.set_actor_location_and_rotation(u.Vector(1500,2400,550),rotation(-9,-122,0),False,False)
 cam.camera_component.set_editor_property('field_of_view',65.)
 assert level.save_current_level()
-report={'status':'complete','appearance':MODE,'map':target,'scannedAssets':model_report,'environmentActors':sum(a.get_actor_label().startswith('Environment/') for a in actors.get_all_level_actors()),'materialAssignments':material_assignments,'resetImportedMaterialSlots':reset_slots,'obsoleteProxySlotsHidden':obsolete_proxy_slots,'renderVerified':False}
+report={'status':'complete','appearance':MODE,'map':target,'scannedAssets':model_report,'environmentActors':sum(a.get_actor_label().startswith('Environment/') for a in actors.get_all_level_actors()),'materialAssignments':material_assignments,'defaultMaterialSlots':default_slots,'unmappedForumSlots':[s for s in default_slots if any(token in re.sub(r'[^a-z0-9]+',' ',s.lower()).strip() for token in ('forum','job16','mesh gate','basalt stratum','ridge mossy','celestial'))],'resetImportedMaterialSlots':reset_slots,'obsoleteProxySlotsHidden':obsolete_proxy_slots,'renderVerified':False}
 (ROOT/('docs/design/solar-forum/unreal-environment-'+MODE+'.json')).write_text(json.dumps(report,indent=2)+'\n')
 u.log('FORUM_ENVIRONMENT_BUILT '+json.dumps(report))
