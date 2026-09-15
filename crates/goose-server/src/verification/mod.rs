@@ -863,6 +863,123 @@ fn placeholder_scan_applies(meta: &serde_json::Map<String, serde_json::Value>) -
 
 // ── The independent cross-family review ─────────────────────────────────────
 
+/// E7 (`permagent::cost_router::call_site_completeness`) snapshot caps — this
+/// reads an UNTRUSTED goal worktree for the sole purpose of finding call
+/// sites to hand the reviewer, so it must never become a way to pull an
+/// unbounded amount of a repo into memory and into a cloud reviewer's prompt.
+const CALL_SITE_SNAPSHOT_MAX_FILES: usize = 400;
+const CALL_SITE_SNAPSHOT_MAX_FILE_BYTES: u64 = 256 * 1024;
+const CALL_SITE_SNAPSHOT_MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
+
+/// Directories E7's bounded snapshot never descends into — generated/vendored
+/// trees that are large, irrelevant to a hand-written call site, and (for
+/// `.git`) not source at all. Any OTHER hidden directory (leading `.`) is
+/// also skipped, so this list only needs to name the non-hidden ones.
+const CALL_SITE_SNAPSHOT_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    "venv",
+    "__pycache__",
+];
+
+/// Read a BOUNDED, text-only snapshot of `root` for E7's call-site
+/// enumeration (`permagent::cost_router::enumerate_call_sites`) — capped at
+/// [`CALL_SITE_SNAPSHOT_MAX_FILES`] files, [`CALL_SITE_SNAPSHOT_MAX_FILE_BYTES`]
+/// per file, and [`CALL_SITE_SNAPSHOT_MAX_TOTAL_BYTES`] total; skips
+/// [`CALL_SITE_SNAPSHOT_SKIP_DIRS`] and every hidden directory (`.git`
+/// included); drops anything that is not valid UTF-8 or contains a NUL byte
+/// (binary content is never handed to a reviewer prompt). A tree larger than
+/// the caps degrades to a PARTIAL snapshot rather than blocking or growing
+/// unbounded — a partial snapshot under-reports call sites, which is a false
+/// negative on E7 (a real defect this run happens not to catch), never a
+/// false HOLD (it can only ever find real `SYMBOL(` text, never invent one).
+fn bounded_repo_snapshot(root: &Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        if out.len() >= CALL_SITE_SNAPSHOT_MAX_FILES
+            || total_bytes >= CALL_SITE_SNAPSHOT_MAX_TOTAL_BYTES
+        {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if out.len() >= CALL_SITE_SNAPSHOT_MAX_FILES
+                || total_bytes >= CALL_SITE_SNAPSHOT_MAX_TOTAL_BYTES
+            {
+                break;
+            }
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+                if name.starts_with('.') || CALL_SITE_SNAPSHOT_SKIP_DIRS.contains(&name.as_str()) {
+                    continue;
+                }
+                dirs.push(path);
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if !meta.is_file() || meta.len() == 0 || meta.len() > CALL_SITE_SNAPSHOT_MAX_FILE_BYTES
+            {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            if bytes.contains(&0) {
+                continue; // binary content — text files only
+            }
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            total_bytes += text.len();
+            out.push((rel, text));
+        }
+    }
+    out
+}
+
+/// E7: the call sites of any function/method signature change detected in
+/// `body` (Code mode only — a Rubric goal's `body` is prose, not a diff),
+/// computed from a bounded snapshot of `working_dir` — the SAME worktree the
+/// diff itself came from. `working_dir: None`, no detected signature change,
+/// or a Rubric goal all yield an empty result, which is exactly the signal
+/// [`review::run_review`] reads as "E7 does not apply to this review".
+fn call_site_enumerations_for_review(
+    mode: review::ReviewMode,
+    body: &str,
+    working_dir: Option<&Path>,
+) -> Vec<permagent::cost_router::CallSiteEnumeration> {
+    if mode != review::ReviewMode::Code {
+        return Vec::new();
+    }
+    let changes = permagent::cost_router::detect_signature_changes(body);
+    if changes.is_empty() {
+        return Vec::new();
+    }
+    let Some(wd) = working_dir else {
+        return Vec::new();
+    };
+    let snapshot = bounded_repo_snapshot(wd);
+    permagent::cost_router::enumerate_call_sites(
+        &changes,
+        snapshot.iter().map(|(p, c)| (p.as_str(), c.as_str())),
+    )
+}
+
 /// Assemble the gate's inputs from what verification already computed, choose a
 /// reviewer, and run it. `None` when the gate is turned off for this goal.
 ///
@@ -931,6 +1048,14 @@ async fn run_independent_review(
             .to_string();
     }
 
+    // E7: the reviewer mandate's call-site-completeness check — see
+    // `call_site_enumerations_for_review`'s doc comment. Computed from the
+    // SAME `working_dir` the diff above just came from, so the reviewer's
+    // call-site list and the diff it is reviewing are never two different
+    // trees.
+    let call_site_enumerations =
+        call_site_enumerations_for_review(mode, &body, working_dir.as_deref());
+
     let acceptance_criteria: Vec<String> = meta
         .get("acceptance_criteria")
         .and_then(|v| v.as_array())
@@ -970,6 +1095,7 @@ async fn run_independent_review(
         verify_output: passing_evidence_summary(record),
         worker,
         prior: review::IndependentReview::from_metadata(meta),
+        call_site_enumerations,
     };
 
     Some(review::run_review(&inputs, &selection, spend.as_ref(), deps.client).await)
