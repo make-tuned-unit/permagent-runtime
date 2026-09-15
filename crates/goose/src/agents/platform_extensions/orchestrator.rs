@@ -2248,6 +2248,15 @@ pub struct OrchestratorClient {
     context: PlatformExtensionContext,
     probe_cache: Arc<ProbeCache>,
     kanban_cache: Arc<tokio::sync::Mutex<KanbanContextCache>>,
+    /// Lane R22a: worker keys `check_worker` has produced a fresh result for
+    /// THIS coordinator session — a real `check_worker` tool call, or
+    /// `goal_advance`'s own internal equivalent
+    /// (`ensure_worker_checked_for_dispatch`). Never persisted and never
+    /// TTL'd: it exists only to stop `goal_advance` from silently skipping
+    /// the worker-capability gate `check_worker` performs, and to stop its
+    /// own internal fallback from re-probing a worker it already checked
+    /// earlier this same session.
+    checked_workers_this_session: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl OrchestratorClient {
@@ -2378,6 +2387,9 @@ impl OrchestratorClient {
             context,
             probe_cache: Arc::new(ProbeCache::new()),
             kanban_cache: Arc::new(tokio::sync::Mutex::new(KanbanContextCache::new())),
+            checked_workers_this_session: Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
         };
 
         // Late trigger for the boot reconciliation, kept for the runs that
@@ -4920,6 +4932,36 @@ pub(crate) async fn dispatch_goal_fn(
     Ok(session_id)
 }
 
+/// One worker's probe + graduation view, as `handle_check_worker` computes
+/// it — factored into its own type (Lane R22a) so `goal_advance`'s internal
+/// dispatch-time gate can reuse the exact same computation
+/// (`OrchestratorClient::check_worker_core`) instead of re-deriving worker
+/// availability a second, possibly diverging, way.
+struct CheckWorkerOutcome {
+    worker_key: String,
+    engine_label: String,
+    capabilities: serde_json::Value,
+    cost_tier: String,
+    available: bool,
+    reason: Option<String>,
+    graduation: serde_json::Value,
+}
+
+impl CheckWorkerOutcome {
+    /// The exact JSON shape `handle_check_worker` has always returned.
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "worker_key": self.worker_key,
+            "engine": self.engine_label,
+            "capabilities": self.capabilities,
+            "cost_tier": self.cost_tier,
+            "available": self.available,
+            "reason": self.reason,
+            "graduation": self.graduation,
+        })
+    }
+}
+
 impl OrchestratorClient {
     async fn handle_list_sessions(
         &self,
@@ -5728,24 +5770,25 @@ impl OrchestratorClient {
         ))]))
     }
 
-    async fn handle_check_worker(
-        &self,
-        arguments: Option<JsonObject>,
-    ) -> Result<CallToolResult, String> {
-        let args = arguments.ok_or("Missing arguments")?;
-        let worker_key = extract_string(&args, "worker_key")?;
-
+    /// Lane R22a: the probe + graduation lookup `handle_check_worker`
+    /// performs, factored out so `ensure_worker_checked_for_dispatch` (the
+    /// `goal_advance`-internal equivalent of a real `check_worker` call) can
+    /// call it verbatim rather than re-deriving worker availability a
+    /// second way. Always re-probes, ignoring the TTL cache — an internal
+    /// check that silently trusted a stale probe would not be the same gate
+    /// a real `check_worker` call makes.
+    async fn check_worker_core(&self, worker_key: &str) -> Result<CheckWorkerOutcome, String> {
         let config = agent_identity::load_agent_config();
         let persona = config
             .workers
-            .get(&worker_key)
+            .get(worker_key)
             .ok_or_else(|| format!("Worker '{}' not found in agent.yaml", worker_key))?;
 
         // Always re-probe, ignoring cache
         let (probed_available, probe_reason) =
             worker_probe::probe_worker_async(&persona.availability_check).await;
         self.probe_cache
-            .set(&worker_key, probed_available, probe_reason.clone());
+            .set(worker_key, probed_available, probe_reason.clone());
         let dispatch_error = persona.engine.dispatchability_error();
         let available = probed_available && dispatch_error.is_none();
         let reason = dispatch_error.map(str::to_string).or(probe_reason);
@@ -5760,18 +5803,143 @@ impl OrchestratorClient {
             persona.model.as_deref(),
         );
 
-        let result = serde_json::json!({
-            "worker_key": worker_key,
-            "engine": persona.engine.label(),
-            "capabilities": persona.capabilities(),
-            "cost_tier": persona.cost_tier,
-            "available": available,
-            "reason": reason,
-            "graduation": graduation,
-        });
+        Ok(CheckWorkerOutcome {
+            worker_key: worker_key.to_string(),
+            engine_label: persona.engine.label().to_string(),
+            capabilities: serde_json::json!(persona.capabilities()),
+            cost_tier: persona.cost_tier.clone(),
+            available,
+            reason,
+            graduation,
+        })
+    }
+
+    /// Record that `worker_key` has a fresh `check_worker` result on file
+    /// THIS coordinator session (Lane R22a) — called by both a real
+    /// `check_worker` tool call and `goal_advance`'s own internal
+    /// equivalent, so either one satisfies the other.
+    async fn record_check_worker(&self, worker_key: &str) {
+        self.checked_workers_this_session
+            .lock()
+            .await
+            .insert(worker_key.to_string());
+    }
+
+    /// Lane R22a (defect: M24 DeepSeek m1
+    /// `select-checks-worker-before-dispatch`, HARNESS_LOOP_LOG.md): the
+    /// coordinator found a seeded Ready goal and called
+    /// `goal_advance{action: dispatch}` directly, never `check_worker` —
+    /// the harness's own recipe says a Ready goal must be checked for a
+    /// capable worker before dispatch, but relying on the model to
+    /// remember that call is a prompt-only contract. This is the
+    /// enforcement: called from `handle_goal_advance`'s `GoalAction::
+    /// Dispatch` arm before anything else runs, it requires a fresh
+    /// `check_worker` result — for THIS session — on the worker this
+    /// dispatch would actually use.
+    ///
+    /// Resolves the target worker the same two ways `dispatch_goal_fn`
+    /// itself will (an explicit pin, or a preview of ranked selection via
+    /// `select_worker_detailed`) WITHOUT committing to dispatch. If that
+    /// worker has no fresh `check_worker` on file this session (a real
+    /// tool call, or an earlier internal check), performs the identical
+    /// check itself (`check_worker_core`), records it
+    /// (`record_check_worker`) so a later `goal_advance` this session does
+    /// not repeat it, and prints the same tool-call banner
+    /// `print_tool_header` (`crates/goose-cli/src/session/output.rs`)
+    /// would print for a real `check_worker` call — `"  ▸ check_worker"`,
+    /// preceded by the same blank line + 40-dash separator — so
+    /// `permagent-eval`'s `harness_log::scan` (which keys on that literal
+    /// `▸`-prefixed banner, see its module docs) sees the check happened in
+    /// the run's own transcript, not only this process's in-memory
+    /// bookkeeping. NOTE: because `goal_advance`'s own tool-call banner is
+    /// already printed by the CLI before this handler ever runs (the model
+    /// requested `goal_advance`, not `check_worker`), this internal
+    /// marker necessarily lands AFTER `goal_advance`'s in the transcript —
+    /// unlike a real, explicit `check_worker` call made first, whose
+    /// banner naturally precedes `goal_advance`'s. Calling `check_worker`
+    /// explicitly first is therefore still the preferred path; this is a
+    /// backstop for when the model skips it, not a replacement.
+    ///
+    /// Refuses with the same "no suitable worker" shape the pin/ranked
+    /// selection paths already use — either bubbled straight from
+    /// `select_worker_detailed` (unresolvable ranked selection) or built
+    /// here from the fresh check's own verdict (a resolved worker that is
+    /// not available) — before any dispatch attempt is spent.
+    async fn ensure_worker_checked_for_dispatch(
+        &self,
+        card: &cards::Card,
+        requested_worker: Option<&str>,
+    ) -> Result<(), String> {
+        let target_key = match requested_worker {
+            Some(key) => key.to_string(),
+            None => {
+                let pool = self
+                    .context
+                    .session_manager
+                    .pool_clone()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let policy = current_headless_dispatch_policy(&self.context.session_manager).await;
+                let restrict = policy
+                    .as_ref()
+                    .is_some_and(|p| p.restrict_ranked_selection_to_internal_engine);
+                select_worker_detailed(&pool, &self.probe_cache, card, restrict)
+                    .await?
+                    .worker_key
+            }
+        };
+
+        if self
+            .checked_workers_this_session
+            .lock()
+            .await
+            .contains(&target_key)
+        {
+            return Ok(());
+        }
+
+        let outcome = self.check_worker_core(&target_key).await?;
+        self.record_check_worker(&target_key).await;
+
+        // The tool-call-equivalent marker: the exact shape
+        // `crates/goose-cli/src/session/output.rs`'s `print_tool_header`
+        // prints for a real call, so `harness_log::scan`'s
+        // `tool_call_banner_tool` (which requires the ANSI-stripped `▸`
+        // glyph to be the first non-whitespace character on the line)
+        // records this as a `check_worker` call.
+        println!();
+        println!("  {}", "─".repeat(40));
+        println!("  ▸ check_worker");
+
+        if !outcome.available {
+            return Err(format!(
+                "goal_advance: worker '{}' was checked before dispatch and is not \
+                 available{} — not dispatched. Call check_worker on another roster \
+                 key, or list_workers to see what is runnable.",
+                target_key,
+                outcome
+                    .reason
+                    .as_deref()
+                    .map(|r| format!(" ({r})"))
+                    .unwrap_or_default(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn handle_check_worker(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let worker_key = extract_string(&args, "worker_key")?;
+
+        let outcome = self.check_worker_core(&worker_key).await?;
+        self.record_check_worker(&worker_key).await;
 
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
+            serde_json::to_string_pretty(&outcome.to_json()).unwrap_or_default(),
         )]))
     }
 
@@ -5870,6 +6038,14 @@ impl OrchestratorClient {
             // additionally runs the engine, so this arm delegates rather than
             // duplicating the move.
             GoalAction::Dispatch => {
+                // Lane R22a: a Ready goal must have a fresh check_worker
+                // result on file for the worker this dispatch will use
+                // before anything else happens — enforced, not merely
+                // documented. See `ensure_worker_checked_for_dispatch`'s own
+                // doc comment for what "fresh" means and how it is recorded.
+                self.ensure_worker_checked_for_dispatch(&card, requested_worker.as_deref())
+                    .await?;
+
                 // Persist the role BEFORE dispatch so dispatch_goal_fn reads it
                 // when assembling the brief. Sticky by design: the goal keeps
                 // its mandate across re-dispatches until changed.
@@ -7872,7 +8048,10 @@ impl OrchestratorClient {
                 "Check a specific worker's availability by probing its detection method. \
                  Always re-probes regardless of cache. The response includes the worker's \
                  adapter-derived capabilities so unsupported model, MCP, sandbox, or control \
-                 behavior is not assumed. Use before dispatching to a specific worker."
+                 behavior is not assumed. Use before dispatching to a specific worker — call \
+                 this explicitly first when you already know which worker you want; \
+                 goal_advance{action: dispatch} performs the same check itself when you \
+                 skip it, but calling it here yourself is still preferred."
                     .to_string(),
                 schema::<CheckWorkerParams>(),
             ),
@@ -7882,6 +8061,12 @@ impl OrchestratorClient {
                  'ready' (Triage→Ready), 'dispatch' (Ready→InProgress), \
                  'review' (InProgress→Review), 'approve' (Review→Complete), \
                  'reject' (Review→InProgress, or Triage if 3 attempts reached). \
+                 'dispatch' always confirms a capable worker first: if you already called \
+                 check_worker for it this session that check is reused, otherwise dispatch \
+                 performs it for you before selecting or starting anything — dispatching \
+                 with no capable worker on file refuses with a structured error, never a \
+                 silent no-op. Calling check_worker (or list_workers) yourself first is \
+                 still the preferred way to know what you're dispatching to. \
                  Dispatch may persistently narrow extensions for in-process workers; \
                  scoped dispatch to CLI workers is refused. \
                  Only works on card_type='goal' cards."
@@ -23788,6 +23973,176 @@ mod tests {
         assert!(
             updated.metadata_json.get("worker_key").is_none(),
             "no worker ran, so no worker_key may be recorded"
+        );
+    }
+
+    // ── Lane R22a: goal_advance enforces check_worker before dispatch ──────
+
+    /// A Ready goal with NO prior `check_worker` on file for the worker this
+    /// dispatch would use: `ensure_worker_checked_for_dispatch` must perform
+    /// the check itself and record it, rather than silently trusting an
+    /// unchecked worker. `permagent` is the always-merged-in default worker
+    /// (`agent_identity::merge_missing_default_workers`, `availability_check:
+    /// "always"`), so this is deterministic regardless of the local
+    /// machine's own agent.yaml.
+    #[tokio::test]
+    async fn goal_advance_dispatch_performs_a_missing_check_worker_and_records_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        assert!(
+            client.checked_workers_this_session.lock().await.is_empty(),
+            "a fresh session must start with nothing checked"
+        );
+
+        client
+            .ensure_worker_checked_for_dispatch(&card, Some("permagent"))
+            .await
+            .expect("permagent is always available — the check must succeed");
+
+        assert!(
+            client
+                .checked_workers_this_session
+                .lock()
+                .await
+                .contains("permagent"),
+            "the internal check must record itself exactly as a real check_worker call would"
+        );
+    }
+
+    /// A worker already checked earlier THIS session must not be re-probed.
+    /// Proven by pre-recording a key that does not resolve in agent.yaml at
+    /// all: if `ensure_worker_checked_for_dispatch` repeated the check it
+    /// would call `check_worker_core`, which errors for an unknown worker —
+    /// so an `Ok` here is only possible if the prior record short-circuited
+    /// the check entirely.
+    #[tokio::test]
+    async fn goal_advance_dispatch_does_not_repeat_a_check_worker_already_on_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let bogus_key = "r22a-not-a-real-roster-key";
+        client.record_check_worker(bogus_key).await;
+
+        client
+            .ensure_worker_checked_for_dispatch(&card, Some(bogus_key))
+            .await
+            .expect(
+                "a worker already recorded as checked this session must short-circuit, \
+                 even though it does not resolve in agent.yaml at all",
+            );
+    }
+
+    /// No capable worker on file (fresh session, worker unknown to
+    /// agent.yaml): the gate must refuse with a structured, named error and
+    /// must NOT record a check that never actually resolved a worker.
+    #[tokio::test]
+    async fn goal_advance_dispatch_refuses_with_a_structured_error_when_no_capable_worker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let bogus_key = "r22a-still-not-a-real-roster-key";
+        let err = client
+            .ensure_worker_checked_for_dispatch(&card, Some(bogus_key))
+            .await
+            .expect_err("an unknown worker must refuse, not silently pass");
+        assert!(
+            err.contains(bogus_key),
+            "the refusal must name the worker it checked: {err}"
+        );
+
+        assert!(
+            !client
+                .checked_workers_this_session
+                .lock()
+                .await
+                .contains(bogus_key),
+            "a worker whose check itself failed must not be recorded as checked"
+        );
+    }
+
+    /// End-to-end through the public tool path: `goal_advance{action:
+    /// dispatch}` on a Ready goal, requesting a worker that does not exist,
+    /// must refuse BEFORE moving the card — never a half-dispatch.
+    #[tokio::test]
+    async fn tool_path_dispatch_refuses_before_moving_the_card_when_the_worker_check_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        args.insert("action".to_string(), serde_json::json!("dispatch"));
+        args.insert(
+            "worker".to_string(),
+            serde_json::json!("r22a-not-a-real-roster-key-e2e"),
+        );
+
+        let err = client
+            .handle_goal_advance(Some(args))
+            .await
+            .expect_err("dispatching to an unchecked, unknown worker must be refused");
+        assert!(
+            err.contains("r22a-not-a-real-roster-key-e2e"),
+            "the refusal must name the worker: {err}"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "a refused pre-dispatch worker check must leave the card exactly where it was"
+        );
+        assert!(
+            updated.metadata_json.get("worker_key").is_none(),
+            "no worker was ever selected, so none may be recorded"
         );
     }
 
