@@ -229,6 +229,15 @@ pub struct AgentRunnerConfig {
     pub goose_mode: GooseMode,
     pub disable_session_naming: bool,
     pub goose_platform: GoosePlatform,
+    /// R48c (harness loop, "Lane R48c"): true for a dispatched goal worker
+    /// running the compact prompt profile. `new()` defaults this to `false`
+    /// so every existing call site is unaffected — only `with_compact_
+    /// worker_profile` (goal_engine.rs's `InternalSubagentEngine::spawn`)
+    /// sets it. Read by `Agent::list_tools` to drop the always-on
+    /// `platform__load_feature_lesson` tool, which is appended outside the
+    /// extension-grant mechanism entirely and so is otherwise unreachable
+    /// by the profile's tool-set narrowing.
+    pub compact_worker_profile: bool,
 }
 
 impl AgentRunnerConfig {
@@ -247,7 +256,17 @@ impl AgentRunnerConfig {
             goose_mode,
             disable_session_naming,
             goose_platform,
+            compact_worker_profile: false,
         }
+    }
+
+    /// R48c: opt a subagent run into the compact worker prompt profile's
+    /// tool-set effect at the `Agent::list_tools` layer. See the field's own
+    /// doc comment for why this can't just be another `new()` parameter's
+    /// worth of plumbing — it's set at exactly one call site.
+    pub fn with_compact_worker_profile(mut self, compact: bool) -> Self {
+        self.compact_worker_profile = compact;
+        self
     }
 }
 
@@ -1579,8 +1598,16 @@ impl Agent {
             prefixed_tools.push(platform_tools::manage_schedule_tool());
         }
 
-        // Guided-tour lesson loader — always available (read-only, no deps).
-        if extension_name.is_none() || extension_name.as_deref() == Some("platform") {
+        // Guided-tour lesson loader — always available (read-only, no deps),
+        // EXCEPT for a compact-profile dispatched goal worker (R48c, harness
+        // loop "Lane R48c"): this tool is appended here unconditionally,
+        // outside the extension-grant mechanism `GOAL_WORKER_EXTENSION_KEYS`
+        // narrows, so it survived R30a's own narrowing and A39's compact-
+        // profile-motivating measurement (`platform__load_feature_lesson`,
+        // 1 of the 12 tools measured).
+        if (extension_name.is_none() || extension_name.as_deref() == Some("platform"))
+            && !self.config.compact_worker_profile
+        {
             prefixed_tools.push(platform_tools::load_feature_lesson_tool());
         }
 
@@ -5073,6 +5100,36 @@ mod tests {
             "tool listing must not contain the final-output tool"
         );
         Ok(())
+    }
+
+    /// R48c (harness loop, "Lane R48c"): `platform__load_feature_lesson` is
+    /// appended in `list_tools` OUTSIDE the extension-grant mechanism
+    /// `GOAL_WORKER_EXTENSION_KEYS` narrows (A39 measured it surviving R30a's
+    /// own narrowing, one of the 12 tools that overflowed a 32,768-token
+    /// worker). `AgentRunnerConfig::new`'s default (`compact_worker_profile:
+    /// false`) must keep today's behaviour byte-identical; only an explicit
+    /// opt-in drops the tool.
+    #[tokio::test]
+    async fn compact_worker_profile_drops_the_platform_load_feature_lesson_tool() {
+        let mut agent = Agent::new();
+
+        let tools_default = agent.list_tools("compact-test-session", None).await;
+        assert!(
+            tools_default
+                .iter()
+                .any(|t| t.name == PLATFORM_LOAD_FEATURE_LESSON_TOOL_NAME),
+            "sanity: the default profile (AgentRunnerConfig::new's default) keeps the \
+             platform tool, unchanged from before this lane"
+        );
+
+        agent.config.compact_worker_profile = true;
+        let tools_compact = agent.list_tools("compact-test-session", None).await;
+        assert!(
+            !tools_compact
+                .iter()
+                .any(|t| t.name == PLATFORM_LOAD_FEATURE_LESSON_TOOL_NAME),
+            "the compact worker prompt profile must drop platform__load_feature_lesson"
+        );
     }
 
     #[tokio::test]

@@ -509,6 +509,15 @@ pub struct InternalSubagentEngine {
     /// `Some` ⇒ route the goal to it; `None` ⇒ clone the parent session's model
     /// — the single-model fallback, never a baked-in vendor default.
     pub model_override: Option<crate::cost_router::RoleModel>,
+    /// R48c: whether the dispatching orchestrator selected the compact
+    /// worker prompt profile for this goal (`orchestrator::worker_prompt_
+    /// profile`). `self.extensions`/`task.instructions` were already built
+    /// under that decision by the time `spawn` runs; this flag only carries
+    /// it the rest of the way, to `AgentRunnerConfig`, so the always-on
+    /// `platform__load_feature_lesson` tool (added at the `Agent::list_
+    /// tools` layer, outside the extension-grant mechanism entirely — see
+    /// that function's own doc comment) is dropped for a compact worker too.
+    pub compact_worker_profile: bool,
 }
 
 #[async_trait]
@@ -626,7 +635,8 @@ impl GoalEngine for InternalSubagentEngine {
             GooseMode::Auto,
             true,
             GoosePlatform::GooseCli,
-        );
+        )
+        .with_compact_worker_profile(self.compact_worker_profile);
 
         let worker_prompt = format!(
             "{}{}{}",
@@ -4091,6 +4101,7 @@ mod tests {
             persona_override: None,
             role: None,
             model_override: None,
+            compact_worker_profile: false,
         };
 
         let error = match engine.spawn(internal_worker_task(&repo, &baseline)).await {
