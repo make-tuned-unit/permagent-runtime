@@ -3648,6 +3648,104 @@ fn goal_worker_extensions_for_dispatch(
     narrowed
 }
 
+/// R48c (harness loop, "A45 design" Q4 + "Lane R48c"): which prompt profile a
+/// dispatched goal worker gets. `Default` is today's brief, unbounded and
+/// unchanged by this lane. `Compact` is for small/local-tier workers whose
+/// context window cannot absorb it — A39's live measurement of the R30a
+/// default (12 tools: `developer`'s 7 + `orchestrator`'s 2 + `public_apis`'s
+/// 2 + the always-on `platform__load_feature_lesson`) already cost
+/// 10,278-13,662 prompt tokens across one run, 31-42% of a 32,768-token
+/// ceiling before the worker had done any work. `Compact` drops
+/// `public_apis`/`platform` from the default tool set and bounds the
+/// code-map/digest brief blocks — see `worker_prompt_profile` (selection)
+/// and `bound_compact_block` (the bound itself).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkerPromptProfile {
+    Default,
+    Compact,
+}
+
+/// R48c: explicit override env var (the design's "explicit env/pack flag"
+/// selection path) — an eval tier or operator can pin `compact` (case
+/// insensitive) regardless of whether a model context limit is known yet.
+/// Zero hits repo-wide before this lane, matching "A45 design" Q2's finding
+/// that no worker-profile override existed.
+pub(crate) const WORKER_PROMPT_PROFILE_ENV: &str = "PERMAGENT_WORKER_PROFILE";
+
+/// R48c: the model context-limit ceiling at or under which `worker_prompt_
+/// profile` selects `Compact` by default — the same 32,768 ceiling A39's
+/// MiniCPM5-2B probe measured overflowing against (`## A45 design` Q1/Q4).
+pub(crate) const COMPACT_PROFILE_CONTEXT_LIMIT: u64 = 32_768;
+
+/// R48c: pure selection function — an explicit `env_override` of `"compact"`
+/// always wins (covers a worker whose model isn't known ahead of dispatch,
+/// e.g. a pack-pinned local tier); otherwise a known `model_context_limit`
+/// at or under `COMPACT_PROFILE_CONTEXT_LIMIT` selects `Compact`. An unknown
+/// limit (`None` — no explicit model configured on the worker persona) or a
+/// limit above the ceiling keeps `Default`, so a coordinator/cloud worker
+/// with no local-tier pin renders byte-identically to before this lane.
+pub(crate) fn worker_prompt_profile(
+    model_context_limit: Option<u64>,
+    env_override: Option<&str>,
+) -> WorkerPromptProfile {
+    if env_override
+        .map(|v| v.eq_ignore_ascii_case("compact"))
+        .unwrap_or(false)
+    {
+        return WorkerPromptProfile::Compact;
+    }
+    match model_context_limit {
+        Some(limit) if limit <= COMPACT_PROFILE_CONTEXT_LIMIT => WorkerPromptProfile::Compact,
+        _ => WorkerPromptProfile::Default,
+    }
+}
+
+/// R48c: caps a worker-brief block (the code map or the project digest) at
+/// `max_lines` newline-delimited lines AND `max_chars` chars (this repo's
+/// own "~4 chars/token" heuristic — `dispatch_digest.rs`'s `DIGEST_MAX_
+/// CHARS` doc comment), whichever bound is hit first, appending a one-line
+/// marker so a compact-profile worker can tell the block was cut rather than
+/// silently reading a partial map/digest as the whole thing. A no-op
+/// (returns `block` unchanged, no marker) when it already fits both bounds
+/// — so a block already under a compact tier's cap costs nothing extra.
+/// Char-counted via `.chars()`, never a byte-index slice, so a multi-byte
+/// boundary can never split a character.
+fn bound_compact_block(block: &str, max_lines: usize, max_chars: usize) -> String {
+    let mut truncated = false;
+
+    let mut kept: String = if block.chars().count() > max_chars {
+        truncated = true;
+        block.chars().take(max_chars).collect()
+    } else {
+        block.to_string()
+    };
+
+    if kept.lines().count() > max_lines {
+        truncated = true;
+        kept = kept.lines().take(max_lines).collect::<Vec<_>>().join("\n");
+    }
+
+    if truncated {
+        format!("{kept}\n[...truncated for the compact worker prompt profile...]")
+    } else {
+        kept
+    }
+}
+
+/// R48c: bounds for the code map block under the compact profile. The map is
+/// "A45 design" Q4's single largest, least-predictable contributor (cut only
+/// at a line boundary today, otherwise unbounded) — capped hardest.
+const COMPACT_CODE_MAP_MAX_LINES: usize = 40;
+const COMPACT_CODE_MAP_MAX_CHARS: usize = 1_600;
+
+/// R48c: bounds for the project digest block under the compact profile.
+/// Tighter than `dispatch_digest::DIGEST_MAX_CHARS` (1,600 chars / ~400
+/// tokens for every profile already) — compact trims further, since a
+/// single-goal worker's sibling-awareness is a nice-to-have, not required to
+/// verify/commit/report (`## A45 design` Q4 item 3).
+const COMPACT_DIGEST_MAX_LINES: usize = 15;
+const COMPACT_DIGEST_MAX_CHARS: usize = 600;
+
 /// The outcome of worker selection: the chosen worker plus a routing snapshot
 /// (#211) capturing WHY it was chosen — the required capabilities, and every
 /// candidate's availability / cost tier / load at the selection moment. Stored
@@ -4769,7 +4867,8 @@ pub(crate) async fn dispatch_goal_fn(
 
     // Resolve worker persona for the subagent
     let config = agent_identity::load_agent_config();
-    let persona_override = config.workers.get(&worker_key).map(|w| {
+    let worker_cfg = config.workers.get(&worker_key);
+    let persona_override = worker_cfg.map(|w| {
         (
             crate::public_apis::attach_to_persona_block(
                 &w.system_prompt_block(),
@@ -4778,6 +4877,33 @@ pub(crate) async fn dispatch_goal_fn(
             w.display_name(),
         )
     });
+
+    // R48c: decide the worker prompt profile before the brief below is
+    // built, so a compact-tier worker never has the unbounded code-map/
+    // digest blocks assembled only to discard them downstream. Two
+    // independent signals, either selects `Compact` (`worker_prompt_
+    // profile`'s own doc comment has the precedence): an explicit
+    // `PERMAGENT_WORKER_PROFILE=compact` override, or the worker persona's
+    // own EXPLICITLY configured model (`worker_cfg.model`, agent.yaml)
+    // read against the 32,768 ceiling. A worker with no explicit model pin
+    // resolves its model later, via role/pack routing this function runs
+    // well after the brief is built — that goal keeps `Default` here,
+    // matching "coordinator/cloud workers keep today's profile".
+    let worker_profile_env = std::env::var(WORKER_PROMPT_PROFILE_ENV).ok();
+    let worker_model_context_limit =
+        worker_cfg
+            .and_then(|w| w.model.as_deref())
+            .and_then(|model| {
+                crate::model::ModelConfig::new(model).ok().map(|mc| {
+                    mc.with_canonical_limits(
+                        worker_cfg.and_then(|w| w.provider.as_deref()).unwrap_or(""),
+                    )
+                    .context_limit() as u64
+                })
+            });
+    let worker_profile =
+        worker_prompt_profile(worker_model_context_limit, worker_profile_env.as_deref());
+    let compact_worker_profile = worker_profile == WorkerPromptProfile::Compact;
 
     // Look up project for root_path context
     let project = crate::projects::get_project(&pool, &card.project_id)
@@ -4847,6 +4973,20 @@ pub(crate) async fn dispatch_goal_fn(
         code_map_instructions_block(&project.id, &format!("{} {}", card.title, card.description))
             .await
     {
+        // R48c: a compact-profile worker gets the code map bounded further
+        // than the existing line-boundary cut — see `bound_compact_block`'s
+        // doc comment. A no-op when the block already fits, and always a
+        // no-op for the default profile (byte-identical to before this
+        // lane).
+        let block = if compact_worker_profile {
+            bound_compact_block(
+                &block,
+                COMPACT_CODE_MAP_MAX_LINES,
+                COMPACT_CODE_MAP_MAX_CHARS,
+            )
+        } else {
+            block
+        };
         instructions = format!("{instructions}\n\n{block}");
         // The map is the one memory-derived claim in a normal brief: it was
         // written by an `index-code` run at some past moment and nothing
@@ -4883,6 +5023,15 @@ pub(crate) async fn dispatch_goal_fn(
         super::dispatch_digest::load_dispatch_digest(&pool, &project, &card.id, bridge_available)
             .await
     {
+        // R48c: tighter than `dispatch_digest::DIGEST_MAX_CHARS` (already
+        // ~400 tokens for every profile) — a compact-profile worker's
+        // sibling-awareness is a nice-to-have, not required to verify/
+        // commit/report. No-op for the default profile.
+        let block = if compact_worker_profile {
+            bound_compact_block(&block, COMPACT_DIGEST_MAX_LINES, COMPACT_DIGEST_MAX_CHARS)
+        } else {
+            block
+        };
         instructions = format!("{instructions}\n\n{block}");
     }
 
@@ -5003,7 +5152,7 @@ pub(crate) async fn dispatch_goal_fn(
 
     // Resolve the engine for this worker and dispatch. The engine owns *how*
     // the goal runs; the card lifecycle around it stays here.
-    let worker_cfg = config.workers.get(&worker_key);
+    // (`worker_cfg` was resolved earlier, alongside R48c's profile decision.)
     let timeout_secs = worker_cfg
         .and_then(|w| w.timeout_secs)
         .unwrap_or(goal_engine::DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS);
@@ -5119,8 +5268,11 @@ pub(crate) async fn dispatch_goal_fn(
             // A Settings → Data sources toggle must flow to the suggested
             // agent without a restart. Restore `public_apis` from the parent
             // when this worker is a consumer, unless the goal itself scoped
-            // tools (that filter is per-goal and stays absolute).
-            let extensions = if dispatch_scope.is_none() {
+            // tools (that filter is per-goal and stays absolute) — or R48c's
+            // compact profile dropped it from the default set outright (`##
+            // A45 design` Q4: no worker-facing brief text instructs a worker
+            // to call it).
+            let extensions = if dispatch_scope.is_none() && !compact_worker_profile {
                 super::public_apis::ensure_extension_for_agent(&parent, narrowed, &worker_key)
             } else {
                 narrowed
@@ -5259,6 +5411,7 @@ pub(crate) async fn dispatch_goal_fn(
                 persona_override,
                 role,
                 model_override,
+                compact_worker_profile,
             })
         }
     };
@@ -40355,6 +40508,245 @@ mod tests {
             developer_tool_names.contains("verify"),
             "a dispatched goal worker keeps `developer` wholesale — it must still expose \
              `verify`, got: {developer_tool_names:?}"
+        );
+    }
+
+    // ── Lane R48c ("A45 design" Q4): compact worker prompt profile ──────────
+
+    /// The pure selection rule: an explicit override always wins; otherwise
+    /// a known context limit at or under the 32,768 ceiling selects
+    /// `Compact`; an unknown limit or one above the ceiling keeps `Default`.
+    #[test]
+    fn worker_prompt_profile_selects_compact_from_either_signal() {
+        // The named case from the lane brief: a model with exactly a 32,768
+        // limit (the same ceiling A39's MiniCPM5-2B probe overflowed).
+        assert_eq!(
+            worker_prompt_profile(Some(32_768), None),
+            WorkerPromptProfile::Compact,
+            "a model context limit at the 32,768 ceiling must select Compact"
+        );
+        // Below the ceiling too.
+        assert_eq!(
+            worker_prompt_profile(Some(8_192), None),
+            WorkerPromptProfile::Compact
+        );
+        // Above the ceiling: a cloud/coordinator-class model keeps Default.
+        assert_eq!(
+            worker_prompt_profile(Some(200_000), None),
+            WorkerPromptProfile::Default
+        );
+        // No model context limit known at all (no explicit worker_cfg.model
+        // pin) and no override: Default — "coordinator/cloud workers keep
+        // today's profile" by construction, not by a special case.
+        assert_eq!(
+            worker_prompt_profile(None, None),
+            WorkerPromptProfile::Default
+        );
+        // The explicit env/pack override wins even over a large limit.
+        assert_eq!(
+            worker_prompt_profile(Some(200_000), Some("compact")),
+            WorkerPromptProfile::Compact
+        );
+        assert_eq!(
+            worker_prompt_profile(Some(200_000), Some("COMPACT")),
+            WorkerPromptProfile::Compact,
+            "the override must be case-insensitive"
+        );
+        // An override naming anything else is not a request for Compact.
+        assert_eq!(
+            worker_prompt_profile(None, Some("default")),
+            WorkerPromptProfile::Default
+        );
+    }
+
+    /// A block within both bounds is returned unchanged — no marker, no
+    /// truncation — so a compact-profile worker never pays for bounding
+    /// blocks that already fit (and the default profile, which never calls
+    /// this function at all, is unaffected either way).
+    #[test]
+    fn bound_compact_block_is_a_no_op_when_already_within_bounds() {
+        let block = "line one\nline two\nline three";
+        let bounded = bound_compact_block(block, 10, 1_000);
+        assert_eq!(bounded, block);
+        assert!(!bounded.contains("truncated"));
+    }
+
+    /// A block over the char bound is cut on a CHAR boundary (never a byte
+    /// index — this lane's own hard rule) and carries the marker.
+    #[test]
+    fn bound_compact_block_truncates_on_the_char_bound_with_a_marker() {
+        let block = "0123456789".repeat(100); // 1,000 chars, one line
+        let bounded = bound_compact_block(&block, 100, 50);
+        assert!(
+            bounded.contains("[...truncated for the compact worker prompt profile...]"),
+            "{bounded}"
+        );
+        let kept: String = bounded.lines().next().unwrap().to_string();
+        assert_eq!(
+            kept.chars().count(),
+            50,
+            "kept text must be exactly the char bound"
+        );
+    }
+
+    /// A block over the LINE bound (even if short in chars) is cut on a
+    /// line boundary and carries the marker.
+    #[test]
+    fn bound_compact_block_truncates_on_the_line_bound_with_a_marker() {
+        let block = (0..30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let bounded = bound_compact_block(&block, 5, 10_000);
+        assert!(bounded.contains("[...truncated"), "{bounded}");
+        let kept_lines: Vec<&str> = bounded
+            .lines()
+            .filter(|l| !l.starts_with("[...truncated"))
+            .collect();
+        assert_eq!(kept_lines.len(), 5);
+        assert_eq!(
+            kept_lines,
+            vec!["line 0", "line 1", "line 2", "line 3", "line 4"]
+        );
+    }
+
+    /// A multi-byte character never gets split by the char-count bound —
+    /// the "no byte-index string slicing" rule this lane must not violate.
+    #[test]
+    fn bound_compact_block_never_splits_a_multibyte_character() {
+        let block = "é".repeat(10); // each 'é' is 2 bytes in UTF-8
+        let bounded = bound_compact_block(&block, 100, 5);
+        // Must not panic (a byte-index slice at an odd offset would), and
+        // the kept text must be exactly 5 whole characters.
+        let kept = bounded.lines().next().unwrap();
+        assert_eq!(kept.chars().count(), 5);
+    }
+
+    /// End-to-end fixture: the compact profile's rendered worker prompt for
+    /// a representative goal — real tool schemas (the same 9 tools
+    /// `goal_worker_extensions_for_dispatch`'s default narrows to: `developer`
+    /// wholesale + `orchestrator`'s `escalate`/`message_goal`), a header with
+    /// acceptance criteria, an oversized code-map and digest bounded the same
+    /// way `dispatch_goal_fn` bounds them, and the SAME verify/commit/report
+    /// tail every profile gets (`goal_engine::COMMIT_ONLY_BRIEF` +
+    /// `worktree_scope_brief`, untouched by this lane) — must land at or
+    /// under 6,000 tokens by this repo's own "~4 chars/token" heuristic
+    /// (`dispatch_digest.rs`'s `DIGEST_MAX_CHARS` doc comment), and must
+    /// still carry the ACs and the verify/commit/report surface.
+    #[test]
+    fn compact_worker_profile_fixture_prompt_is_at_most_six_thousand_tokens() {
+        const CHARS_PER_TOKEN: usize = 4;
+        const TOKEN_BUDGET: usize = 6_000;
+
+        // The real tool set a compact-profile worker actually gets, serialized
+        // exactly as it would be for the provider (mirrors `agent.rs`'s own
+        // `serde_json::to_string(&tools)` context-packet accounting).
+        let developer_tools =
+            crate::agents::platform_extensions::developer::DeveloperClient::get_tools();
+        let orchestrator_tools: Vec<_> = OrchestratorClient::get_tools()
+            .into_iter()
+            .filter(|t| GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST.contains(&t.name.as_ref()))
+            .collect();
+        assert_eq!(developer_tools.len() + orchestrator_tools.len(), 9);
+        let mut all_tools = developer_tools.clone();
+        all_tools.extend(orchestrator_tools.clone());
+        let tool_schema_chars = serde_json::to_string(&all_tools)
+            .expect("real tool schemas must serialize")
+            .chars()
+            .count();
+
+        // A representative goal brief header — the part R48c never touches.
+        let header = "Goal: Fix flaky retry-loop test\n\n\
+             Description: The retry-loop integration test hangs intermittently \
+             under load.\nAcceptance Criteria:\n\
+             - The test passes 20 consecutive runs with no hang\n\
+             - No sleep-based waits remain in the retry loop\n\
+             Project: fixture-project\nProject root: /tmp/fixture-project";
+
+        // Oversized code-map and digest fixtures — much larger than either
+        // compact bound, so both truncation paths actually fire.
+        let oversized_code_map = (0..400)
+            .map(|i| format!("src/module_{i}.rs: fn handler_{i}() -> Result<()> {{ ... }}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let oversized_digest = (0..100)
+            .map(|i| format!("Sibling goal {i}: in progress, owned by worker-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let bounded_map = bound_compact_block(
+            &oversized_code_map,
+            COMPACT_CODE_MAP_MAX_LINES,
+            COMPACT_CODE_MAP_MAX_CHARS,
+        );
+        let bounded_digest = bound_compact_block(
+            &oversized_digest,
+            COMPACT_DIGEST_MAX_LINES,
+            COMPACT_DIGEST_MAX_CHARS,
+        );
+
+        // The same verify/commit/report tail EVERY profile gets, appended in
+        // `InternalSubagentEngine::spawn` — untouched by this lane, so its
+        // presence proves compact never loses it.
+        let worktree = PathBuf::from("/tmp/fixture-project/.permagent-goal-worktrees/run-1");
+        let instructions = format!(
+            "{header}\n\n{bounded_map}\n\n{bounded_digest}{}{}",
+            goal_engine::COMMIT_ONLY_BRIEF,
+            goal_engine::worktree_scope_brief(&worktree),
+        );
+
+        let total_chars = instructions.chars().count() + tool_schema_chars;
+        let estimated_tokens = total_chars / CHARS_PER_TOKEN;
+
+        assert!(
+            estimated_tokens <= TOKEN_BUDGET,
+            "compact profile fixture prompt estimated at {estimated_tokens} tokens (budget \
+             {TOKEN_BUDGET}): instructions {ichars} chars + tool schemas {tchars} chars",
+            ichars = instructions.chars().count(),
+            tchars = tool_schema_chars,
+        );
+
+        // Still carries the ACs.
+        assert!(instructions.contains("Acceptance Criteria"));
+        assert!(instructions.contains("The test passes 20 consecutive runs"));
+        // Still carries verify/commit/report: the commit instruction text,
+        // the `verify` tool, and the report-back tools (`escalate`/
+        // `message_goal`).
+        assert!(instructions.contains("Commit your work in this worktree"));
+        assert!(developer_tools.iter().any(|t| t.name == "verify"));
+        assert!(orchestrator_tools.iter().any(|t| t.name == "escalate"));
+        assert!(orchestrator_tools.iter().any(|t| t.name == "message_goal"));
+    }
+
+    /// The default profile's own bounding call sites are `if compact { .. }
+    /// else { block }` — the `else` arm returns the block completely
+    /// unchanged, so a Default-profile worker's code-map/digest text is
+    /// byte-identical to what `dispatch_goal_fn` produced before this lane.
+    /// Asserted directly against `bound_compact_block` NOT being reachable
+    /// on that path: `worker_prompt_profile` must resolve to `Default` for
+    /// exactly the inputs a cloud/coordinator worker presents (no explicit
+    /// small-model pin, no override) — the same case the fixture test above
+    /// exercises for `Compact`.
+    #[test]
+    fn default_profile_selected_for_a_cloud_worker_leaves_blocks_untouched() {
+        // A cloud worker's own configured context limit (when one is
+        // configured at all) sits far above the ceiling.
+        let profile = worker_prompt_profile(Some(200_000), None);
+        assert_eq!(profile, WorkerPromptProfile::Default);
+
+        let block = "some code map or digest content, arbitrarily long ".repeat(200);
+        let rendered = if profile == WorkerPromptProfile::Compact {
+            bound_compact_block(
+                &block,
+                COMPACT_CODE_MAP_MAX_LINES,
+                COMPACT_CODE_MAP_MAX_CHARS,
+            )
+        } else {
+            block.clone()
+        };
+        assert_eq!(
+            rendered, block,
+            "the default profile must never bound a block — byte-identical to before this lane"
         );
     }
 
