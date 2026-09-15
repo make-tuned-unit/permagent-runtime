@@ -6146,11 +6146,24 @@ impl OrchestratorClient {
     /// THIS coordinator session (Lane R22a) — called by both a real
     /// `check_worker` tool call and `goal_advance`'s own internal
     /// equivalent, so either one satisfies the other.
+    ///
+    /// Lane R33a (RECEIPT CONTRACT v1.2, A31 analysis): also the one hook
+    /// point for `dag_enforcement.worker_checked` — both callers (a real
+    /// `check_worker` tool call via `handle_check_worker`, and `goal_advance`
+    /// `dispatch`'s own internal pre-dispatch check via
+    /// `ensure_worker_checked_for_dispatch`) funnel through here, so this
+    /// counts a real, observed worker query either way. Deliberately not
+    /// hooked into `handle_goal_status`: that tool reports a card's stored
+    /// metadata and is callable on any goal card regardless of dispatch
+    /// state, so it is not distinguishing evidence of a worker actually being
+    /// queried — see `receipts.rs`'s `FIELDS` doc comment for the fixture
+    /// this closes.
     async fn record_check_worker(&self, worker_key: &str) {
         self.checked_workers_this_session
             .lock()
             .await
             .insert(worker_key.to_string());
+        crate::receipts::record_count("dag_enforcement", "worker_checked", 1);
     }
 
     /// Lane R22a (defect: M24 DeepSeek m1
@@ -29613,6 +29626,125 @@ mod tests {
         assert!(
             text.contains("permagent"),
             "the outcome must report on the resolved worker key: {text}"
+        );
+    }
+
+    /// Lane R33a (RECEIPT CONTRACT v1.2, A31 analysis): `check_worker`
+    /// resolved off a dispatched (In Progress) card's own worker bumps the
+    /// `dag_enforcement.worker_checked` receipt, but `goal_status` on an
+    /// undispatched (Ready) card — which only reports stored card metadata,
+    /// not a live worker query — does not.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn worker_checked_receipt_counts_check_worker_not_goal_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "R33a Worker Checked".to_string(),
+                root_path: Some(tmp.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        cards::seed_goal_columns(&pool, &project.id).await.unwrap();
+
+        // A dispatched (In Progress) card with a real worker_key, resolved
+        // by `check_worker`'s omitted-worker_key path (Lane R25a) the same
+        // way `check_worker_without_worker_key_resolves_the_single_in_
+        // progress_cards_worker` above does.
+        let in_progress_col = cards::get_goal_column(&pool, &project.id, "in_progress")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut meta = serde_json::Map::new();
+        meta.insert("worker_key".to_string(), serde_json::json!("permagent"));
+        cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Dispatched goal".to_string(),
+                description: Some("t".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(in_progress_col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::Value::Object(meta)),
+            },
+        )
+        .await
+        .unwrap();
+
+        // An undispatched (Ready) card — no worker dispatched to it yet.
+        let ready_col = cards::get_goal_column(&pool, &project.id, "ready")
+            .await
+            .unwrap()
+            .unwrap();
+        let ready_card = cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Undispatched goal".to_string(),
+                description: Some("t".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(ready_col.id.clone()),
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "r33a-worker-checked".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: Some(Arc::new(session)),
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        crate::receipts::begin_run();
+
+        // goal_status on the undispatched Ready card first: must not bump
+        // the counter — it reports stored metadata, not a live worker query.
+        let mut status_args = JsonObject::new();
+        status_args.insert("card_id".to_string(), serde_json::json!(ready_card.id));
+        client
+            .handle_goal_status(Some(status_args))
+            .await
+            .expect("goal_status on a real card id must succeed");
+        let after_goal_status = crate::receipts::snapshot().lines()[0].clone();
+        assert!(
+            after_goal_status.contains("worker_checked=0"),
+            "goal_status on an undispatched card must not count as a worker \
+             check: {after_goal_status}"
+        );
+
+        // check_worker (omitted worker_key, resolved off the In Progress
+        // card) must bump the counter by exactly one.
+        client
+            .handle_check_worker(None)
+            .await
+            .expect("permagent is always available — the resolved check must succeed");
+        let after_check_worker = crate::receipts::snapshot().lines()[0].clone();
+        crate::receipts::end_run();
+
+        assert!(
+            after_check_worker.contains("worker_checked=1"),
+            "check_worker on the dispatched card's worker must count toward \
+             dag_enforcement.worker_checked: {after_check_worker}"
         );
     }
 
