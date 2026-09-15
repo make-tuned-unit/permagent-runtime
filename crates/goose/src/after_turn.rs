@@ -2137,6 +2137,15 @@ const RULE5_MIDSESSION_PARK_REASON: &str =
 /// a value derived purely from the transcript and specific to THIS guard's
 /// own two-strike rule; `prior_holds >= MAX_HOLDS` stays as an OR'd
 /// defensive ceiling only, never a reason to grant an extra nudge.
+///
+/// Lane R24b (M26 DeepSeek m1, HARNESS_LOOP_LOG.md "Lane R24b"): a second
+/// strike whose final message reads as a question is not graded as a
+/// dishonest exit anymore — see [`mint_rule5_question_escalation`] and
+/// [`rule5_park_should_escalate_instead`]. The park itself is redirected
+/// into minting the `escalate` decision the model's own prose already
+/// represents, and the turn ends `Allow` (exit 0) instead. A second strike
+/// whose final message is NOT a question (a plan in prose, a refusal,
+/// silence) is unaffected by this and still parks exactly as before.
 pub struct Rule5HonestFailureGuard;
 
 impl Rule5HonestFailureGuard {
@@ -2260,16 +2269,14 @@ fn contains_word_or_phrase(haystack: &str, needle: &str) -> bool {
     false
 }
 
-/// Lane R20c: whether the turn's FINAL message reads as a question or a
-/// request for information/a decision, per [`RULE5_QUESTION_PHRASES`] plus a
-/// trailing `?`. Scoped to the TEXT content of the last message only — by
-/// the time the live path calls this, [`final_message_has_tool_call`] has
-/// already established that message has no tool call.
-fn final_message_reads_as_question(messages: &[Message]) -> bool {
+/// The turn's FINAL message, as trimmed joined text — `None` if the last
+/// message has no text content (or only whitespace). Factored out of
+/// [`final_message_reads_as_question`] so Lane R24b's escalation minting can
+/// reuse the exact same text a question was detected in, rather than
+/// re-deriving it (and risking the two readings drifting apart).
+fn final_message_text(messages: &[Message]) -> Option<String> {
     use crate::conversation::message::MessageContent;
-    let Some(last) = messages.last() else {
-        return false;
-    };
+    let last = messages.last()?;
     let text: String = last
         .content
         .iter()
@@ -2281,8 +2288,21 @@ fn final_message_reads_as_question(messages: &[Message]) -> bool {
         .join(" ");
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return false;
+        None
+    } else {
+        Some(trimmed.to_string())
     }
+}
+
+/// Lane R20c: whether the turn's FINAL message reads as a question or a
+/// request for information/a decision, per [`RULE5_QUESTION_PHRASES`] plus a
+/// trailing `?`. Scoped to the TEXT content of the last message only — by
+/// the time the live path calls this, [`final_message_has_tool_call`] has
+/// already established that message has no tool call.
+fn final_message_reads_as_question(messages: &[Message]) -> bool {
+    let Some(trimmed) = final_message_text(messages) else {
+        return false;
+    };
     if trimmed.ends_with('?') {
         return true;
     }
@@ -2290,6 +2310,129 @@ fn final_message_reads_as_question(messages: &[Message]) -> bool {
     RULE5_QUESTION_PHRASES
         .iter()
         .any(|phrase| contains_word_or_phrase(&lower, phrase))
+}
+
+// ── Lane R24b: a free-text question at rule-5 park time is the escalation
+// it looks like ─────────────────────────────────────────────────────────
+
+/// The plain-language headline (Amendment A1: max 80 chars, no PR/issue
+/// numbers, paths, file counts, or internal IDs) for an escalation the
+/// rule-5 guard mints on the model's behalf. Deliberately a FIXED,
+/// always-clean string rather than derived from the model's own free text:
+/// the model's question can be arbitrary length and may contain exactly the
+/// tokens Amendment A1 forbids in a headline (a card id, a path, a PR
+/// number), and deriving one from raw prose risks landing the mint on
+/// `DecisionKind::Malformed` (Tier 2, generic headline) for what is, in
+/// substance, an ordinary answerable ask. The model's actual question is
+/// preserved VERBATIM in `why_blocked` (the technical-detail field, only
+/// length-capped) — nothing about the ask is lost, only the plain-language
+/// summary is templated.
+const RULE5_ESCALATION_HEADLINE: &str = "A coordinator question needs a human decision";
+
+/// Deliberately small, documented heuristic — matching
+/// [`final_message_reads_as_question`]'s own bias toward simple, checkable
+/// rules rather than a full parse of the model's prose: a literal `" or "`
+/// between two alternatives reads as the model offering the user a choice
+/// (`"decision"`, which [`crate::decision_inbox::escalate::draft_from_payload`]
+/// reconstructs into a proceed/decline pair when — as here — no structured
+/// `options` list is given; see that function's and
+/// `default_decision_options`'s own doc comments). Anything else — including
+/// the M26 defect's own "which credential should I use?" shape — is a plain
+/// `"information"` ask. A false negative here (a real either/or question
+/// phrased without the literal word "or") still mints a perfectly answerable
+/// `information` escalation; it only affects which of the two default
+/// choice layouts the human sees.
+fn rule5_escalation_kind(question_text: &str) -> &'static str {
+    if question_text.to_ascii_lowercase().contains(" or ") {
+        "decision"
+    } else {
+        "information"
+    }
+}
+
+/// Build the JSON payload [`crate::decision_inbox::escalate::draft_from_payload`]
+/// expects — the same schema `handle_escalate` validates a live `escalate`
+/// tool call against — from the rule-5 guard's own final-message text
+/// rather than an actual tool call.
+fn rule5_escalation_payload(question_text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": rule5_escalation_kind(question_text),
+        "specific_ask": RULE5_ESCALATION_HEADLINE,
+        "why_blocked": question_text,
+        "evidence_refs": ["minted_by:rule5_guard"],
+        "resume": "auto",
+    })
+}
+
+/// Lane R24b: mint the escalation a free-text question at rule-5 park time
+/// represents, exactly as the `escalate` tool itself would (M26 DeepSeek m1,
+/// HARNESS_LOOP_LOG.md "Lane R24b": a coordinator asked "which credential…?"
+/// in prose twice and the two-strike rule-5 guard ended the run as a
+/// dishonest failure — the question WAS the right escalation, only the form
+/// was wrong).
+///
+/// Takes an INJECTED sink, mirroring `orchestrator::record_escalation`'s own
+/// test-friendly design (see that function's doc comment) rather than
+/// reading `escalate::global_decision_sink()` directly here — so a unit
+/// test can assert on an [`crate::decision_inbox::escalate::InMemoryDecisionSink`]
+/// without installing anything into either of `decision_inbox::escalate`'s
+/// or `receipts`'s process-wide globals. The live caller
+/// ([`Rule5HonestFailureGuard::after_turn`]) passes the real global sink.
+///
+/// Records through the exact same seam `handle_escalate`/`record_escalation`
+/// use — `draft_from_payload` then `DecisionSink::record` — so the minted
+/// decision gets the same `decisions`/`decision_audit` rows a real
+/// `escalate` call would (`SqlDecisionSink::record`, installed for every
+/// headless run, writes both atomically); increments the same
+/// `dag_enforcement.escalated` receipt counter `record_escalation` does; and
+/// prints the same tool-call-banner shape Lane R22a's
+/// `ensure_worker_checked_for_dispatch` synthesizes for `check_worker` — the
+/// ANSI-stripped `▸` glyph as the line's first non-whitespace character is
+/// all `permagent_eval::harness_log::scan`'s `tool_call_banner_tool` needs
+/// to record this as an `escalate` call, which is what lets the eval
+/// driver's `dag_enforcement`/selection checks see it.
+async fn mint_rule5_question_escalation(
+    sink: &dyn crate::decision_inbox::escalate::DecisionSink,
+    session_id: &str,
+    question_text: &str,
+) -> Result<crate::decision_inbox::escalate::RecordedDecision, String> {
+    use crate::decision_inbox::escalate as escalate_tool;
+
+    let source = escalate_tool::DraftSource {
+        session_id: Some(session_id.to_string()),
+        worker_roster_name: None,
+    };
+    let raw = rule5_escalation_payload(question_text);
+    let draft = escalate_tool::draft_from_payload(raw, &source);
+    let recorded = sink
+        .record(draft)
+        .await
+        .map_err(|e| format!("Lane R24b: failed to record the rule-5-minted escalation: {e}"))?;
+
+    // Same observation point `record_escalation` uses for a real `escalate`
+    // call — see that function's own doc comment. A no-op unless this
+    // process is an active headless CLI run collecting receipts
+    // (`receipts::is_active`).
+    crate::receipts::record_count("dag_enforcement", "escalated", 1);
+
+    // Lane R22a precedent (`ensure_worker_checked_for_dispatch`,
+    // `orchestrator.rs`): print the exact banner shape a real tool call's
+    // own rendering would produce, so the harness log carries a `▸
+    // escalate` line even though no live tool call happened.
+    println!();
+    println!("  {}", "─".repeat(40));
+    println!("  ▸ escalate");
+
+    Ok(recorded)
+}
+
+/// Whether a park-bound rule-5 decision should be redirected into a minted
+/// escalation instead of an honest failure: the guard is about to `Park`
+/// AND the turn's final message reads as a question. Pure predicate, kept
+/// separate from [`Rule5HonestFailureGuard::after_turn`] so the override
+/// condition itself is unit-testable without a live session.
+fn rule5_park_should_escalate_instead(action: &AfterTurnAction, reads_as_question: bool) -> bool {
+    matches!(action, AfterTurnAction::Park { .. }) && reads_as_question
 }
 
 #[async_trait]
@@ -2361,6 +2504,53 @@ impl AfterTurn for Rule5HonestFailureGuard {
         );
 
         if let AfterTurnAction::Park { .. } = &action {
+            // Lane R24b: a free-text turn about to be parked whose final
+            // message reads as a question is not a dishonest exit — it is
+            // the escalation rule 5 already asks for, just in the wrong
+            // form (prose instead of an `escalate` call). Mint that
+            // escalation on the model's behalf and end the turn cleanly
+            // instead of throwing the whole run away as a rule-5 failure. A
+            // free-text turn that is NOT a question (a plan in prose, a
+            // refusal, silence) never enters this branch and keeps today's
+            // honest failure below unchanged.
+            if rule5_park_should_escalate_instead(&action, reads_as_question) {
+                if let Some(question_text) = final_message_text(ctx.messages) {
+                    let sink = crate::decision_inbox::escalate::global_decision_sink();
+                    match mint_rule5_question_escalation(
+                        sink.as_ref(),
+                        ctx.session_id,
+                        &question_text,
+                    )
+                    .await
+                    {
+                        Ok(recorded) => {
+                            tracing::info!(
+                                session_id = %ctx.session_id,
+                                harness_note = "rule5_question_escalated",
+                                decision_id = %recorded.decision_id,
+                                "Lane R24b: rule-5 guard minted the escalation a free-text \
+                                 question represents instead of parking the turn"
+                            );
+                            return AfterTurnAction::Allow;
+                        }
+                        Err(error) => {
+                            // Minting failed (e.g. a degraded session store) —
+                            // fall through to the ordinary honest-failure park
+                            // below rather than silently claiming a clean exit
+                            // for an escalation that was never actually
+                            // recorded.
+                            tracing::error!(
+                                session_id = %ctx.session_id,
+                                harness_error = "rule5_question_escalation_mint_failed",
+                                error = %error,
+                                "Lane R24b: failed to mint the rule-5 question's escalation; \
+                                 falling back to the honest-failure park"
+                            );
+                        }
+                    }
+                }
+            }
+
             // R18f's original marker for the bare-session shape; R20c's new
             // marker for the mid-session question shape — same mechanism
             // R18f used to make this a receipt-visible, greppable failure
@@ -5303,5 +5493,224 @@ mod tests {
             AfterTurnAction::Allow,
             "an escalate call anywhere in the turn is the honest exit for both shapes"
         );
+    }
+
+    // ── Lane R24b: a free-text question at rule-5 park time is minted as an
+    // escalation ────────────────────────────────────────────────────────
+
+    #[test]
+    fn rule5_park_should_escalate_instead_only_fires_for_a_park_with_a_question() {
+        let park = AfterTurnAction::Park {
+            reason: "x".to_string(),
+        };
+        let cont = AfterTurnAction::Continue {
+            inject: "x".to_string(),
+        };
+        assert!(
+            rule5_park_should_escalate_instead(&park, true),
+            "a park whose final message reads as a question must be redirected"
+        );
+        assert!(
+            !rule5_park_should_escalate_instead(&park, false),
+            "a park whose final message is a plan/refusal/silence, NOT a question, \
+             must keep today's honest failure"
+        );
+        assert!(
+            !rule5_park_should_escalate_instead(&cont, true),
+            "a first-strike Continue must never mint — only a park (second strike) does"
+        );
+        assert!(!rule5_park_should_escalate_instead(
+            &AfterTurnAction::Allow,
+            true
+        ));
+    }
+
+    #[test]
+    fn rule5_escalation_kind_is_information_for_an_ordinary_question() {
+        assert_eq!(
+            rule5_escalation_kind("Which credential should I use for the staging API?"),
+            "information"
+        );
+    }
+
+    #[test]
+    fn rule5_escalation_kind_is_decision_for_an_either_or_question() {
+        assert_eq!(
+            rule5_escalation_kind("Should I use the staging key or the prod key?"),
+            "decision"
+        );
+    }
+
+    #[test]
+    fn rule5_escalation_payload_carries_the_question_verbatim_and_a_minted_by_tag() {
+        let question = "Which credential should I use for the staging API?";
+        let raw = rule5_escalation_payload(question);
+        assert_eq!(raw["kind"], "information");
+        assert_eq!(raw["specific_ask"], RULE5_ESCALATION_HEADLINE);
+        assert_eq!(raw["why_blocked"], question);
+        assert_eq!(raw["evidence_refs"][0], "minted_by:rule5_guard");
+        assert_eq!(raw["resume"], "auto");
+    }
+
+    /// The templated headline must always satisfy Amendment A1's own rules —
+    /// this is what keeps a mint from ever falling to `DecisionKind::
+    /// Malformed` just because the model's underlying question happened to
+    /// contain a path, a PR number, or a long hex id.
+    #[test]
+    fn rule5_escalation_headline_is_always_amendment_a1_clean() {
+        assert!(
+            crate::decision_inbox::escalate::headline_violations(RULE5_ESCALATION_HEADLINE)
+                .is_empty()
+        );
+    }
+
+    /// Task requirement: a question-shaped final turn mints a decision
+    /// carrying the model's own question text, increments the same
+    /// `dag_enforcement.escalated` receipt a real `escalate` tool call
+    /// would, and does so through an INJECTED sink — no process-global
+    /// installed or read.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn mint_rule5_question_escalation_records_the_question_text_and_receipt() {
+        use crate::decision_inbox::escalate::{DecisionKind, InMemoryDecisionSink};
+
+        crate::receipts::begin_run();
+        let sink = InMemoryDecisionSink::default();
+        let question = "Which credential should I use for the staging API?";
+        let recorded = mint_rule5_question_escalation(&sink, "sess-r24b-1", question)
+            .await
+            .expect("mint must succeed against a healthy sink");
+        let after = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+
+        assert!(
+            after[0].contains("escalated=1"),
+            "expected dag_enforcement.escalated to increment exactly once: {}",
+            after[0]
+        );
+
+        let drafts = sink.recorded();
+        assert_eq!(drafts.len(), 1, "exactly one decision must be minted");
+        assert_eq!(drafts[0].0, recorded.decision_id);
+        let draft = &drafts[0].1;
+        assert_eq!(
+            draft.kind,
+            DecisionKind::Unblock,
+            "an ordinary question maps to an information/unblock ask"
+        );
+        assert_eq!(
+            draft.detail, question,
+            "the model's own question text must be preserved verbatim as the decision's detail"
+        );
+        assert!(draft
+            .evidence_refs
+            .iter()
+            .any(|r| r == "minted_by:rule5_guard"));
+        assert!(
+            draft.validation_errors.is_empty(),
+            "the templated headline must never fall to Malformed"
+        );
+    }
+
+    /// A sink failure must surface as `Err`, never as a silently-successful
+    /// mint — the live caller falls back to the ordinary honest-failure
+    /// park in that case rather than claiming a clean exit for an
+    /// escalation that was never actually recorded.
+    struct FailingDecisionSink;
+
+    #[async_trait]
+    impl crate::decision_inbox::escalate::DecisionSink for FailingDecisionSink {
+        async fn record(
+            &self,
+            _draft: crate::decision_inbox::escalate::DecisionDraft,
+        ) -> anyhow::Result<crate::decision_inbox::escalate::RecordedDecision> {
+            Err(anyhow::anyhow!("sink unavailable"))
+        }
+    }
+
+    #[tokio::test]
+    async fn mint_rule5_question_escalation_surfaces_a_sink_error_instead_of_panicking() {
+        let sink = FailingDecisionSink;
+        let err = mint_rule5_question_escalation(&sink, "sess-r24b-2", "Which key should I use?")
+            .await
+            .expect_err("a failing sink must surface as an Err, not panic or silently succeed");
+        assert!(err.contains("Lane R24b"));
+    }
+
+    /// Task requirement: a question-shaped final message with an `escalate`
+    /// call ALREADY present earlier in the same turn must never mint a
+    /// second decision. `turn_called_escalate` already short-circuits
+    /// `Rule5HonestFailureGuard::after_turn` to `Allow` before `Self::decide`
+    /// (and therefore before `mint_rule5_question_escalation`) is ever
+    /// reached — see `rule5_guard_allows_a_mid_session_question_when_
+    /// escalate_was_called_this_turn` above for the same transcript shape.
+    /// This test pins that guarantee observably: the `dag_enforcement.
+    /// escalated` receipt this lane's own mint path would increment stays
+    /// at zero, proving the mint path never fired (a real, live `escalate`
+    /// tool call — not exercised by this transcript, which only mimics one
+    /// — is what increments it in production, via `record_escalation`).
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn rule5_guard_does_not_mint_a_second_escalation_when_one_was_already_called_this_turn() {
+        crate::receipts::begin_run();
+        let guard = Rule5HonestFailureGuard::new();
+        let escalated_question = vec![
+            tool_exchange("decompose_roadmap", "call-1", true),
+            tool_exchange("escalate", "call-2", true),
+            Message::assistant()
+                .with_text("Which credential should I use — the staging or prod key?"),
+        ];
+        let action = guard
+            .after_turn(&AfterTurnContext {
+                session_id: "rule5-no-double-mint",
+                messages: &escalated_question,
+                prior_holds: 0,
+            })
+            .await;
+        let after = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+
+        assert_eq!(action, AfterTurnAction::Allow);
+        assert!(
+            after[0].contains("escalated=0"),
+            "the rule-5 guard's own mint path must never fire once `escalate` was already \
+             called this turn: {}",
+            after[0]
+        );
+    }
+
+    /// Task requirement: a plan-in-prose (not question-shaped) turn keeps
+    /// today's rule-5 honest failure unchanged — `decide` still parks, and
+    /// this lane's new override never engages because
+    /// `final_message_reads_as_question` is false. Pins the exact pre-
+    /// existing behaviour `rule5_decide_parks_the_bare_session_shape_on_
+    /// the_second_consecutive_free_text_turn` (above) already covers, from
+    /// the override predicate's own side.
+    #[test]
+    fn rule5_decide_still_parks_a_non_question_free_text_turn_on_the_second_strike() {
+        let action = Rule5HonestFailureGuard::decide(true, false, false, false, false, 2, 0);
+        assert!(matches!(action, AfterTurnAction::Park { .. }));
+        assert!(
+            !rule5_park_should_escalate_instead(&action, false),
+            "a plan-in-prose ending (reads_as_question == false) must never be redirected"
+        );
+    }
+
+    /// Real-log-shape banner check: the exact `▸ escalate` line this lane's
+    /// mint function prints (`  ▸ escalate`, blank line + 40-dash separator
+    /// before it, mirroring Lane R22a's `check_worker` banner precedent) is
+    /// recognized by the REAL eval-driver log scanner as an `escalate` tool
+    /// call — the same proof R22a-c used for its own synthesized
+    /// `check_worker` banner (`permagent-eval`'s
+    /// `select_checks_worker_before_dispatch_recognizes_goal_advances_
+    /// synthesized_check_worker_banner`).
+    #[test]
+    fn rule5_minted_escalation_banner_is_recognized_by_the_real_log_scanner() {
+        let sep = "─".repeat(40);
+        let log = format!(
+            "some earlier prose\n  {sep}\n  ▸ decompose_roadmap\n\n  {sep}\n  ▸ escalate\n"
+        );
+        let signals = permagent_eval::harness_log::scan(&log);
+        assert_eq!(signals.tool_names, vec!["decompose_roadmap", "escalate"]);
     }
 }
