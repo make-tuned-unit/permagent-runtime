@@ -14241,11 +14241,21 @@ async fn maybe_salvage_committed_work(
     };
     let worktree_path = std::path::Path::new(&worktree);
 
-    // 3. Commits present: does the branch carry ANY commit past the
-    // rolling per-redispatch baseline at all? A cheap, single `git
-    // rev-list` — if this is 0, there is nothing to salvage regardless of
-    // trunk state, so the (potentially slower — resolves a repo root,
-    // shells out again) trunk check below never even runs.
+    // 3+4. Commits present, measured against the trunk when a trusted one
+    // resolves — else against the rolling per-redispatch baseline (A24
+    // Q1/Q3; R22g). These are ONE combined guard, not two sequential ones:
+    // R22f's first attempt split them into "rolling_ahead == 0 bails
+    // before the trunk check ever runs" followed by "the trunk check,"
+    // which re-introduced A24's ORIGINAL bug under a new name — the exact
+    // fixture this guard exists for (rolling baseline == tip, because
+    // Y16b's redispatch resumed from the branch's own prior commit) has
+    // `rolling_ahead == 0` while the trunk still has real, unlanded work,
+    // so bailing on the rolling count ALONE discarded it again. The
+    // authoritative "is there anything present" answer is the trunk-based
+    // count whenever a trusted trunk resolves; the rolling count is used
+    // ONLY when trunk resolution itself fails (no `root_path`, no
+    // resolvable worktree-derived fallback) — never as a shortcut past the
+    // trunk check when one is available.
     let rolling_ahead = match commits_ahead_of_baseline(worktree_path, &baseline).await {
         Ok(n) => n,
         Err(e) => {
@@ -14260,25 +14270,16 @@ async fn maybe_salvage_committed_work(
             return not_salvaged(note);
         }
     };
-    if rolling_ahead == 0 {
-        let note = "no commits past the dispatch baseline — nothing to salvage".to_string();
-        record_salvage_receipt(pool, &card.id, "salvage_skipped_no_commits", &note).await;
-        return not_salvaged(note);
-    }
-
-    // 4. Unlanded-at-trunk (A24 Q1/Q3): `rolling_ahead` counts commits past
-    // the ROLLING per-redispatch baseline (Y16b resumes each redispatch
-    // from the branch's own prior tip) — a NON-zero reading here only means
-    // "something is committed," never "it has not already reached the
-    // trunk." Measure against the project's trunk instead, when a trusted
-    // trunk can be resolved at all; fall back to the rolling count (the
-    // pre-R22d signal, unchanged) when it cannot — never refuse salvage
-    // outright just because trunk resolution failed.
     let ahead = match commits_unlanded_at_trunk(pool, card, worktree_path).await {
         Ok(unlanded) => unlanded,
         Err(_) => rolling_ahead,
     };
     if ahead == 0 {
+        if rolling_ahead == 0 {
+            let note = "no commits past the dispatch baseline — nothing to salvage".to_string();
+            record_salvage_receipt(pool, &card.id, "salvage_skipped_no_commits", &note).await;
+            return not_salvaged(note);
+        }
         let note = format!(
             "{rolling_ahead} commit(s) past the rolling redispatch baseline, but the branch \
              tip is already an ancestor of the project's trunk — nothing left to land"
@@ -14913,38 +14914,18 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     baseline: &str,
     verify_note: &str,
 ) -> ReviewerGateOutcome {
-    let Some(worker_session_id) = card
-        .metadata_json
-        .get("worker_session_id")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-    else {
-        return ReviewerGateOutcome::Refused {
-            reason: "no worker session recorded to attribute the review to".to_string(),
-        };
-    };
-    let manager = SessionManager::instance();
-    let session = match manager.get_session(&worker_session_id, false).await {
-        Ok(s) => s,
-        Err(e) => {
-            return ReviewerGateOutcome::Refused {
-                reason: format!(
-                    "the goal's worker session could not be read to pick an independent \
-                     reviewer: {e}"
-                ),
-            };
-        }
-    };
-    let worker = match (
-        session.provider_name.as_deref(),
-        session.model_config.as_ref().map(|m| m.model_name.as_str()),
-    ) {
-        (Some(p), Some(m)) if !p.is_empty() && !m.is_empty() => {
-            Some((p.to_string(), m.to_string()))
-        }
-        _ => None,
-    };
-
+    // Lane R22g: the diff-size check runs BEFORE any reviewer-selection
+    // work — including the worker-session lookup that picks it (`select_
+    // reviewer` needs the AUTHOR's family, read off the goal's worker
+    // session). The M26 gate found the session lookup ran FIRST and
+    // refused before the size check was ever reached
+    // (`dispatch_cross_family_reviewer_refuses_a_diff_over_the_review_
+    // window` got `Refused { "...Session not found" }` instead of
+    // `DiffTooLarge`) — the same "cheapest, most fundamental guard first"
+    // principle R22f applied to salvage's own guard order, one layer over
+    // in the reviewer path: an oversized diff must never even consult the
+    // roster, session or no session.
+    //
     // Lane R22d: show the reviewer the FULL unlanded diff, not just what
     // changed since the last redispatch — when this arm is reached via a
     // rolling-baseline-equals-tip goal (an earlier attempt's fix already
@@ -14982,6 +14963,38 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         };
     }
     let diff_for_prompt = diff;
+
+    let Some(worker_session_id) = card
+        .metadata_json
+        .get("worker_session_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
+        return ReviewerGateOutcome::Refused {
+            reason: "no worker session recorded to attribute the review to".to_string(),
+        };
+    };
+    let manager = SessionManager::instance();
+    let session = match manager.get_session(&worker_session_id, false).await {
+        Ok(s) => s,
+        Err(e) => {
+            return ReviewerGateOutcome::Refused {
+                reason: format!(
+                    "the goal's worker session could not be read to pick an independent \
+                     reviewer: {e}"
+                ),
+            };
+        }
+    };
+    let worker = match (
+        session.provider_name.as_deref(),
+        session.model_config.as_ref().map(|m| m.model_name.as_str()),
+    ) {
+        (Some(p), Some(m)) if !p.is_empty() && !m.is_empty() => {
+            Some((p.to_string(), m.to_string()))
+        }
+        _ => None,
+    };
 
     let configured = crate::cost_router::role_model(crate::cost_router::WorkflowRole::Review);
     let derived_map = crate::cost_router::derived_role_map().await;
