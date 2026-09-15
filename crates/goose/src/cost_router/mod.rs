@@ -147,12 +147,12 @@ pub use reservation::{
     DEFAULT_RESERVED_ATTEMPTS, RESERVE_ATTEMPTS_ENV,
 };
 pub use review_gate::{
-    build_review_prompt, build_review_prompt_with_call_sites, classify_path, decide_review_route,
-    gate_decision, gate_decision_with_call_sites, parse_review, resolve_actual_review_dispatch,
-    review_required, reviewer_dispatch, reviewer_routing, FileClass, GateDecision, ReviewFinding,
-    ReviewLens, ReviewOutcome, ReviewRoute, ReviewTrigger, ReviewerDispatch, ReviewerRouting,
-    Verdict as ReviewVerdict, REVIEWER_DIVERSITY_WARNING, REVIEWER_EXTENSIONS, REVIEW_ESCALATE_AT,
-    REVIEW_SYSTEM_PROMPT,
+    apply_breaker_to_review_dispatch, build_review_prompt, build_review_prompt_with_call_sites,
+    classify_path, decide_review_route, gate_decision, gate_decision_with_call_sites, parse_review,
+    resolve_actual_review_dispatch, review_required, reviewer_dispatch, reviewer_retry_target,
+    reviewer_routing, FileClass, GateDecision, ReviewFinding, ReviewLens, ReviewOutcome,
+    ReviewRoute, ReviewTrigger, ReviewerDispatch, ReviewerRouting, Verdict as ReviewVerdict,
+    REVIEWER_DIVERSITY_WARNING, REVIEWER_EXTENSIONS, REVIEW_ESCALATE_AT, REVIEW_SYSTEM_PROMPT,
 };
 pub use review_gate::{build_rubric_prompt, REVIEW_RUBRIC_SYSTEM_PROMPT};
 pub use reviewer_pick::{
