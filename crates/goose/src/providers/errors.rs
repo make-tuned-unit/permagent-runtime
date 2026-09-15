@@ -305,6 +305,52 @@ fn is_auth_message(msg: &str) -> bool {
         || m.contains("invalid_api_key")
 }
 
+/// Lane R36a (session-scoped provider circuit breaker): classify a failed
+/// provider call's error text into the reason class the breaker records, or
+/// `None` when the failure is NOT "this specific provider is unavailable
+/// right now" — a malformed request or an unknown model id would fail
+/// identically against a DIFFERENT provider too, so those must never open a
+/// breaker (matches Lane R28b's `REVIEWER_PROVIDER_UNAVAILABLE_MARKERS`
+/// rationale, promoted here so the planner's `complete_fast` decomposition
+/// path and the salvage reviewer path share one classifier instead of two
+/// that could disagree).
+pub fn classify_unavailable(msg: &str) -> Option<&'static str> {
+    if is_billing_message(msg) {
+        return Some("billing");
+    }
+    let m = msg.to_ascii_lowercase();
+    // `is_auth_message` alone is narrower than Lane R28b's original marker
+    // set (it looks for the API-key-rejection phrasing, not a bare 401) —
+    // "unauthorized"/"authentication error" (space form) are kept here so a
+    // plain "401 Unauthorized" still classifies, matching R28b's retry
+    // behavior byte-for-byte.
+    if is_auth_message(msg) || m.contains("unauthorized") || m.contains("authentication error") {
+        return Some("auth");
+    }
+    if m.contains("rate limit") || m.contains("rate-limit") || m.contains("too many requests") {
+        return Some("rate_limit");
+    }
+    if m.contains("server error")
+        || m.contains("internal server error")
+        || m.contains("bad gateway")
+        || m.contains("service unavailable")
+        || m.contains("gateway timeout")
+    {
+        return Some("server_error");
+    }
+    if m.contains("could not be reached")
+        || m.contains("connection refused")
+        || m.contains("connection reset")
+        || m.contains("network error")
+    {
+        return Some("network");
+    }
+    if m.contains("timed out") || m.contains("did not respond within") {
+        return Some("timeout");
+    }
+    None
+}
+
 /// Message-level classification for the `RequestFailed` catch-all, which is
 /// where 4xx bodies land once the status code has been discarded.
 fn is_permanent_client_message(msg: &str) -> bool {
@@ -519,5 +565,46 @@ mod tests {
     fn an_ordinary_stream_budget_error_is_still_permanent() {
         let err = ProviderError::stream_budget_exceeded("the model repeated itself");
         assert!(err.is_permanent(), "{err}");
+    }
+
+    /// Lane R36a: the classifier the session-scoped provider circuit breaker
+    /// keys off must recognize every class Lane R28b already retried on.
+    #[test]
+    fn classify_unavailable_recognizes_every_breaker_worthy_class() {
+        assert_eq!(
+            classify_unavailable("Your credit balance is too low to access the API"),
+            Some("billing")
+        );
+        assert_eq!(
+            classify_unavailable("401 authentication_error: invalid x-api-key"),
+            Some("auth")
+        );
+        assert_eq!(
+            classify_unavailable("429 Too Many Requests, rate limit exceeded"),
+            Some("rate_limit")
+        );
+        assert_eq!(
+            classify_unavailable("502 Bad Gateway: server error"),
+            Some("server_error")
+        );
+        assert_eq!(
+            classify_unavailable("Could not be reached: connection refused"),
+            Some("network")
+        );
+        assert_eq!(
+            classify_unavailable("the independent reviewer did not respond within 120s"),
+            Some("timeout")
+        );
+    }
+
+    /// A request-shaped failure (bad model id, malformed body) would recur
+    /// identically against ANY provider, so it must never open a breaker.
+    #[test]
+    fn classify_unavailable_does_not_classify_request_shaped_failures() {
+        assert_eq!(
+            classify_unavailable("400 invalid_request_error: unknown field 'foo'"),
+            None
+        );
+        assert_eq!(classify_unavailable("model_not_found: no such model"), None);
     }
 }

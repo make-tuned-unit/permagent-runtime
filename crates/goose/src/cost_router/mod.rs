@@ -60,6 +60,7 @@ pub mod hold_done;
 pub mod knowledge;
 pub mod mesh;
 pub mod packs;
+pub mod provider_circuit;
 pub mod recommend;
 pub mod reservation;
 pub mod review_gate;
