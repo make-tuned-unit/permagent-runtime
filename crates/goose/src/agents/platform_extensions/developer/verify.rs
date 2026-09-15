@@ -536,7 +536,7 @@ impl VerifyTool {
                         // than "the file parses", so it replaces the smoke
                         // check rather than merely joining it.
                         if checks.iter().all(|check| check.is_smoke) {
-                            let probes = synthesize_probe_checks(criteria);
+                            let probes = synthesize_probe_checks(&base_dir, criteria);
                             if probes.is_empty() {
                                 // R35b: a smoke-only run is never scored as a
                                 // PASS — run it anyway (a real syntax error
@@ -559,7 +559,7 @@ impl VerifyTool {
                     // acceptance criteria as real checks over an honest, but
                     // uninformative, NO CHECKS.
                     Ok(DetectOutcome::NoChecksConfigured(note)) => {
-                        let probes = synthesize_probe_checks(criteria);
+                        let probes = synthesize_probe_checks(&base_dir, criteria);
                         if probes.is_empty() {
                             return no_checks_result(&note);
                         }
@@ -1262,35 +1262,107 @@ fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
     String::from_utf8(output.stdout).ok()
 }
 
-/// Y10e: the commit this branch forked from — the parent of the OLDEST commit
-/// reachable from `HEAD` but from no other branch or remote.
+/// The local branch this repo's goal work eventually lands on, detected
+/// without any card/DB context — `verify.rs` runs as a tool inside the
+/// worktree only, and every `goal/<run-id>` branch (see
+/// `goal_engine::goal_branch_name`) forks from this one, directly or
+/// through a chain of redispatch attempts. Tried in order: the remote's own
+/// recorded default branch (`refs/remotes/origin/HEAD`, set by `git remote
+/// set-head`/a fresh clone), then the conventional local names `main` and
+/// `master`. `None` when nothing matches, letting [`branch_fork_point`]
+/// fall back to its pre-R54a approximation below.
+fn detect_trunk_branch(root: &Path) -> Option<String> {
+    if let Some(sym) = git_stdout(
+        root,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    ) {
+        let sym = sym.trim();
+        if !sym.is_empty() {
+            return Some(sym.to_string());
+        }
+    }
+    for candidate in ["main", "master"] {
+        let refname = format!("refs/heads/{candidate}");
+        if git_stdout(root, &["rev-parse", "--verify", "--quiet", &refname]).is_some() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Y10e: the commit this branch forked from.
 ///
 /// This is what "the work this goal branch has done" means once the worker has
 /// committed: a goal worktree checks out `goal/<session>` off the trunk, so the
 /// trunk's own tip is reachable from some other ref and every commit the worker
-/// made is not. Deliberately narrow — `None` on a detached HEAD (no branch to
-/// scope to), on a branch with no unique commits (nothing was committed here),
-/// and when the oldest unique commit is a root commit (no parent to diff
-/// against, and diffing the whole history is not a scoped check).
+/// made is not.
+///
+/// R54a (A51 analysis, "branch_fork_point"): prefer a TRUNK-relative fork
+/// point — `git merge-base <trunk> HEAD` — over the old `--exclude`-based
+/// approximation below whenever [`detect_trunk_branch`] can name the trunk.
+/// The old walk treats ANY other local/remote branch as "already covering"
+/// HEAD's commits, including this SAME goal's own prior-attempt sibling
+/// branches (`goal/<run-id>` — Y16b mints a fresh one per redispatch and
+/// never deletes the last one's), so a redispatched goal whose final
+/// attempt makes only a small/no-op commit on top of real earlier progress
+/// sees its own earlier commits treated as "covered by
+/// goal/<earlier-session>" and narrows to just that last commit — the A51
+/// Run 2 defect (verified diff = the empty checkpoint commit → NO CHECKS →
+/// an unverified reviewer hallucinated a rejection of complete work).
+/// `merge-base(trunk, HEAD)` sidesteps the ambiguity entirely: it is the
+/// point this branch actually diverged from the project's landing branch,
+/// unaffected by how many sibling attempt branches happen to still exist.
+///
+/// Falls back to the original `--exclude`-based walk only when no trunk can
+/// be named (no remote configured and no local `main`/`master`) — itself
+/// narrowed by this lane to also `--exclude=goal/*`: every `goal/<run-id>`
+/// branch is, by the repo's own naming convention, ALWAYS a goal-attempt
+/// branch (this goal's own prior attempts, or another goal's) and never a
+/// long-lived integration branch, so none of them can legitimately be
+/// "already covering" this branch's commits either. Deliberately narrow in
+/// both paths — `None` on a detached HEAD (no branch to scope to), on a
+/// branch with no unique commits (nothing was committed here), and when the
+/// fork point would be a root commit with nothing to diff against.
 fn branch_fork_point(root: &Path) -> Option<String> {
     let branch = git_stdout(root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let branch = branch.trim();
     if branch.is_empty() || branch == "HEAD" {
         return None;
     }
+
+    if let Some(trunk) = detect_trunk_branch(root) {
+        if trunk != branch {
+            if let Some(base) = git_stdout(root, &["merge-base", &trunk, "HEAD"]) {
+                let base = base.trim().to_string();
+                if !base.is_empty() {
+                    return Some(base);
+                }
+            }
+        }
+    }
+
     // `--exclude` is matched against the ref name with the `refs/heads/`
     // prefix ALREADY STRIPPED when it feeds `--branches`, so the pattern is
     // the bare branch name. Spelled `refs/heads/<branch>` it matches nothing,
     // `--branches` re-includes this branch, every commit on it is excluded by
     // `--not`, and the walk returns empty — no fork point, no fallback.
-    let exclude = format!("--exclude={branch}");
+    // `--exclude` patterns accumulate and apply to the `--branches`/
+    // `--remotes` glob that follows, so `goal/*` drops every goal-attempt
+    // branch from consideration alongside this branch itself.
+    let exclude_self = format!("--exclude={branch}");
     let unique = git_stdout(
         root,
         &[
             "rev-list",
             "HEAD",
             "--not",
-            &exclude,
+            &exclude_self,
+            "--exclude=goal/*",
             "--branches",
             "--remotes",
         ],
@@ -2175,37 +2247,99 @@ fn shell_single_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
+/// The primary language(s) [`call_returns_probe`]/[`node_call_returns_probe`]
+/// may safely synthesize a real execution probe for, detected from the same
+/// marker files [`detect_checks`] already keys off. R54a (A51 analysis,
+/// "call_returns_probe"): `call_returns_probe` used to compile a Python
+/// `exec`/assert script for ANY repo whose criterion text merely looked
+/// call-shaped, including a TypeScript-only fixture with no `.py` file
+/// anywhere — a guaranteed `NameError`, for any model, forever. Checked in
+/// the same precedence [`detect_checks`] uses (Cargo.toml, then a JS/TS
+/// marker, then a Python marker or a bare top-level `.py` file — the exact
+/// manifestless shape [`call_returns_probe`] was written for and that carries
+/// no `pyproject.toml`/`setup.py` of its own).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeLanguage {
+    Python,
+    JavaScript,
+    Rust,
+    Other,
+}
+
+fn detect_probe_language(dir: &Path) -> ProbeLanguage {
+    if dir.join("Cargo.toml").exists() {
+        return ProbeLanguage::Rust;
+    }
+    if dir.join("package.json").exists() || dir.join("tsconfig.json").exists() {
+        return ProbeLanguage::JavaScript;
+    }
+    if PYTHON_MARKERS
+        .iter()
+        .any(|marker| dir.join(marker).exists())
+        || has_top_level_py_file(dir)
+    {
+        return ProbeLanguage::Python;
+    }
+    ProbeLanguage::Other
+}
+
+/// A bare top-level `.py` file with no `pyproject.toml`/`setup.py` of its
+/// own — the manifestless single-file shape A32 root cause 2 motivated
+/// [`call_returns_probe`] for in the first place, which none of
+/// [`PYTHON_MARKERS`] would otherwise catch.
+fn has_top_level_py_file(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("py"))
+}
+
+/// Parse "calling `f(args)` returns `value`" / "`f(args)` == `value`" (see
+/// [`CALL_RETURNS_RE`]) or "f(args) returns value" / "f(args) should return
+/// value" (see [`CALL_RETURNS_BARE_RE`]) into `(call_expression,
+/// expected_value_text)`. Shared by every per-language call/return probe
+/// below so the two closed text shapes are parsed exactly once.
+fn call_returns_captures(text: &str) -> Option<(String, String)> {
+    if let Some(caps) = CALL_RETURNS_RE.captures(text) {
+        return Some((
+            caps.get(1)?.as_str().trim().to_string(),
+            caps.get(2)?.as_str().trim().to_string(),
+        ));
+    }
+    let caps = CALL_RETURNS_BARE_RE.captures(text)?;
+    Some((
+        caps.get(1)?.as_str().trim().to_string(),
+        caps.get(2)?
+            .as_str()
+            .trim()
+            .trim_end_matches(['.', '!'])
+            .trim()
+            .to_string(),
+    ))
+}
+
 /// R35b: "calling `f(args)` returns `value`" (see [`CALL_RETURNS_RE`]) or
 /// "f(args) should return value" (see [`CALL_RETURNS_BARE_RE`]) becomes a
 /// [`ProbeKind::CommandExitsZero`] that `exec`s every top-level `.py` file in
 /// the verification directory (the same manifestless, non-recursive scope
 /// [`manifestless_checks`]/[`find_symbol_definition`] already use) and
 /// asserts the call's actual result equals the expected value — real
-/// execution, not a syntax-only smoke check. Python only: the motivating
-/// defect (A32 root cause 2) is a manifestless single `.py` file, and this
-/// stays a closed, conservative shape rather than guessing a language from
-/// the criterion text alone. `None` when the call expression isn't a single
-/// flat call ([`CALL_EXPR_SHAPE_RE`]) or the value doesn't normalize into
-/// valid Python source ([`python_literal_for_value`]) — left honestly
+/// execution, not a syntax-only smoke check.
+///
+/// R54a: gated on [`detect_probe_language`] returning `Python` — `None`
+/// immediately otherwise, so a JS/TS/Rust/undetected repo never gets a
+/// Python script compiled against it (see [`node_call_returns_probe`] for
+/// the JS/TS counterpart). `None` also when the call expression isn't a
+/// single flat call ([`CALL_EXPR_SHAPE_RE`]) or the value doesn't normalize
+/// into valid Python source ([`python_literal_for_value`]) — left honestly
 /// unverified rather than approximated, same as every other probe shape.
-fn call_returns_probe(text: &str) -> Option<Check> {
-    let (expr, value_raw) = if let Some(caps) = CALL_RETURNS_RE.captures(text) {
-        (
-            caps.get(1)?.as_str().trim().to_string(),
-            caps.get(2)?.as_str().trim().to_string(),
-        )
-    } else {
-        let caps = CALL_RETURNS_BARE_RE.captures(text)?;
-        (
-            caps.get(1)?.as_str().trim().to_string(),
-            caps.get(2)?
-                .as_str()
-                .trim()
-                .trim_end_matches(['.', '!'])
-                .trim()
-                .to_string(),
-        )
-    };
+fn call_returns_probe(dir: &Path, text: &str) -> Option<Check> {
+    if detect_probe_language(dir) != ProbeLanguage::Python {
+        return None;
+    }
+    let (expr, value_raw) = call_returns_captures(text)?;
     if !CALL_EXPR_SHAPE_RE.is_match(&expr) {
         return None;
     }
@@ -2216,6 +2350,98 @@ fn call_returns_probe(text: &str) -> Option<Check> {
          f\"expected {{_expected!r}}, got {{_actual!r}}\"\n"
     );
     let command = format!("python3 -c {}", shell_single_quote(&script));
+    Some(Check::probe(
+        format!("acceptance criterion: `{expr}` returns `{value_raw}`"),
+        ProbeKind::CommandExitsZero(command),
+    ))
+}
+
+/// Normalize a captured value token into valid JS source — the same closed
+/// shapes [`python_literal_for_value`] accepts, spelled with JS's own
+/// literal keywords (`true`/`false`/`null` rather than
+/// `True`/`False`/`None`); a bare word/phrase is still wrapped via Rust's
+/// `Debug` formatting, which produces a double-quoted string valid in both
+/// languages for the plain ASCII text these criteria are written in.
+fn js_literal_for_value(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('\'') || trimmed.starts_with('"') {
+        return Some(trimmed.to_string());
+    }
+    if trimmed == "true" || trimmed == "false" || trimmed == "null" {
+        return Some(trimmed.to_string());
+    }
+    if (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        || (trimmed.starts_with('{') && trimmed.ends_with('}'))
+    {
+        return Some(trimmed.to_string());
+    }
+    let digits = trimmed.trim_start_matches(['-', '+']);
+    if !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && digits.chars().any(|c| c.is_ascii_digit())
+    {
+        return Some(trimmed.to_string());
+    }
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ' ')
+    {
+        return Some(format!("{trimmed:?}"));
+    }
+    None
+}
+
+/// R54a: the JS/TS counterpart to [`call_returns_probe`], gated the same way
+/// ([`detect_probe_language`] must return `JavaScript`) but additionally
+/// requiring the call's function name to resolve to a REAL, locatable
+/// top-level definition ([`find_symbol_definition`], the same lookup
+/// [`symbol_defined_probe`] already trusts) in a plain `.js`/`.mjs`/`.cjs`
+/// file specifically — a `.ts`/`.tsx` source cannot be `require()`d by a
+/// bare `node -e` without a compiler, and guessing at one would risk
+/// exactly the wrong-language guaranteed failure this lane exists to
+/// prevent. `None` (criterion left honestly UNVERIFIED, its marker intact)
+/// whenever any of that doesn't hold — never approximated, same closed-set
+/// discipline as every other probe shape.
+fn node_call_returns_probe(dir: &Path, text: &str) -> Option<Check> {
+    if detect_probe_language(dir) != ProbeLanguage::JavaScript {
+        return None;
+    }
+    let (expr, value_raw) = call_returns_captures(text)?;
+    if !CALL_EXPR_SHAPE_RE.is_match(&expr) {
+        return None;
+    }
+    let fn_name = expr.split('(').next()?.trim();
+    if fn_name.is_empty()
+        || !fn_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    {
+        return None;
+    }
+    let location = find_symbol_definition(dir, fn_name, SymbolKind::Function)?;
+    let file = location.split(':').next()?.to_string();
+    if !matches!(
+        Path::new(&file).extension().and_then(|e| e.to_str()),
+        Some("js" | "mjs" | "cjs")
+    ) {
+        return None;
+    }
+    let value_literal = js_literal_for_value(&value_raw)?;
+    let script = format!(
+        "const _m = require('./{file}');\n\
+         const {fn_name} = (typeof _m === 'function') ? _m : \
+         ((_m && typeof _m.{fn_name} === 'function') ? _m.{fn_name} : undefined);\n\
+         if (typeof {fn_name} !== 'function') {{ \
+         throw new Error('{fn_name} is not an exported function of {file}'); }}\n\
+         const _actual = {expr};\nconst _expected = {value_literal};\n\
+         if (JSON.stringify(_actual) !== JSON.stringify(_expected)) {{ \
+         throw new Error('expected ' + JSON.stringify(_expected) + ', got ' + \
+         JSON.stringify(_actual)); }}\n"
+    );
+    let command = format!("node -e {}", shell_single_quote(&script));
     Some(Check::probe(
         format!("acceptance criterion: `{expr}` returns `{value_raw}`"),
         ProbeKind::CommandExitsZero(command),
@@ -2343,7 +2569,13 @@ fn probe_quoted_kv(text: &str, key: &str) -> Option<String> {
 /// order — R21b's structured `probe:*` marker first (unambiguous when
 /// present), then the free-text heuristics. `None` when the criterion
 /// matches none of them — left honestly unverified, never approximated.
-fn probe_for_criterion(criterion: &str) -> Option<Check> {
+///
+/// R54a: `dir` is the verification directory, threaded through so
+/// [`call_returns_probe`]/[`node_call_returns_probe`] can gate themselves on
+/// [`detect_probe_language`] — the other shapes here (`file_exists`,
+/// `command_exit`, `symbol_defined`, `run_stdout`, the structured `probe:*`
+/// grammar) are language-agnostic and ignore it.
+fn probe_for_criterion(dir: &Path, criterion: &str) -> Option<Check> {
     let text = criterion
         .strip_prefix(UNVERIFIED_MARKER_PREFIX)
         .unwrap_or(criterion)
@@ -2352,7 +2584,8 @@ fn probe_for_criterion(criterion: &str) -> Option<Check> {
         .or_else(|| file_exists_probe(text))
         .or_else(|| command_exit_probe(text))
         .or_else(|| symbol_defined_probe(text))
-        .or_else(|| call_returns_probe(text))
+        .or_else(|| call_returns_probe(dir, text))
+        .or_else(|| node_call_returns_probe(dir, text))
         .or_else(|| run_stdout_probe(text))
 }
 
@@ -2361,10 +2594,10 @@ fn probe_for_criterion(criterion: &str) -> Option<Check> {
 /// check). See the module comment above for why this is a separate, local
 /// implementation from `orchestrator::checks_from_acceptance` rather than a
 /// shared one.
-fn synthesize_probe_checks(criteria: &[String]) -> Vec<Check> {
+fn synthesize_probe_checks(dir: &Path, criteria: &[String]) -> Vec<Check> {
     criteria
         .iter()
-        .filter_map(|criterion| probe_for_criterion(criterion))
+        .filter_map(|criterion| probe_for_criterion(dir, criterion))
         .collect()
 }
 
@@ -3244,6 +3477,69 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             "a single root commit has no parent to diff against"
         );
         assert_eq!(git_changes_under(dir).unwrap().paths, Vec::<String>::new());
+    }
+
+    /// R54a (A51 analysis, "branch_fork_point"): the A51 Run 2 defect,
+    /// reproduced directly. A goal redispatched twice leaves BOTH prior
+    /// attempts' `goal/<session>` branches alive (Y16b never deletes them),
+    /// each a parent of the next; the final attempt's only new commit is an
+    /// empty checkpoint. Before this lane, `--branches` counted
+    /// `goal/s1`/`goal/s2` as "already covering" their own commits, so the
+    /// verified diff narrowed to just the empty checkpoint (`git_changes_
+    /// under` reporting no changed files at all). After it, the fork point
+    /// is measured against trunk (`main`) via `merge-base`, so the diff
+    /// spans every commit since trunk — both real attempts' work, not just
+    /// the last one's no-op commit.
+    #[test]
+    fn fork_point_spans_every_commit_since_trunk_despite_live_sibling_attempt_branches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        let dir = dir.as_path();
+        git_y10e(dir, &["init", "-b", "main"]);
+        git_y10e(dir, &["config", "user.email", "t@example.com"]);
+        git_y10e(dir, &["config", "user.name", "T"]);
+        git_y10e(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.rs"), "// seed\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "seed"]);
+        let seed = git_y10e(dir, &["rev-parse", "HEAD"]).trim().to_string();
+
+        // Attempt 1, still alive as `goal/s1`.
+        git_y10e(dir, &["checkout", "-q", "-b", "goal/s1"]);
+        std::fs::write(dir.join("b.rs"), "pub fn one() {}\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "attempt 1"]);
+
+        // Attempt 2, redispatched from attempt 1's tip, still alive as `goal/s2`.
+        git_y10e(dir, &["checkout", "-q", "-b", "goal/s2"]);
+        std::fs::write(dir.join("c.rs"), "pub fn two() {}\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "attempt 2"]);
+
+        // Attempt 3, the current goal worktree: an empty checkpoint commit
+        // on top of real earlier progress.
+        git_y10e(dir, &["checkout", "-q", "-b", "goal/s3"]);
+        git_y10e(dir, &["commit", "--allow-empty", "-m", "checkpoint"]);
+
+        assert_eq!(
+            branch_fork_point(dir).as_deref(),
+            Some(seed.as_str()),
+            "the fork point must be trunk-relative (merge-base with main), \
+             not narrowed by goal/s1 and goal/s2 still existing"
+        );
+        let mut changed = changes_since_branch_fork_point(dir, Path::new("")).unwrap();
+        changed.sort();
+        assert_eq!(
+            changed,
+            vec!["b.rs".to_string(), "c.rs".to_string()],
+            "the verified diff must span every commit since trunk, not just \
+             attempt 3's empty checkpoint"
+        );
+        assert_eq!(
+            git_changes_under(dir).unwrap().paths,
+            vec!["b.rs".to_string(), "c.rs".to_string()],
+            "select_checks must see both attempts' real work, never NO CHECKS"
+        );
     }
 
     /// Unwrap a detection that must have produced runnable checks.
@@ -4346,9 +4642,30 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         }
     }
 
+    /// An empty directory with no language marker at all
+    /// (`detect_probe_language` reports `Other`) — fine for every probe
+    /// shape that doesn't consult the language gate.
+    fn no_language_dir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    /// A directory `detect_probe_language` reports as `Python`: a bare
+    /// top-level `.py` file, the exact manifestless shape A32 root cause 2
+    /// motivated `call_returns_probe` for.
+    fn python_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("fizzbuzz.py"),
+            "def fizzbuzz(n):\n    return n\n",
+        )
+        .unwrap();
+        dir
+    }
+
     #[test]
     fn file_exists_criterion_compiles_to_a_probe() {
-        let check = probe_for_criterion("fizzbuzz.py exists").unwrap();
+        let dir = no_language_dir();
+        let check = probe_for_criterion(dir.path(), "fizzbuzz.py exists").unwrap();
         assert_eq!(
             check.exec,
             Exec::Probe(ProbeKind::FileExists("fizzbuzz.py".to_string()))
@@ -4358,8 +4675,9 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
     #[test]
     fn file_exists_criterion_strips_the_unverified_marker() {
+        let dir = no_language_dir();
         let marked = format!("{UNVERIFIED_MARKER_PREFIX}fizzbuzz.py exists");
-        let check = probe_for_criterion(&marked).unwrap();
+        let check = probe_for_criterion(dir.path(), &marked).unwrap();
         assert_eq!(
             check.exec,
             Exec::Probe(ProbeKind::FileExists("fizzbuzz.py".to_string()))
@@ -4368,7 +4686,8 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
     #[test]
     fn function_definition_criterion_compiles_to_a_probe() {
-        let check = probe_for_criterion("defines a function named fizzbuzz").unwrap();
+        let dir = no_language_dir();
+        let check = probe_for_criterion(dir.path(), "defines a function named fizzbuzz").unwrap();
         assert_eq!(
             check.exec,
             Exec::Probe(ProbeKind::SymbolDefined {
@@ -4381,7 +4700,8 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
     #[test]
     fn class_definition_criterion_compiles_to_a_probe() {
-        let check = probe_for_criterion("class FizzBuzzer is defined").unwrap();
+        let dir = no_language_dir();
+        let check = probe_for_criterion(dir.path(), "class FizzBuzzer is defined").unwrap();
         assert_eq!(
             check.exec,
             Exec::Probe(ProbeKind::SymbolDefined {
@@ -4394,7 +4714,8 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
     #[test]
     fn command_exit_criterion_compiles_to_a_probe() {
-        let check = probe_for_criterion("`pytest -k smoke` exits 0").unwrap();
+        let dir = no_language_dir();
+        let check = probe_for_criterion(dir.path(), "`pytest -k smoke` exits 0").unwrap();
         assert_eq!(
             check.exec,
             Exec::Probe(ProbeKind::CommandExitsZero("pytest -k smoke".to_string()))
@@ -4402,13 +4723,18 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     }
 
     // ── R35b: call/return and run/stdout-contains probe shapes ──────────────
+    // ── R54a: language-gated — see the `call_returns_probe`/
+    //    `node_call_returns_probe` tests below for the JS/TS/Python split ──
 
     /// A32 root cause 2's exact motivating text: no backticks, plain
     /// "returns", a quoted string value — this is the specific freeform
     /// criterion that used to fall through to a vacuous smoke-only PASS.
+    /// R54a: only synthesizes for a repo `detect_probe_language` reports as
+    /// Python — probe as before, now on an explicitly Python-shaped dir.
     #[test]
     fn call_returns_criterion_bare_compiles_to_a_probe() {
-        let check = probe_for_criterion("fizzbuzz(3) returns 'Fizz'").unwrap();
+        let dir = python_dir();
+        let check = probe_for_criterion(dir.path(), "fizzbuzz(3) returns 'Fizz'").unwrap();
         assert!(!check.is_smoke);
         let Exec::Probe(ProbeKind::CommandExitsZero(command)) = &check.exec else {
             panic!("expected a CommandExitsZero probe, got {:?}", check.exec);
@@ -4428,7 +4754,8 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     /// literal rather than treat as a bare (undefined) identifier.
     #[test]
     fn call_returns_criterion_with_backticks_and_bare_value_compiles_to_a_probe() {
-        let check = probe_for_criterion("`fizzbuzz(15)` == `FizzBuzz`").unwrap();
+        let dir = python_dir();
+        let check = probe_for_criterion(dir.path(), "`fizzbuzz(15)` == `FizzBuzz`").unwrap();
         let Exec::Probe(ProbeKind::CommandExitsZero(command)) = &check.exec else {
             panic!("expected a CommandExitsZero probe, got {:?}", check.exec);
         };
@@ -4436,13 +4763,81 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         assert!(command.contains(r#""FizzBuzz""#), "got: {command}");
     }
 
+    /// R54a (A51 analysis, "call_returns_probe"): the exact defect — a
+    /// TypeScript-only repo with the same call/return criterion text must
+    /// NEVER get a Python probe compiled against it (a guaranteed
+    /// `NameError`, for any model, forever). The named function is placed at
+    /// the repo's top level (in `find_symbol_definition`'s scan scope) and
+    /// genuinely defined there, so this pins the REAL reason no probe is
+    /// synthesized: the `.ts` source can't be `require()`d by a bare `node
+    /// -e` without a compiler (see `node_call_returns_probe`'s own doc
+    /// comment) — not merely that the file wasn't found. The criterion falls
+    /// through exactly as it did before any probe grammar existed: marker
+    /// intact, left for NO_CHECKS/R43b-c to handle.
+    #[test]
+    fn typescript_repo_call_returns_criterion_synthesizes_no_python_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tsconfig.json"), "{}").unwrap();
+        std::fs::write(
+            dir.path().join("pricing.ts"),
+            "export function computeGoldDiscount(cents: number): number {\n  \
+             return Math.min(Math.round(cents * 0.2), 5000);\n}\n",
+        )
+        .unwrap();
+        assert_eq!(detect_probe_language(dir.path()), ProbeLanguage::JavaScript);
+        assert!(
+            find_symbol_definition(dir.path(), "computeGoldDiscount", SymbolKind::Function)
+                .is_some(),
+            "the function must be genuinely locatable, so the TS extension is what blocks it"
+        );
+        let marked =
+            format!("{UNVERIFIED_MARKER_PREFIX}computeGoldDiscount(100_000) returns 20_000");
+        assert!(
+            probe_for_criterion(dir.path(), &marked).is_none(),
+            "a TS-only repo must never get a wrong-language probe compiled for it"
+        );
+    }
+
+    /// R54a: the JS counterpart — a repo `detect_probe_language` reports as
+    /// JavaScript, with the named function actually defined (and locatable
+    /// via `find_symbol_definition`) in a plain, requireable `.js` file,
+    /// synthesizes a real `node -e` probe instead of leaving the criterion
+    /// unverified.
+    #[test]
+    fn javascript_repo_call_returns_criterion_compiles_to_a_node_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"fx"}"#).unwrap();
+        std::fs::write(
+            dir.path().join("math.js"),
+            "function computeDouble(n) {\n  return n * 2;\n}\n\
+             module.exports = { computeDouble };\n",
+        )
+        .unwrap();
+        assert_eq!(detect_probe_language(dir.path()), ProbeLanguage::JavaScript);
+        let check = probe_for_criterion(dir.path(), "computeDouble(21) returns 42").unwrap();
+        assert!(!check.is_smoke);
+        let Exec::Probe(ProbeKind::CommandExitsZero(command)) = &check.exec else {
+            panic!("expected a CommandExitsZero probe, got {:?}", check.exec);
+        };
+        assert!(command.starts_with("node -e "), "got: {command}");
+        assert!(command.contains("computeDouble(21)"), "got: {command}");
+        assert!(command.contains("require("), "got: {command}");
+        assert!(command.contains("math.js"), "got: {command}");
+        assert!(command.contains("42"), "got: {command}");
+        assert_eq!(
+            check.label,
+            "acceptance criterion: `computeDouble(21)` returns `42`"
+        );
+    }
+
     /// The closed-set contract, narrowed to this shape: text that merely
     /// LOOKS call-shaped but names no return/equality phrasing must never be
     /// approximated into a probe.
     #[test]
     fn call_returns_criterion_without_a_return_phrase_synthesizes_no_probe() {
-        assert!(probe_for_criterion("fizzbuzz(3) is nice").is_none());
-        assert!(probe_for_criterion("the fizzbuzz function is well tested").is_none());
+        let dir = python_dir();
+        assert!(probe_for_criterion(dir.path(), "fizzbuzz(3) is nice").is_none());
+        assert!(probe_for_criterion(dir.path(), "the fizzbuzz function is well tested").is_none());
     }
 
     /// "running `<cmd>` prints/outputs `<text>`" compiles to a real
@@ -4450,8 +4845,12 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     /// `grep -qF` for the expected text.
     #[test]
     fn run_stdout_criterion_compiles_to_a_probe() {
-        let check =
-            probe_for_criterion("running `python3 main.py` prints `Hello, world!`").unwrap();
+        let dir = no_language_dir();
+        let check = probe_for_criterion(
+            dir.path(),
+            "running `python3 main.py` prints `Hello, world!`",
+        )
+        .unwrap();
         assert!(!check.is_smoke);
         assert_eq!(
             check.exec,
@@ -4464,7 +4863,8 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             "acceptance criterion: `python3 main.py` prints `Hello, world!`"
         );
 
-        let check = probe_for_criterion("running `node app.js` outputs `ready`").unwrap();
+        let check =
+            probe_for_criterion(dir.path(), "running `node app.js` outputs `ready`").unwrap();
         assert_eq!(
             check.exec,
             Exec::Probe(ProbeKind::CommandExitsZero(
@@ -4478,8 +4878,9 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     /// shape is left honestly unverified, never guessed at.
     #[test]
     fn run_stdout_criterion_without_backticks_synthesizes_no_probe() {
-        assert!(probe_for_criterion("running main.py prints Hello").is_none());
-        assert!(probe_for_criterion("the program prints a greeting").is_none());
+        let dir = no_language_dir();
+        assert!(probe_for_criterion(dir.path(), "running main.py prints Hello").is_none());
+        assert!(probe_for_criterion(dir.path(), "the program prints a greeting").is_none());
     }
 
     /// The closed-set contract, root-cause level: freeform criteria the
@@ -4488,10 +4889,14 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     /// `unparseable_acceptance_criteria_reports_no_checks_not_a_smoke_pass`.
     #[test]
     fn an_unmechanical_criterion_synthesizes_no_probe_even_when_call_shaped() {
-        assert!(synthesize_probe_checks(&[
-            "the output feels right".to_string(),
-            "fizzbuzz(3) is basically Fizz".to_string(),
-        ])
+        let dir = python_dir();
+        assert!(synthesize_probe_checks(
+            dir.path(),
+            &[
+                "the output feels right".to_string(),
+                "fizzbuzz(3) is basically Fizz".to_string(),
+            ]
+        )
         .is_empty());
     }
 
@@ -4500,13 +4905,17 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     /// check that would silently fabricate a verdict.
     #[test]
     fn an_unmechanical_criterion_synthesizes_no_probe() {
-        assert!(probe_for_criterion("the design feels polished").is_none());
-        assert!(probe_for_criterion("the API is intuitive to use").is_none());
+        let dir = no_language_dir();
+        assert!(probe_for_criterion(dir.path(), "the design feels polished").is_none());
+        assert!(probe_for_criterion(dir.path(), "the API is intuitive to use").is_none());
         assert_eq!(
-            synthesize_probe_checks(&[
-                "the design feels polished".to_string(),
-                "fizzbuzz.py exists".to_string(),
-            ])
+            synthesize_probe_checks(
+                dir.path(),
+                &[
+                    "the design feels polished".to_string(),
+                    "fizzbuzz.py exists".to_string(),
+                ]
+            )
             .len(),
             1,
             "only the mechanically-checkable criterion becomes a probe"
@@ -4781,7 +5190,8 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
     #[test]
     fn structured_probe_parses_a_file_exists_marker() {
-        let check = probe_for_criterion("probe:file_exists path=fizzbuzz.py").unwrap();
+        let dir = no_language_dir();
+        let check = probe_for_criterion(dir.path(), "probe:file_exists path=fizzbuzz.py").unwrap();
         assert_eq!(
             check.exec,
             Exec::Probe(ProbeKind::FileExists("fizzbuzz.py".to_string()))
@@ -4790,7 +5200,9 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
     #[test]
     fn structured_probe_parses_a_symbol_defined_marker_with_its_named_file() {
+        let dir = no_language_dir();
         let check = probe_for_criterion(
+            dir.path(),
             "probe:symbol_defined path=fizzbuzz.py symbol=fizzbuzz kind=function",
         )
         .unwrap();
@@ -4806,7 +5218,9 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
     #[test]
     fn structured_probe_parses_a_command_marker() {
-        let check = probe_for_criterion("probe:command cmd=\"pytest -k smoke\"").unwrap();
+        let dir = no_language_dir();
+        let check =
+            probe_for_criterion(dir.path(), "probe:command cmd=\"pytest -k smoke\"").unwrap();
         assert_eq!(
             check.exec,
             Exec::Probe(ProbeKind::CommandExitsZero("pytest -k smoke".to_string()))
@@ -4819,7 +5233,9 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     /// over the real one before the dash).
     #[test]
     fn structured_probe_ignores_text_after_the_original_criterion_separator() {
+        let dir = no_language_dir();
         let check = probe_for_criterion(
+            dir.path(),
             "probe:file_exists path=fizzbuzz.py — fizzbuzz.py exists in the repo",
         )
         .unwrap();
@@ -4834,9 +5250,12 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         // Would ALSO match `symbol_defined_probe`'s free-text heuristic if
         // the structured marker were not tried first — pin that the
         // structured, unambiguous form wins.
-        let check =
-            probe_for_criterion("probe:file_exists path=fizzbuzz.py — defines a function named x")
-                .unwrap();
+        let dir = no_language_dir();
+        let check = probe_for_criterion(
+            dir.path(),
+            "probe:file_exists path=fizzbuzz.py — defines a function named x",
+        )
+        .unwrap();
         assert_eq!(
             check.exec,
             Exec::Probe(ProbeKind::FileExists("fizzbuzz.py".to_string()))
