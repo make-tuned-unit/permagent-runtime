@@ -306,6 +306,26 @@ fn is_rule5_critical_tool(tool_name: &str) -> bool {
     RULE5_CRITICAL_TOOL_NAMES.contains(&base)
 }
 
+/// Lane R39a (A35 analysis, HARNESS_LOOP_LOG.md): the extension key to
+/// retry a cache miss against, or `None` if none can be derived. A prefixed
+/// tool name (`ext__tool`) names its owner directly, so this applies to any
+/// registered extension, not just rule-5-critical tools. An unprefixed name
+/// carries no owner in the string itself; `is_rule5_critical_tool`'s three
+/// names are the only unprefixed tools this repairs, and they are always
+/// owned by `orchestrator` regardless of how that extension currently
+/// exposes them, so the owner falls back to it directly.
+fn retry_owner_for_miss(tool_name: &str) -> Option<String> {
+    if let Some((prefix, _)) = tool_name.split_once("__") {
+        return Some(name_to_key(prefix));
+    }
+    if is_rule5_critical_tool(tool_name) {
+        return Some(name_to_key(
+            crate::agents::platform_extensions::orchestrator::EXTENSION_NAME,
+        ));
+    }
+    None
+}
+
 /// Result of resolving a tool call to its owning extension
 struct ResolvedTool {
     extension_name: String,
@@ -2096,13 +2116,52 @@ impl ExtensionManager {
             }
         }
 
-        let tools = self.get_all_tools_cached(session_id).await.map_err(|e| {
+        let mut tools = self.get_all_tools_cached(session_id).await.map_err(|e| {
             ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
                 format!("Failed to get tools: {}", e),
                 None,
             )
         })?;
+
+        // Lane R39a (A35 analysis, HARNESS_LOOP_LOG.md): two incidents in
+        // 327 runs showed a session's first-ever call to an
+        // already-registered extension's tool resolve to a -32002 "tool
+        // not found" that never recurred for any later call to that same
+        // extension in the same session — a rare transient miss inside
+        // `fetch_all_tools`'s concurrent gather, not an unregistered or
+        // renamed tool. When the miss is on a tool whose owning extension
+        // is registered, invalidate the tools cache and retry the
+        // fetch/resolve exactly once before falling through to the
+        // unchanged failure path below.
+        if tools.iter().all(|t| *t.name != *tool_name) {
+            if let Some(retry_owner) = retry_owner_for_miss(tool_name) {
+                if self.extensions.lock().await.contains_key(&retry_owner) {
+                    self.invalidate_tools_cache_and_bump_version().await;
+                    tools = self.get_all_tools_cached(session_id).await.map_err(|e| {
+                        ErrorData::new(
+                            ErrorCode::INTERNAL_ERROR,
+                            format!("Failed to get tools: {}", e),
+                            None,
+                        )
+                    })?;
+                    let outcome = if tools.iter().any(|t| *t.name == *tool_name) {
+                        "hit"
+                    } else {
+                        "miss"
+                    };
+                    warn!(
+                        ext = %retry_owner,
+                        tool = tool_name,
+                        outcome,
+                        "tool_resolve_retry ext={} tool={} outcome={}",
+                        retry_owner,
+                        tool_name,
+                        outcome
+                    );
+                }
+            }
+        }
 
         if let Some(tool) = tools.iter().find(|t| *t.name == *tool_name) {
             let owner = get_tool_owner(tool).ok_or_else(|| {
@@ -3621,5 +3680,290 @@ mod tests {
             .expect("no extensions registered — decompose_roadmap cannot resolve");
         assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
         assert!(err.message.contains("decompose_roadmap"), "{}", err.message);
+    }
+
+    // ── tool_router: retry-once-after-transient-miss (Lane R39a, A35 analysis) ──
+
+    #[test]
+    fn retry_owner_for_miss_derives_owner_from_prefix() {
+        assert_eq!(
+            retry_owner_for_miss("myext__mytool"),
+            Some(name_to_key("myext"))
+        );
+    }
+
+    #[test]
+    fn retry_owner_for_miss_falls_back_to_orchestrator_for_unprefixed_rule5_tools() {
+        assert_eq!(
+            retry_owner_for_miss("decompose_roadmap"),
+            Some(name_to_key(
+                crate::agents::platform_extensions::orchestrator::EXTENSION_NAME
+            ))
+        );
+    }
+
+    #[test]
+    fn retry_owner_for_miss_is_none_for_an_unprefixed_unrelated_tool() {
+        assert_eq!(retry_owner_for_miss("goal_status"), None);
+    }
+
+    /// A client whose `list_tools` blocks on a oneshot signal exactly once
+    /// (subsequent calls return immediately). Used to give a test a genuine
+    /// suspension point inside `fetch_all_tools`'s concurrent gather,
+    /// instead of a sleep or a guessed number of `yield_now` calls.
+    struct BlockingDecoyClient {
+        gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for BlockingDecoyClient {
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+
+        async fn list_resources(
+            &self,
+            _session_id: &str,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListResourcesResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn read_resource(
+            &self,
+            _session_id: &str,
+            _uri: &str,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ReadResourceResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn list_tools(
+            &self,
+            _session_id: &str,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            let rx = self.gate.lock().await.take();
+            if let Some(rx) = rx {
+                let _ = rx.await;
+            }
+            Ok(ListToolsResult {
+                tools: vec![],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _ctx: &ToolCallContext,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn list_prompts(
+            &self,
+            _session_id: &str,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListPromptsResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn get_prompt(
+            &self,
+            _session_id: &str,
+            _name: &str,
+            _arguments: Value,
+            _cancellation_token: CancellationToken,
+        ) -> Result<GetPromptResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
+            mpsc::channel(1).1
+        }
+    }
+
+    /// (a) A35 analysis: the coordinator's session's FIRST touch of an
+    /// already-mid-registration extension can miss its tool once, with
+    /// every later call in the same session resolving fine. Reproduced here
+    /// as: `myext` is registered AFTER `fetch_all_tools`'s first snapshot of
+    /// `self.extensions` (taken while `decoy`'s call blocks) but BEFORE
+    /// `resolve_tool`'s own retry-eligibility check — the exact window A35
+    /// attributes the transient miss to. The retry's fresh fetch then sees
+    /// `myext` and resolves.
+    #[tokio::test]
+    async fn tool_router_retries_once_after_transient_miss_then_resolves() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        manager
+            .add_mock_extension(
+                "decoy".to_string(),
+                Arc::new(BlockingDecoyClient {
+                    gate: Mutex::new(Some(rx)),
+                }),
+            )
+            .await;
+
+        let resolve_fut = manager.resolve_tool("session-1", "myext__tool");
+        let register_fut = async {
+            // Yields once so the concurrently-polled `resolve_fut` above
+            // runs first on this round, synchronously, all the way to
+            // `decoy`'s genuine suspension on `rx` inside `fetch_all_tools`.
+            // `myext` is registered only once that suspension is confirmed,
+            // then `decoy` is released.
+            tokio::task::yield_now().await;
+            manager
+                .add_mock_extension_with_tools("myext".to_string(), Arc::new(MockClient {}), vec![])
+                .await;
+            tx.send(()).unwrap();
+        };
+
+        let (resolved, _) = tokio::join!(resolve_fut, register_fut);
+
+        let resolved =
+            resolved.expect("myext__tool should resolve once the retry's fresh fetch sees myext");
+        assert_eq!(resolved.extension_name, "myext");
+        assert_eq!(resolved.actual_tool_name, "tool");
+    }
+
+    struct CountingClient {
+        calls: AtomicU64,
+    }
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for CountingClient {
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+
+        async fn list_resources(
+            &self,
+            _session_id: &str,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListResourcesResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn read_resource(
+            &self,
+            _session_id: &str,
+            _uri: &str,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ReadResourceResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn list_tools(
+            &self,
+            _session_id: &str,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ListToolsResult {
+                tools: vec![],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _ctx: &ToolCallContext,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn list_prompts(
+            &self,
+            _session_id: &str,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListPromptsResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn get_prompt(
+            &self,
+            _session_id: &str,
+            _name: &str,
+            _arguments: Value,
+            _cancellation_token: CancellationToken,
+        ) -> Result<GetPromptResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
+            mpsc::channel(1).1
+        }
+    }
+
+    /// (b) A tool that a registered extension genuinely never returns
+    /// still fails after exactly one retry — the retry must not loop, and
+    /// must not mask a real unknown-tool error.
+    #[tokio::test]
+    async fn tool_router_retries_exactly_once_then_still_fails_for_a_genuinely_missing_tool() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+
+        let client = Arc::new(CountingClient {
+            calls: AtomicU64::new(0),
+        });
+        manager
+            .add_mock_extension(
+                crate::agents::platform_extensions::orchestrator::EXTENSION_NAME.to_string(),
+                client.clone(),
+            )
+            .await;
+
+        let err = manager
+            .resolve_tool("session-1", "decompose_roadmap")
+            .await
+            .err()
+            .expect("orchestrator is registered but never returns this tool, retry included");
+
+        assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
+        assert!(err.message.contains("decompose_roadmap"), "{}", err.message);
+        assert_eq!(
+            client.calls.load(Ordering::SeqCst),
+            2,
+            "exactly one retry: the initial fetch plus one invalidate-and-refetch"
+        );
+    }
+
+    /// (c) A tool prefixed with an extension name that was never
+    /// registered gets no retry at all — there is no registered owner to
+    /// invalidate the cache and refetch for.
+    #[tokio::test]
+    async fn tool_router_unregistered_extension_prefix_does_not_retry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let version_before = manager.tools_cache_version.load(Ordering::SeqCst);
+
+        let err = manager
+            .resolve_tool("session-1", "unregistered_ext__sometool")
+            .await
+            .err()
+            .expect("the extension was never registered");
+
+        assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
+        assert_eq!(
+            manager.tools_cache_version.load(Ordering::SeqCst),
+            version_before,
+            "no registered extension owns the tool, so nothing should invalidate the cache for a retry"
+        );
     }
 }
