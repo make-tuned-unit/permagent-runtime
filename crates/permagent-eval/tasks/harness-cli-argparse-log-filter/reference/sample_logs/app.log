@@ -1,0 +1,6 @@
+2024-01-10T08:00:00 INFO server started
+2024-01-11T09:15:00 DEBUG cache warmed
+2024-01-12T10:30:00 WARN slow query detected
+2024-01-13T11:45:00 ERROR database connection failed
+2024-01-14T12:00:00 INFO request handled
+2024-01-15T13:10:00 ERROR timeout contacting upstream
