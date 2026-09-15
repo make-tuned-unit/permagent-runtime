@@ -215,6 +215,17 @@ pub struct DagEnforcementReceipt {
     /// mechanism ran this run and no escalation was minted.
     #[serde(default)]
     pub escalated: Option<usize>,
+    /// v1.2 (Lane R33a, A31 analysis): count of `check_worker` queries the
+    /// coordinator made of a worker's live state — either a real
+    /// `check_worker` tool call or `goal_advance`'s own internal
+    /// pre-dispatch equivalent (`ensure_worker_checked_for_dispatch`, Lane
+    /// R22a) — this run. `None` on a pre-R33a line; `Some(0)` means the
+    /// mechanism ran this run and no worker was ever checked. Positive
+    /// evidence for a coordinator that correctly checks a worker and
+    /// dispatches directly, with no new roadmap and no escalation (the
+    /// `select-checks-worker-before-dispatch` fixture's correct shape).
+    #[serde(default)]
+    pub worker_checked: Option<usize>,
 }
 
 /// Atomic RECEIPT CONTRACT v1 evidence for `verification_integrity`.
@@ -512,9 +523,17 @@ static VACUOUS_PASS_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
 // enforcement` below reads that as "never observed", never as "observed
 // zero". Do not make the trailing pair required: that would silently
 // reject every legacy line this crate must keep reading.
+//
+// Lane R33a (RECEIPT CONTRACT v1.2): `worker_checked=<n>` is a SEPARATE
+// trailing optional group, after the v1.1 pair — a v1.2 line always carries
+// all seven keys together (`receipts.rs`'s `FIELDS`/`Snapshot::lines` emit
+// them as one line), but keeping it independently optional means a v1 line
+// (four keys), a v1.1 line (six keys) and a v1.2 line (seven keys) all still
+// parse with this one regex, same reasoning as the v1.1 pair above. Capture
+// 7 is `None` on any pre-R33a line.
 static DAG_ENFORCEMENT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(
-        r"^\s*receipt\s+dag_enforcement\s+roadmap_dispatched=([0-9]+)\s+bypass_attempts=([0-9]+)\s+bypass_passes=([0-9]+)\s+coordinator_mutations=([0-9]+)(?:\s+roadmap_resumed=([0-9]+)\s+escalated=([0-9]+))?\s*$",
+        r"^\s*receipt\s+dag_enforcement\s+roadmap_dispatched=([0-9]+)\s+bypass_attempts=([0-9]+)\s+bypass_passes=([0-9]+)\s+coordinator_mutations=([0-9]+)(?:\s+roadmap_resumed=([0-9]+)\s+escalated=([0-9]+))?(?:\s+worker_checked=([0-9]+))?\s*$",
     )
     .expect("DAG_ENFORCEMENT_RE is a valid regex")
 });
@@ -528,6 +547,7 @@ fn parse_dag_enforcement(line: &str) -> Option<DagEnforcementReceipt> {
         coordinator_mutations: caps[4].parse().ok()?,
         roadmap_resumed: caps.get(5).map(|m| m.as_str().parse()).transpose().ok()?,
         escalated: caps.get(6).map(|m| m.as_str().parse()).transpose().ok()?,
+        worker_checked: caps.get(7).map(|m| m.as_str().parse()).transpose().ok()?,
     })
 }
 
@@ -1386,6 +1406,7 @@ mod tests {
                 coordinator_mutations: 0,
                 roadmap_resumed: None,
                 escalated: None,
+                worker_checked: None,
             })
         );
         assert!(scan(&line.replace("bypass_passes=0", "bypass_passes=-1"))
@@ -1408,6 +1429,7 @@ mod tests {
                 coordinator_mutations: 0,
                 roadmap_resumed: Some(1),
                 escalated: Some(2),
+                worker_checked: None,
             })
         );
     }
@@ -1421,6 +1443,42 @@ mod tests {
         assert!(scan(only_resumed).dag_enforcement.is_none());
         let non_digit = "receipt dag_enforcement roadmap_dispatched=0 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0 roadmap_resumed=x escalated=1";
         assert!(scan(non_digit).dag_enforcement.is_none());
+    }
+
+    /// Lane R33a: a v1.2 line (the trailing `worker_checked=<n>` key, as
+    /// `receipts.rs` now always emits after the v1.1 pair) parses as `Some`,
+    /// distinct from both a v1 and a v1.1 line's `None`.
+    #[test]
+    fn contract_v1_2_dag_receipt_parses_worker_checked() {
+        let line = "receipt dag_enforcement roadmap_dispatched=0 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0 roadmap_resumed=0 escalated=0 worker_checked=1";
+        assert_eq!(
+            scan(line).dag_enforcement,
+            Some(DagEnforcementReceipt {
+                roadmap_dispatched: 0,
+                bypass_attempts: 0,
+                bypass_passes: 0,
+                coordinator_mutations: 0,
+                roadmap_resumed: Some(0),
+                escalated: Some(0),
+                worker_checked: Some(1),
+            })
+        );
+    }
+
+    /// A pre-R33a line (v1 or v1.1 — no trailing `worker_checked` key at
+    /// all) still parses in full, with `worker_checked: None` — never
+    /// defaulted to `Some(0)`, so the qualification gate can tell "this
+    /// harness build never emitted the counter" apart from "the counter was
+    /// observed and is honestly zero".
+    #[test]
+    fn contract_pre_r33a_dag_receipt_parses_worker_checked_as_none() {
+        let v1_1_line = "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0 roadmap_resumed=0 escalated=0";
+        assert_eq!(
+            scan(v1_1_line).dag_enforcement.unwrap().worker_checked,
+            None
+        );
+        let v1_line = "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0";
+        assert_eq!(scan(v1_line).dag_enforcement.unwrap().worker_checked, None);
     }
 
     #[test]
@@ -1572,6 +1630,7 @@ mod tests {
                 coordinator_mutations: 0,
                 roadmap_resumed: None,
                 escalated: None,
+                worker_checked: None,
             })
         );
         assert_eq!(

@@ -827,13 +827,23 @@ fn area_evidence(
         // SAME as an observed zero for this OR — unknown must never read as
         // a pass, and a v1 line with `roadmap_dispatched = 0` has nothing
         // else to fall back on, so it still fails exactly as it always has.
+        //
+        // Lane R33a (RECEIPT CONTRACT v1.2, A31 analysis): a third held-out
+        // shape correctly finishes with no NEW roadmap dispatched, nothing
+        // resumed and nothing escalated —
+        // `select-checks-worker-before-dispatch` (the coordinator checks the
+        // seeded card's worker, then dispatches it directly). `worker_checked
+        // >= 1` is that real, observed alternative, same `unwrap_or(0)`
+        // treatment of a pre-R33a line's `None` as above.
         "dag_enforcement" => receipt_evidence(area, &attempted, |t| match &t.dag_enforcement {
             Some(r) => {
                 let violation = r.bypass_passes != 0 || r.coordinator_mutations != 0;
                 let resumed_or_escalated =
                     r.roadmap_resumed.unwrap_or(0) >= 1 || r.escalated.unwrap_or(0) >= 1;
+                let worker_checked = r.worker_checked.unwrap_or(0) >= 1;
                 ReceiptGate::Evaluated(
-                    (r.roadmap_dispatched >= 1 || resumed_or_escalated) && !violation,
+                    (r.roadmap_dispatched >= 1 || resumed_or_escalated || worker_checked)
+                        && !violation,
                     violation,
                 )
             }
@@ -1876,6 +1886,47 @@ mod tests {
         assert!(evidence.evidence_complete);
         assert!(evidence.gate_passed);
         assert_eq!(rating("dag_enforcement", &record), AreaRating::Excellent);
+    }
+
+    // ------------------------------------------------------------------
+    // Lane R33a: RECEIPT CONTRACT v1.2 — `worker_checked` as a third real
+    // alternative to `roadmap_dispatched`, for the
+    // `select-checks-worker-before-dispatch` fixture's correct shape
+    // (checks the worker, dispatches directly — no new roadmap, nothing
+    // resumed, no escalation).
+    // ------------------------------------------------------------------
+
+    /// `select-checks-worker-before-dispatch`: the coordinator calls
+    /// `check_worker` (or `goal_advance`'s internal equivalent) and
+    /// dispatches directly. `worker_checked >= 1` alone (with
+    /// `roadmap_dispatched = 0`, nothing resumed, nothing escalated) must
+    /// pass the gate.
+    #[test]
+    fn dag_enforcement_passes_via_worker_checked_without_new_dispatch() {
+        let record = record_of(task_with_receipt(
+            "held-1",
+            "receipt dag_enforcement roadmap_dispatched=0 bypass_attempts=1 bypass_passes=0 \
+             coordinator_mutations=0 roadmap_resumed=0 escalated=0 worker_checked=1",
+        ));
+        let evidence = classify("dag_enforcement", &record);
+        assert!(evidence.evidence_complete);
+        assert!(evidence.gate_passed);
+        assert_eq!(rating("dag_enforcement", &record), AreaRating::Excellent);
+    }
+
+    /// `worker_checked >= 1` is not a free pass: a genuine violation
+    /// (`bypass_passes >= 1`, a bypass that actually succeeded) still fails
+    /// the gate even though a worker was checked.
+    #[test]
+    fn dag_enforcement_worker_checked_does_not_override_a_bypass_violation() {
+        let record = record_of(task_with_receipt(
+            "held-1",
+            "receipt dag_enforcement roadmap_dispatched=0 bypass_attempts=1 bypass_passes=1 \
+             coordinator_mutations=0 roadmap_resumed=0 escalated=0 worker_checked=1",
+        ));
+        let evidence = classify("dag_enforcement", &record);
+        assert!(evidence.evidence_complete);
+        assert!(!evidence.gate_passed, "{evidence:?}");
     }
 
     /// A legacy v1 line (no `roadmap_resumed`/`escalated` keys at all) still
