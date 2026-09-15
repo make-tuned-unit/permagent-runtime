@@ -1523,6 +1523,12 @@ pub struct SessionGoalCard {
     /// transaction as the state change) has been recorded for at least one
     /// dispatch attempt.
     pub has_worker_session: bool,
+    /// The card's title. Lane R25a: `goal_advance`/`check_worker`'s
+    /// omitted-id resolution and the `goal_list` tool (both in
+    /// `agents/platform_extensions/orchestrator.rs`) both need it to show a
+    /// human a candidate list (`{id, title, state}`) — without it they would
+    /// have had to re-query per card or duplicate this function's SQL.
+    pub title: String,
 }
 
 /// Every non-archived goal card `session_id` created
@@ -1548,7 +1554,7 @@ pub async fn goal_cards_created_by_session(
     session_id: &str,
 ) -> Result<Vec<SessionGoalCard>, String> {
     let rows = sqlx::query(
-        "SELECT c.id, bc.state_binding, c.metadata_json \
+        "SELECT c.id, c.title, bc.state_binding, c.metadata_json \
          FROM cards c JOIN board_columns bc ON c.column_id = bc.id \
          WHERE c.card_type = 'goal' AND c.archived_at IS NULL \
            AND json_extract(c.metadata_json, '$.created_by_session_id') = ?",
@@ -1563,12 +1569,13 @@ pub async fn goal_cards_created_by_session(
 
 /// Shared row -> [`SessionGoalCard`] mapping for
 /// [`goal_cards_created_by_session`] and
-/// [`goal_cards_for_project_matching_cwd`] (Lane R20c-c) — the same three
-/// columns (`id`, `state_binding`, `metadata_json`), the same
+/// [`goal_cards_for_project_matching_cwd`] (Lane R20c-c) — the same four
+/// columns (`id`, `title`, `state_binding`, `metadata_json`), the same
 /// `depends_on`/`worker_session_id(s)` derivation, so the two queries can
 /// never quietly disagree on what a row means.
 fn session_goal_card_from_row(r: sqlx::sqlite::SqliteRow) -> SessionGoalCard {
     let card_id: String = r.get("id");
+    let title: String = r.get::<Option<String>, _>("title").unwrap_or_default();
     let state_binding: String = r
         .get::<Option<String>, _>("state_binding")
         .unwrap_or_default();
@@ -1590,6 +1597,7 @@ fn session_goal_card_from_row(r: sqlx::sqlite::SqliteRow) -> SessionGoalCard {
             .is_some_and(|a| !a.is_empty());
     SessionGoalCard {
         card_id,
+        title,
         state_binding,
         is_root,
         has_worker_session,
@@ -1649,7 +1657,7 @@ pub async fn goal_cards_for_project_matching_cwd(
     };
 
     let rows = sqlx::query(
-        "SELECT c.id, bc.state_binding, c.metadata_json \
+        "SELECT c.id, c.title, bc.state_binding, c.metadata_json \
          FROM cards c JOIN board_columns bc ON c.column_id = bc.id \
          WHERE c.card_type = 'goal' AND c.archived_at IS NULL AND c.project_id = ?",
     )
@@ -3496,6 +3504,7 @@ mod tests {
     fn goal_card(state_binding: &str, is_root: bool, has_worker_session: bool) -> SessionGoalCard {
         SessionGoalCard {
             card_id: "c1".to_string(),
+            title: "goal card".to_string(),
             state_binding: state_binding.to_string(),
             is_root,
             has_worker_session,
@@ -3642,6 +3651,7 @@ mod tests {
             .unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].card_id, "resumed-card-1");
+        assert_eq!(found[0].title, "resumed goal");
         assert_eq!(found[0].state_binding, "ready");
 
         // A cwd that matches NO project's root_path finds nothing — never

@@ -343,8 +343,14 @@ struct InterruptAgentParams {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct GoalAdvanceParams {
-    /// The card ID (UUID) of the goal to advance.
-    card_id: String,
+    /// The card ID (UUID) of the goal to advance. Optional: when omitted,
+    /// resolves to this project's single Ready goal card (Lane R25a),
+    /// matched by cwd the same way resume_roadmap matches a project.
+    /// Several Ready cards, or none, return a structured error instead of
+    /// guessing — call goal_list to see the choices, or list_workers/
+    /// check_worker to confirm a worker first.
+    #[serde(default)]
+    card_id: Option<String>,
     /// The action to perform: "ready", "dispatch", "review", "approve", "reject"
     action: String,
     /// Optional notes for 'approve' or 'reject' actions. Stored in metadata.review_notes.
@@ -709,6 +715,87 @@ async fn resolve_resume_project(
                  Pass one explicitly to resume_roadmap.",
                 paused.len(),
                 list
+            ))
+        }
+    }
+}
+
+/// Lane R25a (harness loop, Lane K12's finding: `select-checks-worker-
+/// before-dispatch` escalated because a seeded Ready goal card IS in the
+/// store with the right project `root_path`, but neither `goal_advance` nor
+/// `check_worker` had any way to discover its id from cwd alone — both
+/// require a `card_id`/`worker_key` the coordinator cannot obtain from a
+/// bare "the rename goal card is described but not identified"). Resolves
+/// the single goal card an OMITTED `card_id` (`goal_advance`) or an omitted
+/// worker lookup (`check_worker`, via the card's own `worker_key` metadata)
+/// should target.
+///
+/// Uses the SAME cwd-based project match [`resolve_resume_project`] uses —
+/// [`cards::goal_cards_for_project_matching_cwd`] (Lane R20c-c) already
+/// implements that exact match (canonicalize, exact-or-prefix `root_path`,
+/// longest wins) and returns every non-archived goal card for the resolved
+/// project, or an empty list when no active project's `root_path` matches
+/// `working_dir` — deliberately NEVER falls back to the "personal" project
+/// the way [`resolve_decompose_project`] does, since guessing a project for
+/// an omitted `card_id` is exactly the silent-guess behavior this repair
+/// must not introduce.
+///
+/// Filters those cards to `wanted_state` and:
+///   - exactly one match resolves silently, re-read in full via
+///     [`cards::get_card`] so the caller gets title/description/metadata,
+///     not just the summary row;
+///   - several return a structured error listing every candidate's
+///     `{id, title, state}` so the model can choose instead of guessing;
+///   - none return a structured "no such card" error naming the state that
+///     was searched for, pointing at `goal_list` and the explicit-id
+///     argument as the ways forward.
+async fn resolve_single_goal_card_by_state(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    working_dir: Option<&std::path::Path>,
+    wanted_state: GoalState,
+) -> Result<cards::Card, String> {
+    let dir = working_dir.ok_or_else(|| {
+        "No card_id was given and this session has no working directory to resolve a project \
+         from. Pass card_id explicitly."
+            .to_string()
+    })?;
+    let candidates = cards::goal_cards_for_project_matching_cwd(pool, dir).await?;
+    let matches: Vec<_> = candidates
+        .into_iter()
+        .filter(|c| GoalState::from_binding(&c.state_binding) == Some(wanted_state))
+        .collect();
+
+    match matches.len() {
+        0 => Err(format!(
+            "No card_id was given and no {wanted_state} goal card was found for the project \
+             matching this working directory. Pass card_id explicitly, or call goal_list to \
+             see what's available."
+        )),
+        1 => {
+            let card_id = &matches[0].card_id;
+            cards::get_card(pool, card_id).await?.ok_or_else(|| {
+                format!(
+                    "Goal card '{}' was resolved by cwd but could not be re-read — it may have \
+                     been archived or deleted concurrently. Pass card_id explicitly.",
+                    card_id
+                )
+            })
+        }
+        n => {
+            let listing = matches
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{{id: {}, title: {:?}, state: {}}}",
+                        c.card_id, c.title, wanted_state
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(format!(
+                "No card_id was given and {n} goal cards are {wanted_state} for the project \
+                 matching this working directory: [{listing}]. Pass card_id explicitly to pick \
+                 one."
             ))
         }
     }
@@ -2204,9 +2291,17 @@ struct ListWorkersParams {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct CheckWorkerParams {
-    /// The worker key from agent.yaml to check.
-    worker_key: String,
+    /// The worker key from agent.yaml to check. Optional: when omitted,
+    /// resolves to the worker recorded (metadata.worker_key) on this
+    /// project's single In Progress goal card (Lane R25a), matched by cwd
+    /// the same way resume_roadmap matches a project. Several In Progress
+    /// cards, or none, return a structured error instead of guessing.
+    #[serde(default)]
+    worker_key: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct GoalListParams {}
 
 /// Keywords that trigger Kanban context injection (case-insensitive substring match).
 const BOARD_KEYWORDS: &[&str] = &[
@@ -2278,7 +2373,10 @@ impl OrchestratorClient {
                  nothing else you can call makes a worker run. The others are bookkeeping \
                  moves. Use list_workers first to see who is actually available, and \
                  goal_status afterwards to check on a running worker; a dispatch that \
-                 returns an error started nothing, so the goal is still yours to place.\n\n\
+                 returns an error started nothing, so the goal is still yours to place. If \
+                 you don't have a card_id on hand, call goal_list to see the goal cards for \
+                 your current project — goal_advance and check_worker also resolve a missing \
+                 id/worker on their own when exactly one Ready (or In Progress) card fits.\n\n\
                  Goals that exhaust their automatic retry budget move to the Failed \
                  column with needs_human_attention=true. Surface these to the user \
                  rather than retrying silently.\n\n\
@@ -5932,8 +6030,51 @@ impl OrchestratorClient {
         &self,
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult, String> {
-        let args = arguments.ok_or("Missing arguments")?;
-        let worker_key = extract_string(&args, "worker_key")?;
+        let args = arguments.unwrap_or_default();
+        let requested_worker_key = args
+            .get("worker_key")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        // Lane R25a: worker_key is optional — an omitted one resolves off
+        // this project's single In Progress goal card's own
+        // `metadata.worker_key`, the same discovery gap `goal_advance`'s
+        // omitted `card_id` closes below.
+        let worker_key = match requested_worker_key {
+            Some(key) => key,
+            None => {
+                let pool = self
+                    .context
+                    .session_manager
+                    .pool_clone()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let working_dir = self
+                    .context
+                    .session
+                    .as_ref()
+                    .map(|s| s.working_dir.as_path());
+                let card =
+                    resolve_single_goal_card_by_state(&pool, working_dir, GoalState::InProgress)
+                        .await?;
+                card.metadata_json
+                    .get("worker_key")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| {
+                        format!(
+                            "No worker_key was given, and the resolved goal card '{}' ('{}') \
+                             has no worker_key recorded in its metadata. Pass worker_key \
+                             explicitly.",
+                            card.id, card.title
+                        )
+                    })?
+            }
+        };
 
         let outcome = self.check_worker_core(&worker_key).await?;
         self.record_check_worker(&worker_key).await;
@@ -5948,7 +6089,12 @@ impl OrchestratorClient {
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult, String> {
         let args = arguments.ok_or("Missing arguments")?;
-        let card_id = extract_string(&args, "card_id")?;
+        let requested_card_id = args
+            .get("card_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
         let action_str = extract_string(&args, "action")?;
         let notes = args
             .get("notes")
@@ -5992,6 +6138,24 @@ impl OrchestratorClient {
             .pool_clone()
             .await
             .map_err(|e| e.to_string())?;
+
+        // Lane R25a: card_id is optional — an omitted one resolves to this
+        // project's single Ready goal card, matched by cwd (see
+        // `resolve_single_goal_card_by_state`'s own doc comment for the
+        // 0/1/many shape).
+        let card_id = match requested_card_id {
+            Some(id) => id,
+            None => {
+                let working_dir = self
+                    .context
+                    .session
+                    .as_ref()
+                    .map(|s| s.working_dir.as_path());
+                resolve_single_goal_card_by_state(&pool, working_dir, GoalState::Ready)
+                    .await?
+                    .id
+            }
+        };
 
         // Load card and verify it's a goal
         let card = match cards::get_card(&pool, &card_id).await? {
@@ -6895,6 +7059,55 @@ impl OrchestratorClient {
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&result).unwrap_or_default(),
+        )]))
+    }
+
+    /// Lane R25a: read-only goal-card discovery by cwd — the tool
+    /// `goal_advance`/`check_worker`'s omitted-id resolution
+    /// (`resolve_single_goal_card_by_state`) falls back to escalation
+    /// without, and the ONLY way a coordinator that knows only its own
+    /// working directory can find out what a Ready/In Progress/etc. card's
+    /// id and title actually are. Same cwd-based project match
+    /// `resolve_resume_project` uses, via
+    /// [`cards::goal_cards_for_project_matching_cwd`] (Lane R20c-c) — no
+    /// personal-project fallback: a cwd that matches no active project's
+    /// `root_path` returns an empty list rather than guessing.
+    async fn handle_goal_list(
+        &self,
+        _arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let working_dir = self
+            .context
+            .session
+            .as_ref()
+            .map(|s| s.working_dir.as_path());
+        let dir = working_dir.ok_or_else(|| {
+            "This session has no working directory to resolve a project from — goal_list has \
+             nothing to match against."
+                .to_string()
+        })?;
+
+        let session_cards = cards::goal_cards_for_project_matching_cwd(&pool, dir).await?;
+        let listing: Vec<serde_json::Value> = session_cards
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.card_id,
+                    "title": c.title,
+                    "state": c.state_binding,
+                })
+            })
+            .collect();
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&listing).unwrap_or_default(),
         )]))
     }
 
@@ -8060,7 +8273,11 @@ impl OrchestratorClient {
                  behavior is not assumed. Use before dispatching to a specific worker — call \
                  this explicitly first when you already know which worker you want; \
                  goal_advance{action: dispatch} performs the same check itself when you \
-                 skip it, but calling it here yourself is still preferred."
+                 skip it, but calling it here yourself is still preferred. \
+                 worker_key is optional: omit it to check the worker already recorded on \
+                 this project's single In Progress goal card (matched by cwd); several such \
+                 cards, or none, return a structured error listing the choices instead of \
+                 guessing."
                     .to_string(),
                 schema::<CheckWorkerParams>(),
             ),
@@ -8078,7 +8295,11 @@ impl OrchestratorClient {
                  still the preferred way to know what you're dispatching to. \
                  Dispatch may persistently narrow extensions for in-process workers; \
                  scoped dispatch to CLI workers is refused. \
-                 Only works on card_type='goal' cards."
+                 Only works on card_type='goal' cards. \
+                 card_id is optional: omit it to resolve this project's single Ready goal \
+                 card, matched by cwd — several Ready cards, or none, return a structured \
+                 error listing the choices instead of guessing; call goal_list to see them \
+                 directly."
                     .to_string(),
                 schema::<GoalAdvanceParams>(),
             ),
@@ -8086,9 +8307,20 @@ impl OrchestratorClient {
                 "goal_status".to_string(),
                 "Get detailed status of a goal card including its lifecycle state, \
                  assigned worker, session liveness, attempt count, and any errors. \
-                 Only works on card_type='goal' cards."
+                 Only works on card_type='goal' cards. Requires a card_id — use goal_list \
+                 first if you don't have one."
                     .to_string(),
                 schema::<GoalStatusParams>(),
+            ),
+            Tool::new(
+                "goal_list".to_string(),
+                "List the goal cards (id, title, lifecycle state) for the project matching \
+                 your current working directory — no card_id required. Use this to discover \
+                 a goal card's id when you know only which project/workspace you're in, \
+                 before calling goal_advance, goal_status, or check_worker. Read-only; \
+                 never creates, dispatches, or modifies anything."
+                    .to_string(),
+                schema::<GoalListParams>(),
             ),
             Tool::new(
                 "steer_goal".to_string(),
@@ -8267,6 +8499,7 @@ impl McpClientTrait for OrchestratorClient {
             "check_worker" => self.handle_check_worker(arguments).await,
             "goal_advance" => self.handle_goal_advance(arguments).await,
             "goal_status" => self.handle_goal_status(arguments).await,
+            "goal_list" => self.handle_goal_list(arguments).await,
             "steer_goal" => self.handle_steer_goal(arguments).await,
             "skill_run" => self.handle_skill_run(arguments).await,
             "context_set" => self.handle_context_set(arguments).await,
@@ -26652,6 +26885,379 @@ mod tests {
             updated.metadata_json.get("worker_key").is_none(),
             "no worker was ever selected, so none may be recorded"
         );
+    }
+
+    // ── Lane R25a: goal_advance/check_worker resolve the project's single
+    // Ready/In Progress card by cwd when card_id/worker_key is omitted;
+    // goal_list makes cards discoverable (Lane K12's finding: a seeded Ready
+    // goal card is in the store with the right project root_path, but
+    // neither tool had any way to discover its id) ──
+
+    /// Seed a project rooted at `working_dir` with one goal card in
+    /// `state_binding`, returning `(project, card)`. `working_dir` must
+    /// exist on disk (`create_project` requires it).
+    async fn setup_project_and_goal_at(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        name: &str,
+        working_dir: &std::path::Path,
+        state_binding: &str,
+        title: &str,
+    ) -> (crate::projects::Project, cards::Card) {
+        let project = crate::projects::create_project(
+            pool,
+            crate::projects::CreateProject {
+                name: name.to_string(),
+                root_path: Some(working_dir.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        cards::seed_goal_columns(pool, &project.id).await.unwrap();
+        let col = cards::get_goal_column(pool, &project.id, state_binding)
+            .await
+            .unwrap()
+            .unwrap();
+        let card = cards::create_card(
+            pool,
+            cards::CreateCard {
+                project_id: project.id.clone(),
+                title: title.to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        (project, card)
+    }
+
+    /// `goal_advance` with NO `card_id`, exactly one Ready card for the cwd
+    /// project: the omitted argument resolves to that card and the request
+    /// reaches real dispatch machinery — proven by hitting R22a's
+    /// enforced check_worker gate FOR THE RESOLVED CARD (a bogus worker key
+    /// refusal, the same deterministic assertion
+    /// `tool_path_dispatch_refuses_before_moving_the_card_when_the_worker_check_fails`
+    /// uses) rather than a "no card_id"/"ambiguous" resolution error. A real
+    /// end-to-end worker spawn is out of scope here — nothing else in this
+    /// file drives `dispatch_goal_fn` to a real success either (it needs a
+    /// real git worktree and agent process); this proves the NEW behavior
+    /// this lane adds (resolution) without re-testing R22a's or
+    /// `dispatch_goal_fn`'s own already-covered machinery.
+    #[tokio::test]
+    async fn goal_advance_without_card_id_resolves_the_single_ready_card_before_dispatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let (_project, _card) = setup_project_and_goal_at(
+            &pool,
+            "R25a Single Ready",
+            tmp.path(),
+            "ready",
+            "Rename widget-cli",
+        )
+        .await;
+
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "r25a-goal-advance".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: Some(Arc::new(session)),
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("action".to_string(), serde_json::json!("dispatch"));
+        args.insert(
+            "worker".to_string(),
+            serde_json::json!("r25a-not-a-real-roster-key"),
+        );
+        // Deliberately no "card_id".
+
+        let err = client
+            .handle_goal_advance(Some(args))
+            .await
+            .expect_err("an unknown worker must still refuse even once the card resolves");
+        assert!(
+            err.contains("r25a-not-a-real-roster-key"),
+            "reaching the worker-check refusal (not a card-resolution error) proves the \
+             omitted card_id resolved to the seeded Ready card: {err}"
+        );
+    }
+
+    /// `goal_advance` with no `card_id` and TWO Ready cards for the cwd
+    /// project: refuses with a structured error listing every candidate's
+    /// `{id, title, state}` instead of guessing.
+    #[tokio::test]
+    async fn goal_advance_without_card_id_two_ready_cards_lists_both_in_the_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "R25a Two Ready".to_string(),
+                root_path: Some(tmp.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        cards::seed_goal_columns(&pool, &project.id).await.unwrap();
+        let col = cards::get_goal_column(&pool, &project.id, "ready")
+            .await
+            .unwrap()
+            .unwrap();
+        let card_a = cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Alpha goal".to_string(),
+                description: Some("t".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        let card_b = cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Beta goal".to_string(),
+                description: Some("t".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "r25a-two-ready".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: Some(Arc::new(session)),
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("action".to_string(), serde_json::json!("ready"));
+
+        let err = client
+            .handle_goal_advance(Some(args))
+            .await
+            .expect_err("two Ready cards must never let goal_advance guess which one");
+        assert!(
+            err.contains(card_a.id.as_str()) && err.contains(card_b.id.as_str()),
+            "the structured error must list every candidate's id: {err}"
+        );
+        assert!(
+            err.contains("Alpha goal") && err.contains("Beta goal"),
+            "the structured error must list every candidate's title: {err}"
+        );
+    }
+
+    /// `goal_advance` with no `card_id` and NO Ready card for the cwd
+    /// project: refuses with a structured "no such card" error rather than
+    /// escalating with nothing actionable.
+    #[tokio::test]
+    async fn goal_advance_without_card_id_no_ready_card_returns_structured_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "R25a No Ready".to_string(),
+                root_path: Some(tmp.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        // Columns exist, but no goal card was ever created — matches the
+        // "project exists, nothing to dispatch yet" shape.
+        cards::seed_goal_columns(&pool, &project.id).await.unwrap();
+
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "r25a-no-ready".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: Some(Arc::new(session)),
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("action".to_string(), serde_json::json!("ready"));
+
+        let err = client
+            .handle_goal_advance(Some(args))
+            .await
+            .expect_err("no Ready card for the project must refuse, not escalate blindly");
+        assert!(
+            err.contains("No card_id was given") && err.contains("no Ready goal card"),
+            "the refusal must name what was missing: {err}"
+        );
+        assert!(
+            err.contains("goal_list"),
+            "the refusal must point at goal_list as the way to discover cards: {err}"
+        );
+    }
+
+    /// `check_worker` with no `worker_key` and exactly one In Progress card
+    /// carrying `metadata.worker_key`: resolves to that worker and checks it
+    /// — proven by the SAME probing path an explicit worker_key would take
+    /// (the always-available "permagent" default worker, per R22a's own
+    /// tests, succeeds deterministically).
+    #[tokio::test]
+    async fn check_worker_without_worker_key_resolves_the_single_in_progress_cards_worker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "R25a Check Worker".to_string(),
+                root_path: Some(tmp.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        cards::seed_goal_columns(&pool, &project.id).await.unwrap();
+        let col = cards::get_goal_column(&pool, &project.id, "in_progress")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut meta = serde_json::Map::new();
+        meta.insert("worker_key".to_string(), serde_json::json!("permagent"));
+        cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "In-flight goal".to_string(),
+                description: Some("t".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::Value::Object(meta)),
+            },
+        )
+        .await
+        .unwrap();
+
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "r25a-check-worker".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: Some(Arc::new(session)),
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let result = client
+            .handle_check_worker(None)
+            .await
+            .expect("permagent is always available — the resolved check must succeed");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("permagent"),
+            "the outcome must report on the resolved worker key: {text}"
+        );
+    }
+
+    /// `goal_list` with no arguments returns the seeded card's id, title and
+    /// state for the project matching the session's working directory.
+    #[tokio::test]
+    async fn goal_list_returns_the_seeded_card() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let (_project, card) = setup_project_and_goal_at(
+            &pool,
+            "R25a Goal List",
+            tmp.path(),
+            "ready",
+            "Rename widget-cli",
+        )
+        .await;
+
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "r25a-goal-list".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: Some(Arc::new(session)),
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let result = client
+            .handle_goal_list(None)
+            .await
+            .expect("goal_list must succeed for a resolvable cwd project");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let list = parsed.as_array().expect("goal_list returns a JSON array");
+        assert_eq!(list.len(), 1, "exactly the one seeded card: {text}");
+        assert_eq!(list[0]["id"].as_str(), Some(card.id.as_str()));
+        assert_eq!(list[0]["title"].as_str(), Some("Rename widget-cli"));
+        assert_eq!(list[0]["state"].as_str(), Some("ready"));
     }
 
     #[tokio::test]
