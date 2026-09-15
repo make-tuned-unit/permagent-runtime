@@ -3716,6 +3716,7 @@ mod tests {
     /// Defect M3-3 found (`delegate` was the ONLY path that landed real
     /// work, entirely bypassing the roadmap).
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn a_coordinator_delegate_with_an_active_roadmap_is_restricted_to_non_mutating_tools() {
         let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::User).await;
         let pool = sm.pool_clone().await.unwrap();
@@ -3746,6 +3747,7 @@ mod tests {
     /// No active roadmap (no cards ever attributed to this session) → no
     /// restriction, no note, extensions untouched — "unchanged" per the
     /// brief's own test spec.
+    #[serial_test::serial(receipts_global_registry)]
     #[tokio::test]
     async fn a_coordinator_delegate_with_no_active_roadmap_is_unchanged() {
         let tmp = TempDir::new().unwrap();
@@ -4100,6 +4102,7 @@ mod tests {
     /// spec, the extension SET must stay completely unchanged, not just the
     /// mutating-tools strip: `extensionmanager`/`orchestrator`'s full tool
     /// surface must both survive untouched.
+    #[serial_test::serial(receipts_global_registry)]
     #[tokio::test]
     async fn an_ungated_delegate_leaves_the_extension_set_completely_unchanged() {
         let tmp = TempDir::new().unwrap();
@@ -4169,6 +4172,7 @@ mod tests {
     }
 
     /// A real task must still get through, including a short but specific one.
+    #[serial_test::serial(receipts_global_registry)]
     #[test]
     fn a_real_task_is_delegated() {
         for task in [
@@ -4809,6 +4813,7 @@ You review code."#;
         assert!(result.is_error.unwrap_or(false));
     }
 
+    #[serial_test::serial(receipts_global_registry)]
     #[tokio::test]
     async fn delegate_many_refuses_more_children_than_the_cap() {
         // Resolution happens before any child runs, so a fan-out that is too
@@ -4833,6 +4838,7 @@ You review code."#;
         assert!(err.contains("at most"), "{err}");
     }
 
+    #[serial_test::serial(receipts_global_registry)]
     #[tokio::test]
     async fn delegate_many_refuses_an_empty_fan_out() {
         let client = SummonClient::new(create_test_context()).unwrap();
@@ -4882,6 +4888,7 @@ You review code."#;
         dir
     }
 
+    #[serial_test::serial(receipts_global_registry)]
     #[tokio::test]
     async fn delegate_many_reviewer_mutation_is_detected_and_voids_via_the_shared_helper() {
         let repo = reviewer_git_repo();
@@ -4951,6 +4958,7 @@ You review code."#;
         );
     }
 
+    #[serial_test::serial(receipts_global_registry)]
     #[tokio::test]
     async fn delegate_many_reviewer_with_a_clean_tree_is_not_voided() {
         let repo = reviewer_git_repo();
@@ -4990,6 +4998,7 @@ You review code."#;
         );
     }
 
+    #[serial_test::serial(receipts_global_registry)]
     #[test]
     fn a_child_carries_the_same_routing_knobs_as_a_single_delegate() {
         // The per-child provider/model must survive parsing, because they are
@@ -5056,6 +5065,7 @@ You review code."#;
         assert!(desc.len() <= 43 && desc.ends_with("..."));
     }
 
+    #[serial_test::serial(receipts_global_registry)]
     #[test]
     fn test_validate_delegate_params_rejects_zero_max_turns() {
         let context = create_test_context();
@@ -5070,6 +5080,7 @@ You review code."#;
         assert_eq!(result, Err("'max_turns' must be at least 1".to_string()));
     }
 
+    #[serial_test::serial(receipts_global_registry)]
     #[test]
     fn test_validate_delegate_params_accepts_positive_max_turns() {
         let context = create_test_context();
