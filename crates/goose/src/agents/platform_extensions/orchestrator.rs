@@ -13294,6 +13294,21 @@ async fn drain_dispatched_goals_with(
 
     let timed_out = pending.len() + stalled + requeued.len();
     for (card_id, project_id) in pending.into_values().chain(requeued) {
+        // R31b-b (G28 review, MEDIUM-1): the same "a handler owns this card"
+        // signal the poll loop above already waits on via `next_drain_
+        // action`'s `Wait` branch — this cap-expiry pass predates that check
+        // and re-derives card state fresh, so without this it can race a
+        // still-running, detached completion tracker. `completion_bound` is
+        // the same bound computed once above.
+        if goal_completion_in_flight_within(&card_id, completion_bound) {
+            tracing::debug!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                "cap-expiry force-park pass skipped_in_flight: a completion handler is already \
+                 running"
+            );
+            continue;
+        }
         // Best-effort: `handle_goal_timeout` itself no-ops for a card no
         // longer `in_progress` (raced to a terminal state between the last
         // poll and here), so this never double-parks. A `requeued` card that
@@ -13382,6 +13397,17 @@ pub async fn park_dispatched_goals_now(
         let state = goal_state_for_card(pool, &card_id).await?;
         if TERMINAL.contains(&state) {
             finished += 1;
+        } else if goal_completion_in_flight(&card_id) {
+            // R31b-b (G28 review, MEDIUM-1): same gap as the drain's
+            // cap-expiry pass — this SIGTERM sweep re-derives card state
+            // fresh and calls `handle_goal_timeout` unconditionally, with no
+            // check for a still-running, detached completion tracker. Skip
+            // rather than race it.
+            tracing::debug!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                "SIGTERM park sweep skipped_in_flight: a completion handler is already running"
+            );
         } else {
             let _ = handle_goal_timeout(pool, &card_id, &project_id, 0, grace_deadline).await;
             timed_out += 1;
@@ -13455,17 +13481,26 @@ pub async fn park_dispatched_goals_now(
 /// `salvage_or_park_stranded_ready_goal`'s own direct calls.
 ///
 /// Records ONE `decision_audit` row, `run_end_salvage_sweep goals=<n>
-/// landed=<k>`, when `n > 0`. A run with nothing stranded (every dispatched
-/// goal already Done, or none carries unlanded work) is a true no-op — no
-/// audit row at all.
+/// landed=<k> skipped_in_flight=<m>`, when `n > 0` or `m > 0`. A run with
+/// nothing stranded and nothing skipped (every dispatched goal already
+/// Done, or none carries unlanded work) is a true no-op — no audit row at
+/// all. `m` counts cards this sweep left untouched because a completion
+/// handler was already mid-flight for them (R31b-b, G28 review MEDIUM-1) —
+/// see `goal_completion_in_flight_within`.
 pub async fn run_end_salvage_sweep(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     coordinator_session_id: &str,
 ) -> Result<(usize, usize), String> {
     let grace_deadline = Some(std::time::Instant::now() + SALVAGE_TIME_BOX);
+    // R31b-b (G28 review, MEDIUM-1): the same idiom `drain_dispatched_goals_
+    // with` uses for `completion_bound` — clamp the configured in-flight
+    // staleness bound to this sweep's own shared time-box, since the sweep
+    // has no separate `cap` of its own to clamp against.
+    let completion_bound = headless_completion_inflight_from_env().min(SALVAGE_TIME_BOX);
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut attempted = 0usize;
     let mut landed = 0usize;
+    let mut skipped_in_flight = 0usize;
 
     for session_id in descendant_session_ids(pool, coordinator_session_id).await? {
         let Some((card_id, _project_id)) = goal_card_for_worker_session(pool, &session_id).await?
@@ -13486,6 +13521,26 @@ pub async fn run_end_salvage_sweep(
         // (Review/Held/Failed/Cancelled/Triage) — leave it exactly where it
         // is.
         if !matches!(state.as_deref(), Some("in_progress") | Some("ready")) {
+            continue;
+        }
+
+        // R31b-b (G28 review, MEDIUM-1): a completion handler is already
+        // mid-flight for this card — the exact "a handler owns this card,
+        // wait, full stop" signal `next_drain_action`'s `Wait` branch
+        // treats as authoritative. This sweep runs after the drain has
+        // stood down, so it cannot wait — but it must still not race a
+        // still-running, detached completion tracker with a second,
+        // concurrent `maybe_salvage_committed_work` call over the same
+        // worktree. Skip, don't attempt.
+        if goal_completion_in_flight_within(&card.id, completion_bound) {
+            skipped_in_flight += 1;
+            tracing::debug!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "run-end salvage sweep skipped_in_flight: a completion handler is already \
+                 running for '{}'",
+                card.title
+            );
             continue;
         }
 
@@ -13552,8 +13607,15 @@ pub async fn run_end_salvage_sweep(
         }
     }
 
-    if attempted > 0 {
-        record_run_end_salvage_sweep_audit(pool, coordinator_session_id, attempted, landed).await;
+    if attempted > 0 || skipped_in_flight > 0 {
+        record_run_end_salvage_sweep_audit(
+            pool,
+            coordinator_session_id,
+            attempted,
+            landed,
+            skipped_in_flight,
+        )
+        .await;
     }
 
     Ok((attempted, landed))
@@ -13569,8 +13631,11 @@ async fn record_run_end_salvage_sweep_audit(
     coordinator_session_id: &str,
     goals: usize,
     landed: usize,
+    skipped_in_flight: usize,
 ) {
-    let outcome = format!("run_end_salvage_sweep goals={goals} landed={landed}");
+    let outcome = format!(
+        "run_end_salvage_sweep goals={goals} landed={landed} skipped_in_flight={skipped_in_flight}"
+    );
     tracing::info!(
         target: "permagentd::brain",
         coordinator_session_id,
@@ -16047,6 +16112,13 @@ async fn maybe_salvage_committed_work(
     // G25 MED: only past all four guards above is there actually anything
     // worth salvaging — from here on, this goal gets AT MOST ONE salvage
     // attempt, ever.
+    // R31b-b (G28 review, MEDIUM-1): `persist_card_meta`'s CAS fails when the
+    // card's metadata changed since guard 1's read above — most plausibly a
+    // concurrent caller (the detached completion tracker) already mid-flight
+    // on this same card. Bail rather than proceed on that stale read: this
+    // closes the "both pass guard 1, both run verify against the same
+    // worktree" window without moving the stamp earlier and burning the
+    // one-shot budget on every cheap bail-out above it.
     if let Err(e) = persist_card_meta(pool, &card.id, |m| {
         let count = m
             .get(SALVAGE_ATTEMPTED_METADATA_KEY)
@@ -16059,11 +16131,9 @@ async fn maybe_salvage_committed_work(
     })
     .await
     {
-        tracing::warn!(
-            target: "permagentd::brain",
-            goal_id = %card.id,
-            "could not stamp the salvage_attempted receipt: {e}"
-        );
+        let note = format!("could not stamp the salvage_attempted receipt: {e}");
+        tracing::warn!(target: "permagentd::brain", goal_id = %card.id, "{note}");
+        return not_salvaged(note);
     }
 
     match worktree_has_uncommitted_work(worktree_path, &baseline).await {
@@ -27481,6 +27551,109 @@ mod tests {
         );
     }
 
+    /// R31b-b (G28 review, MEDIUM-1): the cap-expiry force-park pass at the
+    /// end of `drain_dispatched_goals_with` (`pending.into_values().chain(
+    /// requeued)`) predates the per-poll `next_drain_action` check and
+    /// re-derives card state fresh — before this fix it called `handle_goal_
+    /// timeout` unconditionally, racing a still-running completion handler
+    /// exactly like the sweep did. The card's receipt is deliberately never
+    /// finalized, so every poll already waits on `!receipt_terminal` alone;
+    /// the completion mark begins mid-drain (iteration 5 of ~10, via the
+    /// hook) so it is still fresh — well inside the shared `completion_
+    /// bound` — when the cap-expiry pass runs, proving the skip fires from
+    /// a genuinely in-flight mark, not merely an unexpired one.
+    #[tokio::test]
+    async fn drain_cap_expiry_force_park_pass_skips_a_goal_whose_completion_is_in_flight() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: wedged".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+        // Receipt is intentionally never finalized: every poll already waits
+        // on `!receipt_terminal` alone, so the card stays `pending` all the
+        // way to the cap regardless of the completion mark's timing.
+        let claim: Arc<tokio::sync::Mutex<Option<CompletionInFlight>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+        let card_id_hook = card.id.clone();
+        let claim_hook = Arc::clone(&claim);
+        let mut iteration = 0u32;
+        let hook: DrainIterationHook = Box::new(move || {
+            iteration += 1;
+            let begin_now = iteration == 5;
+            let card_id_hook = card_id_hook.clone();
+            let claim_hook = Arc::clone(&claim_hook);
+            Box::pin(async move {
+                if begin_now {
+                    *claim_hook.lock().await = Some(CompletionInFlight::begin(&card_id_hook));
+                }
+            })
+        });
+
+        let cap = std::time::Duration::from_millis(300);
+        let summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            cap,
+            std::time::Duration::from_millis(30),
+            |_, _| {},
+            Some(hook),
+            DrainRedispatch {
+                dispatch: None,
+                max_redispatch: 0,
+                sweep_headroom: std::time::Duration::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            summary,
+            DrainSummary {
+                finished: 0,
+                timed_out: 1
+            },
+            "counted exactly as the pre-fix drain already counted a cap-expired wait"
+        );
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "an in-flight goal must never be force-parked by the cap-expiry pass"
+        );
+        assert!(
+            updated.metadata_json.get("salvage_attempted").is_none(),
+            "handle_goal_timeout (and the salvage attempt inside it) must never run for a \
+             goal whose completion handler is still in flight"
+        );
+
+        drop(claim);
+    }
+
     /// Y6 (ii), durable. Lane A13 fx10 / A12's runner-up: goal 2 of a chain
     /// never dispatches because nothing inside the drain ever asks
     /// `eligible_ready_goals` again. Pre-fix repro: pass
@@ -28170,6 +28343,71 @@ mod tests {
             "a running goal must be parked immediately on a shutdown signal, not left \
              in_progress"
         );
+    }
+
+    /// R31b-b (G28 review, MEDIUM-1): `park_dispatched_goals_now` re-derives
+    /// card state fresh and, before this fix, called `handle_goal_timeout`
+    /// unconditionally for every non-terminal card — the same gap as the
+    /// drain's cap-expiry pass, just reached over SIGTERM instead of a cap.
+    /// A card whose completion handler is already in flight must be left
+    /// alone rather than force-parked out from under it.
+    #[tokio::test]
+    async fn park_dispatched_goals_now_skips_a_goal_whose_completion_is_in_flight() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: wedged".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "in_progress", 0).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+
+        let guard = CompletionInFlight::begin(&card.id);
+        let summary = park_dispatched_goals_now(&pool, &coordinator.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            summary,
+            DrainSummary {
+                finished: 0,
+                timed_out: 0
+            },
+            "an in-flight goal must be neither finished nor force-parked by this sweep"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "the SIGTERM park sweep must never force-park a goal whose completion handler is \
+             still running"
+        );
+        assert!(updated.metadata_json.get("salvage_attempted").is_none());
+
+        drop(guard);
     }
 
     #[tokio::test]
@@ -36627,7 +36865,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             audited,
-            vec!["run_end_salvage_sweep goals=1 landed=1".to_string()],
+            vec!["run_end_salvage_sweep goals=1 landed=1 skipped_in_flight=0".to_string()],
             "the sweep must record exactly one summary audit row naming both counts"
         );
     }
@@ -36776,6 +37014,115 @@ mod tests {
         assert_eq!(
             audit_rows, 1,
             "only the first, genuinely-attempted call may record a summary audit row"
+        );
+    }
+
+    /// (d) R31b-b (G28 review, MEDIUM-1): a Ready goal whose completion
+    /// handler is already mid-flight (the detached `tokio::spawn`'d
+    /// completion tracker, simulated here with the same [`CompletionInFlight`]
+    /// guard that tracker holds) must be skipped, not attempted — racing it
+    /// with a second, concurrent `maybe_salvage_committed_work` call over the
+    /// same worktree is exactly the shape this fix closes. Once the mark
+    /// clears, the SAME goal is fair game again: the sweep proceeds and lands
+    /// it, proving the skip is about the in-flight mark, not something wrong
+    /// with the goal itself.
+    #[tokio::test]
+    async fn run_end_salvage_sweep_skips_a_goal_whose_completion_is_in_flight() {
+        let pool = test_pool().await;
+        let coordinator_session_id = format!("r31b-coord-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&coordinator_session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (dir, baseline, head) = r20b_worktree_with_committed_fix("r31b-sweep-inflight");
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": head,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let worker_session_id = format!("r31b-worker-{}", uuid::Uuid::new_v4());
+        r31b_attach_worker_session(
+            &pool,
+            &card.id,
+            &coordinator_session_id,
+            &worker_session_id,
+            dir.path(),
+        )
+        .await;
+
+        let guard = CompletionInFlight::begin(&card.id);
+        let skipped = run_end_salvage_sweep(&pool, &coordinator_session_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            skipped,
+            (0, 0),
+            "a card whose completion handler is in flight must never be attempted"
+        );
+
+        let untouched = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &untouched.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "an in-flight goal must never be claimed by the sweep"
+        );
+        assert!(untouched.metadata_json.get("salvage_attempted").is_none());
+
+        let audited_while_in_flight: Vec<String> = sqlx::query_scalar(
+            "SELECT outcome FROM decision_audit WHERE decision_id = ? ORDER BY seq",
+        )
+        .bind(format!("run-end-sweep:{coordinator_session_id}"))
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            audited_while_in_flight,
+            vec!["run_end_salvage_sweep goals=0 landed=0 skipped_in_flight=1".to_string()],
+            "the skip must still be counted and audited even though nothing was attempted"
+        );
+
+        drop(guard);
+        let proceeds = run_end_salvage_sweep(&pool, &coordinator_session_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            proceeds,
+            (1, 1),
+            "once the completion handler is no longer in flight, the same goal is salvaged \
+             normally"
+        );
+
+        let audited_after: Vec<String> = sqlx::query_scalar(
+            "SELECT outcome FROM decision_audit WHERE decision_id = ? ORDER BY seq",
+        )
+        .bind(format!("run-end-sweep:{coordinator_session_id}"))
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            audited_after,
+            vec![
+                "run_end_salvage_sweep goals=0 landed=0 skipped_in_flight=1".to_string(),
+                "run_end_salvage_sweep goals=1 landed=1 skipped_in_flight=0".to_string(),
+            ],
+            "the second call's own audit row must show the goal genuinely attempted and landed"
         );
     }
 }
