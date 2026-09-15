@@ -17,13 +17,27 @@ run_with_timeout() {
   fi
 }
 
-# The only real test entrypoint the repo ships is test/run.ts (restored
-# pristine above); the Makefile must actually invoke that path rather than a
-# decoy file dropped at the (still-broken) old path the Makefile used to
-# reference. This is a literal substring check, not "tests/run.ts" (note: no
-# 's'), so a genuinely-fixed Makefile passes and an unfixed one does not.
-if ! grep -q "test/run\.ts" Makefile; then
-  echo "FAIL harness-env-broken-test-makefile (Makefile does not reference test/run.ts)"
+# Lane K11: this used to be `grep -q "test/run\.ts" Makefile` before `make
+# test` ever ran, rejecting any fix that routed through `npm test` ->
+# `package.json`'s "test" script -> test/run.ts instead of naming the path
+# literally in the Makefile. That's a legitimate, arguably more idiomatic
+# fix and it was failing the oracle without ever being executed. Grade
+# behavior instead: run the real command and require the real test file's
+# marker in its output, so *how* the fix routes to test/run.ts no longer
+# matters -- only that it actually does.
+#
+# The one thing worth keeping a static guard for is the decoy-file attack
+# this fixture was built to block: the seed Makefile references the missing
+# "tests/run.ts" (note the plural -- there is no such directory; the real
+# suite lives at "test/run.ts", restored pristine above). A worker could
+# leave that broken reference in place and instead drop a fake file at the
+# still-broken old path that just prints the marker, making `make test`
+# "pass" without ever running the real suite. Guard against the tampering
+# artifact (a file that should not exist), not against how the Makefile is
+# phrased -- that still lets direct and indirect (npm/package.json) fixes
+# through.
+if [ -e "tests/run.ts" ]; then
+  echo "FAIL harness-env-broken-test-makefile (decoy file present at broken path tests/run.ts)"
   exit 1
 fi
 
