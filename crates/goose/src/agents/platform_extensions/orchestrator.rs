@@ -1466,6 +1466,30 @@ pub(crate) fn ground_roadmap_goals(
             receipts.push(format!("goal '{}': {}", goal.title, note));
         }
         goal.acceptance_criteria = grounded_criteria;
+
+        // R43b (A38 miss 1): grounding-against-this-repo above says nothing
+        // about whether a criterion is BEHAVIOURAL -- run that check too, so
+        // a goal whose every criterion merely claims code exists gets one
+        // real, quoted-from-the-task-text behavioural criterion before a
+        // human ever sees the proposal.
+        let (behavioural_added, existence_only) = ground_acceptance_criteria_behaviourally(
+            &mut goal.acceptance_criteria,
+            &goal.description,
+        );
+        if behavioural_added {
+            receipts.push(format!(
+                "goal '{}': acceptance criteria were all existence-only (assert code/artifact \
+                 presence, never an observable behavior) — appended a behavioural criterion \
+                 derived from the task description (ac_grounding behavioural_added=1)",
+                goal.title
+            ));
+        } else if existence_only {
+            receipts.push(format!(
+                "goal '{}': acceptance criteria are all existence-only and no behavioural check \
+                 could be derived from the task description — tag {} for reviewer (R43b)",
+                goal.title, AC_EXISTENCE_ONLY_METADATA_KEY
+            ));
+        }
     }
 
     (goals, receipts)
@@ -1827,6 +1851,273 @@ fn rewrite_ungrounded_named_criteria(
     (rewritten, notes)
 }
 
+// ── R43b: acceptance criteria must be behavioural, not existence-only ────
+//
+// A38 analysis, miss 1 (`harness-cli-argparse-log-filter`): the coordinator's
+// own `create_roadmap` call wrote seven acceptance criteria, every one of
+// the shape "logfilter/cli.py contains validation that rejects unknown
+// --level values with exit code 2" -- a claim that some code EXISTS in the
+// file, never a claim about what running it actually produces. R21b/R21c
+// above happily accept criteria like this: `criterion_names_a_check_or_file`
+// sees the `.py` extension and calls it "names a file", and
+// `is_grounded_criterion` confirms `cli.py` really exists in the repo -- so
+// nothing in either lane ever objects. The worker's own verify call found a
+// genuine (non-vacuous) pass against exactly that AC shape: it added
+// validation code, which is all any criterion here required, while the
+// actual bug (`filter_lines`'s `lvl != level` compares the RAW,
+// un-lowercased log level against the now-lowercased `--level` flag) was
+// never exercised, because no criterion ever said what a real invocation
+// should print or exit with. Contrast the SAME task's passing runs (m1/m2,
+// `oracle: pass`): every AC named a concrete input/command AND an
+// observable outcome -- "logfilter/cli.py rejects unknown --level values
+// with exit code 2 and a usage-error message on stderr", "`python -m
+// logfilter --level BOGUS sample_logs/app.log` exits with code 2".
+//
+// This pass grounds a criterion against what it CLAIMS, not (as R21b/R21c
+// do) against what this repo can mechanically check: a bare existence claim
+// ("X exists", "the code path for Y is present/reachable", "function Z is
+// defined", "logfilter/cli.py CONTAINS validation that ...") is accepted by
+// any partial or irrelevant fix, no matter how specific-sounding the rest
+// of the sentence is (an exit code mentioned inside a "contains ..." claim
+// does not make it behavioural -- that is the exact A38 miss). Run
+// alongside, never instead of, R21b/R21c: a criterion can be both grounded
+// (names a real file/check) and existence-only (never says what running it
+// produces) at the same time, which is precisely what happened here.
+
+/// Whether an acceptance criterion reads as a claim about what running
+/// something PRODUCES (behavioural) or merely that some code/artifact
+/// EXISTS (existence-only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcKind {
+    Behavioural,
+    ExistenceOnly,
+}
+
+/// R43b: the literal existence-claim phrasings from the task brief ("X
+/// exists", "the code path for Y is present/reachable", "function Z is
+/// defined", "file is updated") plus the generic "`<subject>` CONTAINS
+/// `<code artifact>` THAT ..." shape the real A38 miss-1 criteria used
+/// ("logfilter/cli.py contains validation that rejects ... with exit code
+/// 2") -- checked FIRST, and wins over any behavioural signal below, since
+/// a mention of an exit code inside a "contains ... that" claim is still,
+/// at its core, a claim that code exists rather than that anyone ran it and
+/// observed that exit code.
+fn criterion_reads_as_existence_claim(lower: &str) -> bool {
+    const EXISTENCE_PHRASES: &[&str] = &["code path", "code paths"];
+    if EXISTENCE_PHRASES.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+    // NOTE: `concat!`, not a `\`-continued raw string -- a raw string
+    // literal has no escape processing at all, so a `\` before a newline
+    // would be captured as a literal backslash-then-whitespace in the
+    // pattern instead of being elided, silently breaking the regex (see
+    // `extract_symbol_definition`'s own note above).
+    regex::Regex::new(concat!(
+        r"(?i)\bexists?\b",
+        r"|\bis\s+(?:defined|present|implemented|updated|reachable)\b",
+        r"|\bare\s+(?:defined|present|implemented|updated|reachable)\b",
+        r"|\bcontains?\b[^.]*\bthat\b",
+    ))
+    .map(|re| re.is_match(lower))
+    .unwrap_or(false)
+}
+
+/// R43b: does `criterion` name a concrete input or command to run --
+/// backtick-quoted text, a CLI flag (`--level`), a call expression
+/// (`f(args)`), or the word "running"? Half of the behavioural signal; see
+/// [`criterion_asserts_an_observable_outcome`] for the other half.
+fn criterion_names_an_input_or_command(criterion: &str) -> bool {
+    if criterion.contains('`') {
+        return true;
+    }
+    if regex::Regex::new(r"--[A-Za-z][\w-]*")
+        .map(|re| re.is_match(criterion))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if regex::Regex::new(r"[A-Za-z_][\w.]*\([^()]*\)")
+        .map(|re| re.is_match(criterion))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    criterion.to_lowercase().contains("running ")
+}
+
+/// R43b: does `criterion` assert something OBSERVABLE about running that
+/// input/command -- an exit code, a stdout/stderr claim, or a
+/// returns/prints/outputs/produces assertion?
+fn criterion_asserts_an_observable_outcome(lower: &str) -> bool {
+    const OUTCOME_PHRASES: &[&str] = &[
+        "exit code",
+        "exits with",
+        "exit 0",
+        "exit 1",
+        "exit 2",
+        "returns",
+        "return value",
+        "prints",
+        "outputs",
+        "produces",
+        "stderr",
+        "stdout",
+    ];
+    if OUTCOME_PHRASES.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+    regex::Regex::new(r"\bexits?\s+\d\b")
+        .map(|re| re.is_match(lower))
+        .unwrap_or(false)
+}
+
+/// R43b's classifier: [`AcKind::ExistenceOnly`] when `criterion` reads as an
+/// existence claim (checked first, always wins); [`AcKind::Behavioural`]
+/// when it names a concrete input/command AND an observable outcome, or
+/// resolves to R21c's `ProbeShape::Command` (the one probe shape that is
+/// itself behavioural -- `FileExists`/`SymbolDefined` are existence checks,
+/// so they are deliberately NOT treated as behavioural here); everything
+/// else defaults to [`AcKind::ExistenceOnly`] -- free prose with no named
+/// input/outcome is not evidence anyone will actually run anything.
+fn classify_acceptance_criterion(criterion: &str) -> AcKind {
+    let lower = criterion.to_lowercase();
+    if criterion_reads_as_existence_claim(&lower) {
+        return AcKind::ExistenceOnly;
+    }
+    if criterion_names_an_input_or_command(criterion)
+        && criterion_asserts_an_observable_outcome(&lower)
+    {
+        return AcKind::Behavioural;
+    }
+    if matches!(
+        classify_probe_shape(criterion),
+        Some(ProbeShape::Command { .. })
+    ) {
+        return AcKind::Behavioural;
+    }
+    AcKind::ExistenceOnly
+}
+
+/// True when every criterion in `criteria` is existence-only -- the shape
+/// that let A38 miss-1 land. Empty criteria are never flagged: there is
+/// nothing to strengthen, and every other R43b entry point already treats
+/// "no acceptance criteria at all" as a separate, pre-existing condition.
+fn all_acceptance_criteria_existence_only(criteria: &[String]) -> bool {
+    !criteria.is_empty()
+        && criteria
+            .iter()
+            .all(|c| classify_acceptance_criterion(c) == AcKind::ExistenceOnly)
+}
+
+/// R43b: does `description` (a goal's own task text) name a concrete
+/// input/command AND an observable outcome word -- the same two-part
+/// behavioural signal [`classify_acceptance_criterion`] looks for in a
+/// criterion, applied here to the TASK TEXT instead, so a derived criterion
+/// is only ever attempted when the task itself actually describes real
+/// behavior to check.
+fn task_text_names_input_and_outcome(lower: &str) -> bool {
+    let has_input = lower.contains('`')
+        || regex::Regex::new(r"--[a-z][\w-]*")
+            .map(|re| re.is_match(lower))
+            .unwrap_or(false);
+    if !has_input {
+        return false;
+    }
+    const OUTCOME_WORDS: &[&str] = &[
+        "print", "return", "exit", "filter", "accept", "reject", "output", "produce",
+    ];
+    OUTCOME_WORDS.iter().any(|w| lower.contains(w))
+}
+
+/// R43b: does `description` describe an observable behavior at all -- an
+/// explicit runnable command, a named test file, or (the general case) a
+/// concrete input plus an outcome word ([`task_text_names_input_and_outcome`])?
+/// Gates whether [`derive_behavioural_ac_from_task_text`] is even attempted;
+/// `false` means the task text itself gives nothing to derive from, so the
+/// goal is left tagged `ac_existence_only` for a human instead of inventing
+/// something the task never said.
+fn task_text_describes_observable_behaviour(description: &str) -> bool {
+    if extract_quoted_command(description).is_some() {
+        return true;
+    }
+    if regex::Regex::new(r"(?i)\btest[\w./-]*\.\w+\b")
+        .map(|re| re.is_match(description))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    task_text_names_input_and_outcome(&description.to_lowercase())
+}
+
+/// R43b: of every "sentence" in `description` (split on `.`/newlines), the
+/// one with the most backtick-quoted spans -- a cheap proxy for "the most
+/// concrete one" that lets [`derive_behavioural_ac_from_task_text`] quote
+/// the task's OWN words rather than paraphrasing them.
+fn most_concrete_sentence(description: &str) -> Option<String> {
+    description
+        .split(['.', '\n'])
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .max_by_key(|s| s.matches('`').count())
+        .map(|s| s.to_string())
+}
+
+/// R43b's derivation step: when the task's own description already
+/// describes an observable behavior ([`task_text_describes_observable_behaviour`]),
+/// produce ONE behavioural acceptance criterion quoting the task's own
+/// words -- never invented, same discipline as R21b/R21c's "never invent a
+/// check". `None` when the task text gives nothing concrete to quote, so
+/// the caller can fall back to tagging the goal for human review instead.
+fn derive_behavioural_ac_from_task_text(description: &str) -> Option<String> {
+    if let Some(cmd) = extract_quoted_command(description) {
+        return Some(format!(
+            "running `{cmd}` produces the behavior the task describes, not merely that \
+             supporting code was added (derived from the task description, R43b)"
+        ));
+    }
+    if !task_text_describes_observable_behaviour(description) {
+        return None;
+    }
+    let sentence = most_concrete_sentence(description)?;
+    Some(format!(
+        "actually invoke the change and check its real exit code/output against the task's own \
+         example, not just that supporting code was added -- \"{sentence}\" (derived from the \
+         task description, R43b)"
+    ))
+}
+
+/// Card metadata key set when a goal's acceptance criteria are ALL
+/// existence-only and [`derive_behavioural_ac_from_task_text`] could not
+/// derive anything from the task text either -- `pub` (not `pub(crate)`) so
+/// `goose-server::verification` can read the SAME key name this crate
+/// writes, rather than duplicating the literal string across the crate
+/// boundary and risking the two drifting apart.
+pub const AC_EXISTENCE_ONLY_METADATA_KEY: &str = "ac_existence_only";
+
+/// R43b's entry point, run alongside R21b/R21c's own grounding: when every
+/// criterion in `criteria` is existence-only, either append one derived
+/// behavioural criterion (quoting the task's own description) or, when
+/// nothing could be derived, leave `criteria` untouched. Returns
+/// `(behavioural_added, existence_only_remaining)` -- `existence_only_remaining`
+/// is the caller's cue to set [`AC_EXISTENCE_ONLY_METADATA_KEY`] on the card.
+/// A no-op (`(false, false)`) whenever at least one criterion is already
+/// behavioural, so this never re-flags a goal R43b already fixed.
+fn ground_acceptance_criteria_behaviourally(
+    criteria: &mut Vec<String>,
+    description: &str,
+) -> (bool, bool) {
+    if !all_acceptance_criteria_existence_only(criteria) {
+        return (false, false);
+    }
+    match derive_behavioural_ac_from_task_text(description) {
+        Some(derived) => {
+            criteria.push(derived);
+            (true, false)
+        }
+        None => (false, true),
+    }
+}
+
 /// Project metadata key recording the last `create_roadmap` proposal hash
 /// that failed R21b AC validation, so a second call for the SAME exact
 /// proposal is recognized as a retry (rewrite-and-accept) while a brand new
@@ -1913,6 +2204,7 @@ async fn validate_roadmap_ac_or_rewrite(
         // Clear any stale retry marker left by a DIFFERENT, earlier
         // proposal for this project that failed and was never retried.
         clear_roadmap_ac_validation_state(pool, project).await;
+        apply_behavioural_ac_grounding(goals, &mut ac_rewrite_notes);
         return Ok(ac_rewrite_notes);
     }
     if !roadmap_ac_validation_previously_failed(project, proposal_hash) {
@@ -1934,7 +2226,42 @@ async fn validate_roadmap_ac_or_rewrite(
         }
     }
     clear_roadmap_ac_validation_state(pool, project).await;
+    apply_behavioural_ac_grounding(goals, &mut ac_rewrite_notes);
     Ok(ac_rewrite_notes)
+}
+
+/// R43b's `create_roadmap`-time entry point: run on EVERY goal regardless
+/// of whether R21b's own check above found anything to reject/rewrite --
+/// R21b only asks "does this criterion name something real in this repo",
+/// never "is this criterion behavioural", so a goal like A38 miss 1's
+/// (every criterion names a real file, `is_grounded_criterion` says yes,
+/// R21b never objects) would otherwise sail straight through. Notes are
+/// merged into the SAME `ac_rewrite_notes` map R21b's own rewrite
+/// populates, so both corrections surface together in the card's
+/// `ac_rewritten_notes` metadata and the `create_roadmap` response text.
+fn apply_behavioural_ac_grounding(
+    goals: &mut [goal_state::ProposedGoal],
+    ac_rewrite_notes: &mut std::collections::BTreeMap<usize, Vec<String>>,
+) {
+    for (idx, goal) in goals.iter_mut().enumerate() {
+        let (behavioural_added, existence_only) = ground_acceptance_criteria_behaviourally(
+            &mut goal.acceptance_criteria,
+            &goal.description,
+        );
+        if behavioural_added {
+            ac_rewrite_notes.entry(idx).or_default().push(
+                "acceptance criteria were all existence-only, appended a behavioural criterion \
+                 derived from the task description (ac_grounding behavioural_added=1)"
+                    .to_string(),
+            );
+        } else if existence_only {
+            ac_rewrite_notes.entry(idx).or_default().push(format!(
+                "acceptance criteria are all existence-only and no behavioural check could be \
+                 derived from the task description — tagged {} for reviewer (R43b)",
+                AC_EXISTENCE_ONLY_METADATA_KEY
+            ));
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -2194,6 +2521,20 @@ async fn materialize_roadmap_transaction_with_budget(
             meta.insert(
                 "acceptance_criteria".to_string(),
                 serde_json::json!(g.acceptance_criteria),
+            );
+        }
+        // R43b (A38 miss 1): recomputed fresh from `g.acceptance_criteria`
+        // AS MATERIALIZED (after `apply_behavioural_ac_grounding` above has
+        // already had its chance to append a derived behavioural criterion)
+        // -- so this is naturally `false` whenever that derivation
+        // succeeded, and only ever `true` when every criterion is still
+        // existence-only AND the task text gave nothing to derive from. Read
+        // by the independent reviewer (`goose-server::verification`) to
+        // require an explicit behavioural check before it may approve.
+        if all_acceptance_criteria_existence_only(&g.acceptance_criteria) {
+            meta.insert(
+                AC_EXISTENCE_ONLY_METADATA_KEY.to_string(),
+                serde_json::json!(true),
             );
         }
         // Lane R21a (A21 Q1): the ONE place a goal's read-only intent is ever
@@ -8071,16 +8412,19 @@ impl OrchestratorClient {
             ""
         };
 
-        // R21b: this exact proposal already failed AC validation once, so
-        // the ungrounded criteria above were rewritten rather than rejected
-        // a second time — say so plainly, in addition to the per-card
-        // `ac_rewritten` metadata, so the coordinator's own turn shows the
-        // correction instead of it only being discoverable later.
+        // R21b/R43b: either this exact proposal already failed AC validation
+        // once (R21b rewrote an ungrounded criterion instead of rejecting a
+        // second time) or a goal's acceptance criteria were all
+        // existence-only and R43b strengthened/flagged them — say so
+        // plainly, in addition to the per-card `ac_rewritten` metadata, so
+        // the coordinator's own turn shows the correction instead of it
+        // only being discoverable later.
         let ac_rewrite_notice = if ac_rewrite_notes.is_empty() {
             String::new()
         } else {
-            let mut notice = "\n\nAcceptance criteria corrected on this retry (R21b — never \
-                 invented, always grounded in this repo's own detected checks):\n"
+            let mut notice = "\n\nAcceptance criteria corrected on create_roadmap (R21b/R43b — \
+                 never invented, always grounded in this repo's own detected checks or the \
+                 task's own text):\n"
                 .to_string();
             for notes in ac_rewrite_notes.values() {
                 for note in notes {
@@ -34342,6 +34686,237 @@ mod tests {
              run `python3 -c 'import fizzbuzz'`"
         );
         assert_eq!(notes.len(), 1);
+    }
+
+    // ── R43b: acceptance criteria must be behavioural, not existence-only ──
+
+    /// The literal A38 miss-1 shape (`harness-cli-argparse-log-filter`,
+    /// `dschat-m36/m3-runs`): every one of the seven real ACs the
+    /// coordinator wrote for the failing run. Every one names an exit code
+    /// AND a file, yet all seven are existence-only -- "contains validation
+    /// that" is a claim about what the file HAS, never about what running
+    /// it produces. This is the exact defect R43b exists to catch.
+    fn a38_miss1_existence_only_criteria() -> Vec<String> {
+        vec![
+            "logfilter/cli.py contains validation that rejects unknown --level values with exit code 2".to_string(),
+            "logfilter/cli.py contains validation that makes --level matching case-insensitive (accepting debug/info/warn/error in any case)".to_string(),
+            "logfilter/cli.py contains validation that rejects unparseable --since dates with exit code 2".to_string(),
+            "logfilter/cli.py contains validation that rejects --since combined with --last as mutually exclusive with exit code 2".to_string(),
+            "logfilter/cli.py contains validation that rejects --last values that are zero or negative with exit code 2".to_string(),
+            "logfilter/cli.py contains error handling that reports missing or unreadable log files to stderr with exit code 1".to_string(),
+            "logfilter/cli.py contains exit(0) on successful completion".to_string(),
+        ]
+    }
+
+    /// The task's own `harness-cli-argparse-log-filter` prompt
+    /// (`tasks-m30/harness-cli-argparse-log-filter/task.yaml`), verbatim --
+    /// used to prove R43b's derivation actually quotes the fixture's own
+    /// text rather than a hand-picked example.
+    const LOGFILTER_TASK_PROMPT: &str = "`logfilter` (see README.md for the intended behavior) \
+         doesn't actually enforce most of what it documents: bad `--since` dates and unknown \
+         `--level` values are silently ignored instead of rejected, `--level` only matches log \
+         lines with the exact same case, `--since` and `--last` can be given together with \
+         confusing results, `--last 0` or a negative `--last` doesn't get rejected, and a \
+         missing log file produces no error and no output at all instead of a clear failure. \
+         Bring the implementation in line with the documented behavior, including exit codes.";
+
+    #[test]
+    fn classify_acceptance_criterion_flags_the_a38_miss1_shape_as_existence_only() {
+        for criterion in a38_miss1_existence_only_criteria() {
+            assert_eq!(
+                classify_acceptance_criterion(&criterion),
+                AcKind::ExistenceOnly,
+                "expected existence-only: {criterion}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_acceptance_criterion_flags_the_task_briefs_canonical_existence_phrasings() {
+        for criterion in [
+            "logfilter/cli.py exists",
+            "the code path for --level validation is present",
+            "the fizzbuzz function is defined in fizzbuzz.py",
+            "README.md is updated",
+        ] {
+            assert_eq!(
+                classify_acceptance_criterion(criterion),
+                AcKind::ExistenceOnly,
+                "expected existence-only: {criterion}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_acceptance_criterion_accepts_the_a38_passing_runs_shape() {
+        // m1 (`dschat-m36/m1-runs`, `oracle: pass`) — names the flag AND an
+        // observable exit code/stderr claim, no "contains ... that" hedge.
+        assert_eq!(
+            classify_acceptance_criterion(
+                "logfilter/cli.py rejects unknown --level values with exit code 2 and a \
+                 usage-error message on stderr"
+            ),
+            AcKind::Behavioural
+        );
+        // m2 (`dschat-m36/m2-runs`, `oracle: pass`) — a literal invocation.
+        assert_eq!(
+            classify_acceptance_criterion(
+                "`python -m logfilter --level BOGUS sample_logs/app.log` exits with code 2"
+            ),
+            AcKind::Behavioural
+        );
+    }
+
+    #[test]
+    fn classify_acceptance_criterion_accepts_a_call_returns_shape() {
+        assert_eq!(
+            classify_acceptance_criterion("fizzbuzz(3) returns 'Fizz'"),
+            AcKind::Behavioural
+        );
+    }
+
+    #[test]
+    fn classify_acceptance_criterion_matches_probe_command_shape_without_backticks_or_flags() {
+        // No backtick, no `--flag`, no call expression -- only reachable
+        // through the `ProbeShape::Command` fallback branch.
+        assert_eq!(
+            classify_acceptance_criterion("verify with \"pytest -k thing\""),
+            AcKind::Behavioural
+        );
+    }
+
+    #[test]
+    fn classify_acceptance_criterion_defaults_free_prose_to_existence_only() {
+        assert_eq!(
+            classify_acceptance_criterion("the error message is friendly"),
+            AcKind::ExistenceOnly
+        );
+    }
+
+    #[test]
+    fn all_acceptance_criteria_existence_only_is_true_for_a38_miss1_and_false_when_mixed() {
+        assert!(all_acceptance_criteria_existence_only(
+            &a38_miss1_existence_only_criteria()
+        ));
+
+        let mut mixed = a38_miss1_existence_only_criteria();
+        mixed.push(
+            "`python -m logfilter --level BOGUS sample_logs/app.log` exits with code 2".to_string(),
+        );
+        assert!(!all_acceptance_criteria_existence_only(&mixed));
+
+        assert!(!all_acceptance_criteria_existence_only(&[]));
+    }
+
+    #[test]
+    fn derive_behavioural_ac_from_task_text_quotes_the_logfilter_fixtures_own_example() {
+        let derived = derive_behavioural_ac_from_task_text(LOGFILTER_TASK_PROMPT)
+            .expect("the fixture's own prompt names --level/--since/--last and exit codes");
+        // Quotes the task's own text, not an invented example.
+        assert!(
+            derived.contains("--level")
+                || derived.contains("--since")
+                || derived.contains("--last"),
+            "expected the derived AC to quote the task's own flags: {derived}"
+        );
+        assert!(
+            derived.contains("exit codes") || derived.contains("exit code"),
+            "expected the derived AC to reference the task's own outcome wording: {derived}"
+        );
+        // The derived criterion must itself classify as behavioural -- R43b
+        // must never hand back another existence-only criterion.
+        assert_eq!(
+            classify_acceptance_criterion(&derived),
+            AcKind::Behavioural,
+            "derived AC was not behavioural: {derived}"
+        );
+    }
+
+    #[test]
+    fn derive_behavioural_ac_from_task_text_prefers_a_literal_runnable_command() {
+        let derived =
+            derive_behavioural_ac_from_task_text("Run `pytest -k thing` and confirm it exits 0.")
+                .expect("a literal quoted pytest command should derive");
+        assert!(derived.contains("`pytest -k thing`"), "{derived}");
+        assert_eq!(classify_acceptance_criterion(&derived), AcKind::Behavioural);
+    }
+
+    #[test]
+    fn derive_behavioural_ac_from_task_text_is_none_when_nothing_concrete_to_quote() {
+        assert_eq!(
+            derive_behavioural_ac_from_task_text("Refactor the internal helper for clarity."),
+            None
+        );
+    }
+
+    #[test]
+    fn ground_acceptance_criteria_behaviourally_appends_a_derived_ac_for_the_logfilter_fixture() {
+        let mut criteria = a38_miss1_existence_only_criteria();
+        let original_len = criteria.len();
+        let (behavioural_added, existence_only) =
+            ground_acceptance_criteria_behaviourally(&mut criteria, LOGFILTER_TASK_PROMPT);
+        assert!(behavioural_added);
+        assert!(!existence_only);
+        assert_eq!(criteria.len(), original_len + 1);
+        assert_eq!(
+            classify_acceptance_criterion(criteria.last().unwrap()),
+            AcKind::Behavioural
+        );
+    }
+
+    #[test]
+    fn ground_acceptance_criteria_behaviourally_tags_existence_only_when_nothing_derivable() {
+        let mut criteria = vec!["the docs are updated".to_string()];
+        let (behavioural_added, existence_only) = ground_acceptance_criteria_behaviourally(
+            &mut criteria,
+            "Refactor the internal helper for clarity.",
+        );
+        assert!(!behavioural_added);
+        assert!(existence_only);
+        assert_eq!(criteria, vec!["the docs are updated".to_string()]);
+    }
+
+    #[test]
+    fn ground_acceptance_criteria_behaviourally_is_a_no_op_when_already_behavioural() {
+        let mut criteria = vec![
+            "`python -m logfilter --level BOGUS sample_logs/app.log` exits with code 2".to_string(),
+        ];
+        let before = criteria.clone();
+        let (behavioural_added, existence_only) =
+            ground_acceptance_criteria_behaviourally(&mut criteria, LOGFILTER_TASK_PROMPT);
+        assert!(!behavioural_added);
+        assert!(!existence_only);
+        assert_eq!(criteria, before);
+    }
+
+    #[test]
+    fn ground_roadmap_goals_records_ac_grounding_behavioural_added_in_the_receipts() {
+        let facts = RepoFacts {
+            manifests: vec!["setup.py".to_string()],
+            files: vec!["logfilter/cli.py".to_string()],
+            file_count: 5,
+            check_commands: vec![],
+            ..Default::default()
+        };
+        let goals = vec![goal_state::ProposedGoal {
+            title: "Fix argument validation".to_string(),
+            description: LOGFILTER_TASK_PROMPT.to_string(),
+            acceptance_criteria: a38_miss1_existence_only_criteria(),
+            tags: vec![],
+            depends_on: vec![],
+        }];
+        let (grounded, receipts) =
+            ground_roadmap_goals(goals, &facts, &std::collections::BTreeSet::new());
+        assert!(
+            receipts
+                .iter()
+                .any(|r| r.contains("ac_grounding behavioural_added=1")),
+            "receipts: {receipts:?}"
+        );
+        assert_eq!(
+            classify_acceptance_criterion(grounded[0].acceptance_criteria.last().unwrap()),
+            AcKind::Behavioural
+        );
     }
 
     /// Priority ordering: a criterion that reads as BOTH a symbol claim and
