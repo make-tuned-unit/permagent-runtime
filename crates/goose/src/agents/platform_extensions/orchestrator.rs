@@ -14041,18 +14041,30 @@ async fn resolve_trusted_landing_root(
 /// nothing to salvage" while the fix sat one un-fast-forwarded merge away
 /// from grading.
 ///
-/// `Ok(0)` when the tip is already an ancestor of the trunk's HEAD (already
-/// landed — by an earlier salvage, a human's own manual merge, or anything
-/// else). Otherwise `git rev-list --count <trunk-HEAD>..HEAD` in the goal's
-/// own worktree (which shares the trunk's object store as a linked
-/// worktree, so the trunk's sha is always resolvable there once known).
-/// `Err` when [`resolve_trusted_landing_root`] cannot resolve a trusted
-/// trunk at all — the caller falls back to the rolling-baseline count.
+/// `Ok((0, trunk_head))` when the tip is already an ancestor of the
+/// trunk's HEAD (already landed — by an earlier salvage, a human's own
+/// manual merge, or anything else). Otherwise `git rev-list --count
+/// <trunk-HEAD>..HEAD` in the goal's own worktree (which shares the
+/// trunk's object store as a linked worktree, so the trunk's sha is
+/// always resolvable there once known). `Err` when [`resolve_trusted_
+/// landing_root`] cannot resolve a trusted trunk at all — the caller
+/// falls back to the rolling-baseline count.
+///
+/// Lane R22h: returns the resolved `trunk_head` sha alongside the count
+/// (was `Result<u32, _>`) — the caller needs it to re-point the goal's
+/// ROLLING `dispatch_evidence.baseline_commit` at the trunk before
+/// recursing back through `handle_goal_completion` on a genuine pass. See
+/// that call site's own comment for why: `worktree_has_uncommitted_work`
+/// (used by `maybe_hold_review`'s ordinary re-evaluation, not this
+/// function) is ALSO rolling-baseline-relative, and the rolling baseline
+/// coinciding with HEAD reads as "nothing committed" there too — the exact
+/// A24 shape, now surfacing on the RE-ENTERED evaluation instead of the
+/// original salvage gate the earlier lanes already fixed.
 async fn commits_unlanded_at_trunk(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
     worktree_path: &std::path::Path,
-) -> Result<u32, String> {
+) -> Result<(u32, String), String> {
     let root = resolve_trusted_landing_root(pool, card, worktree_path).await?;
     let trunk_head = git_in_worktree(std::path::Path::new(&root), &["rev-parse", "HEAD"]).await?;
 
@@ -14062,14 +14074,16 @@ async fn commits_unlanded_at_trunk(
     )
     .await?;
     if already_landed {
-        return Ok(0);
+        return Ok((0, trunk_head));
     }
 
     let range = format!("{trunk_head}..HEAD");
     let out = git_in_worktree(worktree_path, &["rev-list", "--count", &range]).await?;
-    out.trim()
+    let unlanded = out
+        .trim()
         .parse::<u32>()
-        .map_err(|e| format!("unexpected `git rev-list --count` output {out:?}: {e}"))
+        .map_err(|e| format!("unexpected `git rev-list --count` output {out:?}: {e}"))?;
+    Ok((unlanded, trunk_head))
 }
 
 // ── Lane R20b: salvage committed goal work before a budget/wall park ────────
@@ -14285,9 +14299,9 @@ async fn maybe_salvage_committed_work(
             return not_salvaged(note);
         }
     };
-    let ahead = match commits_unlanded_at_trunk(pool, card, worktree_path).await {
-        Ok(unlanded) => unlanded,
-        Err(_) => rolling_ahead,
+    let (ahead, trunk_head) = match commits_unlanded_at_trunk(pool, card, worktree_path).await {
+        Ok((unlanded, trunk_head)) => (unlanded, Some(trunk_head)),
+        Err(_) => (rolling_ahead, None),
     };
     if ahead == 0 {
         if rolling_ahead == 0 {
@@ -14543,15 +14557,67 @@ async fn maybe_salvage_committed_work(
         return not_salvaged(note);
     }
 
+    // Lane R22h: re-point the ROLLING baseline at the trunk's own head
+    // BEFORE recursing, when trunk resolution found real unlanded work at
+    // a baseline other than the rolling one. Without this, the "clean
+    // worktree ⇒ decide_goal_hold Allows outright" guarantee this
+    // function's own doc comment makes (see above) is FALSE for exactly
+    // the fixture this guard exists for (rolling baseline == tip, A24's
+    // shape): the re-entered `maybe_hold_review` calls `goal_has_
+    // uncommitted_work`, which is ALSO rolling-baseline-relative and ALSO
+    // reads "baseline == HEAD" as "nothing committed" — so `uncommitted_
+    // work` comes back `true` even though `ahead` commits were just
+    // verified, `decide_goal_hold` re-Parks (hold count is still at its
+    // cap), the re-entered park attempts salvage AGAIN, finds `salvage_
+    // attempted` already spent, and falls through to an ordinary park —
+    // discarding the very work this function just proved. Setting the
+    // baseline to `trunk_head` makes the SAME rolling-relative check see
+    // `ahead` commits past it on the re-evaluation, exactly as it already
+    // does for the common case (`rolling_ahead > 0` at entry), closing the
+    // gap without touching `goal_has_uncommitted_work`'s broader, non-
+    // salvage-specific semantics at all.
+    //
+    // Updates BOTH the top-level `baseline_commit` (what Y16b's redispatch
+    // path — `orchestrator.rs`'s claim/dispatch `patch` maps — actually
+    // writes and keeps current on every redispatch, and what `resolve_
+    // goal_baseline_and_worktree` checks FIRST) and the nested `dispatch_
+    // evidence.baseline_commit` (its fallback, and what THIS lane's own
+    // test fixtures set directly via `cards::set_goal_dispatch_evidence`)
+    // — either one alone would leave the other stale and still authoritative
+    // depending on which a given goal happens to carry.
+    if let Some(trunk_head) = trunk_head.as_deref() {
+        if trunk_head != baseline {
+            if let Err(e) = persist_card_meta(pool, &card.id, |m| {
+                m.insert("baseline_commit".to_string(), serde_json::json!(trunk_head));
+                if let Some(evidence) = m
+                    .get_mut("dispatch_evidence")
+                    .and_then(|v| v.as_object_mut())
+                {
+                    evidence.insert("baseline_commit".to_string(), serde_json::json!(trunk_head));
+                }
+            })
+            .await
+            {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    goal_id = %card.id,
+                    "could not re-point the rolling baseline at the trunk before re-evaluating \
+                     a salvaged goal: {e}"
+                );
+            }
+        }
+    }
+
     // The UNCHANGED success path an ordinary `done` claim already goes
     // through — re-reads the card fresh, so the genuine verify evidence
-    // just recorded above is what `maybe_hold_review` sees this time.
-    // `Box::pin`: this function is itself called from inside
-    // `handle_goal_completion`'s own body (its Err arm, and transitively via
-    // `maybe_hold_review`'s Hold arm), so an unboxed recursive call here
-    // would make `handle_goal_completion`'s generated future type embed
-    // itself — an infinite-sized type the compiler refuses. Boxing breaks
-    // the cycle; it does not change behavior.
+    // just recorded above (and the re-pointed baseline, if applicable) is
+    // what `maybe_hold_review` sees this time. `Box::pin`: this function is
+    // itself called from inside `handle_goal_completion`'s own body (its
+    // Err arm, and transitively via `maybe_hold_review`'s Hold arm), so an
+    // unboxed recursive call here would make `handle_goal_completion`'s
+    // generated future type embed itself — an infinite-sized type the
+    // compiler refuses. Boxing breaks the cycle; it does not change
+    // behavior.
     if let Err(e) = Box::pin(handle_goal_completion(
         pool,
         &card.id,
