@@ -3043,6 +3043,102 @@ const LEAN_CODING_PROFILE_EXTENSION_KEYS: &[&str] = &[
     "extensionmanager",
 ];
 
+/// R30a (harness loop, "A29 analysis"): the DEFAULT extension set for a
+/// dispatched goal worker (`dispatch_goal_fn`'s InternalSubagent arm) when
+/// the worker's `agent.yaml` entry has no explicit `extension_grants`.
+/// Narrower than `LEAN_CODING_PROFILE_EXTENSION_KEYS` — that list is the
+/// coordinator's own declared roster (six extensions, meant for a
+/// start_agent/send_message TARGET that might still plan or delegate); a
+/// dispatched goal worker only edits code and reports back, so it keeps just
+/// `developer` (read/write/edit/shell/tree/search/verify — everything the
+/// coding-harness recipe describes a worker doing) and `orchestrator`
+/// (further narrowed per-tool by `narrow_goal_worker_orchestrator_tools`,
+/// below, to the two tools a worker is actually instructed to call). An
+/// explicit `extension_grants` on the worker entry always wins outright —
+/// this only fills the gap left when that field is absent, matching how
+/// `LEAN_CODING_PROFILE_EXTENSION_KEYS` fills the gap for
+/// `scoped_child_session_extensions`. Kept in sync with the two tool
+/// descriptions it relies on by
+/// `goal_worker_orchestrator_allowlist_matches_the_tools_whose_own_
+/// descriptions_name_a_worker_as_caller` (test, below).
+const GOAL_WORKER_EXTENSION_KEYS: &[&str] = &["developer", "orchestrator"];
+
+/// R30a: per-tool allowlist applied to the `orchestrator` extension when a
+/// dispatched goal worker gets `GOAL_WORKER_EXTENSION_KEYS`'s default (no
+/// explicit `extension_grants`). `narrow_extensions_for_agent` only narrows
+/// at whole-extension granularity — keeping `orchestrator` in the list still
+/// hands the worker every one of its >20 tool schemas otherwise. Of those,
+/// only `escalate`'s and `message_goal`'s own descriptions name a dispatched
+/// WORKER (not the coordinator) as the caller: `escalate` — "Escalate when
+/// you or a worker cannot proceed without a human decision" — and
+/// `message_goal` — "Send a structured agent-to-agent message from one goal
+/// worker to another InProgress goal". Everything else on the orchestrator
+/// surface (list_sessions, view_session, view_attachment, start_agent,
+/// send_message, interrupt_agent, list_workers, check_worker, goal_advance,
+/// goal_status, goal_list, steer_goal, skill_run, context_set, context_get,
+/// context_list, context_delete, decompose_roadmap, create_roadmap,
+/// pause_roadmap, resume_roadmap) dispatches, steers, or reads OTHER
+/// sessions/goals — coordinator-only surface a worker was never instructed
+/// to call and, per "A29 analysis", cannot afford to carry.
+const GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST: &[&str] = &["escalate", "message_goal"];
+
+/// R30a: narrows `orchestrator` in `extensions` (in place) to
+/// `GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST`, reusing the exact mechanism
+/// `summon::SummonClient::restrict_to_non_mutating` already uses to scope
+/// the reviewer persona's `developer` tools to read-only —
+/// `ExtensionConfig::available_tools_mut()`, which `extension_manager::
+/// public_tools`/`is_tool_available` already enforce on both the tool LIST
+/// sent to the model and every dispatch. A no-op when `orchestrator` is not
+/// present in `extensions` (e.g. a per-goal `dispatch_scope` already
+/// excluded it).
+fn narrow_goal_worker_orchestrator_tools(extensions: &mut [ExtensionConfig]) {
+    let allowed: Vec<String> = GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    for ext in extensions.iter_mut() {
+        if ext.name() == EXTENSION_NAME {
+            if let Some(available_tools) = ext.available_tools_mut() {
+                *available_tools = allowed.clone();
+            }
+        }
+    }
+}
+
+/// R30a: the extension set `dispatch_goal_fn`'s InternalSubagent arm hands
+/// a dispatched goal worker, pulled out to a free function (mirroring the
+/// `parent_extensions`/`parent_extensions_fn` and `scoped_child_session_
+/// extensions`/`scoped_child_session_extensions_fn` split already used in
+/// this file) so it is directly unit-testable against hand-built fixtures
+/// rather than requiring a live dispatch. `explicit_extension_grants` is
+/// `worker_cfg.extension_grants` verbatim — `Some` always wins outright and
+/// is narrowed exactly as before this lane; only a `None` (no grant
+/// configured) now defaults to `GOAL_WORKER_EXTENSION_KEYS` instead of
+/// leaving `parent` unnarrowed, and only that default path also applies
+/// `narrow_goal_worker_orchestrator_tools`'s per-tool cut of `orchestrator`.
+/// `dispatch_scope` (the goal's own per-goal `extension_scope`, when set)
+/// narrows a second time afterward either way, unchanged from before.
+fn goal_worker_extensions_for_dispatch(
+    parent: Vec<ExtensionConfig>,
+    explicit_extension_grants: Option<&[String]>,
+    dispatch_scope: Option<&[String]>,
+) -> Vec<ExtensionConfig> {
+    let default_goal_worker_grants: Vec<String> = GOAL_WORKER_EXTENSION_KEYS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let effective_extension_grants =
+        explicit_extension_grants.or(Some(default_goal_worker_grants.as_slice()));
+    let mut narrowed = narrow_extensions_for_agent(
+        narrow_extensions_for_agent(parent, effective_extension_grants),
+        dispatch_scope,
+    );
+    if explicit_extension_grants.is_none() {
+        narrow_goal_worker_orchestrator_tools(&mut narrowed);
+    }
+    narrowed
+}
+
 /// The outcome of worker selection: the chosen worker plus a routing snapshot
 /// (#211) capturing WHY it was chosen — the required capabilities, and every
 /// candidate's availability / cost tier / load at the selection moment. Stored
@@ -4485,11 +4581,30 @@ pub(crate) async fn dispatch_goal_fn(
             // This is the one dispatch path whose tool set this process
             // composes, so extension grants are genuinely enforced here.
             let parent = parent_extensions_fn(context);
-            let narrowed = narrow_extensions_for_agent(
-                narrow_extensions_for_agent(
-                    parent.clone(),
-                    worker_cfg.and_then(|worker| worker.extension_grants.as_deref()),
-                ),
+            // R30a (harness loop, "A29 analysis" — MiniCPM5-2B p2 probe on
+            // M31): `worker_cfg.extension_grants` defaulting to `None` used
+            // to mean "inherit the coordinator's full 6-extension set
+            // unfiltered" for every worker with no explicit grant in
+            // agent.yaml — the default, not the exception. That set alone,
+            // plus the goal brief, overflowed a 32,768-token local model by
+            // ~2.7-3k tokens (~8-9%) on the worker's very first inference
+            // call, before a single turn or tool use: all 3 dispatched
+            // workers died the identical way, three attempts each,
+            // AttemptCap park — zero code written. `narrow_extensions_for_
+            // agent(base, None)` returns `base` unchanged (see its doc
+            // comment), so a `None` grant was never actually "no
+            // narrowing configured" in the privilege-escalation sense R27b
+            // guards against; it was "narrow to nothing" that got skipped.
+            // An explicit `extension_grants` in agent.yaml still wins
+            // outright — `goal_worker_extensions_for_dispatch` only
+            // supplies the DEFAULT (`GOAL_WORKER_EXTENSION_KEYS`, plus a
+            // per-tool cut of `orchestrator`) when the worker entry has
+            // none, exactly like R27b's `scoped_child_session_extensions`
+            // supplies a default base list for start_agent/send_message
+            // rather than inventing a new enforcement path.
+            let narrowed = goal_worker_extensions_for_dispatch(
+                parent.clone(),
+                worker_cfg.and_then(|worker| worker.extension_grants.as_deref()),
                 dispatch_scope.as_deref(),
             );
             // A Settings → Data sources toggle must flow to the suggested
@@ -36002,6 +36117,157 @@ mod tests {
             constant, declared,
             "LEAN_CODING_PROFILE_EXTENSION_KEYS has drifted from permagent-coding.yaml's own \
              extensions list — update the constant to match"
+        );
+    }
+
+    /// R30a headline case: a dispatched goal worker with NO explicit
+    /// `extension_grants` (the default `agent.yaml` worker entry) gets
+    /// exactly `GOAL_WORKER_EXTENSION_KEYS`, not the coordinator's full
+    /// parent set — and `orchestrator`'s own tool surface is further cut
+    /// down to the per-tool allowlist.
+    #[test]
+    fn goal_worker_extensions_for_dispatch_defaults_to_the_lean_key_set_when_no_explicit_grant() {
+        // The coordinator's own lean profile plus a couple of extras, standing
+        // in for whatever `parent_extensions_fn` would actually return —
+        // proves this narrows below even the ALREADY-lean coordinator set,
+        // not just the full default roster.
+        let mut parent = r27b_lean_profile_plus_unrelated_extras();
+        parent.push(r27b_builtin_extension("public_apis"));
+
+        let narrowed = goal_worker_extensions_for_dispatch(parent, None, None);
+
+        let names: std::collections::HashSet<String> =
+            narrowed.iter().map(|ext| ext.name()).collect();
+        let expected: std::collections::HashSet<String> = GOAL_WORKER_EXTENSION_KEYS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            names, expected,
+            "no explicit extension_grants must default to exactly GOAL_WORKER_EXTENSION_KEYS, \
+             got: {names:?}"
+        );
+
+        let orchestrator_ext = narrowed
+            .iter()
+            .find(|ext| ext.name() == EXTENSION_NAME)
+            .expect("orchestrator must be present in the default lean set");
+        let allowed_tools: std::collections::HashSet<&str> = orchestrator_ext
+            .available_tools()
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let expected_tools: std::collections::HashSet<&str> =
+            GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST
+                .iter()
+                .copied()
+                .collect();
+        assert_eq!(
+            allowed_tools, expected_tools,
+            "the default lean set must also cut orchestrator's own tool surface down to \
+             GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST, got: {allowed_tools:?}"
+        );
+    }
+
+    /// An explicit `extension_grants` on the worker entry must win outright,
+    /// unchanged from before this lane — no default substitution, and no
+    /// per-tool narrowing of `orchestrator` piggybacked onto an explicit
+    /// grant that already named it.
+    #[test]
+    fn goal_worker_extensions_for_dispatch_respects_an_explicit_extension_grant_unchanged() {
+        let parent = r27b_lean_profile_plus_unrelated_extras();
+        let explicit = vec!["orchestrator".to_string(), "summon".to_string()];
+
+        let narrowed = goal_worker_extensions_for_dispatch(parent, Some(&explicit), None);
+
+        let names: std::collections::HashSet<String> =
+            narrowed.iter().map(|ext| ext.name()).collect();
+        assert_eq!(
+            names,
+            explicit.iter().cloned().collect(),
+            "an explicit extension_grants must be used verbatim, not the lean default, got: \
+             {names:?}"
+        );
+        // developer was NOT in the explicit grant, so it must be absent —
+        // proves the default substitution did not leak in alongside it.
+        assert!(!names.contains("developer"));
+
+        let orchestrator_ext = narrowed
+            .iter()
+            .find(|ext| ext.name() == EXTENSION_NAME)
+            .expect("orchestrator was explicitly granted");
+        assert!(
+            orchestrator_ext.available_tools().is_empty(),
+            "an explicit extension_grants must not trigger the per-tool orchestrator \
+             narrowing — that is a default-only behavior, got: {:?}",
+            orchestrator_ext.available_tools()
+        );
+    }
+
+    /// A per-goal `dispatch_scope` still narrows a SECOND time on top of the
+    /// new default, exactly as it did on top of the old unnarrowed default —
+    /// this lane changes what the FIRST narrowing defaults to, not whether a
+    /// second one composes with it.
+    #[test]
+    fn goal_worker_extensions_for_dispatch_still_applies_a_per_goal_dispatch_scope_on_top_of_the_default(
+    ) {
+        let parent = r27b_lean_profile_plus_unrelated_extras();
+        let scope = vec!["developer".to_string()];
+
+        let narrowed = goal_worker_extensions_for_dispatch(parent, None, Some(&scope));
+
+        let names: std::collections::HashSet<String> =
+            narrowed.iter().map(|ext| ext.name()).collect();
+        assert_eq!(
+            names,
+            std::collections::HashSet::from(["developer".to_string()]),
+            "a per-goal dispatch_scope must still narrow past the lean default, got: {names:?}"
+        );
+    }
+
+    /// Drift guard (mirrors R27b's own recipe-parity test): the per-tool
+    /// orchestrator allowlist must stay evidence-backed, not silently grow or
+    /// shrink to something the real tool surface no longer supports —
+    /// every allowlisted name must be a real orchestrator tool whose OWN
+    /// description names a worker (not only the coordinator) as a caller,
+    /// and the `developer` extension a goal worker keeps wholesale must
+    /// still expose `verify`.
+    #[test]
+    fn goal_worker_orchestrator_allowlist_matches_tools_whose_own_descriptions_name_a_worker_as_caller(
+    ) {
+        let orchestrator_tools = OrchestratorClient::get_tools();
+        for tool_name in GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST {
+            let tool = orchestrator_tools
+                .iter()
+                .find(|t| t.name.as_ref() == *tool_name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST names '{tool_name}', which is \
+                         not a real orchestrator tool — update the allowlist"
+                    )
+                });
+            let description = tool
+                .description
+                .as_deref()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            assert!(
+                description.contains("worker"),
+                "'{tool_name}' is allowlisted for a dispatched goal worker, but its own tool \
+                 description never mentions a worker as caller — re-check whether this tool \
+                 still belongs on GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST: {description:?}"
+            );
+        }
+
+        let developer_tool_names: std::collections::HashSet<String> =
+            crate::agents::platform_extensions::developer::DeveloperClient::get_tools()
+                .into_iter()
+                .map(|t| t.name.to_string())
+                .collect();
+        assert!(
+            developer_tool_names.contains("verify"),
+            "a dispatched goal worker keeps `developer` wholesale — it must still expose \
+             `verify`, got: {developer_tool_names:?}"
         );
     }
 }
