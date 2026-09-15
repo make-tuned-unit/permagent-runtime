@@ -472,6 +472,10 @@ pub fn draft_decision_from_proposal(proposal: &TriageProposal) -> DecisionDraft 
         requested_by_display: CONCIERGE_NAME.to_string(),
         raw_payload: None,
         validation_errors: Vec::new(),
+        // Concierge builds a typed `ApproveReview` draft directly — never
+        // through the `escalate` tool's freeform `kind` field, so there is
+        // nothing to have coerced.
+        requested_kind: None,
     }
 }
 

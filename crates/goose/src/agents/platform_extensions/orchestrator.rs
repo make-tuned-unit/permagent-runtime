@@ -7708,6 +7708,15 @@ impl OrchestratorClient {
     /// through the DecisionSink seam (in-memory in Part A; L1's decisions
     /// table in Part B). Malformed payloads are recorded for human review
     /// and return success-with-notice — never dropped, never retry-looped.
+    ///
+    /// Lane R24a: an unrecognized `kind` is NOT one of the ways a payload
+    /// can be malformed — [`crate::decision_inbox::escalate::draft_from_payload`]
+    /// coerces it to the closest supported kind (via
+    /// [`crate::decision_inbox::escalate::resolve_kind`]) before validation
+    /// ever runs, preserving the original value as `requested_kind`. Only
+    /// genuinely unusable content (no question text, invalid options,
+    /// oversized fields, a headline that leaks identifiers) still produces a
+    /// `Malformed` draft.
     async fn handle_escalate(
         &self,
         session_id: &str,
@@ -8202,6 +8211,12 @@ impl OrchestratorClient {
                  Kinds: 'credential' (a secret is needed), 'decision' (a choice between \
                  options — requires 2-5 options), 'capability' (a new permission is needed), \
                  'information' (a question must be answered), 'approval' (sign-off is needed). \
+                 Any other value for kind is still accepted: it is coerced to the closest of \
+                 these five (e.g. 'question'/'clarification'/'info' -> information, \
+                 'choice'/'option' -> decision, 'blocked'/'missing' -> credential, anything \
+                 else -> information) rather than rejected, and the exact value you sent is \
+                 preserved for whoever reviews it — so escalate even if you are unsure of the \
+                 exact kind name; do not withhold or invent a fake escalation over it. \
                  specific_ask becomes the plain-language headline the user sees: max 80 chars, \
                  no PR numbers, branch names, file counts, or internal IDs — put technical \
                  identifiers in why_blocked and evidence_refs. The escalation becomes a \
@@ -18317,6 +18332,139 @@ mod tests {
             "nothing auto-answers a real Decision Inbox item either"
         );
         assert_eq!(kind, "choice");
+    }
+
+    // ── Lane R24a (M26 DeepSeek m1, harness loop): an unsupported `kind`
+    // must be coerced to a real, creatable decision instead of thrown away
+    // — see `decision_inbox::escalate::resolve_kind`'s own doc comment for
+    // the exact defect this repairs
+    // (`Rejected decision request (kind 'malformed'): unknown decision kind
+    // 'malformed'`, `dag_enforcement.escalated` stuck at 0, no roadmap, no
+    // recorded escalation). ────────────────────────────────────────────
+
+    /// The end-to-end repair: `escalate{kind: "malformed"}` (an honest
+    /// escalation attempt with an unsupported kind) must still mint a real,
+    /// open decision row — carrying the original kind for a human reviewer
+    /// — and must still count as a real escalation for the qualification
+    /// gate's `dag_enforcement.escalated` receipt.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn coerced_kind_escalate_is_recorded_and_counts_as_escalated() {
+        let pool = test_pool().await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = crate::decision_inbox::escalate::draft_from_payload(
+            serde_json::json!({
+                "kind": "malformed",
+                "specific_ask": "Approve the login page redesign so it can ship",
+                "why_blocked": "Verifier passed; PR awaits sign-off.",
+                "evidence_refs": [],
+                "resume": "auto",
+            }),
+            &crate::decision_inbox::escalate::DraftSource {
+                session_id: Some("r24a-test-session".to_string()),
+                worker_roster_name: None,
+            },
+        );
+        assert_eq!(
+            draft.requested_kind.as_deref(),
+            Some("malformed"),
+            "the draft itself must carry the original, unresolved kind"
+        );
+
+        crate::receipts::begin_run();
+        let text = record_escalation(&pool, &sink, draft, false)
+            .await
+            .expect("a coerced kind must never error the turn out");
+        let escalated_line = crate::receipts::snapshot().lines()[0].clone();
+        crate::receipts::end_run();
+
+        assert!(
+            !text.to_lowercase().contains("rejected"),
+            "an unsupported kind must not surface as a rejection to the caller: {text}"
+        );
+        assert!(
+            escalated_line.contains("escalated=1"),
+            "a coerced-kind escalate must still count toward dag_enforcement.escalated: \
+             {escalated_line}"
+        );
+
+        let (status, kind, detail): (String, String, String) =
+            sqlx::query_as("SELECT status, kind, detail FROM decisions")
+                .fetch_one(&pool)
+                .await
+                .expect("exactly one decisions row must exist");
+        assert_eq!(status, "open");
+        assert_ne!(
+            kind, "malformed",
+            "an unsupported kind alone must not route through the malformed/L1-rejected path"
+        );
+        assert!(
+            detail.contains("requested_kind: malformed"),
+            "the original kind must survive into the stored decision for human review: {detail}"
+        );
+    }
+
+    /// A `kind` already in the supported set is untouched: no `requested_kind`
+    /// note, and the pre-existing behavior for known kinds is unchanged.
+    #[tokio::test]
+    async fn known_kind_escalate_carries_no_requested_kind_note() {
+        let pool = test_pool().await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = capability_escalation_draft("known-kind-test-session");
+        assert_eq!(draft.requested_kind, None);
+
+        record_escalation(&pool, &sink, draft, false)
+            .await
+            .expect("record_escalation must not error");
+
+        let detail: String = sqlx::query_scalar("SELECT detail FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(
+            !detail.contains("requested_kind:"),
+            "a verbatim supported kind must not add a requested_kind note: {detail}"
+        );
+    }
+
+    /// Unusable arguments (no question text at all) must still be recorded
+    /// as a structured, actionable notice that names the missing field — not
+    /// a hard error that ends the turn. Unaffected by the kind-coercion fix
+    /// above: `specific_ask`/`why_blocked` are the reason for rejection
+    /// here, not `kind`.
+    #[tokio::test]
+    async fn missing_question_text_returns_structured_notice_not_a_turn_ending_error() {
+        let pool = test_pool().await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = crate::decision_inbox::escalate::draft_from_payload(
+            serde_json::json!({
+                "kind": "approval",
+                "resume": "auto",
+                // specific_ask and why_blocked (the question text) are
+                // entirely absent — the payload is genuinely unusable.
+            }),
+            &crate::decision_inbox::escalate::DraftSource {
+                session_id: Some("r24a-missing-text-session".to_string()),
+                worker_roster_name: None,
+            },
+        );
+        assert_eq!(
+            draft.kind,
+            crate::decision_inbox::escalate::DecisionKind::Malformed
+        );
+
+        let text = record_escalation(&pool, &sink, draft, false)
+            .await
+            .expect("an unusable payload must return Ok with a structured notice, not Err");
+
+        assert!(
+            text.contains("specific_ask"),
+            "the notice must name the missing field: {text}"
+        );
+        assert!(
+            text.contains("do not retry"),
+            "must tell the model not to retry-loop: {text}"
+        );
     }
 
     #[test]
