@@ -248,13 +248,30 @@ pub struct SafetyAndTrustReceipt {
     pub adversary_blocks: usize,
 }
 
-/// Atomic RECEIPT CONTRACT v1 evidence for `cost_routing`.
+/// Atomic RECEIPT CONTRACT evidence for `cost_routing`. `dispatches`/
+/// `cheapest_capable`/`pack_honored`/`planner` are v1; `routed_local`/
+/// `routed_cloud`/`fallbacks` are v1.3 (R48b, HARNESS_LOOP_LOG.md "A45
+/// design" Addendum (c) / Q5) — appended at the END of the printed line, so
+/// a pre-v1.3 fixture line still parses with all three `None`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CostRoutingReceipt {
     pub dispatches: usize,
     pub cheapest_capable: usize,
     pub pack_honored: usize,
     pub planner: String,
+    /// v1.3: dispatches this run routed to a local/on-device worker tier.
+    /// `None` on a pre-v1.3 line.
+    #[serde(default)]
+    pub routed_local: Option<usize>,
+    /// v1.3: dispatches this run routed to a metered cloud worker tier.
+    /// `None` on a pre-v1.3 line.
+    #[serde(default)]
+    pub routed_cloud: Option<usize>,
+    /// v1.3: goals redispatched once from a LOCAL worker tier to the
+    /// coordinator/cloud tier after a context-exceeded, wall/turn-ceiling,
+    /// or verify-failed-with-no-commit attempt. `None` on a pre-v1.3 line.
+    #[serde(default)]
+    pub fallbacks: Option<usize>,
 }
 
 /// Coarse signals mined from one harness run's combined stdout+stderr log.
@@ -600,7 +617,7 @@ fn parse_safety_and_trust(line: &str) -> Option<SafetyAndTrustReceipt> {
 
 static COST_ROUTING_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(
-        r"^\s*receipt\s+cost_routing\s+dispatches=([0-9]+)\s+cheapest_capable=([0-9]+)\s+pack_honored=([0-9]+)\s+planner=(\S+/\S+)\s*$",
+        r"^\s*receipt\s+cost_routing\s+dispatches=([0-9]+)\s+cheapest_capable=([0-9]+)\s+pack_honored=([0-9]+)\s+planner=(\S+/\S+)(?:\s+routed_local=([0-9]+)\s+routed_cloud=([0-9]+)\s+fallbacks=([0-9]+))?\s*$",
     )
     .expect("COST_ROUTING_RE is a valid regex")
 });
@@ -638,6 +655,9 @@ fn parse_cost_routing(line: &str) -> Option<CostRoutingReceipt> {
         cheapest_capable: caps[2].parse().ok()?,
         pack_honored: caps[3].parse().ok()?,
         planner: caps[4].to_string(),
+        routed_local: caps.get(5).map(|m| m.as_str().parse()).transpose().ok()?,
+        routed_cloud: caps.get(6).map(|m| m.as_str().parse()).transpose().ok()?,
+        fallbacks: caps.get(7).map(|m| m.as_str().parse()).transpose().ok()?,
     })
 }
 
@@ -1537,6 +1557,9 @@ mod tests {
                 cheapest_capable: 4,
                 pack_honored: 4,
                 planner: "openrouter/qwen/model".to_string(),
+                routed_local: None,
+                routed_cloud: None,
+                fallbacks: None,
             })
         );
         assert!(scan(&line.replace("openrouter/qwen/model", "unknown"))
@@ -1572,6 +1595,9 @@ mod tests {
                 cheapest_capable: 0,
                 pack_honored: 0,
                 planner: PLANNER_UNSET_SENTINEL.to_string(),
+                routed_local: None,
+                routed_cloud: None,
+                fallbacks: None,
             })
         );
         // The same sentinel at a NONZERO dispatch count is still discarded —
@@ -1580,6 +1606,65 @@ mod tests {
         assert!(scan(&line.replace("dispatches=0", "dispatches=1"))
             .cost_routing
             .is_none());
+    }
+
+    /// R48b (v1.3): the three new trailing fields parse when present, and
+    /// the receipt still parses (with all three `None`) when a line was
+    /// produced by a pre-v1.3 binary and lacks them — the exact backward-
+    /// compat contract `DagEnforcementReceipt`'s own v1.1 fields already
+    /// established for this module.
+    #[test]
+    fn contract_v1_3_routing_receipt_parses_with_and_without_the_new_fields() {
+        let v1_3_line = "receipt cost_routing dispatches=3 cheapest_capable=3 pack_honored=3 \
+                          planner=custom_deepseek/deepseek-chat routed_local=2 routed_cloud=1 \
+                          fallbacks=1";
+        assert_eq!(
+            scan(v1_3_line).cost_routing,
+            Some(CostRoutingReceipt {
+                dispatches: 3,
+                cheapest_capable: 3,
+                pack_honored: 3,
+                planner: "custom_deepseek/deepseek-chat".to_string(),
+                routed_local: Some(2),
+                routed_cloud: Some(1),
+                fallbacks: Some(1),
+            })
+        );
+
+        let pre_v1_3_line =
+            "receipt cost_routing dispatches=3 cheapest_capable=3 pack_honored=3 planner=p/m";
+        assert_eq!(
+            scan(pre_v1_3_line).cost_routing,
+            Some(CostRoutingReceipt {
+                dispatches: 3,
+                cheapest_capable: 3,
+                pack_honored: 3,
+                planner: "p/m".to_string(),
+                routed_local: None,
+                routed_cloud: None,
+                fallbacks: None,
+            }),
+            "a pre-v1.3 line (no trailing routed_local/routed_cloud/fallbacks) must still \
+             parse, reading the three new fields as None rather than refusing the whole line"
+        );
+
+        // A zero-dispatch v1.3 line — the honest all-zero shape a run that
+        // routed nothing genuinely prints.
+        let zero_v1_3_line = "receipt cost_routing dispatches=0 cheapest_capable=0 \
+                               pack_honored=0 planner=unknown/unknown routed_local=0 \
+                               routed_cloud=0 fallbacks=0";
+        assert_eq!(
+            scan(zero_v1_3_line).cost_routing,
+            Some(CostRoutingReceipt {
+                dispatches: 0,
+                cheapest_capable: 0,
+                pack_honored: 0,
+                planner: PLANNER_UNSET_SENTINEL.to_string(),
+                routed_local: Some(0),
+                routed_cloud: Some(0),
+                fallbacks: Some(0),
+            })
+        );
     }
 
     #[test]
@@ -1669,6 +1754,9 @@ mod tests {
                 cheapest_capable: 1,
                 pack_honored: 1,
                 planner: "openrouter/glm".to_string(),
+                routed_local: None,
+                routed_cloud: None,
+                fallbacks: None,
             })
         );
         assert_eq!(

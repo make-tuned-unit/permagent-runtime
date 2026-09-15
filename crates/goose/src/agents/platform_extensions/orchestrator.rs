@@ -3541,6 +3541,113 @@ fn explicit_routing_choice(metadata: &serde_json::Value) -> Option<RoutingChoice
     Some(RoutingChoice { tier, reason })
 }
 
+/// R48b (HARNESS_LOOP_LOG.md "A45 design" Q5): why a goal that started on
+/// the LOCAL worker tier is being redispatched to the coordinator/cloud
+/// (`WorkflowRole::Orchestrate`) tier for this one attempt, instead of
+/// retrying the identical local model a further time. Each variant names a
+/// failure shape a small local model cannot fix by simply repeating the
+/// same dispatch — a reviewer REJECTION is deliberately not a member of
+/// this enum: that is the work itself being judged wrong (a content
+/// problem), not evidence the tier that produced it was too small, and
+/// retrying it on a stronger tier would not address why it was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkerFallbackReason {
+    /// R46a's `subagent_handler::classified_subagent_failure_message`
+    /// ("subagent failed: context_exceeded (...)") — shared by the goal
+    /// dispatch path via `goal_engine::InternalSubagentEngine::spawn`'s use
+    /// of the same `run_subagent_task`/`get_agent_messages` the delegate
+    /// path uses. The worker's own prompt overflowed its context window,
+    /// A29's exact shape (three identical context-exceeded attempts, then
+    /// an AttemptCap park, zero code written).
+    ContextExceeded,
+    /// The per-goal wall-clock ceiling was spent without finishing —
+    /// `goal_engine::wall_budget_exhausted_outcome`'s "wall budget
+    /// exhausted", `handle_goal_timeout`'s "exceeded its time bound", or
+    /// `goal_transition::BudgetExhaustion::Wallclock::describe`'s
+    /// "wallclock cap exhausted" (A39's exact shape).
+    WallOrTurnCeiling,
+    /// The attempt ended with nothing committed and no successful verify —
+    /// `maybe_salvage_committed_work`'s "no commits past the dispatch
+    /// baseline" note, or a recorded `zero_progress_streak` annotation
+    /// (`goal_transition::park_goal_with_meta`) — the local model never
+    /// produced anything a review could even look at.
+    VerifyFailedNoCommit,
+}
+
+impl WorkerFallbackReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ContextExceeded => "context_exceeded",
+            Self::WallOrTurnCeiling => "wall_or_turn_ceiling",
+            Self::VerifyFailedNoCommit => "verify_failed_no_commit",
+        }
+    }
+}
+
+/// Classify a prior attempt's `card.metadata_json.last_error` text into one
+/// of the three [`WorkerFallbackReason`] markers this lane redispatches on,
+/// or `None` for anything else — most importantly a reviewer rejection,
+/// which routes through `GoalAction::Reject` (`decisions_effects.rs`'s
+/// `("approve_review", Some("reject"))` handler), never through
+/// `goal_transition::requeue_goal`/`park_goal_with_meta`, so it never
+/// overwrites `last_error` with rejection text for this classifier to
+/// (mis)match against in the first place. An ordinary content-shaped
+/// verify failure with real committed work also does not match — only the
+/// specific zero-progress/no-commit shape does.
+fn classify_worker_fallback_reason(last_error: &str) -> Option<WorkerFallbackReason> {
+    if last_error.contains("context_exceeded") {
+        return Some(WorkerFallbackReason::ContextExceeded);
+    }
+    if last_error.contains("wall budget exhausted")
+        || last_error.contains("wallclock cap exhausted")
+        || last_error.contains("exceeded its time bound")
+    {
+        return Some(WorkerFallbackReason::WallOrTurnCeiling);
+    }
+    if last_error.contains("no commits past the dispatch baseline")
+        || last_error.contains("zero_progress_streak=")
+    {
+        return Some(WorkerFallbackReason::VerifyFailedNoCommit);
+    }
+    None
+}
+
+/// R48b (Q5's fallback rule): whether THIS re-dispatch should override its
+/// already-resolved role/model to the coordinator/cloud (`WorkflowRole::
+/// Orchestrate`) tier instead of repeating the local tier the goal started
+/// on. Pure and IO-free — every input is already sitting on the card
+/// before this is called, so the decision is table-testable without a
+/// database.
+///
+/// - `prior_last_error`: `card.metadata_json.last_error` left by whatever
+///   transition produced the Ready card this dispatch is about to claim.
+///   `None` on a goal's very first dispatch, or whenever the prior
+///   transition never wrote `last_error` at all.
+/// - `attempt_count`: the card's `attempt_count` BEFORE this dispatch's own
+///   stamp. `0` means this is the goal's first attempt — nothing to fall
+///   back FROM yet.
+/// - `prior_tier_was_local`: the prior attempt's own persisted
+///   `RoutingChoice.tier == WorkflowRole::Local` (read from
+///   `capability_snapshot.cost_routing.routing_choice`, R48d's seam). A
+///   goal that started on `Mechanical` or higher already ran a
+///   coordinator/cloud-shaped rung; this rule only exists to rescue a
+///   LOCAL start — a goal escalating through some other tier's own ladder
+///   is `escalate_verify_fix_loop`'s job, unchanged.
+/// - `already_used`: the one-shot `worker_fallback_used` guardrail — at
+///   most one fallback per goal, ever, so a goal can never oscillate
+///   between tiers.
+fn should_fallback_to_coordinator_tier(
+    prior_last_error: Option<&str>,
+    attempt_count: u64,
+    prior_tier_was_local: bool,
+    already_used: bool,
+) -> Option<WorkerFallbackReason> {
+    if already_used || attempt_count == 0 || !prior_tier_was_local {
+        return None;
+    }
+    classify_worker_fallback_reason(prior_last_error?)
+}
+
 /// R48d (HARNESS_LOOP_LOG.md "A45 design", Addendum (a)): one row of the
 /// coordinator-visible routing roster (`orchestrator__routing_roster`) —
 /// what one `WorkflowRole` currently resolves to. `available: false` names
@@ -5254,6 +5361,12 @@ pub(crate) async fn dispatch_goal_fn(
     // `capability_snapshot.cost_routing` after the match, alongside the
     // existing cheapest_capable/pack_honored fields.
     let mut routing_choice: Option<RoutingChoice> = None;
+    // R48b: set when this dispatch overrode a repeated local attempt to
+    // the coordinator/cloud tier (see `should_fallback_to_coordinator_
+    // tier`) — read after the match both to stamp the one-shot
+    // `worker_fallback_used` guardrail on the claim and to increment the
+    // `fallbacks` receipt counter alongside `routed_local`/`routed_cloud`.
+    let mut worker_fallback_applied: Option<WorkerFallbackReason> = None;
     let engine: Box<dyn goal_engine::GoalEngine> = match engine_kind {
         Some(agent_identity::WorkerEngineKind::ExternalCli { bin, args }) => {
             // External workers own their model flag in `agent.yaml`; the role
@@ -5468,6 +5581,81 @@ pub(crate) async fn dispatch_goal_fn(
                     }
                 }
             }
+            // R48b (HARNESS_LOOP_LOG.md "A45 design" Q5): a goal that
+            // started on the LOCAL worker tier and whose most recent
+            // attempt ended with a failure a local model cannot fix by
+            // repeating itself (context-exceeded, the wall/turn ceiling,
+            // or a failed verify with nothing committed) gets ONE
+            // redispatch on the coordinator/cloud tier instead of a third
+            // identical local attempt — never for a reviewer rejection
+            // (see `classify_worker_fallback_reason`'s own doc comment).
+            // Counted within the existing attempt cap: this only changes
+            // WHICH model runs this attempt, not how many attempts the
+            // goal gets. Checked LAST, after every other routing
+            // precedence above has already set `role`/`resolved` for this
+            // dispatch — an explicit per-goal `worker_tier` or a live
+            // verify-loop escalation that already moved this dispatch off
+            // Local wins outright (the `role == Some(Local)` guard below);
+            // this rule only fires when the goal is still about to repeat
+            // the identical local tier that just failed it.
+            if role == Some(crate::cost_router::WorkflowRole::Local) {
+                let prior_attempt_count = card
+                    .metadata_json
+                    .get("attempt_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let prior_tier_was_local = card
+                    .metadata_json
+                    .pointer("/capability_snapshot/cost_routing/routing_choice")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(crate::cost_router::WorkflowRole::Local.as_str());
+                let fallback_already_used = card
+                    .metadata_json
+                    .get("worker_fallback_used")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let prior_last_error = card
+                    .metadata_json
+                    .get("last_error")
+                    .and_then(serde_json::Value::as_str);
+                if let Some(fallback_reason) = should_fallback_to_coordinator_tier(
+                    prior_last_error,
+                    prior_attempt_count,
+                    prior_tier_was_local,
+                    fallback_already_used,
+                ) {
+                    if let Some(hit) = resolve_dispatch_role_model(
+                        crate::cost_router::WorkflowRole::Orchestrate,
+                        &derived,
+                        policy,
+                    ) {
+                        tracing::info!(
+                            target: "permagentd::brain",
+                            card_id,
+                            from = crate::cost_router::WorkflowRole::Local.as_str(),
+                            to = crate::cost_router::WorkflowRole::Orchestrate.as_str(),
+                            reason = fallback_reason.as_str(),
+                            "worker_fallback from={} to={} reason={}",
+                            crate::cost_router::WorkflowRole::Local.as_str(),
+                            crate::cost_router::WorkflowRole::Orchestrate.as_str(),
+                            fallback_reason.as_str()
+                        );
+                        role = Some(crate::cost_router::WorkflowRole::Orchestrate);
+                        resolved = Some(hit);
+                        routing_choice = Some(RoutingChoice {
+                            tier: crate::cost_router::WorkflowRole::Orchestrate,
+                            reason: format!("worker_fallback: {}", fallback_reason.as_str()),
+                        });
+                        worker_fallback_applied = Some(fallback_reason);
+                    }
+                    // No baked default: if the coordinator/cloud (HARD)
+                    // tier has no configured/derived model either,
+                    // `resolve_dispatch_role_model` returns `None` and the
+                    // dispatch simply proceeds on the local tier it
+                    // already resolved — matching every other cost_router
+                    // rule's guardrail (never invent a vendor default).
+                }
+            }
             // The routing receipt (#211 snapshot): configured / derived (with
             // provenance) / session model — so the goal card says HOW the model
             // was chosen, not just which worker ran.
@@ -5594,6 +5782,12 @@ pub(crate) async fn dispatch_goal_fn(
         }
     }
     claim_patch.insert("attempt_count".to_string(), serde_json::json!(next_attempt));
+    // R48b: the one-shot guardrail — once a goal has fallen back to the
+    // coordinator/cloud tier, it never oscillates back to trying the same
+    // local tier a further time on this or any later re-dispatch.
+    if worker_fallback_applied.is_some() {
+        claim_patch.insert("worker_fallback_used".to_string(), serde_json::json!(true));
+    }
     claim_patch.insert(
         "dispatched_lifecycle".to_string(),
         serde_json::json!(daemon_lifecycle_id()),
@@ -5680,6 +5874,25 @@ pub(crate) async fn dispatch_goal_fn(
     }
     if pack_honored {
         crate::cost_router::routing_receipt::record("cost_routing", "pack_honored");
+    }
+    // R48b (Addendum (c)): classify THIS dispatch's actual resolved
+    // provider (whichever engine kind produced it — InternalSubagent's
+    // resolved/session model, or an ExternalCli's static `agent.yaml`
+    // provider) via the SAME `is_local_provider` the routing roster (a)
+    // uses, so the roster's local/cloud label and this counter can never
+    // disagree. `None` (no provider recorded at all) increments neither —
+    // never a guessed default.
+    match capability_snapshot
+        .pointer("/model_routing/provider")
+        .and_then(serde_json::Value::as_str)
+        .map(crate::cost_router::is_local_provider)
+    {
+        Some(true) => crate::cost_router::routing_receipt::record("cost_routing", "routed_local"),
+        Some(false) => crate::cost_router::routing_receipt::record("cost_routing", "routed_cloud"),
+        None => {}
+    }
+    if worker_fallback_applied.is_some() {
+        crate::cost_router::routing_receipt::record("cost_routing", "fallbacks");
     }
 
     // Register the worker handles: kill for the cancel path (#490), steer for
@@ -29418,6 +29631,125 @@ mod tests {
             "dispatch_worker_tier": "not-a-real-tier",
         }))
         .is_none());
+    }
+
+    /// R48b: `classify_worker_fallback_reason` covering all three trigger
+    /// markers, plus the honest non-matches — a reviewer rejection's own
+    /// wording, an ordinary content-shaped verify failure with real
+    /// committed work, and a blank/unrelated string.
+    #[test]
+    fn classify_worker_fallback_reason_matches_the_three_markers_only() {
+        assert_eq!(
+            classify_worker_fallback_reason(
+                "subagent failed: context_exceeded (prompt 34930 tokens > limit 32768)"
+            ),
+            Some(WorkerFallbackReason::ContextExceeded)
+        );
+        assert_eq!(
+            classify_worker_fallback_reason(
+                "wallclock cap exhausted (1200s elapsed of 1200s); last error: worker exceeded \
+                 its time bound; salvage: no commits past the dispatch baseline — nothing to \
+                 salvage"
+            ),
+            Some(WorkerFallbackReason::WallOrTurnCeiling),
+            "either wording alone (\"wallclock cap exhausted\" or \"exceeded its time bound\") \
+             must classify, and the FIRST match wins when both are present in one string"
+        );
+        assert_eq!(
+            classify_worker_fallback_reason(
+                "wall budget exhausted: 40s remaining, the last attempt took 90s"
+            ),
+            Some(WorkerFallbackReason::WallOrTurnCeiling)
+        );
+        assert_eq!(
+            classify_worker_fallback_reason(
+                "attempt cap exhausted (3/3 attempts); last error: no commits past the dispatch \
+                 baseline — nothing to salvage"
+            ),
+            Some(WorkerFallbackReason::VerifyFailedNoCommit)
+        );
+        assert_eq!(
+            classify_worker_fallback_reason("held — still verifying; zero_progress_streak=2"),
+            Some(WorkerFallbackReason::VerifyFailedNoCommit)
+        );
+        // A reviewer rejection never writes `last_error` through this
+        // classifier's callers at all (see the function's own doc
+        // comment) — but even its own wording, hypothetically, must not
+        // accidentally match one of the three markers above.
+        assert_eq!(
+            classify_worker_fallback_reason("Rejected after maximum attempts"),
+            None
+        );
+        // A genuine content-shaped verify failure with real committed
+        // work — never the no-commit shape.
+        assert_eq!(
+            classify_worker_fallback_reason(
+                "attempt cap exhausted (3/3 attempts); last error: verify failed: 2 tests failing"
+            ),
+            None
+        );
+        assert_eq!(classify_worker_fallback_reason(""), None);
+    }
+
+    /// R48b: `should_fallback_to_coordinator_tier`'s gate — the classified
+    /// reason alone is not enough; the goal must actually be on its second
+    /// (or later) attempt, its prior tier must have been LOCAL, and the
+    /// one-shot guardrail must not already be spent.
+    #[test]
+    fn should_fallback_to_coordinator_tier_gates_on_attempt_count_prior_tier_and_guardrail() {
+        let context_exceeded = "subagent failed: context_exceeded (the sub-session's prompt \
+                                 overflowed its context window)";
+
+        // The base case: attempt_count > 0, prior tier local, not yet used,
+        // a classifiable error — fallback fires.
+        assert_eq!(
+            should_fallback_to_coordinator_tier(Some(context_exceeded), 1, true, false),
+            Some(WorkerFallbackReason::ContextExceeded)
+        );
+
+        // A goal's very first dispatch has nothing to fall back FROM.
+        assert_eq!(
+            should_fallback_to_coordinator_tier(Some(context_exceeded), 0, true, false),
+            None,
+            "attempt_count == 0 must never fall back"
+        );
+
+        // A goal that started on a non-Local tier (Mechanical, Orchestrate,
+        // …) already ran a coordinator/cloud-shaped rung; this rule does
+        // not second-guess any other tier's own escalation ladder.
+        assert_eq!(
+            should_fallback_to_coordinator_tier(Some(context_exceeded), 1, false, false),
+            None,
+            "a non-local prior tier must never fall back through this rule"
+        );
+
+        // The one-shot guardrail: once used, never again for this goal.
+        assert_eq!(
+            should_fallback_to_coordinator_tier(Some(context_exceeded), 2, true, true),
+            None,
+            "the guardrail must refuse a second fallback for the same goal"
+        );
+
+        // Reviewer rejected: never writes a matching last_error, and even
+        // its own wording (see the classifier test above) does not match —
+        // no fallback.
+        assert_eq!(
+            should_fallback_to_coordinator_tier(
+                Some("Rejected after maximum attempts"),
+                1,
+                true,
+                false
+            ),
+            None,
+            "a reviewer rejection is a content problem, not a tier problem — never fall back"
+        );
+
+        // No prior error recorded at all (e.g. a metadata shape this
+        // classifier has never seen) — honestly nothing to classify.
+        assert_eq!(
+            should_fallback_to_coordinator_tier(None, 1, true, false),
+            None
+        );
     }
 
     /// Lane U / U1 (HARNESS_LOOP_LOG.md, "Lane G4 review" finding 1,
