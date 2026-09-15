@@ -18538,6 +18538,14 @@ async fn land_salvage_approved_by_reviewer(
                 })
             })
             .unwrap_or_else(|| "no landing outcome was recorded for this approval".to_string());
+        // R43a-c: `refusal_reason` is the structured token `land_approved_
+        // goal` persists alongside `describe`'s prose — thread it into the
+        // audit trail so a reader can match on the reason without
+        // re-parsing `reason`.
+        let refusal_reason = landing
+            .and_then(|l| l.get("refusal_reason"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("none");
         let note = format!(
             "the independent reviewer ({reviewer_provider}/{reviewer_model}) approved {ahead} \
              commit(s), but the landing attempt did not reach the trunk: {reason}"
@@ -18546,6 +18554,7 @@ async fn land_salvage_approved_by_reviewer(
             target: "permagentd::brain",
             goal_id = %card.id,
             reason = %reason,
+            refusal_reason = %refusal_reason,
             "salvage_land_refused: reviewer approval did not translate into a landed goal — \
              leaving the audit trail honest rather than claiming landed"
         );
@@ -18553,7 +18562,7 @@ async fn land_salvage_approved_by_reviewer(
             pool,
             &card.id,
             "salvage_land_refused",
-            &format!("reason={reason}"),
+            &format!("reason={reason} refusal_reason={refusal_reason}"),
         )
         .await;
         return SalvageOutcome::NotSalvaged { note };
