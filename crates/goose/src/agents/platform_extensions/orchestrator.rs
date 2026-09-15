@@ -13967,7 +13967,74 @@ async fn maybe_salvage_committed_work(
     };
 
     if !crate::agents::platform_extensions::developer::verify::is_genuine_pass(&result) {
-        let note = "salvage verify did not report a genuine, non-vacuous pass".to_string();
+        // Lane R22c-b: `is_genuine_pass` alone cannot tell a REAL code
+        // failure apart from three honest non-pass shapes that are never
+        // the committed code's fault. Traced against the exact M24
+        // `editapply` record this lane was asked to explain
+        // (`dschat-harness-editapply-duplicate-discount-blocks`,
+        // `salvage_receipt.outcome: "salvage_verify_failed"` on commit
+        // `416550b`, while the SAME fix content passed the fixture's oracle
+        // in other records): the worktree's `package.json` declares no
+        // `build`/`test` script at all — not a placeholder, none — so
+        // `node_checks` (`developer/verify.rs`) returns a hard `Err(..)`,
+        // which `verify_with_cwd` reports as `verdict: "error"`, NOT
+        // `verdict: "no_checks"`. R21c-b's acceptance-criteria probe
+        // synthesis is never even consulted for this shape (`would_use_
+        // criteria` only fires for `NoChecksConfigured` or an all-smoke
+        // `Checks` outcome, `verify.rs:496-499`) — cwd and scope were
+        // already correct (this call already runs in the goal worktree
+        // with `scope: None`/Auto, Y11's fork-point fallback included; ruled
+        // out by inspection), and `node_modules` never entered into it: the
+        // gap is a package.json with nothing runnable declared, reached via
+        // `error_result` instead of `no_checks_result`. Before this lane,
+        // EVERY non-pass verdict funneled into one generic
+        // `salvage_verify_failed`, so this genuinely correct, committed fix
+        // was branded a failure when nothing ever ran against its code.
+        let observation = result.structured_content.as_ref().and_then(|v| {
+            serde_json::from_value::<
+                crate::agents::platform_extensions::developer::verify::VerificationObservation,
+            >(v.clone())
+            .ok()
+        });
+        let verdict = observation.as_ref().and_then(|o| o.verdict.as_deref());
+        let evidence = observation
+            .as_ref()
+            .and_then(|o| o.evidence.clone())
+            .unwrap_or_else(|| {
+                "salvage verify did not report a genuine, non-vacuous pass".to_string()
+            });
+
+        // R18h: a check ran and hit a missing interpreter/runtime
+        // dependency for THIS run — never a defect in the committed code.
+        // Coordinator's explicit instruction: skip, not a failure.
+        if verdict == Some("environment") {
+            record_salvage_receipt(pool, &card.id, "salvage_skipped_environment", &evidence).await;
+            return not_salvaged(evidence);
+        }
+
+        // Neither a pass nor a fail: no check ever ran against the code at
+        // all — either R21c's honest `NO_CHECKS_VERDICT` (a recognized
+        // project with nothing runnable, and no acceptance-criterion probe
+        // could stand in), or the `error_result` shape above that reaches
+        // the exact same place through `node_checks`'/`select_checks`'s own
+        // `Err(..)` branches (a project verify could not even determine how
+        // to check at all — the M24 record's actual cause). Both are
+        // UNVERIFIED, not FAILED: hand the committed work to a human
+        // reviewer instead of discarding it, never auto-landed.
+        if matches!(verdict, Some("no_checks") | Some("error")) {
+            return hand_salvaged_work_to_review_unverified(pool, card, ahead, &evidence).await;
+        }
+
+        // A genuine FAIL (a real check ran and reported a defect) or a
+        // vacuous PASS (ran, but only a syntax-only smoke check or a
+        // zero-test run) — name the failing check so the audit row and the
+        // next analysis never have to re-derive it from raw verify output.
+        let note = match observation.as_ref().and_then(|o| o.command.clone()) {
+            Some(check) => format!("salvage verify failed for `{check}`: {evidence}"),
+            None => {
+                format!("salvage verify did not report a genuine, non-vacuous pass: {evidence}")
+            }
+        };
         record_salvage_receipt(pool, &card.id, "salvage_verify_failed", &note).await;
         return not_salvaged(note);
     }
@@ -14084,6 +14151,118 @@ async fn maybe_salvage_committed_work(
     // above), not just the card-metadata write — a no-op outside an active
     // receipts run, mirroring every other `record_count` call site.
     crate::receipts::record_count("dag_enforcement", "salvaged_on_park", 1);
+    SalvageOutcome::Salvaged { note }
+}
+
+/// Lane R22c-b: NO_CHECKS (R21c) — and the `error_result` shape that reaches
+/// the same honest place ("nothing could be checked") through `node_checks`/
+/// `select_checks`'s own `Err(..)` branches — are not a pass (R21c's own doc
+/// comment on `NO_CHECKS_VERDICT` already established that), but they are
+/// also not a code failure: nothing ever ran against the committed code, so
+/// nothing disputes it either. `decide_goal_done_hold` (`hold_done.rs`) has
+/// no NO_CHECKS concept at all — routing back through it (the way a genuine
+/// pass recurses through `handle_goal_completion`) would just Hold asking
+/// for a verify that structurally cannot happen here. This bypasses that
+/// re-decision entirely and transitions the card InProgress → Review
+/// directly, using the SAME `advance_goal_checked`/`approve_review`
+/// mechanism an ordinary verified completion uses (`handle_goal_
+/// completion`'s own `Ok(())` arm) — just without its evidence-formatting/
+/// review-fanout/headless-auto-land extras, which all assume a real verify
+/// ran. Deliberately never auto-landed, headless or not: nothing was
+/// actually verified, so a human reviewer inspects the diff themselves
+/// before this can land — "the reviewer inspects the diff; land only via
+/// the normal review path," not an unattended green.
+async fn hand_salvaged_work_to_review_unverified(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    ahead: u64,
+    verify_note: &str,
+) -> SalvageOutcome {
+    let mut patch = serde_json::Map::new();
+    patch.insert(
+        "completed_at".to_string(),
+        serde_json::json!(chrono::Utc::now().to_rfc3339()),
+    );
+    if let Err(e) = goal_transition::advance_goal_checked(
+        pool,
+        &card.id,
+        GoalAction::Review,
+        decisions::ACTOR_SYSTEM,
+        None,
+        TransitionEffects {
+            metadata_patch: patch,
+            ..Default::default()
+        },
+    )
+    .await
+    {
+        let e = String::from(e);
+        let note = format!(
+            "{ahead} commit(s) past baseline could not be checked ({verify_note}), and the \
+             goal could not be moved to Review either: {e}"
+        );
+        record_salvage_receipt(
+            pool,
+            &card.id,
+            "salvage_skipped_review_transition_failed",
+            &note,
+        )
+        .await;
+        return SalvageOutcome::NotSalvaged { note };
+    }
+
+    let note = format!(
+        "salvaged {ahead} commit(s): no automatic check could run against them ({verify_note}) \
+         — moved to Review UNVERIFIED for a human to inspect the diff directly, never auto-landed"
+    );
+    let already_has_review_decision =
+        decisions::find_open_decision_for_goal(pool, &card.id, "approve_review")
+            .await
+            .unwrap_or(None)
+            .is_some();
+    if !already_has_review_decision {
+        let headline = format!(
+            "\"{}\" needs review — verify could not check it automatically",
+            card.title
+        );
+        let headline: String = headline
+            .chars()
+            .take(decisions::MAX_HEADLINE_CHARS)
+            .collect();
+        let detail = format!(
+            "{ahead} commit(s) committed past the dispatch baseline. Salvage ran verify, but \
+             {verify_note} Inspect the diff directly before approving — this was never \
+             automatically verified."
+        );
+        if let Err(e) = create_decision_with_retry(
+            pool,
+            decisions::NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(card.project_id.clone()),
+                headline: Some(headline),
+                detail: Some(detail),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        {
+            tracing::error!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "goal salvaged unverified to Review but its approve_review decision could not \
+                 be created: {e}"
+            );
+            record_decision_create_failure(pool, &card.id, "approve_review", &e).await;
+        }
+    }
+    // Lane L2: same post-Review verification hook an ordinary completion
+    // kicks off — absent hook or hook failure never affects this path.
+    if let Some(hook) = GOAL_REVIEW_HOOK.get() {
+        hook(pool.clone(), card.id.clone());
+    }
+    record_salvage_receipt(pool, &card.id, "salvaged_on_park_unverified", &note).await;
     SalvageOutcome::Salvaged { note }
 }
 
@@ -20265,6 +20444,327 @@ mod tests {
             vec!["salvage_skipped_no_commits".to_string()],
             "even the common 'nothing to salvage' case must leave a decision_audit row, not \
              just a card-metadata breadcrumb — the pre-fix defect A23/M24 found"
+        );
+    }
+
+    // ── Lane R22c-b: salvage verify honestly distinguishes NO_CHECKS/error ──
+    // from ENVIRONMENT from a real FAIL, instead of branding every non-pass
+    // as `salvage_verify_failed`.
+    //
+    // Root cause traced against the exact M24 `editapply` record the
+    // coordinator named (`dschat-harness-editapply-duplicate-discount-
+    // blocks`, `salvage_receipt.outcome: "salvage_verify_failed"` on commit
+    // `416550b`): NOT wrong cwd/scope (salvage already runs `verify_with_cwd`
+    // in the goal worktree with `scope: None`/Auto, ruled out by inspection
+    // of `maybe_salvage_committed_work`'s `verify_params`), NOT a missing
+    // `node_modules` (nothing was ever spawned to hit that), but the
+    // worktree's `package.json` declaring no `build`/`test` script at all —
+    // `node_checks` (`developer/verify.rs`) returns a hard `Err(..)` for
+    // that shape, which `verify_with_cwd` reports as `verdict: "error"`, a
+    // DIFFERENT tag than R21c's `verdict: "no_checks"`. Both are honestly
+    // "nothing ran against the code", so both now route the same way.
+
+    /// A worktree with a real `package.json` but no `build`/`test` script at
+    /// all (no scripts object — the exact M24 shape, not the `npm init`
+    /// placeholder `NoChecksConfigured` already covers) and no Cargo/Go/
+    /// Python markers to fall back to. `node_checks` returns `Err(..)`, so
+    /// `verify_with_cwd` reports `verdict: "error"` — deterministic and
+    /// dependency-free (`read_package_scripts` only parses the file, no
+    /// `node`/`npm` binary is ever spawned for this shape).
+    fn r22c_b_worktree_with_committed_fix_no_checks(
+        run_id: &str,
+    ) -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        r20b_git(root, &["init", "-q", "-b", "main"]);
+        r20b_git(root, &["config", "user.email", "test@example.com"]);
+        r20b_git(root, &["config", "user.name", "Test"]);
+        r20b_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(
+            root.join("package.json"),
+            "{\n  \"name\": \"r22c-b-fixture\",\n  \"private\": true,\n  \"type\": \"module\"\n}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/pricing.ts"),
+            "export const percentOff = 0.15;\n",
+        )
+        .unwrap();
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "base"]);
+        let baseline = r20b_git(root, &["rev-parse", "HEAD"]);
+
+        let branch = format!("goal/{run_id}");
+        r20b_git(root, &["checkout", "-q", "-b", &branch]);
+        std::fs::write(
+            root.join("src/pricing.ts"),
+            "export const percentOff = 0.20;\n",
+        )
+        .unwrap();
+        r20b_git(
+            root,
+            &["commit", "-q", "-am", "fix: correct the discount percent"],
+        );
+        let head = r20b_git(root, &["rev-parse", "HEAD"]);
+        (dir, baseline, head)
+    }
+
+    async fn r22c_b_setup_goal_with_no_checks_fix(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        run_id: &str,
+    ) -> (cards::Card, tempfile::TempDir) {
+        let (dir, baseline, head) = r22c_b_worktree_with_committed_fix_no_checks(run_id);
+        let card = setup_goal_in_state(pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": head,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 1,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r22c-b-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(dir.path().to_string_lossy().as_ref())
+            .execute(pool)
+            .await
+            .unwrap();
+        persist_card_meta(pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(pool, &card.id).await.unwrap().unwrap();
+        (card, dir)
+    }
+
+    /// A20/R20b-shaped Rust fixture, but the committed "fix" is intentionally
+    /// wrong (`assert_eq!(add(2, 2), 5)`), so `cargo test` — the check
+    /// `detect_checks` picks for a Cargo project — genuinely fails.
+    fn r22c_b_worktree_with_committed_failing_fix(
+        run_id: &str,
+    ) -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        r20b_git(root, &["init", "-q", "-b", "main"]);
+        r20b_git(root, &["config", "user.email", "test@example.com"]);
+        r20b_git(root, &["config", "user.name", "Test"]);
+        r20b_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"r22c-b-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "base"]);
+        let baseline = r20b_git(root, &["rev-parse", "HEAD"]);
+
+        let branch = format!("goal/{run_id}");
+        r20b_git(root, &["checkout", "-q", "-b", &branch]);
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n\n#[test]\nfn it_adds() { \
+             assert_eq!(add(2, 2), 5); }\n",
+        )
+        .unwrap();
+        r20b_git(
+            root,
+            &[
+                "commit",
+                "-q",
+                "-am",
+                "fix: intentionally wrong, for the salvage-failure test",
+            ],
+        );
+        let head = r20b_git(root, &["rev-parse", "HEAD"]);
+        (dir, baseline, head)
+    }
+
+    async fn r22c_b_setup_goal_with_committed_failing_fix(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        run_id: &str,
+    ) -> (cards::Card, tempfile::TempDir) {
+        let (dir, baseline, head) = r22c_b_worktree_with_committed_failing_fix(run_id);
+        let card = setup_goal_in_state(pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": head,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r22c-b-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(dir.path().to_string_lossy().as_ref())
+            .execute(pool)
+            .await
+            .unwrap();
+        persist_card_meta(pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(pool, &card.id).await.unwrap().unwrap();
+        (card, dir)
+    }
+
+    /// The coordinator's first required test: a committed goal in a repo
+    /// with no detectable checks must be handed to Review, never branded a
+    /// failed salvage.
+    #[tokio::test]
+    async fn hold_exhaustion_park_with_no_detectable_checks_hands_to_review() {
+        let pool = test_pool().await;
+        let (card, _dir) = r22c_b_setup_goal_with_no_checks_fix(&pool, "r22c-b-no-checks").await;
+        persist_card_meta(&pool, &card.id, |m| {
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("review"),
+            "no detectable checks must hand the goal to Review, never park it as a failure"
+        );
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("an unverified salvage must still leave a card-metadata breadcrumb");
+        assert_eq!(
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvaged_on_park_unverified")
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+                .await
+                .unwrap()
+                .is_some(),
+            "an unverified salvage must still raise an approve_review decision — a human \
+             inspects the diff, it is never auto-landed"
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_none(),
+            "a goal handed to Review must never also raise an unblock decision"
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(outcomes, vec!["salvaged_on_park_unverified".to_string()]);
+    }
+
+    /// The coordinator's second required test: a REAL failing check must
+    /// still be `salvage_verify_failed`, with the failing check itself named
+    /// in the note and the `decision_audit` row's evidence — never confused
+    /// with the honest "nothing could run" cases above.
+    #[tokio::test]
+    async fn hold_exhaustion_park_with_a_real_test_failure_names_the_failing_check() {
+        let pool = test_pool().await;
+        let (card, _dir) =
+            r22c_b_setup_goal_with_committed_failing_fix(&pool, "r22c-b-real-fail").await;
+        persist_card_meta(&pool, &card.id, |m| {
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "a real test failure must still park the goal, exactly as before this lane"
+        );
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("a failed salvage must still leave a card-metadata breadcrumb");
+        assert_eq!(
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvage_verify_failed")
+        );
+        let note = receipt.get("note").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            note.contains("cargo test"),
+            "the failing check must be named in the note: {note}"
+        );
+
+        let outcomes = salvage_audit_outcomes(&pool, &card.id).await;
+        assert_eq!(outcomes, vec!["salvage_verify_failed".to_string()]);
+        let evidence: String = sqlx::query_scalar(
+            "SELECT evidence_digest FROM decision_audit WHERE goal_id = ? AND \
+             outcome = 'salvage_verify_failed'",
+        )
+        .bind(&card.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            evidence.contains("cargo test"),
+            "the audit row's evidence must name the failing check too: {evidence}"
         );
     }
 
