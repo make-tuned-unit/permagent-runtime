@@ -1840,7 +1840,13 @@ async fn run_probe_check(kind: &ProbeKind, dir: &Path, timeout_secs: u64) -> Che
             }
         }
         ProbeKind::CommandExitsZero(command_line) => {
-            run_check(&Check::shell(command_line), dir, timeout_secs).await
+            // `run_check` -> `run_probe_check` -> `run_check` is a genuine
+            // async cycle (a probe may resolve to an ordinary shell check),
+            // so this edge must be boxed or the future would be infinitely
+            // sized (E0733). One `Box::pin` anywhere in the cycle is enough;
+            // put it here, on the rarer probe path, rather than taxing every
+            // ordinary check.
+            Box::pin(run_check(&Check::shell(command_line), dir, timeout_secs)).await
         }
     }
 }
