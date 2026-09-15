@@ -14423,7 +14423,9 @@ async fn maybe_salvage_committed_work(
             return hand_salvaged_work_to_review_unverified(
                 pool,
                 card,
-                ahead,
+                // `commits_unlanded_at_trunk` yields u32; this helper takes
+                // u64. Widening is lossless.
+                ahead.into(),
                 &evidence,
                 worktree_path,
                 &baseline,
