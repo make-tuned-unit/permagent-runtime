@@ -34,6 +34,20 @@ test: [true]
 prompt: |
   This project's roadmap was already approved and is currently paused.
   Continue executing it — do not re-plan or propose a new roadmap.
+# Lane R51a (HARNESS_LOOP_LOG.md "Lane R51a"): as K8's note above already
+# flagged for `roadmap-state.json`, `workspace/` here was still empty even
+# after that fix — nothing for the "Add a retry policy to the client"
+# goal's dispatched worker to add a retry to. One observed run's worker
+# fabricated a throwaway `tests/test_retry.py` with a placeholder
+# `api_key` just to have something to commit, and got correctly refused
+# by the credential guard — a fixture defect, not a worker or guard bug.
+# `workspace/` now seeds a real `client.py` (an API call with no retry
+# policy yet, matching the goal's own title) plus a rename/refactor-safe
+# `test_client.py` and a `pyproject.toml` pytest marker, so the worker has
+# real code to add a retry policy to and a genuine (non-vacuous) `verify`
+# PASS is reachable — see Lane R51a's fuller note for why `verify_ran`
+# requires this (`session_had_successful_verify` /
+# `VerifyEvidence::Genuine`, orchestrator.rs).
 selection_check:
   must_call: [resume_roadmap]
   must_not_call: [create_roadmap]

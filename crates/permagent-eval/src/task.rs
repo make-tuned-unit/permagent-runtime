@@ -986,6 +986,45 @@ mod tests {
     }
 
     #[test]
+    fn r51a_worker_dispatch_fixtures_seed_a_real_workspace_not_an_empty_one() {
+        // Lane R51a (HARNESS_LOOP_LOG.md "Lane R51a"): M39's
+        // verification_integrity gate failed on both these fixtures with
+        // goals=1, review_reached=0 -- their dispatched worker's checkout
+        // was a bare, empty seed commit (K8/K12 only ever seeded the DB
+        // card via seed/harness_state.json, never a workspace/). With
+        // nothing to rename/add-to and no test to run, the worker can
+        // never earn a genuine (non-vacuous) `verify` PASS, so
+        // `maybe_hold_review` can never Allow -> the goal is stuck
+        // Hold/requeue or an honest stuck escalation, and review is never
+        // reached. Pin that both fixtures now ship a real, non-empty
+        // workspace/ so a future edit can't silently regress this back to
+        // empty.
+        let tasks_dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tasks"));
+        let tasks = load_task_set(tasks_dir).expect("bundled task set must load");
+        for id in [
+            "select-checks-worker-before-dispatch",
+            "select-existing-roadmap-resumes-not-redecomposes",
+        ] {
+            let task = tasks
+                .iter()
+                .find(|t| t.spec.id == id)
+                .unwrap_or_else(|| panic!("bundled task set must contain {id}"));
+            assert!(
+                task.has_workspace(),
+                "{id} must seed a workspace/ directory for its dispatched worker"
+            );
+            let files: Vec<_> = std::fs::read_dir(task.workspace_dir())
+                .unwrap_or_else(|e| panic!("reading {id}'s workspace/: {e}"))
+                .filter_map(|e| e.ok())
+                .collect();
+            assert!(
+                !files.is_empty(),
+                "{id}'s workspace/ directory must not be empty"
+            );
+        }
+    }
+
+    #[test]
     fn select_tasks_filters_and_rejects_unknown() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
