@@ -101,7 +101,7 @@ impl Agent {
         let accounting = self.accounted_fast_completion(&session, provider, true);
         let (compacted_conversation, usage) = compact_messages_accounted(
             session_id,
-            &conversation,
+            conversation,
             true, // is_manual_compact
             accounting.as_ref(),
         )

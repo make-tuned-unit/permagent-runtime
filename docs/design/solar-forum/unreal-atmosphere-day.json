@@ -1,0 +1,9 @@
+{
+  "status": "complete",
+  "appearance": "day",
+  "map": "/Game/SolarForum/Maps/ForumCinematic",
+  "lanterns": 25,
+  "stars": false,
+  "sunLux": 85000.0,
+  "exposureEV100": 13.0
+}

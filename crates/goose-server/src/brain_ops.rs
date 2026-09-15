@@ -555,6 +555,7 @@ struct ChatMemoryJob {
 
 /// Enqueue a chat turn durably before returning to the route. Spectral
 /// ingestion is asynchronous and retryable; the transcript remains evidence.
+#[allow(clippy::too_many_arguments)]
 pub async fn persist_chat_turn(
     brain: permagent::brain_handle::SafeBrain,
     pool: Option<sqlx::Pool<sqlx::Sqlite>>,
@@ -967,8 +968,9 @@ mod tests {
         let mut cursor = 0;
         for beat in fixture["ordered_beats"].as_array().unwrap() {
             let beat = beat.as_str().unwrap();
-            let relative = prompt[cursor..]
-                .find(beat)
+            let relative = prompt
+                .get(cursor..)
+                .and_then(|rest| rest.find(beat))
                 .unwrap_or_else(|| panic!("missing or out-of-order story beat: {beat}"));
             cursor += relative + beat.len();
         }

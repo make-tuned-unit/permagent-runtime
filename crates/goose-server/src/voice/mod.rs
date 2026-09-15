@@ -22,7 +22,6 @@ pub mod speech_normalize;
 pub mod spoken_verdict;
 pub mod user_lexicon;
 
-pub use provider::{
-    SpeechToText, StreamingSpeechToText, StreamingSttEvent, StreamingSttGate, StreamingSttSession,
-    TextToSpeech,
-};
+// The streaming types are referenced through `voice::provider::*` at every use
+// site, so re-exporting them here only created names nothing reads.
+pub use provider::{SpeechToText, TextToSpeech};

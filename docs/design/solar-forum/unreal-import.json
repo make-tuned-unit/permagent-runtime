@@ -1,0 +1,17 @@
+{
+  "status": "complete",
+  "engine": "5.8.2-56702186+++UE5+Release-5.8",
+  "mesh": "/Game/SolarForum/Architecture/solar-forum.solar-forum",
+  "diameterCm": 58228.568359375,
+  "materialSlots": 51,
+  "collision": "complex-as-simple, static architecture",
+  "map": "/Game/SolarForum/Maps/Forum",
+  "gameMode": "/Game/FirstPerson/Blueprints/BP_FirstPersonGameMode.BP_FirstPersonGameMode_C",
+  "playerStart": [
+    0,
+    1500,
+    110
+  ],
+  "blueprintStatus": "<BlueprintStatus.BS_UP_TO_DATE: 3>",
+  "playTested": false
+}

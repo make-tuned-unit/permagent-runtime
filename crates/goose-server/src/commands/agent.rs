@@ -317,21 +317,6 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
 /// is legitimate — but finite, which is the whole point. Failure is not fatal:
 /// sessions surface a provider error, which is far better than an unreachable
 /// daemon, and Settings can re-configure without a restart.
-#[cfg(test)]
-mod startup_order_tests {
-    #[test]
-    fn restart_dispatcher_is_installed_before_boot_reconciliation() {
-        // Wiring regression complements the core injected-dispatch recovery
-        // test: AppState tests must never install or trigger real workers.
-        let serving = include_str!("agent.rs");
-        let install = serving.find("::install_dispatch_hook(").unwrap();
-        let reconcile = serving.find("::spawn_boot_reconcile(").unwrap();
-        assert!(install < reconcile);
-        let state = include_str!("../state.rs");
-        assert!(!state.contains("::spawn_boot_reconcile("));
-    }
-}
-
 async fn init_default_provider(app_state: std::sync::Arc<state::AppState>) {
     const PROVIDER_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
@@ -407,5 +392,20 @@ async fn init_default_provider(app_state: std::sync::Arc<state::AppState>) {
                 PROVIDER_INIT_TIMEOUT
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod startup_order_tests {
+    #[test]
+    fn restart_dispatcher_is_installed_before_boot_reconciliation() {
+        // Wiring regression complements the core injected-dispatch recovery
+        // test: AppState tests must never install or trigger real workers.
+        let serving = include_str!("agent.rs");
+        let install = serving.find("::install_dispatch_hook(").unwrap();
+        let reconcile = serving.find("::spawn_boot_reconcile(").unwrap();
+        assert!(install < reconcile);
+        let state = include_str!("../state.rs");
+        assert!(!state.contains("::spawn_boot_reconcile("));
     }
 }

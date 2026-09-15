@@ -523,7 +523,6 @@ impl MemberCaller for LiveCaller {
                     &lease_until,
                     &self
                         .budget_config
-                        .clone()
                         .unwrap_or_else(crate::cost_router::budget::load_budget_config),
                 )
                 .await

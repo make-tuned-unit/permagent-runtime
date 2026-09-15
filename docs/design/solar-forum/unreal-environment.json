@@ -1,0 +1,28 @@
+{
+  "status": "complete",
+  "map": "/Game/SolarForum/Maps/ForumCinematic",
+  "scannedAssets": {
+    "jacaranda_tree": {
+      "heightCm": 1946.8874893188477,
+      "slots": [
+        "jacaranda_tree_branches",
+        "jacaranda_tree_trunk",
+        "jacaranda_tree_leaves"
+      ]
+    },
+    "fern_02": {
+      "heightCm": 42.769469022750854,
+      "slots": [
+        "fern_02"
+      ]
+    },
+    "rock_09": {
+      "heightCm": 3.294884890317917,
+      "slots": [
+        "rock_09"
+      ]
+    }
+  },
+  "environmentActors": 112,
+  "renderVerified": true
+}

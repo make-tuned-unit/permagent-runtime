@@ -1,0 +1,362 @@
+/* All exploration rules are scoped;
+   importing ForumView cannot repaint the app. */
+/* The forum fills its parent (a workspace panel, or #root on the standalone
+   page). No viewport units and no minimum height: a panel can be short or
+   narrow, and the shell must shrink with it rather than overflow the panel. */
+.forum-shell {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,370px);
+  height:100%;
+  min-height:0;
+  overflow:hidden;
+  background:var(--forum-bg);
+  color:var(--forum-text);
+  font-family:var(--forum-body);
+  font-synthesis:none}
+.forum-shell * {
+  box-sizing:border-box}
+.forum-world {
+  position:relative;
+  min-width:0;
+  min-height:0;
+  overflow:hidden}
+.forum-brand {
+  position:absolute;
+  top:28px;
+  left:28px;
+  display:flex;
+  align-items:center;
+  gap:14px;
+  pointer-events:none;
+  padding:16px 20px;
+  background:var(--forum-bg);
+  border:1px solid var(--forum-border);
+  border-radius:var(--forum-radius);
+  box-shadow:0 8px 24px #0002}
+.forum-shell .eyebrow {
+  font:10px var(--forum-mono);
+  letter-spacing:.14em;
+  color:var(--forum-muted)}
+.forum-shell h1 {
+  margin:5px 0;
+  color:var(--forum-text);
+  font-family:var(--forum-display)}
+.forum-shell h2 {
+  font-family:var(--forum-display);
+  margin:14px 0}
+.forum-shell h3 {
+  font-family:var(--forum-display);
+  font-size:20px;
+  font-weight:600;
+  line-height:26px;
+  margin:14px 0}
+.forum-brand p {
+  font-size:12px;
+  color:var(--forum-muted);
+  margin:0}
+.forum-panel {
+  background:var(--forum-panel);
+  border-left:1px solid var(--forum-border);
+  padding:28px;
+  min-height:0;
+  overflow-y:auto;
+  z-index:2}
+.forum-panel p {
+  font-size:13px;
+  line-height:1.6;
+  color:var(--forum-muted)}
+.forum-panel .intro {
+  margin-bottom:22px}
+.forum-shell .field-label {
+  display:block;
+  font-size:12px;
+  font-weight:500;
+  margin:15px 0 8px}
+.forum-shell select,.forum-shell textarea {
+  width:100%;
+  background:var(--forum-inset);
+  border:1px solid var(--forum-border);
+  border-radius:var(--forum-radius);
+  padding:11px;
+  color:var(--forum-text);
+  font:13px var(--forum-body);
+  color-scheme:dark}
+.forum-shell textarea {
+  resize:vertical;
+  min-height:110px}
+.forum-shell textarea.short {
+  min-height:75px}
+.forum-shell :focus-visible {
+  outline:2px solid var(--forum-accent);
+  outline-offset:3px}
+.forum-tabs {
+  display:flex;
+  border-bottom:1px solid var(--forum-border);
+  gap:12px;
+  margin:24px 0}
+.forum-tabs .pa-btn {
+  border:0;
+  border-radius:0;
+  background:transparent;
+  padding:0 0 12px;
+  font-size:12px;
+  color:var(--forum-muted);
+  border-bottom:2px solid transparent}
+.forum-tabs .pa-btn[aria-pressed=true] {
+  color:var(--forum-accent);
+  border-bottom-color:var(--forum-accent)}
+.forum-shell .agent-seal {
+  display:grid;
+  place-items:center;
+  width:54px;
+  height:54px;
+  border:2px solid;
+  border-radius:50%;
+  background:var(--forum-bg);
+  font-size:26px;
+  color:var(--forum-bronze)}
+.forum-shell .note {
+  background:var(--forum-bg);
+  padding:16px;
+  margin:22px 0;
+  border:1px solid var(--forum-border);
+  border-radius:var(--forum-radius)}
+.forum-shell .note b {
+  font-size:12px;
+  font-weight:500}
+.forum-shell .note p {
+  margin:8px 0 0;
+  font-size:12px}
+.forum-shell .forum-primary {
+  width:100%;
+  padding:12px;
+  text-align:left;
+  font-size:12px}
+.forum-shell .lesson-count {
+  font:10px var(--forum-mono);
+  letter-spacing:.1em;
+  color:var(--forum-bronze)}
+.forum-shell .lesson-steps {
+  display:flex;
+  gap:10px;
+  margin-top:24px}
+.forum-shell .lesson-steps .pa-btn {
+  width:34px;
+  height:34px;
+  padding:0;
+  border:1px solid var(--forum-border);
+  border-radius:50%}
+.forum-shell .lesson-steps .pa-btn[aria-pressed=true] {
+  border-color:var(--forum-accent);
+  color:var(--forum-accent);
+  background:var(--forum-accent-soft)}
+.forum-panel footer {
+  border-top:1px solid var(--forum-border);
+  margin-top:26px;
+  padding-top:16px;
+  display:flex;
+  justify-content:space-between;
+  font:9px var(--forum-mono);
+  color:var(--forum-muted)}
+.forum-location {
+  position:absolute;
+  left:28px;
+  bottom:125px;
+  pointer-events:none;
+  padding:12px 16px;
+  background:var(--forum-bg);
+  border-left:2px solid var(--forum-bronze);
+  border-radius:var(--forum-radius)}
+.forum-location span {
+  font:10px var(--forum-mono);
+  letter-spacing:.12em;
+  color:var(--forum-muted)}
+.forum-location p {
+  font-family:var(--forum-display);
+  font-size:20px;
+  margin:4px 0}
+.forum-controls {
+  position:absolute;
+  bottom:22px;
+  left:28px;
+  font:10px var(--forum-mono);
+  color:var(--forum-muted);
+  background:var(--forum-bg);
+  border:1px solid var(--forum-border);
+  padding:10px 14px;
+  border-radius:var(--forum-radius)}
+.forum-live {
+  position:absolute;
+  bottom:70px;
+  left:28px;
+  font:11px var(--forum-mono);
+  background:var(--forum-bg);
+  padding:10px 14px;
+  border-radius:var(--forum-radius)}
+.forum-live small {
+  display:block;
+  font-size:9px;
+  color:var(--forum-muted);
+  margin-top:6px}
+.forum-shell .save-state {
+  font-size:11px}
+.forum-districts {
+  position:absolute;
+  left:28px;
+  top:158px;
+  display:flex;
+  gap:5px;
+  padding:6px;
+  background:var(--forum-bg);
+  border:1px solid var(--forum-border);
+  border-radius:var(--forum-radius)}
+.forum-waypoint {
+  background:var(--forum-bg);
+  color:var(--forum-text);
+  border:1px solid;
+  border-radius:var(--forum-radius);
+  font:11px var(--forum-mono);
+  padding:6px 10px;
+  cursor:pointer}
+/* The waypoint label is now the shared Button primitive (adoption gate), which
+   brings its own hover/press/pending feedback through --pa-btn-* custom
+   properties (see index.css .pa-btn and components/common/Button.tsx). These
+   overrides keep its resting look — flat panel background, mono label, same
+   padding/weight — identical to the hand-rolled button it replaced; the
+   per-district border color still arrives as an inline style and wins over
+   any of these. */
+.forum-world .forum-waypoint.pa-btn {
+  --pa-btn-bg:var(--forum-bg);
+  --pa-btn-bg-hover:var(--forum-bg);
+  --pa-btn-bg-active:var(--forum-bg);
+  --pa-btn-fg:var(--forum-text);
+  --pa-btn-fg-hover:var(--forum-text);
+  --pa-btn-weight:400;
+  --pa-btn-pad:6px 10px;
+  font:11px var(--forum-mono)}
+.forum-work {
+  margin-top:26px;
+  border-top:1px solid var(--forum-border);
+  padding-top:20px}
+.forum-job {
+  padding:10px 0;
+  border-bottom:1px solid var(--forum-border);
+  font-size:12px}
+.forum-job b {
+  display:block;
+  font-weight:500}
+.forum-job span {
+  display:block;
+  color:var(--forum-muted);
+  font-size:10px;
+  margin-top:5px}
+@media(max-width:800px) {
+  .forum-shell {
+  grid-template-columns:minmax(0,1fr);
+  grid-template-rows:minmax(0,3fr) minmax(0,2fr);
+  height:100%;
+  min-height:0}
+.forum-world {
+  height:auto;
+  min-height:0}
+.forum-panel {
+  border-left:0;
+  padding:24px}
+.forum-brand {
+  top:16px;
+  left:16px;
+  right:16px;
+  padding:12px;
+  gap:8px}
+.forum-brand h1 {
+  font-size:25px!important}
+.forum-brand p {
+  font-size:11px;
+  max-width:230px}
+.forum-location,.forum-live,.forum-controls {
+  left:16px}
+.forum-districts {
+  left:16px;
+  right:16px;
+  top:150px;
+  flex-wrap:wrap}
+.forum-districts .pa-btn {
+  font-size:11px;
+  padding:7px}
+.forum-controls {
+  font-size:8px;
+  right:16px}
+.forum-location {
+  bottom:135px}
+.forum-live {
+  right:16px}
+.forum-panel footer {
+  font-size:8px}
+}
+
+.forum-shell .forum-primary + .forum-primary {
+  margin-top:8px}
+.forum-tabs {
+  gap:10px;
+  flex-wrap:wrap}
+.forum-tabs .pa-btn {
+  font-size:11px}
+.forum-transcript {
+  max-height:420px;
+  overflow-y:auto;
+  overflow-wrap:anywhere;
+  margin:16px -12px}
+.forum-conversation {
+  min-width:0}
+
+.forum-agent-portrait { display:flex; align-items:center; border-left:2px solid; background:var(--forum-bg); border-radius:var(--forum-radius); margin-bottom:18px; padding:8px 12px; gap:10px; }
+.forum-agent-portrait img { width:100px; height:155px; object-fit:contain; flex-shrink:0; }
+.forum-agent-portrait .eyebrow { line-height:1.6; font-size:9px; }
+.forum-agent-portrait h3 { font-size:18px; margin:6px 0; }
+.forum-character b { font-size:12px; font-weight:500; }
+.forum-character .forum-voice { border-left:1px solid var(--forum-bronze); padding-left:12px; font-size:12px; }
+/* Bug 5 (jobs/11-in-app-verification.md): these were two contradictory rules in
+   sequence — a wrapping `width:fit-content` row immediately overridden by a
+   `nowrap` + `overflow-x:auto` row — so fourteen districts ran off the right of
+   the panel and "Debating theatre" and "Harbor" were only reachable by a
+   horizontal scroll with no affordance at all. One rule now: the row wraps
+   inside a bounded box so every district is visible at 1280px, and if the panel
+   is short enough that even the wrapped block does not fit, it scrolls
+   vertically with a real scrollbar rather than silently clipping. */
+.forum-districts {
+  flex-wrap:wrap;
+  width:fit-content;
+  max-width:min(560px,calc(100% - 56px));
+  max-height:calc(100% - 330px);
+  overflow-y:auto;
+  overscroll-behavior:contain}
+.forum-districts .pa-btn { white-space:nowrap; flex-shrink:0; }
+.forum-agora-return { position:absolute; right:28px; bottom:126px; }
+.forum-gate-prompt {
+  position:absolute;
+  left:50%;
+  top:58%;
+  transform:translateX(-50%);
+  pointer-events:none;
+  font:11px var(--forum-mono);
+  letter-spacing:.12em;
+  color:var(--forum-text);
+  background:var(--forum-bg);
+  border:1px solid var(--forum-border);
+  border-left:2px solid var(--forum-accent);
+  border-radius:var(--forum-radius);
+  padding:8px 12px}
+.forum-mesh-plaque {
+  font:11px var(--forum-mono);
+  letter-spacing:.18em;
+  white-space:nowrap;
+  pointer-events:none;
+  color:#C9D6EA;
+  background:#0D1018CC;
+  border:1px solid #2A3550;
+  border-radius:2px;
+  padding:7px 14px}
+.forum-mesh-plaque[data-state="connected"] { color:#CFE2FF; border-color:#5599FF; }
+.forum-play { position:absolute; right:28px; bottom:72px; }
+.forum-crosshair { pointer-events:none; position:absolute; top:50%; left:50%; color:var(--forum-accent); font:20px var(--forum-mono); transform:translate(-50%,-50%); text-shadow:0 0 4px #000; }
+@media(max-width:800px) { .forum-play { right:16px; bottom:192px; } .forum-agora-return { right:16px; bottom:246px; } .forum-controls { font-size:8px; line-height:1.6; } .forum-districts { max-width:calc(100% - 32px); max-height:calc(100% - 300px); } }

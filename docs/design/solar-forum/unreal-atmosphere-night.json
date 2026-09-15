@@ -1,0 +1,13 @@
+{
+  "status": "complete",
+  "appearance": "night",
+  "map": "/Game/SolarForum/Maps/ForumNight",
+  "lanterns": 25,
+  "stars": true,
+  "sunLux": 1.0,
+  "skyIntensity": 0.3,
+  "exposureEV100": 1.5,
+  "exposureMode": "manual",
+  "fogDensity": 0.0005,
+  "lanternEmissionStrength": 6.0
+}

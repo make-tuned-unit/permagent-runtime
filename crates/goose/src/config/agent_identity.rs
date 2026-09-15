@@ -412,7 +412,7 @@ pub enum WorkerEngineKind {
 /// have `code_edit` in `tool_kinds` while still having no model override,
 /// steering protocol, MCP bridge, or sandbox support.  Surfaces should use
 /// this value when describing what a worker can do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerCapabilities {
     pub supports_model_override: bool,
     pub supports_streaming: bool,
@@ -422,21 +422,6 @@ pub struct WorkerCapabilities {
     pub supports_permission_gates: bool,
     pub supports_mcp: bool,
     pub supports_cli_tools: bool,
-}
-
-impl Default for WorkerCapabilities {
-    fn default() -> Self {
-        Self {
-            supports_model_override: false,
-            supports_streaming: false,
-            supports_steering: false,
-            supports_cancellation: false,
-            supports_sandbox: false,
-            supports_permission_gates: false,
-            supports_mcp: false,
-            supports_cli_tools: false,
-        }
-    }
 }
 
 impl WorkerCapabilities {
@@ -1681,8 +1666,10 @@ workers:
         );
         assert!(WorkerBillingClass::parse("anthropic").is_err());
         assert!(WorkerBillingClass::parse("").is_err());
-        let mut malformed = WorkerPersona::default();
-        malformed.cost_tier = "mystery_provider".to_string();
+        let malformed = WorkerPersona {
+            cost_tier: "mystery_provider".to_string(),
+            ..WorkerPersona::default()
+        };
         assert!(malformed.configured_billing_class().is_err());
     }
 

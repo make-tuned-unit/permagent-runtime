@@ -2070,8 +2070,10 @@ mod tests {
         let mut cursor = 0;
         for beat in fixture["ordered_beats"].as_array().unwrap() {
             let beat = beat.as_str().unwrap();
-            let relative = recalled.content[cursor..]
-                .find(beat)
+            let relative = recalled
+                .content
+                .get(cursor..)
+                .and_then(|rest| rest.find(beat))
                 .unwrap_or_else(|| panic!("missing or out-of-order recalled detail: {beat}"));
             cursor += relative + beat.len();
         }

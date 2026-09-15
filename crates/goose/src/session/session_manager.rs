@@ -128,6 +128,20 @@ impl CostTier {
     }
 }
 
+/// The seven usage columns an authoritative ledger row carries, in the order the
+/// insert binds them: model, input, output, total, and the three cache counts.
+/// Named because the bare tuple tripped `clippy::type_complexity` and read as
+/// noise at every call site.
+type LedgerUsageColumns = (
+    Option<String>,
+    Option<i32>,
+    Option<i32>,
+    Option<i32>,
+    i32,
+    i32,
+    i32,
+);
+
 /// One append-only per-call cost row. Every money field is the output of the
 /// single canonical [`crate::providers::canonical::cost_of`] function, so the
 /// ledger can never disagree with the live meter or the verification digest.
@@ -618,6 +632,9 @@ impl SessionManager {
 
     /// Append one provider invocation and atomically update both token and
     /// money rollups. A repeated `call_id` is a successful no-op.
+    // Every argument is a distinct piece of settlement evidence; collapsing them
+    // into a struct would only move the same fields behind one more name.
+    #[allow(clippy::too_many_arguments)]
     pub async fn append_usage_and_rollup(
         &self,
         row: &CostLedgerRow,
@@ -669,6 +686,9 @@ impl SessionManager {
 
     /// Settle a reservation and append its provider usage in one transaction.
     /// Duplicate invocation/call IDs are successful no-ops.
+    // Every argument is a distinct piece of settlement evidence; collapsing them
+    // into a struct would only move the same fields behind one more name.
+    #[allow(clippy::too_many_arguments)]
     pub async fn settle_provider_invocation(
         &self,
         reservation_id: &str,
@@ -2086,6 +2106,9 @@ impl SessionStorage {
             .map(|_| ())
     }
 
+    // Every argument is a distinct piece of settlement evidence; collapsing them
+    // into a struct would only move the same fields behind one more name.
+    #[allow(clippy::too_many_arguments)]
     async fn append_usage_and_rollup(
         &self,
         row: &CostLedgerRow,
@@ -2113,6 +2136,9 @@ impl SessionStorage {
         .await
     }
 
+    // Every argument is a distinct piece of settlement evidence; collapsing them
+    // into a struct would only move the same fields behind one more name.
+    #[allow(clippy::too_many_arguments)]
     async fn settle_provider_invocation(
         &self,
         reservation_id: &str,
@@ -2443,15 +2469,7 @@ impl SessionStorage {
     async fn append_cost_ledger_with_usage(
         &self,
         row: &CostLedgerRow,
-        usage: Option<(
-            Option<String>,
-            Option<i32>,
-            Option<i32>,
-            Option<i32>,
-            i32,
-            i32,
-            i32,
-        )>,
+        usage: Option<LedgerUsageColumns>,
         reservation_id: Option<&str>,
     ) -> Result<bool> {
         let pool = self.pool().await?;
@@ -5026,13 +5044,14 @@ mod tests {
         let outcomes = [first.unwrap(), second.unwrap()];
         let reservation_id = outcomes
             .iter()
-            .find_map(|outcome| match outcome {
+            .map(|outcome| match outcome {
                 CostReservationOutcome::Granted { reservation_id }
                 | CostReservationOutcome::AlreadyReserved { reservation_id } => {
-                    Some(reservation_id.clone())
+                    reservation_id.clone()
                 }
                 other => panic!("unexpected reservation outcome: {other:?}"),
             })
+            .next()
             .unwrap();
         assert!(outcomes
             .iter()

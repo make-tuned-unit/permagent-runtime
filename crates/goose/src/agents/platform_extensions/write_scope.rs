@@ -79,12 +79,16 @@ pub fn first_conflict(left: &[String], right: &[String]) -> Option<(String, Stri
     let mut pairs: Vec<(String, String)> = left
         .iter()
         .flat_map(|a| {
-            right.iter().filter_map(move |b| {
-                (a == b
-                    || a.strip_prefix(b).is_some_and(|rest| rest.starts_with('/'))
-                    || b.strip_prefix(a).is_some_and(|rest| rest.starts_with('/')))
-                .then(|| (a.clone(), b.clone()))
-            })
+            right
+                .iter()
+                .filter(move |b| {
+                    a == *b
+                        || a.strip_prefix(b.as_str())
+                            .is_some_and(|rest| rest.starts_with('/'))
+                        || b.strip_prefix(a.as_str())
+                            .is_some_and(|rest| rest.starts_with('/'))
+                })
+                .map(move |b| (a.clone(), b.clone()))
         })
         .collect();
     pairs.sort();
