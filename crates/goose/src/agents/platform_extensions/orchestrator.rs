@@ -4245,6 +4245,78 @@ fn should_fallback_to_coordinator_tier(
     classify_worker_fallback_reason(prior_last_error?)
 }
 
+// ── R55a: the mid-attempt half of the local→cloud fallback ────────────────
+//
+// `should_fallback_to_coordinator_tier`, above, only ever runs when a
+// SECOND dispatch of the same goal is already about to happen — it reads
+// the PRIOR attempt's `last_error`/`attempt_count`. A goal whose FIRST
+// local attempt is still the live worker when this run's own cap arrives
+// never gets a second dispatch to gate at all (`## A52 analysis` point 2,
+// `harness-editapply-duplicate-discount-blocks`: `attempt_count` stayed 0
+// for the whole 554s run — there was no second dispatch for the existing
+// rule to fire on, independent of whether the local worker was struggling).
+// The functions below let `drain_dispatched_goals_with`'s poll recognise
+// that shape directly, from the still-running attempt, instead of waiting
+// for a dispatch that structurally never comes.
+
+/// Floor of the mid-attempt stall budget for a LOCAL-routed goal — never
+/// less than this, regardless of how fast this run's other goals have
+/// been (or how little history this run has observed yet).
+const LOCAL_STALL_BUDGET_FLOOR: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// How much of a goal's own remaining wall-clock budget the stall check
+/// holds back for the cloud-tier fallback attempt itself, so triggering
+/// the fallback never schedules a redispatch with so little of the goal's
+/// own budget left that it is doomed to be cut off again almost
+/// immediately.
+const CLOUD_ATTEMPT_RESERVE: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// R55a: how long a LOCAL-routed attempt gets before the drain treats it
+/// as stalled rather than merely slow. Pure and IO-free.
+///
+/// - `median_goal_duration`: this run's own median finished-goal duration
+///   so far (`drain_dispatched_goals_with`'s existing `finished_durations`/
+///   `median_duration` — the same R52b median the sweep-headroom override
+///   already computes once per poll; not tier-scoped, so this is "how long
+///   a goal in this run typically takes" rather than a cloud-only figure,
+///   which keeps this check to one extra call into an already-computed
+///   value instead of a second per-tier duration history). `None` with no
+///   finished goal yet this run. `2x` that is the working estimate of "how
+///   long a goal like this reasonably takes" — never below
+///   [`LOCAL_STALL_BUDGET_FLOOR`].
+/// - `remaining_goal_wall_budget`: what is left of the GOAL's own
+///   wallclock cap (`remaining_wall_budget_secs`), when the goal carries
+///   one. The returned budget never exceeds this minus
+///   [`CLOUD_ATTEMPT_RESERVE`] — `None` (no wallclock cap configured on
+///   this goal at all) leaves the cloud-median/floor answer unconstrained.
+fn local_stall_budget(
+    median_goal_duration: Option<std::time::Duration>,
+    remaining_goal_wall_budget: Option<std::time::Duration>,
+) -> std::time::Duration {
+    let by_median = median_goal_duration
+        .map(|median| median.saturating_mul(2))
+        .unwrap_or(LOCAL_STALL_BUDGET_FLOOR)
+        .max(LOCAL_STALL_BUDGET_FLOOR);
+    match remaining_goal_wall_budget {
+        Some(remaining) => by_median.min(remaining.saturating_sub(CLOUD_ATTEMPT_RESERVE)),
+        None => by_median,
+    }
+}
+
+/// R55a: whether THIS poll should treat a LOCAL-routed, still-running
+/// attempt as stalled. Pure — `elapsed`/`budget` are both already computed
+/// by the caller ([`local_stall_budget`] for `budget`); `already_used` is
+/// the SAME one-shot `worker_fallback_used` guardrail
+/// [`should_fallback_to_coordinator_tier`] reads, so a goal can never
+/// spend the fallback twice regardless of which of the two rules fires it.
+fn local_attempt_has_stalled(
+    elapsed: std::time::Duration,
+    budget: std::time::Duration,
+    already_used: bool,
+) -> bool {
+    !already_used && elapsed >= budget
+}
+
 /// R48d (HARNESS_LOOP_LOG.md "A45 design", Addendum (a)): one row of the
 /// coordinator-visible routing roster (`orchestrator__routing_roster`) —
 /// what one `WorkflowRole` currently resolves to. `available: false` names
@@ -13656,6 +13728,127 @@ fn remaining_wall_budget_secs(metadata: &serde_json::Value) -> WallBudgetCeiling
     }
 }
 
+/// R55a: everything the mid-attempt stall check
+/// ([`local_stall_budget`]/[`local_attempt_has_stalled`]) needs from a
+/// pending goal's OWN card, fetched once so `drain_dispatched_goals_with`'s
+/// poll never pays for a second `cards::get_card` per candidate goal.
+struct LocalFallbackProbe {
+    /// This dispatch's own persisted routing choice
+    /// (`capability_snapshot.cost_routing.routing_choice`, R48d's seam)
+    /// reads as `WorkflowRole::Local` — the same field
+    /// `should_fallback_to_coordinator_tier`'s caller reads for the
+    /// between-dispatch case.
+    is_local: bool,
+    /// The one-shot `worker_fallback_used` guardrail already spent —
+    /// shared with `should_fallback_to_coordinator_tier` so a goal can
+    /// never fall back twice regardless of which rule spends it.
+    already_used: bool,
+    /// [`remaining_wall_budget_secs`]'s answer, translated to a `Duration`
+    /// (`None` for `Unbounded`) for [`local_stall_budget`].
+    remaining_wall_budget: Option<std::time::Duration>,
+}
+
+/// R55a: load [`LocalFallbackProbe`] for `card_id` — `Ok(None)` when the
+/// card cannot be loaded at all (deleted mid-drain, or a card id that
+/// never resolves), in which case the caller treats the goal as not
+/// fallback-eligible rather than erroring the whole poll.
+async fn local_fallback_probe(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+) -> Result<Option<LocalFallbackProbe>, String> {
+    let Some(card) = cards::get_card(pool, card_id).await? else {
+        return Ok(None);
+    };
+    let is_local = card
+        .metadata_json
+        .pointer("/capability_snapshot/cost_routing/routing_choice")
+        .and_then(serde_json::Value::as_str)
+        == Some(crate::cost_router::WorkflowRole::Local.as_str());
+    let already_used = card
+        .metadata_json
+        .get("worker_fallback_used")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let remaining_wall_budget = match remaining_wall_budget_secs(&card.metadata_json) {
+        WallBudgetCeiling::Unbounded => None,
+        WallBudgetCeiling::Remaining(secs) => Some(std::time::Duration::from_secs(secs)),
+    };
+    Ok(Some(LocalFallbackProbe {
+        is_local,
+        already_used,
+        remaining_wall_budget,
+    }))
+}
+
+/// R55a (`## A52 analysis` point 2): stamp the sticky explicit `worker_
+/// tier` override R48d already reads at dispatch time
+/// (`explicit_routing_choice`, `card.metadata_json.dispatch_worker_tier`/
+/// `dispatch_reason`) onto a card that the drain is about to hand back —
+/// mid-attempt (a LOCAL-routed attempt that stalled past its own budget)
+/// or at a `DrainAction::Park` the drain was about to run unchanged (the
+/// worker's own turn/wall ceiling ended it with the goal's `GoalState`
+/// never reaching a terminal one) — so WHENEVER this goal next dispatches,
+/// it runs on the cloud tier once, never silently repeating the identical
+/// local attempt that just stalled it. The goal's own worktree/branch is
+/// untouched by this call (nothing is landed, nothing is abandoned — only
+/// which tier picks the goal back up changes), so nothing already
+/// committed is at risk.
+///
+/// One-shot: `worker_fallback_used` is stamped alongside, the SAME guard
+/// [`should_fallback_to_coordinator_tier`] and [`local_attempt_has_
+/// stalled`] both read, so a goal can never spend this twice regardless of
+/// which of the two rules (or a later ordinary between-dispatch fallback)
+/// fires it. Never fires for a reviewer-rejected goal by construction: a
+/// rejection routes through `GoalAction::Reject`
+/// (`decisions_effects.rs`'s `("approve_review", Some("reject"))`
+/// handler), which moves the card's `GoalState` away from `in_progress`
+/// before either of this function's two call sites in
+/// `drain_dispatched_goals_with` are ever reached for that poll.
+///
+/// Best-effort, like [`checkpoint_uncommitted_worker_changes`]: a persist
+/// failure only warns and returns — the caller's own park/requeue still
+/// proceeds either way, so a card is never left half-stamped in a way that
+/// blocks its own park.
+async fn stamp_local_fallback_to_cloud(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    reason: &str,
+) {
+    let dispatch_reason = format!("worker_fallback: {reason}");
+    if let Err(e) = persist_card_meta(pool, card_id, |meta| {
+        meta.insert(
+            "dispatch_worker_tier".to_string(),
+            serde_json::json!(crate::cost_router::WorkflowRole::Orchestrate.as_str()),
+        );
+        meta.insert(
+            "dispatch_reason".to_string(),
+            serde_json::json!(dispatch_reason.clone()),
+        );
+        meta.insert("worker_fallback_used".to_string(), serde_json::json!(true));
+    })
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            "could not stamp the local\u{2192}cloud stall fallback onto card '{card_id}': {e}"
+        );
+        return;
+    }
+    tracing::info!(
+        target: "permagentd::brain",
+        card_id,
+        from = crate::cost_router::WorkflowRole::Local.as_str(),
+        to = crate::cost_router::WorkflowRole::Orchestrate.as_str(),
+        reason,
+        "worker_fallback from={} to={} reason={}",
+        crate::cost_router::WorkflowRole::Local.as_str(),
+        crate::cost_router::WorkflowRole::Orchestrate.as_str(),
+        reason
+    );
+    crate::cost_router::routing_receipt::record("cost_routing", "fallbacks");
+}
+
 /// I1 (harness loop, 2026-09-10): wires E2b's pure
 /// `wall_budget_permits_another_attempt` primitive into the live retry
 /// decision `handle_goal_completion`'s `Err(error)` arm makes. Returns
@@ -15663,6 +15856,23 @@ async fn drain_dispatched_goals_with(
                     requeued.insert(card_id, project_id);
                 }
                 DrainAction::Park => {
+                    // R55a (`## A52 analysis` point 2): this Park is the
+                    // "ends by ceiling/turn-cap" half of the mid-attempt
+                    // fallback — the worker's own execution receipt is
+                    // already terminal (its turn/wall ceiling ended it) but
+                    // the goal's `GoalState` never reached one on its own.
+                    // A LOCAL-routed goal reaching here with its fallback
+                    // still unspent gets the cloud-tier override stamped
+                    // BEFORE the park, so whenever it next dispatches it
+                    // runs on the cloud tier once instead of silently
+                    // repeating the identical local attempt. A reviewer
+                    // rejection never reaches this branch (see `stamp_
+                    // local_fallback_to_cloud`'s own doc comment).
+                    if let Some(probe) = local_fallback_probe(pool, &card_id).await? {
+                        if probe.is_local && !probe.already_used {
+                            stamp_local_fallback_to_cloud(pool, &card_id, "stall").await;
+                        }
+                    }
                     // Best-effort, same as the cap-expiry park below: a no-op
                     // if the card already left `in_progress`, so this never
                     // double-parks or fights a genuine retry.
@@ -15678,7 +15888,53 @@ async fn drain_dispatched_goals_with(
                     stalled += 1;
                 }
                 DrainAction::Wait => {
-                    still_pending.insert(session_id, (card_id, project_id));
+                    // R55a (`## A52 analysis` point 2): the mid-attempt
+                    // half — a LOCAL-routed attempt still genuinely
+                    // running (unlike the `Park` branch above, its own
+                    // execution receipt is NOT terminal yet) past its own
+                    // stall budget gets parked NOW rather than waited on
+                    // to this run's own cap, with the same cloud-tier
+                    // override stamped first. `should_fallback_to_
+                    // coordinator_tier` never gets a chance to fire for
+                    // this shape (there is no second dispatch to gate —
+                    // A52's `harness-editapply-duplicate-discount-blocks`)
+                    // so this is the only place that shape is ever caught.
+                    // Cheap in the common case: `elapsed` alone clearing
+                    // the hard floor skips the card read entirely.
+                    let elapsed = goal_started_at
+                        .get(&card_id)
+                        .map(|started| started.elapsed())
+                        .unwrap_or_default();
+                    let stalled_locally = if elapsed < LOCAL_STALL_BUDGET_FLOOR {
+                        false
+                    } else if let Some(probe) = local_fallback_probe(pool, &card_id).await? {
+                        probe.is_local
+                            && local_attempt_has_stalled(
+                                elapsed,
+                                local_stall_budget(
+                                    median_duration(&finished_durations),
+                                    probe.remaining_wall_budget,
+                                ),
+                                probe.already_used,
+                            )
+                    } else {
+                        false
+                    };
+                    if stalled_locally {
+                        stamp_local_fallback_to_cloud(pool, &card_id, "stall").await;
+                        let _ = handle_goal_timeout(
+                            pool,
+                            &card_id,
+                            &project_id,
+                            elapsed.as_secs(),
+                            None,
+                            Some(coordinator_session_id),
+                        )
+                        .await;
+                        stalled += 1;
+                    } else {
+                        still_pending.insert(session_id, (card_id, project_id));
+                    }
                 }
             }
         }
@@ -30674,6 +30930,199 @@ mod tests {
         assert_eq!(
             should_fallback_to_coordinator_tier(None, 1, true, false),
             None
+        );
+    }
+
+    /// R55a: [`local_stall_budget`] — the floor always binds with no
+    /// history; `2x` the observed median once there is one; the goal's own
+    /// remaining wall budget (minus the cloud-attempt reserve) caps
+    /// whichever of those is larger, but never raises it.
+    #[test]
+    fn local_stall_budget_uses_median_or_floor_and_respects_the_wall_reserve() {
+        // No finished-goal history yet, no wallclock cap on the goal:
+        // the floor alone.
+        assert_eq!(local_stall_budget(None, None), LOCAL_STALL_BUDGET_FLOOR);
+
+        // A fast run (30s median) still gets at least the floor, not 60s.
+        assert_eq!(
+            local_stall_budget(Some(std::time::Duration::from_secs(30)), None),
+            LOCAL_STALL_BUDGET_FLOOR
+        );
+
+        // A slower run's median wins once 2x clears the floor.
+        assert_eq!(
+            local_stall_budget(Some(std::time::Duration::from_secs(200)), None),
+            std::time::Duration::from_secs(400)
+        );
+
+        // The goal's own remaining wall budget, minus the cloud-attempt
+        // reserve, caps the answer even when the median-based estimate
+        // would be larger — a cloud attempt must still get a real chance
+        // to run before the goal's own cap arrives.
+        assert_eq!(
+            local_stall_budget(
+                Some(std::time::Duration::from_secs(200)),
+                Some(std::time::Duration::from_secs(500)),
+            ),
+            std::time::Duration::from_secs(320),
+            "500s remaining - 180s reserve = 320s, below the 400s median-based estimate"
+        );
+
+        // A goal with ample remaining wall budget is unconstrained by it.
+        assert_eq!(
+            local_stall_budget(
+                Some(std::time::Duration::from_secs(200)),
+                Some(std::time::Duration::from_secs(10_000)),
+            ),
+            std::time::Duration::from_secs(400)
+        );
+    }
+
+    /// R55a: [`local_attempt_has_stalled`] — the guardrail refuses even
+    /// past budget; otherwise it is a plain `elapsed >= budget` compare.
+    #[test]
+    fn local_attempt_has_stalled_gates_on_budget_and_the_guardrail() {
+        let budget = std::time::Duration::from_secs(180);
+        assert!(!local_attempt_has_stalled(
+            std::time::Duration::from_secs(179),
+            budget,
+            false
+        ));
+        assert!(local_attempt_has_stalled(
+            std::time::Duration::from_secs(180),
+            budget,
+            false
+        ));
+        assert!(local_attempt_has_stalled(
+            std::time::Duration::from_secs(400),
+            budget,
+            false
+        ));
+        assert!(
+            !local_attempt_has_stalled(std::time::Duration::from_secs(400), budget, true),
+            "the one-shot guardrail must refuse even a badly-overrun attempt once spent"
+        );
+    }
+
+    /// R55a: [`local_fallback_probe`] reads `is_local`/`already_used` off
+    /// the card's own persisted fields — the SAME `capability_snapshot.
+    /// cost_routing.routing_choice`/`worker_fallback_used` pointers
+    /// `should_fallback_to_coordinator_tier`'s caller in `dispatch_goal_fn`
+    /// reads for the between-dispatch case, so the two can never disagree
+    /// about whether a goal is currently local-routed.
+    #[tokio::test]
+    async fn local_fallback_probe_reads_routing_choice_and_the_guardrail_off_the_card() {
+        let pool = test_pool().await;
+
+        let local_card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        persist_card_meta(&pool, &local_card.id, |meta| {
+            meta.insert(
+                "capability_snapshot".to_string(),
+                serde_json::json!({"cost_routing": {"routing_choice": "local"}}),
+            );
+        })
+        .await
+        .unwrap();
+        let probe = local_fallback_probe(&pool, &local_card.id)
+            .await
+            .unwrap()
+            .expect("card must resolve");
+        assert!(probe.is_local);
+        assert!(!probe.already_used);
+        assert!(
+            probe.remaining_wall_budget.is_none(),
+            "no wallclock cap on this fixture"
+        );
+
+        let cloud_card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        persist_card_meta(&pool, &cloud_card.id, |meta| {
+            meta.insert(
+                "capability_snapshot".to_string(),
+                serde_json::json!({"cost_routing": {"routing_choice": "orchestrate"}}),
+            );
+        })
+        .await
+        .unwrap();
+        let probe = local_fallback_probe(&pool, &cloud_card.id)
+            .await
+            .unwrap()
+            .expect("card must resolve");
+        assert!(
+            !probe.is_local,
+            "a cloud-routed card must never read as local"
+        );
+
+        let already_used_card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        persist_card_meta(&pool, &already_used_card.id, |meta| {
+            meta.insert(
+                "capability_snapshot".to_string(),
+                serde_json::json!({"cost_routing": {"routing_choice": "local"}}),
+            );
+            meta.insert("worker_fallback_used".to_string(), serde_json::json!(true));
+        })
+        .await
+        .unwrap();
+        let probe = local_fallback_probe(&pool, &already_used_card.id)
+            .await
+            .unwrap()
+            .expect("card must resolve");
+        assert!(probe.is_local);
+        assert!(probe.already_used, "the one-shot guardrail must round-trip");
+
+        assert!(
+            local_fallback_probe(&pool, "does-not-exist")
+                .await
+                .unwrap()
+                .is_none(),
+            "a card that cannot be loaded is not fallback-eligible, not an error"
+        );
+    }
+
+    /// R55a: [`stamp_local_fallback_to_cloud`] — stamps the sticky explicit
+    /// `worker_tier` override, the one-shot guardrail, and increments the
+    /// `fallbacks` receipt counter (`Receipts: fallbacks increments on the
+    /// new path`, this lane's brief) — never touching `dispatches`/
+    /// `routed_local`/`routed_cloud`/`cheapest_capable`/`pack_honored`,
+    /// which only `dispatch_goal_fn`'s own recording block writes.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn stamp_local_fallback_to_cloud_persists_the_override_once_and_records_a_fallback() {
+        crate::receipts::begin_run();
+        let baseline = crate::cost_router::routing_receipt::snapshot();
+
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        stamp_local_fallback_to_cloud(&pool, &card.id, "stall").await;
+
+        let updated = cards::get_card(&pool, &card.id)
+            .await
+            .unwrap()
+            .expect("card must still exist");
+        assert_eq!(
+            updated.metadata_json.get("dispatch_worker_tier"),
+            Some(&serde_json::json!(
+                crate::cost_router::WorkflowRole::Orchestrate.as_str()
+            ))
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("dispatch_reason")
+                .and_then(serde_json::Value::as_str),
+            Some("worker_fallback: stall")
+        );
+        assert_eq!(
+            updated.metadata_json.get("worker_fallback_used"),
+            Some(&serde_json::json!(true))
+        );
+
+        let after = crate::cost_router::routing_receipt::snapshot();
+        crate::receipts::end_run();
+        assert_eq!(
+            after.fallbacks,
+            baseline.fallbacks + 1,
+            "the mid-attempt stall path must record exactly one fallback"
         );
     }
 
