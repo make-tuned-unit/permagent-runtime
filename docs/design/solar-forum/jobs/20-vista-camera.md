@@ -399,3 +399,44 @@ batches first; the captures are the evidence, not that probe. Evidence:
 `../../../../assets/world/forum/browser/v7-vista-day.webp`,
 `../../../../assets/world/forum/browser/v7-vista-night.webp`,
 `../vista-frame-v7.json`.
+
+### Landmark visibility, v5 (eye 10 m, belvedere only) vs v7 (eye 15 m)
+
+Read from `vistaLandmarks.json`'s projection through the live camera, same
+method as job 20's main table, at the two eye heights either side of the eye
+raise:
+
+| landmark | v5 (0,10,23) in frame | v7 (0,15,27) in frame | changed by |
+| --- | --- | --- | --- |
+| Lagoon | 6/9 | 6/9 | unchanged count; whether the water reads as water rather than haze is a shading question the projection count can't answer on its own -- see the day-fog fix above and the visual read below |
+| Ridge crest | 3/36 | 3/36 | unchanged. The ridge sits at radius 140-175 m, well outside the gallery ring (radius ~19-22 m) the belvedere opened, so neither the belvedere nor the eye raise moves which ridge samples fall inside the frame -- it was already held by the yaw job 20's v4 pass chose, and stays held |
+| NE spires | 2/7 | 4/7 | the eye raise, not the belvedere: two more spire sample points clear the frame edge once the eye and pitch change |
+| Council island | 3/3 | 3/3 | unchanged |
+| Lakeside town | not a `vistaLandmarks.json` entry -- job 21 added the town after job 20's v4 pass, and this job does not edit `ui/command-center/src` to add one | same | assessed instead by a bounding-box sample (Blender polar 60-120 deg, radius 118-135 m, per the job brief) plus a direct visual read of the captures: at eye 10 m (v5) the roofline sits right at the balustrade's own height band and blends into the (then still warm) haze; at eye 15 m with the cooled aerial fog (v7) the town's sandstone walls and green roofs read as distinct shapes above the balustrade in both `v7-vista-day.webp` and `v7-vista-night.webp` |
+
+FPS, recorded under `perfOnGlBackendNotComparable` in both reports (not a
+frame-cost claim -- job 20's bug 1 already established that this harness
+drives the ANGLE GL backend to get an uncorrupted frame, and GL is
+substantially slower here than the Metal backend the product ships):
+v5 (eye 10 m) 0.8 fps day / 0.5 fps night; v7 (eye 15 m) 0.9 fps day / 0.5 fps
+night -- no material change from raising the eye.
+
+**The ray-occlusion probe (`belvedereCheck` in the v5/v6/v7 JSON reports) is
+not usable as written, in both runs.** It casts a ray from the camera to each
+sample point and looks for the nearest mesh whose world-space bounding box the
+ray crosses first. Every sample point in every group -- lagoon, ridge crest,
+and the town band -- resolves to the *same* single "occluder" regardless of
+direction (`{x: 1.12, y: 136.94, z: -193.724}` in the v5 run, at ~15 m along
+every ray tested). That is not the gallery: it is the export's own coarse,
+material-merged mesh batching -- 123 meshes cover the entire static forum
+(confirmed empirically: `scene.traverse` over the live app finds 123 meshes
+and only 3 named materials, versus the thousands of individually placed
+objects the Blender scripts author), so a single mesh's bounding box can span
+from the near terrace out past the orbital rings, and a bounding-box test
+against it is true almost everywhere. This is the same effect the prose above
+describes as "hits translucent mist and sky batches first" -- the mechanism is
+export-side mesh/material merging rather than mist specifically, and it means
+`occludedByGallery` / `occludedByOther` in those reports should be read as
+"the probe is not discriminating," not as a visibility verdict. The day/night
+captures and the pixel/visual read are the evidence for this section, as the
+existing prose already says.
