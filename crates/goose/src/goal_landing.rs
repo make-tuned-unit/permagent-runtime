@@ -334,7 +334,13 @@ pub(crate) async fn verify_worktree_landing_target(
 /// when the raw comparison fails; if either side cannot be resolved
 /// (deleted, permissions), that failure is itself treated as "no match" —
 /// never as a reason to assume innocence.
-fn paths_match(a: &str, b: &str) -> bool {
+///
+/// Lane R22f: `pub(crate)` (was private) so `orchestrator.rs`'s salvage
+/// path can reuse this exact comparison to refuse a resolved landing root
+/// that turns out to BE the goal's own worktree (a degenerate shape every
+/// non-linked-worktree test fixture hits) — see `resolve_trusted_landing_
+/// root`'s own doc comment.
+pub(crate) fn paths_match(a: &str, b: &str) -> bool {
     fn norm(s: &str) -> &str {
         s.trim_end_matches('/')
     }
