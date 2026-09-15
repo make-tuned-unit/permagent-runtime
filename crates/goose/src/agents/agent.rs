@@ -290,6 +290,18 @@ pub struct Agent {
     /// full config read + YAML parse on every request. See
     /// `sync_extensions_with_config`.
     last_extension_config_mtime: Mutex<Option<std::time::SystemTime>>,
+    /// R46a (harness loop, "A43 analysis" lever 3): the raw provider-error
+    /// text behind this agent's most recent context-length-exceeded give-up
+    /// (recorded only at that one arm of the reply loop — see
+    /// `record_context_length_failure`). A caller that drives an `Agent`
+    /// headless (`delegate`/`delegate_many`'s spawned subagent, via
+    /// `subagent_handler::get_agent_messages`) reads this AFTER the reply
+    /// stream ends to turn a bare `AgentRuntimeOutcome::Failed` into a
+    /// classified reason instead of leaving the coordinator with an opaque
+    /// `-32603`. Never read by the ordinary user-facing reply path — the
+    /// turn's own visible text stays scrubbed of raw provider payloads,
+    /// unchanged.
+    last_context_length_failure: Mutex<Option<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -543,6 +555,7 @@ impl Agent {
             ),
             container: Mutex::new(None),
             last_extension_config_mtime: Mutex::new(None),
+            last_context_length_failure: Mutex::new(None),
         }
     }
 
@@ -1620,6 +1633,25 @@ impl Agent {
     /// [`Agent::set_headless`].
     pub fn is_headless(&self) -> bool {
         self.headless.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// R46a: record the raw provider-error text behind a context-length
+    /// give-up, for [`Agent::take_context_length_failure`] to read after the
+    /// reply stream ends. Called from exactly one place in the reply loop
+    /// (the `ProviderError::ContextLengthExceeded` arm's final, no-more-
+    /// compaction-attempts branch) — see that field's doc comment for why.
+    async fn record_context_length_failure(&self, detail: String) {
+        *self.last_context_length_failure.lock().await = Some(detail);
+    }
+
+    /// Takes (clears) the most recent context-length-exceeded detail
+    /// recorded by [`Agent::record_context_length_failure`], if any. See
+    /// `last_context_length_failure`'s doc comment: this is a non-user-
+    /// facing side channel a headless caller (a `delegate`/`delegate_many`
+    /// subagent) opts into reading to classify an `AgentRuntimeOutcome::
+    /// Failed` instead of reporting a bare "Subagent runtime failed".
+    pub async fn take_context_length_failure(&self) -> Option<String> {
+        self.last_context_length_failure.lock().await.take()
     }
 
     /// Handle a confirmation response for a tool request.
@@ -2753,7 +2785,6 @@ impl Agent {
                                 no_tools_called = false;
                             }
                         }
-                        #[allow(unused_variables)]
                         Err(ref provider_err @ ProviderError::ContextLengthExceeded(_)) => {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
@@ -2761,6 +2792,18 @@ impl Agent {
 
                             if compaction_attempts >= 2 {
                                 error!("Context limit exceeded after compaction - prompt too large");
+                                // R46a (harness loop, "A43 analysis" lever 3):
+                                // the turn's own visible text below is
+                                // deliberately scrubbed of the raw provider
+                                // payload (it is shown to a human and read
+                                // aloud); the RAW text — which for a local
+                                // llama.cpp-shaped 400 carries the actual
+                                // `n_prompt_tokens`/`n_ctx` numbers — is kept
+                                // here instead, for a headless caller
+                                // (`delegate`/`delegate_many`'s subagent) to
+                                // read back via `take_context_length_failure`
+                                // and turn into a classified reason.
+                                self.record_context_length_failure(provider_err.to_string()).await;
                                 yield AgentEvent::Message(
                                     Message::assistant().with_system_notification(
                                         SystemNotificationType::InlineMessage,

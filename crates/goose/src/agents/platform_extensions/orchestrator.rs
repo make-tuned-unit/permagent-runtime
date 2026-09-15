@@ -3498,7 +3498,13 @@ const LEAN_CODING_PROFILE_EXTENSION_KEYS: &[&str] = &[
 /// descriptions it relies on by
 /// `goal_worker_orchestrator_allowlist_matches_the_tools_whose_own_
 /// descriptions_name_a_worker_as_caller` (test, below).
-const GOAL_WORKER_EXTENSION_KEYS: &[&str] = &["developer", "orchestrator"];
+///
+/// R46a: `pub(crate)` (was private) so `summon::SummonClient::
+/// restrict_delegate_for_active_roadmap` can reuse this exact profile for a
+/// `delegate`/`delegate_many` spawned sub-session, rather than growing a
+/// second, parallel worker-shaped allowlist — see that function's own doc
+/// comment for why `delegate`'s child needs the identical narrowing.
+pub(crate) const GOAL_WORKER_EXTENSION_KEYS: &[&str] = &["developer", "orchestrator"];
 
 /// R30a: per-tool allowlist applied to the `orchestrator` extension when a
 /// dispatched goal worker gets `GOAL_WORKER_EXTENSION_KEYS`'s default (no
@@ -3517,7 +3523,10 @@ const GOAL_WORKER_EXTENSION_KEYS: &[&str] = &["developer", "orchestrator"];
 /// pause_roadmap, resume_roadmap) dispatches, steers, or reads OTHER
 /// sessions/goals — coordinator-only surface a worker was never instructed
 /// to call and, per "A29 analysis", cannot afford to carry.
-const GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST: &[&str] = &["escalate", "message_goal"];
+/// R46a: `pub(crate)` (was private) so `summon.rs`'s own drift-guard test for
+/// the `delegate`/`delegate_many` narrowing can assert against this list
+/// directly, the same way this file's own R30a tests do.
+pub(crate) const GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST: &[&str] = &["escalate", "message_goal"];
 
 /// R30a: narrows `orchestrator` in `extensions` (in place) to
 /// `GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST`, reusing the exact mechanism
@@ -3528,7 +3537,12 @@ const GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST: &[&str] = &["escalate", "message_
 /// sent to the model and every dispatch. A no-op when `orchestrator` is not
 /// present in `extensions` (e.g. a per-goal `dispatch_scope` already
 /// excluded it).
-fn narrow_goal_worker_orchestrator_tools(extensions: &mut [ExtensionConfig]) {
+///
+/// R46a: `pub(crate)` (was private) — see `GOAL_WORKER_EXTENSION_KEYS`'s own
+/// doc comment; `summon::SummonClient::restrict_delegate_for_active_roadmap`
+/// calls this too, after narrowing a `delegate`/`delegate_many` child's
+/// extension SET to `GOAL_WORKER_EXTENSION_KEYS`.
+pub(crate) fn narrow_goal_worker_orchestrator_tools(extensions: &mut [ExtensionConfig]) {
     let allowed: Vec<String> = GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST
         .iter()
         .map(|s| s.to_string())
