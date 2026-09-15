@@ -13393,6 +13393,227 @@ pub async fn park_dispatched_goals_now(
     })
 }
 
+// ── Lane R31b: end-of-run salvage sweep ─────────────────────────────────────
+//
+// A30 analysis (`harness-editapply-duplicate-discount-blocks`/`harness-
+// refactor-shipping-quote-signature`, the M31 DeepSeek m1 run): both goals
+// finished R26b's one-time headless-unblock resume (`resumed_by_headless_
+// unblock_at`) with a real, verifiably-correct, committed fix already on
+// their branch — then the coordinator's own headless session simply ended
+// (`harness_exit=0`) with no further `transition:dispatch`, no `redispatch_
+// refused:<gate>` audit row, and no salvage/park of any kind. R26b's
+// priority-requeue stamp and `handle_refused_redispatch`/`handle_goal_
+// timeout`'s Ready-and-exhausted branch all depend on ANOTHER drain pass, a
+// cap-expiry sweep, or a SIGTERM racing the process — none of which is
+// guaranteed to happen again once the coordinator's turn loop itself decides
+// it is done. This sweep is the unconditional last chance: called once, from
+// the same single place `Session::drain_dispatched_goals` (goose-cli)
+// already converges the ordinary drain and `park_dispatched_goals_now`'s
+// shutdown-signal path, right before that function returns and the process
+// is free to exit.
+
+/// Every goal card THIS coordinator session dispatched that is not yet
+/// `Complete` ("Done") and whose branch carries at least one commit
+/// [`commits_unlanded_at_trunk`] has not yet seen gets ONE [`maybe_salvage_
+/// committed_work`] attempt before the caller is allowed to let the process
+/// exit. Returns `(goals attempted, goals landed)`.
+///
+/// Scope is the same `descendant_session_ids`/`goal_card_for_worker_session`
+/// idiom [`landed_goals_for_session`]/[`needs_merge_goals_for_session`]
+/// already use — every worker session this coordinator (transitively)
+/// dispatched, deduplicated by card id, regardless of that card's CURRENT
+/// state (a card resumed straight Held → Ready by R18g's headless unblock
+/// still maps back to the session that last dispatched it).
+///
+/// At most one salvage attempt per goal, ever — [`maybe_salvage_committed_
+/// work`]'s own `salvage_attempted` guard already enforces this (and makes a
+/// second sweep call for an already-attempted goal a pure no-op), so this
+/// function adds no separate bookkeeping for it. Bounded by ONE shared
+/// deadline across the whole sweep (reusing [`SALVAGE_TIME_BOX`], the same
+/// mechanism [`park_dispatched_goals_now`] already uses for its own SIGTERM
+/// clock) rather than a fresh box per goal — a total time-box across however
+/// many goals this run left stranded, not `SALVAGE_TIME_BOX * n`.
+///
+/// A `ready` card is claimed first (`GoalAction::Dispatch`, Tier-0 — "selects
+/// no worker, spawns no process," the exact same claim [`salvage_or_park_
+/// stranded_ready_goal`] performs and for the identical reason:
+/// `maybe_salvage_committed_work`'s success tail recurses into
+/// [`handle_goal_completion`], which no-ops on anything but `in_progress`)
+/// before salvage is attempted; an `in_progress` card is salvaged directly.
+/// Any other state (Review, Held/Triage, Failed, Cancelled) is left
+/// untouched — none of those are the "stranded with unlanded work" shape
+/// this sweep exists for, and this function never parks or fails a goal on
+/// its own account: a `NotSalvaged` outcome here just means the goal is
+/// exactly as stranded as it already was, one honest chance poorer.
+///
+/// This is a NEW call edge into `maybe_salvage_committed_work`, but not a
+/// new one into its async-recursion cycle (`maybe_salvage_committed_work` ->
+/// `hand_salvaged_work_to_review_unverified` -> `land_salvage_approved_by_
+/// reviewer` -> `auto_land_headless_goal` -> back, boxed at the ONE edge
+/// that closes it): nothing in that cycle calls this sweep, so this call
+/// stays inline/unboxed, exactly like `handle_goal_timeout`'s and
+/// `salvage_or_park_stranded_ready_goal`'s own direct calls.
+///
+/// Records ONE `decision_audit` row, `run_end_salvage_sweep goals=<n>
+/// landed=<k>`, when `n > 0`. A run with nothing stranded (every dispatched
+/// goal already Done, or none carries unlanded work) is a true no-op — no
+/// audit row at all.
+pub async fn run_end_salvage_sweep(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
+) -> Result<(usize, usize), String> {
+    let grace_deadline = Some(std::time::Instant::now() + SALVAGE_TIME_BOX);
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut attempted = 0usize;
+    let mut landed = 0usize;
+
+    for session_id in descendant_session_ids(pool, coordinator_session_id).await? {
+        let Some((card_id, _project_id)) = goal_card_for_worker_session(pool, &session_id).await?
+        else {
+            continue;
+        };
+        if !seen.insert(card_id.clone()) {
+            continue;
+        }
+
+        let Some(card) = cards::get_card(pool, &card_id).await? else {
+            continue;
+        };
+        let state = cards::get_column(pool, &card.column_id)
+            .await?
+            .and_then(|c| c.state_binding);
+        // Already Done, or a state this sweep has no business touching
+        // (Review/Held/Failed/Cancelled/Triage) — leave it exactly where it
+        // is.
+        if !matches!(state.as_deref(), Some("in_progress") | Some("ready")) {
+            continue;
+        }
+
+        let Ok(Some((baseline, worktree))) =
+            resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await
+        else {
+            continue;
+        };
+        let worktree_path = std::path::Path::new(&worktree);
+        // Same combined trunk/rolling guard `maybe_salvage_committed_work`
+        // itself uses: the trunk-relative count is authoritative whenever a
+        // trusted trunk resolves; the rolling per-dispatch baseline is the
+        // fallback ONLY when trunk resolution itself fails (no `root_path`,
+        // no resolvable worktree-derived project) — never a shortcut past
+        // the trunk check when one is available. A rolling-count failure
+        // too means this goal's git state cannot be inspected at all; skip
+        // rather than guess.
+        let rolling_ahead = match commits_ahead_of_baseline(worktree_path, &baseline).await {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        let unlanded = match commits_unlanded_at_trunk(pool, &card, worktree_path).await {
+            Ok((n, _trunk_head)) => n,
+            Err(_) => rolling_ahead,
+        };
+        if unlanded == 0 {
+            continue;
+        }
+
+        attempted += 1;
+
+        let target_card = if state.as_deref() == Some("ready") {
+            if let Err(e) = goal_transition::advance_goal_checked(
+                pool,
+                &card.id,
+                GoalAction::Dispatch,
+                decisions::ACTOR_SYSTEM,
+                None,
+                TransitionEffects::default(),
+            )
+            .await
+            {
+                tracing::debug!(
+                    target: "permagentd::brain",
+                    goal_id = %card.id,
+                    "run-end salvage sweep could not claim Ready goal '{}': {e}",
+                    card.title
+                );
+                continue;
+            }
+            match cards::get_card(pool, &card.id).await? {
+                Some(c) => c,
+                None => continue,
+            }
+        } else {
+            card
+        };
+
+        if matches!(
+            maybe_salvage_committed_work(pool, &target_card, grace_deadline, None).await,
+            SalvageOutcome::Salvaged { .. }
+        ) {
+            landed += 1;
+        }
+    }
+
+    if attempted > 0 {
+        record_run_end_salvage_sweep_audit(pool, coordinator_session_id, attempted, landed).await;
+    }
+
+    Ok((attempted, landed))
+}
+
+/// Mirrors [`record_redispatch_refusal_audit`]'s synthetic-decision-id,
+/// hash-chained audit pattern — a distinct `decision_id` namespace
+/// (`run-end-sweep:`) so this never collides with a `redispatch-gate:` or
+/// `salvage-gate:` row, and session- rather than goal-scoped (`goal_id:
+/// None`) since one row summarises every goal this sweep touched.
+async fn record_run_end_salvage_sweep_audit(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
+    goals: usize,
+    landed: usize,
+) {
+    let outcome = format!("run_end_salvage_sweep goals={goals} landed={landed}");
+    tracing::info!(
+        target: "permagentd::brain",
+        coordinator_session_id,
+        outcome = %outcome,
+        "run-end salvage sweep finished before the headless session exits"
+    );
+    let synthetic_decision_id = format!("run-end-sweep:{coordinator_session_id}");
+    let mut tx = match pool.begin_with("BEGIN IMMEDIATE").await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "could not open a transaction to record the run_end_salvage_sweep audit row \
+                 ({outcome}): {e}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = decisions::append_audit_tx(
+        &mut tx,
+        &synthetic_decision_id,
+        None,
+        decisions::ACTOR_SYSTEM,
+        1,
+        &outcome,
+        None,
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            "could not record the run_end_salvage_sweep audit row ({outcome}): {e}"
+        );
+        return;
+    }
+    if let Err(e) = tx.commit().await {
+        tracing::warn!(
+            target: "permagentd::brain",
+            "could not commit the run_end_salvage_sweep audit row ({outcome}): {e}"
+        );
+    }
+}
+
 /// The worker's landed head commit for a card already in `Complete` state.
 /// `None` when the card carries no recorded evidence, OR (Y2-1,
 /// HARNESS_LOOP_LOG.md "Lane M5 report" NEW Defect #3) when
@@ -36268,6 +36489,293 @@ mod tests {
             developer_tool_names.contains("verify"),
             "a dispatched goal worker keeps `developer` wholesale — it must still expose \
              `verify`, got: {developer_tool_names:?}"
+        );
+    }
+
+    // ── Lane R31b (A30 analysis): end-of-run salvage sweep ──────────────────
+
+    /// Wires `card_id` to `worker_session_id` (`dispatch_goal_fn`'s own
+    /// stamp) AND inserts `worker_session_id` as a real `sessions` row whose
+    /// `parent_session_id` is `coordinator_session_id` — the shape
+    /// `descendant_session_ids`/`goal_card_for_worker_session` both need to
+    /// find this card from the coordinator side, mirroring `attach_worker_
+    /// session_to_card` (T3's own helper) plus the direct `sessions` insert
+    /// every `r20b`/`r26b` fixture above already uses.
+    async fn r31b_attach_worker_session(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        card_id: &str,
+        coordinator_session_id: &str,
+        worker_session_id: &str,
+        working_dir: &std::path::Path,
+    ) {
+        sqlx::query("INSERT INTO sessions (id, working_dir, parent_session_id) VALUES (?, ?, ?)")
+            .bind(worker_session_id)
+            .bind(working_dir.to_string_lossy().as_ref())
+            .bind(coordinator_session_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        persist_card_meta(pool, card_id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(worker_session_id),
+            );
+        })
+        .await
+        .unwrap();
+    }
+
+    /// (a) A Ready goal with a genuinely committed, verifiable, unlanded fix
+    /// — the exact A30 Miss 2/Miss 3 shape (R18g's headless unblock flipped
+    /// it Held → Ready, `resumed_by_headless_unblock_at` stamped, and no
+    /// further redispatch/park cycle ever reached it before the run ended)
+    /// — gets ONE salvage attempt from the sweep and leaves Ready.
+    ///
+    /// Deliberately does NOT assert the card literally reaches `Complete`:
+    /// whether `maybe_salvage_committed_work`'s recursive `handle_goal_
+    /// completion` auto-lands (vs. moving to Review for a human) depends on
+    /// the process-global `HEADLESS_DISPATCH_POLICY_CONFIG` `OnceLock`,
+    /// which — per that block's own comment and every other salvage test in
+    /// this file (`ready_goal_refused_redispatch_salvages_committed_work`
+    /// and neighbours) — "can only ever be set once for the life of a
+    /// `--lib` test binary" and must never be written from a test (this
+    /// lane's own hard rule). "Landed by the sweep" is this function's own
+    /// contract instead: `run_end_salvage_sweep`'s returned `landed` count
+    /// and the `salvaged_on_park` receipt it leaves, the same non-flaky
+    /// shape every other salvage test in this file already settles for.
+    #[tokio::test]
+    async fn run_end_salvage_sweep_lands_a_ready_goal_with_unlanded_committed_work() {
+        let pool = test_pool().await;
+        let coordinator_session_id = format!("r31b-coord-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&coordinator_session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (dir, baseline, head) = r20b_worktree_with_committed_fix("r31b-sweep-lands");
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": head,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let worker_session_id = format!("r31b-worker-{}", uuid::Uuid::new_v4());
+        r31b_attach_worker_session(
+            &pool,
+            &card.id,
+            &coordinator_session_id,
+            &worker_session_id,
+            dir.path(),
+        )
+        .await;
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "resumed_by_headless_unblock_at".to_string(),
+                serde_json::json!(chrono::Utc::now().to_rfc3339()),
+            );
+        })
+        .await
+        .unwrap();
+
+        let (attempted, landed) = run_end_salvage_sweep(&pool, &coordinator_session_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            attempted, 1,
+            "the one goal with unlanded work must be attempted"
+        );
+        assert_eq!(
+            landed, 1,
+            "a genuinely passing, committed fix must be landed by the sweep"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "a goal the sweep salvaged must never be left Ready — the exact A30 defect"
+        );
+        let receipt = updated
+            .metadata_json
+            .get("salvaged_on_park")
+            .expect("the committed, unlanded fix must be salvaged instead of left stranded");
+        assert_eq!(
+            receipt.get("commits_ahead").and_then(|v| v.as_u64()),
+            Some(1)
+        );
+
+        let audited: Vec<String> =
+            sqlx::query_scalar("SELECT outcome FROM decision_audit WHERE decision_id = ?")
+                .bind(format!("run-end-sweep:{coordinator_session_id}"))
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            audited,
+            vec!["run_end_salvage_sweep goals=1 landed=1".to_string()],
+            "the sweep must record exactly one summary audit row naming both counts"
+        );
+    }
+
+    /// (b) A Ready goal whose branch has NOT moved past its dispatch
+    /// baseline at all (`commits_unlanded_at_trunk`/the rolling fallback
+    /// both read 0) is left completely untouched: no claim, no salvage
+    /// attempt, no audit row — a true no-op, not a quiet park.
+    #[tokio::test]
+    async fn run_end_salvage_sweep_leaves_a_goal_with_no_unlanded_commits_untouched() {
+        let pool = test_pool().await;
+        let coordinator_session_id = format!("r31b-coord-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&coordinator_session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (dir, baseline) = r20b_worktree_with_no_commits_past_baseline("r31b-sweep-untouched");
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": baseline,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 0,
+                "insertions": 0,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let worker_session_id = format!("r31b-worker-{}", uuid::Uuid::new_v4());
+        r31b_attach_worker_session(
+            &pool,
+            &card.id,
+            &coordinator_session_id,
+            &worker_session_id,
+            dir.path(),
+        )
+        .await;
+
+        let (attempted, landed) = run_end_salvage_sweep(&pool, &coordinator_session_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            attempted, 0,
+            "nothing to salvage must never count as an attempt"
+        );
+        assert_eq!(landed, 0);
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "a goal with nothing unlanded must be left exactly where it was — no claim attempted"
+        );
+        assert!(updated.metadata_json.get("salvage_attempted").is_none());
+
+        let audit_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM decision_audit WHERE decision_id = ?")
+                .bind(format!("run-end-sweep:{coordinator_session_id}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            audit_rows, 0,
+            "no unlanded work anywhere in the roadmap must record no audit row at all"
+        );
+    }
+
+    /// (c) Idempotent: a second sweep call over the SAME coordinator session
+    /// is a no-op — the first call already moved the goal out of
+    /// `ready`/`in_progress` (into Review, or straight to Complete if this
+    /// process already had headless auto-land installed by an earlier
+    /// test), so the second call's own state filter skips it before ever
+    /// touching git or `maybe_salvage_committed_work`'s one-shot guard.
+    #[tokio::test]
+    async fn run_end_salvage_sweep_is_idempotent_on_a_second_call() {
+        let pool = test_pool().await;
+        let coordinator_session_id = format!("r31b-coord-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&coordinator_session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (dir, baseline, head) = r20b_worktree_with_committed_fix("r31b-sweep-idempotent");
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": head,
+                "commits": [],
+                "baseline_commit": baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let worker_session_id = format!("r31b-worker-{}", uuid::Uuid::new_v4());
+        r31b_attach_worker_session(
+            &pool,
+            &card.id,
+            &coordinator_session_id,
+            &worker_session_id,
+            dir.path(),
+        )
+        .await;
+
+        let first = run_end_salvage_sweep(&pool, &coordinator_session_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            first,
+            (1, 1),
+            "the first call must salvage the one stranded goal"
+        );
+
+        let second = run_end_salvage_sweep(&pool, &coordinator_session_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            second,
+            (0, 0),
+            "a second sweep over the same session must find nothing left to attempt"
+        );
+
+        let audit_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM decision_audit WHERE decision_id = ?")
+                .bind(format!("run-end-sweep:{coordinator_session_id}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            audit_rows, 1,
+            "only the first, genuinely-attempted call may record a summary audit row"
         );
     }
 }
