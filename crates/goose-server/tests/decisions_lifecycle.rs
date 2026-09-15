@@ -85,12 +85,28 @@ async fn decision_lifecycle_through_router() {
             created_by: None,
             metadata_json: Some(serde_json::json!({
                 "attempt_count": 1,
-                "goal_state": "review"
+                "goal_state": "review",
+                // approve_review_verification_status (decisions_effects.rs)
+                // treats missing evidence as "pending", never an implicit
+                // pass (56cee825) — an approve_review decision only clears
+                // the router's answer boundary once the verifier recorded a
+                // "pass" verdict here, the same shape
+                // handle_goal_completion/set_goal_dispatch_evidence writes.
+                "dispatch_evidence": {"verdict": {"status": "pass"}}
             })),
         },
     )
     .await
     .unwrap();
+    // Pin the precondition the router answer boundary enforces: a missing
+    // verdict reads as "pending", never an implicit pass, and the fixture
+    // above must satisfy it or step 4 below gets a false 409.
+    assert_eq!(
+        permagent::decisions_effects::approve_review_verification_status(&pool, &goal.id)
+            .await
+            .unwrap(),
+        "pass"
+    );
     let decision = decisions::create_decision(
         &pool,
         NewDecision {
