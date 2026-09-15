@@ -48,5 +48,20 @@ prompt: |
 # not a selection-check concern. `must_call` alone is still meaningful and
 # kept — a run that calls neither, or dispatches without ever reaching
 # `goal_advance`, still fails it.
+# Lane R51a (HARNESS_LOOP_LOG.md "Lane R51a"): `seed/harness_state.json`
+# above seeds the DB card but K8/K12 never gave the dispatched WORKER an
+# actual repo to rename `old_id` in — `workspace/` here was empty, so
+# `git ls-tree` / `search old_id` both came back with nothing, and the
+# worker either honestly escalated ("the repo seed is empty — no files to
+# rename") or improvised a throwaway file just to have something to
+# commit. Both are correct worker behavior given an impossible task; the
+# defect was the fixture. `workspace/` now seeds two real files
+# (`widget.py`, `registry.py`) with `old_id` as a rename-safe parameter
+# name (call sites are positional, so the rename doesn't break the test
+# either way), a `test_widget.py` pytest exercises them, and
+# `pyproject.toml`'s `[tool.pytest.ini_options]` table gives `verify`'s
+# `detect_checks` a real pytest marker so a genuine (non-vacuous) PASS is
+# actually reachable — see `crates/goose/src/agents/platform_extensions/
+# developer/verify.rs`'s `has_pytest_marker`/`PYTHON_MARKERS`.
 selection_check:
   must_call: [check_worker, goal_advance]
