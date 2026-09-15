@@ -1,0 +1,2649 @@
+{
+  "appUrl": "http://127.0.0.1:5284/ui/",
+  "viewport": {
+    "width": 1280,
+    "height": 1000
+  },
+  "startedAt": "2026-09-15T04:25:18.695Z",
+  "tokenSource": "/Users/j/.permagent/secrets/daemon_token.json (value never recorded)",
+  "notes": [
+    "Companion to verify-world-in-app-v2.mjs; only the checks job 18 left for a browser.",
+    "Day/night pairs share one camera: the appearance is a live matchMedia subscription, so no reload happens between them."
+  ],
+  "gates": {
+    "sky": {
+      "description": "gas giant and moon, disc-vs-sky contrast in day and night from one camera, plus what really blocks the line of sight",
+      "numbersToBeat": {
+        "moon": 0.82,
+        "gasGiantCommons": 1.09,
+        "gasGiantGateCourt": 0.7
+      },
+      "rows": [
+        {
+          "vantage": "commons-overlook",
+          "body": "moon",
+          "walkControls": "WASD walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview",
+          "captureArtifact": null,
+          "camera": {
+            "position": {
+              "x": 0,
+              "y": 1.7,
+              "z": 14
+            },
+            "yaw": -0.541,
+            "pitch": 0.444
+          },
+          "cameraUnchangedAfterFlip": 0,
+          "nightLabel": "Night / follows system appearance",
+          "aim": {
+            "ok": true,
+            "targetYaw": -0.53,
+            "targetPitch": 0.43,
+            "yaw": -0.541,
+            "pitch": 0.444
+          },
+          "occlusion": {
+            "ok": true,
+            "body": "moon",
+            "bodyDistanceM": 1090,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0
+          },
+          "renderState": {
+            "depthWrite": true,
+            "renderOrder": -100,
+            "name": "Forum moon",
+            "distanceM": 1090,
+            "radiusPx": 46
+          },
+          "capture": {
+            "day": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "night": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "chosenDayZeroPixels": 0,
+            "chosenNightZeroPixels": 0
+          },
+          "day": {
+            "measured": true,
+            "centre": [
+              343,
+              496
+            ],
+            "radiusPx": 46,
+            "discPixels": 3816,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 232.87,
+            "discMedianLuma": 234.06,
+            "discMinLuma": 209.13,
+            "discMaxLuma": 254.78,
+            "surroundMeanLuma": 204.33,
+            "surroundMedianLuma": 234.27,
+            "contrastRatio": 1.14,
+            "medianContrastRatio": 1
+          },
+          "night": {
+            "measured": true,
+            "centre": [
+              343,
+              496
+            ],
+            "radiusPx": 46,
+            "discPixels": 3816,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 232.34,
+            "discMedianLuma": 233.27,
+            "discMinLuma": 208.42,
+            "discMaxLuma": 254.71,
+            "surroundMeanLuma": 17.65,
+            "surroundMedianLuma": 14.59,
+            "contrastRatio": 13.17,
+            "medianContrastRatio": 15.99
+          },
+          "starSpikes": {
+            "note": "Isolated pixels >=35 luma above their own 7x7 median. The sky annulus is the control: it is full of stars, so a detector that finds none there is not working.",
+            "disc": {
+              "where": "moon-disc",
+              "pixelsSampled": 3644,
+              "spikeThreshold": 35,
+              "spikes": 0,
+              "spikeFraction": 0,
+              "maxExcessOverNeighbourhood": 22.21
+            },
+            "sky": {
+              "where": "sky-annulus",
+              "pixelsSampled": 29996,
+              "spikeThreshold": 35,
+              "spikes": 212,
+              "spikeFraction": 0.00707,
+              "maxExcessOverNeighbourhood": 219.17
+            }
+          },
+          "screenshots": {
+            "day": "assets/world/forum/browser/v3-commons-overlook-moon-day.webp",
+            "night": "assets/world/forum/browser/v3-commons-overlook-moon-night.webp"
+          }
+        },
+        {
+          "vantage": "commons-overlook",
+          "body": "gasGiant",
+          "walkControls": "WASD walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview",
+          "captureArtifact": null,
+          "camera": {
+            "position": {
+              "x": 0,
+              "y": 1.7,
+              "z": 14
+            },
+            "yaw": 2.802,
+            "pitch": 0.444
+          },
+          "cameraUnchangedAfterFlip": 0,
+          "nightLabel": "Night / follows system appearance",
+          "aim": {
+            "ok": true,
+            "targetYaw": 2.79,
+            "targetPitch": 0.49,
+            "yaw": 2.802,
+            "pitch": 0.444
+          },
+          "occlusion": {
+            "ok": true,
+            "body": "gasGiant",
+            "bodyDistanceM": 888,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0
+          },
+          "renderState": {
+            "depthWrite": true,
+            "renderOrder": -100,
+            "name": "Forum gas giant",
+            "distanceM": 888,
+            "radiusPx": 170.8
+          },
+          "capture": {
+            "day": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "night": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "chosenDayZeroPixels": 0,
+            "chosenNightZeroPixels": 0
+          },
+          "day": {
+            "measured": true,
+            "centre": [
+              366,
+              431
+            ],
+            "radiusPx": 170.8,
+            "discPixels": 58232,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 172.45,
+            "discMedianLuma": 171.78,
+            "discMinLuma": 78.98,
+            "discMaxLuma": 242.25,
+            "surroundMeanLuma": 175.24,
+            "surroundMedianLuma": 233.34,
+            "contrastRatio": 0.98,
+            "medianContrastRatio": 0.74
+          },
+          "night": {
+            "measured": true,
+            "centre": [
+              366,
+              431
+            ],
+            "radiusPx": 170.8,
+            "discPixels": 58232,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 163.9,
+            "discMedianLuma": 164.77,
+            "discMinLuma": 107.47,
+            "discMaxLuma": 202.22,
+            "surroundMeanLuma": 22.33,
+            "surroundMedianLuma": 15.52,
+            "contrastRatio": 7.34,
+            "medianContrastRatio": 10.62
+          },
+          "starSpikes": null,
+          "screenshots": {
+            "day": "assets/world/forum/browser/v3-commons-overlook-gasGiant-day.webp",
+            "night": "assets/world/forum/browser/v3-commons-overlook-gasGiant-night.webp"
+          }
+        },
+        {
+          "vantage": "gate-approach",
+          "body": "moon",
+          "walkControls": "WASD walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview",
+          "captureArtifact": null,
+          "camera": {
+            "position": {
+              "x": -35.355,
+              "y": 1.7,
+              "z": -35.355
+            },
+            "yaw": -0.593,
+            "pitch": 0.478
+          },
+          "cameraUnchangedAfterFlip": 0,
+          "nightLabel": "Night / follows system appearance",
+          "aim": {
+            "ok": true,
+            "targetYaw": -0.59,
+            "targetPitch": 0.44,
+            "yaw": -0.593,
+            "pitch": 0.478
+          },
+          "occlusion": {
+            "ok": true,
+            "body": "moon",
+            "bodyDistanceM": 1069,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0
+          },
+          "renderState": {
+            "depthWrite": true,
+            "renderOrder": -100,
+            "name": "Forum moon",
+            "distanceM": 1069,
+            "radiusPx": 46.9
+          },
+          "capture": {
+            "day": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "night": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "chosenDayZeroPixels": 0,
+            "chosenNightZeroPixels": 0
+          },
+          "day": {
+            "measured": true,
+            "centre": [
+              348,
+              524
+            ],
+            "radiusPx": 46.9,
+            "discPixels": 4228,
+            "crosshairPixelsDropped": 193,
+            "discMeanLuma": 246.54,
+            "discMedianLuma": 248.07,
+            "discMinLuma": 202.06,
+            "discMaxLuma": 255,
+            "surroundMeanLuma": 212.69,
+            "surroundMedianLuma": 233.56,
+            "contrastRatio": 1.16,
+            "medianContrastRatio": 1.06
+          },
+          "night": {
+            "measured": true,
+            "centre": [
+              348,
+              524
+            ],
+            "radiusPx": 46.9,
+            "discPixels": 4228,
+            "crosshairPixelsDropped": 193,
+            "discMeanLuma": 228.54,
+            "discMedianLuma": 233.2,
+            "discMinLuma": 30.43,
+            "discMaxLuma": 254.49,
+            "surroundMeanLuma": 21.75,
+            "surroundMedianLuma": 13.59,
+            "contrastRatio": 10.51,
+            "medianContrastRatio": 17.16
+          },
+          "starSpikes": {
+            "note": "Isolated pixels >=35 luma above their own 7x7 median. The sky annulus is the control: it is full of stars, so a detector that finds none there is not working.",
+            "disc": {
+              "where": "moon-disc",
+              "pixelsSampled": 4153,
+              "spikeThreshold": 35,
+              "spikes": 25,
+              "spikeFraction": 0.00602,
+              "maxExcessOverNeighbourhood": 198.42
+            },
+            "sky": {
+              "where": "sky-annulus",
+              "pixelsSampled": 31128,
+              "spikeThreshold": 35,
+              "spikes": 173,
+              "spikeFraction": 0.00556,
+              "maxExcessOverNeighbourhood": 213.48
+            }
+          },
+          "screenshots": {
+            "day": "assets/world/forum/browser/v3-gate-approach-moon-day.webp",
+            "night": "assets/world/forum/browser/v3-gate-approach-moon-night.webp"
+          }
+        },
+        {
+          "vantage": "gate-approach",
+          "body": "gasGiant",
+          "walkControls": "WASD walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview",
+          "captureArtifact": null,
+          "camera": {
+            "position": {
+              "x": -35.355,
+              "y": 1.7,
+              "z": -35.355
+            },
+            "yaw": 2.845,
+            "pitch": 0.478
+          },
+          "cameraUnchangedAfterFlip": 0,
+          "nightLabel": "Night / follows system appearance",
+          "aim": {
+            "ok": true,
+            "targetYaw": 2.85,
+            "targetPitch": 0.48,
+            "yaw": 2.845,
+            "pitch": 0.478
+          },
+          "occlusion": {
+            "ok": true,
+            "body": "gasGiant",
+            "bodyDistanceM": 919,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0
+          },
+          "renderState": {
+            "depthWrite": true,
+            "renderOrder": -100,
+            "name": "Forum gas giant",
+            "distanceM": 919,
+            "radiusPx": 165
+          },
+          "capture": {
+            "day": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "night": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "chosenDayZeroPixels": 0,
+            "chosenNightZeroPixels": 0
+          },
+          "day": {
+            "measured": true,
+            "centre": [
+              348,
+              489
+            ],
+            "radiusPx": 165,
+            "discPixels": 54252,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 51.53,
+            "discMedianLuma": 50.64,
+            "discMinLuma": 37.78,
+            "discMaxLuma": 65.5,
+            "surroundMeanLuma": 46.92,
+            "surroundMedianLuma": 36.85,
+            "contrastRatio": 1.1,
+            "medianContrastRatio": 1.37
+          },
+          "night": {
+            "measured": true,
+            "centre": [
+              348,
+              489
+            ],
+            "radiusPx": 165,
+            "discPixels": 54252,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 23.48,
+            "discMedianLuma": 26.85,
+            "discMinLuma": 4.93,
+            "discMaxLuma": 36.41,
+            "surroundMeanLuma": 21.23,
+            "surroundMedianLuma": 17.52,
+            "contrastRatio": 1.11,
+            "medianContrastRatio": 1.53
+          },
+          "starSpikes": null,
+          "screenshots": {
+            "day": "assets/world/forum/browser/v3-gate-approach-gasGiant-day.webp",
+            "night": "assets/world/forum/browser/v3-gate-approach-gasGiant-night.webp"
+          }
+        },
+        {
+          "vantage": "harbour",
+          "body": "moon",
+          "walkControls": "WASD walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview",
+          "captureArtifact": null,
+          "camera": {
+            "position": {
+              "x": 2,
+              "y": 1.7,
+              "z": 123
+            },
+            "yaw": -0.487,
+            "pitch": 0.426
+          },
+          "cameraUnchangedAfterFlip": 0,
+          "nightLabel": "Night / follows system appearance",
+          "aim": {
+            "ok": true,
+            "targetYaw": -0.48,
+            "targetPitch": 0.4,
+            "yaw": -0.487,
+            "pitch": 0.426
+          },
+          "occlusion": {
+            "ok": true,
+            "body": "moon",
+            "bodyDistanceM": 1176,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0
+          },
+          "renderState": {
+            "depthWrite": true,
+            "renderOrder": -100,
+            "name": "Forum moon",
+            "distanceM": 1176,
+            "radiusPx": 42.7
+          },
+          "capture": {
+            "day": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "night": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "chosenDayZeroPixels": 0,
+            "chosenNightZeroPixels": 0
+          },
+          "day": {
+            "measured": true,
+            "centre": [
+              344,
+              514
+            ],
+            "radiusPx": 42.7,
+            "discPixels": 3342,
+            "crosshairPixelsDropped": 331,
+            "discMeanLuma": 212.85,
+            "discMedianLuma": 229.35,
+            "discMinLuma": 123.46,
+            "discMaxLuma": 254.64,
+            "surroundMeanLuma": 191.56,
+            "surroundMedianLuma": 233.27,
+            "contrastRatio": 1.11,
+            "medianContrastRatio": 0.98
+          },
+          "night": {
+            "measured": true,
+            "centre": [
+              344,
+              514
+            ],
+            "radiusPx": 42.7,
+            "discPixels": 3342,
+            "crosshairPixelsDropped": 331,
+            "discMeanLuma": 186.88,
+            "discMedianLuma": 229.27,
+            "discMinLuma": 13.57,
+            "discMaxLuma": 254.57,
+            "surroundMeanLuma": 23.57,
+            "surroundMedianLuma": 18.8,
+            "contrastRatio": 7.93,
+            "medianContrastRatio": 12.19
+          },
+          "starSpikes": {
+            "note": "Isolated pixels >=35 luma above their own 7x7 median. The sky annulus is the control: it is full of stars, so a detector that finds none there is not working.",
+            "disc": {
+              "where": "moon-disc",
+              "pixelsSampled": 3245,
+              "spikeThreshold": 35,
+              "spikes": 40,
+              "spikeFraction": 0.01233,
+              "maxExcessOverNeighbourhood": 176.16
+            },
+            "sky": {
+              "where": "sky-annulus",
+              "pixelsSampled": 25840,
+              "spikeThreshold": 35,
+              "spikes": 124,
+              "spikeFraction": 0.0048,
+              "maxExcessOverNeighbourhood": 210.82
+            }
+          },
+          "screenshots": {
+            "day": "assets/world/forum/browser/v3-harbour-moon-day.webp",
+            "night": "assets/world/forum/browser/v3-harbour-moon-night.webp"
+          }
+        },
+        {
+          "vantage": "harbour",
+          "body": "gasGiant",
+          "walkControls": "WASD walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview",
+          "captureArtifact": null,
+          "camera": {
+            "position": {
+              "x": 2,
+              "y": 1.7,
+              "z": 123
+            },
+            "yaw": 2.733,
+            "pitch": 0.566
+          },
+          "cameraUnchangedAfterFlip": 0,
+          "nightLabel": "Night / follows system appearance",
+          "aim": {
+            "ok": true,
+            "targetYaw": 2.73,
+            "targetPitch": 0.55,
+            "yaw": 2.733,
+            "pitch": 0.566
+          },
+          "occlusion": {
+            "ok": true,
+            "body": "gasGiant",
+            "bodyDistanceM": 801,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0
+          },
+          "renderState": {
+            "depthWrite": true,
+            "renderOrder": -100,
+            "name": "Forum gas giant",
+            "distanceM": 801,
+            "radiusPx": 189
+          },
+          "capture": {
+            "day": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "night": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "chosenDayZeroPixels": 0,
+            "chosenNightZeroPixels": 0
+          },
+          "day": {
+            "measured": true,
+            "centre": [
+              356,
+              500
+            ],
+            "radiusPx": 189,
+            "discPixels": 71380,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 189.59,
+            "discMedianLuma": 197.93,
+            "discMinLuma": 105.55,
+            "discMaxLuma": 226.73,
+            "surroundMeanLuma": 168.63,
+            "surroundMedianLuma": 233.56,
+            "contrastRatio": 1.12,
+            "medianContrastRatio": 0.85
+          },
+          "night": {
+            "measured": true,
+            "centre": [
+              356,
+              500
+            ],
+            "radiusPx": 189,
+            "discPixels": 71380,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 163.17,
+            "discMedianLuma": 164.77,
+            "discMinLuma": 105.33,
+            "discMaxLuma": 203.22,
+            "surroundMeanLuma": 21.38,
+            "surroundMedianLuma": 14.59,
+            "contrastRatio": 7.63,
+            "medianContrastRatio": 11.29
+          },
+          "starSpikes": null,
+          "screenshots": {
+            "day": "assets/world/forum/browser/v3-harbour-gasGiant-day.webp",
+            "night": "assets/world/forum/browser/v3-harbour-gasGiant-night.webp"
+          }
+        }
+      ],
+      "at": "2026-09-15T04:24:52.628Z"
+    },
+    "occlude": {
+      "description": "raycast from the live camera to each body: a body behind real geometry must report a blocking mesh and a low-contrast disc",
+      "appearance": "Night / follows system appearance",
+      "probes": [
+        {
+          "from": "Maker hall",
+          "walkerAt": {
+            "x": -114,
+            "y": 1.7,
+            "z": 5
+          },
+          "body": "moon",
+          "aim": {
+            "ok": true,
+            "targetYaw": -0.63,
+            "targetPitch": 0.41,
+            "yaw": -0.632,
+            "pitch": 0.41
+          },
+          "occlusionRaycast": {
+            "ok": true,
+            "body": "moon",
+            "bodyDistanceM": 1141,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0,
+            "note": "Raycaster finds nothing on this export (quantized merged GLB meshes); the hide-the-world measurement below is the evidence."
+          },
+          "capture": [
+            {
+              "source": "composited",
+              "zeroPixels": 0
+            }
+          ],
+          "disc": {
+            "measured": true,
+            "centre": [
+              351,
+              481
+            ],
+            "radiusPx": 44,
+            "discPixels": 3452,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 0.99,
+            "discMedianLuma": 0.86,
+            "discMinLuma": 0.86,
+            "discMaxLuma": 41.34,
+            "surroundMeanLuma": 4,
+            "surroundMedianLuma": 0.86,
+            "contrastRatio": 0.25,
+            "medianContrastRatio": 1
+          },
+          "discWithWorldHidden": {
+            "measured": true,
+            "centre": [
+              351,
+              481
+            ],
+            "radiusPx": 44,
+            "discPixels": 3452,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 0,
+            "discMedianLuma": 0,
+            "discMinLuma": 0,
+            "discMaxLuma": 0,
+            "surroundMeanLuma": 0,
+            "surroundMedianLuma": 0,
+            "contrastRatio": 0,
+            "medianContrastRatio": 0
+          },
+          "worldMeshesHidden": {
+            "ok": true,
+            "hidden": 137
+          },
+          "worldRestored": {
+            "ok": true,
+            "restored": 137
+          },
+          "occludedByTheWorld": {
+            "discLumaLostToGeometry": -0.99,
+            "fractionOfBodyLuma": null
+          },
+          "screenshots": {
+            "asRendered": "assets/world/forum/browser/v3-occlude-maker-hall-moon.webp",
+            "worldHidden": "assets/world/forum/browser/v3-occlude-maker-hall-moon-noworld.webp"
+          }
+        },
+        {
+          "from": "Maker hall",
+          "walkerAt": {
+            "x": -114,
+            "y": 1.7,
+            "z": 5
+          },
+          "body": "gasGiant",
+          "aim": {
+            "ok": true,
+            "targetYaw": 2.93,
+            "targetPitch": 0.51,
+            "yaw": 2.934,
+            "pitch": 0.554
+          },
+          "occlusionRaycast": {
+            "ok": true,
+            "body": "gasGiant",
+            "bodyDistanceM": 867,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0,
+            "note": "Raycaster finds nothing on this export (quantized merged GLB meshes); the hide-the-world measurement below is the evidence."
+          },
+          "capture": [
+            {
+              "source": "composited",
+              "zeroPixels": 0
+            }
+          ],
+          "disc": {
+            "measured": true,
+            "centre": [
+              353,
+              538
+            ],
+            "radiusPx": 174.7,
+            "discPixels": 60908,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 10.29,
+            "discMedianLuma": 2.64,
+            "discMinLuma": 0.86,
+            "discMaxLuma": 65.31,
+            "surroundMeanLuma": 20.08,
+            "surroundMedianLuma": 17.52,
+            "contrastRatio": 0.51,
+            "medianContrastRatio": 0.15
+          },
+          "discWithWorldHidden": {
+            "measured": true,
+            "centre": [
+              353,
+              538
+            ],
+            "radiusPx": 174.7,
+            "discPixels": 60908,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 163.51,
+            "discMedianLuma": 164.68,
+            "discMinLuma": 106.69,
+            "discMaxLuma": 203.22,
+            "surroundMeanLuma": 21.98,
+            "surroundMedianLuma": 17.52,
+            "contrastRatio": 7.44,
+            "medianContrastRatio": 9.4
+          },
+          "worldMeshesHidden": {
+            "ok": true,
+            "hidden": 137
+          },
+          "worldRestored": {
+            "ok": true,
+            "restored": 137
+          },
+          "occludedByTheWorld": {
+            "discLumaLostToGeometry": 153.22,
+            "fractionOfBodyLuma": 0.94
+          },
+          "screenshots": {
+            "asRendered": "assets/world/forum/browser/v3-occlude-maker-hall-gasGiant.webp",
+            "worldHidden": "assets/world/forum/browser/v3-occlude-maker-hall-gasGiant-noworld.webp"
+          }
+        },
+        {
+          "from": "Conservatory",
+          "walkerAt": {
+            "x": 118,
+            "y": 1.7,
+            "z": 5
+          },
+          "body": "moon",
+          "aim": {
+            "ok": false,
+            "targetYaw": -0.43,
+            "targetPitch": 0.46,
+            "yaw": -0.418,
+            "pitch": 0.674
+          },
+          "occlusionRaycast": {
+            "ok": true,
+            "body": "moon",
+            "bodyDistanceM": 1034,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0,
+            "note": "Raycaster finds nothing on this export (quantized merged GLB meshes); the hide-the-world measurement below is the evidence."
+          },
+          "capture": [
+            {
+              "source": "composited",
+              "zeroPixels": 98385
+            },
+            {
+              "source": "webgl-readback",
+              "zeroPixels": 105400
+            },
+            {
+              "source": "composited",
+              "zeroPixels": 98385
+            },
+            {
+              "source": "webgl-readback",
+              "zeroPixels": 105400
+            },
+            {
+              "source": "composited",
+              "zeroPixels": 98385
+            },
+            {
+              "source": "webgl-readback",
+              "zeroPixels": 105400
+            }
+          ],
+          "disc": {
+            "measured": true,
+            "centre": [
+              361,
+              723
+            ],
+            "radiusPx": 48.5,
+            "discPixels": 4709,
+            "crosshairPixelsDropped": 0,
+            "discMeanLuma": 0,
+            "discMedianLuma": 0,
+            "discMinLuma": 0,
+            "discMaxLuma": 0,
+            "surroundMeanLuma": 0.33,
+            "surroundMedianLuma": 0,
+            "contrastRatio": 0,
+            "medianContrastRatio": 0
+          },
+          "discWithWorldHidden": {
+            "measured": true,
+            "centre": [
+              361,
+              723
+            ],
+            "radiusPx": 48.5,
+            "discPixels": 4709,
+            "crosshairPixelsDropped": 0,
+            "discMeanLuma": 0,
+            "discMedianLuma": 0,
+            "discMinLuma": 0,
+            "discMaxLuma": 0,
+            "surroundMeanLuma": 0.33,
+            "surroundMedianLuma": 0,
+            "contrastRatio": 0,
+            "medianContrastRatio": 0
+          },
+          "worldMeshesHidden": {
+            "ok": true,
+            "hidden": 137
+          },
+          "worldRestored": {
+            "ok": true,
+            "restored": 137
+          },
+          "occludedByTheWorld": {
+            "discLumaLostToGeometry": 0,
+            "fractionOfBodyLuma": null
+          },
+          "screenshots": {
+            "asRendered": "assets/world/forum/browser/v3-occlude-conservatory-moon.webp",
+            "worldHidden": "assets/world/forum/browser/v3-occlude-conservatory-moon-noworld.webp"
+          }
+        },
+        {
+          "from": "Conservatory",
+          "walkerAt": {
+            "x": 118,
+            "y": 1.7,
+            "z": 5
+          },
+          "body": "gasGiant",
+          "aim": {
+            "ok": true,
+            "targetYaw": 2.66,
+            "targetPitch": 0.47,
+            "yaw": 2.655,
+            "pitch": 0.476
+          },
+          "occlusionRaycast": {
+            "ok": true,
+            "body": "gasGiant",
+            "bodyDistanceM": 938,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0,
+            "note": "Raycaster finds nothing on this export (quantized merged GLB meshes); the hide-the-world measurement below is the evidence."
+          },
+          "capture": [
+            {
+              "source": "composited",
+              "zeroPixels": 0
+            }
+          ],
+          "disc": {
+            "measured": true,
+            "centre": [
+              348,
+              498
+            ],
+            "radiusPx": 161.8,
+            "discPixels": 52208,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 9.01,
+            "discMedianLuma": 10.78,
+            "discMinLuma": 4.93,
+            "discMaxLuma": 11.71,
+            "surroundMeanLuma": 18.49,
+            "surroundMedianLuma": 13.57,
+            "contrastRatio": 0.49,
+            "medianContrastRatio": 0.79
+          },
+          "discWithWorldHidden": {
+            "measured": true,
+            "centre": [
+              348,
+              498
+            ],
+            "radiusPx": 161.8,
+            "discPixels": 52208,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 164.19,
+            "discMedianLuma": 164.91,
+            "discMinLuma": 108.61,
+            "discMaxLuma": 203.43,
+            "surroundMeanLuma": 21.75,
+            "surroundMedianLuma": 17.52,
+            "contrastRatio": 7.55,
+            "medianContrastRatio": 9.41
+          },
+          "worldMeshesHidden": {
+            "ok": true,
+            "hidden": 137
+          },
+          "worldRestored": {
+            "ok": true,
+            "restored": 137
+          },
+          "occludedByTheWorld": {
+            "discLumaLostToGeometry": 155.18,
+            "fractionOfBodyLuma": 0.95
+          },
+          "screenshots": {
+            "asRendered": "assets/world/forum/browser/v3-occlude-conservatory-gasGiant.webp",
+            "worldHidden": "assets/world/forum/browser/v3-occlude-conservatory-gasGiant-noworld.webp"
+          }
+        },
+        {
+          "from": "Commons",
+          "walkerAt": {
+            "x": 0,
+            "y": 1.7,
+            "z": 14
+          },
+          "body": "moon",
+          "aim": {
+            "ok": true,
+            "targetYaw": -0.53,
+            "targetPitch": 0.43,
+            "yaw": -0.53,
+            "pitch": 0.444
+          },
+          "occlusionRaycast": {
+            "ok": true,
+            "body": "moon",
+            "bodyDistanceM": 1090,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0,
+            "note": "Raycaster finds nothing on this export (quantized merged GLB meshes); the hide-the-world measurement below is the evidence."
+          },
+          "capture": [
+            {
+              "source": "composited",
+              "zeroPixels": 0
+            }
+          ],
+          "disc": {
+            "measured": true,
+            "centre": [
+              354,
+              496
+            ],
+            "radiusPx": 46,
+            "discPixels": 3816,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 232.56,
+            "discMedianLuma": 233.34,
+            "discMinLuma": 208.42,
+            "discMaxLuma": 254.71,
+            "surroundMeanLuma": 17.65,
+            "surroundMedianLuma": 14.52,
+            "contrastRatio": 13.18,
+            "medianContrastRatio": 16.07
+          },
+          "discWithWorldHidden": {
+            "measured": true,
+            "centre": [
+              354,
+              496
+            ],
+            "radiusPx": 46,
+            "discPixels": 3816,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 232.56,
+            "discMedianLuma": 233.34,
+            "discMinLuma": 208.42,
+            "discMaxLuma": 254.71,
+            "surroundMeanLuma": 18.6,
+            "surroundMedianLuma": 14.24,
+            "contrastRatio": 12.5,
+            "medianContrastRatio": 16.39
+          },
+          "worldMeshesHidden": {
+            "ok": true,
+            "hidden": 137
+          },
+          "worldRestored": {
+            "ok": true,
+            "restored": 137
+          },
+          "occludedByTheWorld": {
+            "discLumaLostToGeometry": 0,
+            "fractionOfBodyLuma": 0
+          },
+          "screenshots": {
+            "asRendered": "assets/world/forum/browser/v3-occlude-commons-moon.webp",
+            "worldHidden": "assets/world/forum/browser/v3-occlude-commons-moon-noworld.webp"
+          }
+        },
+        {
+          "from": "Commons",
+          "walkerAt": {
+            "x": 0,
+            "y": 1.7,
+            "z": 14
+          },
+          "body": "gasGiant",
+          "aim": {
+            "ok": true,
+            "targetYaw": 2.79,
+            "targetPitch": 0.49,
+            "yaw": 2.787,
+            "pitch": 0.444
+          },
+          "occlusionRaycast": {
+            "ok": true,
+            "body": "gasGiant",
+            "bodyDistanceM": 888,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0,
+            "note": "Raycaster finds nothing on this export (quantized merged GLB meshes); the hide-the-world measurement below is the evidence."
+          },
+          "capture": [
+            {
+              "source": "composited",
+              "zeroPixels": 0
+            }
+          ],
+          "disc": {
+            "measured": true,
+            "centre": [
+              351,
+              431
+            ],
+            "radiusPx": 170.8,
+            "discPixels": 58232,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 163.91,
+            "discMedianLuma": 164.77,
+            "discMinLuma": 107.47,
+            "discMaxLuma": 202.22,
+            "surroundMeanLuma": 22.43,
+            "surroundMedianLuma": 15.59,
+            "contrastRatio": 7.31,
+            "medianContrastRatio": 10.57
+          },
+          "discWithWorldHidden": {
+            "measured": true,
+            "centre": [
+              351,
+              431
+            ],
+            "radiusPx": 170.8,
+            "discPixels": 58232,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 163.91,
+            "discMedianLuma": 164.77,
+            "discMinLuma": 107.47,
+            "discMaxLuma": 202.22,
+            "surroundMeanLuma": 19.65,
+            "surroundMedianLuma": 10.52,
+            "contrastRatio": 8.34,
+            "medianContrastRatio": 15.66
+          },
+          "worldMeshesHidden": {
+            "ok": true,
+            "hidden": 137
+          },
+          "worldRestored": {
+            "ok": true,
+            "restored": 137
+          },
+          "occludedByTheWorld": {
+            "discLumaLostToGeometry": 0,
+            "fractionOfBodyLuma": 0
+          },
+          "screenshots": {
+            "asRendered": "assets/world/forum/browser/v3-occlude-commons-gasGiant.webp",
+            "worldHidden": "assets/world/forum/browser/v3-occlude-commons-gasGiant-noworld.webp"
+          }
+        },
+        {
+          "from": "Harbor",
+          "walkerAt": {
+            "x": 2,
+            "y": 1.7,
+            "z": 123
+          },
+          "body": "moon",
+          "aim": {
+            "ok": true,
+            "targetYaw": -0.48,
+            "targetPitch": 0.4,
+            "yaw": -0.493,
+            "pitch": 0.426
+          },
+          "occlusionRaycast": {
+            "ok": true,
+            "body": "moon",
+            "bodyDistanceM": 1176,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0,
+            "note": "Raycaster finds nothing on this export (quantized merged GLB meshes); the hide-the-world measurement below is the evidence."
+          },
+          "capture": [
+            {
+              "source": "composited",
+              "zeroPixels": 0
+            }
+          ],
+          "disc": {
+            "measured": true,
+            "centre": [
+              338,
+              513
+            ],
+            "radiusPx": 42.7,
+            "discPixels": 3370,
+            "crosshairPixelsDropped": 303,
+            "discMeanLuma": 190.35,
+            "discMedianLuma": 229.49,
+            "discMinLuma": 13.85,
+            "discMaxLuma": 254.64,
+            "surroundMeanLuma": 23.7,
+            "surroundMedianLuma": 18.8,
+            "contrastRatio": 8.03,
+            "medianContrastRatio": 12.2
+          },
+          "discWithWorldHidden": {
+            "measured": true,
+            "centre": [
+              338,
+              513
+            ],
+            "radiusPx": 42.7,
+            "discPixels": 3370,
+            "crosshairPixelsDropped": 303,
+            "discMeanLuma": 233.82,
+            "discMedianLuma": 234.49,
+            "discMinLuma": 209.42,
+            "discMaxLuma": 254.64,
+            "surroundMeanLuma": 18.15,
+            "surroundMedianLuma": 14.45,
+            "contrastRatio": 12.88,
+            "medianContrastRatio": 16.23
+          },
+          "worldMeshesHidden": {
+            "ok": true,
+            "hidden": 137
+          },
+          "worldRestored": {
+            "ok": true,
+            "restored": 137
+          },
+          "occludedByTheWorld": {
+            "discLumaLostToGeometry": 43.47,
+            "fractionOfBodyLuma": 0.19
+          },
+          "screenshots": {
+            "asRendered": "assets/world/forum/browser/v3-occlude-harbor-moon.webp",
+            "worldHidden": "assets/world/forum/browser/v3-occlude-harbor-moon-noworld.webp"
+          }
+        },
+        {
+          "from": "Harbor",
+          "walkerAt": {
+            "x": 2,
+            "y": 1.7,
+            "z": 123
+          },
+          "body": "gasGiant",
+          "aim": {
+            "ok": true,
+            "targetYaw": 2.73,
+            "targetPitch": 0.55,
+            "yaw": 2.731,
+            "pitch": 0.566
+          },
+          "occlusionRaycast": {
+            "ok": true,
+            "body": "gasGiant",
+            "bodyDistanceM": 801,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0,
+            "note": "Raycaster finds nothing on this export (quantized merged GLB meshes); the hide-the-world measurement below is the evidence."
+          },
+          "capture": [
+            {
+              "source": "composited",
+              "zeroPixels": 0
+            }
+          ],
+          "disc": {
+            "measured": true,
+            "centre": [
+              353,
+              500
+            ],
+            "radiusPx": 189,
+            "discPixels": 71380,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 163.17,
+            "discMedianLuma": 164.77,
+            "discMinLuma": 105.47,
+            "discMaxLuma": 203.22,
+            "surroundMeanLuma": 21.41,
+            "surroundMedianLuma": 14.59,
+            "contrastRatio": 7.62,
+            "medianContrastRatio": 11.29
+          },
+          "discWithWorldHidden": {
+            "measured": true,
+            "centre": [
+              353,
+              500
+            ],
+            "radiusPx": 189,
+            "discPixels": 71380,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 163.17,
+            "discMedianLuma": 164.77,
+            "discMinLuma": 105.47,
+            "discMaxLuma": 203.22,
+            "surroundMeanLuma": 21.41,
+            "surroundMedianLuma": 14.59,
+            "contrastRatio": 7.62,
+            "medianContrastRatio": 11.29
+          },
+          "worldMeshesHidden": {
+            "ok": true,
+            "hidden": 137
+          },
+          "worldRestored": {
+            "ok": true,
+            "restored": 137
+          },
+          "occludedByTheWorld": {
+            "discLumaLostToGeometry": 0,
+            "fractionOfBodyLuma": 0
+          },
+          "screenshots": {
+            "asRendered": "assets/world/forum/browser/v3-occlude-harbor-gasGiant.webp",
+            "worldHidden": "assets/world/forum/browser/v3-occlude-harbor-gasGiant-noworld.webp"
+          }
+        },
+        {
+          "from": "Mesh gate",
+          "walkerAt": {
+            "x": -35.355,
+            "y": 1.7,
+            "z": -35.355
+          },
+          "body": "moon",
+          "aim": {
+            "ok": true,
+            "targetYaw": -0.59,
+            "targetPitch": 0.44,
+            "yaw": -0.589,
+            "pitch": 0.478
+          },
+          "occlusionRaycast": {
+            "ok": true,
+            "body": "moon",
+            "bodyDistanceM": 1069,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0,
+            "note": "Raycaster finds nothing on this export (quantized merged GLB meshes); the hide-the-world measurement below is the evidence."
+          },
+          "capture": [
+            {
+              "source": "composited",
+              "zeroPixels": 120314
+            },
+            {
+              "source": "webgl-readback",
+              "zeroPixels": 120360
+            },
+            {
+              "source": "composited",
+              "zeroPixels": 120314
+            },
+            {
+              "source": "webgl-readback",
+              "zeroPixels": 120360
+            },
+            {
+              "source": "composited",
+              "zeroPixels": 120314
+            },
+            {
+              "source": "webgl-readback",
+              "zeroPixels": 120360
+            }
+          ],
+          "disc": {
+            "measured": true,
+            "centre": [
+              353,
+              524
+            ],
+            "radiusPx": 46.9,
+            "discPixels": 4226,
+            "crosshairPixelsDropped": 195,
+            "discMeanLuma": 0,
+            "discMedianLuma": 0,
+            "discMinLuma": 0,
+            "discMaxLuma": 0,
+            "surroundMeanLuma": 0.02,
+            "surroundMedianLuma": 0,
+            "contrastRatio": 0,
+            "medianContrastRatio": 0
+          },
+          "discWithWorldHidden": {
+            "measured": true,
+            "centre": [
+              353,
+              524
+            ],
+            "radiusPx": 46.9,
+            "discPixels": 4226,
+            "crosshairPixelsDropped": 195,
+            "discMeanLuma": 0,
+            "discMedianLuma": 0,
+            "discMinLuma": 0,
+            "discMaxLuma": 0,
+            "surroundMeanLuma": 0.02,
+            "surroundMedianLuma": 0,
+            "contrastRatio": 0,
+            "medianContrastRatio": 0
+          },
+          "worldMeshesHidden": {
+            "ok": true,
+            "hidden": 137
+          },
+          "worldRestored": {
+            "ok": true,
+            "restored": 137
+          },
+          "occludedByTheWorld": {
+            "discLumaLostToGeometry": 0,
+            "fractionOfBodyLuma": null
+          },
+          "screenshots": {
+            "asRendered": "assets/world/forum/browser/v3-occlude-mesh-gate-moon.webp",
+            "worldHidden": "assets/world/forum/browser/v3-occlude-mesh-gate-moon-noworld.webp"
+          }
+        },
+        {
+          "from": "Mesh gate",
+          "walkerAt": {
+            "x": -35.355,
+            "y": 1.7,
+            "z": -35.355
+          },
+          "body": "gasGiant",
+          "aim": {
+            "ok": true,
+            "targetYaw": 2.85,
+            "targetPitch": 0.48,
+            "yaw": 2.847,
+            "pitch": 0.478
+          },
+          "occlusionRaycast": {
+            "ok": true,
+            "body": "gasGiant",
+            "bodyDistanceM": 919,
+            "occluded": false,
+            "firstBlockingMesh": null,
+            "realHitsBeforeBody": 0,
+            "note": "Raycaster finds nothing on this export (quantized merged GLB meshes); the hide-the-world measurement below is the evidence."
+          },
+          "capture": [
+            {
+              "source": "composited",
+              "zeroPixels": 0
+            }
+          ],
+          "disc": {
+            "measured": true,
+            "centre": [
+              349,
+              489
+            ],
+            "radiusPx": 165,
+            "discPixels": 54252,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 23.52,
+            "discMedianLuma": 26.85,
+            "discMinLuma": 4.93,
+            "discMaxLuma": 36.41,
+            "surroundMeanLuma": 21.23,
+            "surroundMedianLuma": 17.52,
+            "contrastRatio": 1.11,
+            "medianContrastRatio": 1.53
+          },
+          "discWithWorldHidden": {
+            "measured": true,
+            "centre": [
+              349,
+              489
+            ],
+            "radiusPx": 165,
+            "discPixels": 54252,
+            "crosshairPixelsDropped": 441,
+            "discMeanLuma": 164.24,
+            "discMedianLuma": 164.99,
+            "discMinLuma": 108.4,
+            "discMaxLuma": 202.29,
+            "surroundMeanLuma": 21.84,
+            "surroundMedianLuma": 16.59,
+            "contrastRatio": 7.52,
+            "medianContrastRatio": 9.94
+          },
+          "worldMeshesHidden": {
+            "ok": true,
+            "hidden": 137
+          },
+          "worldRestored": {
+            "ok": true,
+            "restored": 137
+          },
+          "occludedByTheWorld": {
+            "discLumaLostToGeometry": 140.72,
+            "fractionOfBodyLuma": 0.86
+          },
+          "screenshots": {
+            "asRendered": "assets/world/forum/browser/v3-occlude-mesh-gate-gasGiant.webp",
+            "worldHidden": "assets/world/forum/browser/v3-occlude-mesh-gate-gasGiant-noworld.webp"
+          }
+        }
+      ],
+      "at": "2026-09-15T04:27:47.019Z"
+    },
+    "windows": {
+      "description": "where the warm window strips actually are, and whether they read as lit at night from the commons overlook and a garden vantage",
+      "nightLabel": "Night / follows system appearance",
+      "strips": {
+        "meshesWithThatMaterial": 1,
+        "totalVertices": 4056,
+        "boxesImplied": 169,
+        "clusterCount": 28,
+        "clusters": [
+          {
+            "centre": {
+              "x": 122.5,
+              "y": 28,
+              "z": -56
+            },
+            "vertices": 240,
+            "boxes": 10,
+            "distanceFromOverlookM": 131.2,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 121.5,
+              "y": 58,
+              "z": -56
+            },
+            "vertices": 240,
+            "boxes": 10,
+            "distanceFromOverlookM": 133.7,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 122.5,
+              "y": 88,
+              "z": -56
+            },
+            "vertices": 240,
+            "boxes": 10,
+            "distanceFromOverlookM": 143.8,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": -96.8,
+              "y": 7.4,
+              "z": 31.3
+            },
+            "vertices": 216,
+            "boxes": 9,
+            "distanceFromOverlookM": 127.7,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 69.4,
+              "y": 28,
+              "z": -58
+            },
+            "vertices": 192,
+            "boxes": 8,
+            "distanceFromOverlookM": 102.3,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 78.6,
+              "y": 58,
+              "z": -58
+            },
+            "vertices": 192,
+            "boxes": 8,
+            "distanceFromOverlookM": 110.2,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 98.8,
+              "y": 28,
+              "z": -86
+            },
+            "vertices": 192,
+            "boxes": 8,
+            "distanceFromOverlookM": 140.6,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 109.2,
+              "y": 58,
+              "z": -86
+            },
+            "vertices": 192,
+            "boxes": 8,
+            "distanceFromOverlookM": 148.9,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": -94.7,
+              "y": 23.5,
+              "z": 29.8
+            },
+            "vertices": 192,
+            "boxes": 8,
+            "distanceFromOverlookM": 124,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 79.3,
+              "y": 28,
+              "z": -58
+            },
+            "vertices": 168,
+            "boxes": 7,
+            "distanceFromOverlookM": 106.6,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 68.7,
+              "y": 58,
+              "z": -58
+            },
+            "vertices": 168,
+            "boxes": 7,
+            "distanceFromOverlookM": 106.1,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 109.9,
+              "y": 28,
+              "z": -86
+            },
+            "vertices": 168,
+            "boxes": 7,
+            "distanceFromOverlookM": 146.4,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 98.1,
+              "y": 58,
+              "z": -86
+            },
+            "vertices": 168,
+            "boxes": 7,
+            "distanceFromOverlookM": 143.2,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": -113.3,
+              "y": 26.3,
+              "z": 29.7
+            },
+            "vertices": 168,
+            "boxes": 7,
+            "distanceFromOverlookM": 142.5,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 109.5,
+              "y": 86,
+              "z": -86
+            },
+            "vertices": 144,
+            "boxes": 6,
+            "distanceFromOverlookM": 156.9,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 98.5,
+              "y": 84,
+              "z": -86
+            },
+            "vertices": 144,
+            "boxes": 6,
+            "distanceFromOverlookM": 150.8,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 121.1,
+              "y": 28,
+              "z": -43.9
+            },
+            "vertices": 120,
+            "boxes": 5,
+            "distanceFromOverlookM": 121.9,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 122.9,
+              "y": 58,
+              "z": -43.9
+            },
+            "vertices": 120,
+            "boxes": 5,
+            "distanceFromOverlookM": 126.7,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 121.1,
+              "y": 88,
+              "z": -43.9
+            },
+            "vertices": 120,
+            "boxes": 5,
+            "distanceFromOverlookM": 135.4,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 122,
+              "y": 7,
+              "z": -56
+            },
+            "vertices": 96,
+            "boxes": 4,
+            "distanceFromOverlookM": 132.7,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 122,
+              "y": 109,
+              "z": -56
+            },
+            "vertices": 96,
+            "boxes": 4,
+            "distanceFromOverlookM": 153.4,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": -110.6,
+              "y": 6.3,
+              "z": 30.5
+            },
+            "vertices": 96,
+            "boxes": 4,
+            "distanceFromOverlookM": 141.6,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 78.9,
+              "y": 8,
+              "z": -58
+            },
+            "vertices": 72,
+            "boxes": 3,
+            "distanceFromOverlookM": 108.5,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 69.1,
+              "y": 6,
+              "z": -58
+            },
+            "vertices": 72,
+            "boxes": 3,
+            "distanceFromOverlookM": 104.7,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 109.5,
+              "y": 8,
+              "z": -86
+            },
+            "vertices": 72,
+            "boxes": 3,
+            "distanceFromOverlookM": 147.7,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 98.5,
+              "y": 6,
+              "z": -86
+            },
+            "vertices": 72,
+            "boxes": 3,
+            "distanceFromOverlookM": 142.3,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 122,
+              "y": 7,
+              "z": -43.9
+            },
+            "vertices": 48,
+            "boxes": 2,
+            "distanceFromOverlookM": 124.6,
+            "onScreenPoints": 0
+          },
+          {
+            "centre": {
+              "x": 122,
+              "y": 109,
+              "z": -43.9
+            },
+            "vertices": 48,
+            "boxes": 2,
+            "distanceFromOverlookM": 146.4,
+            "onScreenPoints": 0
+          }
+        ]
+      },
+      "fromTheCommonsOverlook": {
+        "note": "ForumNavigation puts the overview camera at (29,29,36) looking at (0,1,0) for the commons; fov 48 on a 702x972 canvas.",
+        "verticesProjectingIntoView": 0,
+        "stripPixels": {
+          "measured": false,
+          "reason": "no-window-strip-vertex-projects-into-the-overlook-view"
+        },
+        "wholeFrameBrighterAtNight": {
+          "region": [
+            0,
+            0.3,
+            1,
+            0.76
+          ],
+          "pixelsCompared": 314496,
+          "deltaThreshold": 25,
+          "brighterAtNightPixels": 1172,
+          "brighterAtNightFraction": 0.00373,
+          "meanDeltaWhereBrighter": 69.14,
+          "maxDelta": 161.81
+        },
+        "nightScreenshot": "assets/world/forum/browser/v3-world-night.webp"
+      },
+      "groundVantages": [
+        {
+          "place": "Council garden",
+          "aimedAtCluster": {
+            "centre": {
+              "x": 69.1,
+              "y": 6,
+              "z": -58
+            },
+            "vertices": 72,
+            "distanceM": 67.7
+          },
+          "aim": {
+            "ok": false,
+            "targetYaw": -1.45,
+            "targetPitch": 0.06,
+            "yaw": -1.45,
+            "pitch": 0.278
+          },
+          "camera": {
+            "position": {
+              "x": 2,
+              "y": 1.7,
+              "z": -50
+            },
+            "yaw": -1.45,
+            "pitch": 0.278
+          },
+          "capture": {
+            "day": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "night": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ]
+          },
+          "clustersVisible": 23,
+          "clusterSummary": [
+            {
+              "centre": {
+                "x": 122.5,
+                "y": 28,
+                "z": -56
+              },
+              "distanceM": 123.5,
+              "onScreenPoints": 240,
+              "vertices": 240
+            },
+            {
+              "centre": {
+                "x": 121.5,
+                "y": 58,
+                "z": -56
+              },
+              "distanceM": 132.3,
+              "onScreenPoints": 240,
+              "vertices": 240
+            },
+            {
+              "centre": {
+                "x": 122.5,
+                "y": 88,
+                "z": -56
+              },
+              "distanceM": 148.3,
+              "onScreenPoints": 192,
+              "vertices": 240
+            },
+            {
+              "centre": {
+                "x": 69.4,
+                "y": 28,
+                "z": -58
+              },
+              "distanceM": 72.8,
+              "onScreenPoints": 192,
+              "vertices": 192
+            },
+            {
+              "centre": {
+                "x": 78.6,
+                "y": 58,
+                "z": -58
+              },
+              "distanceM": 95.4,
+              "onScreenPoints": 144,
+              "vertices": 192
+            },
+            {
+              "centre": {
+                "x": 98.8,
+                "y": 28,
+                "z": -86
+              },
+              "distanceM": 106.6,
+              "onScreenPoints": 192,
+              "vertices": 192
+            }
+          ],
+          "verticesProjectingIntoView": 2916,
+          "stripPixels": {
+            "measured": true,
+            "points": 2916,
+            "day": {
+              "n": 2916,
+              "min": 17.52,
+              "median": 82.77,
+              "p90": 201,
+              "max": 255,
+              "mean": 89.27
+            },
+            "night": {
+              "n": 2916,
+              "min": 1.79,
+              "median": 35.11,
+              "p90": 101.53,
+              "max": 255,
+              "mean": 48.64
+            },
+            "pointsBrighterAtNight": 0
+          },
+          "wholeFrameBrighterAtNight": {
+            "region": [
+              0,
+              0.05,
+              1,
+              0.95
+            ],
+            "pixelsCompared": 614952,
+            "deltaThreshold": 25,
+            "brighterAtNightPixels": 550,
+            "brighterAtNightFraction": 0.00089,
+            "meanDeltaWhereBrighter": 84.99,
+            "maxDelta": 129.65
+          },
+          "screenshots": {
+            "day": "assets/world/forum/browser/v3-windows-council-garden-day.webp",
+            "night": "assets/world/forum/browser/v3-windows-council-garden-night.webp"
+          }
+        },
+        {
+          "place": "Arrival gardens",
+          "aimedAtCluster": {
+            "centre": {
+              "x": -96.8,
+              "y": 7.4,
+              "z": 31.3
+            },
+            "vertices": 216,
+            "distanceM": 103
+          },
+          "aim": {
+            "ok": false,
+            "targetYaw": 1.29,
+            "targetPitch": 0.06,
+            "yaw": 1.291,
+            "pitch": 0.278
+          },
+          "camera": {
+            "position": {
+              "x": 2,
+              "y": 1.7,
+              "z": 60
+            },
+            "yaw": 1.291,
+            "pitch": 0.278
+          },
+          "capture": {
+            "day": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "night": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ]
+          },
+          "clustersVisible": 4,
+          "clusterSummary": [
+            {
+              "centre": {
+                "x": -96.8,
+                "y": 7.4,
+                "z": 31.3
+              },
+              "distanceM": 103,
+              "onScreenPoints": 216,
+              "vertices": 216
+            },
+            {
+              "centre": {
+                "x": -94.7,
+                "y": 23.5,
+                "z": 29.8
+              },
+              "distanceM": 103.6,
+              "onScreenPoints": 192,
+              "vertices": 192
+            },
+            {
+              "centre": {
+                "x": -113.3,
+                "y": 26.3,
+                "z": 29.7
+              },
+              "distanceM": 121.8,
+              "onScreenPoints": 168,
+              "vertices": 168
+            },
+            {
+              "centre": {
+                "x": -110.6,
+                "y": 6.3,
+                "z": 30.5
+              },
+              "distanceM": 116.5,
+              "onScreenPoints": 96,
+              "vertices": 96
+            }
+          ],
+          "verticesProjectingIntoView": 672,
+          "stripPixels": {
+            "measured": true,
+            "points": 672,
+            "day": {
+              "n": 672,
+              "min": 14.66,
+              "median": 61.99,
+              "p90": 177.79,
+              "max": 246.41,
+              "mean": 86.87
+            },
+            "night": {
+              "n": 672,
+              "min": 2.5,
+              "median": 24.6,
+              "p90": 170.75,
+              "max": 245.83,
+              "mean": 54.16
+            },
+            "pointsBrighterAtNight": 0
+          },
+          "wholeFrameBrighterAtNight": {
+            "region": [
+              0,
+              0.05,
+              1,
+              0.95
+            ],
+            "pixelsCompared": 614952,
+            "deltaThreshold": 25,
+            "brighterAtNightPixels": 550,
+            "brighterAtNightFraction": 0.00089,
+            "meanDeltaWhereBrighter": 84.99,
+            "maxDelta": 129.65
+          },
+          "screenshots": {
+            "day": "assets/world/forum/browser/v3-windows-arrival-gardens-day.webp",
+            "night": "assets/world/forum/browser/v3-windows-arrival-gardens-night.webp"
+          }
+        },
+        {
+          "place": "Maker hall",
+          "aimedAtCluster": {
+            "centre": {
+              "x": -110.6,
+              "y": 6.3,
+              "z": 30.5
+            },
+            "vertices": 96,
+            "distanceM": 26.1
+          },
+          "aim": {
+            "ok": false,
+            "targetYaw": -3.01,
+            "targetPitch": 0.18,
+            "yaw": -2.984,
+            "pitch": 0.278
+          },
+          "camera": {
+            "position": {
+              "x": -114,
+              "y": 1.7,
+              "z": 5
+            },
+            "yaw": -2.984,
+            "pitch": 0.278
+          },
+          "capture": {
+            "day": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ],
+            "night": [
+              {
+                "source": "composited",
+                "zeroPixels": 0
+              }
+            ]
+          },
+          "clustersVisible": 4,
+          "clusterSummary": [
+            {
+              "centre": {
+                "x": -96.8,
+                "y": 7.4,
+                "z": 31.3
+              },
+              "distanceM": 31.9,
+              "onScreenPoints": 84,
+              "vertices": 216
+            },
+            {
+              "centre": {
+                "x": -94.7,
+                "y": 23.5,
+                "z": 29.8
+              },
+              "distanceM": 38.2,
+              "onScreenPoints": 24,
+              "vertices": 192
+            },
+            {
+              "centre": {
+                "x": -113.3,
+                "y": 26.3,
+                "z": 29.7
+              },
+              "distanceM": 34.8,
+              "onScreenPoints": 48,
+              "vertices": 168
+            },
+            {
+              "centre": {
+                "x": -110.6,
+                "y": 6.3,
+                "z": 30.5
+              },
+              "distanceM": 26.1,
+              "onScreenPoints": 72,
+              "vertices": 96
+            }
+          ],
+          "verticesProjectingIntoView": 228,
+          "stripPixels": {
+            "measured": true,
+            "points": 228,
+            "day": {
+              "n": 228,
+              "min": 17.52,
+              "median": 58.89,
+              "p90": 117.14,
+              "max": 253,
+              "mean": 62.31
+            },
+            "night": {
+              "n": 228,
+              "min": 0.86,
+              "median": 28.95,
+              "p90": 42.71,
+              "max": 253,
+              "mean": 32.14
+            },
+            "pointsBrighterAtNight": 0
+          },
+          "wholeFrameBrighterAtNight": {
+            "region": [
+              0,
+              0.05,
+              1,
+              0.95
+            ],
+            "pixelsCompared": 614952,
+            "deltaThreshold": 25,
+            "brighterAtNightPixels": 550,
+            "brighterAtNightFraction": 0.00089,
+            "meanDeltaWhereBrighter": 84.99,
+            "maxDelta": 129.65
+          },
+          "screenshots": {
+            "day": "assets/world/forum/browser/v3-windows-maker-hall-day.webp",
+            "night": "assets/world/forum/browser/v3-windows-maker-hall-night.webp"
+          }
+        }
+      ],
+      "at": "2026-09-15T04:18:55.325Z"
+    },
+    "shadows": {
+      "description": "the deprecation warning is gone and the shadow pass still does something measurable",
+      "shadowMap": {
+        "ok": true,
+        "enabled": true,
+        "type": 1,
+        "typeName": "PCFShadowMap",
+        "threeRevision": null,
+        "shadowCastingMeshes": 63,
+        "shadowReceivingMeshes": 51,
+        "shadowCastingLights": 1
+      },
+      "shadowMapAfterRestore": {
+        "ok": true,
+        "enabled": true,
+        "type": 1,
+        "typeName": "PCFShadowMap",
+        "threeRevision": null,
+        "shadowCastingMeshes": 63,
+        "shadowReceivingMeshes": 51,
+        "shadowCastingLights": 1
+      },
+      "toggle": {
+        "off": {
+          "ok": true,
+          "enabled": false
+        },
+        "restored": {
+          "ok": true,
+          "enabled": true
+        }
+      },
+      "capture": {
+        "shadowsOn": [
+          {
+            "source": "composited",
+            "zeroPixels": 0
+          }
+        ],
+        "shadowsOff": [
+          {
+            "source": "composited",
+            "zeroPixels": 0
+          }
+        ]
+      },
+      "groundWithShadows": {
+        "region": [
+          0,
+          0.55,
+          1,
+          0.95
+        ],
+        "pixels": 273780,
+        "meanLuma": 117.65,
+        "minLuma": 17.1,
+        "maxLuma": 255
+      },
+      "groundWithoutShadows": {
+        "region": [
+          0,
+          0.55,
+          1,
+          0.95
+        ],
+        "pixels": 273780,
+        "meanLuma": 122.97,
+        "minLuma": 17.1,
+        "maxLuma": 255
+      },
+      "pixelsBrightenedByRemovingShadows": {
+        "region": [
+          0,
+          0.55,
+          1,
+          0.95
+        ],
+        "pixelsCompared": 273780,
+        "deltaThreshold": 8,
+        "brighterAtNightPixels": 64113,
+        "brighterAtNightFraction": 0.23418,
+        "meanDeltaWhereBrighter": 21.01,
+        "maxDelta": 70.81
+      },
+      "screenshots": {
+        "on": "assets/world/forum/browser/v3-shadows-on.webp",
+        "off": "assets/world/forum/browser/v3-shadows-off.webp"
+      },
+      "perfWithShadows": {
+        "fps": {
+          "min": 138.3,
+          "median": 140.4,
+          "max": 142.8,
+          "n": 4
+        },
+        "calls": 276,
+        "triangles": 2676159
+      },
+      "at": "2026-09-15T04:19:16.983Z"
+    },
+    "shots": {
+      "description": "the two screenshots the job asks for",
+      "appearance": "Night / follows system appearance",
+      "overviewScreenshot": "assets/world/forum/browser/v3-world-night.webp",
+      "overviewPerf": {
+        "fps": {
+          "min": 99.4,
+          "median": 100.5,
+          "max": 101.3,
+          "n": 4
+        },
+        "calls": 280,
+        "triangles": 2682685
+      },
+      "towerCloseUp": {
+        "screenshot": "assets/world/forum/browser/v3-tower-windows-night.webp",
+        "aimedAt": {
+          "x": 69.1,
+          "y": 6,
+          "z": -58
+        },
+        "aim": {
+          "ok": false,
+          "targetYaw": -1.45,
+          "targetPitch": 0.06,
+          "yaw": -1.453,
+          "pitch": 0.278
+        },
+        "capture": [
+          {
+            "source": "composited",
+            "zeroPixels": 0
+          }
+        ],
+        "frame": {
+          "region": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "pixels": 682344,
+          "meanLuma": 37.59,
+          "minLuma": 1.21,
+          "maxLuma": 255
+        }
+      },
+      "at": "2026-09-15T04:19:53.866Z"
+    }
+  },
+  "mergedFromPreviousRun": {
+    "startedAt": "2026-09-15T04:23:14.429Z",
+    "gates": [
+      "sky",
+      "occlude",
+      "windows",
+      "shadows",
+      "shots"
+    ],
+    "replaced": [
+      "occlude"
+    ]
+  },
+  "browser": {
+    "channel": "chrome",
+    "args": [
+      "--use-angle=metal",
+      "--enable-gpu",
+      "--ignore-gpu-blocklist",
+      "--disable-frame-rate-limit",
+      "--disable-gpu-vsync"
+    ],
+    "version": "152.0.7977.83"
+  },
+  "workspace": "World",
+  "updatedAt": "2026-09-15T04:27:47.021Z",
+  "console": [
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    }
+  ],
+  "consoleSummary": [
+    {
+      "count": 132,
+      "text": "warning: [.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment h"
+    },
+    {
+      "count": 124,
+      "text": "warning: [.WebGL-0x11c000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has ze"
+    },
+    {
+      "count": 42,
+      "text": "error: Failed to load resource: the server responded with a status of 404 (Not Found)"
+    },
+    {
+      "count": 13,
+      "text": "warning: [.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has ze"
+    },
+    {
+      "count": 13,
+      "text": "warning: [.WebGL-0x11c000d1e00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment h"
+    },
+    {
+      "count": 1,
+      "text": "warning: WebGL: too many errors, no more errors will be reported to the console for this context."
+    },
+    {
+      "count": 1,
+      "text": "warning: THREE.Clock: This module has been deprecated. Please use THREE.Timer instead."
+    }
+  ],
+  "shadowDeprecationLines": 0,
+  "pageErrorSummary": [
+    {
+      "count": 5,
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    }
+  ],
+  "finishedAt": "2026-09-15T04:27:47.021Z"
+}

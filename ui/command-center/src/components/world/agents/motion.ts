@@ -32,6 +32,8 @@ export interface MotionState {
   heading: number;
   targetHeading: number;
   walking: boolean;
+  /** Distance-based gait for the separately authored forum navigation. */
+  strideDistance?: number;
   engaged: Engagement;
   queue: Waypoint[];
   waitUntil: number; // epoch ms; pausing at a waypoint when > now

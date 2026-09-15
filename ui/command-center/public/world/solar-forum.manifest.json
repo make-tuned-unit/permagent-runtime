@@ -1,0 +1,121 @@
+{
+  "schema": "permagent.forum.v1",
+  "metersPerUnit": 1,
+  "runtimeUp": "Y",
+  "sourceUp": "Z",
+  "meshes": 56,
+  "triangles": 801474,
+  "bytes": 14578860,
+  "rawBytes": 64039876,
+  "liveState": false,
+  "levels": [
+    0,
+    4.32,
+    8.26
+  ],
+  "campusDiameterMeters": 582.29,
+  "geodiscDiameterMeters": 358.79,
+  "celestial": {
+    "schema": "permagent.forum.celestial.v1",
+    "deterministic": true,
+    "objects": 841,
+    "mesh_objects": 841,
+    "triangles": 95924,
+    "bounds_m": {
+      "min": [
+        -187.0,
+        21.54,
+        3.0
+      ],
+      "max": [
+        187.0,
+        400.24,
+        285.66
+      ]
+    },
+    "landmarks": {
+      "orbital_ring": {
+        "center_m": [
+          0.0,
+          260.0,
+          106.0
+        ],
+        "outer_radius_m": 101.0,
+        "inner_radius_m": 86.0,
+        "bounds_hint_m": [
+          [
+            -101.0,
+            256.0,
+            5.0
+          ],
+          [
+            101.0,
+            264.0,
+            207.0
+          ]
+        ],
+        "playable": false
+      },
+      "second_orbital_ring": {
+        "center_m": [
+          0.0,
+          338.0,
+          158.0
+        ],
+        "outer_radius_m": 126.0,
+        "inner_radius_m": 108.0,
+        "tilt_degrees": 28.0,
+        "playable": false
+      },
+      "Northwest floating garden": {
+        "center_m": [
+          -148.0,
+          204.0,
+          92.0
+        ],
+        "top_m": 100.1,
+        "playable": false,
+        "waterfalls": 5
+      },
+      "Northeast floating garden": {
+        "center_m": [
+          148.0,
+          211.0,
+          98.0
+        ],
+        "top_m": 106.1,
+        "playable": false,
+        "waterfalls": 5
+      },
+      "Northwest lower floating garden": {
+        "center_m": [
+          -78.0,
+          304.0,
+          132.0
+        ],
+        "top_m": 132.52,
+        "playable": false,
+        "waterfalls": 1,
+        "lagoon": true
+      },
+      "Northeast lower floating garden": {
+        "center_m": [
+          86.0,
+          322.0,
+          145.0
+        ],
+        "top_m": 145.52,
+        "playable": false,
+        "waterfalls": 1,
+        "lagoon": true
+      }
+    },
+    "playable": false,
+    "integration": {
+      "execute_after": "forum_landscape.py",
+      "execute_before": "source save/export",
+      "recommended_camera_far_m": 430,
+      "recommended_star_sphere_radius_m": 380
+    }
+  }
+}

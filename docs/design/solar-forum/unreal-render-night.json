@@ -1,0 +1,15 @@
+{
+  "status": "complete",
+  "renderer": "Unreal Engine / Metal",
+  "views": [
+    "unreal-forum-night.webp",
+    "unreal-walk-night.webp",
+    "unreal-campus-night.webp",
+    "unreal-sovereign-night.webp",
+    "unreal-galaxies-night.webp",
+    "unreal-conservatory-night.webp"
+  ],
+  "elapsedSeconds": 234.6052833329959,
+  "appearance": "night",
+  "captureFramesPerView": 64
+}

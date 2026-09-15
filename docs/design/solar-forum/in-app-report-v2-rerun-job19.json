@@ -1,0 +1,2992 @@
+{
+  "appUrl": "http://127.0.0.1:5284/ui/",
+  "viewport": {
+    "width": 1280,
+    "height": 1000
+  },
+  "startedAt": "2026-09-15T03:35:42.096Z",
+  "tokenSource": "/Users/j/.permagent/secrets/daemon_token.json (value never recorded)",
+  "shippedGlb": {
+    "path": "ui/command-center/public/world/solar-forum.glb",
+    "bytes": 14425300
+  },
+  "notes": [
+    "Drives the real Command Center app against the live local daemon.",
+    "Every sent prompt is prefixed \"[world-e2e-test]\".",
+    "Walker position comes from a read-only React DevTools hook stub, not a src/ change."
+  ],
+  "gates": {
+    "load": {
+      "description": "the app world tool loads the new meshopt GLB revision and renders it on ANGLE/Metal",
+      "label": "day",
+      "navigationToFirstPerfSampleMs": 7819,
+      "opened": {
+        "clicked": true,
+        "visible": true,
+        "count": 1,
+        "canvas": {
+          "width": 300,
+          "height": 150,
+          "drawingBuffer": [
+            300,
+            150
+          ]
+        }
+      },
+      "glb": {
+        "url": "/ui/world/solar-forum.glb?v=64e14660b1c608c6",
+        "status": 200
+      },
+      "glbResourceTiming": {
+        "name": "/ui/world/solar-forum.glb?v=64e14660b1c608c6",
+        "durationMs": 389,
+        "transferSize": 14425600,
+        "encodedBodySize": 14425300,
+        "decodedBodySize": 14425300,
+        "startTimeMs": 6733
+      },
+      "expectedRevisionQuery": "?v=64e14660b1c608c6",
+      "renderer": {
+        "unmasked": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)",
+        "vendor": "Google Inc. (Apple)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      },
+      "perf": {
+        "samples": [
+          {
+            "fps": 144.5,
+            "calls": 276,
+            "triangles": 2676159,
+            "geometries": 148,
+            "textures": 45,
+            "programs": 35,
+            "dpr": 1
+          },
+          {
+            "fps": 136.2,
+            "calls": 276,
+            "triangles": 2676159,
+            "geometries": 148,
+            "textures": 45,
+            "programs": 35,
+            "dpr": 1
+          },
+          {
+            "fps": 136.9,
+            "calls": 276,
+            "triangles": 2676159,
+            "geometries": 148,
+            "textures": 45,
+            "programs": 35,
+            "dpr": 1
+          },
+          {
+            "fps": 129.5,
+            "calls": 276,
+            "triangles": 2676159,
+            "geometries": 148,
+            "textures": 45,
+            "programs": 35,
+            "dpr": 1
+          },
+          {
+            "fps": 140.8,
+            "calls": 276,
+            "triangles": 2676159,
+            "geometries": 148,
+            "textures": 45,
+            "programs": 35,
+            "dpr": 1
+          },
+          {
+            "fps": 136.4,
+            "calls": 276,
+            "triangles": 2676159,
+            "geometries": 148,
+            "textures": 45,
+            "programs": 35,
+            "dpr": 1
+          }
+        ],
+        "fps": {
+          "min": 129.5,
+          "median": 136.9,
+          "max": 144.5,
+          "n": 6
+        },
+        "calls": 276,
+        "triangles": 2676159,
+        "geometries": 148,
+        "textures": 45,
+        "programs": 35,
+        "dpr": 1
+      },
+      "sceneCensus": {
+        "ok": true,
+        "meshes": 172,
+        "triangles": 931512,
+        "vertices": 2000280,
+        "emissiveMaterials": 49,
+        "emissiveSample": [
+          {
+            "mesh": "Forum_Engraved_intelligence",
+            "material": "Engraved intelligence",
+            "emissiveIntensity": 1
+          },
+          {
+            "mesh": "Forum_Forum_Brazier_Amber_Embers",
+            "material": "Forum Brazier Amber Embers",
+            "emissiveIntensity": 4
+          },
+          {
+            "mesh": "Forum_Forum_Hologram",
+            "material": "Forum Hologram",
+            "emissiveIntensity": 4.9499998688697815
+          },
+          {
+            "mesh": "Forum_Forum_Hologram_Continents",
+            "material": "Forum Hologram Continents",
+            "emissiveIntensity": 2.849999964237213
+          },
+          {
+            "mesh": "Forum_Forum_Hologram_Glass",
+            "material": "Forum Hologram Glass",
+            "emissiveIntensity": 1
+          },
+          {
+            "mesh": "Forum_Forum_Hologram_Light_Cone",
+            "material": "Forum Hologram Light Cone",
+            "emissiveIntensity": 1
+          },
+          {
+            "mesh": "Forum_Forum_Info_Display_Line",
+            "material": "Forum Info Display Line",
+            "emissiveIntensity": 1
+          },
+          {
+            "mesh": "Forum_Forum_Lantern_Amber",
+            "material": "Forum Lantern Amber",
+            "emissiveIntensity": 8
+          },
+          {
+            "mesh": "Forum_Forum_Strand_Amber",
+            "material": "Forum Strand Amber",
+            "emissiveIntensity": 4
+          },
+          {
+            "mesh": "Forum_Forum_Warm_Window_Emission",
+            "material": "Forum Warm Window Emission",
+            "emissiveIntensity": 3.3249999582767487
+          },
+          {
+            "mesh": "Forum_Mesh_gate_cyan_display_glass",
+            "material": "Mesh gate cyan display glass",
+            "emissiveIntensity": 1
+          },
+          {
+            "mesh": "Forum_Mesh_gate_HorizonBlue_Inlay",
+            "material": "Mesh gate HorizonBlue Inlay",
+            "emissiveIntensity": 1
+          }
+        ]
+      },
+      "sampling": {
+        "supported": true,
+        "width": 702,
+        "height": 972,
+        "rgbVariance": 4377.352430555561,
+        "alphaIgnored": true
+      },
+      "canvasAfterSettle": {
+        "width": 702,
+        "height": 972,
+        "drawingBuffer": [
+          702,
+          972
+        ]
+      },
+      "appearance": "Day / follows system appearance",
+      "districts": "Commons\nGallery\nBuild\nBrain\nAutomate\nMesh gate\nReading grove\nMaker court\nCouncil garden\nArrival gardens\nConservatory\nMaker hall\nDebating theatre\nHarbor",
+      "meshoptConsole": [],
+      "probe": {
+        "ok": true,
+        "camera": {
+          "x": 29,
+          "y": 29,
+          "z": 36
+        },
+        "feet": {
+          "x": 29,
+          "y": 27.3,
+          "z": 36
+        },
+        "yaw": 0.678,
+        "pitch": -0.545,
+        "pointerLock": null,
+        "gate": {
+          "signedDistance": -101.962,
+          "lateralOffset": 4.95,
+          "polarRadius": 46.228
+        }
+      },
+      "screenshot": "assets/world/forum/browser/v2-world-overview.webp",
+      "at": "2026-09-15T03:36:01.618Z"
+    },
+    "mesh": {
+      "description": "MESH portal flow against the real geometry: gate focus, outward ring crossing, Agora, return",
+      "districtLocation": "MESH GATE\n\nThe gate to the MESH",
+      "districtScreenshot": "assets/world/forum/browser/v2-mesh-district.webp",
+      "controlsWhileWalking": "WASD walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview",
+      "walkModePerf": {
+        "samples": [
+          {
+            "fps": 167.5,
+            "calls": 248,
+            "triangles": 2575767,
+            "geometries": 149,
+            "textures": 47,
+            "programs": 35,
+            "dpr": 1
+          },
+          {
+            "fps": 166.1,
+            "calls": 248,
+            "triangles": 2575767,
+            "geometries": 149,
+            "textures": 47,
+            "programs": 35,
+            "dpr": 1
+          },
+          {
+            "fps": 164.9,
+            "calls": 248,
+            "triangles": 2575767,
+            "geometries": 149,
+            "textures": 47,
+            "programs": 35,
+            "dpr": 1
+          },
+          {
+            "fps": 169.5,
+            "calls": 248,
+            "triangles": 2575767,
+            "geometries": 149,
+            "textures": 47,
+            "programs": 35,
+            "dpr": 1
+          },
+          {
+            "fps": 162.6,
+            "calls": 248,
+            "triangles": 2575767,
+            "geometries": 149,
+            "textures": 48,
+            "programs": 35,
+            "dpr": 1
+          }
+        ],
+        "fps": {
+          "min": 162.6,
+          "median": 166.1,
+          "max": 169.5,
+          "n": 5
+        },
+        "calls": 248,
+        "triangles": 2575767,
+        "geometries": 149,
+        "textures": 48,
+        "programs": 35,
+        "dpr": 1
+      },
+      "walkerAtGateDistrictStart": {
+        "ok": true,
+        "camera": {
+          "x": -35.355,
+          "y": 1.7,
+          "z": -35.355
+        },
+        "feet": {
+          "x": -35.355,
+          "y": 0,
+          "z": -35.355
+        },
+        "yaw": 0,
+        "pitch": 0,
+        "pointerLock": "CANVAS",
+        "gate": {
+          "signedDistance": -6,
+          "lateralOffset": 0,
+          "polarRadius": 50
+        }
+      },
+      "facing": {
+        "ok": true,
+        "yaw": 0.777,
+        "error": 0.008
+      },
+      "walkerAfterFacing": {
+        "ok": true,
+        "camera": {
+          "x": -35.355,
+          "y": 1.7,
+          "z": -35.355
+        },
+        "feet": {
+          "x": -35.355,
+          "y": 0,
+          "z": -35.355
+        },
+        "yaw": 0.777,
+        "pitch": 0,
+        "pointerLock": "CANVAS",
+        "gate": {
+          "signedDistance": -6,
+          "lateralOffset": 0,
+          "polarRadius": 50
+        }
+      },
+      "outwardWalk": {
+        "heldMs": 2279,
+        "stalled": false,
+        "agoraOpened": true,
+        "samples": 13,
+        "firstSample": {
+          "t": 149,
+          "feet": {
+            "x": -35.685,
+            "y": 0.038,
+            "z": -35.691
+          },
+          "signed": -5.529,
+          "lateral": 0.004
+        },
+        "lastSample": {
+          "t": 2019,
+          "feet": {
+            "x": -39.747,
+            "y": 0.721,
+            "z": -39.819
+          },
+          "signed": 0.261,
+          "lateral": 0.051
+        },
+        "signedDistanceTrack": [
+          -5.529,
+          -5.036,
+          -4.522,
+          -4.018,
+          -3.51,
+          -3.014,
+          -2.532,
+          -2.041,
+          -1.539,
+          -1.045,
+          -0.543,
+          -0.036,
+          0.261
+        ],
+        "path": [
+          {
+            "t": 149,
+            "feet": {
+              "x": -35.685,
+              "y": 0.038,
+              "z": -35.691
+            },
+            "signed": -5.529,
+            "lateral": 0.004
+          },
+          {
+            "t": 303,
+            "feet": {
+              "x": -36.031,
+              "y": 0.038,
+              "z": -36.042
+            },
+            "signed": -5.036,
+            "lateral": 0.008
+          },
+          {
+            "t": 463,
+            "feet": {
+              "x": -36.392,
+              "y": 0.038,
+              "z": -36.409
+            },
+            "signed": -4.522,
+            "lateral": 0.012
+          },
+          {
+            "t": 621,
+            "feet": {
+              "x": -36.746,
+              "y": 0.038,
+              "z": -36.768
+            },
+            "signed": -4.018,
+            "lateral": 0.016
+          },
+          {
+            "t": 780,
+            "feet": {
+              "x": -37.102,
+              "y": 0.241,
+              "z": -37.13
+            },
+            "signed": -3.51,
+            "lateral": 0.02
+          },
+          {
+            "t": 934,
+            "feet": {
+              "x": -37.45,
+              "y": 0.721,
+              "z": -37.484
+            },
+            "signed": -3.014,
+            "lateral": 0.024
+          },
+          {
+            "t": 1086,
+            "feet": {
+              "x": -37.788,
+              "y": 0.793,
+              "z": -37.828
+            },
+            "signed": -2.532,
+            "lateral": 0.028
+          },
+          {
+            "t": 1239,
+            "feet": {
+              "x": -38.132,
+              "y": 0.721,
+              "z": -38.177
+            },
+            "signed": -2.041,
+            "lateral": 0.032
+          },
+          {
+            "t": 1398,
+            "feet": {
+              "x": -38.484,
+              "y": 0.721,
+              "z": -38.536
+            },
+            "signed": -1.539,
+            "lateral": 0.036
+          },
+          {
+            "t": 1556,
+            "feet": {
+              "x": -38.83,
+              "y": 0.721,
+              "z": -38.887
+            },
+            "signed": -1.045,
+            "lateral": 0.04
+          },
+          {
+            "t": 1710,
+            "feet": {
+              "x": -39.183,
+              "y": 0.721,
+              "z": -39.246
+            },
+            "signed": -0.543,
+            "lateral": 0.044
+          },
+          {
+            "t": 1868,
+            "feet": {
+              "x": -39.538,
+              "y": 0.721,
+              "z": -39.607
+            },
+            "signed": -0.036,
+            "lateral": 0.048
+          },
+          {
+            "t": 2019,
+            "feet": {
+              "x": -39.747,
+              "y": 0.721,
+              "z": -39.819
+            },
+            "signed": 0.261,
+            "lateral": 0.051
+          }
+        ]
+      },
+      "walkerAfterOutwardWalk": {
+        "ok": true,
+        "camera": {
+          "x": -39.767,
+          "y": 2.421,
+          "z": -39.84
+        },
+        "feet": {
+          "x": -39.767,
+          "y": 0.721,
+          "z": -39.84
+        },
+        "yaw": 0.777,
+        "pitch": 0,
+        "pointerLock": null,
+        "gate": {
+          "signedDistance": 0.291,
+          "lateralOffset": 0.051,
+          "polarRadius": 56.291
+        }
+      },
+      "agora": {
+        "plaquePresent": true,
+        "plaqueText": "MESH: NOT CONNECTED",
+        "plaqueState": "offline",
+        "location": "MESH AGORA\n\nThe antechamber beyond the gate",
+        "perf": {
+          "samples": [
+            {
+              "fps": 239.2,
+              "calls": 22,
+              "triangles": 1807,
+              "geometries": 158,
+              "textures": 46,
+              "programs": 35,
+              "dpr": 1
+            },
+            {
+              "fps": 304.8,
+              "calls": 22,
+              "triangles": 1807,
+              "geometries": 158,
+              "textures": 46,
+              "programs": 35,
+              "dpr": 1
+            },
+            {
+              "fps": 331.9,
+              "calls": 22,
+              "triangles": 1807,
+              "geometries": 158,
+              "textures": 46,
+              "programs": 35,
+              "dpr": 1
+            },
+            {
+              "fps": 331.4,
+              "calls": 22,
+              "triangles": 1807,
+              "geometries": 158,
+              "textures": 46,
+              "programs": 35,
+              "dpr": 1
+            }
+          ],
+          "fps": {
+            "min": 239.2,
+            "median": 331.4,
+            "max": 331.9,
+            "n": 4
+          },
+          "calls": 22,
+          "triangles": 1807,
+          "geometries": 158,
+          "textures": 46,
+          "programs": 35,
+          "dpr": 1
+        },
+        "screenshot": "assets/world/forum/browser/v2-mesh-agora.webp"
+      },
+      "escape": {
+        "agoraStillOpen": false,
+        "walkerAfterEscape": {
+          "ok": true,
+          "camera": {
+            "x": -35.355,
+            "y": 1.7,
+            "z": -35.355
+          },
+          "feet": {
+            "x": -35.355,
+            "y": 0,
+            "z": -35.355
+          },
+          "yaw": 0,
+          "pitch": 0,
+          "pointerLock": null,
+          "gate": {
+            "signedDistance": -6,
+            "lateralOffset": 0,
+            "polarRadius": 50
+          }
+        },
+        "screenshot": "assets/world/forum/browser/v2-mesh-return.webp"
+      },
+      "overviewPath": {
+        "agoraOpenedByDistrictReselect": true,
+        "returnedByButton": true
+      },
+      "approachScreenshot": "assets/world/forum/browser/v2-mesh-approach.webp",
+      "at": "2026-09-15T03:36:27.769Z"
+    },
+    "night": {
+      "description": "prefers-color-scheme: dark gives the night sky, the celestial bodies and lit emissive strips",
+      "dayAppearanceLabel": "Day / follows system appearance",
+      "nightAppearanceLabel": "Night / follows system appearance",
+      "dayBoot": {
+        "label": "day-baseline",
+        "navigationToFirstPerfSampleMs": 4866,
+        "opened": {
+          "clicked": true,
+          "visible": true,
+          "count": 1,
+          "canvas": {
+            "width": 300,
+            "height": 150,
+            "drawingBuffer": [
+              300,
+              150
+            ]
+          }
+        },
+        "glb": {
+          "url": "/ui/world/solar-forum.glb?v=64e14660b1c608c6",
+          "status": 200
+        },
+        "glbResourceTiming": {
+          "name": "/ui/world/solar-forum.glb?v=64e14660b1c608c6",
+          "durationMs": 283,
+          "transferSize": 14425600,
+          "encodedBodySize": 14425300,
+          "decodedBodySize": 14425300,
+          "startTimeMs": 3812
+        }
+      },
+      "nightBoot": {
+        "label": "night",
+        "navigationToFirstPerfSampleMs": 4824,
+        "opened": {
+          "clicked": true,
+          "visible": true,
+          "count": 1,
+          "canvas": {
+            "width": 300,
+            "height": 150,
+            "drawingBuffer": [
+              300,
+              150
+            ]
+          }
+        },
+        "glb": {
+          "url": "/ui/world/solar-forum.glb?v=64e14660b1c608c6",
+          "status": 200
+        },
+        "glbResourceTiming": {
+          "name": "/ui/world/solar-forum.glb?v=64e14660b1c608c6",
+          "durationMs": 295,
+          "transferSize": 14425600,
+          "encodedBodySize": 14425300,
+          "decodedBodySize": 14425300,
+          "startTimeMs": 3748
+        }
+      },
+      "perf": {
+        "note": "Overview mounts ForumNavigation (OrbitControls + 14 drei <Html> district chips); walk mode does not.",
+        "dayOverview": {
+          "fps": {
+            "min": 136.3,
+            "median": 137.4,
+            "max": 139.6,
+            "n": 5
+          },
+          "calls": 276,
+          "triangles": 2676159
+        },
+        "nightOverview": {
+          "fps": {
+            "min": 95.2,
+            "median": 96.4,
+            "max": 96.6,
+            "n": 6
+          },
+          "calls": 280,
+          "triangles": 2682685
+        },
+        "dayWalk": {
+          "fps": {
+            "min": 143.9,
+            "median": 146.4,
+            "max": 147.8,
+            "n": 5
+          },
+          "calls": 268,
+          "triangles": 2673031
+        },
+        "nightWalk": {
+          "fps": {
+            "min": 106.4,
+            "median": 107,
+            "max": 108.3,
+            "n": 5
+          },
+          "calls": 272,
+          "triangles": 2679557
+        }
+      },
+      "bloomCostAtNight": {
+        "overviewDeltaFps": -41,
+        "walkDeltaFps": -39.4,
+        "extraDrawCallsAtNight": 4
+      },
+      "emissives": {
+        "note": "Identical walk-mode camera (0, 1.7, 14) looking down -Z from the commons, day vs night. Walk mode paints no district chips over the frame, so these are the world's own pixels.",
+        "dayWalkCamera": {
+          "ok": true,
+          "camera": {
+            "x": 0,
+            "y": 1.7,
+            "z": 14
+          },
+          "feet": {
+            "x": 0,
+            "y": 0,
+            "z": 14
+          },
+          "yaw": 0,
+          "pitch": 0,
+          "pointerLock": "CANVAS",
+          "gate": {
+            "signedDistance": -65.899,
+            "lateralOffset": 9.899,
+            "polarRadius": 14
+          }
+        },
+        "nightWalkCamera": {
+          "ok": true,
+          "camera": {
+            "x": 0,
+            "y": 1.7,
+            "z": 14
+          },
+          "feet": {
+            "x": 0,
+            "y": 0,
+            "z": 14
+          },
+          "yaw": 0,
+          "pitch": 0,
+          "pointerLock": "CANVAS",
+          "gate": {
+            "signedDistance": -65.899,
+            "lateralOffset": 9.899,
+            "polarRadius": 14
+          }
+        },
+        "dayBand": {
+          "region": [
+            0,
+            0.3,
+            1,
+            0.76
+          ],
+          "pixels": 314496,
+          "meanLuma": 115.53,
+          "maxLuma": 255,
+          "brightPixels": 40678,
+          "brightFraction": 0.12934,
+          "brightThreshold": 190,
+          "hotPixels": 33149,
+          "hotThreshold": 235
+        },
+        "nightBand": {
+          "region": [
+            0,
+            0.3,
+            1,
+            0.76
+          ],
+          "pixels": 314496,
+          "meanLuma": 83.98,
+          "maxLuma": 255,
+          "brightPixels": 35145,
+          "brightFraction": 0.11175,
+          "brightThreshold": 190,
+          "hotPixels": 31676,
+          "hotThreshold": 235
+        },
+        "brighterAtNight": {
+          "region": [
+            0,
+            0.05,
+            1,
+            0.95
+          ],
+          "pixelsCompared": 614952,
+          "deltaThreshold": 25,
+          "brighterAtNightPixels": 4390,
+          "brighterAtNightFraction": 0.00714,
+          "meanDeltaWhereBrighter": 60.67,
+          "maxDelta": 195.14
+        },
+        "windowStripMeshes": {
+          "meshesWithThatMaterial": 1,
+          "worldBounds": [
+            {
+              "min": [
+                -120,
+                4,
+                -94
+              ],
+              "max": [
+                131,
+                112,
+                34
+              ]
+            }
+          ],
+          "vertexCount": [
+            4056
+          ],
+          "verticesProjectingIntoTheWalkView": 0
+        },
+        "windowStripPixelsAtEyeLevel": {
+          "measured": false,
+          "reason": "no-window-strip-vertex-projects-into-this-view"
+        },
+        "emissiveSurfacesFromTheOverlook": {
+          "note": "Every mesh whose material has a non-black emissive, projected into the overlook frame and sampled in the day and night renders of that same frame.",
+          "emissiveMeshesInScene": 49,
+          "emissiveMeshesProjectingIntoView": 31,
+          "allEmissivePixels": {
+            "measured": true,
+            "points": 7930,
+            "day": {
+              "n": 7930,
+              "min": 17.52,
+              "median": 74.84,
+              "p90": 161.42,
+              "max": 255,
+              "mean": 95.51
+            },
+            "night": {
+              "n": 7930,
+              "min": 8.59,
+              "median": 40.24,
+              "p90": 159.98,
+              "max": 255,
+              "mean": 69.58
+            },
+            "pointsBrighterAtNight": 1004
+          },
+          "perSurface": [
+            {
+              "mesh": "Forum_Engraved_intelligence",
+              "material": "Engraved intelligence",
+              "emissiveIntensity": 1,
+              "worldBounds": {
+                "min": [
+                  -165,
+                  -47,
+                  -392
+                ],
+                "max": [
+                  165,
+                  282,
+                  31
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 17.52,
+                  "median": 67.67,
+                  "p90": 116.74,
+                  "max": 255,
+                  "mean": 73.09
+                },
+                "night": {
+                  "n": 300,
+                  "min": 8.59,
+                  "median": 36.33,
+                  "p90": 76.57,
+                  "max": 255,
+                  "mean": 46.84
+                },
+                "pointsBrighterAtNight": 3
+              }
+            },
+            {
+              "mesh": "Forum_Forum_Hologram",
+              "material": "Forum Hologram",
+              "emissiveIntensity": 4.9499998688697815,
+              "worldBounds": {
+                "min": [
+                  -3,
+                  -1,
+                  -3
+                ],
+                "max": [
+                  3,
+                  3,
+                  3
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 66.55,
+                  "median": 87.12,
+                  "p90": 243.94,
+                  "max": 246.92,
+                  "mean": 117.31
+                },
+                "night": {
+                  "n": 300,
+                  "min": 35.67,
+                  "median": 79.87,
+                  "p90": 244.16,
+                  "max": 247.35,
+                  "mean": 109.82
+                },
+                "pointsBrighterAtNight": 0
+              }
+            },
+            {
+              "mesh": "Forum_Forum_Lantern_Amber",
+              "material": "Forum Lantern Amber",
+              "emissiveIntensity": 8,
+              "worldBounds": {
+                "min": [
+                  -6,
+                  1,
+                  -7
+                ],
+                "max": [
+                  6,
+                  3,
+                  7
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 94.49,
+                  "median": 233.23,
+                  "p90": 249.87,
+                  "max": 250.02,
+                  "mean": 181.36
+                },
+                "night": {
+                  "n": 300,
+                  "min": 84.35,
+                  "median": 245.9,
+                  "p90": 249.8,
+                  "max": 249.95,
+                  "mean": 213.77
+                },
+                "pointsBrighterAtNight": 80
+              }
+            },
+            {
+              "mesh": "Forum_Forum_Strand_Amber",
+              "material": "Forum Strand Amber",
+              "emissiveIntensity": 4,
+              "worldBounds": {
+                "min": [
+                  -17,
+                  -1,
+                  -15
+                ],
+                "max": [
+                  17,
+                  6,
+                  1
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 76.46,
+                  "median": 121.28,
+                  "p90": 246.92,
+                  "max": 255,
+                  "mean": 159.26
+                },
+                "night": {
+                  "n": 300,
+                  "min": 49.69,
+                  "median": 111.83,
+                  "p90": 246.77,
+                  "max": 255,
+                  "mean": 148.94
+                },
+                "pointsBrighterAtNight": 6
+              }
+            },
+            {
+              "mesh": "Forum_Mesh_gate_HorizonBlue_Inlay",
+              "material": "Mesh gate HorizonBlue Inlay",
+              "emissiveIntensity": 1,
+              "worldBounds": {
+                "min": [
+                  -51,
+                  -5,
+                  -51
+                ],
+                "max": [
+                  6,
+                  9,
+                  6
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 17.52,
+                  "median": 17.52,
+                  "p90": 31.45,
+                  "max": 255,
+                  "mean": 25.67
+                },
+                "night": {
+                  "n": 300,
+                  "min": 17.52,
+                  "median": 17.52,
+                  "p90": 31.45,
+                  "max": 255,
+                  "mean": 25.67
+                },
+                "pointsBrighterAtNight": 0
+              }
+            },
+            {
+              "mesh": "(unnamed)",
+              "material": "(unnamed)",
+              "emissiveIntensity": 1.6,
+              "worldBounds": {
+                "min": [
+                  -6,
+                  1,
+                  -1
+                ],
+                "max": [
+                  -5,
+                  2,
+                  0
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 44.22,
+                  "median": 50.34,
+                  "p90": 52.49,
+                  "max": 55.2,
+                  "mean": 50.74
+                },
+                "night": {
+                  "n": 300,
+                  "min": 61.07,
+                  "median": 80.35,
+                  "p90": 167.83,
+                  "max": 167.83,
+                  "mean": 90.93
+                },
+                "pointsBrighterAtNight": 273
+              }
+            },
+            {
+              "mesh": "(unnamed)",
+              "material": "(unnamed)",
+              "emissiveIntensity": 0.8,
+              "worldBounds": {
+                "min": [
+                  -6,
+                  0,
+                  -1
+                ],
+                "max": [
+                  -5,
+                  2,
+                  0
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 43.65,
+                  "median": 62.57,
+                  "p90": 146.11,
+                  "max": 207.24,
+                  "mean": 80.76
+                },
+                "night": {
+                  "n": 300,
+                  "min": 30.07,
+                  "median": 63.99,
+                  "p90": 144.9,
+                  "max": 159.98,
+                  "mean": 75.66
+                },
+                "pointsBrighterAtNight": 97
+              }
+            },
+            {
+              "mesh": "(unnamed)",
+              "material": "(unnamed)",
+              "emissiveIntensity": 0.5,
+              "worldBounds": {
+                "min": [
+                  -6,
+                  2,
+                  -1
+                ],
+                "max": [
+                  -5,
+                  2,
+                  -1
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 41.79,
+                  "median": 69.29,
+                  "p90": 69.29,
+                  "max": 154.23,
+                  "mean": 62.05
+                },
+                "night": {
+                  "n": 300,
+                  "min": 103.27,
+                  "median": 108.26,
+                  "p90": 130.22,
+                  "max": 130.22,
+                  "mean": 111.56
+                },
+                "pointsBrighterAtNight": 279
+              }
+            },
+            {
+              "mesh": "(unnamed)",
+              "material": "(unnamed)",
+              "emissiveIntensity": 0.3,
+              "worldBounds": {
+                "min": [
+                  -6,
+                  2,
+                  -1
+                ],
+                "max": [
+                  -5,
+                  2,
+                  0
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 42.22,
+                  "median": 45.08,
+                  "p90": 133.93,
+                  "max": 167.25,
+                  "mean": 66.68
+                },
+                "night": {
+                  "n": 300,
+                  "min": 57.79,
+                  "median": 60.3,
+                  "p90": 128.31,
+                  "max": 133.51,
+                  "mean": 85.55
+                },
+                "pointsBrighterAtNight": 194
+              }
+            },
+            {
+              "mesh": "(unnamed)",
+              "material": "(unnamed)",
+              "emissiveIntensity": 1.6,
+              "worldBounds": {
+                "min": [
+                  10,
+                  5,
+                  -18
+                ],
+                "max": [
+                  10,
+                  6,
+                  -17
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 58.96,
+                  "median": 58.96,
+                  "p90": 61.68,
+                  "max": 61.68,
+                  "mean": 60.29
+                },
+                "night": {
+                  "n": 300,
+                  "min": 29.48,
+                  "median": 29.48,
+                  "p90": 33.84,
+                  "max": 33.84,
+                  "mean": 31.61
+                },
+                "pointsBrighterAtNight": 0
+              }
+            },
+            {
+              "mesh": "(unnamed)",
+              "material": "(unnamed)",
+              "emissiveIntensity": 0.35,
+              "worldBounds": {
+                "min": [
+                  9,
+                  4,
+                  -18
+                ],
+                "max": [
+                  10,
+                  7,
+                  -17
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 53.96,
+                  "median": 61.68,
+                  "p90": 70.82,
+                  "max": 76.66,
+                  "mean": 63.15
+                },
+                "night": {
+                  "n": 300,
+                  "min": 21.97,
+                  "median": 33.84,
+                  "p90": 35.56,
+                  "max": 44.93,
+                  "mean": 32.67
+                },
+                "pointsBrighterAtNight": 0
+              }
+            },
+            {
+              "mesh": "(unnamed)",
+              "material": "(unnamed)",
+              "emissiveIntensity": 1.6,
+              "worldBounds": {
+                "min": [
+                  10,
+                  5,
+                  -17
+                ],
+                "max": [
+                  11,
+                  6,
+                  -17
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 61.68,
+                  "median": 61.68,
+                  "p90": 61.68,
+                  "max": 61.68,
+                  "mean": 61.68
+                },
+                "night": {
+                  "n": 300,
+                  "min": 33.84,
+                  "median": 33.91,
+                  "p90": 33.91,
+                  "max": 33.91,
+                  "mean": 33.87
+                },
+                "pointsBrighterAtNight": 0
+              }
+            },
+            {
+              "mesh": "(unnamed)",
+              "material": "(unnamed)",
+              "emissiveIntensity": 1.6,
+              "worldBounds": {
+                "min": [
+                  2,
+                  1,
+                  -34
+                ],
+                "max": [
+                  2,
+                  2,
+                  -33
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 86.66,
+                  "median": 116.47,
+                  "p90": 116.47,
+                  "max": 116.47,
+                  "mean": 101.86
+                },
+                "night": {
+                  "n": 300,
+                  "min": 40.24,
+                  "median": 62.83,
+                  "p90": 62.83,
+                  "max": 62.83,
+                  "mean": 51.76
+                },
+                "pointsBrighterAtNight": 0
+              }
+            },
+            {
+              "mesh": "(unnamed)",
+              "material": "(unnamed)",
+              "emissiveIntensity": 1,
+              "worldBounds": {
+                "min": [
+                  2,
+                  0,
+                  -34
+                ],
+                "max": [
+                  3,
+                  2,
+                  -33
+                ]
+              },
+              "pixels": {
+                "measured": true,
+                "points": 300,
+                "day": {
+                  "n": 300,
+                  "min": 48.54,
+                  "median": 70.02,
+                  "p90": 120.47,
+                  "max": 144.75,
+                  "mean": 82.84
+                },
+                "night": {
+                  "n": 300,
+                  "min": 21.53,
+                  "median": 33.41,
+                  "p90": 58.69,
+                  "max": 71.27,
+                  "mean": 39.92
+                },
+                "pointsBrighterAtNight": 0
+              }
+            }
+          ]
+        },
+        "warmWindowStripsInSitu": {
+          "walkerAt": {
+            "x": -114,
+            "y": 0,
+            "z": 5
+          },
+          "distanceM": 136.7,
+          "aim": {
+            "ok": true,
+            "targetYaw": -1.286,
+            "targetPitch": 0.425,
+            "yaw": -1.292,
+            "pitch": 0.418,
+            "pointerLock": "CANVAS",
+            "yawPasses": [
+              {
+                "ok": true,
+                "yaw": -1.284,
+                "error": -0.002
+              },
+              {
+                "ok": true,
+                "yaw": -1.292,
+                "error": 0.006
+              }
+            ],
+            "gain": 914,
+            "history": [
+              {
+                "yaw": -0.744,
+                "pitch": 0.71,
+                "gain": 528,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": -0.744,
+                "pitch": 0.498,
+                "gain": 620,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": -0.744,
+                "pitch": 0.708,
+                "gain": 418,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": -0.744,
+                "pitch": 0.562,
+                "gain": 615,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": -0.744,
+                "pitch": 0.63,
+                "gain": 928,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": -0.744,
+                "pitch": 0.418,
+                "gain": 914,
+                "pointerLock": "CANVAS"
+              }
+            ]
+          },
+          "verticesOnScreen": 200,
+          "strips": {
+            "measured": true,
+            "centre": [
+              296,
+              921
+            ],
+            "radiusPx": 58.8,
+            "discMeanLuma": 30.51,
+            "discMaxLuma": 147.17,
+            "surroundMeanLuma": 38.82,
+            "contrastRatio": 0.79
+          },
+          "screenshot": "assets/world/forum/browser/v2-night-window-strips.webp"
+        },
+        "fromTheCommonsOverlook": {
+          "note": "Default overview camera at the commons: the raised vantage the task calls the overlook. Same camera in day and night.",
+          "verticesProjectingIntoView": 0,
+          "windowStripPixels": {
+            "measured": false,
+            "reason": "no-window-strip-vertex-projects-into-the-overlook-view"
+          },
+          "brighterAtNightInArchitectureBand": {
+            "region": [
+              0,
+              0.3,
+              1,
+              0.76
+            ],
+            "pixelsCompared": 314496,
+            "deltaThreshold": 25,
+            "brighterAtNightPixels": 1439,
+            "brighterAtNightFraction": 0.00458,
+            "meanDeltaWhereBrighter": 65.98,
+            "maxDelta": 170.51
+          }
+        },
+        "dayFrame": "assets/world/forum/browser/v2-commons-day-walk.webp",
+        "nightFrame": "assets/world/forum/browser/v2-commons-night-walk.webp"
+      },
+      "nightOverview": {
+        "sampling": {
+          "supported": true,
+          "width": 702,
+          "height": 972,
+          "rgbVariance": 3971.0674641927085,
+          "alphaIgnored": true
+        },
+        "band": {
+          "region": [
+            0,
+            0.3,
+            1,
+            0.76
+          ],
+          "pixels": 314496,
+          "meanLuma": 87.07,
+          "maxLuma": 255,
+          "brightPixels": 4580,
+          "brightFraction": 0.01456,
+          "brightThreshold": 190,
+          "hotPixels": 3592,
+          "hotThreshold": 235
+        },
+        "screenshot": "assets/world/forum/browser/v2-world-night.webp"
+      },
+      "celestial": {
+        "note": "Both bodies exist in the scene in day and night alike (ForumSky mounts CelestialBodies outside the appearance branch); these are night measurements from the commons in walk mode.",
+        "moon": {
+          "ok": true,
+          "aimedAt": "moon",
+          "aimTarget": {
+            "x": 502.6,
+            "y": 460.7,
+            "z": -837.6,
+            "source": "live-scene"
+          },
+          "from": {
+            "ok": true,
+            "camera": {
+              "x": 0,
+              "y": 1.7,
+              "z": 14
+            },
+            "feet": {
+              "x": 0,
+              "y": 0,
+              "z": 14
+            },
+            "yaw": 0,
+            "pitch": 0,
+            "pointerLock": "CANVAS",
+            "gate": {
+              "signedDistance": -65.899,
+              "lateralOffset": 9.899,
+              "polarRadius": 14
+            }
+          },
+          "aim": {
+            "ok": true,
+            "targetYaw": -0.533,
+            "targetPitch": 0.435,
+            "yaw": -0.541,
+            "pitch": 0.444,
+            "pointerLock": "CANVAS",
+            "yawPasses": [
+              {
+                "ok": true,
+                "yaw": -0.529,
+                "error": -0.004
+              },
+              {
+                "ok": true,
+                "yaw": -0.541,
+                "error": 0.008
+              }
+            ],
+            "gain": 915,
+            "history": [
+              {
+                "yaw": 0.011,
+                "pitch": 0.894,
+                "gain": 191,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": 0.011,
+                "pitch": 0.624,
+                "gain": 258,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": 0.011,
+                "pitch": 0.702,
+                "gain": 443,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": 0.011,
+                "pitch": 0.562,
+                "gain": 644,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": 0.011,
+                "pitch": 0.634,
+                "gain": 892,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": 0.011,
+                "pitch": 0.444,
+                "gain": 915,
+                "pointerLock": "CANVAS"
+              }
+            ]
+          },
+          "discs": [
+            {
+              "body": "gasGiant",
+              "screen": {
+                "x": 44,
+                "y": 1997
+              },
+              "radiusPx": 170.8,
+              "inFrustum": false,
+              "luma": {
+                "measured": false,
+                "reason": "disc-outside-frame",
+                "cx": 44,
+                "cy": 1997,
+                "r": 170.8
+              }
+            },
+            {
+              "body": "moon",
+              "screen": {
+                "x": 343,
+                "y": 496
+              },
+              "radiusPx": 46,
+              "inFrustum": true,
+              "luma": {
+                "measured": true,
+                "centre": [
+                  343,
+                  496
+                ],
+                "radiusPx": 46,
+                "discMeanLuma": 231.35,
+                "discMaxLuma": 254.71,
+                "surroundMeanLuma": 17.7,
+                "contrastRatio": 13.07
+              }
+            }
+          ],
+          "file": "assets/world/forum/browser/v2-world-night-sky.webp",
+          "contrastRatio": 13.07,
+          "skyBand": {
+            "region": [
+              0,
+              0,
+              1,
+              0.45
+            ],
+            "pixels": 307476,
+            "meanLuma": 21.58,
+            "maxLuma": 255,
+            "brightPixels": 4593,
+            "brightFraction": 0.01494,
+            "brightThreshold": 190,
+            "hotPixels": 13169,
+            "hotThreshold": 64.75
+          }
+        },
+        "gasGiantFromCommons": {
+          "ok": true,
+          "aimedAt": "gasGiant",
+          "aimTarget": {
+            "x": -271.7,
+            "y": 422.5,
+            "z": 746.8,
+            "source": "live-scene"
+          },
+          "from": {
+            "ok": true,
+            "camera": {
+              "x": 0,
+              "y": 1.7,
+              "z": 14
+            },
+            "feet": {
+              "x": 0,
+              "y": 0,
+              "z": 14
+            },
+            "yaw": -0.541,
+            "pitch": 0.444,
+            "pointerLock": "CANVAS",
+            "gate": {
+              "signedDistance": -65.899,
+              "lateralOffset": 9.899,
+              "polarRadius": 14
+            }
+          },
+          "aim": {
+            "ok": true,
+            "targetYaw": 2.787,
+            "targetPitch": 0.494,
+            "yaw": 2.804,
+            "pitch": 0.444,
+            "pointerLock": "CANVAS",
+            "yawPasses": [
+              {
+                "ok": true,
+                "yaw": 2.804,
+                "error": -0.017
+              },
+              {
+                "ok": true,
+                "yaw": 2.804,
+                "error": -0.017
+              }
+            ],
+            "gain": 500,
+            "history": [
+              {
+                "yaw": 2.804,
+                "pitch": 0.444,
+                "gain": 500,
+                "pointerLock": "CANVAS"
+              }
+            ]
+          },
+          "discs": [
+            {
+              "body": "gasGiant",
+              "screen": {
+                "x": 368,
+                "y": 431
+              },
+              "radiusPx": 170.8,
+              "inFrustum": true,
+              "luma": {
+                "measured": true,
+                "centre": [
+                  368,
+                  431
+                ],
+                "radiusPx": 170.8,
+                "discMeanLuma": 163.92,
+                "discMaxLuma": 202.22,
+                "surroundMeanLuma": 22.3,
+                "contrastRatio": 7.35
+              }
+            },
+            {
+              "body": "moon",
+              "screen": {
+                "x": 660,
+                "y": 1823
+              },
+              "radiusPx": 46,
+              "inFrustum": false,
+              "luma": {
+                "measured": false,
+                "reason": "disc-outside-frame",
+                "cx": 660,
+                "cy": 1823,
+                "r": 46
+              }
+            }
+          ],
+          "file": "assets/world/forum/browser/v2-world-night-gasgiant.webp",
+          "contrastRatio": 7.35,
+          "skyBand": {
+            "region": [
+              0,
+              0,
+              1,
+              0.45
+            ],
+            "pixels": 307476,
+            "meanLuma": 52.02,
+            "maxLuma": 255,
+            "brightPixels": 21526,
+            "brightFraction": 0.07001,
+            "brightThreshold": 190,
+            "hotPixels": 42344,
+            "hotThreshold": 156.06
+          }
+        },
+        "gasGiantFromGateCourt": {
+          "ok": true,
+          "aimedAt": "gasGiant",
+          "aimTarget": {
+            "x": -271.7,
+            "y": 422.5,
+            "z": 746.8,
+            "source": "live-scene"
+          },
+          "from": {
+            "ok": true,
+            "camera": {
+              "x": -35.355,
+              "y": 1.7,
+              "z": -35.355
+            },
+            "feet": {
+              "x": -35.355,
+              "y": 0,
+              "z": -35.355
+            },
+            "yaw": 0,
+            "pitch": 0,
+            "pointerLock": "CANVAS",
+            "gate": {
+              "signedDistance": -6,
+              "lateralOffset": 0,
+              "polarRadius": 50
+            }
+          },
+          "aim": {
+            "ok": true,
+            "targetYaw": 2.848,
+            "targetPitch": 0.476,
+            "yaw": 2.848,
+            "pitch": 0.45,
+            "pointerLock": "CANVAS",
+            "yawPasses": [
+              {
+                "ok": true,
+                "yaw": 2.853,
+                "error": -0.005
+              },
+              {
+                "ok": true,
+                "yaw": 2.848,
+                "error": 0
+              }
+            ],
+            "gain": 749,
+            "history": [
+              {
+                "yaw": -2.89,
+                "pitch": 1.022,
+                "gain": 356,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": -2.89,
+                "pitch": 0.41,
+                "gain": 337,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": -2.89,
+                "pitch": 0.844,
+                "gain": 194,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": -2.89,
+                "pitch": 0.656,
+                "gain": 287,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": -2.89,
+                "pitch": 0.696,
+                "gain": 790,
+                "pointerLock": "CANVAS"
+              },
+              {
+                "yaw": -2.89,
+                "pitch": 0.45,
+                "gain": 749,
+                "pointerLock": "CANVAS"
+              }
+            ]
+          },
+          "discs": [
+            {
+              "body": "gasGiant",
+              "screen": {
+                "x": 351,
+                "y": 458
+              },
+              "radiusPx": 165,
+              "inFrustum": true,
+              "luma": {
+                "measured": true,
+                "centre": [
+                  351,
+                  458
+                ],
+                "radiusPx": 165,
+                "discMeanLuma": 23.42,
+                "discMaxLuma": 170.75,
+                "surroundMeanLuma": 21.01,
+                "contrastRatio": 1.11
+              }
+            },
+            {
+              "body": "moon",
+              "screen": {
+                "x": 840,
+                "y": 1894
+              },
+              "radiusPx": 46.9,
+              "inFrustum": false,
+              "luma": {
+                "measured": false,
+                "reason": "disc-outside-frame",
+                "cx": 840,
+                "cy": 1894,
+                "r": 46.9
+              }
+            }
+          ],
+          "file": "assets/world/forum/browser/v2-world-night-gasgiant-gate.webp",
+          "contrastRatio": 1.11,
+          "skyBand": {
+            "region": [
+              0,
+              0,
+              1,
+              0.45
+            ],
+            "pixels": 307476,
+            "meanLuma": 28.94,
+            "maxLuma": 255,
+            "brightPixels": 4350,
+            "brightFraction": 0.01415,
+            "brightThreshold": 190,
+            "hotPixels": 7264,
+            "hotThreshold": 86.82
+          }
+        }
+      },
+      "sceneCensus": {
+        "ok": true,
+        "meshes": 141,
+        "triangles": 931114,
+        "vertices": 1999668,
+        "emissiveMaterials": 49,
+        "emissiveSample": [
+          {
+            "mesh": "Forum_Engraved_intelligence",
+            "material": "Engraved intelligence",
+            "emissiveIntensity": 1
+          },
+          {
+            "mesh": "Forum_Forum_Brazier_Amber_Embers",
+            "material": "Forum Brazier Amber Embers",
+            "emissiveIntensity": 4
+          },
+          {
+            "mesh": "Forum_Forum_Hologram",
+            "material": "Forum Hologram",
+            "emissiveIntensity": 4.9499998688697815
+          },
+          {
+            "mesh": "Forum_Forum_Hologram_Continents",
+            "material": "Forum Hologram Continents",
+            "emissiveIntensity": 2.849999964237213
+          },
+          {
+            "mesh": "Forum_Forum_Hologram_Glass",
+            "material": "Forum Hologram Glass",
+            "emissiveIntensity": 1
+          },
+          {
+            "mesh": "Forum_Forum_Hologram_Light_Cone",
+            "material": "Forum Hologram Light Cone",
+            "emissiveIntensity": 1
+          },
+          {
+            "mesh": "Forum_Forum_Info_Display_Line",
+            "material": "Forum Info Display Line",
+            "emissiveIntensity": 1
+          },
+          {
+            "mesh": "Forum_Forum_Lantern_Amber",
+            "material": "Forum Lantern Amber",
+            "emissiveIntensity": 8
+          },
+          {
+            "mesh": "Forum_Forum_Strand_Amber",
+            "material": "Forum Strand Amber",
+            "emissiveIntensity": 4
+          },
+          {
+            "mesh": "Forum_Forum_Warm_Window_Emission",
+            "material": "Forum Warm Window Emission",
+            "emissiveIntensity": 3.3249999582767487
+          },
+          {
+            "mesh": "Forum_Mesh_gate_cyan_display_glass",
+            "material": "Mesh gate cyan display glass",
+            "emissiveIntensity": 1
+          },
+          {
+            "mesh": "Forum_Mesh_gate_HorizonBlue_Inlay",
+            "material": "Mesh gate HorizonBlue Inlay",
+            "emissiveIntensity": 1
+          }
+        ]
+      },
+      "at": "2026-09-15T03:38:29.796Z"
+    },
+    "ask": {
+      "description": "forum ask control streams a real reply into the existing conversation (job-11 gate, re-run)",
+      "agentRepliedPong": false,
+      "replyAfterPrompt": "Useful answer criteria: a one-word reply\nAgent\n11:56 PM",
+      "replyLooksLikeTransportError": false,
+      "buttonLabel": "Ask Henry",
+      "hitTest": {
+        "label": "Ask Henry",
+        "box": {
+          "x": 939,
+          "y": 493.765625,
+          "width": 313,
+          "height": 40
+        },
+        "hit": {
+          "tag": "SPAN",
+          "class": "pa-btn__label",
+          "text": "Ask Henry"
+        },
+        "obstructed": false,
+        "disabled": false,
+        "clickMode": "normal"
+      },
+      "connection": "connected",
+      "transcriptTail": "You\n11:56 PM\nQuestion from the World forum. Selected agent for context: Henry. This is a request to the orchestrator, not a claim that this specialist has been directly assigned.\nPresentation preference: Warm and direct. Clarify the outcome; explain tradeoffs without grandstanding.\n\n[world-e2e-test] reply with the single word PONG\n\nUseful answer criteria: a one-word reply\nAgent\n11:56 PM",
+      "network": [
+        {
+          "url": "/api/sessions",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "url": "/api/sessions/20260915_4",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "url": "/api/sessions/20260915_4/cost",
+          "status": 500,
+          "method": "GET"
+        },
+        {
+          "url": "/sessions/20260915_4/events?token=REDACTED",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "url": "/sessions/20260915_4/events?token=REDACTED",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "url": "/sessions/20260915_4/reply",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "url": "/api/sessions",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "url": "/api/sessions/20260915_4/cost",
+          "status": 500,
+          "method": "GET"
+        },
+        {
+          "url": "/api/sessions/20260915_4",
+          "status": 200,
+          "method": "GET"
+        }
+      ],
+      "screenshot": "assets/world/forum/browser/v2-ask.webp",
+      "at": "2026-09-15T02:59:09.560Z"
+    },
+    "skills": {
+      "description": "saved-skills list matches /permagent/skills and Open Skills reaches the app Skills panel (job-11 gate, re-run)",
+      "apiStatus": 200,
+      "apiSkillCount": 37,
+      "forumSavedSkills": "37",
+      "forumRegisteredWorkers": "2",
+      "matches": true,
+      "skillsPanelOpened": true,
+      "skillsPanelText": "Home\nProjects\nPeople\nBuild\nGrow\nFinance\nAutomate\nWorld\nBrain\nRecord\nNotifications\nSettings\nCollapse\nSKILLS LIBRARY\n37\ncopy_to_clipboard:-text=we-acknowledge-that-we-are-on-the-tradit\n\ncopy_to_clipboard: text=We acknowledge that we are on the traditional territories of\n\n726 runs\nACTIVE\nhalifax-tide-data\n0 runs\nACTIVE\nprefer-web-search-over-browser-reads\n0 runs\nACTIVE\norchestrator__goal_status:-card_id=[redacted]\n\norchestrator__goal_status: card_id=[REDACTED]\n\n597 runs\nACTIVE\norchestrator__goal_advance:-card_id=[redacted]\n\norchestrator__goal_advance: card_id=[REDACTED]\n\n597 runs\nACTIVE\nlist_mode",
+      "screenshot": "assets/world/forum/browser/v2-skills-panel.webp",
+      "at": "2026-09-15T02:59:13.859Z"
+    },
+    "remount": {
+      "description": "switch away and back: hidden panel stops rendering, WASD does not leak, forum keeps rendering (job-11 gate, re-run)",
+      "controlsWhileWalking": "WASD walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview",
+      "walkerBefore": {
+        "ok": true,
+        "camera": {
+          "x": 0,
+          "y": 1.7,
+          "z": 14
+        },
+        "feet": {
+          "x": 0,
+          "y": 0,
+          "z": 14
+        },
+        "yaw": 0,
+        "pitch": 0,
+        "pointerLock": "CANVAS",
+        "gate": {
+          "signedDistance": -65.899,
+          "lateralOffset": 9.899,
+          "polarRadius": 14
+        }
+      },
+      "perfTicksWhileVisible": 4,
+      "switchedTo": "Home",
+      "switchMethod": "keyboard Meta+1",
+      "pointerLockedWhileWalking": "CANVAS",
+      "hiddenState": {
+        "forumBox": [
+          [
+            0,
+            0
+          ]
+        ],
+        "pointerLock": null,
+        "controls": [
+          "Drag to orbit · Scroll to explore · Select a place or walk from this place"
+        ]
+      },
+      "walkerWhenHidden": {
+        "ok": true,
+        "camera": {
+          "x": 29,
+          "y": 29,
+          "z": 36
+        },
+        "feet": {
+          "x": 29,
+          "y": 27.3,
+          "z": 36
+        },
+        "yaw": 0.678,
+        "pitch": -0.545,
+        "pointerLock": null,
+        "gate": {
+          "signedDistance": -101.962,
+          "lateralOffset": 4.95,
+          "polarRadius": 46.228
+        }
+      },
+      "walkerAfterHiddenWasd": {
+        "ok": true,
+        "camera": {
+          "x": 29,
+          "y": 29,
+          "z": 36
+        },
+        "feet": {
+          "x": 29,
+          "y": 27.3,
+          "z": 36
+        },
+        "yaw": 0.678,
+        "pitch": -0.545,
+        "pointerLock": null,
+        "gate": {
+          "signedDistance": -101.962,
+          "lateralOffset": 4.95,
+          "polarRadius": 46.228
+        }
+      },
+      "cameraMovedWhileHidden": 0,
+      "perfTicksWhileHiddenAfterWASD": 0,
+      "perfTicksAfterReturn": 3,
+      "canvasAfterReturn": {
+        "visible": true,
+        "count": 1,
+        "canvas": {
+          "width": 702,
+          "height": 972,
+          "drawingBuffer": [
+            702,
+            972
+          ]
+        }
+      },
+      "samplingAfterReturn": {
+        "supported": true,
+        "width": 702,
+        "height": 972,
+        "rgbVariance": 4377.352430555561,
+        "alphaIgnored": true
+      },
+      "perfAfterReturn": {
+        "samples": [
+          {
+            "fps": 137.7,
+            "calls": 274,
+            "triangles": 2670135,
+            "geometries": 152,
+            "textures": 76,
+            "programs": 35,
+            "dpr": 1
+          },
+          {
+            "fps": 133.9,
+            "calls": 274,
+            "triangles": 2670135,
+            "geometries": 152,
+            "textures": 76,
+            "programs": 35,
+            "dpr": 1
+          },
+          {
+            "fps": 135.3,
+            "calls": 274,
+            "triangles": 2670135,
+            "geometries": 152,
+            "textures": 76,
+            "programs": 35,
+            "dpr": 1
+          },
+          {
+            "fps": 133.4,
+            "calls": 274,
+            "triangles": 2670135,
+            "geometries": 152,
+            "textures": 76,
+            "programs": 35,
+            "dpr": 1
+          }
+        ],
+        "fps": {
+          "min": 133.4,
+          "median": 135.3,
+          "max": 137.7,
+          "n": 4
+        },
+        "calls": 274,
+        "triangles": 2670135,
+        "geometries": 152,
+        "textures": 76,
+        "programs": 35,
+        "dpr": 1
+      },
+      "screenshots": [
+        "assets/world/forum/browser/v2-other-workspace.webp",
+        "assets/world/forum/browser/v2-world-return.webp"
+      ],
+      "at": "2026-09-15T02:59:44.875Z"
+    }
+  },
+  "mergedFromPreviousRun": {
+    "startedAt": "2026-09-15T02:53:16.747Z",
+    "gates": [
+      "load",
+      "mesh",
+      "night",
+      "ask",
+      "skills",
+      "remount"
+    ],
+    "replaced": [
+      "load",
+      "mesh",
+      "night"
+    ]
+  },
+  "browser": {
+    "channel": "chrome",
+    "args": [
+      "--use-angle=metal",
+      "--enable-gpu",
+      "--ignore-gpu-blocklist",
+      "--disable-frame-rate-limit",
+      "--disable-gpu-vsync"
+    ],
+    "version": "152.0.7977.83"
+  },
+  "workspaces": {
+    "names": [
+      "Home",
+      "Projects",
+      "People",
+      "Build",
+      "Grow",
+      "Finance",
+      "Automate",
+      "World",
+      "Brain"
+    ],
+    "world": "World",
+    "other": "Home"
+  },
+  "updatedAt": "2026-09-15T03:38:29.808Z",
+  "obstructions": [],
+  "console": [
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    }
+  ],
+  "consoleErrorCount": 55,
+  "consoleSummary": [
+    {
+      "count": 132,
+      "text": "warning: [.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment h"
+    },
+    {
+      "count": 132,
+      "text": "warning: [.WebGL-0x134000f1000] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment h"
+    },
+    {
+      "count": 132,
+      "text": "warning: [.WebGL-0x134000f2200] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment h"
+    },
+    {
+      "count": 124,
+      "text": "warning: [.WebGL-0x134000f2800] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has ze"
+    },
+    {
+      "count": 124,
+      "text": "warning: [.WebGL-0x134000f1000] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has ze"
+    },
+    {
+      "count": 124,
+      "text": "warning: [.WebGL-0x134000f2200] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has ze"
+    },
+    {
+      "count": 55,
+      "text": "error: Failed to load resource: the server responded with a status of 404 (Not Found)"
+    },
+    {
+      "count": 13,
+      "text": "warning: [.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has ze"
+    },
+    {
+      "count": 13,
+      "text": "warning: [.WebGL-0x134000e8c00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment h"
+    },
+    {
+      "count": 13,
+      "text": "warning: [.WebGL-0x134000ebc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has ze"
+    },
+    {
+      "count": 13,
+      "text": "warning: [.WebGL-0x134000ebc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment h"
+    },
+    {
+      "count": 13,
+      "text": "warning: [.WebGL-0x134000d8a00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has ze"
+    },
+    {
+      "count": 13,
+      "text": "warning: [.WebGL-0x134000d8a00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment h"
+    },
+    {
+      "count": 3,
+      "text": "warning: WebGL: too many errors, no more errors will be reported to the console for this context."
+    },
+    {
+      "count": 3,
+      "text": "warning: THREE.Clock: This module has been deprecated. Please use THREE.Timer instead."
+    }
+  ],
+  "pageErrorSummary": [
+    {
+      "count": 15,
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    }
+  ],
+  "pageErrors": [
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    }
+  ],
+  "requestFailures": [
+    {
+      "url": "/ui/mobius/frame_002.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/ui/mobius-idle/frame_05.webp",
+      "error": "net::ERR_ABORTED"
+    }
+  ],
+  "daemonHttpFailures": [
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/snapshot/37b53e24-528c-44d8-8234-f0a99009bc5f",
+      "status": 404,
+      "method": "POST"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/snapshot/37b53e24-528c-44d8-8234-f0a99009bc5f",
+      "status": 404,
+      "method": "POST"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/snapshot/37b53e24-528c-44d8-8234-f0a99009bc5f",
+      "status": 404,
+      "method": "POST"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    }
+  ],
+  "glbResponses": [
+    {
+      "url": "/ui/world/solar-forum.glb?v=64e14660b1c608c6",
+      "status": 200,
+      "method": "GET"
+    },
+    {
+      "url": "/ui/world/solar-forum.glb?v=64e14660b1c608c6",
+      "status": 200,
+      "method": "GET"
+    },
+    {
+      "url": "/ui/world/solar-forum.glb?v=64e14660b1c608c6",
+      "status": 200,
+      "method": "GET"
+    }
+  ],
+  "finishedAt": "2026-09-15T03:38:29.808Z"
+}

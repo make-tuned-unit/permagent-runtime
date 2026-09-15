@@ -8,7 +8,19 @@ import { ChatView } from '../chat/ChatView';
 import { SkillsPanel } from '../skills/SkillsPanel';
 import { TerminalManager } from '../terminal/TerminalManager';
 import { Browser } from '../browser';
-const LazyWorldView = lazy(() => import('../world/WorldView').then(m => ({ default: m.WorldView })));
+// The `world` tool renders the Solar Forum (`ForumAppView`), which supplies the
+// real workspace navigation, goal detail, Skills overlay and agent settings.
+// `shouldUseLegacyWorld()` is the single rollback lever back to the original
+// `WorldView` (see world/forum/worldRoute.ts). Both branches stay behind the
+// same `lazy()` so neither Three.js bundle is fetched until a World panel is
+// actually rendered; the flag is read once, at that first render.
+const LazyWorldRoute = lazy(async () => {
+  const { shouldUseLegacyWorld } = await import('../world/forum/worldRoute');
+  if (shouldUseLegacyWorld()) {
+    return { default: (await import('../world/WorldView')).WorldView };
+  }
+  return { default: (await import('../world/forum/ForumAppView')).ForumAppView };
+});
 import { ExecutionTrace } from '../trace/ExecutionTrace';
 import { BrainView } from '../brain/BrainView';
 import { ErrorBoundary } from '../common/ErrorBoundary';
@@ -24,7 +36,7 @@ const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   chat: ChatView,
   skills: SkillsPanel,
   trace: ExecutionTrace,
-  world: LazyWorldView,
+  world: LazyWorldRoute,
   terminal: TerminalManager,
   browser: Browser,
   memory: BrainView,

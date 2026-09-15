@@ -1,0 +1,1191 @@
+{
+  "schema": "permagent.forum.vista-frame.v4",
+  "job": "docs/design/solar-forum/jobs/20-vista-camera.md",
+  "capturedAt": "2026-09-15T06:14:25.541Z",
+  "appUrl": "http://127.0.0.1:5284/ui/",
+  "viewport": {
+    "width": 1280,
+    "height": 1000
+  },
+  "browser": {
+    "channel": "chrome",
+    "version": "152.0.7977.83",
+    "args": [
+      "--use-angle=gl",
+      "--enable-gpu",
+      "--ignore-gpu-blocklist",
+      "--disable-frame-rate-limit",
+      "--disable-gpu-vsync"
+    ]
+  },
+  "tokenSource": "/Users/j/.permagent/secrets/daemon_token.json (value never recorded)",
+  "landmarkTable": "ui/command-center/src/components/world/forum/vistaLandmarks.json",
+  "orbitControls": {
+    "start": {
+      "position": {
+        "x": 0,
+        "y": 10,
+        "z": 23
+      },
+      "fov": 72,
+      "yawDegEastOfNorth": 17.057,
+      "pitchDeg": -5.584
+    },
+    "afterDrag": {
+      "position": {
+        "x": 35.246,
+        "y": 4.543,
+        "z": 27.051
+      },
+      "fov": 72,
+      "yawDegEastOfNorth": -5.119,
+      "pitchDeg": -2.195
+    },
+    "afterScroll": {
+      "position": {
+        "x": 39.333,
+        "y": 4.365,
+        "z": 21.929
+      },
+      "fov": 72,
+      "yawDegEastOfNorth": -8.075,
+      "pitchDeg": -2.195
+    },
+    "restored": {
+      "position": {
+        "x": 0.289,
+        "y": 9.898,
+        "z": 23.099
+      },
+      "fov": 72,
+      "yawDegEastOfNorth": 16.867,
+      "pitchDeg": -5.521
+    },
+    "dragMovedCameraM": 35.9,
+    "scrollMovedCameraM": 6.56,
+    "restoredWithinM": 0.32,
+    "restoredFovMatches": true,
+    "restoreError": null
+  },
+  "day": {
+    "appearance": "day",
+    "appearanceLabel": "Day / follows system appearance",
+    "screenshot": "assets/world/forum/browser/v4-vista-day.webp",
+    "pureBlackPixels": 0,
+    "captureAttempts": 1,
+    "skyMeasurementFrame": {
+      "screenshot": "assets/world/forum/browser/v4-vista-day-sky.webp",
+      "pureBlackPixels": 0,
+      "attempts": 1,
+      "hudHidden": ".forum-brand, .forum-districts, .forum-location, .forum-controls, .forum-play, .forum-live, .forum-waypoint"
+    },
+    "canvasBox": {
+      "x": 208,
+      "y": 28,
+      "width": 702,
+      "height": 972
+    },
+    "probe": {
+      "ok": true,
+      "canvas": {
+        "width": 702,
+        "height": 972,
+        "aspect": 0.7222
+      },
+      "camera": {
+        "position": {
+          "x": 0,
+          "y": 10,
+          "z": 23
+        },
+        "fov": 72,
+        "yawDegEastOfNorth": 17.057,
+        "pitchDeg": -5.584
+      },
+      "landmarks": [
+        {
+          "id": "hologram_globe",
+          "label": "Hologram globe on the gathering terrace",
+          "source": "scripts/blender/forum_terrace.py:281",
+          "points": 1,
+          "inFrame": 1,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.568,
+              -0.348
+            ],
+            "px": [
+              152,
+              655
+            ],
+            "distanceM": 24,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              152,
+              655
+            ]
+          ]
+        },
+        {
+          "id": "terrace_south_balustrade",
+          "label": "South overlook balustrade, the terrace edge the vantage stands on",
+          "source": "scripts/blender/forum_terrace.py:476",
+          "points": 3,
+          "inFrame": 0,
+          "visible": false,
+          "nearestToCentre": {
+            "ndc": [
+              2.122,
+              -1.387
+            ],
+            "px": [
+              1096,
+              1160
+            ],
+            "distanceM": 14,
+            "inFrame": false
+          },
+          "samplePixels": []
+        },
+        {
+          "id": "lagoon",
+          "label": "The lagoon ring (radius 62-118 m) between the geodisc and the ridge",
+          "source": "scripts/blender/forum_landform.py:194",
+          "points": 9,
+          "inFrame": 6,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              0.187,
+              -0.048
+            ],
+            "px": [
+              417,
+              509
+            ],
+            "distanceM": 91,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              417,
+              509
+            ],
+            [
+              147,
+              511
+            ],
+            [
+              435,
+              491
+            ],
+            [
+              147,
+              492
+            ],
+            [
+              446,
+              480
+            ],
+            [
+              147,
+              481
+            ]
+          ]
+        },
+        {
+          "id": "council_island",
+          "label": "Council destination island in the northern lagoon",
+          "source": "scripts/blender/forum_landform.py:476",
+          "points": 3,
+          "inFrame": 3,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.289,
+              0.015
+            ],
+            "px": [
+              250,
+              479
+            ],
+            "distanceM": 117,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              147,
+              481
+            ],
+            [
+              34,
+              484
+            ],
+            [
+              250,
+              479
+            ]
+          ]
+        },
+        {
+          "id": "ne_spires",
+          "label": "The three NE spires (Alpha 72 m, Beta 96 m, Gamma 118 m)",
+          "source": "scripts/blender/forum_towers.py:301",
+          "points": 7,
+          "inFrame": 2,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              0.931,
+              0.509
+            ],
+            "px": [
+              678,
+              239
+            ],
+            "distanceM": 113,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              678,
+              239
+            ],
+            [
+              697,
+              225
+            ]
+          ]
+        },
+        {
+          "id": "ridge_crest",
+          "label": "Mountain ridge crest, Blender polar 100-215 deg at radius 140/160/175 (deterministic envelope, without the +/-11 m fractal term)",
+          "source": "scripts/blender/forum_landform.py:294",
+          "points": 36,
+          "inFrame": 3,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.926,
+              0.233
+            ],
+            "px": [
+              26,
+              373
+            ],
+            "distanceM": 163,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              26,
+              373
+            ],
+            [
+              15,
+              190
+            ],
+            [
+              24,
+              402
+            ]
+          ]
+        },
+        {
+          "id": "ridge_waterfalls",
+          "label": "The three ridge waterfalls (Blender polar 100/125/150 deg)",
+          "source": "scripts/blender/forum_landform.py:383",
+          "points": 6,
+          "inFrame": 2,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.902,
+              0.005
+            ],
+            "px": [
+              34,
+              484
+            ],
+            "distanceM": 141,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              15,
+              190
+            ],
+            [
+              34,
+              484
+            ]
+          ]
+        },
+        {
+          "id": "orbital_ring_1",
+          "label": "Monumental orbital garden ring, centre (0,260,106) m, radii 86-101 m",
+          "source": "scripts/blender/forum_celestial.py:467",
+          "points": 72,
+          "inFrame": 35,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.14,
+              0.224
+            ],
+            "px": [
+              302,
+              377
+            ],
+            "distanceM": 291,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              349,
+              194
+            ],
+            [
+              382,
+              198
+            ],
+            [
+              346,
+              157
+            ],
+            [
+              379,
+              155
+            ],
+            [
+              337,
+              120
+            ],
+            [
+              369,
+              112
+            ]
+          ]
+        },
+        {
+          "id": "orbital_ring_2",
+          "label": "Second, 28-degree tilted orbital ring, centre (0,338,158) m, radii 108-126 m",
+          "source": "scripts/blender/forum_celestial.py:566",
+          "points": 72,
+          "inFrame": 33,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.285,
+              0.311
+            ],
+            "px": [
+              251,
+              335
+            ],
+            "distanceM": 420,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              346,
+              145
+            ],
+            [
+              378,
+              149
+            ],
+            [
+              348,
+              105
+            ],
+            [
+              381,
+              103
+            ],
+            [
+              344,
+              63
+            ],
+            [
+              377,
+              53
+            ]
+          ]
+        },
+        {
+          "id": "floating_islands",
+          "label": "The four floating gardens",
+          "source": "scripts/blender/forum_celestial.py:702",
+          "points": 4,
+          "inFrame": 2,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              0.54,
+              0.608
+            ],
+            "px": [
+              540,
+              191
+            ],
+            "distanceM": 291,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              540,
+              191
+            ],
+            [
+              314,
+              154
+            ]
+          ]
+        },
+        {
+          "id": "west_habitats",
+          "label": "Market habitat cluster, west of the commons",
+          "source": "scripts/blender/forum_towers.py:320",
+          "points": 1,
+          "inFrame": 0,
+          "visible": false,
+          "nearestToCentre": {
+            "ndc": [
+              4.841,
+              -0.241
+            ],
+            "px": [
+              2050,
+              603
+            ],
+            "distanceM": 101,
+            "inFrame": false
+          },
+          "samplePixels": []
+        },
+        {
+          "id": "se_conservatory_dome",
+          "label": "Geodesic conservatory dome, south-east of the commons",
+          "source": "scripts/blender/forum_towers.py:321",
+          "points": 1,
+          "inFrame": 0,
+          "visible": false,
+          "nearestToCentre": {
+            "ndc": [
+              -4.076,
+              -0.017
+            ],
+            "px": [
+              -1080,
+              494
+            ],
+            "distanceM": 108,
+            "inFrame": false
+          },
+          "samplePixels": []
+        }
+      ],
+      "bodies": [
+        {
+          "label": "gasGiant",
+          "material": "Forum gas giant",
+          "world": {
+            "x": 270.593,
+            "y": 401.578,
+            "z": -758.627
+          },
+          "ndc": [
+            0.071,
+            0.825
+          ],
+          "px": [
+            376,
+            85
+          ],
+          "radiusPx": 128,
+          "inFrame": true
+        },
+        {
+          "label": "moon",
+          "material": "Forum moon",
+          "world": {
+            "x": 502.567,
+            "y": 460.687,
+            "z": -837.612
+          },
+          "ndc": [
+            0.471,
+            0.811
+          ],
+          "px": [
+            516,
+            92
+          ],
+          "radiusPx": 35,
+          "inFrame": true
+        }
+      ]
+    },
+    "sky": {
+      "gasGiant": {
+        "measured": true,
+        "centre": [
+          584,
+          113
+        ],
+        "radiusPx": 128,
+        "discPixels": 32937,
+        "discMeanLuma": 195.52,
+        "discMedianLuma": 215.6,
+        "discMaxLuma": 255,
+        "surroundMeanLuma": 130.04,
+        "contrastRatio": 1.5
+      },
+      "moon": {
+        "measured": true,
+        "centre": [
+          724,
+          120
+        ],
+        "radiusPx": 35,
+        "discPixels": 2453,
+        "discMeanLuma": 253.65,
+        "discMedianLuma": 255,
+        "discMaxLuma": 255,
+        "surroundMeanLuma": 167.28,
+        "contrastRatio": 1.52
+      }
+    },
+    "skyWithWorldHidden": {
+      "meshesHidden": 172,
+      "pureBlackPixels": 0,
+      "bodies": {
+        "gasGiant": {
+          "measured": true,
+          "centre": [
+            584,
+            113
+          ],
+          "radiusPx": 128,
+          "discPixels": 32937,
+          "discMeanLuma": 227.71,
+          "discMedianLuma": 239.22,
+          "discMaxLuma": 255,
+          "surroundMeanLuma": 140.01,
+          "contrastRatio": 1.63
+        },
+        "moon": {
+          "measured": true,
+          "centre": [
+            724,
+            120
+          ],
+          "radiusPx": 35,
+          "discPixels": 2453,
+          "discMeanLuma": 253.65,
+          "discMedianLuma": 255,
+          "discMaxLuma": 255,
+          "surroundMeanLuma": 169.62,
+          "contrastRatio": 1.5
+        }
+      }
+    },
+    "groundTint": {
+      "region": [
+        0.299609375,
+        0.7278399999999999,
+        0.573828125,
+        0.9514
+      ],
+      "pixels": 79200,
+      "meanRgb": [
+        125.96,
+        113.72,
+        97.27
+      ],
+      "blueMinusRed": -28.69,
+      "greenMinusRed": -12.24
+    },
+    "perfOnGlBackendNotComparable": {
+      "fps": 0.8,
+      "calls": 313,
+      "triangles": 2731739,
+      "geometries": 163,
+      "textures": 46,
+      "programs": 35,
+      "dpr": 1
+    }
+  },
+  "night": {
+    "appearance": "night",
+    "appearanceLabel": "Night / follows system appearance",
+    "screenshot": "assets/world/forum/browser/v4-vista-night.webp",
+    "pureBlackPixels": 7,
+    "captureAttempts": 1,
+    "skyMeasurementFrame": {
+      "screenshot": "assets/world/forum/browser/v4-vista-night-sky.webp",
+      "pureBlackPixels": 19,
+      "attempts": 1,
+      "hudHidden": ".forum-brand, .forum-districts, .forum-location, .forum-controls, .forum-play, .forum-live, .forum-waypoint"
+    },
+    "canvasBox": {
+      "x": 208,
+      "y": 28,
+      "width": 702,
+      "height": 972
+    },
+    "probe": {
+      "ok": true,
+      "canvas": {
+        "width": 702,
+        "height": 972,
+        "aspect": 0.7222
+      },
+      "camera": {
+        "position": {
+          "x": 0,
+          "y": 10,
+          "z": 23
+        },
+        "fov": 72,
+        "yawDegEastOfNorth": 17.057,
+        "pitchDeg": -5.584
+      },
+      "landmarks": [
+        {
+          "id": "hologram_globe",
+          "label": "Hologram globe on the gathering terrace",
+          "source": "scripts/blender/forum_terrace.py:281",
+          "points": 1,
+          "inFrame": 1,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.568,
+              -0.348
+            ],
+            "px": [
+              152,
+              655
+            ],
+            "distanceM": 24,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              152,
+              655
+            ]
+          ]
+        },
+        {
+          "id": "terrace_south_balustrade",
+          "label": "South overlook balustrade, the terrace edge the vantage stands on",
+          "source": "scripts/blender/forum_terrace.py:476",
+          "points": 3,
+          "inFrame": 0,
+          "visible": false,
+          "nearestToCentre": {
+            "ndc": [
+              2.122,
+              -1.387
+            ],
+            "px": [
+              1096,
+              1160
+            ],
+            "distanceM": 14,
+            "inFrame": false
+          },
+          "samplePixels": []
+        },
+        {
+          "id": "lagoon",
+          "label": "The lagoon ring (radius 62-118 m) between the geodisc and the ridge",
+          "source": "scripts/blender/forum_landform.py:194",
+          "points": 9,
+          "inFrame": 6,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              0.187,
+              -0.048
+            ],
+            "px": [
+              417,
+              509
+            ],
+            "distanceM": 91,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              417,
+              509
+            ],
+            [
+              147,
+              511
+            ],
+            [
+              435,
+              491
+            ],
+            [
+              147,
+              492
+            ],
+            [
+              446,
+              480
+            ],
+            [
+              147,
+              481
+            ]
+          ]
+        },
+        {
+          "id": "council_island",
+          "label": "Council destination island in the northern lagoon",
+          "source": "scripts/blender/forum_landform.py:476",
+          "points": 3,
+          "inFrame": 3,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.289,
+              0.015
+            ],
+            "px": [
+              250,
+              479
+            ],
+            "distanceM": 117,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              147,
+              481
+            ],
+            [
+              34,
+              484
+            ],
+            [
+              250,
+              479
+            ]
+          ]
+        },
+        {
+          "id": "ne_spires",
+          "label": "The three NE spires (Alpha 72 m, Beta 96 m, Gamma 118 m)",
+          "source": "scripts/blender/forum_towers.py:301",
+          "points": 7,
+          "inFrame": 2,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              0.931,
+              0.509
+            ],
+            "px": [
+              678,
+              239
+            ],
+            "distanceM": 113,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              678,
+              239
+            ],
+            [
+              697,
+              225
+            ]
+          ]
+        },
+        {
+          "id": "ridge_crest",
+          "label": "Mountain ridge crest, Blender polar 100-215 deg at radius 140/160/175 (deterministic envelope, without the +/-11 m fractal term)",
+          "source": "scripts/blender/forum_landform.py:294",
+          "points": 36,
+          "inFrame": 3,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.926,
+              0.233
+            ],
+            "px": [
+              26,
+              373
+            ],
+            "distanceM": 163,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              26,
+              373
+            ],
+            [
+              15,
+              190
+            ],
+            [
+              24,
+              402
+            ]
+          ]
+        },
+        {
+          "id": "ridge_waterfalls",
+          "label": "The three ridge waterfalls (Blender polar 100/125/150 deg)",
+          "source": "scripts/blender/forum_landform.py:383",
+          "points": 6,
+          "inFrame": 2,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.902,
+              0.005
+            ],
+            "px": [
+              34,
+              484
+            ],
+            "distanceM": 141,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              15,
+              190
+            ],
+            [
+              34,
+              484
+            ]
+          ]
+        },
+        {
+          "id": "orbital_ring_1",
+          "label": "Monumental orbital garden ring, centre (0,260,106) m, radii 86-101 m",
+          "source": "scripts/blender/forum_celestial.py:467",
+          "points": 72,
+          "inFrame": 35,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.14,
+              0.224
+            ],
+            "px": [
+              302,
+              377
+            ],
+            "distanceM": 291,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              349,
+              194
+            ],
+            [
+              382,
+              198
+            ],
+            [
+              346,
+              157
+            ],
+            [
+              379,
+              155
+            ],
+            [
+              337,
+              120
+            ],
+            [
+              369,
+              112
+            ]
+          ]
+        },
+        {
+          "id": "orbital_ring_2",
+          "label": "Second, 28-degree tilted orbital ring, centre (0,338,158) m, radii 108-126 m",
+          "source": "scripts/blender/forum_celestial.py:566",
+          "points": 72,
+          "inFrame": 33,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              -0.285,
+              0.311
+            ],
+            "px": [
+              251,
+              335
+            ],
+            "distanceM": 420,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              346,
+              145
+            ],
+            [
+              378,
+              149
+            ],
+            [
+              348,
+              105
+            ],
+            [
+              381,
+              103
+            ],
+            [
+              344,
+              63
+            ],
+            [
+              377,
+              53
+            ]
+          ]
+        },
+        {
+          "id": "floating_islands",
+          "label": "The four floating gardens",
+          "source": "scripts/blender/forum_celestial.py:702",
+          "points": 4,
+          "inFrame": 2,
+          "visible": true,
+          "nearestToCentre": {
+            "ndc": [
+              0.54,
+              0.608
+            ],
+            "px": [
+              540,
+              191
+            ],
+            "distanceM": 291,
+            "inFrame": true
+          },
+          "samplePixels": [
+            [
+              540,
+              191
+            ],
+            [
+              314,
+              154
+            ]
+          ]
+        },
+        {
+          "id": "west_habitats",
+          "label": "Market habitat cluster, west of the commons",
+          "source": "scripts/blender/forum_towers.py:320",
+          "points": 1,
+          "inFrame": 0,
+          "visible": false,
+          "nearestToCentre": {
+            "ndc": [
+              4.841,
+              -0.241
+            ],
+            "px": [
+              2050,
+              603
+            ],
+            "distanceM": 101,
+            "inFrame": false
+          },
+          "samplePixels": []
+        },
+        {
+          "id": "se_conservatory_dome",
+          "label": "Geodesic conservatory dome, south-east of the commons",
+          "source": "scripts/blender/forum_towers.py:321",
+          "points": 1,
+          "inFrame": 0,
+          "visible": false,
+          "nearestToCentre": {
+            "ndc": [
+              -4.076,
+              -0.017
+            ],
+            "px": [
+              -1080,
+              494
+            ],
+            "distanceM": 108,
+            "inFrame": false
+          },
+          "samplePixels": []
+        }
+      ],
+      "bodies": [
+        {
+          "label": "gasGiant",
+          "material": "Forum gas giant",
+          "world": {
+            "x": 270.593,
+            "y": 401.578,
+            "z": -758.627
+          },
+          "ndc": [
+            0.071,
+            0.825
+          ],
+          "px": [
+            376,
+            85
+          ],
+          "radiusPx": 128,
+          "inFrame": true
+        },
+        {
+          "label": "moon",
+          "material": "Forum moon",
+          "world": {
+            "x": 502.567,
+            "y": 460.687,
+            "z": -837.612
+          },
+          "ndc": [
+            0.471,
+            0.811
+          ],
+          "px": [
+            516,
+            92
+          ],
+          "radiusPx": 35,
+          "inFrame": true
+        }
+      ]
+    },
+    "sky": {
+      "gasGiant": {
+        "measured": true,
+        "centre": [
+          584,
+          113
+        ],
+        "radiusPx": 128,
+        "discPixels": 32937,
+        "discMeanLuma": 154.17,
+        "discMedianLuma": 215.03,
+        "discMaxLuma": 255,
+        "surroundMeanLuma": 17.06,
+        "contrastRatio": 9.04
+      },
+      "moon": {
+        "measured": true,
+        "centre": [
+          724,
+          120
+        ],
+        "radiusPx": 35,
+        "discPixels": 2453,
+        "discMeanLuma": 253.65,
+        "discMedianLuma": 255,
+        "discMaxLuma": 255,
+        "surroundMeanLuma": 105.21,
+        "contrastRatio": 2.41
+      }
+    },
+    "skyWithWorldHidden": {
+      "meshesHidden": 142,
+      "pureBlackPixels": 0,
+      "bodies": {
+        "gasGiant": {
+          "measured": true,
+          "centre": [
+            584,
+            113
+          ],
+          "radiusPx": 128,
+          "discPixels": 32937,
+          "discMeanLuma": 227.64,
+          "discMedianLuma": 238.95,
+          "discMaxLuma": 255,
+          "surroundMeanLuma": 11.09,
+          "contrastRatio": 20.52
+        },
+        "moon": {
+          "measured": true,
+          "centre": [
+            724,
+            120
+          ],
+          "radiusPx": 35,
+          "discPixels": 2453,
+          "discMeanLuma": 253.65,
+          "discMedianLuma": 255,
+          "discMaxLuma": 255,
+          "surroundMeanLuma": 105.48,
+          "contrastRatio": 2.4
+        }
+      }
+    },
+    "groundTint": {
+      "region": [
+        0.299609375,
+        0.7278399999999999,
+        0.573828125,
+        0.9514
+      ],
+      "pixels": 79200,
+      "meanRgb": [
+        69.85,
+        78.45,
+        98.62
+      ],
+      "blueMinusRed": 28.77,
+      "greenMinusRed": 8.61
+    },
+    "perfOnGlBackendNotComparable": {
+      "fps": 0.5,
+      "calls": 295,
+      "triangles": 2730545,
+      "geometries": 163,
+      "textures": 51,
+      "programs": 58,
+      "dpr": 1
+    }
+  },
+  "consoleErrorSample": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ],
+  "consoleErrors": 50
+}
