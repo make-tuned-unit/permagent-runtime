@@ -8217,8 +8217,11 @@ impl OrchestratorClient {
                  else -> information) rather than rejected, and the exact value you sent is \
                  preserved for whoever reviews it — so escalate even if you are unsure of the \
                  exact kind name; do not withhold or invent a fake escalation over it. \
-                 specific_ask becomes the plain-language headline the user sees: max 80 chars, \
-                 no PR numbers, branch names, file counts, or internal IDs — put technical \
+                 specific_ask becomes the plain-language headline the user sees: aim for 80 \
+                 chars or fewer, but a longer ask is never rejected for length alone — it is \
+                 truncated into the headline and the full text is kept too, so don't withhold \
+                 an escalation just to get the length exactly right. No PR numbers, branch \
+                 names, file counts, or internal IDs anywhere in specific_ask — put technical \
                  identifiers in why_blocked and evidence_refs. The escalation becomes a \
                  decision item in the user's inbox; work resumes automatically once answered."
                     .to_string(),
