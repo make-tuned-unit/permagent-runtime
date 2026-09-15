@@ -44,7 +44,11 @@ instructions: |
      repo already implies (devDependencies, lockfile, config files, file
      extensions), add it the smallest way (a devDependency, or an
      `npx`/`node --experimental-strip-types`/`python -m pytest`
-     invocation), state the choice in the goal note, and proceed.
+     invocation), state the choice in the goal note, and proceed. Same for
+     semantic edge cases (rounding, ordering, tie-breaks, error text): if
+     tests, fixtures, or task text pin the behaviour, implement to it;
+     escalate only when both are silent and the choice is user-visible or
+     irreversible.
   1. Otherwise, for a coding request, your first execution tool call is
      `decompose_roadmap`. A tiny fix is a valid one-node roadmap.
   2. Present that exact graph once. In unattended/auto mode, the operator's
