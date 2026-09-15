@@ -618,13 +618,19 @@ mod tests {
     /// Lane R48a: `pack_env()` on a mixed tier pins `MECHANICAL`/`LOCAL` (the
     /// roles an ordinary dispatched goal worker routes through) to the WORKER
     /// pair, and `HARD`/`EDIT` (planning + the review role's fallback, and
-    /// the inert main-loop role) to the COORDINATOR pair — still 8 entries,
-    /// still every role set, just split across two models instead of one.
+    /// the inert main-loop role) to the COORDINATOR pair — every role set,
+    /// split across two models instead of one. R48f adds a 9th entry on a
+    /// mixed tier: the local worker's compact profile.
     #[test]
     fn pack_env_splits_worker_roles_from_coordinator_roles_on_a_mixed_tier() {
         let t = Tier::builtin("dschat+minicpm").unwrap();
         let env = t.pack_env();
-        assert_eq!(env.len(), 8);
+        assert_eq!(env.len(), 9, "8 pack pins + R48f's worker profile: {env:?}");
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "PERMAGENT_WORKER_PROFILE" && v == "compact"),
+            "a mixed tier's local worker gets the compact profile"
+        );
 
         for role in ["MECHANICAL", "LOCAL"] {
             assert!(env
