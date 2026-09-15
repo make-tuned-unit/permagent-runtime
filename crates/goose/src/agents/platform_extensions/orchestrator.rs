@@ -34123,7 +34123,13 @@ mod tests {
             &pool,
             &card.id,
             &[
-                "UNVERIFIED (no detected check command in this repo) — kept for human review: \
+                // R43b-d (A53): seed the PRESERVATION reclassification, not the
+                // generic no-check fallback. The fallback marks every criterion
+                // of every simple task in a fresh sandbox, so holding on it held
+                // genuine passes forever; only this shape is real evidence the
+                // goal still owes a human a look.
+                "UNVERIFIED (task text names `--level` as currently broken, but no check \
+               confirms it) — kept for human review: \
                logfilter/cli.py rejects unknown --level values with exit code 2",
             ],
         )
