@@ -634,6 +634,13 @@ fn task_result_from_qual_evidence(t: &TaskQualificationEvidence) -> Result<TaskR
             output_tokens: t.output_tokens,
             cache_read_tokens: t.cache_read_tokens,
             cache_write_tokens: t.cache_write_tokens,
+            // K18 (`## A45 design` Q3): round-trips the qual.json record's
+            // per-role cost/offset fields the same way every other
+            // CostReading field here does.
+            coordinator_usd: t.coordinator_usd,
+            worker_usd: t.worker_usd,
+            worker_local_tokens: t.worker_local_tokens,
+            worker_offset_usd: t.worker_offset_usd,
         },
         duration_secs: t.seconds,
         harness_exit: None,

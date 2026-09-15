@@ -199,6 +199,20 @@ pub struct Aggregate {
     /// selection failed") or `1.0` (which would read as "graduated") for a
     /// role/tier that was never measured. See [`dag_selection_pct`].
     pub dag_selection_pct: Option<f64>,
+    /// K18 (`## A45 design` Q3): sum of [`CostReading::coordinator_usd`]
+    /// across every task with a known reading — the coordinator's own
+    /// spend. `None` when no task carries role/provider ledger data (e.g.
+    /// a pre-K18 ledger schema), never conflated with `Some(0.0)`.
+    pub coordinator_usd: Option<f64>,
+    /// K18: sum of [`CostReading::worker_usd`] across every task with a
+    /// known reading — dispatched-worker spend. `None` under the same
+    /// condition as [`Self::coordinator_usd`].
+    pub worker_usd: Option<f64>,
+    /// K18: sum of [`CostReading::worker_offset_usd`] across every task —
+    /// the total USD a local worker tier is measured to have "offset" by
+    /// running on `$0` Ollama instead of the MECHANICAL pack's cloud rung.
+    /// `None` when no task had any local-worker tokens to offset.
+    pub worker_offset_usd: Option<f64>,
 }
 
 /// Tasks NOT skipped by a budget stop — i.e. everything except
@@ -298,6 +312,44 @@ pub fn cache_hit_rate(results: &[TaskResult]) -> Option<f64> {
     Some(total_cache_read as f64 / total_input as f64)
 }
 
+/// K18 (`## A45 design` Q3): sum a per-task `Option<f64>` cost field
+/// (`coordinator_usd`, `worker_usd`, or `worker_offset_usd`) across every
+/// result, the same "`None` only when *no* task had a known value" rule
+/// [`total_cost`] uses — mirrored here as a small generic helper so the
+/// three role/offset totals don't hand-roll the accumulator three times.
+fn sum_known_role_cost(
+    results: &[TaskResult],
+    field: impl Fn(&CostReading) -> Option<f64>,
+) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut any_known = false;
+    for r in results {
+        if let Some(v) = field(&r.cost) {
+            sum += v;
+            any_known = true;
+        }
+    }
+    any_known.then_some(sum)
+}
+
+/// K18: total coordinator spend across every task. See
+/// [`Aggregate::coordinator_usd`].
+pub fn coordinator_usd(results: &[TaskResult]) -> Option<f64> {
+    sum_known_role_cost(results, |c| c.coordinator_usd)
+}
+
+/// K18: total dispatched-worker spend across every task. See
+/// [`Aggregate::worker_usd`].
+pub fn worker_usd(results: &[TaskResult]) -> Option<f64> {
+    sum_known_role_cost(results, |c| c.worker_usd)
+}
+
+/// K18: total local-worker "offset" across every task. See
+/// [`Aggregate::worker_offset_usd`].
+pub fn worker_offset_usd(results: &[TaskResult]) -> Option<f64> {
+    sum_known_role_cost(results, |c| c.worker_offset_usd)
+}
+
 /// Sum of the known per-task costs. Returns `(total, any_unknown, any_estimated)`
 /// where `total` is `None` only when *no* task had a known cost.
 pub fn total_cost(results: &[TaskResult]) -> (Option<f64>, bool, bool) {
@@ -372,6 +424,9 @@ pub fn aggregate(results: &[TaskResult]) -> Aggregate {
         total_rate_limit_events: total_rate_limit_events(results),
         cache_hit_rate: cache_hit_rate(results),
         dag_selection_pct: dag_selection_pct(results),
+        coordinator_usd: coordinator_usd(results),
+        worker_usd: worker_usd(results),
+        worker_offset_usd: worker_offset_usd(results),
     }
 }
 
@@ -640,5 +695,53 @@ mod tests {
         let mut a = res("a", false, Some(1.0));
         a.selection_correct = Some(false);
         assert_eq!(dag_selection_pct(&[a]), Some(0.0));
+    }
+
+    // ── K18: per-role, per-provider cost accounting ─────────────────────────
+
+    #[test]
+    fn role_cost_totals_are_none_when_no_task_carries_role_data() {
+        let r = vec![res("a", true, Some(1.0)), res("b", false, Some(2.0))];
+        assert_eq!(coordinator_usd(&r), None);
+        assert_eq!(worker_usd(&r), None);
+        assert_eq!(worker_offset_usd(&r), None);
+        let agg = aggregate(&r);
+        assert_eq!(agg.coordinator_usd, None);
+        assert_eq!(agg.worker_usd, None);
+        assert_eq!(agg.worker_offset_usd, None);
+    }
+
+    #[test]
+    fn role_cost_totals_sum_known_values_across_tasks() {
+        let mut a = res("a", true, Some(1.0));
+        a.cost.coordinator_usd = Some(0.05);
+        a.cost.worker_usd = Some(0.01);
+        a.cost.worker_offset_usd = Some(0.002);
+
+        let mut b = res("b", true, Some(0.5));
+        b.cost.coordinator_usd = Some(0.03);
+        b.cost.worker_usd = Some(0.02);
+        b.cost.worker_offset_usd = Some(0.004);
+
+        // A third task with no role data at all must not turn the totals
+        // into `None` — only ALL-unknown does that.
+        let c = res("c", false, Some(0.1));
+
+        let r = vec![a, b, c];
+        assert!((coordinator_usd(&r).unwrap() - 0.08).abs() < 1e-12);
+        assert!((worker_usd(&r).unwrap() - 0.03).abs() < 1e-12);
+        assert!((worker_offset_usd(&r).unwrap() - 0.006).abs() < 1e-12);
+
+        let agg = aggregate(&r);
+        assert!((agg.coordinator_usd.unwrap() - 0.08).abs() < 1e-12);
+        assert!((agg.worker_usd.unwrap() - 0.03).abs() < 1e-12);
+        assert!((agg.worker_offset_usd.unwrap() - 0.006).abs() < 1e-12);
+    }
+
+    #[test]
+    fn role_cost_totals_over_empty_results_are_none() {
+        assert_eq!(coordinator_usd(&[]), None);
+        assert_eq!(worker_usd(&[]), None);
+        assert_eq!(worker_offset_usd(&[]), None);
     }
 }
