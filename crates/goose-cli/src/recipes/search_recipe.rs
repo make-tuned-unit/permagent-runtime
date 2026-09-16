@@ -133,6 +133,15 @@ mod tests {
             .find(|extension| extension.name() == "developer")
             .expect("coding harness pins developer");
         assert_eq!(developer.available_tools(), ["read", "tree", "search"]);
+        // Lane R58a: a headless coordinator probed `check_worker` and
+        // `routing_roster`, then ended its turn asking the absent user to pick
+        // the `worker_tier` (`select-checks-worker-before-dispatch`). Routing
+        // within the roster is the coordinator's own call.
+        assert!(
+            instructions.contains("your own decision, never the user's")
+                && instructions.contains("never end a turn asking the user to choose routing"),
+            "coding recipe must make the worker/worker_tier choice the coordinator's own"
+        );
         assert!(
             instructions.contains("SMALLEST executable graph")
                 && instructions.contains("Coalesce changes that share a file into one card"),
