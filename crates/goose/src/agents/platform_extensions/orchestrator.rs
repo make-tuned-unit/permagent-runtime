@@ -1407,6 +1407,80 @@ fn merge_overlapping_file_goals(
     (collapse_goal_clusters(&goals, &clusters), merged_away)
 }
 
+/// R56a: the most real files a DERIVED write scope may claim for one goal.
+/// A card whose own text names more paths than this is describing a sweep,
+/// not a scoped edit, and the derivation declines rather than claiming a
+/// broad scope on the planner's behalf.
+const DERIVED_WRITE_SCOPE_MAX_PATHS: usize = 8;
+
+/// R56a (harness loop, held-out fixture `select-failing-test-decompose-
+/// before-create`): derive a per-goal [`write_scope::WRITE_SCOPE_KEY`] from
+/// the real files each goal's own title/description names, but ONLY when the
+/// whole proposal is unambiguous.
+///
+/// The defect this closes: nothing in the pipeline ever wrote a
+/// `write_scope` onto a goal card. `write_scope::metadata_conflict` treats a
+/// missing scope as unproven — correct, since a worktree isolates branches,
+/// not merge collisions — so the SECOND root goal of any multi-root roadmap
+/// was refused dispatch against the first ("write scope is missing or empty
+/// for a non-read-only node") for as long as the first stayed InProgress,
+/// even when the two cards name different files. The planner cannot fix this
+/// itself: `ProposedGoal` has no metadata field for a model to fill in.
+///
+/// Deliberately conservative, because an under-claimed scope is what lets two
+/// workers collide:
+/// - at least two goals, and a non-empty `RepoFacts` file list (no facts,
+///   no proof — decline);
+/// - EVERY goal must name at least one file that actually exists here
+///   (`goal_named_files`, title+description only: acceptance criteria are
+///   excluded on purpose, since disjoint cards routinely share one test
+///   oracle they never write);
+/// - each goal's set is bounded by [`DERIVED_WRITE_SCOPE_MAX_PATHS`];
+/// - every path is normalized and validated by the SAME
+///   [`write_scope::declared_write_scope`] the dispatcher parses with, so a
+///   derived value can never turn a dispatch into a metadata error;
+/// - the sets must be pairwise non-overlapping under the dispatcher's own
+///   [`write_scope::scopes_overlap`] rule (directory claims descendants).
+///
+/// Any failure declines for the WHOLE proposal — a half-stamped roadmap
+/// would prove nothing, since an undeclared sibling still serializes
+/// everything. Overlapping-file goals never reach here as separate cards
+/// anyway: `merge_overlapping_file_goals` above has already coalesced them.
+///
+/// Returns goal-index -> normalized scope. The caller stamps it only where a
+/// card has no declared scope of its own, so this can never widen one.
+pub(crate) fn derive_disjoint_write_scopes(
+    goals: &[goal_state::ProposedGoal],
+    facts: &RepoFacts,
+) -> std::collections::BTreeMap<usize, Vec<String>> {
+    if goals.len() < 2 || facts.files.is_empty() {
+        return std::collections::BTreeMap::new();
+    }
+    let mut scopes: Vec<Vec<String>> = Vec::with_capacity(goals.len());
+    for goal in goals {
+        let named: Vec<String> = goal_named_files(goal, facts).into_iter().collect();
+        if named.is_empty() || named.len() > DERIVED_WRITE_SCOPE_MAX_PATHS {
+            return std::collections::BTreeMap::new();
+        }
+        // Normalize through the dispatcher's own parser, never a second
+        // notion of what a valid repository-relative path is.
+        let key = super::write_scope::WRITE_SCOPE_KEY;
+        let candidate = serde_json::json!({ key: named });
+        match super::write_scope::declared_write_scope(&candidate) {
+            Ok(Some(paths)) if !paths.is_empty() => scopes.push(paths),
+            _ => return std::collections::BTreeMap::new(),
+        }
+    }
+    for (i, left) in scopes.iter().enumerate() {
+        for right in scopes.iter().skip(i + 1) {
+            if super::write_scope::scopes_overlap(left, right) {
+                return std::collections::BTreeMap::new();
+            }
+        }
+    }
+    scopes.into_iter().enumerate().collect()
+}
+
 /// True when `token` is shaped like a filename (`word.ext`, a short
 /// alphanumeric extension) — the R52b "mechanical call-site" merge below
 /// masks these out of a goal's title/description before comparing two
@@ -3464,6 +3538,7 @@ async fn materialize_roadmap_transaction(
         session_mode,
         calling_session_id,
         &std::collections::BTreeMap::new(),
+        &std::collections::BTreeMap::new(),
     )
     .await
 }
@@ -3508,6 +3583,13 @@ async fn materialize_roadmap_transaction_with_budget(
     // that path (both `#[cfg(test)]` callers, and a `create_roadmap` call
     // whose AC was already grounded).
     ac_rewrite_notes: &std::collections::BTreeMap<usize, Vec<String>>,
+    // R56a: goal-index -> the write scope `derive_disjoint_write_scopes`
+    // proved for this proposal, stamped onto each card below so the
+    // dispatcher can prove two roots are file-disjoint instead of
+    // serializing them. Empty for every caller that has no repo facts to
+    // derive from (both `#[cfg(test)]` callers, a single-goal roadmap, a
+    // proposal whose goals do not each name one real file).
+    derived_write_scopes: &std::collections::BTreeMap<usize, Vec<String>>,
 ) -> Result<RoadmapMaterialization, String> {
     validate_roadmap_goals(goals)?;
     let mut tx = pool
@@ -3722,6 +3804,19 @@ async fn materialize_roadmap_transaction_with_budget(
         if let Some(notes) = ac_rewrite_notes.get(&idx) {
             meta.insert("ac_rewritten".to_string(), serde_json::json!(true));
             meta.insert("ac_rewritten_notes".to_string(), serde_json::json!(notes));
+        }
+        // R56a: the derived, proven-disjoint write scope (see
+        // `derive_disjoint_write_scopes`). Inserted only when this card has
+        // no scope of its own, so a declared scope is never widened — today
+        // `meta` is built fresh here and nothing else writes the key, and the
+        // guard keeps that true if a future caller starts declaring one.
+        if let Some(paths) = derived_write_scopes.get(&idx) {
+            if !paths.is_empty() && !meta.contains_key(super::write_scope::WRITE_SCOPE_KEY) {
+                meta.insert(
+                    super::write_scope::WRITE_SCOPE_KEY.to_string(),
+                    serde_json::json!(paths),
+                );
+            }
         }
         let card_id = cards::create_goal_card_in_tx(
             &mut tx,
@@ -6136,6 +6231,24 @@ async fn finalize_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, state:
     }
 }
 
+/// The one phrase a write-scope dispatch refusal is recognised by (R56a).
+/// Written into the refusal built in `dispatch_goal_to` and matched by
+/// [`refusal_is_scope_wait`], so the drain's "this is a WAIT, not a terminal
+/// refusal" test can never drift from the text that triggers it.
+pub(crate) const WRITE_SCOPE_CONFLICT_REFUSAL: &str = "write scope conflicts with active goal";
+
+/// R56a: true when a dispatch refusal says only "another goal currently
+/// holds the write scope" — a transient, self-clearing condition, not a
+/// verdict about this goal. Nothing was started, no worker or model budget
+/// was spent, and the same card becomes dispatchable the moment the
+/// conflicting goal leaves `in_progress`. The drain therefore retries it on
+/// a later poll instead of charging it a re-dispatch attempt (which,
+/// at the default budget of 2, otherwise burned the card's whole allowance
+/// on refusals before the conflict could clear).
+pub(crate) fn refusal_is_scope_wait(dispatch_error: &str) -> bool {
+    dispatch_error.contains(WRITE_SCOPE_CONFLICT_REFUSAL)
+}
+
 /// Refuse a parallel dispatch when a ready goal's declared write scope
 /// overlaps an in-flight sibling in the same project. Worktrees isolate
 /// branches, not merge conflicts; this gate keeps independent nodes parallel
@@ -6168,7 +6281,7 @@ async fn write_scope_conflict(
             .map_err(|e| format!("active goal {active_id} has invalid metadata: {e}"))?;
         if let Some(reason) = super::write_scope::metadata_conflict(candidate_meta, &metadata)? {
             return Ok(Some(format!(
-                "write scope conflicts with active goal '{title}' ({active_id}): {reason}"
+                "{WRITE_SCOPE_CONFLICT_REFUSAL} '{title}' ({active_id}): {reason}"
             )));
         }
     }
@@ -10645,6 +10758,19 @@ impl OrchestratorClient {
         // finding 3) so a proof minted in one Auto session cannot be consumed
         // by a different Auto session in the same project.
         let calling_session_id = self.context.session.as_ref().map(|s| s.id.as_str());
+        // R56a: derived from the FINAL goals (after the AC revalidation
+        // above may have rewritten them), against the same `facts` that pass
+        // used. A machine diagnostic, so it goes to tracing only — never
+        // into the user-visible note this call returns.
+        let derived_write_scopes = derive_disjoint_write_scopes(&goals, &facts);
+        if !derived_write_scopes.is_empty() {
+            tracing::info!(
+                target: "permagentd::orchestrator",
+                goals = derived_write_scopes.len(),
+                "create_roadmap_derived_write_scopes={}",
+                derived_write_scopes.len()
+            );
+        }
         let materialized = materialize_roadmap_transaction_with_budget(
             &pool,
             &project.id,
@@ -10657,6 +10783,7 @@ impl OrchestratorClient {
             session_mode,
             calling_session_id,
             &ac_rewrite_notes,
+            &derived_write_scopes,
         )
         .await?;
 
@@ -16228,14 +16355,33 @@ pub(crate) fn next_dispatch_actions(
 /// the project is by definition a stranger, and a roadmap existing says
 /// nothing about whether this run owns it. (The drain also returns before the
 /// loop when there are no descendant sessions at all.)
+///
+/// R56a adds the third membership test: a card THIS coordinator's own
+/// `create_roadmap` minted (`metadata_json.created_by_session_id`, stamped by
+/// `materialize_roadmap_transaction_with_budget`). Awaited-or-dependent alone
+/// could never reach a SIBLING ROOT — a second root goal with no
+/// `depends_on` whose very first dispatch was refused (a write-scope conflict
+/// against the first root, `select-failing-test-decompose-before-create`
+/// 2026-09-16: `park_reason … never_dispatched`). It has no worker session,
+/// so it never joins `awaited_cards`; it depends on nothing, so it is never a
+/// dependent — the sweep could not see it on any poll, and the run exited
+/// with it never started. Ownership by this run's own coordinator session is
+/// exactly as narrow: a card a human left Ready, or one another session
+/// created, still carries a different id (or none) and stays a stranger.
 pub(crate) fn run_scoped_ready_goals(
     ready: &[cards::Card],
     awaited_cards: &std::collections::HashSet<String>,
+    coordinator_session_id: &str,
 ) -> Vec<String> {
     ready
         .iter()
         .filter(|card| {
             awaited_cards.contains(&card.id)
+                || card
+                    .metadata_json
+                    .get("created_by_session_id")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|owner| owner == coordinator_session_id)
                 || card
                     .metadata_json
                     .get("depends_on")
@@ -16299,7 +16445,7 @@ async fn redispatch_ready_goals(
                         .get("resumed_by_headless_unblock_at")
                         .is_none()
                 });
-                run_scoped_ready_goals(&goals, awaited_cards)
+                run_scoped_ready_goals(&goals, awaited_cards, coordinator_session_id)
             }
             Err(e) => {
                 tracing::warn!(
@@ -16326,6 +16472,27 @@ async fn redispatch_ready_goals(
                     "drain re-dispatched a Ready goal (attempt {})",
                     redispatch_counts[&card_id]
                 ),
+                Err(e) if refusal_is_scope_wait(&e) => {
+                    // R56a: a scope conflict against a goal that is still
+                    // InProgress is a WAIT, not a refusal of this card.
+                    // Refund the attempt — nothing was started and no
+                    // worker/model budget was spent — so the card is still
+                    // dispatchable on the poll after the conflicting goal
+                    // leaves InProgress. Bounded by the drain's own cap and
+                    // poll interval (one extra query per poll), and it never
+                    // reports itself as a dispatch, so a pass made only of
+                    // these can still quiesce.
+                    if let Some(count) = redispatch_counts.get_mut(&card_id) {
+                        *count = count.saturating_sub(1);
+                    }
+                    attempted = attempted.saturating_sub(1);
+                    tracing::debug!(
+                        target: "permagentd::brain",
+                        goal_id = %card_id,
+                        project_id = %project_id,
+                        "drain re-dispatch waiting on an active goal's write scope, will retry: {e}"
+                    );
+                }
                 Err(e) => {
                     tracing::debug!(
                         target: "permagentd::brain",
@@ -33988,39 +34155,71 @@ mod tests {
     /// question; the drain's sweep must only continue this run's own DAG.
     #[test]
     fn run_scoped_ready_goals_keeps_awaited_cards_and_their_dependents() {
-        fn ready_card(id: &str, depends_on: &[&str]) -> cards::Card {
-            cards::Card {
-                id: id.to_string(),
-                project_id: "proj".to_string(),
-                card_type: "goal".to_string(),
-                title: id.to_string(),
-                description: String::new(),
-                column_id: "ready-col".to_string(),
-                position: 0,
-                created_by: "test".to_string(),
-                assigned_to: None,
-                metadata_json: serde_json::json!({ "depends_on": depends_on }),
-                created_at: String::new(),
-                updated_at: String::new(),
-                archived_at: None,
-            }
-        }
         let ready = vec![
-            ready_card("awaited", &[]),
-            ready_card("dependent", &["awaited"]),
-            ready_card("stranger", &[]),
-            ready_card("someone-elses-dependent", &["not-ours"]),
+            run_scope_ready_card("awaited", &[], None),
+            run_scope_ready_card("dependent", &["awaited"], None),
+            run_scope_ready_card("stranger", &[], None),
+            run_scope_ready_card("someone-elses-dependent", &["not-ours"], None),
         ];
         let awaited: std::collections::HashSet<String> =
             ["awaited".to_string()].into_iter().collect();
         assert_eq!(
-            run_scoped_ready_goals(&ready, &awaited),
+            run_scoped_ready_goals(&ready, &awaited, "coordinator-1"),
             vec!["awaited".to_string(), "dependent".to_string()],
             "only this run's own cards and their dependents"
         );
         assert!(
-            run_scoped_ready_goals(&ready, &std::collections::HashSet::new()).is_empty(),
+            run_scoped_ready_goals(&ready, &std::collections::HashSet::new(), "coordinator-1")
+                .is_empty(),
             "no awaited cards means no DAG of this run's to continue — never a project-wide sweep"
+        );
+    }
+
+    fn run_scope_ready_card(
+        id: &str,
+        depends_on: &[&str],
+        created_by_session_id: Option<&str>,
+    ) -> cards::Card {
+        let mut metadata = serde_json::json!({ "depends_on": depends_on });
+        if let Some(owner) = created_by_session_id {
+            metadata["created_by_session_id"] = serde_json::json!(owner);
+        }
+        cards::Card {
+            id: id.to_string(),
+            project_id: "proj".to_string(),
+            card_type: "goal".to_string(),
+            title: id.to_string(),
+            description: String::new(),
+            column_id: "ready-col".to_string(),
+            position: 0,
+            created_by: "test".to_string(),
+            assigned_to: None,
+            metadata_json: metadata,
+            created_at: String::new(),
+            updated_at: String::new(),
+            archived_at: None,
+        }
+    }
+
+    /// R56a, pure. A SIBLING ROOT of this run's own roadmap — a second root
+    /// goal whose first dispatch was refused, so it has no worker session and
+    /// depends on nothing — must be sweepable, while a stranger card with no
+    /// owner, and one owned by a DIFFERENT session, stay out of scope.
+    #[test]
+    fn run_scoped_ready_goals_keeps_a_never_dispatched_sibling_root_of_this_run() {
+        let ready = vec![
+            run_scope_ready_card("awaited", &[], Some("coordinator-1")),
+            run_scope_ready_card("sibling-root", &[], Some("coordinator-1")),
+            run_scope_ready_card("other-runs-root", &[], Some("coordinator-2")),
+            run_scope_ready_card("stranger", &[], None),
+        ];
+        let awaited: std::collections::HashSet<String> =
+            ["awaited".to_string()].into_iter().collect();
+        assert_eq!(
+            run_scoped_ready_goals(&ready, &awaited, "coordinator-1"),
+            vec!["awaited".to_string(), "sibling-root".to_string()],
+            "a root this run's own create_roadmap minted must be reachable by the sweep, and \
+             nothing else new"
         );
     }
 
@@ -34107,6 +34306,124 @@ mod tests {
             Some("ready"),
             "a card outside this run's DAG must be left exactly where it was"
         );
+    }
+
+    /// R56a, durable. The `select-failing-test-decompose-before-create`
+    /// repro: a SIBLING ROOT of this run's own roadmap whose first dispatch
+    /// was refused has no worker session and no `depends_on`, so pre-fix the
+    /// sweep could not see it on any poll and the run exited with
+    /// `park_reason … never_dispatched`. It is this run's card —
+    /// `created_by_session_id` is the coordinator that minted it — so the
+    /// sweep must start it, while a stranger card is still left alone.
+    #[tokio::test]
+    async fn drain_sweep_dispatches_a_never_dispatched_sibling_root_of_this_runs_roadmap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: first root".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        // The first root: its worker attempt is over and the card is Ready
+        // again, exactly as in the sibling test above.
+        let first_root = setup_goal_in_state(&pool, "ready", 1).await;
+        attach_worker_session_to_card(&pool, &first_root.id, &child.id).await;
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            child.id.clone(),
+            serde_json::json!({}),
+            "life-1",
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::Failed, chrono::Utc::now().to_rfc3339());
+        cards::set_goal_execution_receipt(
+            &pool,
+            &first_root.id,
+            serde_json::to_value(&receipt).unwrap(),
+        )
+        .await
+        .unwrap();
+        // The second root of the SAME roadmap: never dispatched, depends on
+        // nothing, minted by this coordinator's own `create_roadmap`.
+        let sibling_root = setup_goal_in_state(&pool, "ready", 0).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, \
+             '$.created_by_session_id', ?) WHERE id = ?",
+        )
+        .bind(&coordinator.id)
+        .bind(&sibling_root.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // A card nobody in this run owns.
+        let stranger = setup_goal_in_state(&pool, "ready", 0).await;
+
+        let (dispatcher, recorded) = drain_claiming_dispatcher(pool.clone());
+        let _summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            |_, _| {},
+            None,
+            DrainRedispatch {
+                dispatch: Some(&dispatcher),
+                max_redispatch: 2,
+                sweep_headroom: std::time::Duration::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+
+        let recorded = recorded.lock().unwrap().clone();
+        assert!(
+            recorded.contains(&sibling_root.id),
+            "the never-dispatched sibling root of this run's own roadmap must be swept: \
+             {recorded:?}"
+        );
+        assert!(
+            !recorded.contains(&stranger.id),
+            "a card this run does not own must still be left alone: {recorded:?}"
+        );
+    }
+
+    /// R56a, pure. A write-scope refusal must be recognised as a WAIT from
+    /// the exact text `write_scope_conflict` builds — the drain refunds the
+    /// re-dispatch attempt for this shape only, so the phrase and its test
+    /// share one const.
+    #[test]
+    fn scope_conflict_refusal_reads_as_a_wait_and_other_refusals_do_not() {
+        let refusal = format!(
+            "Goal 'Fix inventory.py' remains Ready and was not dispatched: \
+             {WRITE_SCOPE_CONFLICT_REFUSAL} 'Fix pricing.py' (card-1): write scope is missing or \
+             empty for a non-read-only node. Wait for the active goal to finish or narrow its \
+             declared 'write_scope' paths."
+        );
+        assert!(refusal_is_scope_wait(&refusal));
+        assert!(!refusal_is_scope_wait(
+            "No suitable worker available for goal 'Fix inventory.py'"
+        ));
+        assert!(!refusal_is_scope_wait(
+            "attempt cap exhausted (spent=3,cap=3)"
+        ));
     }
 
     /// Y6b: the two new headless env knobs parse and are named the way their
@@ -38264,6 +38581,7 @@ mod tests {
             GooseMode::Approve,
             None,
             &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
         )
         .await
         .unwrap();
@@ -38274,6 +38592,80 @@ mod tests {
             .unwrap();
         let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
         assert_eq!(metadata["budget_task_id"], "approving-task");
+    }
+
+    /// R56a, durable. The derived scope must actually land on the card
+    /// metadata the dispatcher reads (`write_scope_conflict` ->
+    /// `write_scope::metadata_conflict`), not merely be computed. Pre-fix,
+    /// no code path ever wrote the key, so two roots of one roadmap always
+    /// read as "write scope is missing or empty for a non-read-only node"
+    /// and the second was refused dispatch until the first left InProgress.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn materialized_goals_carry_the_derived_write_scope() {
+        let pool = test_pool().await;
+        let goals = vec![
+            goal_state::ProposedGoal {
+                title: "Fix pricing.py".to_string(),
+                description: "repair apply_discount in pricing.py".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+            goal_state::ProposedGoal {
+                title: "Fix inventory.py".to_string(),
+                description: "repair decrement_stock in inventory.py".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+        ];
+        let facts = RepoFacts {
+            files: vec!["pricing.py".to_string(), "inventory.py".to_string()],
+            file_count: 2,
+            ..Default::default()
+        };
+        let derived = derive_disjoint_write_scopes(&goals, &facts);
+        assert_eq!(derived.len(), 2, "fixture precondition: {derived:?}");
+
+        let (hash, decision_id) =
+            install_answered_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let order = goal_state::topological_order(&goals).unwrap();
+        let materialized = materialize_roadmap_transaction_with_budget(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+            None,
+            GooseMode::Approve,
+            None,
+            &std::collections::BTreeMap::new(),
+            &derived,
+        )
+        .await
+        .unwrap();
+
+        let mut metadata = Vec::new();
+        for card_id in &materialized.created_ids {
+            let card = cards::get_card(&pool, card_id).await.unwrap().unwrap();
+            metadata.push(card.metadata_json);
+        }
+        let key = crate::agents::platform_extensions::write_scope::WRITE_SCOPE_KEY;
+        assert_eq!(metadata[0][key], serde_json::json!(["pricing.py"]));
+        assert_eq!(metadata[1][key], serde_json::json!(["inventory.py"]));
+        assert_eq!(
+            crate::agents::platform_extensions::write_scope::metadata_conflict(
+                &metadata[0],
+                &metadata[1]
+            )
+            .unwrap(),
+            None,
+            "the dispatcher must now be able to prove the two roots are file-disjoint"
+        );
     }
 
     #[test]
@@ -38619,6 +39011,124 @@ mod tests {
         assert!(receipts
             .iter()
             .any(|receipt| receipt.contains("decompose_merged_overlapping_files=1")));
+    }
+
+    /// R56a, pure. The held-out `select-failing-test-decompose-before-create`
+    /// shape: two roots, each naming one real file the other never mentions.
+    /// Both cards must come out with a derived `write_scope`, and the
+    /// dispatcher's own conflict rule must then read them as independent —
+    /// before this lane neither card had a scope at all, so the second root's
+    /// dispatch was refused for as long as the first stayed InProgress
+    /// ("write scope is missing or empty for a non-read-only node").
+    #[test]
+    fn derive_disjoint_write_scopes_stamps_one_real_file_per_disjoint_goal() {
+        let facts = RepoFacts {
+            files: vec![
+                "pricing.py".to_string(),
+                "inventory.py".to_string(),
+                "test_checkout.py".to_string(),
+            ],
+            file_count: 3,
+            ..Default::default()
+        };
+        let goals = vec![
+            goal(
+                "Fix discount calculation in pricing.py",
+                "Repair apply_discount in pricing.py. Verify by running the integration test.",
+                &["python3 test_checkout.py exits with code 0"],
+                &["code_edit"],
+            ),
+            goal(
+                "Fix stock decrement in inventory.py",
+                "Repair decrement_stock in inventory.py. Verify by running the integration test.",
+                &["python3 test_checkout.py exits with code 0"],
+                &["code_edit"],
+            ),
+        ];
+
+        let derived = derive_disjoint_write_scopes(&goals, &facts);
+        assert_eq!(
+            derived.get(&0),
+            Some(&vec!["pricing.py".to_string()]),
+            "the shared test oracle lives in the acceptance criteria and must never be claimed \
+             as a write: {derived:?}"
+        );
+        assert_eq!(derived.get(&1), Some(&vec!["inventory.py".to_string()]));
+
+        let key = crate::agents::platform_extensions::write_scope::WRITE_SCOPE_KEY;
+        let left = serde_json::json!({ key: derived[&0] });
+        let right = serde_json::json!({ key: derived[&1] });
+        assert_eq!(
+            crate::agents::platform_extensions::write_scope::metadata_conflict(&left, &right)
+                .unwrap(),
+            None,
+            "the derived scopes must let the dispatcher prove the two roots are disjoint"
+        );
+    }
+
+    /// R56a, pure. The derivation declines for the WHOLE proposal rather
+    /// than half-stamping it: a goal that names no real file cannot be
+    /// proven disjoint from anything, and an undeclared sibling serializes
+    /// the roadmap anyway.
+    #[test]
+    fn derive_disjoint_write_scopes_declines_when_any_goal_is_unproven() {
+        let facts = RepoFacts {
+            files: vec!["pricing.py".to_string(), "inventory.py".to_string()],
+            file_count: 2,
+            ..Default::default()
+        };
+        let no_file_named = vec![
+            goal(
+                "Fix pricing",
+                "Repair apply_discount in pricing.py",
+                &[],
+                &["code_edit"],
+            ),
+            goal(
+                "Write the release note",
+                "Summarise the fix for the changelog",
+                &[],
+                &["code_edit"],
+            ),
+        ];
+        assert!(
+            derive_disjoint_write_scopes(&no_file_named, &facts).is_empty(),
+            "a goal naming no real file leaves the split unproven"
+        );
+
+        let overlapping = vec![
+            goal(
+                "Fix pricing",
+                "Repair apply_discount in pricing.py",
+                &[],
+                &["code_edit"],
+            ),
+            goal(
+                "Guard pricing input",
+                "Also edit pricing.py to reject negative input",
+                &[],
+                &["code_edit"],
+            ),
+        ];
+        assert!(
+            derive_disjoint_write_scopes(&overlapping, &facts).is_empty(),
+            "two goals naming the same file must keep serializing, never be declared disjoint"
+        );
+
+        let single = vec![goal(
+            "Fix pricing",
+            "Repair apply_discount in pricing.py",
+            &[],
+            &["code_edit"],
+        )];
+        assert!(
+            derive_disjoint_write_scopes(&single, &facts).is_empty(),
+            "a one-goal roadmap has no sibling to prove anything against"
+        );
+        assert!(
+            derive_disjoint_write_scopes(&no_file_named, &RepoFacts::default()).is_empty(),
+            "no repo facts means no proof"
+        );
     }
 
     /// R52b, pure: the `harness-refactor-shipping-quote-signature` fixture

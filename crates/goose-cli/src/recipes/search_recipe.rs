@@ -138,5 +138,14 @@ mod tests {
                 && instructions.contains("Coalesce changes that share a file into one card"),
             "coding recipe must prevent overlapping micro-goals from exhausting headless runs"
         );
+        // R56a: a write-scope refusal is transient and self-clearing. The
+        // coordinator that escalates it burns the run's one escalation and
+        // ends parked with the sibling never dispatched.
+        assert!(
+            instructions.contains("write scope conflicts with active goal")
+                && instructions.contains("is a WAIT"),
+            "coding recipe must tell the coordinator a write-scope refusal is a wait, not an \
+             escalation"
+        );
     }
 }
