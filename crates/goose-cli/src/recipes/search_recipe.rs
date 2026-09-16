@@ -82,9 +82,10 @@ mod tests {
         let rf = load_recipe_file(PERMAGENT_CODING_RECIPE_NAME)
             .expect("built-in coding recipe should resolve by name");
 
-        // Pins the coding toolset explicitly: developer = edit + search + shell
-        // + tree; analyze = the code-structure map; summon = the subagent seam
-        // for tiered cost-routing; orchestrator = executable DAGs;
+        // Pins the coding toolset explicitly: the root developer extension is
+        // read-only (read + search + tree), while dispatched goal workers get
+        // their own full developer extension; analyze = the code-structure map;
+        // summon = the subagent seam for tiered cost-routing; orchestrator = executable DAGs;
         // extensionmanager = on-demand research/MCP discovery without paying
         // the tool-schema cost in every coding turn.
         assert!(
@@ -117,10 +118,16 @@ mod tests {
             recipe.instructions.is_some(),
             "coding harness must set a system prompt"
         );
+        let extensions = recipe.extensions.expect("coding harness pins extensions");
         assert_eq!(
-            recipe.extensions.map(|e| e.len()).unwrap_or_default(),
+            extensions.len(),
             6,
             "coding harness pins developer, analyze, summon, orchestrator, council, and extensionmanager capabilities"
         );
+        let developer = extensions
+            .iter()
+            .find(|extension| extension.name() == "developer")
+            .expect("coding harness pins developer");
+        assert_eq!(developer.available_tools(), ["read", "tree", "search"]);
     }
 }

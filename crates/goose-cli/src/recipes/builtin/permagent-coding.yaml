@@ -96,6 +96,11 @@ instructions: |
     and do not ask for approval again at every internal verification step. Ask
     again only for a material scope change or a privileged/destructive external
     effect.
+  - Make behavioural acceptance criteria executable. When the repository or
+    task gives a concrete CLI/example, quote the literal runnable command and
+    its exact expected exit code/output in the criterion. Never use placeholders
+    such as `<file>` or merely say "works correctly": the worker's `verify`
+    tool compiles literal criteria into deterministic probes before work lands.
   - The local Build supervisor may recommend a Council pass for an ambiguous,
     cross-cutting, architectural, research-heavy, or high-risk request. Council
     is selective because it spends across several providers: never convene it
@@ -235,6 +240,11 @@ instructions: |
 extensions:
   - type: builtin
     name: developer
+    # The root is a coordinator, not an implementation worker. Keeping only
+    # read-only discovery tools in this extension makes rule 4 structural:
+    # smaller models cannot attempt a direct edit/shell call that the DAG
+    # inspector would merely refuse after it was already selected.
+    available_tools: [read, tree, search]
   - type: builtin
     name: analyze
   - type: builtin

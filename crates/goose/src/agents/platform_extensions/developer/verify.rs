@@ -2111,9 +2111,19 @@ const UNVERIFIED_MARKER_PREFIX: &str =
 static FILE_EXISTS_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)`?([\w./-]+\.[A-Za-z0-9_]{1,10})`?\s+exists\b").unwrap());
 
-/// "`<command>` exits 0" / "`<command>` exits with code 0".
+/// "`<command>` exits 0" / "`<command>` exits with code 2".
 static COMMAND_EXIT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)`([^`]{1,300})`\s+exits?(?:\s+with)?(?:\s+code)?\s+0\b").unwrap()
+    Regex::new(r"(?i)`([^`]{1,300})`\s+exits?(?:\s+with)?(?:\s+code)?\s+([0-9]{1,3})\b").unwrap()
+});
+
+/// "`<command>` exits 0 and prints exactly [the] N ... lines". This more
+/// specific shape must be tried before [`COMMAND_EXIT_RE`] so verification
+/// checks the observable output too, rather than stopping at the exit code.
+static COMMAND_EXACT_LINES_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)`([^`]{1,300})`\s+exits?(?:\s+with)?(?:\s+code)?\s+0\s+and\s+prints?\s+exactly\s+(?:the\s+)?([0-9]{1,4})\b[^.]*\blines?\b",
+    )
+    .unwrap()
 });
 
 /// "defines a function named X" / "defines class X" / "function X is defined".
@@ -2136,12 +2146,38 @@ fn file_exists_probe(text: &str) -> Option<Check> {
 fn command_exit_probe(text: &str) -> Option<Check> {
     let caps = COMMAND_EXIT_RE.captures(text)?;
     let command = caps.get(1)?.as_str().trim().to_string();
+    let expected: u16 = caps.get(2)?.as_str().parse().ok()?;
     if command.is_empty() {
         return None;
     }
+    let probe_command = if expected == 0 {
+        command.clone()
+    } else {
+        format!("( {command} ); _permagent_status=$?; test \"$_permagent_status\" -eq {expected}")
+    };
     Some(Check::probe(
-        format!("acceptance criterion: `{command}` exits 0"),
-        ProbeKind::CommandExitsZero(command),
+        format!("acceptance criterion: `{command}` exits {expected}"),
+        ProbeKind::CommandExitsZero(probe_command),
+    ))
+}
+
+fn command_exact_lines_probe(text: &str) -> Option<Check> {
+    let caps = COMMAND_EXACT_LINES_RE.captures(text)?;
+    let command = caps.get(1)?.as_str().trim().to_string();
+    let expected: u16 = caps.get(2)?.as_str().parse().ok()?;
+    if command.is_empty() {
+        return None;
+    }
+    let probe_command = format!(
+        "_permagent_output=$({command}); _permagent_status=$?; \
+         test \"$_permagent_status\" -eq 0 && \
+         if [ -z \"$_permagent_output\" ]; then _permagent_lines=0; \
+         else _permagent_lines=$(printf '%s\\n' \"$_permagent_output\" | wc -l | tr -d ' '); fi; \
+         test \"$_permagent_lines\" -eq {expected}"
+    );
+    Some(Check::probe(
+        format!("acceptance criterion: `{command}` prints exactly {expected} lines"),
+        ProbeKind::CommandExitsZero(probe_command),
     ))
 }
 
@@ -2582,6 +2618,7 @@ fn probe_for_criterion(dir: &Path, criterion: &str) -> Option<Check> {
         .trim();
     structured_probe(text)
         .or_else(|| file_exists_probe(text))
+        .or_else(|| command_exact_lines_probe(text))
         .or_else(|| command_exit_probe(text))
         .or_else(|| symbol_defined_probe(text))
         .or_else(|| call_returns_probe(dir, text))
@@ -4726,6 +4763,74 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             check.exec,
             Exec::Probe(ProbeKind::CommandExitsZero("pytest -k smoke".to_string()))
         );
+    }
+
+    #[test]
+    fn expected_nonzero_exit_criterion_compiles_to_a_real_status_probe() {
+        let dir = no_language_dir();
+        let check = probe_for_criterion(
+            dir.path(),
+            "`python3 -m logfilter sample.log --level bogus` exits with code 2",
+        )
+        .unwrap();
+        let Exec::Probe(ProbeKind::CommandExitsZero(command)) = &check.exec else {
+            panic!("expected a CommandExitsZero wrapper, got {:?}", check.exec);
+        };
+        assert!(command.contains("python3 -m logfilter sample.log --level bogus"));
+        assert!(command.contains("_permagent_status=$?"));
+        assert!(command.contains("-eq 2"));
+        assert_eq!(
+            check.label,
+            "acceptance criterion: `python3 -m logfilter sample.log --level bogus` exits 2"
+        );
+    }
+
+    #[test]
+    fn exact_output_line_count_criterion_checks_status_and_line_count() {
+        let dir = no_language_dir();
+        let check = probe_for_criterion(
+            dir.path(),
+            "`python3 -m logfilter sample_logs/app.log --level INFO` exits 0 and prints exactly the 2 INFO lines",
+        )
+        .unwrap();
+        let Exec::Probe(ProbeKind::CommandExitsZero(command)) = &check.exec else {
+            panic!("expected a CommandExitsZero wrapper, got {:?}", check.exec);
+        };
+        assert!(command.contains("python3 -m logfilter sample_logs/app.log --level INFO"));
+        assert!(command.contains("_permagent_status=$?"));
+        assert!(command.contains("_permagent_lines"));
+        assert!(command.contains("-eq 2"));
+        assert_eq!(
+            check.label,
+            "acceptance criterion: `python3 -m logfilter sample_logs/app.log --level INFO` prints exactly 2 lines"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn expected_exit_and_line_count_probes_execute_the_observable_contract() {
+        let dir = no_language_dir();
+        let nonzero = probe_for_criterion(dir.path(), "`sh -c 'exit 2'` exits 2").unwrap();
+        let Exec::Probe(nonzero) = nonzero.exec else {
+            panic!("expected a probe");
+        };
+        assert!(matches!(
+            run_probe_check(&nonzero, dir.path(), 5).await,
+            CheckOutcome::Passed { .. }
+        ));
+
+        let lines = probe_for_criterion(
+            dir.path(),
+            "`printf 'alpha\\nbeta\\n'` exits 0 and prints exactly 2 lines",
+        )
+        .unwrap();
+        let Exec::Probe(lines) = lines.exec else {
+            panic!("expected a probe");
+        };
+        assert!(matches!(
+            run_probe_check(&lines, dir.path(), 5).await,
+            CheckOutcome::Passed { .. }
+        ));
     }
 
     // ── R35b: call/return and run/stdout-contains probe shapes ──────────────
