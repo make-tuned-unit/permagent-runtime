@@ -2162,8 +2162,8 @@ mod tests {
     /// brief's test contract): the only candidate is the EXACT pair that
     /// already failed — retrying it would prove nothing, so this refuses
     /// rather than looping on a doomed pair. (The mandate's OWN independence
-    /// accounting — marking `reviewer_not_independent` when a fallback lands
-    /// on the author's pair — is exercised by
+    /// accounting — marking `reviewer_not_independent` for a fallback that
+    /// resolves to the author's pair — is exercised by
     /// `breaker_open_falls_back_to_the_author_session_pair` above and by the
     /// live seam's existing warning-driven receipt, which this function
     /// deliberately leaves to the caller.)
