@@ -246,6 +246,81 @@ and `costly_cache_label` matches runs of consecutive components — while
 `in_use_reason` can never find anything to stat. One line in the test helper,
 and it makes every other `classify_path` test hermetic too.
 
+## Second window (coordinator pruned to 18 GB) — what happened
+
+The prune freed the target dir, so the next `cargo test` was a **cold 9-minute
+rebuild that put 9 GB straight back**. Free space went 17 GB → 8.5 GB on that one
+build and has stayed there. Only one cargo command fitted in the window:
+
+- **#11 `a_fake_429_is_announced_while_we_wait_and_cleared_after` passes alone.**
+  So it is a suite-only failure, consistent with the `wait_status` diagnosis
+  below. Not fixed — the remaining two solo runs and the serialization fix both
+  need a build.
+
+`wait_status` has exactly two writers outside the test
+(`providers/inflight.rs:85,97` publish/clear for `ConcurrencyLimit`, and
+`retry.rs:188,197` for the retry path). The test calls `wait_status::clear()` with
+no serial key, so any concurrent provider test that publishes or clears can make
+the 400 ms announcement invisible to its poll loop. **Fix:** put this test and
+`inflight`'s own tests in a shared `#[serial_test::serial(provider_wait_status)]`
+group.
+
+## Uncommitted work in the tree
+
+Fixes for **#2–#8 and #12/#13 are written and sitting in the working tree,
+deliberately uncommitted**, because the disk floor closed before any of them
+could be built. Nothing unverified goes into this branch's history — that is the
+failure mode that produced these thirteen in the first place. `git status` is
+dirty by design; the changes are:
+
+`crates/goose/src/agents/platform_extensions/orchestrator.rs`
+
+1. **#6/#7 — a `&Config` seam.** `parent_extensions_with_config` and
+   `scoped_child_session_extensions_with_config` added; the existing free
+   functions delegate to them with `Config::global()`, so production is
+   unchanged. The two tests call the `_with_config` form with
+   `r27b_empty_config(tmp.path())` — a `Config::new_with_file_secrets` over two
+   paths that do not exist, so no keyring is touched and the additive refresh
+   contributes nothing. Confirmed by reading `get_extensions_map_with_config`:
+   it reads the config file and nothing else, with **no built-in defaults**, so
+   an empty config really does yield an empty merge.
+2. **#2–#4 — a unique worker session id.** `dead_silent_worker_goal` now renames
+   the freshly created session row to `<id>_<uuid>` and stamps that on the card,
+   so no other fixture in the binary can mint the same id. The row has no
+   children, and the `YYYYMMDD_` prefix is preserved so the id sequencer's
+   `SUBSTR(id, 10)` still parses.
+3. **#5 — spend R18g's budget up front.** `repeated_premature_done_parks_after_
+   max_holds` seeds `headless_unblock_count: 1` on its card, so the headless
+   unblock refuses on `once_per_goal_spent` whichever way the
+   `HEADLESS_DISPATCH_POLICY_CONFIG` `OnceLock` landed. Inert when headless is
+   off, and the same technique the R20b-e tests beside it already use. Chosen
+   over making the offending test stop calling the real installer, per the
+   coordinator's "prefer per-test isolation over process-global resets" — a
+   `OnceLock` cannot be reset at all, so isolating the victim is the only
+   test-only move available.
+
+`crates/goose/src/agents/platform_extensions/mod.rs`
+
+4. **#8 — name `routing_roster`** in the orchestrator's registry description:
+   "inspect available workers and the routing roster each worker tier resolves to
+   (list_workers, check_worker, routing_roster)". **The four prompt snapshots and
+   `family_prompt_size_table.snap` are now stale** and must be regenerated with
+   `INSTA_UPDATE=always` before this can be committed; the only legitimate diff
+   is that sentence plus the byte/token counts.
+
+`crates/goose/src/storage_health/classify.rs`
+
+5. **#12/#13 — hermetic paths.** The `classify_path` test helper prefixes every
+   case with `/permagent-classify-fixture-does-not-exist`. All the rules under
+   test read path shape only (`is_macos_managed` wants the `/Library/Caches/`
+   substring plus the file name; `costly_cache_label` matches component runs;
+   `local_rebuild_consequence` reads the file and parent names), so they are
+   unaffected, while `inuse::in_use_reason` can no longer stat anything. This
+   also de-mines four sibling tests that assert on real paths like
+   `/Users/j/Documents/dev/spectral/target`.
+
+**None of the five has been compiled.** Review them as a patch, not as a result.
+
 ## What is still red
 
 The whole suite was never re-run, so there is no `test result:` line for this
@@ -258,13 +333,34 @@ lane. Per-item:
   scanners over shipped source, and each fix was checked by re-running that
   guard's own scan predicate by hand; the edits are comments only and cannot
   affect compilation or behaviour. Still unproven by execution.
-- **#2–#8, #11–#13 — still red.** Diagnosed to a named function and line, with
-  the fix specified above. Each needs a build to apply and gate, so each needs a
-  machine with ≥ 9 GB free on `/`.
+- **#11 — passes alone**, so it is a suite-only interaction; the serialization
+  fix is specified but not written.
+- **#2–#8, #12, #13 — still red in the suite, fixes written but uncommitted and
+  uncompiled** (see "Uncommitted work in the tree").
 
 Nothing on this branch was left in a worse state than it was found: the three
 landed commits each remove a failure and none of them touches production
 behaviour beyond #1's one-line classification arm.
+
+## What the next window needs
+
+The target dir is **warm now** (48 GB), so the 9-minute cold rebuild will not
+repeat — the remaining work is a handful of fast incremental builds. In order:
+
+1. `cargo test -p permagent --lib scoped_child_session_extensions -j2`
+2. `cargo test -p permagent --lib goal_worker -j2` and the three named registry
+   tests
+3. `cargo test -p permagent --lib repeated_premature_done_parks_after_max_holds -j2`
+4. `cargo test -p permagent --lib storage_health -j2`
+5. `INSTA_UPDATE=always cargo test -p permagent --lib prompt_manager -j2`, then
+   read the five `.snap` diffs — only the description sentence and the size-table
+   numbers may move — then `tool_descriptions_name_every_callable_tool`
+6. add the `provider_wait_status` serial group for #11
+7. one full `cargo test -p permagent --lib -j2`
+
+Each of those is a separate cause and wants its own commit. The blocker is
+purely free space on `/`: it sits at ~8 GB and the floor is 10 GB. Freeing space
+anywhere other than the target dir (which must stay warm) is what unblocks this.
 
 ## Follow-on note
 
