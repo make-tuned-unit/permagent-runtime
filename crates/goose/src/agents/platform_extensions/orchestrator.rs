@@ -1333,6 +1333,80 @@ fn merge_goals_into_one(goals: &[goal_state::ProposedGoal]) -> goal_state::Propo
     }
 }
 
+/// Return the real repository files explicitly named by a goal's title or
+/// implementation description. Acceptance criteria are intentionally excluded:
+/// several disjoint cards may run the same shared test fixture without writing
+/// it, which is not a write-scope overlap.
+fn goal_named_files(
+    goal: &goal_state::ProposedGoal,
+    facts: &RepoFacts,
+) -> std::collections::HashSet<String> {
+    let haystack = format!("{} {}", goal.title, goal.description).to_lowercase();
+    facts
+        .files
+        .iter()
+        .filter(|file| !file.is_empty() && haystack.contains(&file.to_lowercase()))
+        .cloned()
+        .collect()
+}
+
+/// Merge connected clusters of goals that explicitly name any of the same
+/// existing files. Those cards cannot run concurrently under write-scope
+/// enforcement, and splitting one cohesive file edit across them can exhaust a
+/// bounded headless run before the complete behavior lands. Disjoint-file
+/// goals remain separate.
+fn merge_overlapping_file_goals(
+    goals: Vec<goal_state::ProposedGoal>,
+    facts: &RepoFacts,
+) -> (Vec<goal_state::ProposedGoal>, usize) {
+    if goals.len() < 2 || facts.files.is_empty() {
+        return (goals, 0);
+    }
+
+    let named: Vec<std::collections::HashSet<String>> = goals
+        .iter()
+        .map(|goal| goal_named_files(goal, facts))
+        .collect();
+    let mut assigned = vec![false; goals.len()];
+    let mut clusters = Vec::new();
+
+    for start in 0..goals.len() {
+        if assigned[start] || named[start].is_empty() {
+            continue;
+        }
+        assigned[start] = true;
+        let mut cluster = vec![start];
+        let mut files = named[start].clone();
+        loop {
+            let mut changed = false;
+            for candidate in 0..goals.len() {
+                if assigned[candidate]
+                    || named[candidate].is_empty()
+                    || files.is_disjoint(&named[candidate])
+                {
+                    continue;
+                }
+                assigned[candidate] = true;
+                cluster.push(candidate);
+                files.extend(named[candidate].iter().cloned());
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+        }
+        if cluster.len() > 1 {
+            clusters.push(cluster);
+        }
+    }
+
+    if clusters.is_empty() {
+        return (goals, 0);
+    }
+    let merged_away = clusters.iter().map(|cluster| cluster.len() - 1).sum();
+    (collapse_goal_clusters(&goals, &clusters), merged_away)
+}
+
 /// True when `token` is shaped like a filename (`word.ext`, a short
 /// alphanumeric extension) — the R52b "mechanical call-site" merge below
 /// masks these out of a goal's title/description before comparing two
@@ -1803,6 +1877,21 @@ pub(crate) fn ground_roadmap_goals(
                 facts.file_count
             ));
             goals = vec![merge_goals_into_one(&goals)];
+        }
+    }
+
+    // Cards that name the same real file are not independent work: the
+    // write-scope guard serializes them, and later cards must build on earlier
+    // partial edits to produce one behavior. Coalesce them deterministically
+    // even in fixture-sized repositories without a package manifest.
+    if goals.len() > 1 {
+        let (merged_goals, merged_overlaps) = merge_overlapping_file_goals(goals, facts);
+        goals = merged_goals;
+        if merged_overlaps > 0 {
+            receipts.push(format!(
+                "merged {merged_overlaps} overlapping-file goal(s) into one card so each real \
+                 file has one writer (decompose_merged_overlapping_files={merged_overlaps})"
+            ));
         }
     }
 
@@ -9936,6 +10025,8 @@ impl OrchestratorClient {
              - 1 to 15 goals (reject if scope needs more than 15). A tiny fix or a single named \
              behavior is a valid ONE-goal roadmap — do not manufacture additional goals just to \
              reach a larger count.\n\
+             - Build the smallest executable graph. Requirements that edit the same file belong \
+             in ONE goal; never make one card per flag, acceptance criterion, or edge case.\n\
              - Each goal completable in a single agent session (< 30 min of work)\n\
              - depends_on uses 0-based indices referencing other goals in the array\n\
              - No circular dependencies\n\
@@ -9949,7 +10040,9 @@ impl OrchestratorClient {
              actually exists ('docs/guide.md exists', 'no TODO remains in src/lib.rs'). Never \
              invent a language, framework, directory, class name, or test file this repo does \
              not have — an ungrounded criterion will be rewritten or rejected before the goal can \
-             be approved.";
+             be approved. For CLI behavior, state the literal command plus exact expected exit \
+             code and exact output or output-line count; 'works' or 'filters correctly' is not a \
+             mechanically-verifiable criterion.";
 
         let facts_dir = project
             .root_path
@@ -10162,8 +10255,19 @@ impl OrchestratorClient {
         // Z1: ground the raw proposal in this repo and the live roster
         // before any validation or approval — see the "Roadmap grounding"
         // block above `ground_roadmap_goals`.
-        let (goals, grounding_receipts) =
+        let (mut goals, grounding_receipts) =
             ground_roadmap_goals(goals, &facts, &allowed_tags, facts_dir);
+
+        // A worker otherwise sees only the planner's narrowed card text. Keep
+        // the user's complete objective as non-expanding context so a compact
+        // or merged card cannot silently omit a cross-file behavior that the
+        // planner summarized poorly.
+        for goal in &mut goals {
+            goal.description.push_str(&format!(
+                "\n\nOverall objective (context only; implement it through this card's scoped \
+                 work): {objective}"
+            ));
+        }
 
         validate_roadmap_goals(&goals)?;
 
@@ -38439,6 +38543,57 @@ mod tests {
         let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed, None);
         assert_eq!(grounded.len(), 2);
         assert!(!receipts.iter().any(|r| r.contains("right-sized")));
+    }
+
+    /// Parser-style edge-case fixes often arrive from the planner as one card
+    /// per flag even though every card edits the same CLI file. A manifest-less
+    /// fixture is still a real repository, and those overlapping writers must
+    /// be coalesced so the bounded headless drain can land the complete fix.
+    #[test]
+    fn ground_roadmap_goals_merges_overlapping_file_cards_without_a_manifest() {
+        let facts = RepoFacts {
+            manifests: vec![],
+            files: vec![
+                "logfilter/cli.py".to_string(),
+                "logfilter/filtering.py".to_string(),
+            ],
+            file_count: 2,
+            check_commands: vec![],
+            ..Default::default()
+        };
+        let allowed = tags(&["code_edit", "shell"]);
+        let goals = vec![
+            goal(
+                "Validate --level",
+                "update logfilter/cli.py to validate level input",
+                &["logfilter/cli.py rejects invalid levels"],
+                &["code_edit"],
+            ),
+            goal(
+                "Validate --since",
+                "update logfilter/cli.py to reject invalid dates",
+                &["logfilter/cli.py rejects invalid dates"],
+                &["code_edit"],
+            ),
+            goal(
+                "Case-insensitive matching",
+                "update logfilter/filtering.py to compare normalized levels",
+                &["logfilter/filtering.py normalizes levels"],
+                &["code_edit"],
+            ),
+        ];
+
+        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed, None);
+        assert_eq!(
+            grounded.len(),
+            2,
+            "the two cli.py cards merge; filtering stays separate"
+        );
+        assert!(grounded[0].description.contains("validate level input"));
+        assert!(grounded[0].description.contains("reject invalid dates"));
+        assert!(receipts
+            .iter()
+            .any(|receipt| receipt.contains("decompose_merged_overlapping_files=1")));
     }
 
     /// R52b, pure: the `harness-refactor-shipping-quote-signature` fixture
