@@ -16258,6 +16258,12 @@ async fn drain_dispatched_goals_with(
     // with real budget left just because that budget is under the static
     // headroom.
     let mut finished_durations: Vec<std::time::Duration> = Vec::new();
+    // R56a: an empty pass is only a candidate for quiescence. A completion
+    // handler can dispatch a dependent immediately after this pass's
+    // descendant query and then drop its in-flight mark before the idle check.
+    // Requiring one confirming pass gives that committed child session a
+    // chance to become visible instead of exiting with it untracked.
+    let mut consecutive_idle_passes = 0u8;
 
     let start = std::time::Instant::now();
     loop {
@@ -16557,8 +16563,16 @@ async fn drain_dispatched_goals_with(
         // must always be followed by one that can pick up its session.
         let idle =
             pending.is_empty() && !discovered_new && dispatched_now == 0 && !completion_active;
-        if idle || start.elapsed() >= cap {
+        if start.elapsed() >= cap {
             break;
+        }
+        if idle {
+            consecutive_idle_passes = consecutive_idle_passes.saturating_add(1);
+            if consecutive_idle_passes >= 2 {
+                break;
+            }
+        } else {
+            consecutive_idle_passes = 0;
         }
         tokio::time::sleep(poll_interval.min(cap.saturating_sub(start.elapsed()))).await;
     }
@@ -34124,6 +34138,118 @@ mod tests {
             Some("in_progress"),
             "a goal dispatched mid-drain must be tracked and parked, not silently left \
              in_progress"
+        );
+    }
+
+    /// R56a: a dependent can be committed just after an otherwise-empty
+    /// pass queried descendants. One empty pass is therefore not proof that
+    /// the run is quiescent. The third-iteration hook models that exact
+    /// window: iteration one discovers an already-complete parent, iteration
+    /// two looks idle, and the dependent appears before the confirming pass.
+    /// Pre-fix the loop returned after iteration two and left the dependent
+    /// silently in progress; the confirming pass must discover and park it.
+    #[tokio::test]
+    async fn drain_confirms_quiescence_before_missing_a_late_dependent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        let parent_session = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: completed parent".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let parent = setup_goal_in_state(&pool, "complete", 0).await;
+        attach_worker_session_to_card(&pool, &parent.id, &parent_session.id).await;
+
+        let dependent_cell: Arc<tokio::sync::Mutex<Option<cards::Card>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+        let sm_hook = Arc::clone(&sm);
+        let pool_hook = pool.clone();
+        let coordinator_id = coordinator.id.clone();
+        let tmp_path = tmp.path().to_path_buf();
+        let dependent_cell_hook = Arc::clone(&dependent_cell);
+        let mut iteration = 0u32;
+        let hook: DrainIterationHook = Box::new(move || {
+            iteration += 1;
+            let fire = iteration == 3;
+            let sm_hook = Arc::clone(&sm_hook);
+            let pool_hook = pool_hook.clone();
+            let coordinator_id = coordinator_id.clone();
+            let tmp_path = tmp_path.clone();
+            let dependent_cell_hook = Arc::clone(&dependent_cell_hook);
+            Box::pin(async move {
+                if !fire {
+                    return;
+                }
+                let child = sm_hook
+                    .create_session_with_parent(
+                        Some(&coordinator_id),
+                        tmp_path,
+                        "Goal: late dependent".to_string(),
+                        SessionType::SubAgent,
+                        GooseMode::Auto,
+                    )
+                    .await
+                    .unwrap();
+                let dependent = setup_goal_in_state(&pool_hook, "in_progress", 0).await;
+                attach_worker_session_to_card(&pool_hook, &dependent.id, &child.id).await;
+                *dependent_cell_hook.lock().await = Some(dependent);
+            })
+        });
+
+        let summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            std::time::Duration::from_millis(250),
+            std::time::Duration::from_millis(10),
+            |_, _| {},
+            Some(hook),
+            DrainRedispatch {
+                dispatch: None,
+                max_redispatch: 0,
+                sweep_headroom: std::time::Duration::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+
+        let dependent = dependent_cell.lock().await.clone().unwrap();
+        assert_eq!(
+            summary,
+            DrainSummary {
+                finished: 1,
+                timed_out: 1
+            }
+        );
+        let dependent = cards::get_card(&pool, &dependent.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let column = cards::get_column(&pool, &dependent.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            column.state_binding.as_deref(),
+            Some("in_progress"),
+            "the confirming pass must discover and account for the late dependent"
         );
     }
 
