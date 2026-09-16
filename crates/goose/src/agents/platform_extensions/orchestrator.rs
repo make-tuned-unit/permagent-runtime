@@ -8744,6 +8744,29 @@ impl OrchestratorClient {
         ))
     }
 
+    /// Recover the exact server-generated proposal for a headless create call.
+    /// Models sometimes rewrite criteria while copying the tool result back,
+    /// which otherwise loops on proposal hashes. The stored goals are accepted
+    /// only when their canonical hash and approval decision both match the
+    /// persisted proof; interactive sessions never use this recovery path.
+    fn canonical_pending_goals(
+        project: &crate::projects::Project,
+        approval_decision_id: &str,
+    ) -> Option<Vec<goal_state::ProposedGoal>> {
+        let proposal = project.metadata_json.get(ROADMAP_PROPOSAL_METADATA_KEY)?;
+        if proposal
+            .get("approval_decision_id")
+            .and_then(|value| value.as_str())
+            != Some(approval_decision_id)
+        {
+            return None;
+        }
+        let expected_hash = proposal.get("hash")?.as_str()?;
+        let goals: Vec<goal_state::ProposedGoal> =
+            serde_json::from_value(proposal.get("goals")?.clone()).ok()?;
+        (roadmap_proposal_hash(&goals) == expected_hash).then_some(goals)
+    }
+
     /// Lane R22a (defect: M24 DeepSeek m1
     /// `select-checks-worker-before-dispatch`, HARNESS_LOOP_LOG.md): the
     /// coordinator found a seeded Ready goal and called
@@ -10255,19 +10278,8 @@ impl OrchestratorClient {
         // Z1: ground the raw proposal in this repo and the live roster
         // before any validation or approval — see the "Roadmap grounding"
         // block above `ground_roadmap_goals`.
-        let (mut goals, grounding_receipts) =
+        let (goals, grounding_receipts) =
             ground_roadmap_goals(goals, &facts, &allowed_tags, facts_dir);
-
-        // A worker otherwise sees only the planner's narrowed card text. Keep
-        // the user's complete objective as non-expanding context so a compact
-        // or merged card cannot silently omit a cross-file behavior that the
-        // planner summarized poorly.
-        for goal in &mut goals {
-            goal.description.push_str(&format!(
-                "\n\nOverall objective (context only; implement it through this card's scoped \
-                 work): {objective}"
-            ));
-        }
 
         validate_roadmap_goals(&goals)?;
 
@@ -10360,6 +10372,7 @@ impl OrchestratorClient {
             "goal_count": goals.len(),
             "approval_decision_id": approval.id.clone(),
             "derived_ac_hashes": derived_ac_hashes,
+            "goals": goals.clone(),
         });
         let saved = sqlx::query(
             "UPDATE projects
@@ -10492,9 +10505,9 @@ impl OrchestratorClient {
 
         validate_roadmap_goals(&goals)?;
 
-        let computed_hash = roadmap_proposal_hash(&goals);
+        let mut computed_hash = roadmap_proposal_hash(&goals);
 
-        let order = goal_state::topological_order(&goals).map_err(|e| e.to_string())?;
+        let mut order = goal_state::topological_order(&goals).map_err(|e| e.to_string())?;
 
         let pool = self
             .context
@@ -10510,6 +10523,18 @@ impl OrchestratorClient {
         let headless = current_headless_dispatch_policy(&self.context.session_manager)
             .await
             .is_some();
+        if headless {
+            if let Some(canonical) = Self::canonical_pending_goals(&project, &approval_decision_id)
+            {
+                if roadmap_proposal_hash(&canonical) != computed_hash {
+                    goals = canonical;
+                    validate_roadmap_goals(&goals)?;
+                    computed_hash = roadmap_proposal_hash(&goals);
+                    order = goal_state::topological_order(&goals).map_err(|e| e.to_string())?;
+                    record_proposal_hash_tolerated(&pool, &project.id).await;
+                }
+            }
+        }
         let proposal_hash = match self
             .resolve_create_roadmap_proposal_hash(
                 &pool,
@@ -42104,6 +42129,35 @@ mod tests {
         assert!(
             text.contains("Goal cards:") && text.contains("id="),
             "a tolerated hash must still materialize the roadmap: {text}"
+        );
+    }
+
+    /// The headless recovery path must use the exact server-generated goals,
+    /// and must reject persisted goal text that no longer matches its proof.
+    #[tokio::test]
+    async fn canonical_pending_goals_are_bound_to_hash_and_decision() {
+        let (_tmp, sm, session, _em, client) =
+            roadmap_handler_fixture(GooseMode::Approve, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let (_result, approval_decision_id, goals_json, _proposal_hash) =
+            decompose_then_read_proof(&client, &pool, &session.id).await;
+        let mut project = crate::projects::get_project(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        let expected: Vec<goal_state::ProposedGoal> = serde_json::from_str(&goals_json).unwrap();
+
+        assert_eq!(
+            OrchestratorClient::canonical_pending_goals(&project, &approval_decision_id),
+            Some(expected)
+        );
+        assert!(OrchestratorClient::canonical_pending_goals(&project, "wrong-decision").is_none());
+
+        project.metadata_json[ROADMAP_PROPOSAL_METADATA_KEY]["goals"][0]["title"] =
+            serde_json::json!("tampered after proof");
+        assert!(
+            OrchestratorClient::canonical_pending_goals(&project, &approval_decision_id).is_none(),
+            "persisted goals must remain cryptographically bound to the proposal hash"
         );
     }
 
