@@ -1,22 +1,26 @@
 # Lane T4 — the 13 `cargo test -p permagent --lib` failures at f9ecdb5a
 
-**Status: BLOCKED on the disk gate.** The lane rule is "before every cargo
-invocation check `df -g /` and STOP if free space is under 9 GB". Free space on
-`/` measured 8.42 GB at the start of this lane and did not move. **No cargo
-command was run**, so nothing below is verified by execution; every
-classification is from source reading, `git log -L` / `git show` archaeology and
-the failure log at
+**Status: BLOCKED on the disk gate, with a short window used.** The lane rule is
+"before every cargo invocation check `df -g /` and STOP if free space is under
+9 GB". Free space on `/` was 8.42 GB at the start of this lane, rose to 10.27 GB
+when the paid measurement round released space, and fell back to ~7.7 GB after
+two builds. Three of the thirteen are fixed; the rest are diagnosed to a named
+function and line with the fix specified, but could not be built or gated.
+
+Two cargo runs happened inside the 10.27 GB window and diagnosed and then
+verified failure #1. Everything else below is from source reading, `git log -L` /
+`git show` archaeology and the failure log at
 `/private/tmp/claude-501/.../scratchpad/libtest-f9ecdb5a.log`.
 
-Two fixes were still landed, because they are comment-only edits against
-text-scanning guards and carry no compile or behaviour risk. The other eleven
-need a build to verify and are specified, not applied.
+Two further fixes were landed without a build, because they are comment-only
+edits against text-scanning guards and carry no compile or behaviour risk. The
+other ten need a build to verify and are specified, not applied.
 
 ## Classification
 
 | # | Test | Verdict | Cause |
 |---|------|---------|-------|
-| 1 | `orchestrator::create_roadmap_rewrites_a_harness_derived_ac_on_the_first_call` | DEBT (Lane R52a/R21c) — **not** a regression from the last six commits | The R52a rewrite fires, then the harness re-rejects its own output |
+| 1 | `orchestrator::create_roadmap_rewrites_a_harness_derived_ac_on_the_first_call` | DEBT (Lane R52a/R21c) — **not** a regression from the last six commits | The R52a rewrite fires, then the harness re-rejects its own output. **FIXED — `6fedb843`, verified green** |
 | 2 | `orchestrator::goal_status_reports_a_registered_goal_worker_as_alive_and_leaves_it_alone` | DEBT (Lane Y4b) — test pollution | Session ids are `YYYYMMDD_N`, sequential per DB, not unique |
 | 3 | `orchestrator::send_message_refuses_a_live_goal_worker_and_says_what_can_be_done_instead` | DEBT (Lane Y4b) — same cause as 2 | " |
 | 4 | `orchestrator::view_session_and_goal_status_agree_that_a_live_goal_worker_is_alive` | DEBT (Lane Y8c) — same cause as 2 | " |
@@ -76,11 +80,14 @@ The substring-marker looseness (`pin` inside an ordinary English word) is left
 alone: widening `DEPENDENCY_MARKERS` to word boundaries is a separate change with
 its own blast radius across the CLAIMS allowlist.
 
-## The eleven not applied, with root cause and the fix each needs
+## Root cause and fix for the rest
 
-### 1 — `create_roadmap_rewrites_a_harness_derived_ac_on_the_first_call`
+### 1 — `create_roadmap_rewrites_a_harness_derived_ac_on_the_first_call` — FIXED in `6fedb843`
 
-**The mechanism is fully understood.** The fixture's project has
+Run alone at `f9ecdb5a` it fails identically, so it is a deterministic defect,
+not pollution. The fix below is verified: the test is green after `6fedb843`.
+
+The fixture's project has
 `root_path = NULL` (the personal project is seeded that way in
 `spectral_schema.rs`), so `facts_dir` falls back to the session's tempdir
 working dir and `RepoFacts::gather` detects **no** check commands — which the
@@ -106,15 +113,18 @@ Archaeology: `validate_roadmap_ac_or_rewrite`,
 `rewrite_selected_ungrounded_criteria`, `criterion_names_a_check_or_file`,
 `is_grounded_criterion`, `classify_probe_shape`, `extract_quoted_command`,
 `PROBE_COMMAND_PROGRAMS`, the `facts_dir` resolution and the test body itself are
-all byte-identical to `86facc0c`, the commit that introduced the test. I could
-not establish how it was ever green, and could not run it to find out.
+all byte-identical to `86facc0c`, the commit that introduced the test — so it
+looks as though it was never green in this configuration and Lane R52a's gate did
+not cover it.
 
-**Fix:** exempt the three `PROBE_*_PREFIX` markers in
+**Fix applied:** exempt the three `PROBE_*_PREFIX` markers in
 `criterion_names_a_check_or_file`, exactly as `UNVERIFIED_CRITERION_PREFIX`
 already is. A criterion the harness has already compiled into a structured probe
 is the most grounded form available — `verify` can execute it — so re-flagging it
-is wrong independent of this test. One `starts_with` arm; makes the test pass
-deterministically whatever the historical break point was.
+is wrong independent of this test, and the rewrite becomes idempotent. No test
+pins the old classification for a probe-prefixed criterion (the
+`rewrite_ungrounded_named_criteria_emits_probe_*` tests assert on the *output* of
+a rewrite over plain criteria).
 
 ### 2, 3, 4 — the GOAL_WORKERS registry liveness tests
 
@@ -238,11 +248,23 @@ and it makes every other `classify_path` test hermetic too.
 
 ## What is still red
 
-All thirteen, as far as *execution* evidence goes: the suite was never re-run.
-Fixes for #9 and #10 are landed and were checked against a faithful re-run of
-each guard's own scan predicate, which is what those two tests do and nothing
-more. The remaining eleven are diagnosed to a named function and line, with the
-fix specified, and need a machine with ≥ 9 GB free to apply and gate.
+The whole suite was never re-run, so there is no `test result:` line for this
+lane. Per-item:
+
+- **#1 — green**, verified by `cargo test -p permagent --lib
+  create_roadmap_rewrites_a_harness_derived_ac_on_the_first_call` after
+  `6fedb843`.
+- **#9, #10 — expected green**, landed without a build. Both tests are pure text
+  scanners over shipped source, and each fix was checked by re-running that
+  guard's own scan predicate by hand; the edits are comments only and cannot
+  affect compilation or behaviour. Still unproven by execution.
+- **#2–#8, #11–#13 — still red.** Diagnosed to a named function and line, with
+  the fix specified above. Each needs a build to apply and gate, so each needs a
+  machine with ≥ 9 GB free on `/`.
+
+Nothing on this branch was left in a worse state than it was found: the three
+landed commits each remove a failure and none of them touches production
+behaviour beyond #1's one-line classification arm.
 
 ## Follow-on note
 
