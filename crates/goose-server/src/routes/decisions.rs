@@ -1170,6 +1170,54 @@ mod tests {
     async fn approve_effect_promotes_dependents_without_warning() {
         use permagent::projects::PERSONAL_PROJECT_ID;
         let pool = memory_pool().await;
+        let trunk = tempfile::tempdir().unwrap();
+        let worktrees = tempfile::tempdir().unwrap();
+        let worktree = worktrees.path().join("approved-goal");
+        let git = |root: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(trunk.path(), &["init", "-b", "main"]);
+        git(trunk.path(), &["config", "user.email", "test@example.com"]);
+        git(trunk.path(), &["config", "user.name", "Test"]);
+        std::fs::write(trunk.path().join("README.md"), "base\n").unwrap();
+        git(trunk.path(), &["add", "README.md"]);
+        git(trunk.path(), &["commit", "-m", "base"]);
+        let baseline = git(trunk.path(), &["rev-parse", "HEAD"]);
+        git(
+            trunk.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "goal/approved-goal",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(worktree.join("work.txt"), "approved work\n").unwrap();
+        git(&worktree, &["add", "work.txt"]);
+        git(&worktree, &["commit", "-m", "approved work"]);
+        let head = git(&worktree, &["rev-parse", "HEAD"]);
+        permagent::projects::update_project(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            permagent::projects::UpdateProject {
+                root_path: Some(Some(trunk.path().to_string_lossy().into_owned())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         permagent::cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
             .await
             .unwrap();
@@ -1191,7 +1239,17 @@ mod tests {
                 card_type: Some("goal".to_string()),
                 column_id: Some(review_col.id.clone()),
                 created_by: None,
-                metadata_json: Some(serde_json::json!({})),
+                // Approval is allowed only for a verified head, and dependent
+                // promotion happens only after that head lands on trunk.
+                metadata_json: Some(serde_json::json!({
+                    "dispatch_evidence": {
+                        "worktree_path": worktree,
+                        "baseline_commit": baseline,
+                        "head_commit": head,
+                        "commits": [format!("{head} approved work")],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
             },
         )
         .await
@@ -1242,7 +1300,12 @@ mod tests {
         decisions::mark_effect_outbox_applied(&pool, &claim_key)
             .await
             .unwrap();
-        assert_eq!(effect.as_deref(), Some("goal approved: Review → Complete"));
+        assert!(
+            effect
+                .as_deref()
+                .is_some_and(|value| value.starts_with("goal approved: Review → Complete; landed:")),
+            "approval must land before promoting dependents: {effect:?}"
+        );
         assert!(
             warning.is_none(),
             "healthy path must not warn: {:?}",

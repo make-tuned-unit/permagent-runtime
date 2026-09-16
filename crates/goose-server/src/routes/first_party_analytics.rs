@@ -1829,14 +1829,18 @@ fn validated_referrer(raw: Option<String>) -> Option<String> {
 
 /// Resolve a site key to its project id by scanning project metadata. Personal
 /// scale (a handful of projects); the rate limiter fronts this.
-async fn project_for_site_key(pool: &Pool<Sqlite>, site_key: &str) -> Option<String> {
-    let rows: Vec<(String, String)> =
-        sqlx::query_as("SELECT id, metadata_json FROM projects WHERE metadata_json LIKE ?1")
-            .bind(format!("%{site_key}%"))
-            .fetch_all(pool)
-            .await
-            .ok()?;
-    for (id, metadata) in rows {
+async fn project_for_site_key(
+    pool: &Pool<Sqlite>,
+    site_key: &str,
+) -> Option<(String, Option<String>)> {
+    let rows: Vec<(String, Option<String>, String)> = sqlx::query_as(
+        "SELECT id, site_url, metadata_json FROM projects WHERE metadata_json LIKE ?1",
+    )
+    .bind(format!("%{site_key}%"))
+    .fetch_all(pool)
+    .await
+    .ok()?;
+    for (id, site_url, metadata) in rows {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&metadata) {
             if value
                 .get(METADATA_KEY)
@@ -1844,7 +1848,7 @@ async fn project_for_site_key(pool: &Pool<Sqlite>, site_key: &str) -> Option<Str
                 .and_then(|k| k.as_str())
                 == Some(site_key)
             {
-                return Some(id);
+                return Some((id, site_url));
             }
         }
     }
@@ -1882,7 +1886,7 @@ async fn collect(
     let Ok(pool) = state.session_manager().pool_clone().await else {
         return StatusCode::INTERNAL_SERVER_ERROR;
     };
-    let Some(project_id) = project_for_site_key(&pool, &site_key).await else {
+    let Some((project_id, site_url)) = project_for_site_key(&pool, &site_key).await else {
         return StatusCode::NOT_FOUND;
     };
 
@@ -1913,7 +1917,11 @@ async fn collect(
     // The stored path drops the query, or every ?utm_source= variant becomes a
     // distinct "page" and the top-pages list fragments into near-duplicates.
     let path = classify::normalize_path(&raw_path);
-    let referrer = validated_referrer(beacon.normalized_referrer());
+    let site_host = site_url.as_deref().and_then(classify::referrer_host);
+    let referrer = validated_referrer(beacon.normalized_referrer()).filter(|value| {
+        classify::classify_referrer(Some(value), site_host.as_deref())
+            != classify::ReferrerClass::Internal
+    });
     let name = clamp(beacon.n, 128);
     let is_bot = classify::is_bot(Some(ua)) as i64;
     let properties = beacon.d.as_ref().and_then(classify::sanitize_properties);
@@ -2326,7 +2334,16 @@ mod tests {
         // surfaced so a filtered figure never reads as a quiet day.
         assert_eq!(stats["includingBots"], serde_json::json!(false));
         assert!(stats["botsExcluded"].is_number());
-        assert_eq!(stats["topPages"][0]["name"], serde_json::json!("/pricing"));
+        // `/pricing` and `/deals` each have one pageview, so neither is a
+        // meaningful winner. SQLite is free to return tied GROUP BY rows in
+        // either order; assert the aggregate rather than an accidental order.
+        let top_pages = stats["topPages"].as_array().unwrap();
+        assert!(top_pages.iter().any(|page| {
+            page["name"] == serde_json::json!("/pricing") && page["count"] == serde_json::json!(1)
+        }));
+        assert!(top_pages.iter().any(|page| {
+            page["name"] == serde_json::json!("/deals") && page["count"] == serde_json::json!(1)
+        }));
         // Grouped by HOST, not raw URL: a hundred deep links from one site are
         // one source, not a hundred rows.
         assert_eq!(
@@ -2338,9 +2355,16 @@ mod tests {
             serde_json::json!("https://news.ycombinator.com/")
         );
         // First-touch source/medium from the shared referrer map (no utm_*).
-        assert_eq!(
-            stats["topSources"][0]["name"],
-            serde_json::json!("news.ycombinator.com / referral")
+        let top_sources = stats["topSources"].as_array().unwrap();
+        assert!(top_sources.iter().any(|source| {
+            source["name"] == serde_json::json!("news.ycombinator.com / referral")
+                && source["count"] == serde_json::json!(1)
+        }));
+        assert!(
+            top_sources.iter().all(|source| {
+                source["name"] != serde_json::json!("grocerysaver.ca / referral")
+            }),
+            "the project's own host must not become a traffic source: {top_sources:?}"
         );
         assert_eq!(stats["topEvents"][0]["name"], serde_json::json!("signup"));
     }
