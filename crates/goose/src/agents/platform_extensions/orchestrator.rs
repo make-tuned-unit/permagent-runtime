@@ -15783,15 +15783,51 @@ impl DrainSummary {
     }
 }
 
-/// The goal card whose `metadata_json.worker_session_id`/`worker_session_ids`
-/// (stamped by `dispatch_goal_fn` before the completion tracker starts)
-/// names `session_id`, if any — `(card_id, project_id)`. Scans every
-/// non-archived goal card once; acceptable for a bounded post-run drain
-/// (small, one-shot, not a hot path).
+/// The goal card owned by `session_id`, if any — `(card_id, project_id)`.
+///
+/// Prefer the session's durable `goal_worker.v1` identity. The session row is
+/// committed before `dispatch_goal_fn` stamps the card's
+/// `metadata_json.worker_session_id`, so a drain poll can observe the former
+/// during that small window. Falling back to the card metadata preserves
+/// compatibility with sessions created before the durable identity existed.
 async fn goal_card_for_worker_session(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     session_id: &str,
 ) -> Result<Option<(String, String)>, String> {
+    let extension_data: Option<String> =
+        sqlx::query_scalar("SELECT extension_data FROM sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    let goal_identity_key = format!(
+        "{}.{}",
+        crate::session::session_manager::GOAL_ID_EXTENSION_NAME,
+        crate::session::session_manager::GOAL_ID_EXTENSION_VERSION
+    );
+    if let Some(goal_id) = extension_data
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| {
+            value
+                .get(&goal_identity_key)
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+    {
+        let row = sqlx::query_as::<_, (String, String)>(
+            "SELECT id, project_id FROM cards
+             WHERE id = ? AND card_type = 'goal' AND archived_at IS NULL",
+        )
+        .bind(goal_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        if row.is_some() {
+            return Ok(row);
+        }
+    }
+
     let rows = sqlx::query_as::<_, (String, String, String)>(
         "SELECT c.id, c.project_id, c.metadata_json FROM cards c
          WHERE c.card_type = 'goal' AND c.archived_at IS NULL",
@@ -34138,6 +34174,82 @@ mod tests {
             Some("in_progress"),
             "a goal dispatched mid-drain must be tracked and parked, not silently left \
              in_progress"
+        );
+    }
+
+    /// R56b: `dispatch_goal_fn` creates the worker session before it stamps
+    /// `worker_session_id` on the goal card. A drain poll in that window must
+    /// use the session's already-durable `goal_worker.v1` identity instead of
+    /// accounting for the session as an unrelated child forever. This fixture
+    /// deliberately never writes the later card stamp; pre-fix the drain
+    /// returned an empty summary and left the goal silently `in_progress`.
+    #[tokio::test]
+    async fn drain_maps_a_new_worker_from_its_durable_session_identity_before_card_stamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: partially stamped dispatch".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "in_progress", 0).await;
+        let extension_data = serde_json::json!({ "goal_worker.v1": card.id }).to_string();
+        sqlx::query("UPDATE sessions SET extension_data = ? WHERE id = ?")
+            .bind(extension_data)
+            .bind(&child.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            std::time::Duration::from_millis(75),
+            std::time::Duration::from_millis(10),
+            |_, _| {},
+            None,
+            DrainRedispatch {
+                dispatch: None,
+                max_redispatch: 0,
+                sweep_headroom: std::time::Duration::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            summary,
+            DrainSummary {
+                finished: 0,
+                timed_out: 1
+            }
+        );
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let column = cards::get_column(&pool, &card.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            column.state_binding.as_deref(),
+            Some("in_progress"),
+            "the partially stamped worker must still be discovered and parked"
         );
     }
 
