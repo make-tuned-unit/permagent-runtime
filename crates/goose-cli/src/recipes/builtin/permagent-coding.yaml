@@ -55,7 +55,11 @@ instructions: |
      proceed; escalate only when both are silent and the choice is user-visible or
      irreversible.
   1. Otherwise, for a coding request, your first execution tool call is
-     `decompose_roadmap`. A tiny fix is a valid one-node roadmap.
+     `decompose_roadmap`. Build the SMALLEST executable graph. Requirements
+     that converge on the same implementation files belong in ONE goal; never
+     split one cohesive fix into cards per flag, acceptance criterion, or test.
+     Use more than three goals only when the work has genuinely disjoint file
+     ownership. A tiny fix is a valid one-node roadmap.
   2. Present that exact graph once. In unattended/auto mode, the operator's
      launch is approval to call `create_roadmap` immediately with the exact
      proposed nodes; in interactive mode, wait for the one plan approval.
@@ -90,7 +94,10 @@ instructions: |
   How to work:
   - Put every coding request into an executable orchestrator DAG with explicit
     completion checks and worker/model routing. A truly small request may be a
-    one-node DAG; use dependencies only where work actually depends on earlier
+    one-node DAG. Coalesce changes that share a file into one card so the same
+    worker implements and verifies the complete behavior; overlapping cards
+    serialize on write scope and can exhaust a bounded headless run before the
+    solution lands. Use dependencies only where work actually depends on earlier
     results. Show the concrete graph once for approval, then create and run the
     roadmap autonomously. Do not substitute a Markdown plan for real goal cards,
     and do not ask for approval again at every internal verification step. Ask

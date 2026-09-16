@@ -118,6 +118,10 @@ mod tests {
             recipe.instructions.is_some(),
             "coding harness must set a system prompt"
         );
+        let instructions = recipe
+            .instructions
+            .as_deref()
+            .expect("coding harness must set a system prompt");
         let extensions = recipe.extensions.expect("coding harness pins extensions");
         assert_eq!(
             extensions.len(),
@@ -129,5 +133,10 @@ mod tests {
             .find(|extension| extension.name() == "developer")
             .expect("coding harness pins developer");
         assert_eq!(developer.available_tools(), ["read", "tree", "search"]);
+        assert!(
+            instructions.contains("SMALLEST executable graph")
+                && instructions.contains("Coalesce changes that share a file into one card"),
+            "coding recipe must prevent overlapping micro-goals from exhausting headless runs"
+        );
     }
 }
