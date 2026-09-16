@@ -821,7 +821,7 @@ fn area_evidence(
             }
             measured(heldout_attempted.iter().all(|t| task_solved(t)), false)
         }
-        // Jesse's R18c redirect (HARNESS_LOOP_LOG.md "A17 analysis"): the
+        // The user's R18c redirect (HARNESS_LOOP_LOG.md "A17 analysis"): the
         // harness's own recipe.yaml NON-NEGOTIABLE rule 1 requires
         // `decompose_roadmap` as the first execution tool call on every
         // task — even a proportional one-node roadmap for a tiny fix — so
@@ -1736,7 +1736,7 @@ mod tests {
     // ------------------------------------------------------------------
     // Lane R18c: a zero-dispatch cost_routing receipt is neither a pass nor
     // missing evidence (dag_enforcement's `roadmap_dispatched >= 1` stays
-    // unconditional per Jesse's redirect — recipe.yaml's own protocol
+    // unconditional per the user's redirect — recipe.yaml's own protocol
     // requires a roadmap, even a one-node one, on every task).
     // ------------------------------------------------------------------
 

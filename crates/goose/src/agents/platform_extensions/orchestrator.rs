@@ -4384,7 +4384,7 @@ pub(crate) struct HeadlessDispatchPolicy {
     /// (`goal_advance`'s `worker` argument) is always honoured regardless —
     /// this flag only narrows the RANKED candidate pool.
     pub restrict_ranked_selection_to_internal_engine: bool,
-    /// Harness loop, Lane V2 — Jesse's ruling (HARNESS_LOOP_LOG.md "JESSE
+    /// Harness loop, Lane V2 — the user's ruling (HARNESS_LOOP_LOG.md "JESSE
     /// RULING (2026-09-08 23:55): Tier-1 landing → option 3"): DEFAULT OFF,
     /// read once from [`PERMAGENT_HEADLESS_AUTOLAND_ENV`] at install time
     /// by [`install_dispatch_hook_for_headless_session`] — never re-read per
@@ -10618,7 +10618,7 @@ impl OrchestratorClient {
         }
         .unwrap_or_default();
         // Harness loop, Lane V2: say plainly whether a headless run can land
-        // its own work — so a transcript shows the policy Jesse ruled on
+        // its own work — so a transcript shows the policy the user ruled on
         // (HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1
         // landing → option 3") rather than leaving the coordinator to
         // discover it only when an approve_review decision stays open (or
@@ -12417,7 +12417,7 @@ fn headless_worker_restricted_to_internal_from_env() -> bool {
         .unwrap_or(false)
 }
 
-/// Env switch for headless Auto landing (harness loop, Lane V2 — Jesse's
+/// Env switch for headless Auto landing (harness loop, Lane V2 — the user's
 /// ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1
 /// landing → option 3"). DEFAULT OFF: accepts `"1"`/`"true"`/`"yes"`/`"on"`
 /// (case-insensitive); `"0"`/`"false"`/`"no"`/`"off"` and anything else,
@@ -14274,7 +14274,7 @@ async fn record_decision_create_failure(
 /// [`HeadlessDispatchPolicy::auto_land`] on (the real completion tracker in
 /// `dispatch_goal_fn` passes `policy.is_some_and(|p| p.auto_land)` — V1
 /// originally passed `policy.is_some()`; V2 added the
-/// `PERMAGENT_HEADLESS_AUTOLAND` gate per Jesse's ruling, HARNESS_LOOP_LOG.md
+/// `PERMAGENT_HEADLESS_AUTOLAND` gate per the user's ruling, HARNESS_LOOP_LOG.md
 /// "JESSE RULING (2026-09-08 23:55): Tier-1 landing → option 3"); every other
 /// caller — daemon reconciliation, every existing test — passes `false`,
 /// byte-identical to this function's behavior before V1). When `true` AND
@@ -15001,7 +15001,7 @@ fn goal_still_carries_an_unresolved_unverified_ac(
 /// always the fallback.
 ///
 /// `auto_land_allowed` / `calling_session_id` (harness loop, Lane V2 —
-/// Jesse's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55):
+/// the user's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55):
 /// Tier-1 landing → option 3"): threaded straight through to
 /// [`decisions_effects::apply_decision_effect_with_auto_land`], which threads
 /// them into `goal_transition::check_proof`'s Tier-1 arm — the ONLY place
@@ -32059,7 +32059,7 @@ mod tests {
     /// shape) always calls with `requested_worker: None`, so before T2 this
     /// exact call could return Claude Code/Codex/Cursor whenever one is
     /// `bin_exists` on the machine running the test — which is a real,
-    /// non-hypothetical risk on Jesse's own dev machine where these tools are
+    /// non-hypothetical risk on the user's own dev machine where these tools are
     /// installed. Asserting the ENGINE KIND of the restricted call's result
     /// (rather than which specific worker) keeps this deterministic
     /// regardless of which external CLIs happen to be on PATH. G15 MED-4:
@@ -34892,7 +34892,7 @@ mod tests {
     // Harness loop, Lane V (V1) found landing refused by a SEPARATE,
     // pre-existing tier gate it did not touch — `goal_transition::check_proof`'s
     // Tier-1 arm hardcoded `acted_by` to `ACTOR_JESSE`/`ACTOR_HENRY` and did
-    // not accept `ACTOR_AUTO_LAUNCH`. Jesse ruled (HARNESS_LOOP_LOG.md
+    // not accept `ACTOR_AUTO_LAUNCH`. The user ruled (HARNESS_LOOP_LOG.md
     // "JESSE RULING (2026-09-08 23:55): Tier-1 landing → option 3") for a
     // policy switch, default off: `PERMAGENT_HEADLESS_AUTOLAND`. Lane V2
     // implements it (`auto_land_allowed`/`calling_session_id` threaded into

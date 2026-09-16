@@ -1343,7 +1343,7 @@ impl SummonClient {
     // `delegate source: codex` succeeded immediately with no roadmap ever
     // created. Whether `delegate` should also require an approved roadmap
     // node, or stays a deliberate escape hatch for mechanical sub-tasks, is
-    // a design decision for Jesse -- not picked unilaterally here.
+    // a design decision for the user -- not picked unilaterally here.
     async fn handle_delegate(
         &self,
         session_id: &str,

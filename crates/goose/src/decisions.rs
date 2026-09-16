@@ -230,7 +230,7 @@ pub struct ApproveReviewPayload {
     #[serde(default)]
     pub completion_check: Option<String>,
     /// The coordinator session dispatching this goal under a headless Auto
-    /// policy with landing switched on (harness loop, Lane V2 — Jesse's
+    /// policy with landing switched on (harness loop, Lane V2 — the user's
     /// ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1
     /// landing → option 3"). Stamped only by `orchestrator::handle_goal_completion`
     /// when it files this decision under a headless auto-land policy; binds

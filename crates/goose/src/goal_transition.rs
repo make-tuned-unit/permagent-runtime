@@ -334,7 +334,7 @@ fn apply_patch(
 /// Validate a proof against a tier gate and the target card/action.
 ///
 /// `auto_land_allowed` / `calling_session_id` (harness loop, Lane V2 —
-/// Jesse's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55):
+/// the user's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55):
 /// Tier-1 landing → option 3"): the ONLY way [`decisions::ACTOR_AUTO_LAUNCH`]
 /// can ever satisfy the Tier-1 gate. `auto_land_allowed` is an explicit bool
 /// the CALLER passes — never read from an env var or global inside this
@@ -465,7 +465,7 @@ pub async fn advance_goal_checked(
 
 /// [`advance_goal_checked`], plus the two arguments [`check_proof`] needs to
 /// ever accept [`decisions::ACTOR_AUTO_LAUNCH`] at Tier 1 (harness loop, Lane
-/// V2 — Jesse's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08
+/// V2 — the user's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08
 /// 23:55): Tier-1 landing → option 3"). `auto_land_allowed: false` (what
 /// [`advance_goal_checked`] always passes) makes this byte-identical to the
 /// pre-V2 function; the ONLY caller that ever passes `true` is
@@ -2857,7 +2857,7 @@ mod tests {
     }
 
     // ── Harness loop, Lane V2: headless auto-land, ACTOR_AUTO_LAUNCH at Tier 1
-    // (Jesse's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55):
+    // (the user's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55):
     // Tier-1 landing → option 3") ──
 
     /// Mint a genuine `ACTOR_AUTO_LAUNCH` proof for an `approve_review`

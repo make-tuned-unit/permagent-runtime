@@ -853,7 +853,7 @@ mod tests {
 
     #[test]
     fn select_trivial_typo_fix_skips_roadmap() {
-        // Lane R18c: corrected per Jesse's redirect — a tiny fix is still a
+        // Lane R18c: corrected per the user's redirect — a tiny fix is still a
         // valid ONE-NODE roadmap (recipe.yaml NON-NEGOTIABLE rule 1); what
         // is wrong is the coordinator hand-editing instead of dispatching.
         let check = load_selection_check("select-trivial-typo-fix-skips-roadmap");
@@ -1013,7 +1013,7 @@ mod tests {
 
     #[test]
     fn select_mechanical_rename_skips_roadmap() {
-        // Lane R18c: corrected per Jesse's redirect — same reasoning as
+        // Lane R18c: corrected per the user's redirect — same reasoning as
         // `select_trivial_typo_fix_skips_roadmap` above.
         let check = load_selection_check("select-mechanical-rename-skips-roadmap");
         assert!(check.evaluate(&signals(&["decompose_roadmap", "create_roadmap"])));

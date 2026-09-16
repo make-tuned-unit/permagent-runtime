@@ -1681,7 +1681,7 @@ impl CliSession {
             return;
         };
         // Harness loop, Lane V2: say plainly whether this run could land its
-        // own dispatched work before the process exits — Jesse's ruling
+        // own dispatched work before the process exits — the user's ruling
         // (HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1
         // landing → option 3") made this an explicit, default-off switch, and
         // a transcript should show which way it was set for this run rather

@@ -4,7 +4,7 @@
 //! cheapest one it can trust, from a single source both the planner and the
 //! worker router read.
 //!
-//! ## The ruling this implements (Jesse, 2026-09-09, verbatim intent)
+//! ## The ruling this implements (the user, 2026-09-09, verbatim intent)
 //!
 //! *"We should always use the most capable and advanced model to write the
 //! plan... Use the best model we can to plan the work efficiently and with

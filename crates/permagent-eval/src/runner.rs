@@ -262,7 +262,7 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     let effective_harness_timeout_secs = task
         .spec
         .resolved_harness_timeout_secs(tier, cfg.harness_timeout_secs);
-    // Jesse's ruling (option 3, HARNESS_LOOP_LOG.md "### JESSE RULING"
+    // The user's ruling (option 3, HARNESS_LOOP_LOG.md "### JESSE RULING"
     // 2026-09-08): headless auto-land stays a policy switch, DEFAULT OFF —
     // ordinary headless runs keep landing human-gated. The eval is exactly
     // the "deliberate unattended run" that turns it on explicitly, alongside
@@ -2542,7 +2542,7 @@ mod tests {
         assert_eq!(headless_drain_secs(0), 60);
     }
 
-    /// Jesse's ruling (option 3): the eval is the "deliberate unattended run"
+    /// The user's ruling (option 3): the eval is the "deliberate unattended run"
     /// that turns headless auto-land on explicitly. Every task run must set
     /// both env vars on the child, with the drain window computed from that
     /// task's own `harness_timeout_secs`, and both values must also land on

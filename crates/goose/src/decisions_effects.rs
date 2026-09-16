@@ -1049,7 +1049,7 @@ pub async fn apply_decision_effect(
 /// "approve" arm needs to pass into
 /// `goal_transition::advance_goal_checked_with_auto_land` so
 /// `check_proof`'s Tier-1 arm can ever accept
-/// [`decisions::ACTOR_AUTO_LAUNCH`] (harness loop, Lane V2 — Jesse's ruling,
+/// [`decisions::ACTOR_AUTO_LAUNCH`] (harness loop, Lane V2 — the user's ruling,
 /// HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1 landing →
 /// option 3"). `auto_land_allowed: false` (what [`apply_decision_effect`]
 /// always passes) makes this byte-identical to the pre-V2 function. The ONLY
