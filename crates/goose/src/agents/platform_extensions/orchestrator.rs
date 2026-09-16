@@ -2050,9 +2050,27 @@ const UNVERIFIED_NO_CHECK_FALLBACK: &str = "no detected check command in this re
 /// [`ungrounded_named_criteria_in_goals`]; anything else passes through
 /// untouched, whether or not it happens to be independently checkable.
 fn criterion_names_a_check_or_file(criterion: &str) -> bool {
-    if criterion
-        .trim_start()
-        .starts_with(UNVERIFIED_CRITERION_PREFIX)
+    let trimmed = criterion.trim_start();
+    if trimmed.starts_with(UNVERIFIED_CRITERION_PREFIX) {
+        return false;
+    }
+    // R52a: the same exemption, for the OTHER marker family a rewrite can
+    // produce. A criterion already wearing one of R21c's `probe:*` markers has
+    // been compiled by this harness into a check `verify` can actually run --
+    // the most grounded form a criterion can take here. Re-flagging it would
+    // make the harness reject its own output: `rewrite_*_ungrounded_criteria`
+    // emits `probe:command cmd="..." — <original>` when the repo has no
+    // detected check command, and without this arm the very next
+    // `ungrounded_named_criteria_in_goals` pass sees the original text still
+    // carried alongside the marker, calls it ungrounded again, and returns the
+    // reject-then-resubmit error R52a exists to avoid.
+    if [
+        PROBE_FILE_EXISTS_PREFIX,
+        PROBE_SYMBOL_DEFINED_PREFIX,
+        PROBE_COMMAND_PREFIX,
+    ]
+    .iter()
+    .any(|prefix| trimmed.starts_with(prefix))
     {
         return false;
     }
