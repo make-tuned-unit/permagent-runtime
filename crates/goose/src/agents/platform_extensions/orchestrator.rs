@@ -23731,10 +23731,70 @@ enum ReviewerGateOutcome {
     },
 }
 
-/// Bounds how long the reviewer's own completion call may run — independent
+/// Bounds how long ONE reviewer completion call attempt may run — independent
 /// of [`SALVAGE_TIME_BOX`] (the verify step's own budget, already spent by
 /// the time this runs).
-const REVIEWER_GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+///
+/// Lane R68a (r68 s2, `harness-cli-argparse-log-filter`): this used to be a
+/// single 120s bound shared by every reviewer call. The unverified salvage
+/// path keeps that original value here — salvage already runs after the
+/// goal's own verify budget and attempt cap are spent, and (Lane R68a) a
+/// timeout is now retried once on the same reviewer before it errors, so a
+/// slow salvage reviewer still gets 240s of wall time before the harness
+/// gives up and parks honestly, which is proportionate to a goal that was
+/// already failing verification. The auto-land/escalation review before a
+/// VERIFIED goal lands (`GoalReviewKind::Verified`) is far higher-stakes —
+/// it is the only gate between "nothing verified this by a human" and
+/// landing unattended — so it uses the longer, env-overridable
+/// [`DEFAULT_REVIEWER_GATE_TIMEOUT_SECS`] instead (see
+/// [`review_kind_timeout`]).
+const REVIEWER_GATE_SALVAGE_TIMEOUT_SECS: u64 = 120;
+
+/// Env override (Lane R68a) for [`DEFAULT_REVIEWER_GATE_TIMEOUT_SECS`], the
+/// auto-land/escalation independent-review timeout. Same
+/// `PERMAGENT_<NAME>_ENV`/`DEFAULT_<NAME>` naming and raw-`std::env::var`
+/// idiom as [`PERMAGENT_HEADLESS_SWEEP_HEADROOM_SECS_ENV`] and its siblings;
+/// unset or unparseable keeps the default.
+pub const PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS_ENV: &str = "PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS";
+
+/// Default for [`PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS_ENV`]: 300 seconds.
+///
+/// Lane R68a (r68 s2 evidence): the ORIGINAL single 120s timeout cut off an
+/// escalated `anthropic/claude-fable-5` review before headless auto-land —
+/// the cost ledger shows that call was actually billed $0.14, so the model
+/// was still working, not absent. This review gates whether a VERIFIED goal
+/// is allowed to land with no human in the loop at all, so a slow-but-
+/// working stronger reviewer should be given real time to answer rather
+/// than have its answer thrown away and the goal parked for nothing; 300s
+/// is 2.5x the old bound. A reviewer that still exceeds it is (Lane R68a)
+/// retried once on the SAME reviewer at the full timeout before the round
+/// is recorded as `errored` and the escalation ladder runs.
+pub const DEFAULT_REVIEWER_GATE_TIMEOUT_SECS: u64 = 300;
+
+/// Read [`PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS_ENV`], falling back to
+/// [`DEFAULT_REVIEWER_GATE_TIMEOUT_SECS`] when unset or unparseable.
+fn reviewer_gate_timeout_from_env() -> std::time::Duration {
+    let secs = match std::env::var(PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS_ENV) {
+        Ok(v) => v
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(DEFAULT_REVIEWER_GATE_TIMEOUT_SECS),
+        Err(_) => DEFAULT_REVIEWER_GATE_TIMEOUT_SECS,
+    };
+    std::time::Duration::from_secs(secs)
+}
+
+/// The reviewer-call timeout for `kind`: the unverified salvage path's own
+/// fixed [`REVIEWER_GATE_SALVAGE_TIMEOUT_SECS`], or the auto-land/escalation
+/// path's longer, env-overridable [`DEFAULT_REVIEWER_GATE_TIMEOUT_SECS`].
+fn review_kind_timeout(kind: &GoalReviewKind<'_>) -> std::time::Duration {
+    match kind {
+        GoalReviewKind::Salvage { .. } => {
+            std::time::Duration::from_secs(REVIEWER_GATE_SALVAGE_TIMEOUT_SECS)
+        }
+        GoalReviewKind::Verified { .. } => reviewer_gate_timeout_from_env(),
+    }
+}
 
 /// Lane R22c-e (G26 MED-2): the reviewer's prompt window, in characters
 /// (not bytes — `git diff` output is arbitrary UTF-8, and a byte-index
@@ -23801,22 +23861,38 @@ fn open_provider_circuit(session_id: Option<&str>, provider: &str, detail: &str)
 
 /// A single reviewer-provider call attempt's failure, classified for the
 /// retry decision: [`Unavailable`](Self::Unavailable) is worth one retry on
-/// a different provider; [`Other`](Self::Other) is not.
+/// a different provider; [`Other`](Self::Other) is not; [`TimedOut`](Self::TimedOut)
+/// (Lane R68a) is worth one retry on the SAME reviewer — see
+/// [`run_reviewer_call_cycle`].
 #[derive(Debug)]
 enum ReviewerCallFailure {
     Unavailable(String),
     Other(String),
+    /// Lane R68a: OUR OWN client-side `tokio::time::timeout` elapsed with no
+    /// response. Deliberately distinct from [`Self::Unavailable`] (a
+    /// billing/auth/outage-class error the provider or transport itself
+    /// reported): a bare client-side timeout says nothing about whether the
+    /// call is doomed on retry — r68 s2 evidence shows the cost ledger
+    /// billed for a call this same timeout had already given up on, i.e.
+    /// the model was still working. So this is never routed through
+    /// [`open_provider_circuit`] or the cross-provider fallback on its own;
+    /// it is retried once on the SAME reviewer first.
+    TimedOut,
 }
 
 /// Build the model config + provider for `(provider_id, model_id)` and run
 /// ONE salvage-reviewer completion against it, classifying any failure for
 /// the caller's retry decision. Shared by the initial reviewer pick and the
 /// one same-session-tier-model fallback attempt (Lane R28b, A27 Miss 3).
+/// `timeout` bounds this one call attempt (Lane R68a: proportionate to
+/// `kind` — see [`review_kind_timeout`] — rather than a single shared
+/// constant).
 async fn call_reviewer_provider(
     provider_id: &str,
     model_id: &str,
     session: Session,
     prompt: &str,
+    timeout: std::time::Duration,
 ) -> Result<crate::conversation::message::Message, ReviewerCallFailure> {
     let model_config = crate::model::ModelConfig::new(model_id)
         .map(|c| c.with_canonical_limits(provider_id))
@@ -23842,7 +23918,7 @@ async fn call_reviewer_provider(
     let user_message = Message::user().with_text(prompt);
 
     let completion = tokio::time::timeout(
-        REVIEWER_GATE_TIMEOUT,
+        timeout,
         AccountedFastCompletion::complete_fast_accounted(
             std::sync::Arc::new(SessionManager::instance()),
             session,
@@ -23866,10 +23942,12 @@ async fn call_reviewer_provider(
                 Err(ReviewerCallFailure::Other(reason))
             }
         }
-        Err(_) => Err(ReviewerCallFailure::Unavailable(format!(
-            "the independent reviewer did not respond within {}s",
-            REVIEWER_GATE_TIMEOUT.as_secs()
-        ))),
+        // Lane R68a: our own wrapper cut this call off after `timeout` —
+        // an infrastructure failure, not a verdict on the provider. Never
+        // classified as `Unavailable` here: the caller (`run_reviewer_call_
+        // cycle`) retries the SAME reviewer once before treating it as a
+        // failure at all.
+        Err(_) => Err(ReviewerCallFailure::TimedOut),
     }
 }
 
@@ -23886,6 +23964,7 @@ async fn call_reviewer_provider_checked(
     model_id: &str,
     session: Session,
     prompt: &str,
+    timeout: std::time::Duration,
 ) -> Result<crate::conversation::message::Message, ReviewerCallFailure> {
     if let Some(sid) = session_id {
         if let Some(class) = crate::cost_router::provider_circuit::reason_if_open(sid, provider_id)
@@ -23896,7 +23975,108 @@ async fn call_reviewer_provider_checked(
             )));
         }
     }
-    call_reviewer_provider(provider_id, model_id, session, prompt).await
+    call_reviewer_provider(provider_id, model_id, session, prompt, timeout).await
+}
+
+/// What one reviewer-call CYCLE ([`run_reviewer_call_cycle`]) produced:
+/// either a response (on the first try, or the one same-reviewer retry —
+/// `attempts` says which), or one of the three failure classes a single
+/// attempt can end in. [`Errored`](Self::Errored) is the Lane R68a case:
+/// BOTH the initial attempt and the retry timed out, so nothing was ever
+/// parsed — this must never be read as an UNCERTAIN verdict downstream.
+#[derive(Debug)]
+enum ReviewCycleOutcome {
+    Responded {
+        message: crate::conversation::message::Message,
+        attempts: u32,
+    },
+    Errored {
+        reason: String,
+        elapsed_secs: u64,
+    },
+    Unavailable(String),
+    Other(String),
+}
+
+/// Lane R68a: run one reviewer-call cycle via `attempt_call`, retrying the
+/// SAME reviewer with the SAME prompt exactly once when the attempt is
+/// [`ReviewerCallFailure::TimedOut`] — a timeout is an infrastructure
+/// failure, never a verdict (r68 s2 evidence: the cost ledger billed for a
+/// call this same class of timeout had already given up on). A provider-
+/// unavailable or other failure is never retried here; those already have
+/// their own fallback ladders at the call site (the session-tier fallback,
+/// the reviewer escalation). Generic over `attempt_call` so tests can inject
+/// a deterministic fake attempt instead of a real provider call and a real
+/// multi-minute wait.
+async fn run_reviewer_call_cycle<F, Fut>(mut attempt_call: F) -> ReviewCycleOutcome
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<
+        Output = Result<crate::conversation::message::Message, ReviewerCallFailure>,
+    >,
+{
+    let started = std::time::Instant::now();
+    match attempt_call().await {
+        Ok(message) => {
+            return ReviewCycleOutcome::Responded {
+                message,
+                attempts: 1,
+            }
+        }
+        Err(ReviewerCallFailure::Unavailable(reason)) => {
+            return ReviewCycleOutcome::Unavailable(reason);
+        }
+        Err(ReviewerCallFailure::Other(reason)) => return ReviewCycleOutcome::Other(reason),
+        Err(ReviewerCallFailure::TimedOut) => {
+            tracing::info!(
+                target: "permagentd::brain",
+                "independent reviewer call timed out; retrying the same reviewer once before \
+                 recording it as an infrastructure failure",
+            );
+        }
+    }
+    match attempt_call().await {
+        Ok(message) => ReviewCycleOutcome::Responded {
+            message,
+            attempts: 2,
+        },
+        Err(ReviewerCallFailure::Unavailable(reason)) => ReviewCycleOutcome::Unavailable(reason),
+        Err(ReviewerCallFailure::Other(reason)) => ReviewCycleOutcome::Other(reason),
+        Err(ReviewerCallFailure::TimedOut) => {
+            let elapsed_secs = started.elapsed().as_secs();
+            ReviewCycleOutcome::Errored {
+                reason: format!("did not respond after 2 attempts ({elapsed_secs}s elapsed)"),
+                elapsed_secs,
+            }
+        }
+    }
+}
+
+/// [`run_reviewer_call_cycle`] wired to the real provider call
+/// ([`call_reviewer_provider_checked`]).
+async fn call_reviewer_provider_with_timeout_retry(
+    session_id: Option<&str>,
+    provider_id: &str,
+    model_id: &str,
+    session: Session,
+    prompt: &str,
+    timeout: std::time::Duration,
+) -> ReviewCycleOutcome {
+    run_reviewer_call_cycle(move || {
+        let session = session.clone();
+        async move {
+            call_reviewer_provider_checked(
+                session_id,
+                provider_id,
+                model_id,
+                session,
+                prompt,
+                timeout,
+            )
+            .await
+        }
+    })
+    .await
 }
 
 /// Lane R28b (A27 Miss 3): resolve the ONE fallback reviewer candidate for a
@@ -24681,20 +24861,53 @@ async fn review_goal_diff_with_cross_family_reviewer(
     // calling session's own tier provider/model before parking unlanded.
     // Any other failure (a bad model id, a malformed request) would recur
     // identically on a different provider too, so it is not retried.
-    let (response, reviewer_provider, reviewer_model) = match call_reviewer_provider_checked(
+    //
+    // Lane R68a: a bare client-side TIMEOUT is neither of those — it is
+    // never routed through the provider fallback above, because it says
+    // nothing about the PROVIDER being unavailable (r68 s2 evidence: the
+    // cost ledger billed for a call this same timeout had already given up
+    // on). `call_reviewer_provider_with_timeout_retry` retries the SAME
+    // reviewer once at the full `call_timeout` first; only when that retry
+    // ALSO times out does this become `ReviewRound::Errored` and fall
+    // through to the escalation ladder below like any other inconclusive
+    // round.
+    let call_timeout = review_kind_timeout(kind);
+    let first: ReviewAttempt = match call_reviewer_provider_with_timeout_retry(
         calling_session_id,
         &pick.provider,
         &pick.model,
         session.clone(),
         &prompt,
+        call_timeout,
     )
     .await
     {
-        Ok(response) => (response, pick.provider.clone(), pick.model.clone()),
-        Err(ReviewerCallFailure::Other(reason)) => {
+        ReviewCycleOutcome::Responded { message, attempts } => ReviewAttempt {
+            round: review_round_from_response(
+                &message.as_concat_text(),
+                changed_lines,
+                &review_context.call_site_enumerations,
+            ),
+            provider: pick.provider.clone(),
+            model: pick.model.clone(),
+            attempts,
+        },
+        ReviewCycleOutcome::Errored {
+            reason,
+            elapsed_secs,
+        } => ReviewAttempt {
+            round: ReviewRound::Errored {
+                reason,
+                elapsed_secs,
+            },
+            provider: pick.provider.clone(),
+            model: pick.model.clone(),
+            attempts: 2,
+        },
+        ReviewCycleOutcome::Other(reason) => {
             return GoalReviewRun::single(ReviewerGateOutcome::Unreachable { reason });
         }
-        Err(ReviewerCallFailure::Unavailable(first_reason)) => {
+        ReviewCycleOutcome::Unavailable(first_reason) => {
             // R36a: this failure (or an already-open circuit
             // `call_reviewer_provider_checked` just reported without
             // calling anything) is billing/auth/outage-class by
@@ -24709,29 +24922,49 @@ async fn review_goal_diff_with_cross_family_reviewer(
             )
             .await
             {
-                Some((fb_provider, fb_model)) => {
-                    match call_reviewer_provider_checked(
-                        calling_session_id,
-                        &fb_provider,
-                        &fb_model,
-                        session.clone(),
-                        &prompt,
-                    )
-                    .await
-                    {
-                        Ok(response) => (response, fb_provider, fb_model),
-                        Err(ReviewerCallFailure::Unavailable(second_reason))
-                        | Err(ReviewerCallFailure::Other(second_reason)) => {
-                            open_provider_circuit(calling_session_id, &fb_provider, &second_reason);
-                            return GoalReviewRun::single(ReviewerGateOutcome::Unreachable {
-                                reason: format!(
-                                    "{first_reason}; retried on the session's own tier model \
-                                     {fb_provider}/{fb_model}, which also failed: {second_reason}"
-                                ),
-                            });
-                        }
+                Some((fb_provider, fb_model)) => match call_reviewer_provider_with_timeout_retry(
+                    calling_session_id,
+                    &fb_provider,
+                    &fb_model,
+                    session.clone(),
+                    &prompt,
+                    call_timeout,
+                )
+                .await
+                {
+                    ReviewCycleOutcome::Responded { message, attempts } => ReviewAttempt {
+                        round: review_round_from_response(
+                            &message.as_concat_text(),
+                            changed_lines,
+                            &review_context.call_site_enumerations,
+                        ),
+                        provider: fb_provider,
+                        model: fb_model,
+                        attempts,
+                    },
+                    ReviewCycleOutcome::Errored {
+                        reason,
+                        elapsed_secs,
+                    } => ReviewAttempt {
+                        round: ReviewRound::Errored {
+                            reason,
+                            elapsed_secs,
+                        },
+                        provider: fb_provider,
+                        model: fb_model,
+                        attempts: 2,
+                    },
+                    ReviewCycleOutcome::Unavailable(second_reason)
+                    | ReviewCycleOutcome::Other(second_reason) => {
+                        open_provider_circuit(calling_session_id, &fb_provider, &second_reason);
+                        return GoalReviewRun::single(ReviewerGateOutcome::Unreachable {
+                            reason: format!(
+                                "{first_reason}; retried on the session's own tier model \
+                                 {fb_provider}/{fb_model}, which also failed: {second_reason}"
+                            ),
+                        });
                     }
-                }
+                },
                 None => {
                     return GoalReviewRun::single(ReviewerGateOutcome::Unreachable {
                         reason: first_reason,
@@ -24741,15 +24974,6 @@ async fn review_goal_diff_with_cross_family_reviewer(
         }
     };
 
-    let first = ReviewAttempt {
-        round: review_round_from_response(
-            &response.as_concat_text(),
-            changed_lines,
-            &review_context.call_site_enumerations,
-        ),
-        provider: reviewer_provider,
-        model: reviewer_model,
-    };
     let escalate_uncertain = matches!(kind, GoalReviewKind::Verified { .. });
     let worker_ref = worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str()));
     finish_goal_review_with_escalation(first, escalate_uncertain, |provider, model| {
@@ -24763,6 +24987,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
             &prompt,
             &review_context.call_site_enumerations,
             calling_session_id,
+            call_timeout,
         )
     })
     .await
@@ -24786,6 +25011,7 @@ async fn escalated_goal_review(
     prompt: &str,
     enumerations: &[crate::cost_router::CallSiteEnumeration],
     calling_session_id: Option<&str>,
+    call_timeout: std::time::Duration,
 ) -> (Result<ReviewAttempt, String>, serde_json::Value) {
     let (answered_provider, answered_model) = answered;
     // Ruling 2026-09-17: the one escalation goes to the next reviewer
@@ -24843,32 +25069,54 @@ async fn escalated_goal_review(
     {
         return (Err(reason), record);
     }
-    match call_reviewer_provider_checked(
+    // Lane R68a: same retry-once-on-timeout treatment as the first review —
+    // a timeout is an infrastructure failure, not a verdict, so it becomes
+    // `ReviewRound::Errored` (round 2, recorded in `reviews`) rather than an
+    // immediate `Err` that would short-circuit past `finish_goal_review_
+    // with_escalation`'s own bookkeeping for this round.
+    match call_reviewer_provider_with_timeout_retry(
         calling_session_id,
         &pick.provider,
         &pick.model,
         session,
         prompt,
+        call_timeout,
     )
     .await
     {
-        Ok(response) => (
+        ReviewCycleOutcome::Responded { message, attempts } => (
             Ok(ReviewAttempt {
                 round: review_round_from_response(
-                    &response.as_concat_text(),
+                    &message.as_concat_text(),
                     changed_lines,
                     enumerations,
                 ),
                 provider: pick.provider.clone(),
                 model: pick.model.clone(),
+                attempts,
             }),
             record,
         ),
-        Err(ReviewerCallFailure::Unavailable(reason)) => {
+        ReviewCycleOutcome::Errored {
+            reason,
+            elapsed_secs,
+        } => (
+            Ok(ReviewAttempt {
+                round: ReviewRound::Errored {
+                    reason,
+                    elapsed_secs,
+                },
+                provider: pick.provider.clone(),
+                model: pick.model.clone(),
+                attempts: 2,
+            }),
+            record,
+        ),
+        ReviewCycleOutcome::Unavailable(reason) => {
             open_provider_circuit(calling_session_id, &pick.provider, &reason);
             (Err(reason), record)
         }
-        Err(ReviewerCallFailure::Other(reason)) => (Err(reason), record),
+        ReviewCycleOutcome::Other(reason) => (Err(reason), record),
     }
 }
 
@@ -24911,6 +25159,16 @@ enum ReviewRound {
     Blocked {
         reason: String,
     },
+    /// Lane R68a: the reviewer call itself failed at the infrastructure
+    /// level — both the initial attempt and the one same-reviewer retry
+    /// timed out (see [`run_reviewer_call_cycle`]), so nothing was ever
+    /// parsed. Distinct from [`Self::Uncertain`] on purpose: a timeout is
+    /// not a verdict, and must never read as "reviewed and declined" or
+    /// "reviewed and unsure" downstream.
+    Errored {
+        reason: String,
+        elapsed_secs: u64,
+    },
 }
 
 impl ReviewRound {
@@ -24922,6 +25180,7 @@ impl ReviewRound {
                 "uncertain"
             }
             ReviewRound::Blocked { .. } => "blocked",
+            ReviewRound::Errored { .. } => "errored",
         }
     }
 
@@ -24931,7 +25190,8 @@ impl ReviewRound {
             ReviewRound::RequestChanges { reason, .. }
             | ReviewRound::Uncertain { reason }
             | ReviewRound::CallSiteTableIncomplete { reason, .. }
-            | ReviewRound::Blocked { reason } => reason,
+            | ReviewRound::Blocked { reason }
+            | ReviewRound::Errored { reason, .. } => reason,
         }
     }
 }
@@ -24942,6 +25202,11 @@ struct ReviewAttempt {
     round: ReviewRound,
     provider: String,
     model: String,
+    /// Lane R68a: how many raw calls this round's outcome took — 1
+    /// normally, 2 when the initial call timed out and the same reviewer
+    /// was retried once (whether that retry produced a response or timed
+    /// out again, producing [`ReviewRound::Errored`]).
+    attempts: u32,
 }
 
 impl ReviewAttempt {
@@ -24949,11 +25214,31 @@ impl ReviewAttempt {
         format!("{}/{}", self.provider, self.model)
     }
 
+    /// Lane R68a: word this round's failure for the escalation ladder's
+    /// messages. A genuine UNCERTAIN/incomplete-table verdict (the
+    /// reviewer answered, just wasn't sure) reads as "{reviewer} was
+    /// UNCERTAIN (...)", unchanged from Lane R65a/R66a.
+    /// [`ReviewRound::Errored`] never produced an answer at all, so it must
+    /// never be worded that way — callers use this instead of hand-rolling
+    /// "was UNCERTAIN" so a parked refusal can never misreport a timeout as
+    /// a real verdict.
+    fn describe_inconclusive(&self) -> String {
+        match &self.round {
+            ReviewRound::Errored { reason, .. } => format!("{} {reason}", self.reviewer()),
+            _ => format!(
+                "{} was UNCERTAIN ({})",
+                self.reviewer(),
+                self.round.reason()
+            ),
+        }
+    }
+
     fn to_json(&self, round: usize) -> serde_json::Value {
         let mut record = serde_json::json!({
             "round": round,
             "reviewer": self.reviewer(),
             "outcome": self.round.label(),
+            "attempts": self.attempts,
         });
         let detail_key = match self.round {
             ReviewRound::Approved { .. } => "checked",
@@ -24967,6 +25252,9 @@ impl ReviewAttempt {
             if let ReviewRound::CallSiteTableIncomplete { sites, .. } = &self.round {
                 obj.insert("absent_call_sites".to_string(), serde_json::json!(sites));
             }
+            if let ReviewRound::Errored { elapsed_secs, .. } = &self.round {
+                obj.insert("elapsed_secs".to_string(), serde_json::json!(elapsed_secs));
+            }
         }
         record
     }
@@ -24977,6 +25265,12 @@ impl ReviewAttempt {
                 checked,
                 reviewer_provider: self.provider,
                 reviewer_model: self.model,
+            },
+            // Lane R28b's `Unreachable` doc comment applies verbatim: no
+            // reviewer ever actually looked at the diff here either, so
+            // this must never read as "reviewed and declined".
+            ReviewRound::Errored { .. } => ReviewerGateOutcome::Unreachable {
+                reason: self.describe_inconclusive(),
             },
             ReviewRound::RequestChanges { reason, .. }
             | ReviewRound::Uncertain { reason }
@@ -25120,6 +25414,15 @@ fn review_round_from_response(
 /// the first and the escalated reviewer left it incomplete, the harness's own
 /// call-site list becomes the REQUEST_CHANGES finding ("update or account for
 /// these call sites"), so the goal can be sent back rather than parked.
+///
+/// Lane R68a: [`ReviewRound::Errored`] (the reviewer call timed out twice —
+/// an infrastructure failure, not a verdict) escalates through this SAME
+/// ladder, exactly like a real UNCERTAIN. The wording never conflates the
+/// two: a genuine UNCERTAIN still reads "{reviewer} was UNCERTAIN (...)"
+/// (unchanged), while an errored round reads via
+/// [`ReviewAttempt::describe_inconclusive`] and the final refusal — when
+/// nothing ever answered — says the review "could not be obtained" instead
+/// of claiming a verdict was reached.
 async fn finish_goal_review_with_escalation<E, Fut>(
     first: ReviewAttempt,
     escalate_uncertain: bool,
@@ -25132,7 +25435,9 @@ where
     let mut reviews = vec![first.to_json(1)];
     let first_unsure = matches!(
         first.round,
-        ReviewRound::Uncertain { .. } | ReviewRound::CallSiteTableIncomplete { .. }
+        ReviewRound::Uncertain { .. }
+            | ReviewRound::CallSiteTableIncomplete { .. }
+            | ReviewRound::Errored { .. }
     );
     if !(escalate_uncertain && first_unsure) {
         let findings = round_findings(&first.round);
@@ -25145,23 +25450,38 @@ where
     }
     let first_reviewer = first.reviewer();
     let first_reason = first.round.reason().to_string();
+    let first_errored = matches!(first.round, ReviewRound::Errored { .. });
+    let first_description = first.describe_inconclusive();
     let first_omitted_table = matches!(first.round, ReviewRound::CallSiteTableIncomplete { .. });
     tracing::info!(
         target: "permagentd::brain",
         reviewer = %first_reviewer,
-        "independent review UNCERTAIN; escalating once to the next-ranked reviewer",
+        errored = first_errored,
+        "independent review inconclusive; escalating once to the next-ranked reviewer",
     );
     let (second, escalation) = escalate(first.provider, first.model).await;
     let mut findings = Vec::new();
     let outcome = match second {
         Err(why) => ReviewerGateOutcome::Refused {
-            reason: format!(
-                "{first_reviewer} was UNCERTAIN ({first_reason}) and no escalation review \
-                 could run: {why}"
-            ),
+            reason: if first_errored {
+                // Lane R68a: `first_description` already reads "{reviewer}
+                // did not respond..." — never "was UNCERTAIN" — so a park
+                // caused by a timeout can never be misread as a genuine
+                // UNCERTAIN verdict.
+                format!(
+                    "{first_description} and no escalation review could run: {why} — the \
+                     review could not be obtained"
+                )
+            } else {
+                format!(
+                    "{first_reviewer} was UNCERTAIN ({first_reason}) and no escalation review \
+                     could run: {why}"
+                )
+            },
         },
         Ok(second) => {
             reviews.push(second.to_json(2));
+            let second_errored = matches!(second.round, ReviewRound::Errored { .. });
             let second_uncertain = match &second.round {
                 ReviewRound::Uncertain { reason } => Some((reason.clone(), None)),
                 ReviewRound::CallSiteTableIncomplete { reason, sites } => {
@@ -25169,32 +25489,56 @@ where
                 }
                 _ => None,
             };
-            match second_uncertain {
-                Some((_, Some(sites))) if first_omitted_table => {
-                    let listed = sites.join(", ");
-                    findings = vec![format!(
-                        "[CALL_SITE_COMPLETENESS] update or account for these call sites: \
-                         {listed}"
-                    )];
-                    ReviewerGateOutcome::Refused {
-                        reason: format!(
-                            "neither {first_reviewer} nor the escalated reviewer {} completed \
-                             the required CALLSITE table; the listed call sites are requested \
-                             as changes: {listed}",
-                            second.reviewer()
-                        ),
-                    }
-                }
-                Some((reason, _)) => ReviewerGateOutcome::Refused {
+            if second_errored {
+                // Lane R68a: the escalated reviewer ALSO never answered.
+                // Whatever the first round was (a real UNCERTAIN or itself
+                // errored), the review was never obtained — say so plainly
+                // rather than reusing the "both reviewers were UNCERTAIN"
+                // wording, which would claim a verdict that was never
+                // reached.
+                ReviewerGateOutcome::Unreachable {
                     reason: format!(
-                        "both reviewers were UNCERTAIN: {first_reviewer} ({first_reason}); \
-                         escalated to {} ({reason})",
-                        second.reviewer()
+                        "{first_description}; escalated to {} — the review could not be \
+                         obtained",
+                        second.describe_inconclusive()
                     ),
-                },
-                None => {
-                    findings = round_findings(&second.round);
-                    second.into_outcome()
+                }
+            } else {
+                match second_uncertain {
+                    Some((_, Some(sites))) if first_omitted_table => {
+                        let listed = sites.join(", ");
+                        findings = vec![format!(
+                            "[CALL_SITE_COMPLETENESS] update or account for these call sites: \
+                             {listed}"
+                        )];
+                        ReviewerGateOutcome::Refused {
+                            reason: format!(
+                                "neither {first_reviewer} nor the escalated reviewer {} \
+                                 completed the required CALLSITE table; the listed call sites \
+                                 are requested as changes: {listed}",
+                                second.reviewer()
+                            ),
+                        }
+                    }
+                    Some((reason, _)) => ReviewerGateOutcome::Refused {
+                        reason: if first_errored {
+                            format!(
+                                "{first_description}; escalated to {} which was UNCERTAIN \
+                                 ({reason})",
+                                second.reviewer()
+                            )
+                        } else {
+                            format!(
+                                "both reviewers were UNCERTAIN: {first_reviewer} \
+                                 ({first_reason}); escalated to {} ({reason})",
+                                second.reviewer()
+                            )
+                        },
+                    },
+                    None => {
+                        findings = round_findings(&second.round);
+                        second.into_outcome()
+                    }
                 }
             }
         }
@@ -55228,6 +55572,7 @@ mod r65a_tests {
             round,
             provider: provider.to_string(),
             model: model.to_string(),
+            attempts: 1,
         }
     }
 
@@ -55667,6 +56012,7 @@ mod r66a_tests {
             round,
             provider: provider.to_string(),
             model: model.to_string(),
+            attempts: 1,
         }
     }
 
@@ -56077,6 +56423,306 @@ mod r66a_tests {
         assert!(
             next_drain_dispatches(&candidates, &live, &DrainSweepLedger::default(), 0, false)
                 .is_empty()
+        );
+    }
+}
+
+/// Lane R68a (r68 s2, `harness-cli-argparse-log-filter`): the independent
+/// review before headless auto-land must never refuse a goal just because a
+/// reviewer TIMED OUT. A timeout is an infrastructure failure, retried once
+/// on the same reviewer before it errors — and only then does the existing
+/// escalation ladder run, exactly as for a real UNCERTAIN.
+#[cfg(test)]
+mod r68a_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn attempt(round: ReviewRound, provider: &str, model: &str, attempts: u32) -> ReviewAttempt {
+        ReviewAttempt {
+            round,
+            provider: provider.to_string(),
+            model: model.to_string(),
+            attempts,
+        }
+    }
+
+    fn errored(elapsed_secs: u64) -> ReviewRound {
+        ReviewRound::Errored {
+            reason: format!("did not respond after 2 attempts ({elapsed_secs}s elapsed)"),
+            elapsed_secs,
+        }
+    }
+
+    /// The env knob is named the way its siblings are and falls back to the
+    /// documented default, at least 300s (2.5x the pre-R68a 120s bound the
+    /// salvage path keeps).
+    #[test]
+    fn reviewer_gate_timeout_env_name_and_default_match_the_family() {
+        assert_eq!(
+            PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS_ENV,
+            "PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS"
+        );
+        assert_eq!(DEFAULT_REVIEWER_GATE_TIMEOUT_SECS, 300);
+        assert!(DEFAULT_REVIEWER_GATE_TIMEOUT_SECS >= 300);
+        assert_eq!(REVIEWER_GATE_SALVAGE_TIMEOUT_SECS, 120);
+    }
+
+    /// Pure: `review_kind_timeout` picks the salvage constant for a salvage
+    /// review and the (possibly env-overridden) auto-land default for a
+    /// verified one, never sharing a single bound between the two.
+    #[test]
+    #[serial_test::serial]
+    fn review_kind_timeout_is_proportionate_to_the_kind_and_the_env_overrides_the_default() {
+        std::env::remove_var(PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS_ENV);
+        assert_eq!(
+            review_kind_timeout(&GoalReviewKind::Salvage { verify_note: "x" }),
+            std::time::Duration::from_secs(REVIEWER_GATE_SALVAGE_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            review_kind_timeout(&GoalReviewKind::Verified { verification: None }),
+            std::time::Duration::from_secs(DEFAULT_REVIEWER_GATE_TIMEOUT_SECS)
+        );
+
+        std::env::set_var(PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS_ENV, "45");
+        assert_eq!(
+            review_kind_timeout(&GoalReviewKind::Verified { verification: None }),
+            std::time::Duration::from_secs(45),
+            "the env knob overrides the default"
+        );
+        // The salvage path is unaffected by the auto-land knob.
+        assert_eq!(
+            review_kind_timeout(&GoalReviewKind::Salvage { verify_note: "x" }),
+            std::time::Duration::from_secs(REVIEWER_GATE_SALVAGE_TIMEOUT_SECS)
+        );
+        std::env::remove_var(PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS_ENV);
+    }
+
+    /// A reviewer that times out once, then answers on the retry: the round
+    /// records the retry's answer with `attempts: 2` (Lane R68a's "one
+    /// errored attempt then approve" — the SAME round's JSON carries both
+    /// facts, since it is the same reviewer and the harness cares about the
+    /// final answer). No timeout at all is `attempts: 1`.
+    #[tokio::test]
+    async fn a_reviewer_that_times_out_once_then_answers_is_recorded_with_two_attempts() {
+        let calls = AtomicUsize::new(0);
+        let outcome = run_reviewer_call_cycle(|| {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n == 0 {
+                    Err(ReviewerCallFailure::TimedOut)
+                } else {
+                    Ok(Message::assistant().with_text("VERDICT: APPROVE\nCHECKED: everything"))
+                }
+            }
+        })
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "exactly one retry");
+        match outcome {
+            ReviewCycleOutcome::Responded { attempts, .. } => assert_eq!(attempts, 2),
+            other => panic!("expected the retry to answer, got {other:?}"),
+        }
+
+        let calls = AtomicUsize::new(0);
+        let outcome = run_reviewer_call_cycle(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async move { Ok(Message::assistant().with_text("VERDICT: APPROVE\nCHECKED: it")) }
+        })
+        .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "no retry when it answers first try"
+        );
+        match outcome {
+            ReviewCycleOutcome::Responded { attempts, .. } => assert_eq!(attempts, 1),
+            other => panic!("expected the first try to answer, got {other:?}"),
+        }
+    }
+
+    /// A reviewer that times out TWICE (the initial attempt and the one
+    /// retry) never reads as UNCERTAIN or REQUEST_CHANGES — it is `errored`,
+    /// with the reviewer, elapsed time and attempt count all present.
+    #[tokio::test]
+    async fn a_reviewer_that_times_out_twice_is_recorded_as_errored_not_uncertain() {
+        let outcome = run_reviewer_call_cycle(|| async {
+            Err::<crate::conversation::message::Message, _>(ReviewerCallFailure::TimedOut)
+        })
+        .await;
+        let (reason, elapsed_secs) = match outcome {
+            ReviewCycleOutcome::Errored {
+                reason,
+                elapsed_secs,
+            } => (reason, elapsed_secs),
+            other => panic!("expected both timeouts to error, got {other:?}"),
+        };
+        let round = ReviewRound::Errored {
+            reason,
+            elapsed_secs,
+        };
+        assert_eq!(round.label(), "errored");
+        assert_ne!(round.label(), "uncertain");
+        assert_ne!(round.label(), "request_changes");
+
+        let a = attempt(round, "anthropic", "claude-fable-5", 2);
+        let json = a.to_json(2);
+        assert_eq!(json["outcome"], "errored");
+        assert_eq!(json["reviewer"], "anthropic/claude-fable-5");
+        assert_eq!(json["attempts"], 2);
+        assert!(json["elapsed_secs"].is_number());
+
+        // A lone errored round (no escalation attempted, e.g. the salvage
+        // path) reports `Unreachable` — nothing ever looked at the diff —
+        // and the wording never says "UNCERTAIN".
+        match a.into_outcome() {
+            ReviewerGateOutcome::Unreachable { reason } => {
+                assert!(!reason.contains("UNCERTAIN"), "{reason}");
+                assert!(reason.contains("anthropic/claude-fable-5"), "{reason}");
+            }
+            other => panic!("expected Unreachable, got {other:?}"),
+        }
+    }
+
+    /// Bullet 2: a reviewer that times out twice, with a stronger reviewer
+    /// available, escalates — exactly like a real UNCERTAIN.
+    #[tokio::test]
+    async fn errored_first_round_escalates_when_a_stronger_reviewer_is_available() {
+        let calls = AtomicUsize::new(0);
+        let calls_ref = &calls;
+        let run = finish_goal_review_with_escalation(
+            attempt(errored(240), "minimax", "MiniMax-M2.5", 2),
+            true,
+            move |provider, model| async move {
+                calls_ref.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(
+                    (provider.as_str(), model.as_str()),
+                    ("minimax", "MiniMax-M2.5")
+                );
+                (
+                    Ok(attempt(
+                        ReviewRound::Approved {
+                            checked: "every call site".to_string(),
+                        },
+                        "zai",
+                        "glm-5.2",
+                        1,
+                    )),
+                    serde_json::json!({ "from": "minimax/MiniMax-M2.5", "to": "zai/glm-5.2" }),
+                )
+            },
+        )
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "exactly one escalation");
+        assert!(matches!(run.outcome, ReviewerGateOutcome::Approved { .. }));
+        assert_eq!(run.reviews.len(), 2);
+        assert_eq!(run.reviews[0]["outcome"], "errored");
+        assert_eq!(run.reviews[0]["attempts"], 2);
+        assert_eq!(run.reviews[1]["outcome"], "approved");
+    }
+
+    /// Bullet 3: a reviewer that times out twice, with NO stronger reviewer
+    /// available, parks with a refusal that says the review could not be
+    /// obtained — never worded as a real UNCERTAIN.
+    #[tokio::test]
+    async fn errored_first_round_with_no_stronger_reviewer_parks_distinctly_from_uncertain() {
+        let run = finish_goal_review_with_escalation(
+            attempt(errored(240), "anthropic", "claude-fable-5", 2),
+            true,
+            |_, _| async move {
+                (
+                    Err("no cross-family model you have ranks above it".to_string()),
+                    serde_json::json!({ "from": "anthropic/claude-fable-5" }),
+                )
+            },
+        )
+        .await;
+        match &run.outcome {
+            ReviewerGateOutcome::Refused { reason } => {
+                assert!(reason.contains("review could not be obtained"), "{reason}");
+                assert!(!reason.contains("was UNCERTAIN"), "{reason}");
+                assert!(
+                    reason.contains("no escalation review could run"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected a distinct park reason, got {other:?}"),
+        }
+        assert_eq!(run.reviews.len(), 1);
+        assert_eq!(run.reviews[0]["outcome"], "errored");
+    }
+
+    /// The escalated reviewer ALSO timing out twice parks distinctly from
+    /// "both reviewers were UNCERTAIN" too.
+    #[tokio::test]
+    async fn errored_escalated_round_also_parks_distinctly_from_uncertain() {
+        let run = finish_goal_review_with_escalation(
+            attempt(errored(240), "minimax", "MiniMax-M2.5", 2),
+            true,
+            |_, _| async move {
+                (
+                    Ok(attempt(errored(300), "zai", "glm-5.2", 2)),
+                    serde_json::json!({ "to": "zai/glm-5.2" }),
+                )
+            },
+        )
+        .await;
+        match &run.outcome {
+            ReviewerGateOutcome::Unreachable { reason }
+            | ReviewerGateOutcome::Refused { reason } => {
+                assert!(reason.contains("review could not be obtained"), "{reason}");
+                assert!(!reason.contains("UNCERTAIN"), "{reason}");
+            }
+            other => panic!("expected a distinct park reason, got {other:?}"),
+        }
+        assert_eq!(run.reviews.len(), 2);
+        assert_eq!(run.reviews[1]["outcome"], "errored");
+    }
+
+    /// A real UNCERTAIN still follows R65a's one-escalation path unchanged:
+    /// wording keeps saying "was UNCERTAIN", and a second real UNCERTAIN
+    /// still reads "both reviewers were UNCERTAIN".
+    #[tokio::test]
+    async fn a_real_uncertain_is_unaffected_by_the_errored_wording() {
+        let run = finish_goal_review_with_escalation(
+            attempt(
+                ReviewRound::Uncertain {
+                    reason: "review verdict is UNCERTAIN".to_string(),
+                },
+                "minimax",
+                "MiniMax-M2.5",
+                1,
+            ),
+            true,
+            |_, _| async move {
+                (
+                    Ok(attempt(
+                        ReviewRound::Uncertain {
+                            reason: "review verdict is UNCERTAIN".to_string(),
+                        },
+                        "zai",
+                        "glm-5.2",
+                        1,
+                    )),
+                    serde_json::json!({ "to": "zai/glm-5.2" }),
+                )
+            },
+        )
+        .await;
+        match &run.outcome {
+            ReviewerGateOutcome::Refused { reason } => {
+                assert!(reason.contains("both reviewers were UNCERTAIN"), "{reason}");
+                assert!(!reason.contains("could not be obtained"), "{reason}");
+            }
+            other => panic!("expected the unchanged R65a wording, got {other:?}"),
+        }
+    }
+
+    /// Guard against a future edit reintroducing a single shared timeout:
+    /// the two constants must stay independent values.
+    #[test]
+    fn salvage_and_auto_land_timeouts_are_independent_constants() {
+        assert_ne!(
+            REVIEWER_GATE_SALVAGE_TIMEOUT_SECS,
+            DEFAULT_REVIEWER_GATE_TIMEOUT_SECS
         );
     }
 }
