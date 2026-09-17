@@ -2072,7 +2072,253 @@ pub(crate) fn ground_roadmap_goals(
         }
     }
 
+    // R62c (R56a root cause 3, option (b)): LAST, after every per-goal
+    // criteria rewrite above, so `ground_acceptance_criteria`'s empty-list
+    // fallback can never re-add the oracle this moves.
+    if goals.len() > 1 {
+        receipts.extend(chain_goals_sharing_a_whole_suite_oracle(&mut goals, facts));
+    }
+
     (goals, receipts)
+}
+
+/// Normalised comparison key for "the same acceptance criterion" across
+/// goals: case, surrounding whitespace, internal whitespace runs and a
+/// trailing full stop are not a difference.
+fn shared_criterion_key(criterion: &str) -> String {
+    criterion
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches('.')
+        .to_lowercase()
+}
+
+/// R62c: does `criterion` run a whole test suite command — command-shaped
+/// (names a detected check command, quotes a command in backticks, reads
+/// "run …", or claims an exit status / "passes") AND test-shaped? Only such
+/// a criterion is a candidate oracle for
+/// [`chain_goals_sharing_a_whole_suite_oracle`]; prose ("all tests still
+/// pass") and build-only commands are left alone.
+fn is_whole_suite_command_criterion(criterion: &str, facts: &RepoFacts) -> bool {
+    let lower = criterion.trim().to_lowercase();
+    if lower.starts_with(&UNVERIFIED_CRITERION_PREFIX.to_lowercase())
+        || lower.starts_with(PROBE_FILE_EXISTS_PREFIX)
+        || lower.starts_with(PROBE_SYMBOL_DEFINED_PREFIX)
+    {
+        return false;
+    }
+    let names_check = facts
+        .check_commands
+        .iter()
+        .any(|check| !check.is_empty() && lower.contains(&check.to_lowercase()));
+    let command_shaped = names_check
+        || lower.contains('`')
+        || lower.starts_with("run ")
+        || lower.starts_with(PROBE_COMMAND_PREFIX)
+        || lower.contains(" exits")
+        || lower.contains("exit code")
+        || lower.contains(" passes");
+    let test_shaped = lower.contains("test") || lower.contains("jest");
+    command_shaped && test_shaped
+}
+
+/// R62c: the scoped probe(s) an earlier card of a shared-oracle chain gets
+/// when moving the oracle would leave it with no acceptance criterion at
+/// all — a check it can pass in its own worktree without its siblings'
+/// fixes. Built only from real files the card's own title/description
+/// names ([`goal_named_files`]), non-test files preferred, at most three,
+/// rendered in R21b's `probe:*` grammar so `verify` runs them as real
+/// checks. Empty when the card names no usable file (the caller then
+/// declines to move the oracle).
+fn scoped_probes_for_chained_goal(
+    goal: &goal_state::ProposedGoal,
+    facts: &RepoFacts,
+    oracle: &str,
+    last_title: &str,
+) -> Vec<String> {
+    let path_is_plain = |path: &str| {
+        !path.is_empty()
+            && path
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-'))
+    };
+    let is_test_file = |path: &str| {
+        let name = path.rsplit('/').next().unwrap_or(path).to_lowercase();
+        name.starts_with("test_")
+            || name.contains("_test.")
+            || name.contains(".test.")
+            || name.contains(".spec.")
+            || path.to_lowercase().split('/').any(|seg| seg == "tests")
+    };
+    let mut named: Vec<String> = goal_named_files(goal, facts)
+        .into_iter()
+        .filter(|path| path_is_plain(path))
+        .collect();
+    named.sort();
+    let non_test: Vec<String> = named
+        .iter()
+        .filter(|path| !is_test_file(path))
+        .cloned()
+        .collect();
+    let files = if non_test.is_empty() { named } else { non_test };
+    let has_cargo = facts.manifests.iter().any(|m| m == "Cargo.toml");
+    let note = format!(
+        "a check this card can pass on its own; the shared suite check \"{oracle}\" runs on \
+         '{last_title}', which depends on this card (R62c)"
+    );
+    let mut probes: Vec<String> = Vec::new();
+    for path in files.iter().take(3) {
+        let extension = path.rsplit('.').next().unwrap_or("").to_lowercase();
+        let shape = match extension.as_str() {
+            "py" => ProbeShape::Command {
+                cmd: format!("python3 -m py_compile {path}"),
+            },
+            "js" | "mjs" | "cjs" => ProbeShape::Command {
+                cmd: format!("node --check {path}"),
+            },
+            "sh" | "bash" => ProbeShape::Command {
+                cmd: format!("bash -n {path}"),
+            },
+            "rs" if has_cargo => ProbeShape::Command {
+                cmd: "cargo check".to_string(),
+            },
+            _ => ProbeShape::FileExists { path: path.clone() },
+        };
+        let probe = format!("{} — {note}", shape.render());
+        if !probes.contains(&probe) {
+            probes.push(probe);
+        }
+    }
+    probes
+}
+
+/// R62c (R56a root cause 3, option (b); A61 Miss 5, s4
+/// `select-failing-test-decompose-before-create`; r58 q3): two or more
+/// file-disjoint goals that each carry the SAME whole-suite acceptance
+/// criterion (`python3 test_checkout.py exits with code 0`) can never each
+/// pass it: every goal runs in its own worktree off trunk with only its own
+/// fix, and the suite asserts all of them. Both roots held, burned their
+/// attempts and parked, whether serialized or parallel.
+///
+/// Rather than merge them (which the protected invariant
+/// `ground_roadmap_goals_keeps_a_split_when_every_goal_names_a_real_file`
+/// forbids), chain them: in the roadmap's own topological order, each
+/// member gains a `depends_on` on the previous member, and the shared
+/// criterion stays only on the LAST member, which starts on a trunk that
+/// already carries every earlier fix. An earlier member keeps its other
+/// criteria; if moving the oracle would leave it none, it gets
+/// [`scoped_probes_for_chained_goal`]. When some earlier member would be
+/// left with nothing and no probe can be derived, the group is left exactly
+/// as proposed (and the receipt says so) — never a card with no check.
+/// Edges only ever point forward in one fixed topological order, so the
+/// roadmap stays acyclic; a proposal that is already cyclic is untouched
+/// (validation rejects it right after grounding). Returns one receipt per
+/// group changed or declined.
+fn chain_goals_sharing_a_whole_suite_oracle(
+    goals: &mut [goal_state::ProposedGoal],
+    facts: &RepoFacts,
+) -> Vec<String> {
+    let mut receipts = Vec::new();
+    let Ok(order) = goal_state::topological_order(goals) else {
+        return receipts;
+    };
+    let mut position = vec![0usize; goals.len()];
+    for (pos, &index) in order.iter().enumerate() {
+        position[index] = pos;
+    }
+    // Candidate oracles in first-appearance order, one entry per key, with
+    // the text as first written (for the receipt and the probe note).
+    let mut oracles: Vec<(String, String)> = Vec::new();
+    for goal in goals.iter() {
+        for criterion in &goal.acceptance_criteria {
+            let key = shared_criterion_key(criterion);
+            if is_whole_suite_command_criterion(criterion, facts)
+                && !oracles.iter().any(|(k, _)| *k == key)
+            {
+                oracles.push((key, criterion.clone()));
+            }
+        }
+    }
+    for (key, oracle) in oracles {
+        let mut members: Vec<usize> = (0..goals.len())
+            .filter(|&i| {
+                goals[i]
+                    .acceptance_criteria
+                    .iter()
+                    .any(|c| shared_criterion_key(c) == key)
+            })
+            .collect();
+        if members.len() < 2 {
+            continue;
+        }
+        members.sort_by_key(|&i| position[i]);
+        let Some((&last, earlier)) = members.split_last() else {
+            continue;
+        };
+        let last_title = goals[last].title.clone();
+        let mut additions: Vec<(usize, Vec<String>)> = Vec::new();
+        let mut declined_for: Option<String> = None;
+        for &i in earlier {
+            let keeps_another = goals[i]
+                .acceptance_criteria
+                .iter()
+                .any(|c| shared_criterion_key(c) != key);
+            if keeps_another {
+                continue;
+            }
+            let probes = scoped_probes_for_chained_goal(&goals[i], facts, &oracle, &last_title);
+            if probes.is_empty() {
+                declined_for = Some(goals[i].title.clone());
+                break;
+            }
+            additions.push((i, probes));
+        }
+        if let Some(title) = declined_for {
+            tracing::info!(
+                target: "permagentd::orchestrator",
+                members = members.len(),
+                "decompose_shared_oracle_chain_declined=1"
+            );
+            receipts.push(format!(
+                "{} goal(s) share the whole-suite check \"{oracle}\", which none of them can pass \
+                 alone in its own worktree, but '{title}' has no other criterion and names no file \
+                 to give it a scoped one — left as proposed (decompose_shared_oracle_chain_declined=1)",
+                members.len()
+            ));
+            continue;
+        }
+        for (i, probes) in additions {
+            goals[i].acceptance_criteria.extend(probes);
+        }
+        for &i in earlier {
+            goals[i]
+                .acceptance_criteria
+                .retain(|c| shared_criterion_key(c) != key);
+        }
+        for pair in members.windows(2) {
+            let (previous, next) = (pair[0], pair[1]);
+            if !goals[next].depends_on.contains(&previous) {
+                goals[next].depends_on.push(previous);
+            }
+        }
+        tracing::info!(
+            target: "permagentd::orchestrator",
+            members = members.len(),
+            "decompose_chained_shared_oracle={}",
+            members.len()
+        );
+        let titles: Vec<String> = members.iter().map(|&i| goals[i].title.clone()).collect();
+        receipts.push(format!(
+            "chained {} goal(s) that each named the whole-suite check \"{oracle}\" ({}): no one \
+             of them can pass it alone in its own worktree, so each now depends on the one before \
+             and the check stays only on '{last_title}' (decompose_chained_shared_oracle={})",
+            members.len(),
+            titles.join(" -> "),
+            members.len()
+        ));
+    }
+    receipts
 }
 
 // ── R21b: create_roadmap-time acceptance-criteria validation ────────────
@@ -39930,6 +40176,224 @@ mod tests {
         let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed, None);
         assert_eq!(grounded.len(), 2);
         assert!(!receipts.iter().any(|r| r.contains("right-sized")));
+    }
+
+    /// R62c (R56a root cause 3, option (b); A61 Miss 5 and r58 q3,
+    /// `select-failing-test-decompose-before-create`): two file-disjoint
+    /// roots whose only criterion is the same whole-suite oracle. Neither can
+    /// pass it in its own worktree, so they are chained and the oracle stays
+    /// only on the last; the first gets a probe it can pass alone, scoped to
+    /// its own file (not the test file its description also mentions). The
+    /// split itself survives.
+    #[test]
+    fn ground_roadmap_goals_chains_goals_sharing_a_whole_suite_oracle() {
+        let facts = RepoFacts {
+            files: vec![
+                "pricing.py".to_string(),
+                "inventory.py".to_string(),
+                "test_checkout.py".to_string(),
+            ],
+            file_count: 3,
+            ..Default::default()
+        };
+        let allowed = tags(&["code_edit", "shell"]);
+        let oracle = "`python3 test_checkout.py` exits with code 0";
+        let goals = vec![
+            goal(
+                "Fix discount calculation in pricing.py",
+                "Repair apply_discount in pricing.py so test_checkout.py stops failing on it.",
+                &[oracle],
+                &["code_edit"],
+            ),
+            goal(
+                "Fix stock decrement in inventory.py",
+                "Repair decrement_stock in inventory.py.",
+                &[oracle],
+                &["code_edit"],
+            ),
+        ];
+        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed, None);
+
+        assert_eq!(grounded.len(), 2, "the split is kept");
+        assert!(grounded[0].depends_on.is_empty());
+        assert_eq!(
+            grounded[1].depends_on,
+            vec![0],
+            "the later goal waits for the earlier one to land"
+        );
+        assert!(
+            !grounded[0].acceptance_criteria.iter().any(|c| c == oracle),
+            "the shared oracle moves off the earlier goal: {:?}",
+            grounded[0].acceptance_criteria
+        );
+        assert_eq!(
+            grounded[1]
+                .acceptance_criteria
+                .iter()
+                .filter(|c| *c == oracle)
+                .count(),
+            1,
+            "the shared oracle stays on the last goal: {:?}",
+            grounded[1].acceptance_criteria
+        );
+        assert!(
+            grounded[0]
+                .acceptance_criteria
+                .iter()
+                .any(|c| c.starts_with(&format!(
+                    "{PROBE_COMMAND_PREFIX} cmd=\"python3 -m py_compile pricing.py\""
+                ))),
+            "the earlier goal gets a probe scoped to its own non-test file: {:?}",
+            grounded[0].acceptance_criteria
+        );
+        assert!(
+            !grounded[0]
+                .acceptance_criteria
+                .iter()
+                .any(|c| c.contains("py_compile test_checkout.py")),
+            "never a probe on the shared test file"
+        );
+        assert!(
+            receipts
+                .iter()
+                .any(|r| r.contains("decompose_chained_shared_oracle=2")),
+            "receipts: {receipts:?}"
+        );
+        assert!(!receipts.iter().any(|r| r.contains("right-sized")));
+    }
+
+    /// R62c: the protected split above (`cargo test` shared by `src/a.rs` and
+    /// `src/b.rs`) keeps both goals and gains the order; the earlier Rust card
+    /// gets `cargo check`, which it can pass on its own. Three members chain
+    /// in order, and an earlier member that keeps another criterion of its
+    /// own gains no probe.
+    #[test]
+    fn ground_roadmap_goals_chains_a_shared_cargo_test_in_order_and_keeps_own_criteria() {
+        let facts = RepoFacts {
+            manifests: vec!["Cargo.toml".to_string()],
+            files: vec![
+                "src/a.rs".to_string(),
+                "src/b.rs".to_string(),
+                "src/c.rs".to_string(),
+            ],
+            file_count: 3,
+            check_commands: vec!["cargo test".to_string()],
+            ..Default::default()
+        };
+        let allowed = tags(&["code_edit", "shell"]);
+        let goals = vec![
+            goal(
+                "Fix src/a.rs",
+                "edit src/a.rs",
+                &["`cargo test` passes"],
+                &["code_edit"],
+            ),
+            goal(
+                "Fix src/b.rs",
+                "edit src/b.rs",
+                &["`cargo test` passes", "`cargo test b_parses` passes"],
+                &["code_edit"],
+            ),
+            goal(
+                "Fix src/c.rs",
+                "edit src/c.rs",
+                &["`cargo test` passes."],
+                &["code_edit"],
+            ),
+        ];
+        let (grounded, _receipts) = ground_roadmap_goals(goals, &facts, &allowed, None);
+        assert_eq!(grounded.len(), 3);
+        assert!(grounded[0].depends_on.is_empty());
+        assert_eq!(grounded[1].depends_on, vec![0]);
+        assert_eq!(grounded[2].depends_on, vec![1]);
+        assert!(goal_state::topological_order(&grounded).is_ok());
+        assert_eq!(
+            grounded[0].acceptance_criteria.len(),
+            1,
+            "{:?}",
+            grounded[0].acceptance_criteria
+        );
+        assert!(grounded[0].acceptance_criteria[0]
+            .starts_with(&format!("{PROBE_COMMAND_PREFIX} cmd=\"cargo check\"")));
+        assert_eq!(
+            grounded[1].acceptance_criteria,
+            vec!["`cargo test b_parses` passes".to_string()],
+            "an earlier goal with its own criterion keeps it and gains no probe"
+        );
+        assert_eq!(
+            grounded[2].acceptance_criteria,
+            vec!["`cargo test` passes.".to_string()],
+            "the oracle (matched ignoring a trailing full stop) stays only on the last goal"
+        );
+    }
+
+    /// R62c negative controls: goals whose test criteria differ are left
+    /// exactly as proposed, and a group whose earlier member would be left
+    /// with no check and names no file is declined, not half-applied.
+    #[test]
+    fn ground_roadmap_goals_leaves_disjoint_or_unprovable_oracles_unchained() {
+        let facts = RepoFacts {
+            manifests: vec!["setup.py".to_string()],
+            files: vec![
+                "pricing.py".to_string(),
+                "inventory.py".to_string(),
+                "tests/test_pricing.py".to_string(),
+                "tests/test_inventory.py".to_string(),
+            ],
+            file_count: 4,
+            ..Default::default()
+        };
+        let allowed = tags(&["code_edit", "shell"]);
+        let goals = vec![
+            goal(
+                "Fix pricing.py",
+                "Repair apply_discount in pricing.py.",
+                &["`python3 -m pytest tests/test_pricing.py` passes"],
+                &["code_edit"],
+            ),
+            goal(
+                "Fix inventory.py",
+                "Repair decrement_stock in inventory.py.",
+                &["`python3 -m pytest tests/test_inventory.py` passes"],
+                &["code_edit"],
+            ),
+        ];
+        let (grounded, receipts) = ground_roadmap_goals(goals.clone(), &facts, &allowed, None);
+        assert_eq!(grounded, goals, "disjoint oracles: unchanged");
+        assert!(!receipts
+            .iter()
+            .any(|r| r.contains("decompose_chained_shared_oracle")));
+
+        let files: Vec<String> = (0..50).map(|i| format!("src/f{i}.rs")).collect();
+        let large = RepoFacts {
+            manifests: vec!["Cargo.toml".to_string()],
+            file_count: files.len(),
+            files,
+            check_commands: vec!["cargo test".to_string()],
+            ..Default::default()
+        };
+        let unnamed = vec![
+            goal(
+                "Goal A",
+                "do the first thing",
+                &["`cargo test` passes"],
+                &[],
+            ),
+            goal(
+                "Goal B",
+                "do the second thing",
+                &["`cargo test` passes"],
+                &[],
+            ),
+        ];
+        let (grounded, receipts) = ground_roadmap_goals(unnamed.clone(), &large, &allowed, None);
+        assert_eq!(
+            grounded, unnamed,
+            "no scoped probe derivable for Goal A: left as proposed"
+        );
+        assert!(receipts
+            .iter()
+            .any(|r| r.contains("decompose_shared_oracle_chain_declined=1")));
     }
 
     /// Parser-style edge-case fixes often arrive from the planner as one card
