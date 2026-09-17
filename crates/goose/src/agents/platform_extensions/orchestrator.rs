@@ -1407,6 +1407,147 @@ fn merge_overlapping_file_goals(
     (collapse_goal_clusters(&goals, &clusters), merged_away)
 }
 
+/// R52c: the largest union of named source files a call-site fan-out may fold
+/// into one goal. A wider fan-out stays split — one goal editing more files
+/// than this is no longer a bounded dispatch/verify/review unit.
+const CALL_SITE_FAN_OUT_MAX_FILES: usize = 8;
+
+/// Words that read as camelCase but name a product or language, never a
+/// function or variable a goal edits.
+const CODE_IDENTIFIER_STOPWORDS: &[&str] = &[
+    "typescript",
+    "javascript",
+    "github",
+    "gitlab",
+    "macos",
+    "nodejs",
+    "graphql",
+    "postgresql",
+    "mysql",
+    "openai",
+    "youtube",
+    "iphone",
+    "ipad",
+];
+
+/// R52c: camelCase (`quoteShipping`) or snake_case (`apply_discount`) code
+/// identifiers named in a goal's title or description, with file-shaped
+/// tokens dropped first so `quoteHandler.ts` never reads as an identifier.
+fn goal_code_identifiers(goal: &goal_state::ProposedGoal) -> HashSet<String> {
+    let text = format!("{} {}", goal.title, goal.description);
+    let mut out = HashSet::new();
+    for token in text.split_whitespace() {
+        if looks_like_file_token(token) {
+            continue;
+        }
+        for word in token.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            let chars: Vec<char> = word.chars().collect();
+            if chars.len() < 3 {
+                continue;
+            }
+            let camel = chars
+                .windows(2)
+                .any(|w| w[0].is_ascii_lowercase() && w[1].is_ascii_uppercase());
+            let snake = chars.windows(3).any(|w| {
+                w[0].is_ascii_alphanumeric() && w[1] == '_' && w[2].is_ascii_alphanumeric()
+            });
+            if (camel || snake)
+                && !CODE_IDENTIFIER_STOPWORDS.contains(&word.to_ascii_lowercase().as_str())
+            {
+                out.insert(word.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// R52c (A61 miss 1, `harness-refactor-shipping-quote-signature` s2): merge
+/// a signature-change goal with the call-site goals split off it. The planner
+/// emitted "change `quoteShipping` in src/shipping/quote.ts" plus four goals
+/// "update <function> in <file> to pass packageType to quoteShipping", each
+/// `depends_on: [0]`. R52b's `mechanical_shape_key` needs identical text once
+/// file names are masked, and each call-site goal names a different function,
+/// so nothing merged; `merge_overlapping_file_goals` needs a file two goals
+/// both name, and each goal named only its own.
+///
+/// The overlap is through the shared callee: a dependent that names a code
+/// identifier its root also names is editing a use of what the root changes,
+/// so its write scope is its own source files plus the root's. When a root
+/// has two or more such dependents (a fan-out, the "one goal per call site"
+/// split), the root and those dependents merge into one goal, provided the
+/// union of their named source files (test files excluded) is at most
+/// [`CALL_SITE_FAN_OUT_MAX_FILES`]. Goals naming disjoint files with no such
+/// dependency stay split. A merge that would create a dependency cycle is
+/// dropped and the proposal returned unchanged.
+fn merge_call_site_fan_out_goals(
+    goals: Vec<goal_state::ProposedGoal>,
+    facts: &RepoFacts,
+) -> (Vec<goal_state::ProposedGoal>, usize) {
+    if goals.len() < 3 || facts.files.is_empty() {
+        return (goals, 0);
+    }
+    let source_files: Vec<HashSet<String>> = goals
+        .iter()
+        .map(|goal| {
+            goal_named_files(goal, facts)
+                .into_iter()
+                .filter(|file| !crate::tool_monitor::is_test_path(file))
+                .collect()
+        })
+        .collect();
+    let identifiers: Vec<HashSet<String>> = goals.iter().map(goal_code_identifiers).collect();
+
+    let mut assigned = vec![false; goals.len()];
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
+    for root in 0..goals.len() {
+        if assigned[root] || source_files[root].is_empty() || identifiers[root].is_empty() {
+            continue;
+        }
+        let dependents: Vec<usize> = (0..goals.len())
+            .filter(|&d| {
+                d != root
+                    && !assigned[d]
+                    && goals[d].depends_on.contains(&root)
+                    && !source_files[d].is_empty()
+                    && !identifiers[d].is_disjoint(&identifiers[root])
+            })
+            .collect();
+        if dependents.len() < 2 {
+            continue;
+        }
+        let mut union = source_files[root].clone();
+        for &d in &dependents {
+            union.extend(source_files[d].iter().cloned());
+        }
+        if union.len() > CALL_SITE_FAN_OUT_MAX_FILES {
+            tracing::info!(
+                target: "permagentd::orchestrator",
+                files = union.len(),
+                cap = CALL_SITE_FAN_OUT_MAX_FILES,
+                "call-site fan-out left split: merged goal would name {} files",
+                union.len()
+            );
+            continue;
+        }
+        let mut cluster = vec![root];
+        cluster.extend(dependents);
+        cluster.sort_unstable();
+        for &i in &cluster {
+            assigned[i] = true;
+        }
+        clusters.push(cluster);
+    }
+    if clusters.is_empty() {
+        return (goals, 0);
+    }
+    let merged = collapse_goal_clusters(&goals, &clusters);
+    if goal_state::topological_order(&merged).is_err() {
+        return (goals, 0);
+    }
+    let merged_away = clusters.iter().map(|c| c.len() - 1).sum();
+    (merged, merged_away)
+}
+
 /// True when `token` is shaped like a filename (`word.ext`, a short
 /// alphanumeric extension) — the R52b "mechanical call-site" merge below
 /// masks these out of a goal's title/description before comparing two
@@ -1889,6 +2030,26 @@ pub(crate) fn ground_roadmap_goals(
         }
     }
 
+    // R52c (A61 miss 1): a signature change split into one goal per call
+    // site names disjoint files, so neither merge above or below folds it.
+    let mut merged_fan_out = 0usize;
+    if goals.len() > 1 {
+        let (merged_goals, merged) = merge_call_site_fan_out_goals(goals, facts);
+        goals = merged_goals;
+        merged_fan_out = merged;
+        if merged > 0 {
+            receipts.push(format!(
+                "merged {merged} call-site goal(s) into the signature change they depend on \
+                 (decompose_merged_call_site_fan_out={merged})"
+            ));
+            tracing::info!(
+                target: "permagentd::orchestrator",
+                merged,
+                "decompose_merged_call_site_fan_out={merged}"
+            );
+        }
+    }
+
     // Z1-5 (R52b, A50 analysis (b) "refactor-shipping-quote-signature"): fold
     // goals that are the same mechanical operation repeated across N
     // call-site files into one goal, BEFORE the per-goal criteria/tag
@@ -1920,7 +2081,8 @@ pub(crate) fn ground_roadmap_goals(
         // R53a (G34 HIGH-4): gated on the mechanical merge above actually
         // having found something, or the hard sanity ceiling — never
         // unconditional.
-        let (capped_goals, merged_for_cap) = cap_roadmap_goal_count(goals, merged_mechanical > 0);
+        let (capped_goals, merged_for_cap) =
+            cap_roadmap_goal_count(goals, merged_mechanical + merged_fan_out > 0);
         goals = capped_goals;
         if merged_for_cap > 0 {
             receipts.push(format!(
@@ -39611,6 +39773,217 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         let (merged, merged_away) = merge_mechanical_call_site_goals(goals.clone());
         assert_eq!(merged_away, 0);
         assert_eq!(merged, goals);
+    }
+
+    /// R52c: the `harness-refactor-shipping-quote-signature` repo as
+    /// `RepoFacts` sees it.
+    fn r52c_shipping_facts() -> RepoFacts {
+        let files: Vec<String> = [
+            "README.md",
+            "package.json",
+            "src/admin/manualQuote.ts",
+            "src/api/quoteHandler.ts",
+            "src/cart/cartSummary.ts",
+            "src/checkout/checkout.ts",
+            "src/shipping/quote.ts",
+            "src/types.ts",
+        ]
+        .iter()
+        .map(|f| f.to_string())
+        .collect();
+        RepoFacts {
+            languages: vec!["typescript".to_string()],
+            manifests: vec!["package.json".to_string()],
+            file_count: files.len(),
+            files,
+            check_commands: vec![],
+            ..Default::default()
+        }
+    }
+
+    /// R52c: the 5-goal proposal A61 miss 1 (s2) actually received, titles
+    /// and descriptions quoted from its harness.log.
+    fn r52c_s2_call_site_split() -> Vec<goal_state::ProposedGoal> {
+        let mut root = goal(
+            "Add packageType parameter to quoteShipping and implement 25% fragile surcharge",
+            "Modify src/shipping/quote.ts to accept a third scalar parameter `packageType` \
+             ('standard' | 'fragile'). Apply a 25% surcharge to the shipping cost when \
+             packageType is 'fragile', using Math.round consistently with existing rounding.",
+            &["quoteShipping(1, 'domestic', 'fragile') returns 250"],
+            &["code_edit"],
+        );
+        root.depends_on = vec![];
+        let call_site = |title: &str, description: &str| {
+            let mut g = goal(
+                title,
+                description,
+                &["TypeScript builds without errors"],
+                &["code_edit"],
+            );
+            g.depends_on = vec![0];
+            g
+        };
+        vec![
+            root,
+            call_site(
+                "Update buildCheckoutSummary to pass packageType to quoteShipping",
+                "Modify src/checkout/checkout.ts to extract packageType from the Order object \
+                 and pass it as the third argument to quoteShipping.",
+            ),
+            call_site(
+                "Update estimateCartShipping to pass packageType to quoteShipping",
+                "Modify src/cart/cartSummary.ts to extract packageType from each Order in the \
+                 cart array and pass it to quoteShipping for each item.",
+            ),
+            call_site(
+                "Update handleQuoteRequest to pass packageType to quoteShipping",
+                "Modify src/api/quoteHandler.ts to extract packageType from the Order in the \
+                 request and pass it as the third argument to quoteShipping.",
+            ),
+            call_site(
+                "Update computeManualQuote to accept and pass packageType parameter",
+                "Modify src/admin/manualQuote.ts to add packageType as a third scalar parameter \
+                 and pass it to quoteShipping. Update all callers within the repo to provide \
+                 this argument.",
+            ),
+        ]
+    }
+
+    /// R52c (A61 miss 1): the s2 split — a signature change plus four
+    /// call-site goals on four different files — folds into one goal that
+    /// still names every file.
+    #[test]
+    fn merge_call_site_fan_out_goals_folds_the_s2_signature_split() {
+        let facts = r52c_shipping_facts();
+        let (merged, merged_away) =
+            merge_call_site_fan_out_goals(r52c_s2_call_site_split(), &facts);
+        assert_eq!(merged_away, 4);
+        assert_eq!(merged.len(), 1, "got: {merged:#?}");
+        let only = &merged[0];
+        assert!(only.depends_on.is_empty());
+        for file in [
+            "src/shipping/quote.ts",
+            "src/checkout/checkout.ts",
+            "src/cart/cartSummary.ts",
+            "src/api/quoteHandler.ts",
+            "src/admin/manualQuote.ts",
+        ] {
+            assert!(only.description.contains(file), "merged goal lost {file}");
+        }
+        assert!(goal_state::topological_order(&merged).is_ok());
+    }
+
+    /// R52c end-to-end through `ground_roadmap_goals`: the same proposal
+    /// leaves grounding as one goal, with its receipt.
+    #[test]
+    fn ground_roadmap_goals_merges_an_overlapping_call_site_split() {
+        let facts = r52c_shipping_facts();
+        let allowed = tags(&["code_edit", "shell"]);
+        let (grounded, receipts) =
+            ground_roadmap_goals(r52c_s2_call_site_split(), &facts, &allowed, None);
+        assert_eq!(grounded.len(), 1, "receipts: {receipts:?}");
+        assert!(receipts
+            .iter()
+            .any(|r| r.contains("decompose_merged_call_site_fan_out=4")));
+    }
+
+    /// R52c: dependents that share no code identifier with their root, and
+    /// goals on disjoint files with no dependency, stay split.
+    #[test]
+    fn merge_call_site_fan_out_goals_keeps_disjoint_goals_split() {
+        let facts = r52c_shipping_facts();
+        let mut unrelated = vec![
+            goal(
+                "Rework quoteShipping rounding",
+                "change rounding in src/shipping/quote.ts",
+                &[],
+                &["code_edit"],
+            ),
+            goal(
+                "Restyle the checkout summary",
+                "rename the heading in src/checkout/checkout.ts",
+                &[],
+                &["code_edit"],
+            ),
+            goal(
+                "Document the cart",
+                "add a comment block to src/cart/cartSummary.ts",
+                &[],
+                &["code_edit"],
+            ),
+        ];
+        let (split, merged_away) = merge_call_site_fan_out_goals(unrelated.clone(), &facts);
+        assert_eq!(merged_away, 0, "no dependency at all");
+        assert_eq!(split, unrelated);
+
+        unrelated[1].depends_on = vec![0];
+        unrelated[2].depends_on = vec![0];
+        let (split, merged_away) = merge_call_site_fan_out_goals(unrelated.clone(), &facts);
+        assert_eq!(
+            merged_away, 0,
+            "dependents naming no identifier the root names are not call sites of it"
+        );
+        assert_eq!(split, unrelated);
+    }
+
+    /// R52c: a fan-out whose union of named source files exceeds
+    /// `CALL_SITE_FAN_OUT_MAX_FILES` stays split.
+    #[test]
+    fn merge_call_site_fan_out_goals_keeps_an_oversized_union_split() {
+        let files: Vec<String> = (0..10).map(|i| format!("src/site{i}.ts")).collect();
+        let facts = RepoFacts {
+            manifests: vec!["package.json".to_string()],
+            file_count: files.len(),
+            files,
+            ..Default::default()
+        };
+        let mut goals = vec![goal(
+            "Add packageType to quoteShipping",
+            "change quoteShipping in src/site0.ts",
+            &[],
+            &["code_edit"],
+        )];
+        for i in 1..10 {
+            let mut g = goal(
+                &format!("Update site {i}"),
+                &format!("pass packageType to quoteShipping in src/site{i}.ts"),
+                &[],
+                &["code_edit"],
+            );
+            g.depends_on = vec![0];
+            goals.push(g);
+        }
+        let (split, merged_away) = merge_call_site_fan_out_goals(goals.clone(), &facts);
+        assert_eq!(
+            merged_away, 0,
+            "10 files exceed the cap of {CALL_SITE_FAN_OUT_MAX_FILES}"
+        );
+        assert_eq!(split, goals);
+
+        let (merged, merged_away) =
+            merge_call_site_fan_out_goals(goals.into_iter().take(8).collect(), &facts);
+        assert_eq!(merged_away, 7, "8 files are within the cap");
+        assert_eq!(merged.len(), 1);
+    }
+
+    /// R52c: test files never count toward the overlap, and identifiers are
+    /// read from code-shaped words only (a file name is not an identifier).
+    #[test]
+    fn goal_code_identifiers_reads_camel_and_snake_case_but_not_file_names() {
+        let g = goal(
+            "Update handleQuoteRequest",
+            "edit src/api/quoteHandler.ts to call apply_discount via TypeScript",
+            &[],
+            &[],
+        );
+        let ids = goal_code_identifiers(&g);
+        assert!(ids.contains("handleQuoteRequest"));
+        assert!(ids.contains("apply_discount"));
+        assert!(
+            !ids.contains("quoteHandler"),
+            "a file name is not an identifier"
+        );
+        assert!(!ids.contains("TypeScript"));
     }
 
     /// R52b cap, pure: a scope-proportional ceiling must NEVER drop a goal —
