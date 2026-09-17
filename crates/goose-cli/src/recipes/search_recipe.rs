@@ -160,5 +160,21 @@ mod tests {
                 && instructions.contains("never dispatch a paused roadmap's goals one by one"),
             "coding recipe must send a paused roadmap to resume_roadmap, not to per-goal dispatch"
         );
+        // Lane R59a: a headless coordinator read the shipping-quote-signature
+        // task, then called `escalate kind: decision` asking whether to apply
+        // the surcharge before or after rounding — a detail the request never
+        // raised — and ended the run with no roadmap
+        // (`harness-refactor-shipping-quote-signature`). The recipe must say
+        // that a detail the request is silent on, with an existing-code
+        // convention to follow, is decided and noted, not escalated — while
+        // still escalating a choice the request itself names, a missing
+        // fact/credential, or a spend cap (so the ambiguous-choice and
+        // missing-credential/no-repo-facts fixtures keep escalating).
+        assert!(
+            instructions.contains("own convention already answers it")
+                && instructions.contains("never merely because the request stayed silent"),
+            "coding recipe must decide a silent implementation detail from the existing code's \
+             convention and proceed, not escalate it"
+        );
     }
 }
