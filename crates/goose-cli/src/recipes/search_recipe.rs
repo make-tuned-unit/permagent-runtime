@@ -176,5 +176,14 @@ mod tests {
             "coding recipe must decide a silent implementation detail from the existing code's \
              convention and proceed, not escalate it"
         );
+        // R56a: a write-scope refusal is transient and self-clearing. The
+        // coordinator that escalates it burns the run's one escalation and
+        // ends parked with the sibling never dispatched.
+        assert!(
+            instructions.contains("write scope conflicts with active goal")
+                && instructions.contains("is a WAIT"),
+            "coding recipe must tell the coordinator a write-scope refusal is a wait, not an \
+             escalation"
+        );
     }
 }
