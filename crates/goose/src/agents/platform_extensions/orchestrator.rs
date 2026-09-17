@@ -22945,17 +22945,7 @@ async fn gather_salvage_review_context(
 ) -> SalvageReviewContext {
     let mut context = SalvageReviewContext::default();
     let changes = crate::cost_router::detect_signature_changes(diff);
-    for change in changes.iter().take(SALVAGE_REVIEW_CONTEXT_MAX_SYMBOLS) {
-        let grep = git_in_worktree(
-            worktree_path,
-            &["grep", "-n", "-I", "-w", "-F", "-e", &change.symbol],
-        )
-        .await
-        .unwrap_or_default();
-        context
-            .call_site_enumerations
-            .push(call_sites_from_grep(change, &grep));
-    }
+    context.call_site_enumerations = enumerate_signature_call_sites(worktree_path, &changes).await;
     for symbol in called_symbols_on_added_lines(diff) {
         if changes.iter().any(|c| c.symbol == symbol) {
             continue;
@@ -22971,6 +22961,28 @@ async fn gather_salvage_review_context(
             .extend(definition_lines_from_grep(&symbol, &grep));
     }
     context
+}
+
+/// Lane R62e: the E7 call sites of each signature `changes` names, from
+/// `git grep` in `worktree_path` (bounded by
+/// [`SALVAGE_REVIEW_CONTEXT_MAX_SYMBOLS`]). Shared by the goal-level review
+/// context and the delegate reviewer assignment (Lane N3), so both count call
+/// sites from one source.
+async fn enumerate_signature_call_sites(
+    worktree_path: &std::path::Path,
+    changes: &[crate::cost_router::SignatureChange],
+) -> Vec<crate::cost_router::CallSiteEnumeration> {
+    let mut enumerations = Vec::new();
+    for change in changes.iter().take(SALVAGE_REVIEW_CONTEXT_MAX_SYMBOLS) {
+        let grep = git_in_worktree(
+            worktree_path,
+            &["grep", "-n", "-I", "-w", "-F", "-e", &change.symbol],
+        )
+        .await
+        .unwrap_or_default();
+        enumerations.push(call_sites_from_grep(change, &grep));
+    }
+    enumerations
 }
 
 /// Lane R62e: the salvage reviewer's prompt — the same data-fenced
@@ -23300,28 +23312,53 @@ async fn record_reviewer_assignment(
     assignment: &crate::cost_router::recommend::ReviewerAssignment,
     selected: Option<&crate::cost_router::ReviewerPick>,
 ) {
+    write_reviewer_assignment(
+        pool,
+        card_id,
+        assignment,
+        selected.map(|p| p.label()),
+        selected.map(|p| p.source.as_str()),
+        None,
+    )
+    .await;
+}
+
+/// The one `reviewer_assignment` writer behind [`record_reviewer_assignment`]
+/// (goal-level gate) and [`record_delegate_reviewer_assignment`] (Lane N3,
+/// the reviewer delegate). `selected`/`selected_source` name the reviewer the
+/// path actually dispatched; `diff_source` (delegate path only) names which
+/// diff the facts were measured on.
+async fn write_reviewer_assignment(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    assignment: &crate::cost_router::recommend::ReviewerAssignment,
+    selected: Option<String>,
+    selected_source: Option<&str>,
+    diff_source: Option<&str>,
+) {
     tracing::info!(
         target: "permagentd::orchestrator",
         goal_id = %card_id,
         review_complexity = %assignment.complexity.as_str(),
         floor = assignment.floor,
         assigned = %assignment.pick_label().unwrap_or_else(|| "none".to_string()),
-        selected = %selected.map(|p| p.label()).unwrap_or_else(|| "none".to_string()),
-        source = %selected.map(|p| p.source.as_str()).unwrap_or("none"),
+        selected = %selected.as_deref().unwrap_or("none"),
+        source = %selected_source.unwrap_or("none"),
+        diff_source = %diff_source.unwrap_or("goal_gate"),
         candidates = assignment.candidates.len(),
         why = %assignment.why,
         "reviewer assignment",
     );
     let mut record = assignment.to_json();
     if let Some(obj) = record.as_object_mut() {
-        obj.insert(
-            "selected".to_string(),
-            serde_json::json!(selected.map(|p| p.label())),
-        );
+        obj.insert("selected".to_string(), serde_json::json!(selected));
         obj.insert(
             "selected_source".to_string(),
-            serde_json::json!(selected.map(|p| p.source.as_str())),
+            serde_json::json!(selected_source),
         );
+        if let Some(diff_source) = diff_source {
+            obj.insert("diff_source".to_string(), serde_json::json!(diff_source));
+        }
         obj.insert(
             "recorded_at".to_string(),
             serde_json::json!(chrono::Utc::now().to_rfc3339()),
@@ -23341,6 +23378,333 @@ async fn record_reviewer_assignment(
             "could not record the reviewer assignment: {e}"
         );
     }
+}
+
+// ── Lane N3: the reviewer DELEGATE's objective assignment ───────────────────
+//
+// M48 r64 s5 (harness-refactor-shipping-quote-signature): a five-file
+// signature refactor was sized by `git diff --shortstat HEAD` in the
+// coordinator's directory, which reads 0 once the goal auto-landed, so the
+// delegate path's floor was the small-diff one. Ruling 2026-09-17: a review's
+// model is chosen by assessing THAT review's complexity at selection time. The
+// delegate path now measures the goal's trunk-relative diff (the same range
+// the goal-level gate reviews), counts call sites from the same E7 source, and
+// assigns through `recommend::assign_reviewer` — the goal gate's one rule.
+
+/// Which diff a reviewer delegate's assignment was measured on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReviewDiffSource {
+    /// The goal worker's own worktree against its fork point from trunk
+    /// (committed and uncommitted work).
+    GoalWorktreeForkPoint,
+    /// A goal's recorded head against its fork point from trunk (not landed).
+    GoalForkPoint,
+    /// A landed goal's recorded range (`baseline_commit..landed head`).
+    GoalLandedRange,
+    /// No goal range: `git diff HEAD` in the session's working directory.
+    WorkingTree,
+    /// Nothing measurable: the review is held to at least MODERATE.
+    Unmeasured,
+}
+
+impl ReviewDiffSource {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            ReviewDiffSource::GoalWorktreeForkPoint => "goal_worktree_fork_point",
+            ReviewDiffSource::GoalForkPoint => "goal_fork_point",
+            ReviewDiffSource::GoalLandedRange => "goal_landed_range",
+            ReviewDiffSource::WorkingTree => "working_tree",
+            ReviewDiffSource::Unmeasured => "unmeasured",
+        }
+    }
+}
+
+/// The reason recorded when no diff could be measured for a delegate review.
+pub(crate) const UNMEASURED_REVIEW_REASON: &str =
+    "no diff could be measured for this review (no goal range and a clean working tree); held \
+     to at least moderate so an unmeasured review never gets the cheapest reviewer";
+
+/// A reviewer delegate's assignment and where its facts came from.
+#[derive(Debug, Clone)]
+pub(crate) struct DelegateReviewAssignment {
+    pub(crate) assignment: crate::cost_router::recommend::ReviewerAssignment,
+    /// The goal under review, when the session is tied to one.
+    pub(crate) goal_card_id: Option<String>,
+    pub(crate) diff_source: ReviewDiffSource,
+}
+
+/// Assign the reviewer for a `worker_persona: "reviewer"` delegate from
+/// `session` (and for the reviewer mandate's prediction of that same
+/// delegate — both call this, so the prediction cannot drift from the
+/// dispatch). The diff is trunk-relative for the goal under review
+/// ([`review_goal_for_session`], [`goal_trunk_relative_diff`]), never
+/// `HEAD`-relative in the coordinator's directory; with no goal range it is the
+/// working-tree diff, and with nothing measurable the verdict is held to at
+/// least MODERATE. Best-effort: a read or git failure only narrows what is
+/// measured, never refuses the review.
+pub(crate) async fn assign_delegate_reviewer(
+    pool: Option<&sqlx::Pool<sqlx::Sqlite>>,
+    session: &Session,
+    author: Option<(&str, &str)>,
+    available: &[crate::cost_router::AvailableModel],
+) -> DelegateReviewAssignment {
+    let goal = match pool {
+        Some(pool) => review_goal_for_session(pool, session).await,
+        None => None,
+    };
+    let mut measured: Option<(String, std::path::PathBuf, ReviewDiffSource)> = None;
+    if let (Some(pool), Some((card, is_worker))) = (pool, goal.as_ref()) {
+        measured = goal_trunk_relative_diff(pool, card, &session.working_dir, *is_worker).await;
+    }
+    if measured.is_none() {
+        if let Some(diff) = git_in_worktree(&session.working_dir, &["diff", "HEAD"])
+            .await
+            .ok()
+            .filter(|d| !d.trim().is_empty())
+        {
+            measured = Some((
+                diff,
+                session.working_dir.clone(),
+                ReviewDiffSource::WorkingTree,
+            ));
+        }
+    }
+    let (assignment, diff_source) = match measured {
+        Some((diff, dir, source)) => {
+            let changes = crate::cost_router::detect_signature_changes(&diff);
+            let call_sites: usize = enumerate_signature_call_sites(&dir, &changes)
+                .await
+                .iter()
+                .map(|e| e.call_sites.len())
+                .sum();
+            (
+                crate::cost_router::recommend::assign_reviewer(
+                    crate::cost_router::recommend::ReviewFacts::from_diff(&diff, call_sites),
+                    author,
+                    available,
+                ),
+                source,
+            )
+        }
+        None => (
+            crate::cost_router::recommend::assign_reviewer_at_least(
+                crate::cost_router::recommend::ReviewFacts::default(),
+                crate::cost_router::recommend::ReviewComplexity::Moderate,
+                Some(UNMEASURED_REVIEW_REASON),
+                author,
+                available,
+            ),
+            ReviewDiffSource::Unmeasured,
+        ),
+    };
+    let goal_card_id = goal.map(|(card, _)| card.id);
+    tracing::info!(
+        target: "permagentd::brain",
+        session_id = %session.id,
+        goal_id = %goal_card_id.as_deref().unwrap_or("none"),
+        diff_source = diff_source.as_str(),
+        review_complexity = %assignment.complexity.as_str(),
+        floor = assignment.floor,
+        changed_lines = assignment.facts.changed_lines,
+        call_sites = assignment.facts.call_sites,
+        assigned = %assignment.pick_label().unwrap_or_else(|| "none".to_string()),
+        why = %assignment.why,
+        "delegate reviewer assignment",
+    );
+    DelegateReviewAssignment {
+        assignment,
+        goal_card_id,
+        diff_source,
+    }
+}
+
+/// Record a reviewer delegate's assignment on its goal card through the goal
+/// gate's own writer; `selected` is what the delegate actually dispatched to.
+/// A no-op when the review is not tied to a goal.
+pub(crate) async fn record_delegate_reviewer_assignment(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    live: &DelegateReviewAssignment,
+    selected: Option<&crate::cost_router::RoleModel>,
+    selected_source: &str,
+) {
+    let Some(card_id) = live.goal_card_id.as_deref() else {
+        return;
+    };
+    write_reviewer_assignment(
+        pool,
+        card_id,
+        &live.assignment,
+        selected.map(|rm| format!("{}/{}", rm.provider, rm.model)),
+        Some(selected_source),
+        Some(live.diff_source.as_str()),
+    )
+    .await;
+}
+
+/// The goal a session's reviewer delegate reviews: the goal this session is
+/// the worker for (`true`), else the most recently finished goal this session
+/// created that recorded a head commit (`false`).
+async fn review_goal_for_session(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session: &Session,
+) -> Option<(cards::Card, bool)> {
+    if let Ok(Some((card_id, _))) = goal_card_for_worker_session(pool, &session.id).await {
+        if let Ok(Some(card)) = cards::get_card(pool, &card_id).await {
+            return Some((card, true));
+        }
+    }
+    let created = cards::goal_cards_created_by_session(pool, &session.id)
+        .await
+        .ok()?;
+    let recency = |card: &cards::Card| {
+        card.metadata_json
+            .get("completed_at")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| card.updated_at.clone())
+    };
+    let mut best: Option<cards::Card> = None;
+    for goal in created {
+        let Ok(Some(card)) = cards::get_card(pool, &goal.card_id).await else {
+            continue;
+        };
+        if recorded_goal_head(&card.metadata_json).is_none() {
+            continue;
+        }
+        if best.as_ref().is_none_or(|b| recency(&card) > recency(b)) {
+            best = Some(card);
+        }
+    }
+    best.map(|card| (card, false))
+}
+
+/// The head a goal recorded: the landed head when it landed, else the
+/// dispatch evidence's `head_commit`.
+fn recorded_goal_head(meta: &serde_json::Value) -> Option<String> {
+    meta.pointer("/dispatch_evidence/landing/landed_head")
+        .or_else(|| meta.pointer("/dispatch_evidence/head_commit"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// The goal's diff relative to trunk, with the directory it was read in.
+///
+/// Trunk's tip is the goal gate's: `HEAD` of the trusted landing root
+/// ([`resolve_trusted_landing_root`]), else `detect_trunk_branch` in the
+/// goal's directory. Then, in order:
+/// - the goal's worker (`is_worker`): its worktree against the fork point
+///   `merge-base <trunk> HEAD` (committed and uncommitted work);
+/// - a recorded head that is not on trunk: `merge-base <trunk> <head>..<head>`;
+/// - a recorded head already on trunk (landed): `baseline_commit..<head>`.
+///
+/// `None` when nothing non-empty can be read.
+async fn goal_trunk_relative_diff(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    session_dir: &std::path::Path,
+    is_worker: bool,
+) -> Option<(String, std::path::PathBuf, ReviewDiffSource)> {
+    let meta = &card.metadata_json;
+    let nonempty = |s: &String| !s.trim().is_empty();
+    let worktree: Option<std::path::PathBuf> = if is_worker {
+        Some(session_dir.to_path_buf())
+    } else {
+        meta.pointer("/dispatch_evidence/worktree_path")
+            .and_then(|v| v.as_str())
+            .map(std::path::PathBuf::from)
+    }
+    .filter(|p| p.is_dir());
+    let trunk_root: Option<std::path::PathBuf> = match &worktree {
+        Some(wt) => resolve_trusted_landing_root(pool, card, wt)
+            .await
+            .ok()
+            .map(std::path::PathBuf::from),
+        None => crate::projects::get_project_by_id_or_slug(pool, &card.project_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|project| project.root_path)
+            .filter(|root| !root.is_empty())
+            .map(std::path::PathBuf::from),
+    }
+    .filter(|p| p.is_dir());
+    let git_dir = worktree
+        .clone()
+        .or_else(|| trunk_root.clone())
+        .unwrap_or_else(|| session_dir.to_path_buf());
+    let trunk_tip = match &trunk_root {
+        Some(root) => git_in_worktree(root, &["rev-parse", "HEAD"]).await.ok(),
+        None => {
+            let dir = git_dir.clone();
+            let branch = tokio::task::spawn_blocking(move || {
+                super::developer::verify::detect_trunk_branch(&dir)
+            })
+            .await
+            .ok()
+            .flatten();
+            match branch {
+                Some(branch) => git_in_worktree(&git_dir, &["rev-parse", "--verify", &branch])
+                    .await
+                    .ok(),
+                None => None,
+            }
+        }
+    }
+    .filter(nonempty);
+    let baseline = meta
+        .get("baseline_commit")
+        .or_else(|| meta.pointer("/dispatch_evidence/baseline_commit"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string);
+
+    if is_worker {
+        if let Some(wt) = &worktree {
+            let fork_point = match &trunk_tip {
+                Some(tip) => git_in_worktree(wt, &["merge-base", tip, "HEAD"])
+                    .await
+                    .ok()
+                    .filter(nonempty),
+                None => None,
+            }
+            .or_else(|| baseline.clone());
+            if let Some(base) = fork_point {
+                if let Some(diff) = git_in_worktree(wt, &["diff", &base])
+                    .await
+                    .ok()
+                    .filter(nonempty)
+                {
+                    return Some((diff, wt.clone(), ReviewDiffSource::GoalWorktreeForkPoint));
+                }
+            }
+        }
+    }
+
+    let head = recorded_goal_head(meta)?;
+    let landed = match &trunk_tip {
+        Some(tip) => git_in_worktree(&git_dir, &["merge-base", "--is-ancestor", &head, tip])
+            .await
+            .is_ok(),
+        None => false,
+    };
+    let (base, source) = if landed {
+        (baseline?, ReviewDiffSource::GoalLandedRange)
+    } else {
+        let fork_point = match &trunk_tip {
+            Some(tip) => git_in_worktree(&git_dir, &["merge-base", tip, &head])
+                .await
+                .ok()
+                .filter(nonempty),
+            None => None,
+        };
+        (fork_point.or(baseline)?, ReviewDiffSource::GoalForkPoint)
+    };
+    let diff = git_in_worktree(&git_dir, &["diff", &format!("{base}..{head}")])
+        .await
+        .ok()
+        .filter(nonempty)?;
+    Some((diff, git_dir, source))
 }
 
 /// Lane R22c-e (clippy `too_many_arguments`): bundles the three reviewer-
@@ -32387,6 +32751,400 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         assert!(recorded["why"].as_str().is_some_and(|w| !w.is_empty()));
         assert_eq!(recorded["candidates"].as_array().map(Vec::len), Some(3));
         assert!(recorded["recorded_at"].is_string());
+    }
+
+    // ── Lane N3 (M48 r64 s5): the reviewer delegate's objective assignment ──
+
+    const N3_AUTHOR: (&str, &str) = ("custom_deepseek", "deepseek-chat");
+
+    /// The s5 roster: the DeepSeek tier plus the Anthropic line.
+    fn n3_available() -> Vec<crate::cost_router::AvailableModel> {
+        use crate::cost_router::AvailableModel;
+        vec![
+            AvailableModel::new(N3_AUTHOR.0, N3_AUTHOR.1),
+            AvailableModel::new("anthropic", "claude-fable-5"),
+            AvailableModel::new("anthropic", "claude-sonnet-5"),
+            AvailableModel::new("anthropic", "claude-haiku-4-5-20251001"),
+        ]
+    }
+
+    fn n3_session(working_dir: &std::path::Path) -> crate::session::Session {
+        crate::session::Session {
+            id: format!("n3-session-{}", uuid::Uuid::new_v4()),
+            working_dir: working_dir.to_path_buf(),
+            provider_name: Some(N3_AUTHOR.0.to_string()),
+            model_config: Some(crate::model::ModelConfig::new(N3_AUTHOR.1).unwrap()),
+            ..crate::session::Session::default()
+        }
+    }
+
+    fn n3_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        r20b_git(root, &["init", "-q", "-b", "main"]);
+        r20b_git(root, &["config", "user.email", "test@example.com"]);
+        r20b_git(root, &["config", "user.name", "Test"]);
+        r20b_git(root, &["config", "commit.gpgsign", "false"]);
+        dir
+    }
+
+    fn n3_write(root: &std::path::Path, path: &str, text: &str) {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+
+    /// The shipping-quote repo at baseline: `quoteShipping(weightKg, zone)`
+    /// and its four call sites (checkout, cart preview, API handler, admin
+    /// manual quote).
+    fn n3_write_shipping_baseline(root: &std::path::Path) {
+        n3_write(
+            root,
+            "src/shipping/quote.ts",
+            "export type Zone = \"domestic\" | \"international\";\n\
+             export function quoteShipping(weightKg: number, zone: Zone): number {\n  \
+             return Math.round(weightKg * (zone === \"domestic\" ? 200 : 550));\n}\n",
+        );
+        for (path, caller, args) in [
+            (
+                "src/checkout/checkout.ts",
+                "checkoutShipping",
+                "order.weightKg, order.zone",
+            ),
+            (
+                "src/cart/cartSummary.ts",
+                "cartShipping",
+                "order.weightKg, order.zone",
+            ),
+            (
+                "src/api/quoteHandler.ts",
+                "handleQuote",
+                "order.weightKg, order.zone",
+            ),
+        ] {
+            n3_write(
+                root,
+                path,
+                &format!(
+                    "export function {caller}(order: Order): number {{\n  \
+                     return quoteShipping({args});\n}}\n"
+                ),
+            );
+        }
+        n3_write(
+            root,
+            "src/admin/manualQuote.ts",
+            "export function computeManualQuote(weightKg: number, zone: Zone): number {\n  \
+             return quoteShipping(weightKg, zone);\n}\n",
+        );
+    }
+
+    /// The r64 s5 change: `quoteShipping` gains `packageType`, three call
+    /// sites pass `order.packageType`, the admin tool passes `"standard"`,
+    /// plus a test file.
+    fn n3_write_shipping_refactor(root: &std::path::Path) {
+        n3_write(
+            root,
+            "src/shipping/quote.ts",
+            "export type Zone = \"domestic\" | \"international\";\n\
+             export function quoteShipping(weightKg: number, zone: Zone, packageType: PackageType): number {\n  \
+             const base = weightKg * (zone === \"domestic\" ? 200 : 550);\n  \
+             return Math.round(packageType === \"fragile\" ? base * 1.25 : base);\n}\n",
+        );
+        for (path, caller) in [
+            ("src/checkout/checkout.ts", "checkoutShipping"),
+            ("src/cart/cartSummary.ts", "cartShipping"),
+            ("src/api/quoteHandler.ts", "handleQuote"),
+        ] {
+            n3_write(
+                root,
+                path,
+                &format!(
+                    "export function {caller}(order: Order): number {{\n  \
+                     return quoteShipping(order.weightKg, order.zone, order.packageType);\n}}\n"
+                ),
+            );
+        }
+        n3_write(
+            root,
+            "src/admin/manualQuote.ts",
+            "export function computeManualQuote(weightKg: number, zone: Zone): number {\n  \
+             return quoteShipping(weightKg, zone, \"standard\");\n}\n",
+        );
+        n3_write(
+            root,
+            "src/shipping/quote.test.ts",
+            "test(\"fragile\", () => {\n  \
+             assert.equal(quoteShipping(10, \"domestic\", \"fragile\"), 2500);\n});\n",
+        );
+    }
+
+    /// A goal card this coordinator session created, with the dispatch
+    /// evidence `dispatch_goal_fn` records (the worktree already removed).
+    async fn n3_goal_created_by(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session_id: &str,
+        evidence: serde_json::Value,
+    ) -> cards::Card {
+        let card = setup_goal_in_state(pool, "complete", 1).await;
+        cards::merge_card_metadata(
+            pool,
+            &card.id,
+            serde_json::json!({ "created_by_session_id": session_id }),
+            false,
+        )
+        .await
+        .unwrap();
+        cards::set_goal_dispatch_evidence(pool, &card.id, evidence)
+            .await
+            .unwrap();
+        card
+    }
+
+    /// The r64 s5 shape. A five-file signature refactor with four call sites,
+    /// reviewed from the coordinator's directory where `git diff HEAD` reads
+    /// 0 (the old size signal). Both before and after the auto-land, the
+    /// delegate's assignment measures the goal's trunk-relative range: COMPLEX,
+    /// floor 0.80, and the cheapest cross-family model clearing it
+    /// (`claude-sonnet-5`), never `claude-haiku-4-5`. The assignment is
+    /// recorded on the goal card.
+    #[tokio::test]
+    async fn n3_the_r64_s5_signature_refactor_is_complex_and_not_reviewed_by_haiku() {
+        use crate::cost_router::recommend::{ReviewComplexity, REVIEW_FLOOR_COMPLEX};
+        let pool = test_pool().await;
+        let repo = n3_repo();
+        let root = repo.path();
+        n3_write_shipping_baseline(root);
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "seed"]);
+        let baseline = r20b_git(root, &["rev-parse", "HEAD"]);
+        r20b_git(root, &["checkout", "-q", "-b", "goal/n3-worker"]);
+        n3_write_shipping_refactor(root);
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(
+            root,
+            &["commit", "-q", "-m", "Add packageType to quoteShipping"],
+        );
+        let head = r20b_git(root, &["rev-parse", "HEAD"]);
+        r20b_git(root, &["checkout", "-q", "main"]);
+
+        let session = n3_session(root);
+        let author = Some(N3_AUTHOR);
+        let available = n3_available();
+        let card = n3_goal_created_by(
+            &pool,
+            &session.id,
+            serde_json::json!({
+                "worktree_path": root.join(".permagent-goal-worktrees/gone").to_string_lossy(),
+                "baseline_commit": baseline,
+                "head_commit": head,
+                "commits": ["Add packageType to quoteShipping"],
+            }),
+        )
+        .await;
+
+        // Not landed yet: the goal branch against its fork point from trunk.
+        assert_eq!(crate::after_turn::changed_lines(root).await, 0);
+        let live = assign_delegate_reviewer(Some(&pool), &session, author, &available).await;
+        assert_eq!(live.goal_card_id.as_deref(), Some(card.id.as_str()));
+        assert_eq!(live.diff_source, ReviewDiffSource::GoalForkPoint);
+        assert_eq!(
+            live.assignment.complexity,
+            ReviewComplexity::Complex,
+            "{:?}",
+            live.assignment.complexity_reasons
+        );
+
+        // Auto-land: trunk fast-forwards, `git diff HEAD` still reads 0.
+        r20b_git(root, &["merge", "-q", "--ff-only", "goal/n3-worker"]);
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": root.join(".permagent-goal-worktrees/gone").to_string_lossy(),
+                "baseline_commit": baseline,
+                "head_commit": head,
+                "landing": {"outcome": "landed", "landed_head": head},
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(crate::after_turn::changed_lines(root).await, 0);
+        let live = assign_delegate_reviewer(Some(&pool), &session, author, &available).await;
+        let a = &live.assignment;
+        assert_eq!(live.diff_source, ReviewDiffSource::GoalLandedRange);
+        assert_eq!(
+            a.complexity,
+            ReviewComplexity::Complex,
+            "{:?}",
+            a.complexity_reasons
+        );
+        assert_eq!(a.floor, REVIEW_FLOOR_COMPLEX);
+        assert_eq!(a.facts.code_files, 5, "{:?}", a.facts);
+        assert_eq!(a.facts.signature_changes, vec!["quoteShipping".to_string()]);
+        assert!(a.facts.call_sites >= 4, "{:?}", a.facts);
+        let pick = a.pick_role_model().expect("a cross-family reviewer");
+        assert!(
+            !pick.model.starts_with("claude-haiku"),
+            "haiku (0.63) cannot review a complex change: {a:?}"
+        );
+        assert_eq!(pick.model, "claude-sonnet-5", "{}", a.why);
+        assert!(a.pick_clears_floor);
+
+        record_delegate_reviewer_assignment(&pool, &live, Some(&pick), "assigned").await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let recorded = &card.metadata_json["reviewer_assignment"];
+        assert_eq!(recorded["complexity"], "complex", "{recorded}");
+        assert_eq!(recorded["floor"], REVIEW_FLOOR_COMPLEX);
+        assert_eq!(recorded["pick_model"], "claude-sonnet-5");
+        assert_eq!(recorded["selected"], "anthropic/claude-sonnet-5");
+        assert_eq!(recorded["selected_source"], "assigned");
+        assert_eq!(recorded["diff_source"], "goal_landed_range");
+        assert!(recorded["why"].as_str().is_some_and(|w| !w.is_empty()));
+        let candidates = recorded["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 4);
+        for c in candidates {
+            assert!(c["orchestration"].is_number() && c["cost_per_mtok"].is_number());
+        }
+    }
+
+    /// The mandate's prediction and the real dispatch resolve through the same
+    /// assignment: assessed as the dispatch (which records on the card) and
+    /// then again as the mandate, the pick and the resolved dispatch agree.
+    #[tokio::test]
+    async fn n3_the_mandate_prediction_equals_the_delegate_dispatch() {
+        let pool = test_pool().await;
+        let repo = n3_repo();
+        let root = repo.path();
+        n3_write_shipping_baseline(root);
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "seed"]);
+        let baseline = r20b_git(root, &["rev-parse", "HEAD"]);
+        n3_write_shipping_refactor(root);
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "landed refactor"]);
+        let head = r20b_git(root, &["rev-parse", "HEAD"]);
+        let session = n3_session(root);
+        n3_goal_created_by(
+            &pool,
+            &session.id,
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "head_commit": head,
+                "landing": {"outcome": "landed", "landed_head": head},
+            }),
+        )
+        .await;
+        let available = n3_available();
+        let resolve = |candidate: Option<crate::cost_router::RoleModel>| {
+            crate::cost_router::resolve_actual_review_dispatch(
+                false,
+                None,
+                Some(N3_AUTHOR),
+                None,
+                candidate,
+                &|_: &str| true,
+                Some(crate::cost_router::BudgetBand::Ok),
+            )
+        };
+
+        let dispatch_live =
+            assign_delegate_reviewer(Some(&pool), &session, Some(N3_AUTHOR), &available).await;
+        let dispatch = resolve(dispatch_live.assignment.pick_role_model());
+        record_delegate_reviewer_assignment(
+            &pool,
+            &dispatch_live,
+            dispatch.role_model.as_ref(),
+            "assigned",
+        )
+        .await;
+        let mandate_live =
+            assign_delegate_reviewer(Some(&pool), &session, Some(N3_AUTHOR), &available).await;
+        let predicted = resolve(mandate_live.assignment.pick_role_model());
+
+        assert_eq!(predicted.role_model, dispatch.role_model);
+        assert_eq!(predicted.warning, dispatch.warning);
+        assert_eq!(mandate_live.assignment, dispatch_live.assignment);
+        assert_eq!(
+            dispatch.role_model.map(|rm| rm.model).as_deref(),
+            Some("claude-sonnet-5")
+        );
+    }
+
+    /// A one-line typo fix with no goal is ROUTINE, measured on the working
+    /// tree, and gets the cheapest cross-family model clearing 0.60 (haiku).
+    #[tokio::test]
+    async fn n3_a_one_line_typo_review_is_routine_and_gets_the_cheapest_clearing_model() {
+        use crate::cost_router::recommend::{ReviewComplexity, REVIEW_FLOOR_ROUTINE};
+        let pool = test_pool().await;
+        let repo = n3_repo();
+        let root = repo.path();
+        n3_write(
+            root,
+            "src/pager.rs",
+            "// Retruns the last page.\npub fn last_page() {}\n",
+        );
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "seed"]);
+        n3_write(
+            root,
+            "src/pager.rs",
+            "// Returns the last page.\npub fn last_page() {}\n",
+        );
+
+        let session = n3_session(root);
+        let live =
+            assign_delegate_reviewer(Some(&pool), &session, Some(N3_AUTHOR), &n3_available()).await;
+        assert_eq!(live.goal_card_id, None);
+        assert_eq!(live.diff_source, ReviewDiffSource::WorkingTree);
+        let a = &live.assignment;
+        assert_eq!(
+            a.complexity,
+            ReviewComplexity::Routine,
+            "{:?}",
+            a.complexity_reasons
+        );
+        assert_eq!(a.floor, REVIEW_FLOOR_ROUTINE);
+        assert_eq!(
+            a.pick_label().as_deref(),
+            Some("anthropic/claude-haiku-4-5-20251001"),
+            "{}",
+            a.why
+        );
+    }
+
+    /// Nothing measurable (no goal, clean tree): held to at least MODERATE, so
+    /// the unmeasured review never falls to the cheapest end.
+    #[tokio::test]
+    async fn n3_an_unmeasured_review_fails_toward_a_capable_reviewer() {
+        use crate::cost_router::recommend::{ReviewComplexity, REVIEW_FLOOR_MODERATE};
+        let pool = test_pool().await;
+        let repo = n3_repo();
+        let root = repo.path();
+        n3_write(root, "src/pager.rs", "pub fn last_page() {}\n");
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "seed"]);
+
+        let session = n3_session(root);
+        let live =
+            assign_delegate_reviewer(Some(&pool), &session, Some(N3_AUTHOR), &n3_available()).await;
+        assert_eq!(live.diff_source, ReviewDiffSource::Unmeasured);
+        let a = &live.assignment;
+        assert_eq!(a.complexity, ReviewComplexity::Moderate);
+        assert_eq!(a.floor, REVIEW_FLOOR_MODERATE);
+        assert!(
+            a.complexity_reasons
+                .iter()
+                .any(|r| r == UNMEASURED_REVIEW_REASON),
+            "{:?}",
+            a.complexity_reasons
+        );
+        assert_eq!(
+            a.pick_label().as_deref(),
+            Some("anthropic/claude-sonnet-5"),
+            "{}",
+            a.why
+        );
     }
 
     /// Lane R22c-e (G26 MED-2): a diff over the reviewer's prompt window
