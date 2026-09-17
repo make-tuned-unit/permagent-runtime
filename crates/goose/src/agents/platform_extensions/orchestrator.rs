@@ -28223,6 +28223,18 @@ impl ReconcileReport {
 /// not per caller, because that is the scope the sweep's own precondition
 /// assumes: "a prior daemon lifecycle" can only be recovered from once, at this
 /// daemon's start.
+///
+/// Lane T8 (harness loop): `spawn_boot_reconcile` is called from
+/// `OrchestratorClient::new`, so any test that constructs a real client
+/// claims this flag for the rest of the `cargo test --lib` process — the
+/// same shape of leak Lane T7 fixed for `HEADLESS_DISPATCH_POLICY_CONFIG`.
+/// Nothing currently asserts on `spawn_boot_reconcile`'s own effect (every
+/// boot-reconciliation test below drives the pool-based
+/// `reconcile_in_progress_goals` instead, precisely to sidestep this claim),
+/// so the leak is inert today. [`take_boot_reconcile_claim_for_test`] closes
+/// the gap anyway: it gives a `#[cfg(test)]`-only seam to observe a genuine
+/// first claim regardless of process history, the way
+/// [`take_headless_dispatch_policy_for_test`] does for its sibling global.
 static RESUME_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Claim the once-per-process boot reconciliation against `done`. `true` means
@@ -28238,6 +28250,41 @@ fn claim_boot_reconcile(done: &std::sync::atomic::AtomicBool) -> bool {
         std::sync::atomic::Ordering::SeqCst,
     )
     .is_ok()
+}
+
+/// RAII guard returned by [`take_boot_reconcile_claim_for_test`]: restores
+/// whatever claim state (claimed or not) `RESUME_DONE` held before the guard
+/// was created, on `Drop`. Only constructible under `#[cfg(test)]`, so
+/// production has no way to re-arm the one-shot boot reconciliation.
+#[cfg(test)]
+#[must_use = "the previous boot-reconcile claim state is restored when this guard drops — \
+              binding it to `_` (instead of a named local) drops it immediately and undoes \
+              the override"]
+pub(crate) struct BootReconcileTestGuard {
+    previous: bool,
+}
+
+#[cfg(test)]
+impl Drop for BootReconcileTestGuard {
+    fn drop(&mut self) {
+        RESUME_DONE.store(self.previous, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Test-only seam (Lane T8): clears the process-global boot-reconcile claim
+/// for the guard's lifetime, so a test that reaches `spawn_boot_reconcile`
+/// (directly, or by constructing a real `OrchestratorClient`) can observe a
+/// genuine first-claim pass instead of silently inheriting whichever earlier
+/// test in this binary claimed it first. Pair with
+/// `#[serial_test::serial(boot_reconcile)]` -- the shared key every test that
+/// depends on the boot pass's report/log output takes -- so two such tests
+/// never interleave; the guard makes each test's footprint reversible
+/// regardless of run order, but does not by itself stop two guarded tests
+/// running concurrently. Sibling of [`take_headless_dispatch_policy_for_test`].
+#[cfg(test)]
+pub(crate) fn take_boot_reconcile_claim_for_test() -> BootReconcileTestGuard {
+    let previous = RESUME_DONE.swap(false, std::sync::atomic::Ordering::SeqCst);
+    BootReconcileTestGuard { previous }
 }
 
 /// Spawn the boot reconciliation of goals interrupted by a PRIOR DAEMON
@@ -45061,6 +45108,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// The boot report counts foreign-owned goals on their own line and does
     /// not count them as reconciled.
     #[tokio::test]
+    #[serial_test::serial(boot_reconcile)]
     async fn the_boot_report_counts_goals_owned_by_a_live_terminal() {
         let pool = test_pool().await;
         crate::session::spectral_schema::apply_briefings_schema(&pool)
@@ -45094,6 +45142,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// for a human to call resume_roadmap. The normal dispatcher seam must take
     /// the bounded Ready→InProgress claim exactly once in the same pass.
     #[tokio::test]
+    #[serial_test::serial(boot_reconcile)]
     async fn resume_requeues_and_dispatches_orphan_once() {
         let pool = test_pool().await;
         crate::session::spectral_schema::apply_briefings_schema(&pool)
@@ -45116,6 +45165,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     }
 
     #[tokio::test]
+    #[serial_test::serial(boot_reconcile)]
     async fn boot_pending_scan_is_bounded_and_does_not_sweep_generic_ready_work() {
         let pool = test_pool().await;
         let mut pending_ids = Vec::new();
@@ -45247,6 +45297,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// silently rewrites goal state is the condition R0 spent a day
     /// reconstructing from the journal; the pass reports itself instead.
     #[tokio::test]
+    #[serial_test::serial(boot_reconcile)]
     async fn the_boot_reconciler_reports_what_it_did() {
         let pool = test_pool().await;
         crate::session::spectral_schema::apply_briefings_schema(&pool)
@@ -45320,7 +45371,16 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// one level up forbids ("a report that omits its empty rows cannot be told
     /// from a report that never looked").
     #[tokio::test]
+    #[serial_test::serial(boot_reconcile)]
     async fn a_quiet_boot_still_reports_that_it_looked() {
+        // Lane T8: an empty-slate claim, regardless of what an earlier test
+        // in this binary already claimed against the real `RESUME_DONE`
+        // static — mirrors `take_headless_dispatch_policy_for_test` in
+        // `dispatch_goal_to_and_resume_roadmap_consult_the_installed_headless_policy`.
+        // `Drop` restores whatever this process's claim state was once this
+        // test is done, rather than leaking it into whatever runs next.
+        let _boot_guard = take_boot_reconcile_claim_for_test();
+
         let pool = test_pool().await;
         crate::session::spectral_schema::apply_briefings_schema(&pool)
             .await
@@ -45362,6 +45422,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// A boot that finds nothing in flight files nothing — the reconciler is a
     /// report of work done, not a heartbeat.
     #[tokio::test]
+    #[serial_test::serial(boot_reconcile)]
     async fn a_quiet_boot_files_no_briefing() {
         let pool = test_pool().await;
         crate::session::spectral_schema::apply_briefings_schema(&pool)
