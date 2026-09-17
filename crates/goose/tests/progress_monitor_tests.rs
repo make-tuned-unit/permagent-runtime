@@ -14,6 +14,8 @@ fn ev(name: &str, args: Value, result_hash: u64, is_error: bool) -> ToolEvent {
         result_hash,
         is_error,
         is_mutating: permagent::tool_monitor::is_mutating(name),
+        is_ac_validation_error: false,
+        is_guard_block: false,
     }
 }
 
