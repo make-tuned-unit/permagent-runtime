@@ -48936,7 +48936,21 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// that differs from the pending proposal, paired with a wrong hash,
     /// still fails — and the error names the exact hash expected for the
     /// goals actually submitted, so a model can recover in one more call.
+    ///
+    /// Mode-dependent like the R62g blocker tests (98780e3a): with another
+    /// test in this binary having installed the process-wide
+    /// `HEADLESS_DISPATCH_POLICY_CONFIG` `OnceLock` (nothing can reset it),
+    /// `create_roadmap` takes the f9ecdb5a canonical-proposal recovery —
+    /// `canonical_pending_goals` finds the persisted proposal still matches
+    /// its own stored hash, so `resolve_create_roadmap_proposal_hash` treats
+    /// it as identical-to-pending and proceeds, regardless of the wrong hash
+    /// submitted here. The invariant that holds in either mode: the
+    /// differing `goals_json` this call sent is never itself materialized —
+    /// only the untouched, already-proven canonical proposal is. Only when
+    /// no headless policy is installed does the ordinary hash-mismatch error
+    /// (naming the differing goals' own expected hash) apply.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn goals_json_that_differs_from_the_pending_proposal_still_requires_the_correct_hash() {
         let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
         let pool = sm.pool_clone().await.unwrap();
@@ -48951,18 +48965,40 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         let wrong_hash = "f".repeat(64);
         assert_ne!(wrong_hash, expected_hash);
 
-        let err = client
+        let result = client
             .handle_create_roadmap(Some(create_roadmap_args(
                 &different_goals_json,
                 &wrong_hash,
                 &approval_decision_id,
             )))
-            .await
-            .expect_err("goals that do not match the pending proposal and a wrong hash must fail");
-        assert!(
-            err.contains(&expected_hash),
-            "the error must name the exact expected hash for these goals: {err}"
-        );
+            .await;
+
+        if is_headless_dispatch_policy_installed() {
+            let text = result
+                .expect(
+                    "with the headless canonical-proposal recovery installed, differing \
+                     goals_json paired with a wrong hash recovers the untouched pending \
+                     proposal instead of failing",
+                )
+                .content[0]
+                .as_text()
+                .unwrap()
+                .text
+                .clone();
+            assert!(
+                !text.contains("A goal decompose_roadmap never proposed"),
+                "the headless recovery must materialize the canonical pending proposal, \
+                 never the caller's differing goals_json: {text}"
+            );
+        } else {
+            let err = result.expect_err(
+                "goals that do not match the pending proposal and a wrong hash must fail",
+            );
+            assert!(
+                err.contains(&expected_hash),
+                "the error must name the exact expected hash for these goals: {err}"
+            );
+        }
     }
 
     /// A headless session that genuinely cannot reproduce the hash (goals
