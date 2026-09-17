@@ -481,10 +481,16 @@ pub(crate) async fn goal_dispatching_session_working_dir(
 /// approval actually takes: `approve_review` is outbox-eligible, so
 /// `execute_effect` delegates before reaching its own inline arm. This code
 /// spent its whole life in that unreachable arm (L7, 2026-08-31).
+///
+/// `headless_auto_land` (Lane R63b) is the `auto_land_allowed` the approval
+/// arrived with — true only on the `PERMAGENT_HEADLESS_AUTOLAND` path. Only
+/// then does a `NeedsMerge` get the rebase + fresh re-verify retry below;
+/// interactive approvals keep reporting "needs merge" unchanged.
 async fn land_approved_goal(
     pool: &Pool<Sqlite>,
     goal_id: &str,
     project_id: Option<&str>,
+    headless_auto_land: bool,
 ) -> (
     Option<(String, crate::goal_landing::LandOutcome)>,
     Option<String>,
@@ -875,7 +881,88 @@ async fn land_approved_goal(
             .await;
         return (Some((project_id, outcome)), Some(note));
     };
-    let outcome = crate::goal_landing::land(&req).await;
+    let mut req = req;
+    let mut outcome = crate::goal_landing::land(&req).await;
+
+    // Lane R63b (M47 r63 s2): R56a's derived disjoint write scopes dispatch
+    // sibling goals in PARALLEL, so once the first lands the rest cannot
+    // fast-forward — fast-forward-only landing was only enough while siblings
+    // were serialized. Under headless auto-land, rebase the goal branch onto
+    // the moved trunk (never a merge commit: history stays linear), re-verify
+    // the rebased head, and land it through the SAME `land` call, so every
+    // receipt, note and consumer below is unchanged. The helper refuses
+    // unless the goal's write_scope and own changes are disjoint from what the
+    // trunk changed, the worktree is clean and the rebase applies. A refusal
+    // or conflict leaves the branch intact and keeps the honest `NeedsMerge`;
+    // a failed re-verify parks the goal. Bounded, because a sibling can land
+    // while this one re-verifies.
+    let mut card = card;
+    let mut rebase_refusal: Option<&'static str> = None;
+    if headless_auto_land {
+        for _ in 0..HEADLESS_REBASE_MAX_ATTEMPTS {
+            let crate::goal_landing::LandOutcome::NeedsMerge { trunk, .. } = &outcome else {
+                break;
+            };
+            let attempt =
+                crate::agents::platform_extensions::orchestrator::rebase_goal_branch_for_headless_land(
+                    pool,
+                    &card,
+                    std::path::Path::new(&worktree_path),
+                    &root,
+                    trunk,
+                    &req.branch,
+                    &req.head_commit,
+                )
+                .await;
+            // The helper re-points metadata on a rebase; re-read so the
+            // landing receipt below never writes a stale evidence copy back.
+            if let Some(fresh) = crate::cards::get_card(pool, goal_id).await.ok().flatten() {
+                card = fresh;
+            }
+            match attempt {
+                crate::agents::platform_extensions::orchestrator::HeadlessRebase::Verified {
+                    head,
+                } => {
+                    req.head_commit = head;
+                    outcome = crate::goal_landing::land(&req).await;
+                    rebase_refusal = Some("rebase_retries_exhausted");
+                }
+                crate::agents::platform_extensions::orchestrator::HeadlessRebase::NotRebased {
+                    reason,
+                } => {
+                    rebase_refusal = Some(reason);
+                    break;
+                }
+                crate::agents::platform_extensions::orchestrator::HeadlessRebase::ReverifyFailed {
+                    detail,
+                } => {
+                    let note = format!("note: not landed — {detail}");
+                    tracing::warn!(
+                        goal_id,
+                        reason = "rebase_reverify_failed",
+                        "land_refused reason=rebase_reverify_failed: {note}"
+                    );
+                    let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
+                    persist_landing_outcome(
+                        pool,
+                        goal_id,
+                        &card,
+                        &outcome,
+                        Some("rebase_reverify_failed"),
+                    )
+                    .await;
+                    crate::agents::platform_extensions::orchestrator::park_refused_goal(
+                        pool, &card, &note,
+                    )
+                    .await;
+                    return (Some((project_id, outcome)), Some(note));
+                }
+            }
+        }
+        if !matches!(outcome, crate::goal_landing::LandOutcome::NeedsMerge { .. }) {
+            rebase_refusal = None;
+        }
+    }
 
     // YF2 (G6 review, Lane Y-fix 2026-09-09, finding #2): this outcome used
     // to be computed and then discarded — only folded into a one-shot
@@ -888,7 +975,7 @@ async fn land_approved_goal(
     // under the worker (e.g. a second goal in the same roadmap landing
     // first). Persist it onto the card so those readers can gate on whether
     // landing actually happened, not merely whether it was attempted.
-    persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
+    persist_landing_outcome(pool, goal_id, &card, &outcome, rebase_refusal).await;
 
     let warning = if let crate::goal_landing::LandOutcome::NeedsMerge { branch, trunk } = &outcome {
         ensure_needs_merge_decision(pool, goal_id, &card.title, &card.project_id, branch, trunk)
@@ -901,6 +988,10 @@ async fn land_approved_goal(
 
     (Some((project_id, outcome)), warning)
 }
+
+/// Lane R63b: how many rebase + re-verify rounds one headless landing may
+/// spend when siblings keep moving the trunk underneath it.
+const HEADLESS_REBASE_MAX_ATTEMPTS: usize = 3;
 
 /// Shared `dispatch_evidence.landing` persistence (YF2, G6 review, Lane
 /// Y-fix 2026-09-09) — factored out (R1, Lane D1) so both the ordinary git
@@ -968,6 +1059,7 @@ async fn persist_landing_outcome(
 async fn ensure_registered_goal_landed(
     pool: &Pool<Sqlite>,
     goal_id: &str,
+    headless_auto_land: bool,
 ) -> Result<(), GuardError> {
     let card = crate::cards::get_card(pool, goal_id)
         .await
@@ -993,7 +1085,8 @@ async fn ensure_registered_goal_landed(
         // the completion authority; there is no trunk to fast-forward.
         return Ok(());
     }
-    let (landing, warning) = land_approved_goal(pool, goal_id, Some(&card.project_id)).await;
+    let (landing, warning) =
+        land_approved_goal(pool, goal_id, Some(&card.project_id), headless_auto_land).await;
     let Some((_, outcome)) = landing else {
         return Err(GuardError::Db(format!(
             "registered continuation blocked: approved goal '{}' has no durable landing outcome{}",
@@ -1129,7 +1222,7 @@ pub async fn apply_decision_effect_with_auto_land(
                     // registered continuation hit a transient storage or
                     // dispatch failure. Re-enter only that exact continuation
                     // seam; never replay the broad legacy promoter.
-                    ensure_registered_goal_landed(pool, goal_id).await?;
+                    ensure_registered_goal_landed(pool, goal_id, auto_land_allowed).await?;
                     match crate::agents::platform_extensions::program_bridge::handoff_registered_goal(pool, goal_id).await {
                         Ok(Some(response))
                             if response.status
@@ -1213,7 +1306,13 @@ pub async fn apply_decision_effect_with_auto_land(
             let (landing, landing_warning) = if no_write_program {
                 (None, None)
             } else {
-                land_approved_goal(pool, goal_id, decision.project_id.as_deref()).await
+                land_approved_goal(
+                    pool,
+                    goal_id,
+                    decision.project_id.as_deref(),
+                    auto_land_allowed,
+                )
+                .await
             };
             if goal_state(pool, goal_id).await?.as_deref() == Some("failed") {
                 return Ok((
@@ -2649,7 +2748,7 @@ mod tests {
             .unwrap();
         assert!(unblock.detail.contains(&expected));
         // Repeating the landing refusal reuses the same open unblock.
-        let (_, repeated_note) = land_approved_goal(&pool, &card.id, None).await;
+        let (_, repeated_note) = land_approved_goal(&pool, &card.id, None, false).await;
         assert_eq!(repeated_note, note);
         let repeated = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
             .await
@@ -2670,7 +2769,7 @@ mod tests {
         .await
         .unwrap();
 
-        let (landing, note) = land_approved_goal(&pool, &card.id, None).await;
+        let (landing, note) = land_approved_goal(&pool, &card.id, None, false).await;
         assert!(matches!(
             landing,
             Some((_, crate::goal_landing::LandOutcome::Skipped(_)))
@@ -2713,7 +2812,7 @@ mod tests {
         .await
         .unwrap();
 
-        let (landing, note) = land_approved_goal(&pool, &card.id, None).await;
+        let (landing, note) = land_approved_goal(&pool, &card.id, None, false).await;
         assert!(
             matches!(
                 landing,
@@ -2781,7 +2880,7 @@ mod tests {
             .await
             .unwrap();
 
-        ensure_registered_goal_landed(&pool, &goal.id)
+        ensure_registered_goal_landed(&pool, &goal.id, false)
             .await
             .expect("explicit no-write contract must not require a repository landing");
     }
@@ -4187,7 +4286,7 @@ mod tests {
         .await
         .unwrap();
 
-        let (landing, note) = land_approved_goal(&pool, &goal_unverified.id, None).await;
+        let (landing, note) = land_approved_goal(&pool, &goal_unverified.id, None, false).await;
         assert!(
             matches!(
                 landing,
@@ -4255,7 +4354,7 @@ mod tests {
         .await
         .unwrap();
 
-        let (landing, note) = land_approved_goal(&pool, &goal_verified.id, None).await;
+        let (landing, note) = land_approved_goal(&pool, &goal_verified.id, None, false).await;
         assert_eq!(
             note, None,
             "a successful land must not also report a refusal note"
@@ -4279,6 +4378,463 @@ mod tests {
         // landing in the real approval flow, so this goal's card column is
         // left exactly where it started (Review); only the trunk-side
         // outcome asserted above is this function's own contract.
+    }
+
+    // ── Lane R63b: headless landing rebases a parallel sibling's branch ──────
+
+    /// M47 r63 s2 shape: two sibling goal branches forked from the same
+    /// trunk commit, each committed in its own linked worktree
+    /// (`<tmp>/run-a`, `<tmp>/run-b` -> `goal/run-a`, `goal/run-b`).
+    struct R63bSiblings {
+        repo: tempfile::TempDir,
+        _worktrees: tempfile::TempDir,
+        wt_a: std::path::PathBuf,
+        wt_b: std::path::PathBuf,
+        base: String,
+        head_a: String,
+        head_b: String,
+    }
+
+    fn r63b_siblings(a_files: &[&str], b_files: &[&str]) -> R63bSiblings {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        git_in(root, &["init", "-b", "main"]);
+        git_in(root, &["config", "user.email", "test@example.com"]);
+        git_in(root, &["config", "user.name", "Test"]);
+        git_in(root, &["config", "commit.gpgsign", "false"]);
+        // No excludes from the machine's global config: a global `*.pyc`
+        // ignore would change what `add -A` tracks and what a checkout may
+        // overwrite, and the rebase-abort test depends on both.
+        git_in(root, &["config", "core.excludesFile", "/dev/null"]);
+        std::fs::write(root.join("README.md"), "base\n").unwrap();
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-m", "base"]);
+        let base = git_in(root, &["rev-parse", "HEAD"]);
+
+        let worktrees = tempfile::tempdir().unwrap();
+        let commit_sibling = |name: &str, files: &[&str]| {
+            let wt = worktrees.path().join(format!("run-{name}"));
+            let branch = format!("goal/run-{name}");
+            git_in(
+                root,
+                &["worktree", "add", "-b", &branch, wt.to_str().unwrap()],
+            );
+            for file in files {
+                let path = wt.join(file);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, format!("goal {name}\n")).unwrap();
+            }
+            git_in(&wt, &["add", "-A"]);
+            git_in(&wt, &["commit", "-m", &format!("goal {name}")]);
+            let head = git_in(&wt, &["rev-parse", "HEAD"]);
+            (wt, head)
+        };
+        let (wt_a, head_a) = commit_sibling("a", a_files);
+        let (wt_b, head_b) = commit_sibling("b", b_files);
+        R63bSiblings {
+            repo,
+            _worktrees: worktrees,
+            wt_a,
+            wt_b,
+            base,
+            head_a,
+            head_b,
+        }
+    }
+
+    async fn r63b_project(pool: &Pool<Sqlite>, root: &std::path::Path) -> String {
+        let project = crate::projects::create_project(
+            pool,
+            crate::projects::CreateProject {
+                name: format!("R63b {}", uuid::Uuid::new_v4()),
+                root_path: Some(root.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::cards::seed_goal_columns(pool, &project.id)
+            .await
+            .unwrap();
+        project.id
+    }
+
+    /// A reviewed goal with a PASS verdict, a declared `write_scope`, and a
+    /// worker session whose recorded genuine verify command is
+    /// `verify_command` — what `run_fresh_verify_for_hold` re-runs.
+    async fn r63b_goal(
+        pool: &Pool<Sqlite>,
+        project_id: &str,
+        worktree: &std::path::Path,
+        base: &str,
+        head: &str,
+        scope: &[&str],
+        verify_command: &str,
+    ) -> crate::cards::Card {
+        use crate::conversation::message::MessageContent;
+        use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+
+        let review = crate::cards::get_goal_column(pool, project_id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let session_id = format!("r63b-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&session_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        let request = MessageContent::tool_request(
+            "r63b-call",
+            Ok(
+                CallToolRequestParams::new("developer__verify".to_string()).with_arguments(
+                    serde_json::Map::from_iter([(
+                        "command".to_string(),
+                        serde_json::json!(verify_command),
+                    )]),
+                ),
+            ),
+        );
+        let mut result = CallToolResult::success(vec![Content::text("PASS")]);
+        result.structured_content = Some(serde_json::json!({
+            "kind": crate::agents::platform_extensions::developer::verify::VERIFICATION_OBSERVATION_KIND,
+            "command": verify_command,
+            "verdict": "pass",
+            "evidence": "pass",
+            "vacuous_reason": null,
+        }));
+        let response = MessageContent::tool_response("r63b-call", Ok(result));
+        for (role, content) in [("assistant", request), ("user", response)] {
+            sqlx::query(
+                "INSERT INTO messages (message_id, session_id, role, content_json, \
+                 created_timestamp) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(&session_id)
+            .bind(role)
+            .bind(serde_json::to_string(&vec![content]).unwrap())
+            .bind(chrono::Utc::now().timestamp())
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        crate::cards::create_card(
+            pool,
+            crate::cards::CreateCard {
+                project_id: project_id.to_string(),
+                title: format!("R63b sibling {}", worktree.display()),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 1,
+                    "goal_state": "review",
+                    "worker_session_id": session_id,
+                    "write_scope": scope,
+                    "dispatch_evidence": {
+                        "worktree_path": worktree.to_string_lossy(),
+                        "baseline_commit": base,
+                        "head_commit": head,
+                        "commits": [format!("{} the work", head.chars().take(7).collect::<String>())],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    fn r63b_landing(card: &crate::cards::Card) -> serde_json::Value {
+        card.metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .cloned()
+            .expect("the landing outcome must be persisted")
+    }
+
+    /// Lane R63b (M47 r63 s2): two siblings with disjoint write scopes ran in
+    /// parallel; the first fast-forwards, and the second, which used to be
+    /// refused "needs merge", is rebased onto the moved trunk, re-verified on
+    /// the rebased head (the recorded check only passes once goal a's file is
+    /// present), and landed through the same `land` path.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn headless_landing_rebases_a_disjoint_sibling_and_lands_it_after_reverify() {
+        let fx = r63b_siblings(&["a.txt"], &["b.txt"]);
+        let pool = test_pool().await;
+        let project_id = r63b_project(&pool, fx.repo.path()).await;
+        let goal_a = r63b_goal(
+            &pool,
+            &project_id,
+            &fx.wt_a,
+            &fx.base,
+            &fx.head_a,
+            &["a.txt"],
+            "test -f a.txt",
+        )
+        .await;
+        let goal_b = r63b_goal(
+            &pool,
+            &project_id,
+            &fx.wt_b,
+            &fx.base,
+            &fx.head_b,
+            &["b.txt"],
+            "test -f a.txt",
+        )
+        .await;
+
+        let (landing_a, _) = land_approved_goal(&pool, &goal_a.id, None, true).await;
+        assert!(
+            matches!(
+                landing_a,
+                Some((_, crate::goal_landing::LandOutcome::FastForwarded { .. }))
+            ),
+            "{landing_a:?}"
+        );
+        assert_eq!(git_in(fx.repo.path(), &["rev-parse", "main"]), fx.head_a);
+
+        let (landing_b, note_b) = land_approved_goal(&pool, &goal_b.id, None, true).await;
+        let Some((_, crate::goal_landing::LandOutcome::FastForwarded { head, .. })) =
+            landing_b.clone()
+        else {
+            panic!("the disjoint sibling must rebase and land: {landing_b:?} {note_b:?}");
+        };
+        assert_eq!(note_b, None);
+        assert_ne!(head, fx.head_b, "a rebased head is a new commit");
+        assert_eq!(git_in(fx.repo.path(), &["rev-parse", "main"]), head);
+        assert_eq!(
+            git_in(fx.repo.path(), &["rev-parse", "main^"]),
+            fx.head_a,
+            "linear history: goal b sits directly on goal a, no merge commit"
+        );
+        assert_eq!(git_in(&fx.wt_b, &["rev-parse", "HEAD"]), head);
+
+        let card = crate::cards::get_card(&pool, &goal_b.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = r63b_landing(&card);
+        assert_eq!(landing["outcome"], "landed", "{landing:?}");
+        assert_eq!(landing["landed_head"], serde_json::json!(head));
+        assert!(landing["refusal_reason"].is_null(), "{landing:?}");
+        let evidence = &card.metadata_json["dispatch_evidence"];
+        assert_eq!(evidence["head_commit"], serde_json::json!(head));
+        assert_eq!(evidence["baseline_commit"], serde_json::json!(fx.head_a));
+        assert_eq!(
+            card.metadata_json["baseline_commit"],
+            serde_json::json!(fx.head_a)
+        );
+        assert_eq!(evidence["commits"].as_array().map(Vec::len), Some(1));
+        assert_eq!(evidence["rebased_onto_trunk"]["reverify"], "pass");
+        assert_eq!(
+            evidence["rebased_onto_trunk"]["from_head"],
+            serde_json::json!(fx.head_b)
+        );
+    }
+
+    /// The trunk changed a path inside the goal's declared scope (a directory
+    /// claims its descendants). The rebase would even apply cleanly, but
+    /// independence is unproven, so nothing is rebased: the branch is
+    /// untouched and the existing "needs merge" refusal and unblock stand.
+    #[tokio::test]
+    async fn headless_landing_does_not_rebase_when_the_trunk_touched_the_goal_scope() {
+        let fx = r63b_siblings(&["docs/a.md"], &["docs/b.md"]);
+        let pool = test_pool().await;
+        let project_id = r63b_project(&pool, fx.repo.path()).await;
+        git_in(fx.repo.path(), &["merge", "--ff-only", "goal/run-a"]);
+        let goal_b = r63b_goal(
+            &pool,
+            &project_id,
+            &fx.wt_b,
+            &fx.base,
+            &fx.head_b,
+            &["docs"],
+            "true",
+        )
+        .await;
+
+        let (landing, _) = land_approved_goal(&pool, &goal_b.id, None, true).await;
+        assert!(
+            matches!(
+                landing,
+                Some((_, crate::goal_landing::LandOutcome::NeedsMerge { .. }))
+            ),
+            "{landing:?}"
+        );
+        assert_eq!(git_in(&fx.wt_b, &["rev-parse", "HEAD"]), fx.head_b);
+        assert_eq!(git_in(fx.repo.path(), &["rev-parse", "main"]), fx.head_a);
+        let card = crate::cards::get_card(&pool, &goal_b.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = r63b_landing(&card);
+        assert_eq!(landing["outcome"], "needs_merge");
+        assert_eq!(landing["refusal_reason"], "rebase_trunk_overlap");
+        assert!(card
+            .metadata_json
+            .pointer("/dispatch_evidence/rebased_onto_trunk")
+            .is_none());
+        assert_eq!(
+            card.metadata_json["dispatch_evidence"]["head_commit"],
+            serde_json::json!(fx.head_b)
+        );
+        let unblock = decisions::find_open_decision_for_goal(&pool, &goal_b.id, "unblock")
+            .await
+            .unwrap()
+            .expect("needs merge still leaves its manual-merge unblock");
+        assert!(unblock.detail.contains("goal/run-b"), "{}", unblock.detail);
+    }
+
+    /// Scope-disjoint, but `git rebase` cannot apply: the trunk now tracks a
+    /// file the goal worktree holds untracked (a regenerated artefact the
+    /// clean check tolerates). The rebase is aborted, the branch is left
+    /// exactly as it was, and the goal keeps the honest "needs merge".
+    #[tokio::test]
+    async fn headless_landing_aborts_a_rebase_that_cannot_apply_and_leaves_the_branch_intact() {
+        let fx = r63b_siblings(&["a.txt", "stray.pyc"], &["b.txt"]);
+        std::fs::write(fx.wt_b.join("stray.pyc"), "local bytecode\n").unwrap();
+        let pool = test_pool().await;
+        let project_id = r63b_project(&pool, fx.repo.path()).await;
+        git_in(fx.repo.path(), &["merge", "--ff-only", "goal/run-a"]);
+        let goal_b = r63b_goal(
+            &pool,
+            &project_id,
+            &fx.wt_b,
+            &fx.base,
+            &fx.head_b,
+            &["b.txt"],
+            "true",
+        )
+        .await;
+
+        let (landing, _) = land_approved_goal(&pool, &goal_b.id, None, true).await;
+        assert!(
+            matches!(
+                landing,
+                Some((_, crate::goal_landing::LandOutcome::NeedsMerge { .. }))
+            ),
+            "{landing:?}"
+        );
+        assert_eq!(git_in(&fx.wt_b, &["rev-parse", "HEAD"]), fx.head_b);
+        assert_eq!(
+            git_in(&fx.wt_b, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "goal/run-b",
+            "no rebase may be left in progress"
+        );
+        assert_eq!(git_in(fx.repo.path(), &["rev-parse", "main"]), fx.head_a);
+        let card = crate::cards::get_card(&pool, &goal_b.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r63b_landing(&card)["refusal_reason"], "rebase_conflict");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &goal_b.id, "unblock")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// The rebase applies, but the worker's recorded check no longer passes
+    /// on the rebased head. Nothing lands; the goal is parked with the reason
+    /// and a `fail` verdict (so the old pass is never credited to the new
+    /// head), and the rebased branch is left intact.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn headless_landing_parks_when_the_rebased_head_fails_reverify() {
+        let fx = r63b_siblings(&["a.txt"], &["b.txt"]);
+        let pool = test_pool().await;
+        let project_id = r63b_project(&pool, fx.repo.path()).await;
+        git_in(fx.repo.path(), &["merge", "--ff-only", "goal/run-a"]);
+        let goal_b = r63b_goal(
+            &pool,
+            &project_id,
+            &fx.wt_b,
+            &fx.base,
+            &fx.head_b,
+            &["b.txt"],
+            "test -f never-created.txt",
+        )
+        .await;
+
+        let (landing, note) = land_approved_goal(&pool, &goal_b.id, None, true).await;
+        assert!(
+            matches!(
+                landing,
+                Some((_, crate::goal_landing::LandOutcome::Skipped(_)))
+            ),
+            "{landing:?}"
+        );
+        let note = note.expect("a refused landing reports its note");
+        assert!(note.contains("did not genuinely pass"), "{note}");
+        assert_eq!(git_in(fx.repo.path(), &["rev-parse", "main"]), fx.head_a);
+        let rebased = git_in(&fx.wt_b, &["rev-parse", "goal/run-b"]);
+        assert_ne!(rebased, fx.head_b);
+        assert_eq!(git_in(&fx.wt_b, &["rev-parse", "goal/run-b^"]), fx.head_a);
+        assert_eq!(goal_state_of(&pool, &goal_b.id).await, "failed");
+
+        let card = crate::cards::get_card(&pool, &goal_b.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = r63b_landing(&card);
+        assert_eq!(landing["outcome"], "skipped");
+        assert_eq!(landing["refusal_reason"], "rebase_reverify_failed");
+        let evidence = &card.metadata_json["dispatch_evidence"];
+        assert_eq!(evidence["verdict"]["status"], "fail");
+        assert_eq!(evidence["head_commit"], serde_json::json!(rebased));
+        assert_eq!(evidence["rebased_onto_trunk"]["reverify"], "fail");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &goal_b.id, "unblock")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// Interactive approvals are unchanged: the same disjoint sibling shape
+    /// that headless landing rebases stays "needs merge" for the human, with
+    /// no rebase, no metadata rewrite and no machine refusal reason.
+    #[tokio::test]
+    async fn interactive_landing_still_reports_needs_merge_without_rebasing() {
+        let fx = r63b_siblings(&["a.txt"], &["b.txt"]);
+        let pool = test_pool().await;
+        let project_id = r63b_project(&pool, fx.repo.path()).await;
+        git_in(fx.repo.path(), &["merge", "--ff-only", "goal/run-a"]);
+        let goal_b = r63b_goal(
+            &pool,
+            &project_id,
+            &fx.wt_b,
+            &fx.base,
+            &fx.head_b,
+            &["b.txt"],
+            "test -f a.txt",
+        )
+        .await;
+
+        let (landing, _) = land_approved_goal(&pool, &goal_b.id, None, false).await;
+        let Some((_, outcome)) = landing else {
+            panic!("an interactive landing still reports its outcome");
+        };
+        assert!(
+            outcome.describe().contains("cannot fast-forward"),
+            "{}",
+            outcome.describe()
+        );
+        assert_eq!(git_in(&fx.wt_b, &["rev-parse", "HEAD"]), fx.head_b);
+        assert_eq!(git_in(fx.repo.path(), &["rev-parse", "main"]), fx.head_a);
+        let card = crate::cards::get_card(&pool, &goal_b.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(r63b_landing(&card)["refusal_reason"].is_null());
+        assert!(card
+            .metadata_json
+            .pointer("/dispatch_evidence/rebased_onto_trunk")
+            .is_none());
     }
 
     /// H1 (G8 review, harness loop Lane E3 2026-09-10), G8's own pinning

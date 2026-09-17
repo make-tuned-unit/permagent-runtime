@@ -20944,6 +20944,278 @@ pub(crate) async fn worktree_head_commit(worktree_path: &std::path::Path) -> Opt
         .filter(|s| !s.is_empty())
 }
 
+/// Lane R63b: repo-relative paths that differ between `from` and `to`, read
+/// NUL-separated so git never quotes an unusual name into a string that
+/// would compare unequal to the declared scope.
+async fn paths_changed_since(
+    worktree: &std::path::Path,
+    from: &str,
+    to: &str,
+) -> Result<Vec<String>, String> {
+    let out = git_in_worktree(worktree, &["diff", "--name-only", "-z", from, to]).await?;
+    Ok(out
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Lane R63b: what [`rebase_goal_branch_for_headless_land`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HeadlessRebase {
+    /// Rebased cleanly onto the trunk, and a fresh verify genuinely passed
+    /// at `head`. Card metadata already names `head`.
+    Verified { head: String },
+    /// Not rebased: the goal branch is exactly as it was. `reason` is a
+    /// stable machine key for the landing receipt.
+    NotRebased { reason: &'static str },
+    /// Rebased cleanly, but the fresh verify of the rebased head did not
+    /// genuinely pass. The rebased branch is left intact; `detail` is the
+    /// human sentence.
+    ReverifyFailed { detail: String },
+}
+
+/// Lane R63b (M47 r63 s2, `harness-cli-argparse-log-filter`): R56a's derived
+/// disjoint `write_scope` lets sibling goals run in parallel, so after the
+/// first one lands the others can no longer fast-forward and were parked as
+/// "needs merge" with correct, verified work on their branches. Headless
+/// auto-land only (the caller gates on it): rebase the goal branch onto the
+/// trunk's current head inside the goal's own worktree, then re-run the
+/// worker's verification on the rebased head ([`run_fresh_verify_for_hold`])
+/// because review's verify binding does not cover a rewritten head.
+///
+/// Refuses, leaving the branch untouched, unless every one of these holds:
+/// the worktree exists, is not the trunk checkout, is on `branch`, and is
+/// clean apart from regenerated artefacts; `landing_head` is still on the
+/// branch; the goal declares a non-empty `write_scope`; and the files the
+/// trunk changed since the fork point overlap neither that scope nor the
+/// files the goal itself changed (so a clean rebase is a pure union of path
+/// sets, never a textual merge of one file). A rebase that fails is aborted.
+///
+/// On a clean rebase the card's rolling metadata is re-pointed at the
+/// rebased history so every baseline/head consumer stays consistent:
+/// `baseline_commit` (top-level and in `dispatch_evidence`, as R22h does),
+/// `dispatch_evidence.{head_commit, commits}`, `work_base_commit` when
+/// present, plus a `rebased_onto_trunk` receipt. A failed re-verify also
+/// records a `fail` verdict so no later reader credits the old pass to the
+/// rebased head.
+pub(crate) async fn rebase_goal_branch_for_headless_land(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    worktree_path: &std::path::Path,
+    trunk_root: &str,
+    trunk: &str,
+    branch: &str,
+    landing_head: &str,
+) -> HeadlessRebase {
+    let not_rebased = |reason: &'static str, detail: String| {
+        tracing::info!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            reason,
+            "headless_rebase_skipped reason={reason}: {detail}"
+        );
+        HeadlessRebase::NotRebased { reason }
+    };
+    let short = |sha: &str| sha.chars().take(9).collect::<String>();
+
+    if !worktree_path.is_dir()
+        || crate::goal_landing::paths_match(trunk_root, &worktree_path.to_string_lossy())
+    {
+        return not_rebased(
+            "rebase_no_worktree",
+            format!("no separate goal worktree at {}", worktree_path.display()),
+        );
+    }
+    let scope = match super::write_scope::declared_write_scope(&card.metadata_json) {
+        Ok(Some(scope)) if !scope.is_empty() => scope,
+        _ => {
+            return not_rebased(
+                "rebase_no_write_scope",
+                "no declared or derived write_scope, so independence from the trunk's \
+                 changes is unproven"
+                    .to_string(),
+            )
+        }
+    };
+    match git_in_worktree(worktree_path, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
+        Ok(current) if current == branch => {}
+        Ok(current) => {
+            return not_rebased(
+                "rebase_branch_mismatch",
+                format!("worktree is on '{current}', not '{branch}'"),
+            )
+        }
+        Err(e) => return not_rebased("rebase_git_error", e),
+    }
+    match git_in_worktree(worktree_path, &["status", "--porcelain"]).await {
+        Ok(status) if without_generated_artefact_entries(&status).is_empty() => {}
+        Ok(status) => return not_rebased("rebase_dirty_worktree", status),
+        Err(e) => return not_rebased("rebase_git_error", e),
+    }
+    let Some(from_head) = worktree_head_commit(worktree_path).await else {
+        return not_rebased(
+            "rebase_git_error",
+            "cannot read the worktree HEAD".to_string(),
+        );
+    };
+    match git_bool_in_worktree(
+        worktree_path,
+        &["merge-base", "--is-ancestor", landing_head, "HEAD"],
+    )
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return not_rebased(
+                "rebase_head_moved",
+                format!("reviewed head {landing_head} is no longer on {branch}"),
+            )
+        }
+        Err(e) => return not_rebased("rebase_git_error", e),
+    }
+    let onto = match git_in_worktree(std::path::Path::new(trunk_root), &["rev-parse", "HEAD"]).await
+    {
+        Ok(onto) => onto,
+        Err(e) => return not_rebased("rebase_git_error", e),
+    };
+    let fork = match git_in_worktree(worktree_path, &["merge-base", "HEAD", &onto]).await {
+        Ok(fork) => fork,
+        Err(e) => return not_rebased("rebase_git_error", e),
+    };
+    if fork == onto {
+        return not_rebased(
+            "rebase_not_diverged",
+            format!("{branch} already contains {trunk} at {onto}"),
+        );
+    }
+    let (trunk_changed, goal_changed) = match (
+        paths_changed_since(worktree_path, &fork, &onto).await,
+        paths_changed_since(worktree_path, &fork, &from_head).await,
+    ) {
+        (Ok(t), Ok(g)) => (t, g),
+        (Err(e), _) | (_, Err(e)) => return not_rebased("rebase_git_error", e),
+    };
+    if super::write_scope::scopes_overlap(&scope, &trunk_changed)
+        || super::write_scope::scopes_overlap(&goal_changed, &trunk_changed)
+    {
+        return not_rebased(
+            "rebase_trunk_overlap",
+            format!(
+                "{trunk} changed {trunk_changed:?} since {branch} forked, overlapping its \
+                 write_scope {scope:?} or its own changes {goal_changed:?}"
+            ),
+        );
+    }
+
+    if let Err(e) = git_in_worktree(worktree_path, &["rebase", "--no-autostash", &onto]).await {
+        let abort = git_in_worktree(worktree_path, &["rebase", "--abort"]).await;
+        let restored = worktree_head_commit(worktree_path).await;
+        if restored.as_deref() != Some(from_head.as_str()) {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                ?abort,
+                ?restored,
+                "headless rebase abort did not restore {branch} to {from_head}"
+            );
+        }
+        return not_rebased(
+            "rebase_conflict",
+            format!("git rebase onto {onto} did not apply cleanly ({e}); aborted"),
+        );
+    }
+
+    let Some(head) = worktree_head_commit(worktree_path).await else {
+        return HeadlessRebase::ReverifyFailed {
+            detail: format!(
+                "{branch} was rebased onto {} but its rebased head could not be read, so \
+                 nothing was verified or landed",
+                short(&onto)
+            ),
+        };
+    };
+    let verified = run_fresh_verify_for_hold(pool, card, worktree_path).await;
+    let commits: Vec<String> = git_in_worktree(
+        worktree_path,
+        &["log", "--format=%h %s", &format!("{onto}..HEAD")],
+    )
+    .await
+    .map(|out| out.lines().map(str::to_string).collect())
+    .unwrap_or_default();
+    let receipt = serde_json::json!({
+        "from_head": from_head,
+        "onto": onto,
+        "head": head,
+        "trunk_changed_files": trunk_changed,
+        "reverify": if verified { "pass" } else { "fail" },
+        "at": chrono::Utc::now().to_rfc3339(),
+    });
+    if let Err(e) = persist_card_meta(pool, &card.id, |m| {
+        m.insert("baseline_commit".to_string(), serde_json::json!(onto));
+        if let Some(evidence) = m
+            .get_mut("dispatch_evidence")
+            .and_then(|v| v.as_object_mut())
+        {
+            evidence.insert("baseline_commit".to_string(), serde_json::json!(onto));
+            evidence.insert("head_commit".to_string(), serde_json::json!(head));
+            // Never blank a real commit list on a failed log read: an empty
+            // `commits` reads as "nothing landable" to every consumer.
+            if !commits.is_empty() {
+                evidence.insert("commits".to_string(), serde_json::json!(commits));
+            }
+            if evidence.contains_key("work_base_commit") {
+                evidence.insert("work_base_commit".to_string(), serde_json::json!(onto));
+            }
+            evidence.insert("rebased_onto_trunk".to_string(), receipt.clone());
+        }
+    })
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "could not re-point goal metadata at the rebased head: {e}"
+        );
+    }
+
+    if verified {
+        tracing::info!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "headless_rebase_verified: {branch} rebased onto {onto} as {head}"
+        );
+        return HeadlessRebase::Verified { head };
+    }
+    let detail = format!(
+        "{trunk} moved since the worker branched, so {branch} was rebased cleanly onto {} \
+         but a fresh verify of the rebased head {} did not genuinely pass. The rebased work \
+         is intact on that branch.",
+        short(&onto),
+        short(&head)
+    );
+    if let Err(e) = cards::set_goal_verdict_and_program_receipts(
+        pool,
+        &card.id,
+        serde_json::json!({
+            "status": "fail",
+            "source": "headless_auto_rebase_reverify",
+            "reason": detail,
+            "recorded_at": chrono::Utc::now().to_rfc3339(),
+        }),
+        None,
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "could not record the failed rebase re-verify verdict: {e}"
+        );
+    }
+    HeadlessRebase::ReverifyFailed { detail }
+}
+
 // ── Lane R20b: salvage committed goal work before a budget/wall park ────────
 //
 // A20's Q1 forensics (HARNESS_LOOP_LOG.md "## A20 analysis — M19 zai z2")
