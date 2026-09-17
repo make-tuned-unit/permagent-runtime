@@ -43137,7 +43137,16 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// answering the Decision Inbox -- the harness loop's headline defect
     /// (HARNESS_LOOP_LOG.md Lane M2: `create_roadmap` called 0x in 9/10 FAIL
     /// transcripts because nothing ever answers the decision headlessly).
+    ///
+    /// Succeeds and materializes 2 real goal cards through
+    /// `materialize_roadmap_transaction`, which records `verification_integrity`
+    /// `goals` (R41a) in the process-global receipts registry -- the same
+    /// exposure R57a's dispatch tests had (fixed in d57d565b). Keyed to the
+    /// same serial group so it cannot bump
+    /// `materialize_roadmap_transaction_counts_each_created_goal_once_for_verification_integrity_r41a`'s
+    /// count mid-assert.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn auto_launch_session_creates_roadmap_with_no_human_answer() {
         let pool = test_pool().await;
         let goals = two_goal_roadmap("Auto");
@@ -43181,7 +43190,16 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// r64 projects metadata had none). The verdict, reasons, signals, the
     /// intended route and the planner that physically answered now survive on
     /// the project and on every materialized goal card.
+    ///
+    /// Drives `materialize_roadmap_transaction` directly, which records
+    /// `verification_integrity` `goals` (R41a) in the process-global receipts
+    /// registry for each of the 2 cards it creates here — the same exposure
+    /// R57a's dispatch tests had (fixed in d57d565b). Keyed to the same
+    /// serial group so it cannot bump
+    /// `materialize_roadmap_transaction_counts_each_created_goal_once_for_verification_integrity_r41a`'s
+    /// count mid-assert.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn n4_planning_verdict_is_persisted_after_create_roadmap() {
         let pool = test_pool().await;
         let goals = two_goal_roadmap("N4-Planning");
@@ -43401,7 +43419,14 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// session have an active roadmap of its own" off durable state, not a
     /// second, parallel bookkeeping mechanism a future caller could forget
     /// to update.
+    ///
+    /// Succeeds and materializes 2 goal cards through
+    /// `materialize_roadmap_transaction`, which records `verification_integrity`
+    /// `goals` (R41a) process-globally -- keyed to the same serial group as
+    /// R57a's fix (d57d565b) so it cannot bump the R41a counting test's
+    /// snapshot mid-assert.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn materialized_goal_cards_are_stamped_with_the_creating_session_id() {
         let pool = test_pool().await;
         let goals = two_goal_roadmap("Stamp");
@@ -43452,7 +43477,14 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// daemon's own shape, and every existing non-headless caller before
     /// this lane) stamps nothing on any card — the pre-existing behavior is
     /// unchanged, not silently gated behind a session nobody presented.
+    ///
+    /// Succeeds and materializes 2 goal cards through
+    /// `materialize_roadmap_transaction`, which records `verification_integrity`
+    /// `goals` (R41a) process-globally -- keyed to the same serial group as
+    /// R57a's fix (d57d565b) so it cannot bump the R41a counting test's
+    /// snapshot mid-assert.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn no_calling_session_id_stamps_no_card_with_any_session() {
         let pool = test_pool().await;
         let goals = two_goal_roadmap("NoSession");
@@ -43570,7 +43602,14 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// session in `GooseMode::Auto`". A second, different Auto session in
     /// the same project must not be able to consume a proof it never asked
     /// for -- even though both sessions are genuinely, currently Auto.
+    ///
+    /// The minting session's own retry succeeds, materializing 2 goal cards
+    /// through `materialize_roadmap_transaction`, which records
+    /// `verification_integrity` `goals` (R41a) process-globally -- keyed to
+    /// the same serial group as R57a's fix (d57d565b) so it cannot bump the
+    /// R41a counting test's snapshot mid-assert.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn auto_launch_proof_is_bound_to_the_minting_session() {
         let pool = test_pool().await;
         let goals = two_goal_roadmap("Session-bound");
@@ -43632,7 +43671,14 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
 
     /// (d) Replay: once an Auto-mode roadmap has been created, the exact
     /// same proposal/decision can never be consumed a second time.
+    ///
+    /// The first call succeeds, materializing 2 goal cards through
+    /// `materialize_roadmap_transaction`, which records `verification_integrity`
+    /// `goals` (R41a) process-globally -- keyed to the same serial group as
+    /// R57a's fix (d57d565b) so it cannot bump the R41a counting test's
+    /// snapshot mid-assert.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn auto_launch_roadmap_cannot_be_replayed_after_consumption() {
         let pool = test_pool().await;
         let goals = two_goal_roadmap("Replay");
@@ -43790,7 +43836,13 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         assert_eq!(cards, 0, "rollback must leave zero partial goal cards");
     }
 
+    /// Exactly one of the two concurrent calls succeeds, materializing 2 goal
+    /// cards through `materialize_roadmap_transaction`, which records
+    /// `verification_integrity` `goals` (R41a) process-globally -- keyed to
+    /// the same serial group as R57a's fix (d57d565b) so it cannot bump the
+    /// R41a counting test's snapshot mid-assert.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn concurrent_roadmap_replay_materializes_exactly_once() {
         let pool = test_pool().await;
         let goals = vec![
@@ -48746,7 +48798,16 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// A BLOCKER-titled card is refused by `create_roadmap` even in a real
     /// repo and even with the correct hash for those goals — and no card is
     /// materialized.
+    ///
+    /// With the process-wide headless dispatch policy installed by another
+    /// test, this call can instead take the f9ecdb5a canonical-proposal
+    /// recovery and materialize the untouched 2-goal fixture proposal (see
+    /// the comment inline below), which records `verification_integrity`
+    /// `goals` (R41a) process-globally. Keyed to the same serial group as
+    /// R57a's fix (d57d565b) so that conditional write cannot bump the R41a
+    /// counting test's snapshot mid-assert.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn r62g_create_roadmap_refuses_a_blocker_titled_goal_in_a_real_repo() {
         let (tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
@@ -48817,7 +48878,16 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
 
     /// "Remove blocker flag from config" passes the blocker check and reaches
     /// the ordinary proposal-hash check (whose error names the expected hash).
+    ///
+    /// With the process-wide headless dispatch policy installed by another
+    /// test, this call can instead take the f9ecdb5a canonical-proposal
+    /// recovery and materialize the untouched 2-goal fixture proposal, which
+    /// records `verification_integrity` `goals` (R41a) process-globally.
+    /// Keyed to the same serial group as R57a's fix (d57d565b) so that
+    /// conditional write cannot bump the R41a counting test's snapshot
+    /// mid-assert.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn r62g_create_roadmap_lets_a_remove_blocker_flag_goal_through() {
         let (tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
