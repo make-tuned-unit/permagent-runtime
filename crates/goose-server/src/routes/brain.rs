@@ -46,7 +46,7 @@ pub struct BrainSearchQuery {
 
 /// Which memories a search may return (Lane R61a).
 ///
-/// The ruling (Jesse, 2026-09-16): the harness only ever sees memories about
+/// The user's ruling (2026-09-16): the harness only ever sees memories about
 /// the project repo it is actively in, unless the user approves more at the
 /// terminal. The CLI enforces who may widen; this is where the rows are
 /// actually cut, so a scoped caller cannot receive an out-of-scope row even if
