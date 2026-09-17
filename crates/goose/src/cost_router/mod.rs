@@ -60,6 +60,7 @@ pub mod hold_done;
 pub mod knowledge;
 pub mod mesh;
 pub mod packs;
+pub mod planner_complexity;
 pub mod provider_circuit;
 pub mod recommend;
 pub mod reservation;
@@ -550,10 +551,9 @@ mod tests {
         // A fresh owned "both cheap keys set" predicate per call.
         let cheap = || keyed(&["MINIMAX_API_KEY", "MOONSHOT_API_KEY"]);
 
-        // Frontier → the hard (Opus) pack, regardless of cheap keys.
+        // Frontier → the hard pack, regardless of cheap keys.
         let f = concrete_pack_for_tier(Tier::Frontier, &packs, &ladder, cheap());
         assert_eq!(&f, packs.pack_for(Role::Hard));
-        assert_eq!(f.model, "claude-opus-4-8");
 
         // Local + Mesh → the local (Ollama) pack.
         let l = concrete_pack_for_tier(Tier::LocalFree, &packs, &ladder, cheap());
@@ -579,14 +579,14 @@ mod tests {
         assert_eq!(tier, Tier::LocalFree);
         assert_eq!(pack.model, "qwen3");
 
-        // Reasoning → Frontier on Opus.
+        // Reasoning → Frontier on the hard pack.
         let s = TaskSignals {
             multi_file: true,
             ..Default::default()
         };
         let (tier, pack) = route_pack(&s, no_pool(), &packs, &ladder, |_| false);
         assert_eq!(tier, Tier::Frontier);
-        assert_eq!(pack.model, "claude-opus-4-8");
+        assert_eq!(&pack, packs.pack_for(Role::Hard));
     }
 
     #[test]

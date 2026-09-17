@@ -112,10 +112,13 @@ fn dispatched_provider(
         .unwrap_or_else(|| session.0.to_string())
 }
 
-/// The knowledge base still holds the row that caused this. If it stops being
-/// the top-ranked pick the test below would pass vacuously, so assert it first.
+/// The derived map still wants to escalate EDIT off the session's provider to an
+/// Anthropic row. If it stopped, the tests below would pass vacuously, so assert
+/// it first. Since N1 finding 1 (EDIT's reliability band) that row is no longer
+/// Anthropic's priciest: Fable 5's 0.5-point diff-format edge over Sonnet 5 sits
+/// inside `EDIT_RELIABILITY_BAND`, so the cheaper Sonnet 5 is the pick.
 #[test]
-fn the_derived_map_still_wants_to_escalate_to_anthropics_priciest_row() {
+fn the_derived_map_still_wants_to_escalate_to_an_anthropic_row_but_not_the_priciest() {
     let session = CANDIDATES[0];
     let derived = derive_role_map(&available_with_anthropic_key(session));
     let edit = derived
@@ -123,8 +126,12 @@ fn the_derived_map_still_wants_to_escalate_to_anthropics_priciest_row() {
         .expect("EDIT derives from an Anthropic-keyed surface");
     assert_eq!(
         (edit.0.provider.as_str(), edit.0.model.as_str()),
-        ("anthropic", "claude-fable-5"),
+        ("anthropic", "claude-sonnet-5"),
         "if this changes, revisit the escalation gates rather than deleting the test",
+    );
+    assert_ne!(
+        edit.0.model, "claude-fable-5",
+        "a near-tie reliability edge must not route EDIT to the priciest row"
     );
 }
 
@@ -188,7 +195,7 @@ fn the_opt_in_restores_escalation_and_leaves_a_receipt() {
     let r = route(WorkflowRole::Edit, &[], &derived, session, true);
     assert_eq!(r.source, DelegateSource::Escalated);
     assert_eq!(dispatched_provider(&r, session), "anthropic");
-    assert!(r.receipt.contains("claude-fable-5"), "{}", r.receipt);
+    assert!(r.receipt.contains("claude-sonnet-5"), "{}", r.receipt);
     assert!(
         r.receipt.contains("PERMAGENT_DELEGATE_ALLOW_ESCALATION"),
         "the receipt must name what authorized the spend: {}",

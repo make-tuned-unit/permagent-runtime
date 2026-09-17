@@ -136,6 +136,22 @@ async fn resolve_planner_route_free() -> (
     Option<crate::cost_router::RoleModel>,
     crate::cost_router::PlannerReason,
 ) {
+    resolve_planner_route_gated(None).await
+}
+
+/// The ONE planner-route body: the precedence and pin eligibility gate above,
+/// plus — when `gate` is given (roadmap decomposition, ruling 2026-09-17) — the
+/// planning-complexity gate
+/// (`capability_directory::resolve_planner_for_complexity`): a user pin still
+/// wins, a COMPLEX plan gets the expert planner, a ROUTINE one the cheapest
+/// capable planner or the coordinator itself. `None` keeps the ungated
+/// `resolve_planner` precedence every other caller reads.
+async fn resolve_planner_route_gated(
+    gate: Option<&crate::cost_router::capability_directory::PlannerGate>,
+) -> (
+    Option<crate::cost_router::RoleModel>,
+    crate::cost_router::PlannerReason,
+) {
     let config = Config::global();
     let read_pin = |provider_key: &str, model_key: &str| {
         let provider = config
@@ -168,8 +184,15 @@ async fn resolve_planner_route_free() -> (
     // function within one TTL window, not just the roadmap-creation sites.
     let directory = crate::cost_router::cached_capability_directory().await;
 
-    let (route, reason) =
-        crate::cost_router::resolve_planner(decomposition_pin, role_pin, &directory);
+    let (route, reason) = match gate {
+        Some(gate) => crate::cost_router::capability_directory::resolve_planner_for_complexity(
+            decomposition_pin,
+            role_pin,
+            &directory,
+            gate,
+        ),
+        None => crate::cost_router::resolve_planner(decomposition_pin, role_pin, &directory),
+    };
 
     let Some(rm) = route else {
         return (None, reason);
@@ -978,6 +1001,58 @@ fn roadmap_proposal_hash(goals: &[goal_state::ProposedGoal]) -> String {
     let canonical = serde_json::to_vec(goals)
         .expect("ProposedGoal is serializable; roadmap hashing must be infallible");
     hex::encode(Sha256::digest(canonical))
+}
+
+/// Ruling 2026-09-17 planning-complexity input: what this project's earlier
+/// plans left behind — a roadmap proposal still pending (the previous plan was
+/// never approved into cards), live goal cards that parked (Failed, or
+/// `needs_human_attention`), and live goal cards a premature-done hold
+/// (`cost_router::HOLD_METADATA_KEY`) fired on that never completed.
+/// Best-effort: a query failure reads as "no history" (logged at debug), never
+/// as a failed decomposition.
+async fn prior_plan_history(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project: &crate::projects::Project,
+) -> crate::cost_router::planner_complexity::PriorPlanHistory {
+    let unapproved_proposal = project
+        .metadata_json
+        .get(ROADMAP_PROPOSAL_METADATA_KEY)
+        .is_some_and(|v| !v.is_null());
+    // `$.hold_done` is `cost_router::HOLD_METADATA_KEY` (asserted in tests).
+    let row = sqlx::query(
+        "SELECT
+           COALESCE(SUM(CASE WHEN bc.state_binding = 'failed'
+                     OR COALESCE(json_extract(c.metadata_json, '$.needs_human_attention'), 0) != 0
+                    THEN 1 ELSE 0 END), 0) AS parked,
+           COALESCE(SUM(CASE WHEN json_extract(c.metadata_json, '$.hold_done') IS NOT NULL
+                     AND COALESCE(bc.state_binding, '') != 'complete'
+                    THEN 1 ELSE 0 END), 0) AS held
+         FROM cards c LEFT JOIN board_columns bc ON c.column_id = bc.id
+         WHERE c.project_id = ? AND c.card_type = 'goal' AND c.archived_at IS NULL",
+    )
+    .bind(&project.id)
+    .fetch_one(pool)
+    .await;
+    let (parked, held) = match row {
+        Ok(r) => (
+            r.try_get::<i64, _>("parked").unwrap_or(0),
+            r.try_get::<i64, _>("held").unwrap_or(0),
+        ),
+        Err(e) => {
+            tracing::debug!(
+                target: "permagentd::orchestrator",
+                project = %project.slug,
+                error = %e,
+                "planning complexity: plan-history query failed; treating as no history",
+            );
+            (0, 0)
+        }
+    };
+    crate::cost_router::planner_complexity::PriorPlanHistory {
+        unapproved_proposal,
+        parked_goals: usize::try_from(parked).unwrap_or(0),
+        held_goals: usize::try_from(held).unwrap_or(0),
+    }
 }
 
 /// Builds the `payload` for the roadmap-approval `kind='choice'` Decision
@@ -4818,16 +4893,22 @@ impl OrchestratorClient {
 
     /// Resolve the planner ROUTE (not yet a live provider): thin delegator
     /// over the free [`resolve_planner_route_free`] (see its doc comment for
-    /// the full precedence/rationale) — kept as a method too since
-    /// `resolve_decomposition_provider` and the roadmap-creation receipt
-    /// block both call it as `self.resolve_planner_route()`.
+    /// the full precedence/rationale) — kept as a method too since the
+    /// roadmap decomposition calls it. With a `gate` (ruling 2026-09-17) the
+    /// route is planning-complexity-gated ([`resolve_planner_route_gated`]);
+    /// the decomposition resolves it once and reuses it for both the planner
+    /// call and the roadmap receipt.
     async fn resolve_planner_route(
         &self,
+        gate: Option<&crate::cost_router::capability_directory::PlannerGate>,
     ) -> (
         Option<crate::cost_router::RoleModel>,
         crate::cost_router::PlannerReason,
     ) {
-        resolve_planner_route_free().await
+        match gate {
+            Some(gate) => resolve_planner_route_gated(Some(gate)).await,
+            None => resolve_planner_route_free().await,
+        }
     }
 
     /// Resolve the provider that PLANS the roadmap decomposition — the
@@ -4843,17 +4924,21 @@ impl OrchestratorClient {
     /// arm below), skip straight to the session coordinator instead of
     /// re-discovering the same dead provider. `None` disables the check
     /// (no session to scope it to — e.g. a unit test with no live session).
+    ///
+    /// `route`/`reason`: the planner route the caller already resolved (the
+    /// decomposition path resolves it once, complexity-gated, and reuses it for
+    /// the roadmap receipt so the two can never disagree).
     async fn resolve_decomposition_provider(
         &self,
         session_id: Option<&str>,
+        route: Option<crate::cost_router::RoleModel>,
+        reason: &crate::cost_router::PlannerReason,
     ) -> Option<Arc<dyn Provider>> {
-        let (route, reason) = self.resolve_planner_route().await;
-
         let Some(rm) = route else {
             tracing::info!(
                 target: "permagentd::orchestrator",
                 reason = %reason.describe(),
-                "roadmap decomposition: no eligible planner — using the session coordinator",
+                "roadmap decomposition: using the session coordinator",
             );
             return None;
         };
@@ -10843,6 +10928,26 @@ impl OrchestratorClient {
             return Err(refuse_blocker_roadmap("decompose_roadmap", refusal));
         }
 
+        // Planning-complexity gate (ruling 2026-09-17: the expert planner is for
+        // complex plans, not the default). Facts only — repo facts, the
+        // objective's structure, and this project's plan history — never a
+        // model's claim about difficulty.
+        let planning_complexity =
+            crate::cost_router::planner_complexity::assess_planning_complexity(
+                &crate::cost_router::planner_complexity::PlanningFacts {
+                    objective: &objective,
+                    repo_file_count: facts.file_count,
+                    history: prior_plan_history(&pool, &project).await,
+                },
+            );
+        tracing::info!(
+            target: "permagentd::orchestrator",
+            project = %project.slug,
+            planner_complexity = %planning_complexity.complexity.as_str(),
+            reasons = %planning_complexity.reasons.join("; "),
+            "roadmap decomposition: planning complexity assessed",
+        );
+
         // Reuses the same capability set the Council DAG path already
         // validates plan proposals against (`decisions.rs`,
         // `decisions_effects.rs`) rather than re-deriving it: one
@@ -10995,8 +11100,37 @@ impl OrchestratorClient {
         // receipt below reads this, not `resolve_planner_route()` again, so
         // it can never claim a provider ran when the escalation arm is the
         // one that actually answered (A27 Miss 3 / A32's credits section).
+        let planner_gate = crate::cost_router::capability_directory::PlannerGate {
+            complexity: planning_complexity.complexity,
+            coordinator: match (
+                session.provider_name.as_deref(),
+                session.model_config.as_ref().map(|m| m.model_name.as_str()),
+            ) {
+                (Some(p), Some(m)) if !p.is_empty() && !m.is_empty() => {
+                    Some(crate::cost_router::RoleModel {
+                        provider: p.to_string(),
+                        model: m.to_string(),
+                    })
+                }
+                _ => None,
+            },
+            spend_capped: {
+                let spent = session.accumulated_cost_usd.unwrap_or(0.0);
+                let cfg = crate::cost_router::budget::load_budget_config();
+                matches!(
+                    crate::cost_router::budget_verdict(spent, spent, &cfg).band,
+                    crate::cost_router::budget::BudgetBand::Gate
+                        | crate::cost_router::budget::BudgetBand::Hard
+                )
+            },
+        };
+        let (planner_route, planner_reason) = self.resolve_planner_route(Some(&planner_gate)).await;
         let (goals, actual_planner) = match self
-            .resolve_decomposition_provider(Some(session_id))
+            .resolve_decomposition_provider(
+                Some(session_id),
+                planner_route.clone(),
+                &planner_reason,
+            )
             .await
         {
             Some(planner) => {
@@ -11066,7 +11200,7 @@ impl OrchestratorClient {
         // planned this roadmap and why, plus which model each other role
         // currently routes to — read from the SAME directory-derived map
         // dispatch uses, so this can never disagree with what actually runs.
-        let (planner_route, planner_reason) = self.resolve_planner_route().await;
+        // The planner route is the complexity-gated one resolved above.
         let planner_label = planner_route
             .as_ref()
             .map(|rm| format!("{}/{}", rm.provider, rm.model))
@@ -11099,6 +11233,7 @@ impl OrchestratorClient {
             target: "permagentd::orchestrator",
             planner = %planner_label,
             reason = %planner_reason.describe(),
+            planner_complexity = %planning_complexity.complexity.as_str(),
             workers = %workers_label,
             "roadmap created",
         );
@@ -11149,6 +11284,13 @@ impl OrchestratorClient {
             "approval_decision_id": approval.id.clone(),
             "derived_ac_hashes": derived_ac_hashes,
             "goals": goals.clone(),
+            // Ruling 2026-09-17: the planning-complexity verdict that chose the
+            // planner, with its reasons and signals, so the choice is auditable.
+            "planner_complexity": planning_complexity.complexity.as_str(),
+            "planner_complexity_reasons": planning_complexity.reasons.clone(),
+            "planner_complexity_signals": planning_complexity.to_json(),
+            "planner": planner_label.clone(),
+            "planner_reason": planner_reason.describe(),
         });
         let saved = sqlx::query(
             "UPDATE projects
@@ -22971,25 +23113,55 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         _ => None,
     };
 
-    let configured = crate::cost_router::role_model(crate::cost_router::WorkflowRole::Review);
-    let derived_map = crate::cost_router::derived_role_map().await;
-    let derived = derived_map
-        .get(crate::cost_router::WorkflowRole::Review)
-        .map(|(rm, _)| rm.clone());
+    // Ruling 2026-09-17 (reviewer selection): "it is fine to use it if it is
+    // objectively true that its review will be magnitudes better than a cheaper
+    // model, but that has to be proven at the time of selection". Assess the
+    // review's complexity from the trunk-relative diff above (signature changes
+    // and their enumerated call sites included — Lane R62e's context, gathered
+    // here once and reused for the prompt) and assign the reviewer with the one
+    // proportional selection rule, instead of the derived REVIEW entry (which
+    // ranks the strongest cross-family verifier first).
+    let review_context = gather_salvage_review_context(worktree_path, &diff_for_prompt).await;
+    let enumerated_call_sites: usize = review_context
+        .call_site_enumerations
+        .iter()
+        .map(|e| e.call_sites.len())
+        .sum();
     let available = crate::cost_router::discover_available_models_async().await;
+    let assignment = crate::cost_router::recommend::assign_reviewer(
+        crate::cost_router::recommend::ReviewFacts::from_diff(
+            &diff_for_prompt,
+            enumerated_call_sites,
+        ),
+        worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
+        &available,
+    );
+    let assigned = assignment.pick_role_model();
+
+    // The operator's explicit REVIEW mapping still wins (`select_reviewer`'s
+    // step 1); otherwise the assignment's pick rides the derived slot. With no
+    // assignment, the pool is emptied so `select_reviewer` cannot reach a
+    // model the complexity floor already ruled out.
+    let configured = crate::cost_router::role_model(crate::cost_router::WorkflowRole::Review);
+    let reviewer_pool: &[crate::cost_router::AvailableModel] =
+        if assigned.is_some() { &available } else { &[] };
     let selection = crate::cost_router::select_reviewer(
         worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
         configured.as_ref(),
-        derived.as_ref(),
-        &available,
+        assigned.as_ref(),
+        reviewer_pool,
         changed_lines,
     );
-    let pick = match selection {
+    record_reviewer_assignment(pool, &card.id, &assignment, selection.pick()).await;
+    let mut pick = match selection {
         crate::cost_router::ReviewerSelection::Unavailable { reason } => {
             return ReviewerGateOutcome::Refused { reason };
         }
         crate::cost_router::ReviewerSelection::Reviewer(pick) => pick,
     };
+    if pick.source == crate::cost_router::ReviewerSource::Derived {
+        pick.why = assignment.why.clone();
+    }
 
     // No live cost tracker for a completed, abandoned worker session at this
     // point — 0.0 is the same "nothing spent in this scope yet" a fresh
@@ -23010,8 +23182,8 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         collect_acceptance_criteria(&card.metadata_json, &card.description).join("\n")
     );
     // Lane R62e (A61 miss 1): give the reviewer the callee definitions and
-    // E7 call sites the diff alone does not show.
-    let review_context = gather_salvage_review_context(worktree_path, &diff_for_prompt).await;
+    // E7 call sites the diff alone does not show (gathered above, before the
+    // reviewer assignment that also reads them).
     let prompt =
         build_salvage_review_prompt(&task_spec, &diff_for_prompt, verify_note, &review_context);
 
@@ -23113,6 +23285,61 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         | crate::cost_router::GateDecision::ReviewUnavailable { reason } => {
             ReviewerGateOutcome::Refused { reason }
         }
+    }
+}
+
+/// Ruling 2026-09-17: record the reviewer assignment on the goal card
+/// (`reviewer_assignment`: complexity verdict, floor, reasons, the diff facts,
+/// every candidate with strength and price, the objective pick and why) plus
+/// the reviewer actually selected and its source (a configured REVIEW pin can
+/// override the objective pick), and trace it. Best-effort: a write failure is
+/// logged, never a refused review.
+async fn record_reviewer_assignment(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    assignment: &crate::cost_router::recommend::ReviewerAssignment,
+    selected: Option<&crate::cost_router::ReviewerPick>,
+) {
+    tracing::info!(
+        target: "permagentd::orchestrator",
+        goal_id = %card_id,
+        review_complexity = %assignment.complexity.as_str(),
+        floor = assignment.floor,
+        assigned = %assignment.pick_label().unwrap_or_else(|| "none".to_string()),
+        selected = %selected.map(|p| p.label()).unwrap_or_else(|| "none".to_string()),
+        source = %selected.map(|p| p.source.as_str()).unwrap_or("none"),
+        candidates = assignment.candidates.len(),
+        why = %assignment.why,
+        "reviewer assignment",
+    );
+    let mut record = assignment.to_json();
+    if let Some(obj) = record.as_object_mut() {
+        obj.insert(
+            "selected".to_string(),
+            serde_json::json!(selected.map(|p| p.label())),
+        );
+        obj.insert(
+            "selected_source".to_string(),
+            serde_json::json!(selected.map(|p| p.source.as_str())),
+        );
+        obj.insert(
+            "recorded_at".to_string(),
+            serde_json::json!(chrono::Utc::now().to_rfc3339()),
+        );
+    }
+    if let Err(e) = cards::merge_card_metadata(
+        pool,
+        card_id,
+        serde_json::json!({ "reviewer_assignment": record }),
+        false,
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::orchestrator",
+            goal_id = %card_id,
+            "could not record the reviewer assignment: {e}"
+        );
     }
 }
 
@@ -32105,10 +32332,12 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         let client = OrchestratorClient::new(context).unwrap();
         let session = format!("r36a-decomp-{}", uuid::Uuid::new_v4());
 
-        let (route, _reason) = client.resolve_planner_route().await;
+        let (route, reason) = client.resolve_planner_route(None).await;
         if let Some(rm) = route {
             crate::cost_router::provider_circuit::open(&session, &rm.provider, "billing");
-            let resolved = client.resolve_decomposition_provider(Some(&session)).await;
+            let resolved = client
+                .resolve_decomposition_provider(Some(&session), Some(rm.clone()), &reason)
+                .await;
             assert!(
                 resolved.is_none(),
                 "a planner route whose provider's circuit is open this session must never \
@@ -32118,6 +32347,46 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         // No eligible planner route in this test env: the breaker has
         // nothing to narrow, and the function already returns `None` — the
         // property above is vacuously satisfied.
+    }
+
+    /// Ruling 2026-09-17: the goal-level review gate records its reviewer
+    /// assignment — verdict, floor, candidates with strength and price, the
+    /// objective pick, why, and the reviewer actually selected — on the card.
+    #[tokio::test]
+    async fn reviewer_assignment_is_recorded_on_the_goal_card() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        let diff = "--- a/src/quote.rs\n+++ b/src/quote.rs\n\
+                    -pub fn shipping_quote(order: &Order) -> Quote {\n\
+                    +pub fn shipping_quote(order: &Order, opts: &QuoteOpts) -> Quote {\n";
+        let available = vec![
+            crate::cost_router::AvailableModel::new("anthropic", "claude-fable-5"),
+            crate::cost_router::AvailableModel::new("zai", "glm-4.5-air"),
+            crate::cost_router::AvailableModel::new("google", "gemini-3-pro"),
+        ];
+        let assignment = crate::cost_router::recommend::assign_reviewer(
+            crate::cost_router::recommend::ReviewFacts::from_diff(diff, 2),
+            Some(("anthropic", "claude-sonnet-5")),
+            &available,
+        );
+        let selection = crate::cost_router::select_reviewer(
+            Some(("anthropic", "claude-sonnet-5")),
+            None,
+            assignment.pick_role_model().as_ref(),
+            &available,
+            4,
+        );
+        record_reviewer_assignment(&pool, &card.id, &assignment, selection.pick()).await;
+
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let recorded = &card.metadata_json["reviewer_assignment"];
+        assert_eq!(recorded["complexity"], "complex", "{recorded}");
+        assert_eq!(recorded["pick_model"], "gemini-3-pro");
+        assert_eq!(recorded["selected"], "google/gemini-3-pro");
+        assert_eq!(recorded["selected_source"], "derived");
+        assert!(recorded["why"].as_str().is_some_and(|w| !w.is_empty()));
+        assert_eq!(recorded["candidates"].as_array().map(Vec::len), Some(3));
+        assert!(recorded["recorded_at"].is_string());
     }
 
     /// Lane R22c-e (G26 MED-2): a diff over the reviewer's prompt window
@@ -39592,6 +39861,97 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         .await
         .unwrap();
         (project, card)
+    }
+
+    /// Ruling 2026-09-17: the planning-complexity gate's plan-history input
+    /// reads the real board — a parked (Failed or needs_human_attention) goal,
+    /// a held goal that never completed, and a pending roadmap proposal — and
+    /// ignores a held goal that later completed.
+    #[tokio::test]
+    async fn prior_plan_history_reads_parked_held_and_pending_proposal() {
+        assert_eq!(
+            crate::cost_router::HOLD_METADATA_KEY,
+            "hold_done",
+            "prior_plan_history's SQL hardcodes '$.hold_done'"
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let (project, _card) = setup_project_and_goal_at(
+            &pool,
+            "N2 Plan History",
+            tmp.path(),
+            "ready",
+            "Fix pagination",
+        )
+        .await;
+        assert_eq!(
+            prior_plan_history(&pool, &project).await,
+            crate::cost_router::planner_complexity::PriorPlanHistory::default(),
+            "a fresh project with one Ready goal has no plan history"
+        );
+
+        let add = |binding: &'static str, title: &'static str, meta: serde_json::Value| {
+            let pool = pool.clone();
+            let project_id = project.id.clone();
+            async move {
+                let col = cards::get_goal_column(&pool, &project_id, binding)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                cards::create_card(
+                    &pool,
+                    cards::CreateCard {
+                        project_id,
+                        title: title.to_string(),
+                        description: Some("test".to_string()),
+                        card_type: Some("goal".to_string()),
+                        column_id: Some(col.id.clone()),
+                        created_by: None,
+                        metadata_json: Some(meta),
+                    },
+                )
+                .await
+                .unwrap();
+            }
+        };
+        add("failed", "Parked goal", serde_json::json!({})).await;
+        add(
+            "ready",
+            "Needs a human",
+            serde_json::json!({"needs_human_attention": true}),
+        )
+        .await;
+        add(
+            "in_progress",
+            "Held goal",
+            serde_json::json!({"hold_done": {"count": 1}}),
+        )
+        .await;
+        add(
+            "complete",
+            "Held then completed",
+            serde_json::json!({"hold_done": {"count": 1}}),
+        )
+        .await;
+
+        let h = prior_plan_history(&pool, &project).await;
+        assert_eq!(h.parked_goals, 2, "{h:?}");
+        assert_eq!(
+            h.held_goals, 1,
+            "a held goal that completed is not history: {h:?}"
+        );
+        assert!(!h.unapproved_proposal);
+
+        let mut pending = project.clone();
+        pending.metadata_json = serde_json::json!({"roadmap_proposal": {"hash": "abc"}});
+        assert!(
+            prior_plan_history(&pool, &pending)
+                .await
+                .unapproved_proposal
+        );
     }
 
     /// `goal_advance` with NO `card_id`, exactly one Ready card for the cwd
