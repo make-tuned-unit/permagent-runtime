@@ -1,6 +1,6 @@
 //! Planning-complexity gate — which planner a roadmap decomposition deserves.
 //!
-//! ## The ruling (Jesse, 2026-09-17)
+//! ## The user's ruling (2026-09-17)
 //!
 //! Asked whether the harness favours Anthropic models: *"Fable CAN be used when
 //! a task I give Permagent is complex and needs an expert planner."* The expert

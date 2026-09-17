@@ -141,7 +141,7 @@ pub fn cheapest_within_band<'a, T>(
 
 // ── Proportional floor selection (ruling 2026-09-17, reviewer selection) ─────
 //
-// Jesse, 2026-09-17: "it is fine to use it if it is objectively true that its
+// The user's ruling, 2026-09-17: "it is fine to use it if it is objectively true that its
 // review will be magnitudes better than a cheaper model, but that has to be
 // proven at the time of selection by assessing the complexity of the review and
 // doing an objective assignment to the right model. Being better than half a
