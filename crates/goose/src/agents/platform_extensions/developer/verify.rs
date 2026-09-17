@@ -513,6 +513,18 @@ impl VerifyTool {
     ) -> CallToolResult {
         let base_dir = resolve_dir(working_dir, params.path.as_deref());
 
+        // Lane R64a: resolved before detection (not after, as before this
+        // lane) so auto-detection's own Python-test-runner probe
+        // ([`pytest_importable`]) can use the SAME login-shell PATH a check
+        // actually runs with, exactly like [`super::shell::child_process_env`]
+        // already does for the checks themselves (R62b).
+        #[cfg(not(windows))]
+        let login_path = self.login_path.get().await;
+        #[cfg(not(windows))]
+        let login_path = login_path.as_deref();
+        #[cfg(windows)]
+        let login_path: Option<&str> = None;
+
         // R35b: set only when detection left nothing but a syntax-only smoke
         // check AND no acceptance-criteria probe could stand in for a real
         // one — the sole remaining path that used to score a smoke-only run
@@ -533,11 +545,12 @@ impl VerifyTool {
             }
             Some(command) => vec![Check::shell(command)],
             None => {
-                let outcome = select_checks(
+                let outcome = select_checks_with_login_path(
                     &base_dir,
                     params.scope.unwrap_or(VerificationScope::Auto),
                     params.risk.unwrap_or(VerificationRisk::Standard),
                     params.changed_paths.as_deref(),
+                    login_path,
                 );
                 // R21c-b: acceptance criteria are only ever CONSULTED when
                 // detection would otherwise leave nothing genuine to run —
@@ -613,12 +626,6 @@ impl VerifyTool {
         };
 
         let timeout_secs = params.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
-        #[cfg(not(windows))]
-        let login_path = self.login_path.get().await;
-        #[cfg(not(windows))]
-        let login_path = login_path.as_deref();
-        #[cfg(windows)]
-        let login_path: Option<&str> = None;
 
         // Fail-fast: run checks in order, returning the first failure with its
         // full errors (you can't meaningfully test what won't build).
@@ -783,11 +790,29 @@ async fn load_bound_goal_acceptance_criteria(session_id: &str) -> Option<Vec<Str
 
 // --- detection (pure over the directory's marker files) ---------------------
 
-/// Detect the ordered check command(s) for the project rooted at `dir`.
+/// Detect the ordered check command(s) for the project rooted at `dir`, with
+/// no login-shell PATH available. Equivalent to
+/// [`detect_checks_with_login_path`] with `login_path: None` — every caller
+/// outside this module's own tests only ever needs labels
+/// ([`detect_check_labels`]), never a real run, so `None` here changes
+/// nothing they observe.
+fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
+    detect_checks_with_login_path(dir, None)
+}
+
+/// Lane R64a: the same detection [`detect_checks`] always did, plus the
+/// login-shell PATH so the manifestless-Python branch can probe for a real
+/// test runner ([`pytest_importable`]) on the SAME `python3` a check would
+/// actually run under (R62b: `verify`'s own child processes already get this
+/// PATH via [`super::shell::child_process_env`] — this lane extends it to
+/// detection's own probing, not just execution).
 /// Precedence is language-native first (unambiguous), then a Makefile fallback.
 /// Returns an actionable `Err` when nothing runnable is found so the caller can
 /// surface it instead of silently doing nothing.
-fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
+fn detect_checks_with_login_path(
+    dir: &Path,
+    login_path: Option<&str>,
+) -> Result<DetectOutcome, String> {
     if dir.join("Cargo.toml").exists() {
         // `cargo test` compiles first, so it catches build errors and test
         // failures in one command.
@@ -830,8 +855,16 @@ fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
     // obviously-a-test file is sitting right there. Run THAT, directly, with
     // the right runtime — never guess at a framework that might not even be
     // installed, and never require a manifest just to run one script.
-    if let Some(checks) = manifestless_checks(dir) {
-        return Ok(DetectOutcome::Checks(checks));
+    match manifestless_checks(dir, login_path) {
+        Ok(Some(checks)) => return Ok(DetectOutcome::Checks(checks)),
+        Ok(None) => {}
+        // Lane R64a: a manifestless Python test file that DEFINES tests but
+        // has no runner, and for which neither `pytest` nor a usable
+        // `unittest.TestCase` runner is available — report this honestly as
+        // NO CHECKS rather than falling back to the vacuous plain-script run
+        // R62b-2 had to flag after the fact (dschat r63 s6
+        // `select-named-check-uses-verify-tool`).
+        Err(reason) => return Ok(DetectOutcome::NoChecksConfigured(reason)),
     }
     Err(
         "Could not detect the project type (looked for Cargo.toml, go.mod, \
@@ -933,15 +966,23 @@ fn relative_to(dir: &Path, path: &Path) -> String {
         .into_owned()
 }
 
-/// The direct-run command for a manifestless file, chosen by extension. `None`
-/// for an extension with no safe default runtime (the caller falls back to
-/// the single-file heuristics below).
-fn direct_run_check(dir: &Path, path: &Path) -> Option<Check> {
+/// The direct-run command for a manifestless file, chosen by extension.
+/// `Ok(None)` for an extension with no safe default runtime (the caller falls
+/// back to the single-file heuristics below). `Err` only for a `.py` file
+/// that is pytest-style (see [`python_test_file_check`]) but has no runner
+/// this machine can actually execute — the caller reports that honestly
+/// rather than falling back to a script run that would silently pass without
+/// running a single test (Lane R64a).
+fn direct_run_check(
+    dir: &Path,
+    path: &Path,
+    login_path: Option<&str>,
+) -> Result<Option<Check>, String> {
     let rel = relative_to(dir, path);
     match path.extension().and_then(|e| e.to_str()) {
-        Some("py") => Some(Check::direct_owned("python3", vec![rel])),
-        Some("mjs") | Some("js") => Some(Check::direct_owned("node", vec![rel])),
-        _ => None,
+        Some("py") => python_test_file_check(dir, &rel, login_path).map(Some),
+        Some("mjs") | Some("js") => Ok(Some(Check::direct_owned("node", vec![rel]))),
+        _ => Ok(None),
     }
 }
 
@@ -965,12 +1006,15 @@ fn files_with_extension(dir: &Path, ext: &str) -> Vec<PathBuf> {
 /// Tried in order: (a) a `tests/`-dir or test-named file, run directly; (b) a
 /// single lone `.py` file, syntax-smoke-checked (never run — it might not be
 /// a script meant to execute cleanly on its own); (c) a single lone `.mjs`/
-/// `.js` file, syntax-checked the same way. `None` when none of these shapes
-/// match, so the caller's actionable "could not detect" error still fires.
-fn manifestless_checks(dir: &Path) -> Option<Vec<Check>> {
+/// `.js` file, syntax-checked the same way. `Ok(None)` when none of these
+/// shapes match, so the caller's actionable "could not detect" error still
+/// fires. `Err` when (a) found a pytest-style test file with no runner this
+/// machine can execute (Lane R64a; see [`direct_run_check`]) — never silently
+/// falls through to a script run that would pass without running a test.
+fn manifestless_checks(dir: &Path, login_path: Option<&str>) -> Result<Option<Vec<Check>>, String> {
     if let Some(test_file) = find_manifestless_test_file(dir) {
-        if let Some(check) = direct_run_check(dir, &test_file) {
-            return Some(vec![check]);
+        if let Some(check) = direct_run_check(dir, &test_file, login_path)? {
+            return Ok(Some(vec![check]));
         }
     }
 
@@ -980,11 +1024,11 @@ fn manifestless_checks(dir: &Path) -> Option<Vec<Check>> {
         // X-verify-2: `py_compile` only parses the file — it never executes a
         // line of it, so a PASS here must never be reported (or trusted by a
         // consumer) as if real tests ran.
-        return Some(vec![Check::direct_owned(
+        return Ok(Some(vec![Check::direct_owned(
             "python3",
             vec!["-m".to_string(), "py_compile".to_string(), rel],
         )
-        .smoke_only()]);
+        .smoke_only()]));
     }
 
     let js_files: Vec<PathBuf> = files_with_extension(dir, "mjs")
@@ -995,25 +1039,46 @@ fn manifestless_checks(dir: &Path) -> Option<Vec<Check>> {
         let rel = relative_to(dir, &js_files[0]);
         // X-verify-2: `node --check` is the JS equivalent of `py_compile` —
         // syntax-only, never executed.
-        return Some(vec![Check::direct_owned(
+        return Ok(Some(vec![Check::direct_owned(
             "node",
             vec!["--check".to_string(), rel],
         )
-        .smoke_only()]);
+        .smoke_only()]));
     }
 
-    None
+    Ok(None)
 }
 
 /// Select checks for the current change set. This is intentionally separate
 /// from marker-file detection: the latter remains a useful pure fallback and
 /// its language behavior is stable, while the generic tool must not turn a
 /// docs-only or narrow Rust edit into a workspace build.
+///
+/// Test-only entry point with no login-shell PATH available — equivalent to
+/// [`select_checks_with_login_path`] with `login_path: None`, which is
+/// exactly the login PATH lane R62b's tests already fix it to (the cell is
+/// never initialized in a test build; see
+/// [`super::shell::shared_login_path`]).
+#[cfg(test)]
 fn select_checks(
     dir: &Path,
     scope: VerificationScope,
     risk: VerificationRisk,
     supplied_changes: Option<&[String]>,
+) -> Result<DetectOutcome, String> {
+    select_checks_with_login_path(dir, scope, risk, supplied_changes, None)
+}
+
+/// Lane R64a: the same selection [`select_checks`] always did, plus the
+/// login-shell PATH ([`super::shell::child_process_env`]'s source, R62b) so
+/// the manifestless-Python branch's runner probe ([`pytest_importable`]) sees
+/// the same `python3` a check actually runs with.
+fn select_checks_with_login_path(
+    dir: &Path,
+    scope: VerificationScope,
+    risk: VerificationRisk,
+    supplied_changes: Option<&[String]>,
+    login_path: Option<&str>,
 ) -> Result<DetectOutcome, String> {
     if scope == VerificationScope::Integration {
         if !dir.join("Cargo.toml").is_file() {
@@ -1042,7 +1107,7 @@ fn select_checks(
                         + "explicit command or provide `changed_paths`",
                 ));
             }
-            None => return detect_checks(dir),
+            None => return detect_checks_with_login_path(dir, login_path),
         },
     };
     tracing::debug!(
@@ -1110,7 +1175,7 @@ fn select_checks(
                 }
                 return Ok(DetectOutcome::NoChecksConfigured("the changed files are not Rust, so no Cargo check is inferred; use the matching project check or an explicit command".to_string()));
             }
-            detect_checks(dir)
+            detect_checks_with_login_path(dir, login_path)
         }
         VerificationScope::Docs => unreachable!("handled before scope dispatch"),
         VerificationScope::Integration => unreachable!(),
@@ -2878,6 +2943,112 @@ static PYTHON_TEST_RUNNER_RE: LazyLock<Regex> = LazyLock::new(|| {
 static RAN_TESTS_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bran [1-9]\d* tests?\b").unwrap());
 
+/// Lane R64a: a `class Foo(...TestCase...):` definition specifically —
+/// [`PYTHON_TEST_DEFINITION_RE`] also matches a bare `def test_x():`
+/// function, which `python3 -m unittest <module>` cannot discover on its own
+/// (unittest only collects test METHODS on a `TestCase` subclass), so
+/// auto-detection's `unittest` fallback needs this narrower match.
+static PYTHON_TESTCASE_CLASS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^[ \t]*class[ \t]+\w+[ \t]*\([^)]*\bTestCase\b").unwrap());
+
+/// Lane R64a: true when `source` defines Python tests
+/// ([`PYTHON_TEST_DEFINITION_RE`]) but has no runner invocation
+/// ([`PYTHON_TEST_RUNNER_RE`]) — the shape that makes `python3 <file>` exit 0
+/// without running a single test. Shared by [`uninvoked_python_tests_reason`]
+/// (which flags this shape AFTER a check has already run one) and
+/// [`python_test_file_check`] (which steers auto-detection AROUND it before
+/// any check runs at all) so the two can never define "pytest-style" any
+/// differently from each other.
+fn is_pytest_style_without_runner(source: &str) -> bool {
+    PYTHON_TEST_DEFINITION_RE.is_match(source) && !PYTHON_TEST_RUNNER_RE.is_match(source)
+}
+
+/// Lane R64a: `rel` (e.g. `test_calc.py`, `tests/test_calc.py`) as the dotted
+/// module path `python3 -m unittest <module>` expects — the `.py` extension
+/// dropped and path separators replaced with `.`, matching Python's own
+/// import syntax for a package-relative module.
+fn python_module_name(rel: &str) -> String {
+    let without_ext = rel.strip_suffix(".py").unwrap_or(rel);
+    without_ext.replace(['/', '\\'], ".")
+}
+
+/// Lane R64a: true when `python3 -m pytest --version` succeeds using the SAME
+/// environment a check `verify` actually runs a Python file under
+/// ([`super::shell::child_process_env`], the login-shell PATH lane R62b
+/// introduced) — never the current process's own bare PATH, which A61 bug B
+/// already showed can resolve a DIFFERENT `python3` than the worker's own
+/// shell used. A brief, synchronous probe: `detect_checks` already shells out
+/// to `git` synchronously on this same path (see `git_changes_under`), so one
+/// more short-lived child process here is consistent with the rest of
+/// detection, not a new async concern, and detection runs once per `verify`
+/// call rather than in a hot loop.
+fn pytest_importable(dir: &Path, login_path: Option<&str>) -> bool {
+    std::process::Command::new("python3")
+        .args(["-m", "pytest", "--version"])
+        .current_dir(dir)
+        .envs(super::shell::child_process_env(Some(dir), login_path))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Lane R64a (defect in Lane R62b-2's fix; dschat r63 s6
+/// `select-named-check-uses-verify-tool`): auto-detection used to select a
+/// bare `python3 <file>.py` for a manifestless pytest-style test file — one
+/// that only DEFINES `test*`/`TestCase` tests with no runner invocation (see
+/// [`is_pytest_style_without_runner`]) — which R62b-2 then correctly flagged,
+/// AFTER the check had already run, as a vacuous pass that exercised zero
+/// tests. That flag alone did not fix anything: auto-detection kept
+/// reselecting the same vacuous check on every subsequent `verify` call, so
+/// the worker (who had independently worked out the correct fix) could never
+/// get `verify` itself to confirm it, and the goal ran out its wall-clock
+/// budget stuck on a held vacuous pass.
+///
+/// Steer around the shape at SELECTION time instead of only detecting it
+/// after the fact: choose a real test runner up front. `pytest` wins when it
+/// is importable for the interpreter `verify` would actually run under
+/// ([`pytest_importable`]); `unittest` is the fallback, and only for a file
+/// that defines a `unittest.TestCase` (a bare `def test_add():` with no
+/// class is not discoverable by `python3 -m unittest` on its own). `Err` when
+/// the file is pytest-style but neither runner is available — the caller
+/// reports that honestly (NO CHECKS) rather than falling back to the vacuous
+/// plain-script run.
+fn python_test_file_check(
+    dir: &Path,
+    rel: &str,
+    login_path: Option<&str>,
+) -> Result<Check, String> {
+    let source = std::fs::read_to_string(dir.join(rel)).unwrap_or_default();
+    if !is_pytest_style_without_runner(&source) {
+        // Already has a `__main__` guard, `unittest.main()`, `pytest.main()`,
+        // or a module-level `test*()` call — `python3 <file>` runs the tests
+        // for real, exactly as before this lane.
+        return Ok(Check::direct_owned("python3", vec![rel.to_string()]));
+    }
+    if pytest_importable(dir, login_path) {
+        return Ok(Check::direct_owned(
+            "python3",
+            vec!["-m".to_string(), "pytest".to_string(), rel.to_string()],
+        ));
+    }
+    if PYTHON_TESTCASE_CLASS_RE.is_match(&source) {
+        return Ok(Check::direct_owned(
+            "python3",
+            vec![
+                "-m".to_string(),
+                "unittest".to_string(),
+                python_module_name(rel),
+            ],
+        ));
+    }
+    Err(format!(
+        "`{rel}` defines tests but has no runner, and neither `pytest` nor a usable \
+         `unittest.TestCase` runner is available for the `python3` on PATH"
+    ))
+}
+
 /// Lane R62b-2: the `.py` file a check runs as a plain script
 /// (`python3 test_calc.py`, direct or as a two-word shell command), if that is
 /// all the check does. Anything more elaborate (flags, `-m`, pipes, `&&`) is
@@ -2919,14 +3090,19 @@ fn uninvoked_python_tests_reason(check: &Check, output: &str, dir: &Path) -> Opt
         return None;
     }
     let source = std::fs::read_to_string(dir.join(script)).ok()?;
-    if !PYTHON_TEST_DEFINITION_RE.is_match(&source) || PYTHON_TEST_RUNNER_RE.is_match(&source) {
+    if !is_pytest_style_without_runner(&source) {
         return None;
     }
+    // Lane R64a: name `verify`'s own `command` parameter and give the exact
+    // value to pass — the R63 s6 `select-named-check-uses-verify-tool`
+    // worker worked out the fix itself (`python3 -m pytest test_calc.py`)
+    // but had no way to make `verify` run it, and kept calling `verify`
+    // plain while auto-detection kept re-selecting this vacuous script run.
     Some(format!(
         "`{label}` ran `{script}` as a plain script, but that file only defines tests (no \
          `if __name__ == \"__main__\"` runner, `unittest.main()` or `pytest.main()`), so it \
-         exited 0 without running any test — run it with a test runner, e.g. `python3 -m \
-         pytest {script}`",
+         exited 0 without running any test — call `verify` again with the `command` parameter \
+         set to `python3 -m pytest {script}`",
         label = check.label,
     ))
 }
@@ -2973,11 +3149,22 @@ fn vacuous_pass_reason_for_checks(
 
 fn pass_result(checks: &[Check], outputs: &[String], dir: &Path) -> CallToolResult {
     let labels: Vec<&str> = checks.iter().map(|check| check.label.as_str()).collect();
-    let message = format!("PASS - all checks passed: {}.", labels.join(", "));
     // Lane R62b-3: no receipt here. Returning a vacuous PASS is not crediting
     // it; the evidence readers record the judgement
     // (`record_vacuous_pass_judgement`).
     let vacuous_reason = vacuous_pass_reason_for_checks(checks, outputs, dir);
+    // Lane R64a: a vacuous reason used to live only in `structured_content`
+    // (read by the orchestrator machinery deciding whether to CREDIT this
+    // pass) — the worker calling `verify` never saw it in the tool's own
+    // visible text, so it had no way to learn from `verify` itself that its
+    // pass did not count, or what to run instead. Fold it into the message.
+    let message = match &vacuous_reason {
+        Some(reason) => format!(
+            "PASS - all checks passed: {}. This is not real test evidence: {reason}.",
+            labels.join(", ")
+        ),
+        None => format!("PASS - all checks passed: {}.", labels.join(", ")),
+    };
     observation(
         CallToolResult::success(vec![Content::text(message.clone()).with_priority(0.0)]),
         Some(&labels.join(", ")),
@@ -3785,6 +3972,43 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             Ok(DetectOutcome::Checks(checks)) => checks,
             other => panic!("expected runnable checks, got {other:?}"),
         }
+    }
+
+    /// Lane R64a: like [`checks_of`], but with a login-shell PATH — for
+    /// exercising [`pytest_importable`]'s probe deterministically against a
+    /// fake `python3` on a temp-dir PATH, never the real ambient environment
+    /// (whether this machine happens to have `pytest` installed must not
+    /// change what a unit test asserts).
+    #[cfg(not(windows))]
+    fn checks_of_with_login_path(dir: &Path, login_path: &str) -> Vec<Check> {
+        match detect_checks_with_login_path(dir, Some(login_path)) {
+            Ok(DetectOutcome::Checks(checks)) => checks,
+            other => panic!("expected runnable checks, got {other:?}"),
+        }
+    }
+
+    /// Lane R64a: a fake `python3` on its own temp-dir `bin/`, returned as a
+    /// login-shell PATH string — deterministic, no process-global state, and
+    /// independent of whether pytest is actually installed on the machine
+    /// running this test. `pytest_version_exit` is the exit code the fake
+    /// gives `python3 -m pytest --version` (0 = importable, non-zero = not);
+    /// every other invocation exits 0 and does nothing, since only the
+    /// availability probe ever runs during detection.
+    #[cfg(not(windows))]
+    fn fake_python3_login_path(root: &Path, pytest_version_exit: u8) -> String {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"-m\" ] && [ \"$2\" = \"pytest\" ]; then\n  exit {pytest_version_exit}\nfi\nexit 0\n"
+        );
+        let bin_path = bin_dir.join("python3");
+        std::fs::write(&bin_path, script).unwrap();
+        let mut perms = std::fs::metadata(&bin_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin_path, perms).unwrap();
+        bin_dir.to_string_lossy().into_owned()
     }
 
     // ── Detection → the correct check command ──
@@ -5844,6 +6068,14 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
                 reason.contains("python3 -m pytest test_calc.py"),
                 "got: {reason}"
             );
+            // Lane R64a: the worker sees this in `verify`'s own VISIBLE tool
+            // text (not just `structured_content`), named against the real
+            // `command` parameter and the real file name.
+            let text = text_of(&result);
+            assert!(
+                text.contains("`command`") && text.contains("python3 -m pytest test_calc.py"),
+                "got: {text}"
+            );
         }
 
         // A unittest.TestCase with no runner is the same shape.
@@ -5910,12 +6142,17 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         assert_eq!(vacuous_pass_reason(&result), None);
     }
 
-    /// Lane R62b-2, end to end: auto-detection picks `python3 test_calc.py`
-    /// for the named-check fixture's manifestless workspace. It exits 0, and
-    /// verify must now report that PASS as vacuous rather than genuine.
-    #[tokio::test]
-    #[serial_test::serial(receipts_global_registry)]
-    async fn auto_detected_script_run_of_a_pytest_style_file_is_vacuous() {
+    /// Lane R64a (fixes the Lane R62b-2 defect, dschat r63 s6
+    /// `select-named-check-uses-verify-tool`): auto-detection used to pick
+    /// `python3 test_calc.py` for this exact fixture shape — a manifestless
+    /// pytest-style test file with no runner — which then only ever produced
+    /// the vacuous pass R62b-2 had to flag after the fact. Auto-detection
+    /// must now select a real runner up front: `python3 -m pytest
+    /// test_calc.py` when pytest is importable for the interpreter `verify`
+    /// would actually run under.
+    #[cfg(not(windows))]
+    #[test]
+    fn auto_detect_selects_pytest_for_a_pytest_style_file() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("calc.py"),
@@ -5923,29 +6160,84 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         )
         .unwrap();
         std::fs::write(dir.path().join("test_calc.py"), PYTEST_STYLE_TEST_CALC).unwrap();
+        let login_path = fake_python3_login_path(dir.path(), 0);
+        assert_eq!(
+            checks_of_with_login_path(dir.path(), &login_path),
+            vec![Check::direct_owned(
+                "python3",
+                vec![
+                    "-m".to_string(),
+                    "pytest".to_string(),
+                    "test_calc.py".to_string(),
+                ],
+            )]
+        );
+    }
+
+    /// Lane R64a: a manifestless test file that already invokes its own
+    /// tests (a `__main__` guard here) is not pytest-style-without-a-runner
+    /// ([`is_pytest_style_without_runner`]) — auto-detection must keep the
+    /// plain `python3 <file>` run exactly as before this lane, and must never
+    /// even probe for pytest to make that call.
+    #[test]
+    fn auto_detect_keeps_plain_script_run_when_file_has_a_runner() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("test_guard.py"),
+            "def test_checkout():\n    assert True\n\n\nif __name__ == \"__main__\":\n    test_checkout()\n",
+        )
+        .unwrap();
         assert_eq!(
             checks_of(dir.path()),
-            vec![Check::direct("python3", &["test_calc.py"])]
+            vec![Check::direct("python3", &["test_guard.py"])]
         );
-        let result = VerifyTool::new()
-            .verify_with_cwd(
-                VerifyParams {
-                    command: None,
-                    path: None,
-                    timeout_secs: Some(30),
-                    scope: None,
-                    risk: None,
-                    changed_paths: None,
-                    acceptance_criteria: None,
-                },
-                Some(dir.path()),
-                None,
-            )
-            .await;
-        assert!(is_authoritative_pass(&result), "got: {}", text_of(&result));
-        assert!(!is_genuine_pass(&result));
-        assert!(vacuous_pass_reason(&result)
-            .is_some_and(|reason| reason.contains("only defines tests")));
+    }
+
+    /// Lane R64a: pytest unavailable but the file defines a
+    /// `unittest.TestCase` — fall back to `python3 -m unittest <module>`,
+    /// which CAN discover a `TestCase`'s test methods on its own (unlike a
+    /// bare `def test_add():`).
+    #[cfg(not(windows))]
+    #[test]
+    fn auto_detect_falls_back_to_unittest_when_pytest_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("test_case.py"),
+            "import unittest\n\nclass TestAdd(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(1, 1)\n",
+        )
+        .unwrap();
+        let login_path = fake_python3_login_path(dir.path(), 1);
+        assert_eq!(
+            checks_of_with_login_path(dir.path(), &login_path),
+            vec![Check::direct_owned(
+                "python3",
+                vec![
+                    "-m".to_string(),
+                    "unittest".to_string(),
+                    "test_case".to_string(),
+                ],
+            )]
+        );
+    }
+
+    /// Lane R64a: pytest unavailable, and the file only defines a bare
+    /// `def test_add():` (not runnable by `python3 -m unittest` either) — no
+    /// safe way to actually run the tests exists, so detection must report
+    /// this honestly as NO CHECKS rather than falling back to the vacuous
+    /// plain-script run.
+    #[cfg(not(windows))]
+    #[test]
+    fn auto_detect_reports_no_checks_when_no_python_runner_is_available() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test_calc.py"), PYTEST_STYLE_TEST_CALC).unwrap();
+        let login_path = fake_python3_login_path(dir.path(), 1);
+        match detect_checks_with_login_path(dir.path(), Some(&login_path)) {
+            Ok(DetectOutcome::NoChecksConfigured(reason)) => {
+                assert!(reason.contains("pytest"), "got: {reason}");
+                assert!(reason.contains("unittest"), "got: {reason}");
+            }
+            other => panic!("expected honest NO CHECKS, got {other:?}"),
+        }
     }
 
     /// Lane R62b-3: returning a vacuous PASS is not crediting it. The verify
