@@ -1418,16 +1418,10 @@ fn merge_overlapping_file_goals(
 fn looks_like_file_token(token: &str) -> bool {
     let trimmed =
         token.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '_' && c != '/');
-    match trimmed.rsplit_once('.') {
-        Some((stem, ext))
-            if !stem.is_empty()
-                && (2..=5).contains(&ext.len())
-                && ext.chars().all(|c| c.is_ascii_alphanumeric()) =>
-        {
-            true
-        }
-        _ => false,
-    }
+    matches!(trimmed.rsplit_once('.'), Some((stem, ext))
+        if !stem.is_empty()
+            && (2..=5).contains(&ext.len())
+            && ext.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
 /// Below this many shared (non-file) words, two goals matching only on a
@@ -4190,10 +4184,6 @@ impl OrchestratorClient {
         }
     }
 
-    fn parent_extensions(&self) -> Vec<ExtensionConfig> {
-        parent_extensions_fn(&self.context)
-    }
-
     /// R27b (harness loop, "A26 analysis" section 1 Q2/Q3, lever 3):
     /// `start_agent`/`send_message` used to hand a spawned/addressed
     /// session `parent_extensions()` completely unscoped — the FULL default
@@ -4959,8 +4949,7 @@ fn invalid_worker_tier_error(
     }
 }
 
-/// The parent session's enabled extensions (free-fn form of
-/// `OrchestratorClient::parent_extensions`).
+/// The parent session's enabled extensions.
 fn parent_extensions_fn(context: &PlatformExtensionContext) -> Vec<ExtensionConfig> {
     let extension_data = context.session.as_ref().map(|s| &s.extension_data);
     EnabledExtensionsState::extensions_or_default(extension_data, Config::global())
@@ -16374,13 +16363,13 @@ async fn redispatch_ready_goals(
     live_card_ids: &std::collections::HashSet<String>,
     awaited_cards: &std::collections::HashSet<String>,
     redispatch_counts: &mut HashMap<String, u32>,
-    max_redispatch: u32,
-    dispatch: Option<&GoalDispatchHook>,
+    redispatch: &DrainRedispatch<'_>,
 ) -> u32 {
+    let max_redispatch = redispatch.max_redispatch;
     if max_redispatch == 0 || awaited_cards.is_empty() {
         return 0;
     }
-    let Some(dispatch) = dispatch else {
+    let Some(dispatch) = redispatch.dispatch else {
         return 0;
     };
     let mut attempted = 0u32;
@@ -16805,8 +16794,7 @@ async fn drain_dispatched_goals_with(
                 &live_card_ids,
                 &awaited_cards,
                 &mut redispatch_counts,
-                redispatch.max_redispatch,
-                redispatch.dispatch,
+                &redispatch,
             )
             .await
         };

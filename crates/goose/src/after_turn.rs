@@ -1801,6 +1801,7 @@ impl NoRoadmapGuard {
     /// cards stuck". Lane R20c-c: widened from "does this session own any
     /// goal card" to also see a RESUMED roadmap's cards via
     /// [`goal_cards_relevant_to_session`] — see that function's doc comment.
+    #[cfg(test)]
     async fn has_roadmap_cards(
         pool: &sqlx::Pool<sqlx::Sqlite>,
         session_id: &str,

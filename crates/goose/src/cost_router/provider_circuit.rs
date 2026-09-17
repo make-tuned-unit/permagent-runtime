@@ -81,11 +81,11 @@ pub fn open(session_id: &str, provider: &str, reason_class: &str) -> bool {
     let sessions = guard.get_or_insert_with(HashMap::new);
     let providers = sessions.entry(session_id.to_string()).or_default();
     let key = normalize(provider);
-    if providers.contains_key(&key) {
-        false
-    } else {
-        providers.insert(key, reason_class.to_string());
+    if let std::collections::hash_map::Entry::Vacant(e) = providers.entry(key) {
+        e.insert(reason_class.to_string());
         true
+    } else {
+        false
     }
 }
 

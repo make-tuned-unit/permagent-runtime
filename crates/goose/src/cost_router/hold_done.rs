@@ -320,7 +320,7 @@ fn matches_word_boundary(haystack_words: &[&str], keyword: &str) -> bool {
         return if STEM_KEYWORDS.contains(&kw) {
             haystack_words.iter().any(|w| w.starts_with(kw))
         } else {
-            haystack_words.iter().any(|&w| w == kw)
+            haystack_words.contains(&kw)
         };
     }
     kw_words.len() <= haystack_words.len()
