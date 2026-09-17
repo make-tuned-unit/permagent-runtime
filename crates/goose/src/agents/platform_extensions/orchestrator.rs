@@ -555,6 +555,43 @@ struct CreateRoadmapParams {
 /// when `create_roadmap` starts, so the same proposal cannot be replayed.
 const ROADMAP_PROPOSAL_METADATA_KEY: &str = "roadmap_proposal";
 
+/// Ruling 2026-09-17 (r64 s5): the durable record of how a roadmap was planned
+/// — the planning-complexity verdict, its reasons and signals, the intended
+/// planner route and why, and the planner that physically answered. Copied
+/// from the single-use `roadmap_proposal` proof when `create_roadmap` consumes
+/// it, onto every goal card it materializes and onto the project, so the
+/// verdict outlives the proof.
+pub(crate) const ROADMAP_PLANNING_METADATA_KEY: &str = "roadmap_planning";
+
+/// The proof keys [`roadmap_planning_record`] carries over.
+const ROADMAP_PLANNING_PROOF_KEYS: &[&str] = &[
+    "planner_complexity",
+    "planner_complexity_reasons",
+    "planner_complexity_signals",
+    "planner",
+    "planner_reason",
+    "planner_physical",
+];
+
+/// The [`ROADMAP_PLANNING_METADATA_KEY`] record from a `roadmap_proposal`
+/// proof, or `None` when the proof carries no planning keys (a proof minted
+/// before they existed).
+fn roadmap_planning_record(proof: &serde_json::Value) -> Option<serde_json::Value> {
+    let mut record = serde_json::Map::new();
+    for key in ROADMAP_PLANNING_PROOF_KEYS {
+        if let Some(value) = proof.get(*key).filter(|v| !v.is_null()) {
+            record.insert((*key).to_string(), value.clone());
+        }
+    }
+    if record.is_empty() {
+        return None;
+    }
+    if let Some(hash) = proof.get("hash") {
+        record.insert("proposal_hash".to_string(), hash.clone());
+    }
+    Some(serde_json::Value::Object(record))
+}
+
 /// Resolve the project a `decompose_roadmap` call targets (harness R2
 /// repair, HARNESS_LOOP_LOG.md Lane M2 Defect 2 — with no project-discovery
 /// tool exposed, models burned 1-4 calls guessing slugs like "workspace" or
@@ -4432,11 +4469,20 @@ async fn materialize_roadmap_transaction_with_budget(
         return Err("Roadmap approval does not match this exact proposal".to_string());
     }
 
+    // r64 s5: the planning record is copied out of the single-use proof in the
+    // same statement that consumes it, so the verdict is never lost with it.
+    let planning_record = roadmap_planning_record(proof);
     let consumed = sqlx::query(
-        "UPDATE projects SET metadata_json = json_remove(metadata_json, '$.roadmap_proposal')
+        "UPDATE projects SET metadata_json = CASE WHEN ? IS NULL
+             THEN json_remove(metadata_json, '$.roadmap_proposal')
+             ELSE json_set(json_remove(metadata_json, '$.roadmap_proposal'),
+                           '$.roadmap_planning', json(?))
+           END
          WHERE id = ? AND json_extract(metadata_json, '$.roadmap_proposal.hash') = ?
            AND json_extract(metadata_json, '$.roadmap_proposal.approval_decision_id') = ?",
     )
+    .bind(planning_record.as_ref().map(|r| r.to_string()))
+    .bind(planning_record.as_ref().map(|r| r.to_string()))
     .bind(project_id)
     .bind(proposal_hash)
     .bind(approval_decision_id)
@@ -4494,6 +4540,9 @@ async fn materialize_roadmap_transaction_with_budget(
                 "budget_task_id".to_string(),
                 serde_json::json!(budget_task_id),
             );
+        }
+        if let Some(record) = &planning_record {
+            meta.insert(ROADMAP_PLANNING_METADATA_KEY.to_string(), record.clone());
         }
         if !g.tags.is_empty() {
             meta.insert("tags".to_string(), serde_json::json!(g.tags));
@@ -11175,6 +11224,10 @@ impl OrchestratorClient {
             },
         };
         let (planner_route, planner_reason) = self.resolve_planner_route(Some(&planner_gate)).await;
+        // r64 s5: the model named in the RESPONSE of the decompose call that
+        // produced `goals` — what physically answered, recorded on the
+        // proposal and the roadmap's cards.
+        let mut answered_model: Option<String> = None;
         let (goals, actual_planner) = match self
             .resolve_decomposition_provider(
                 Some(session_id),
@@ -11184,7 +11237,16 @@ impl OrchestratorClient {
             .await
         {
             Some(planner) => {
-                match run_decomposition(&planner, &manager, &session, system, &user_message).await {
+                match run_decomposition(
+                    &planner,
+                    &manager,
+                    &session,
+                    system,
+                    &user_message,
+                    &mut answered_model,
+                )
+                .await
+                {
                     Ok(g) => (DecompositionOutcome::Goals(g), planner),
                     Err(planner_err) => {
                         let reason = match &planner_err {
@@ -11200,9 +11262,17 @@ impl OrchestratorClient {
                         );
                         open_provider_circuit(Some(session_id), planner.get_name(), &reason);
                         let default = self.get_provider().await?;
+                        answered_model = None;
                         let outcome = finalize_decomposition(
-                            run_decomposition(&default, &manager, &session, system, &user_message)
-                                .await,
+                            run_decomposition(
+                                &default,
+                                &manager,
+                                &session,
+                                system,
+                                &user_message,
+                                &mut answered_model,
+                            )
+                            .await,
                         )?;
                         (outcome, default)
                     }
@@ -11211,11 +11281,24 @@ impl OrchestratorClient {
             None => {
                 let default = self.get_provider().await?;
                 let outcome = finalize_decomposition(
-                    run_decomposition(&default, &manager, &session, system, &user_message).await,
+                    run_decomposition(
+                        &default,
+                        &manager,
+                        &session,
+                        system,
+                        &user_message,
+                        &mut answered_model,
+                    )
+                    .await,
                 )?;
                 (outcome, default)
             }
         };
+        let physical_planner = answered_planner(
+            actual_planner.get_name(),
+            &actual_planner.get_model_config().model_name,
+            answered_model.as_deref(),
+        );
 
         let goals = match goals {
             DecompositionOutcome::Goals(g) => g,
@@ -11341,6 +11424,7 @@ impl OrchestratorClient {
             "planner_complexity_signals": planning_complexity.to_json(),
             "planner": planner_label.clone(),
             "planner_reason": planner_reason.describe(),
+            "planner_physical": physical_planner.clone(),
         });
         let saved = sqlx::query(
             "UPDATE projects
@@ -13079,6 +13163,21 @@ fn parse_roadmap_response(response: &str) -> Result<Vec<goal_state::ProposedGoal
         .map_err(|e| format!("Failed to parse response as goals: {}", e))
 }
 
+/// `provider/model` of the planner that physically answered a decompose call:
+/// the model the response named, else (a provider that reports no model) the
+/// provider's configured model.
+fn answered_planner(
+    provider: &str,
+    configured_model: &str,
+    answered_model: Option<&str>,
+) -> String {
+    let model = answered_model
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or(configured_model);
+    format!("{provider}/{model}")
+}
+
 /// Run one decomposition pass against `provider`: call the model, parse goals,
 /// and retry once with a stricter prompt if the first parse fails. Used for
 /// both the cheap pass and the strong-model escalation (#249).
@@ -13090,14 +13189,19 @@ fn parse_roadmap_response(response: &str) -> Result<Vec<goal_state::ProposedGoal
 /// `providers/anthropic.rs`), so a Haiku plan was billed while the receipt
 /// named Fable. The planner is chosen by the gate; the provider may not
 /// silently downgrade it.
+///
+/// `answered_model` is set to the model the provider's response names on every
+/// completion that returns (the retry's answer overwrites the first), so the
+/// caller can record what physically answered even when parsing fails.
 async fn run_decomposition(
     provider: &Arc<dyn Provider>,
     manager: &Arc<SessionManager>,
     session: &Session,
     system: &str,
     user_message: &crate::conversation::message::Message,
+    answered_model: &mut Option<String>,
 ) -> Result<Vec<goal_state::ProposedGoal>, DecompositionError> {
-    let (response, _usage) = AccountedFastCompletion::complete_accounted(
+    let (response, usage) = AccountedFastCompletion::complete_accounted(
         Arc::clone(manager),
         session.clone(),
         Arc::clone(provider),
@@ -13108,6 +13212,7 @@ async fn run_decomposition(
     )
     .await
     .map_err(|e| DecompositionError::Provider(format!("LLM decomposition failed: {}", e)))?;
+    *answered_model = Some(usage.model);
 
     let response_text = response.as_concat_text();
 
@@ -13121,7 +13226,7 @@ async fn run_decomposition(
                  Output ONLY the JSON object with the \"goals\" array. No prose, no markdown fences."
                     .to_string(),
             );
-            let (retry_resp, _) = AccountedFastCompletion::complete_accounted(
+            let (retry_resp, retry_usage) = AccountedFastCompletion::complete_accounted(
                 Arc::clone(manager),
                 session.clone(),
                 Arc::clone(provider),
@@ -13132,6 +13237,7 @@ async fn run_decomposition(
             )
             .await
             .map_err(|e| DecompositionError::Provider(format!("LLM retry failed: {}", e)))?;
+            *answered_model = Some(retry_usage.model);
 
             match parse_roadmap_response(&retry_resp.as_concat_text()) {
                 Ok(g) => Ok(g),
@@ -42546,6 +42652,111 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         .await
         .expect("an Auto-mode launch must be able to create its own pre-approved roadmap");
         assert_eq!(materialized.created_ids.len(), 2);
+    }
+
+    /// r64 s5: `create_roadmap` consumes the single-use `roadmap_proposal`
+    /// proof, which used to take the planning-complexity verdict with it (the
+    /// r64 projects metadata had none). The verdict, reasons, signals, the
+    /// intended route and the planner that physically answered now survive on
+    /// the project and on every materialized goal card.
+    #[tokio::test]
+    async fn n4_planning_verdict_is_persisted_after_create_roadmap() {
+        let pool = test_pool().await;
+        let goals = two_goal_roadmap("N4-Planning");
+        let (hash, decision_id) = install_auto_launch_roadmap_proof(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            "n4-planning-session",
+        )
+        .await;
+        let planning = serde_json::json!({
+            "planner_complexity": "complex",
+            "planner_complexity_reasons": ["asks to change the parameters of `quoteShipping`"],
+            "planner_complexity_signals": {"signature_changes": ["quoteShipping"]},
+            "planner": "anthropic/claude-fable-5",
+            "planner_reason": "complex plan: expert planner",
+            "planner_physical": "anthropic/claude-fable-5",
+        });
+        sqlx::query(
+            "UPDATE projects SET metadata_json = json_patch(metadata_json, json(?)) WHERE id = ?",
+        )
+        .bind(serde_json::json!({ "roadmap_proposal": planning.clone() }).to_string())
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let order = goal_state::topological_order(&goals).unwrap();
+        let materialized = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+            GooseMode::Auto,
+            Some("n4-planning-session"),
+        )
+        .await
+        .expect("materialization must succeed");
+        assert_eq!(materialized.created_ids.len(), 2);
+
+        let project = crate::projects::get_project(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            project
+                .metadata_json
+                .get(ROADMAP_PROPOSAL_METADATA_KEY)
+                .is_none(),
+            "the proof is still single-use"
+        );
+        let expect = |record: &serde_json::Value| {
+            for key in ROADMAP_PLANNING_PROOF_KEYS {
+                assert_eq!(record.get(*key), planning.get(*key), "{key}: {record}");
+            }
+            assert_eq!(
+                record.get("proposal_hash").and_then(|v| v.as_str()),
+                Some(hash.as_str())
+            );
+        };
+        expect(
+            project
+                .metadata_json
+                .get(ROADMAP_PLANNING_METADATA_KEY)
+                .expect("the project keeps the planning record"),
+        );
+        for card_id in &materialized.created_ids {
+            let card = cards::get_card(&pool, card_id).await.unwrap().unwrap();
+            expect(
+                card.metadata_json
+                    .get(ROADMAP_PLANNING_METADATA_KEY)
+                    .expect("every goal card carries the planning record"),
+            );
+        }
+    }
+
+    #[test]
+    fn n4_answered_planner_prefers_the_model_the_response_named() {
+        assert_eq!(
+            answered_planner(
+                "anthropic",
+                "claude-fable-5",
+                Some("claude-haiku-4-5-20251001")
+            ),
+            "anthropic/claude-haiku-4-5-20251001"
+        );
+        assert_eq!(
+            answered_planner("custom_deepseek", "deepseek-chat", Some("  ")),
+            "custom_deepseek/deepseek-chat"
+        );
+        assert_eq!(
+            answered_planner("ollama", "qwen3:8b", None),
+            "ollama/qwen3:8b"
+        );
     }
 
     /// Lane R41a (HARNESS_LOOP_LOG.md "A36 analysis" verification_integrity
