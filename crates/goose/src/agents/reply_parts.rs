@@ -204,14 +204,15 @@ pub(crate) fn record_provider_call_authorized(authorized: bool) {
 /// The gate-decision-resolved half of
 /// [`Agent::handle_provider_authorization_failure`]'s success path, factored
 /// out as a free function taking `headless` as an explicit parameter
-/// instead of consulting the process-global `HEADLESS_DISPATCH_POLICY_CONFIG`
-/// `OnceLock` itself.
+/// instead of consulting the process-global headless dispatch policy slot
+/// itself.
 ///
 /// E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10): D1's own
-/// R2 gate-results notes explicitly flag that `OnceLock` as a real shared-
+/// R2 gate-results notes explicitly flag that global as a real shared-
 /// state hazard for `--lib` unit tests in this same binary ("ask future
-/// lanes not to compound it") — `OnceLock::set` is a one-shot, process-wide
-/// commit with no reset between tests, so any new test that both installs a
+/// lanes not to compound it") — it was a one-shot, process-wide `OnceLock`
+/// with no reset between tests (Lane T7 has since given it an `RwLock`
+/// slot and a `#[cfg(test)]` restore guard), so any new test that both installs a
 /// headless policy AND asserts on the *absence* of one elsewhere in this
 /// binary is a real, order-dependent flakiness risk. Taking `headless` as a
 /// plain argument here lets this function's behavior be pinned directly and
@@ -409,11 +410,12 @@ pub(crate) async fn reusable_gate_grant_invocation_id(
 /// (nothing useful to auto-answer for a session with no goal to route to).
 ///
 /// `headless` is a plain argument, not read from the process-global
-/// `HEADLESS_DISPATCH_POLICY_CONFIG` here, for the same reason
+/// headless dispatch policy slot here, for the same reason
 /// `try_auto_answer_reservation_gate` takes it as one: a `--lib` test that
 /// both installs a headless policy AND asserts its absence elsewhere in this
-/// binary would otherwise be a real, order-dependent flakiness risk (an
-/// existing `OnceLock`, one-shot, process-wide, never reset between tests).
+/// binary is an order-dependent flakiness risk unless it holds Lane T7's
+/// `take_headless_dispatch_policy_for_test` guard under the shared
+/// `serial(headless_dispatch_policy)` key.
 ///
 /// `provider`/`model` (F3, harness loop, Round F, from Lane G9's HIGH
 /// finding) are the exact live identity of the call that just failed, so a
@@ -2921,8 +2923,8 @@ mod tests {
     /// E1 pin: a NON-headless run (no `HeadlessDispatchPolicy` installed)
     /// must fall straight through to the caller's park path — this function
     /// returns `None` and touches nothing. Exercises the `headless` flag
-    /// directly rather than the process-global `HEADLESS_DISPATCH_POLICY_CONFIG`
-    /// `OnceLock` (see this function's own doc comment for why).
+    /// directly rather than the process-global headless dispatch policy
+    /// slot (see this function's own doc comment for why).
     #[tokio::test]
     async fn gate_auto_answer_is_a_no_op_when_not_headless() {
         let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));

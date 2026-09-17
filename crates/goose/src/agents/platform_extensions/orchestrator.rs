@@ -5345,8 +5345,114 @@ struct HeadlessDispatchPolicyConfig {
     auto_land: bool,
 }
 
-static HEADLESS_DISPATCH_POLICY_CONFIG: std::sync::OnceLock<HeadlessDispatchPolicyConfig> =
-    std::sync::OnceLock::new();
+/// Owned handle to the installed headless config, as stored in the
+/// process-global slot and returned by
+/// [`headless_dispatch_policy_config`] — an `Arc` so a reader can clone it
+/// out from behind the lock and never hold a read guard across an `.await`
+/// (the same rule [`goal_dispatch_hook_snapshot`] follows for the dispatch
+/// hook).
+type HeadlessDispatchPolicyConfigHandle = std::sync::Arc<HeadlessDispatchPolicyConfig>;
+
+/// Lane T7 (harness loop): this slot used to be a bare
+/// `OnceLock<HeadlessDispatchPolicyConfig>`, "idempotent" via
+/// `let _ = ....set(..)`. That gave production exactly the contract it needs
+/// (first install wins, every later call a harmless no-op) but gave
+/// `cargo test --lib` a single process-wide cell with no way to unset: the
+/// one test that exercises the real
+/// [`install_dispatch_hook_for_headless_session`] made every test that ran
+/// after it read headless as TRUE, a recurring class of order-dependent
+/// failures with a different victim each run (an R41a dispatch receipt test
+/// failing on `Unknown provider: mock-roadmap` because the headless branch
+/// resolves the worker provider by name instead of through the fixture's
+/// in-memory mock; a quiet-boot report line; a hold-exhaustion park; the
+/// R62g `create_roadmap` blocker tests).
+///
+/// The fix keeps a single process-global slot (a running process still wants
+/// exactly one headless policy) but behind an `RwLock` instead of a
+/// `OnceLock`, so a `#[cfg(test)]`-only seam
+/// ([`take_headless_dispatch_policy_for_test`]) can clear it for one test's
+/// lifetime and restore whatever was there before on `Drop`, while
+/// [`install_headless_dispatch_policy_config`] preserves the exact
+/// production "first install wins" contract the old `OnceLock` gave for
+/// free. Mirrors [`GOAL_DISPATCH_HOOK_SLOT`], which Lane T1 converted from a
+/// `OnceLock` for the same reason.
+static HEADLESS_DISPATCH_POLICY_SLOT: std::sync::OnceLock<
+    std::sync::RwLock<Option<HeadlessDispatchPolicyConfigHandle>>,
+> = std::sync::OnceLock::new();
+
+fn headless_dispatch_policy_slot(
+) -> &'static std::sync::RwLock<Option<HeadlessDispatchPolicyConfigHandle>> {
+    HEADLESS_DISPATCH_POLICY_SLOT.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// Clone the installed headless config out from behind the lock, if any —
+/// the single read every caller uses, replacing the old `OnceLock::get`.
+/// Synchronous and lock-scoped to this one statement: the returned `Arc`
+/// needs no lock, so it (never a read guard) is what crosses an await point.
+fn headless_dispatch_policy_config() -> Option<HeadlessDispatchPolicyConfigHandle> {
+    headless_dispatch_policy_slot().read().unwrap().clone()
+}
+
+/// Install `config` as this process's headless dispatch policy iff nothing
+/// is installed yet ("first install wins"), matching the previous
+/// `OnceLock::set` contract exactly: [`install_dispatch_hook_for_headless_session`]
+/// is the only caller, a second call is a harmless no-op, and there is no
+/// production path that can uninstall one (the only reset lives behind
+/// `#[cfg(test)]`).
+fn install_headless_dispatch_policy_config(config: HeadlessDispatchPolicyConfig) {
+    let slot = headless_dispatch_policy_slot();
+    let mut guard = slot.write().unwrap();
+    if guard.is_some() {
+        tracing::debug!(
+            target: "permagentd::brain",
+            "Headless dispatch policy already installed in this process; second install call is a no-op"
+        );
+        return;
+    }
+    *guard = Some(std::sync::Arc::new(config));
+}
+
+/// RAII guard returned by [`take_headless_dispatch_policy_for_test`]:
+/// restores whatever config (or absence of one) was installed before the
+/// guard was created, on `Drop`. Only constructible under `#[cfg(test)]`, so
+/// production cannot uninstall a policy even by accident.
+#[cfg(test)]
+#[must_use = "the previous headless dispatch policy is restored when this guard drops — \
+              binding it to `_` (instead of a named local) drops it immediately and undoes \
+              the override"]
+pub(crate) struct HeadlessDispatchPolicyTestGuard {
+    previous: Option<HeadlessDispatchPolicyConfigHandle>,
+}
+
+#[cfg(test)]
+impl Drop for HeadlessDispatchPolicyTestGuard {
+    fn drop(&mut self) {
+        let slot = headless_dispatch_policy_slot();
+        let mut guard = slot.write().unwrap();
+        *guard = self.previous.take();
+    }
+}
+
+/// Test-only seam (Lane T7): clears the process-global headless policy for
+/// the guard's lifetime, so a test can call the REAL
+/// [`install_dispatch_hook_for_headless_session`] (first-install-wins needs
+/// an empty slot to actually win) and have its footprint fully reversed on
+/// `Drop` instead of leaking "headless is on" into every test that runs
+/// after it.
+///
+/// Pair with `#[serial_test::serial(headless_dispatch_policy)]` — the shared
+/// key every test that installs the policy uses — so two such tests never
+/// interleave; the guard makes each test's footprint reversible regardless of
+/// run order, but does not by itself stop two guarded tests running
+/// concurrently. Sibling of [`take_goal_dispatch_hook_for_test`], which the
+/// same tests already hold for the dispatch-hook slot.
+#[cfg(test)]
+pub(crate) fn take_headless_dispatch_policy_for_test() -> HeadlessDispatchPolicyTestGuard {
+    let slot = headless_dispatch_policy_slot();
+    let mut guard = slot.write().unwrap();
+    let previous = guard.take();
+    HeadlessDispatchPolicyTestGuard { previous }
+}
 
 /// Whether headless auto-land ([`PERMAGENT_HEADLESS_AUTOLAND_ENV`]) is
 /// switched on for this process's installed headless dispatch policy
@@ -5373,7 +5479,7 @@ pub async fn headless_auto_land_status(
 async fn current_headless_dispatch_policy(
     session_manager: &std::sync::Arc<crate::session::SessionManager>,
 ) -> Option<HeadlessDispatchPolicy> {
-    let config = HEADLESS_DISPATCH_POLICY_CONFIG.get()?;
+    let config = headless_dispatch_policy_config()?;
     let session = session_manager
         .get_session(&config.coordinator_session_id, false)
         .await
@@ -8466,9 +8572,7 @@ pub(crate) async fn dispatch_goal_fn(
                 // resolve R28b's reviewer tier-provider fallback instead of
                 // being permanently unreachable via a literal `None`.
                 let coordinator_session_id = if tracker_headless_auto_land {
-                    HEADLESS_DISPATCH_POLICY_CONFIG
-                        .get()
-                        .map(|c| c.coordinator_session_id.clone())
+                    headless_dispatch_policy_config().map(|c| c.coordinator_session_id.clone())
                 } else {
                     None
                 };
@@ -12081,7 +12185,7 @@ impl OrchestratorClient {
         // Whether THIS process is a headless coding-harness session — never
         // true for the daemon (see `HeadlessDispatchPolicyConfig`'s own doc
         // comment: the daemon never installs one).
-        let headless = HEADLESS_DISPATCH_POLICY_CONFIG.get().is_some();
+        let headless = headless_dispatch_policy_config().is_some();
         let pool = self
             .context
             .session_manager
@@ -12098,13 +12202,15 @@ impl OrchestratorClient {
 /// this call is running in a headless session — the actual logic
 /// `handle_escalate` delegates to. Extracted so it is unit-testable against
 /// an INJECTED sink/headless flag rather than the two shared, process-global
-/// `OnceLock`s `handle_escalate` itself reads
-/// (`decision_inbox::escalate::GLOBAL_SINK`, `HEADLESS_DISPATCH_POLICY_CONFIG`)
-/// — the same reason the git-init-gate tests above avoid touching
-/// `HEADLESS_DISPATCH_POLICY_CONFIG` a third time: any `--lib` unit test that
-/// installs a value into either global stays set for the rest of that
-/// binary's `cargo test` run and can silently collide with an unrelated
-/// test.
+/// slots `handle_escalate` itself reads
+/// (`decision_inbox::escalate::GLOBAL_SINK`, [`HEADLESS_DISPATCH_POLICY_SLOT`])
+/// — the same reason the git-init-gate tests above avoid installing a
+/// headless policy a third time: `GLOBAL_SINK` is still a `OnceLock`, so any
+/// `--lib` unit test that installs a value into it stays set for the rest of
+/// that binary's `cargo test` run and can silently collide with an unrelated
+/// test. (Lane T7 gave the headless-policy half a `#[cfg(test)]` restore
+/// seam, [`take_headless_dispatch_policy_for_test`]; an injected flag is
+/// still the cheaper and more direct way to test this function.)
 ///
 /// M6 report, NEW Defect #3: `escalate{resume: auto}` in a headless run
 /// never produced a resolvable decision — 0/2 calls left a `decisions` row
@@ -12240,7 +12346,7 @@ pub(crate) fn parse_headless_escalate_cap(value: Option<&str>) -> u32 {
 
 /// Whether a headless dispatch policy is installed for THIS process — the
 /// exact check `handle_escalate` makes inline
-/// (`HEADLESS_DISPATCH_POLICY_CONFIG.get().is_some()`), exposed so
+/// (`headless_dispatch_policy_config().is_some()`), exposed so
 /// `after_turn::Rule5HonestFailureGuard` (Lane R26a) can gate its own
 /// information-escalation auto-answer on "is this a headless coding-harness
 /// CLI run", not merely "is this session in Auto mode running a top-level
@@ -12249,7 +12355,7 @@ pub(crate) fn parse_headless_escalate_cap(value: Option<&str>) -> u32 {
 /// must stay unaffected by this lane (see the task's "interactive session
 /// unchanged" requirement).
 pub(crate) fn is_headless_dispatch_policy_installed() -> bool {
-    HEADLESS_DISPATCH_POLICY_CONFIG.get().is_some()
+    headless_dispatch_policy_config().is_some()
 }
 
 /// Lane R26a: the fixed, honest auto-answer a headless coding-harness run
@@ -14102,7 +14208,7 @@ fn headless_completion_inflight_from_env() -> std::time::Duration {
 /// — whichever installer runs first in a process wins. A daemon process
 /// must never call this one.
 ///
-/// Lane U / U1: also sets [`HEADLESS_DISPATCH_POLICY_CONFIG`], the durable
+/// Lane U / U1: also installs the durable [`HeadlessDispatchPolicyConfig`],
 /// config [`current_headless_dispatch_policy`] reads — so the SAME policy
 /// this closure uses is available to `OrchestratorClient::dispatch_goal_to`
 /// for `goal_advance(dispatch)` and `resume_roadmap`, not just the
@@ -14116,7 +14222,7 @@ pub fn install_dispatch_hook_for_headless_session(
 ) {
     let restrict_to_internal_engine = headless_worker_restricted_to_internal_from_env();
     let auto_land = headless_auto_land_from_env();
-    let _ = HEADLESS_DISPATCH_POLICY_CONFIG.set(HeadlessDispatchPolicyConfig {
+    install_headless_dispatch_policy_config(HeadlessDispatchPolicyConfig {
         coordinator_session_id: coordinator_session_id.clone(),
         restrict_ranked_selection_to_internal_engine: restrict_to_internal_engine,
         auto_land,
@@ -16233,9 +16339,7 @@ pub async fn handle_goal_completion(
             // ordinary completion would bind to — never a broader identity
             // than the rest of this function already trusts.
             let coordinator_session_id = if headless_auto_land {
-                HEADLESS_DISPATCH_POLICY_CONFIG
-                    .get()
-                    .map(|c| c.coordinator_session_id.clone())
+                headless_dispatch_policy_config().map(|c| c.coordinator_session_id.clone())
             } else {
                 None
             };
@@ -16380,9 +16484,7 @@ pub async fn handle_goal_completion(
                 // approved unverified salvage lands under the SAME identity
                 // an ordinary auto-land would.
                 let coordinator_session_id = if headless_auto_land {
-                    HEADLESS_DISPATCH_POLICY_CONFIG
-                        .get()
-                        .map(|c| c.coordinator_session_id.clone())
+                    headless_dispatch_policy_config().map(|c| c.coordinator_session_id.clone())
                 } else {
                     None
                 };
@@ -18229,7 +18331,7 @@ pub async fn drain_dispatched_goals(
             dispatch: dispatch_hook.as_deref(),
             max_redispatch: headless_max_redispatch_from_env(),
             sweep_headroom: headless_sweep_headroom_from_env(),
-            auto_land: HEADLESS_DISPATCH_POLICY_CONFIG.get().is_some_and(|config| {
+            auto_land: headless_dispatch_policy_config().is_some_and(|config| {
                 config.auto_land && config.coordinator_session_id == coordinator_session_id
             }),
         },
@@ -22824,9 +22926,7 @@ async fn maybe_salvage_committed_work(
     // computed here so every salvage call site gets it for free instead of
     // threading it through call sites (like `handle_goal_timeout`) that
     // otherwise have no reason to know about headless dispatch at all.
-    let headless_auto_land = HEADLESS_DISPATCH_POLICY_CONFIG
-        .get()
-        .is_some_and(|c| c.auto_land);
+    let headless_auto_land = headless_dispatch_policy_config().is_some_and(|c| c.auto_land);
     let not_salvaged = |note: String| SalvageOutcome::NotSalvaged { note };
 
     // Lane R22f: guards run in this documented order — attempted-once →
@@ -25556,15 +25656,13 @@ async fn land_salvage_approved_by_reviewer(
     // and the final `auto_land_headless_goal` call, so the two can never
     // silently diverge. Prefers the threaded `calling_session_id` (the
     // identity every other salvage call site already derives); falls back
-    // to the SAME `HEADLESS_DISPATCH_POLICY_CONFIG` read `handle_goal_
+    // to the SAME installed-headless-policy read `handle_goal_
     // completion`'s Ok(()) arm uses, for the one call path
     // (`handle_goal_timeout`, the drain/cap-expiry sweep) that has no live
     // calling session to thread through at all.
-    let minting_session_id: Option<String> = calling_session_id.map(str::to_string).or_else(|| {
-        HEADLESS_DISPATCH_POLICY_CONFIG
-            .get()
-            .map(|c| c.coordinator_session_id.clone())
-    });
+    let minting_session_id: Option<String> = calling_session_id
+        .map(str::to_string)
+        .or_else(|| headless_dispatch_policy_config().map(|c| c.coordinator_session_id.clone()));
     // Lane R22c-e (G26 MED-1): `unverified_reviewer_approval` is now in
     // `goal_transition::PROTECTED_GOAL_METADATA_KEYS` — its PRESENCE is
     // what makes `auto_land_headless_goal` bypass the ordinary verify-
@@ -26657,7 +26755,7 @@ async fn maybe_hold_review(
                 pool,
                 card,
                 &reason,
-                HEADLESS_DISPATCH_POLICY_CONFIG.get().is_some(),
+                headless_dispatch_policy_config().is_some(),
             )
             .await?
             {
@@ -26833,10 +26931,9 @@ const HEADLESS_UNBLOCK_METADATA_KEY: &str = "headless_unblock_count";
 /// tier-1 `unblock` decision that a headless `permagent run` otherwise never
 /// answers, stranding the goal parked until the wall clock ends. `headless`
 /// is an explicit parameter rather than a read of
-/// [`HEADLESS_DISPATCH_POLICY_CONFIG`] for the same reason `record_escalation`
-/// takes one: that `OnceLock` can only ever be set once for the life of a
-/// `--lib` test binary, so a unit test exercises this function directly with
-/// an injected flag instead.
+/// [`headless_dispatch_policy_config`] for the same reason `record_escalation`
+/// takes one: a unit test exercises this function directly with an injected
+/// flag instead of installing a process-global policy at all.
 ///
 /// Honest limits, checked in order — any failure falls through to `Ok(None)`
 /// so the caller runs the ordinary park-and-wait path unchanged:
@@ -29290,7 +29387,7 @@ mod tests {
     /// existed at all, so this would have returned the generic "resumes
     /// automatically" text with nothing telling the model the task is
     /// stuck. Uses an INJECTED `SqlDecisionSink` over a fresh in-memory
-    /// pool — never the shared `GLOBAL_SINK`/`HEADLESS_DISPATCH_POLICY_CONFIG`
+    /// pool — never the shared `GLOBAL_SINK`/[`HEADLESS_DISPATCH_POLICY_SLOT`]
     /// statics `handle_escalate` itself reads, so this test cannot collide
     /// with any other test in the `orchestrator::` suite.
     // Lane T2: `record_escalation` unconditionally bumps the process-global
@@ -33185,10 +33282,11 @@ mod tests {
     //
     // Every sub-test here pre-spends R18g's own `headless_unblock_count`
     // (gate 2 of `maybe_headless_unblock_verify_gap`) so its outcome is
-    // deterministic regardless of whether some OTHER test already set the
-    // process-global `HEADLESS_DISPATCH_POLICY_CONFIG` `OnceLock` (it can
-    // only ever be set once per test binary, and Rust runs `#[tokio::test]`s
-    // in parallel by default) — R18g refuses on that gate either way, so
+    // deterministic regardless of whether some OTHER test is concurrently
+    // holding an installed headless policy in [`HEADLESS_DISPATCH_POLICY_SLOT`]
+    // (Rust runs `#[tokio::test]`s in parallel by default, and Lane T7's
+    // restore seam bounds the leak in TIME, not across threads) — R18g
+    // refuses on that gate either way, so
     // these tests observe the salvage-vs-park ordering, not R18g's own
     // eligibility math (already covered by the pre-existing R18g test
     // suite above).
@@ -33257,12 +33355,12 @@ mod tests {
     // unblock_when_eligible` used to live here, testing that R18g's headless
     // unblock (tried BEFORE salvage in `maybe_hold_review`'s `HoldOutcome::
     // Park` arm) wins over salvage when eligible. REMOVED: it drove that by
-    // calling `HEADLESS_DISPATCH_POLICY_CONFIG.set(...)` — a process-global
-    // `OnceLock` that can only ever be set once for the life of a test
+    // installing the headless policy into what was then a process-global
+    // `OnceLock` that could only ever be set once for the life of a test
     // binary. `cargo test` runs `#[tokio::test]`s in parallel within ONE
-    // process, so once this test ran, `HEADLESS_DISPATCH_POLICY_CONFIG.
-    // get().is_some()` read `true` for every OTHER test still to run in the
-    // same binary — including the pre-existing `repeated_premature_done_
+    // process, so once this test ran, every OTHER test still to run in the
+    // same binary read headless as `true` — including the pre-existing
+    // `repeated_premature_done_
     // parks_after_max_holds` earlier in this test module, which assumes headless is OFF. That
     // test's hold-exhausted, nothing-committed goal was silently resumed by
     // R18g instead of parked, so its own `needs_human_attention` assertion
@@ -33387,9 +33485,9 @@ mod tests {
             // Pre-spend R18g's own once-per-goal gate — same reasoning as
             // every other test in this section: makes `maybe_headless_
             // unblock_verify_gap`'s refusal deterministic regardless of
-            // whether some OTHER test already flipped the process-global
-            // `HEADLESS_DISPATCH_POLICY_CONFIG` `OnceLock`, without this
-            // test mutating that global itself.
+            // whether some OTHER test is concurrently holding an installed
+            // policy in [`HEADLESS_DISPATCH_POLICY_SLOT`], without this test
+            // mutating that global itself.
             m.insert(
                 HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
                 serde_json::json!(1),
@@ -51961,10 +52059,9 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     // (guarded on `current_headless_dispatch_policy(...).is_some()`, right
     // after `project` resolves) is deliberately NOT exercised end-to-end
     // here through the real `install_dispatch_hook_for_headless_session`
-    // installer. That installer sets `HEADLESS_DISPATCH_POLICY_CONFIG` —
-    // like `GOAL_DISPATCH_HOOK`, a process-global `OnceLock` that, once set
-    // by ANY test, stays set for the rest of this binary's `cargo test`
-    // invocation (no unsetter exists). A `create_roadmap_initialises_a_
+    // installer. That installer used to set a process-global `OnceLock`
+    // that, once set by ANY test, stayed set for the rest of this binary's
+    // `cargo test` invocation (no unsetter existed). A `create_roadmap_initialises_a_
     // missing_git_baseline_under_a_headless_auto_policy` test built exactly
     // that way was written and run while developing this lane: it passed in
     // isolation but, run as part of the FULL `orchestrator::` suite,
@@ -51983,11 +52080,12 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     // three-line gate in `handle_create_roadmap` that calls it is a thin,
     // already-reviewed composition of that function and
     // `current_headless_dispatch_policy` (Lane U's own primitive, already
-    // covered by the test named above). A future lane that wants true
-    // end-to-end coverage should first give every test touching
-    // `HEADLESS_DISPATCH_POLICY_CONFIG`/`GOAL_DISPATCH_HOOK` a SHARED
-    // `#[serial_test::serial("headless_policy_globals")]` key so they can
-    // never interleave with a test that assumes a clean process.
+    // covered by the test named above). A lane that wants true end-to-end
+    // coverage here now has what it needs: hold BOTH
+    // `take_headless_dispatch_policy_for_test` and
+    // `take_goal_dispatch_hook_for_test`, and key the test
+    // `#[serial_test::serial(headless_dispatch_policy)]` so it can never
+    // interleave with a test that assumes a clean process.
     //
     // Lane T1 (harness loop, M21 bisect, 2026-09-14) update: the
     // `GOAL_DISPATCH_HOOK` half of this note is fixed — it is now a
@@ -51996,10 +52094,14 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     // used by both tests named above, so each one's own footprint on that
     // slot is fully reversible regardless of run order; `#[serial_test::serial]`
     // (the default key) still keeps them from running CONCURRENTLY.
-    // `HEADLESS_DISPATCH_POLICY_CONFIG` itself is untouched by this lane and
-    // remains a bare `OnceLock` with the same "stays set forever" hazard —
-    // still a reason to avoid a fourth installer-calling test without first
-    // giving it the same treatment.
+    //
+    // Lane T7 (harness loop, 2026-09-17) update: the headless-policy half is
+    // fixed the same way — [`HEADLESS_DISPATCH_POLICY_SLOT`] is an
+    // `RwLock`-backed slot with a `#[cfg(test)]` restore seam
+    // (`take_headless_dispatch_policy_for_test`), held by the one test that
+    // calls the real installer under the shared
+    // `serial(headless_dispatch_policy)` key. Neither global "stays set
+    // forever" any more.
 
     /// M3-1: `goal_advance`/`goal_status` on a fabricated or mistyped id used
     /// to silently no-op with a bare `"Card 'X' not found"` — no hint of a
@@ -52160,8 +52262,9 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// goal and stamp `retry_count: 1` — REGARDLESS of whether the follow-up
     /// redispatch attempt itself can succeed in this context (a bare
     /// `extension_manager: None` context, deliberately, so this test is
-    /// deterministic without touching the shared `HEADLESS_DISPATCH_POLICY_CONFIG`
-    /// `OnceLock` other tests in this file already flag as collision-prone —
+    /// deterministic without touching the shared
+    /// [`HEADLESS_DISPATCH_POLICY_SLOT`] other tests in this file already
+    /// flag as collision-prone —
     /// see `create_roadmap_dispatches_a_real_child_session_once_a_dispatch_hook_is_installed`'s
     /// own doc comment. A full live-redispatch success path is exercised by
     /// precedent, not duplicated here:
@@ -54564,12 +54667,12 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// Deliberately does NOT assert the card literally reaches `Complete`:
     /// whether `maybe_salvage_committed_work`'s recursive `handle_goal_
     /// completion` auto-lands (vs. moving to Review for a human) depends on
-    /// the process-global `HEADLESS_DISPATCH_POLICY_CONFIG` `OnceLock`,
-    /// which — per that block's own comment and every other salvage test in
-    /// this file (`ready_goal_refused_redispatch_salvages_committed_work`
-    /// and neighbours) — "can only ever be set once for the life of a
-    /// `--lib` test binary" and must never be written from a test (this
-    /// lane's own hard rule). "Landed by the sweep" is this function's own
+    /// the process-global [`HEADLESS_DISPATCH_POLICY_SLOT`], which — per
+    /// every other salvage test in this file
+    /// (`ready_goal_refused_redispatch_salvages_committed_work` and
+    /// neighbours) — must never be written from a test that does not hold
+    /// `take_headless_dispatch_policy_for_test` under the shared
+    /// `serial(headless_dispatch_policy)` key (this lane's own hard rule). "Landed by the sweep" is this function's own
     /// contract instead: `run_end_salvage_sweep`'s returned `landed` count
     /// and the `salvaged_on_park` receipt it leaves, the same non-flaky
     /// shape every other salvage test in this file already settles for.
