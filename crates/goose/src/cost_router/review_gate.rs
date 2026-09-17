@@ -380,7 +380,7 @@ fn labeled_value<'a>(line: &'a str, label: &str) -> Option<&'a str> {
         .strip_prefix(label)
         .or_else(|| s.strip_prefix(title.as_str()))
         .or_else(|| s.strip_prefix(lower.as_str()))?;
-    let rest = rest.trim_start_matches(|c: char| matches!(c, '*' | '_' | '`' | ' ' | '\t'));
+    let rest = rest.trim_start_matches(['*', '_', '`', ' ', '\t']);
     rest.strip_prefix(':')
 }
 

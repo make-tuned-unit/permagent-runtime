@@ -1857,7 +1857,7 @@ pub fn escalate_reviewer_after_uncertain(
     };
     let stronger: Vec<AvailableModel> = available
         .iter()
-        .filter(|a| !is_excluded(*a))
+        .filter(|a| !is_excluded(a))
         .filter(|a| {
             lookup(&a.provider, &a.model)
                 .is_some_and(|k| k.orchestration_strength > answered_strength + BAND_EPSILON)
@@ -1902,7 +1902,7 @@ pub fn escalate_reviewer_after_uncertain(
     let strongest = top
         .candidates
         .iter()
-        .filter(|c| eligible(*c))
+        .filter(|c| eligible(c))
         .max_by(|a, b| {
             a.orchestration
                 .total_cmp(&b.orchestration)
