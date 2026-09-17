@@ -14753,6 +14753,206 @@ fn wall_budget_exhausted_refusal(metadata: &serde_json::Value) -> Option<WallBud
     })
 }
 
+/// Mint the `approve_review` decision for a goal that has just reached
+/// Review: headline, evidence-citing detail, publish-sequence note, the
+/// optional parallel review fan-out, and (in a headless auto-land run) the
+/// V2 `minting_session_id` binding. Returns the decision together with the
+/// refreshed card it was built from. Extracted from
+/// [`handle_goal_completion`] (R62c) so the drain's orphaned-Review adoption
+/// ([`adopt_orphaned_review`]) mints exactly the same decision rather than a
+/// second, drifting copy.
+async fn mint_approve_review_decision(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    card: &cards::Card,
+    coordinator_session_id: Option<&str>,
+) -> Result<(decisions::Decision, cards::Card), String> {
+    let headline = format!("Review the finished work on \"{}\"", card.title);
+    let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
+        let cut: String = headline
+            .chars()
+            .take(decisions::MAX_HEADLINE_CHARS - 1)
+            .collect();
+        format!("{}…", cut)
+    } else {
+        headline
+    };
+    // Layer 1: cite the deterministic evidence the tracker just
+    // persisted, so the decision itself carries proof-of-work
+    // (commit SHA, push target, diffstat) rather than a bare
+    // "reported success". The full structured evidence lives on the
+    // card metadata (`dispatch_evidence`) where the Evidence panel
+    // and Discuss-with-Henry read it; the decision payload carries
+    // only the schema's `completion_check` line (ApproveReviewPayload
+    // is deny_unknown_fields). Absent evidence (in-process subagent,
+    // pre-existing goals) falls back to the original wording / `{}`.
+    let project = crate::projects::get_project(pool, project_id)
+        .await
+        .ok()
+        .flatten();
+    // Lane R21a: `maybe_hold_review` above may have just persisted
+    // a read-only review receipt straight to the DB — `card` here
+    // is a snapshot from before that call, so refresh it (falling
+    // back to the stale copy on a read failure, which only means
+    // the decision detail below omits the receipt, never a hard
+    // failure of the completion itself).
+    let card = cards::get_card(pool, card_id)
+        .await
+        .ok()
+        .flatten()
+        // Clone rather than move: `card` is the caller's borrowed snapshot.
+        .unwrap_or_else(|| card.clone());
+    let evidence = card.metadata_json.get("dispatch_evidence");
+    let read_only_review = card.metadata_json.get("read_only_review");
+    let mut detail = build_review_detail(card_id, evidence, read_only_review);
+    // Publish sequence (#457): when the project declares ordered
+    // post-push steps, the review decision must say push ≠ live —
+    // the daemon has not run the sequence, so approving does not
+    // make the change user-visible. Best-effort: a project-load
+    // failure only drops the note, never the decision.
+    if let Some(note) = project
+        .as_ref()
+        .map(|p| publish_sequence::parse_publish_sequence(&p.metadata_json))
+        .as_deref()
+        .and_then(publish_sequence::review_pending_note)
+    {
+        detail = format!("{detail}\n\n{note}");
+    }
+    let project_meta = project
+        .as_ref()
+        .map(|p| p.metadata_json.clone())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if super::review_fanout::is_enabled(&card.metadata_json, &project_meta) {
+        let folded = super::review_fanout::run_parallel_reviews(&card).await;
+        detail = super::review_fanout::append_to_detail(&detail, &folded);
+    }
+    let mut payload = match evidence.and_then(format_dispatch_evidence_brief) {
+        Some(proof) => serde_json::json!({ "completion_check": proof }),
+        None => serde_json::json!({}),
+    };
+    // Harness loop, Lane V2: stamp the coordinator session onto
+    // the decision BEFORE it is ever answered, reusing R2's
+    // `minting_session_id` binding — this is the only place that
+    // ever writes this field, so `check_proof`'s Tier-1 arm can
+    // later confirm an `ACTOR_AUTO_LAUNCH` answer is being
+    // consumed by the exact session it was minted for, not some
+    // other headless session in the same process. The caller reads
+    // it from the installed headless config (never re-derived from
+    // `policy`, which does not cross into a detached tracker task)
+    // and passes `None` outside a headless auto-land run.
+    if let Some(session_id) = coordinator_session_id {
+        payload["minting_session_id"] = serde_json::json!(session_id);
+    }
+    let decision = create_decision_with_retry(
+        pool,
+        decisions::NewDecision {
+            kind: "approve_review".to_string(),
+            goal_id: Some(card_id.to_string()),
+            project_id: Some(project_id.to_string()),
+            headline: Some(headline),
+            detail: Some(detail),
+            payload,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok((decision, card))
+}
+
+/// R62c (r61 s1 `harness-testfix-inventory-suite-green`, M46): adopt a goal
+/// that reached Review without ever passing through
+/// [`handle_goal_completion`]'s Review arm, so the headless auto-land it
+/// should have had actually runs.
+///
+/// The shape: the coordinator called `goal_advance{action: review}` while
+/// the goal's worker was still live (audit `transition:review`
+/// 02:49:37.878; the worker's session ended 02:49:49 and its teardown
+/// checkpoint committed 02:49:50). That manual path moves the card to Review
+/// but mints no `approve_review` decision and never auto-lands; the worker's
+/// own completion handler then found the card "not in_progress — manual
+/// intervention assumed" and skipped. Nothing was left that would ever act
+/// on the card, so the drain parked nothing (`handle_goal_timeout` no-ops on
+/// Review), went idle and exited with most of its wall budget unused:
+/// `0 goal(s) finished, 1 still running at exit`, commit 0669b43 never
+/// landed, oracle failed. Waiting longer could not have helped — no reviewer
+/// or auto-land was running.
+///
+/// Narrow on purpose: only a card for which NO `approve_review` decision was
+/// ever minted (open, answered or superseded). A card whose completion
+/// handler already minted one and whose auto-land deliberately left it open
+/// (e.g. an unresolved UNVERIFIED criterion) is never retried here. The
+/// decision is minted by the same [`mint_approve_review_decision`] the
+/// completion handler uses, and the landing goes through the same
+/// [`auto_land_headless_goal`] gates (verify evidence, vacuous refusal,
+/// read-only and salvage rules) — this adds a caller, never a looser gate.
+/// Returns `true` when it minted a decision and ran the auto-land.
+async fn adopt_orphaned_review(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    coordinator_session_id: &str,
+) -> bool {
+    let Ok(Some(card)) = cards::get_card(pool, card_id).await else {
+        return false;
+    };
+    let minted: Result<i64, sqlx::Error> = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM decisions WHERE goal_id = ? AND kind = 'approve_review'",
+    )
+    .bind(card_id)
+    .fetch_one(pool)
+    .await;
+    match minted {
+        Ok(0) => {}
+        Ok(_) => return false,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                "drain could not check for an approve_review decision on a Review goal: {e}"
+            );
+            return false;
+        }
+    }
+    match mint_approve_review_decision(
+        pool,
+        card_id,
+        project_id,
+        &card,
+        Some(coordinator_session_id),
+    )
+    .await
+    {
+        Ok((decision, card)) => {
+            tracing::info!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                decision_id = %decision.id,
+                "drain adopted an orphaned Review goal: no completion handler surfaced it, \
+                 minted its approve_review and ran the headless auto-land"
+            );
+            auto_land_headless_goal(
+                pool,
+                &decision.id,
+                &card,
+                true,
+                Some(coordinator_session_id),
+            )
+            .await;
+            true
+        }
+        Err(e) => {
+            tracing::error!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                "drain found an orphaned Review goal but could not mint its approve_review: {e}"
+            );
+            record_decision_create_failure(pool, card_id, "approve_review", &e).await;
+            false
+        }
+    }
+}
+
 pub async fn handle_goal_completion(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
@@ -14839,113 +15039,20 @@ pub async fn handle_goal_completion(
                 .await?
                 .is_none()
             {
-                let headline = format!("Review the finished work on \"{}\"", card.title);
-                let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
-                    let cut: String = headline
-                        .chars()
-                        .take(decisions::MAX_HEADLINE_CHARS - 1)
-                        .collect();
-                    format!("{}…", cut)
-                } else {
-                    headline
-                };
-                // Layer 1: cite the deterministic evidence the tracker just
-                // persisted, so the decision itself carries proof-of-work
-                // (commit SHA, push target, diffstat) rather than a bare
-                // "reported success". The full structured evidence lives on the
-                // card metadata (`dispatch_evidence`) where the Evidence panel
-                // and Discuss-with-Henry read it; the decision payload carries
-                // only the schema's `completion_check` line (ApproveReviewPayload
-                // is deny_unknown_fields). Absent evidence (in-process subagent,
-                // pre-existing goals) falls back to the original wording / `{}`.
-                let project = crate::projects::get_project(pool, project_id)
-                    .await
-                    .ok()
-                    .flatten();
-                // Lane R21a: `maybe_hold_review` above may have just persisted
-                // a read-only review receipt straight to the DB — `card` here
-                // is a snapshot from before that call, so refresh it (falling
-                // back to the stale copy on a read failure, which only means
-                // the decision detail below omits the receipt, never a hard
-                // failure of the completion itself).
-                let card = cards::get_card(pool, card_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    // Clone rather than move: this shadowing binding is scoped
-                    // to this block, and the OUTER `card` is still read further
-                    // down (the "moved to Review" log line).
-                    .unwrap_or_else(|| card.clone());
-                let evidence = card.metadata_json.get("dispatch_evidence");
-                let read_only_review = card.metadata_json.get("read_only_review");
-                let mut detail = build_review_detail(card_id, evidence, read_only_review);
-                // Publish sequence (#457): when the project declares ordered
-                // post-push steps, the review decision must say push ≠ live —
-                // the daemon has not run the sequence, so approving does not
-                // make the change user-visible. Best-effort: a project-load
-                // failure only drops the note, never the decision.
-                if let Some(note) = project
-                    .as_ref()
-                    .map(|p| publish_sequence::parse_publish_sequence(&p.metadata_json))
-                    .as_deref()
-                    .and_then(publish_sequence::review_pending_note)
-                {
-                    detail = format!("{detail}\n\n{note}");
-                }
-                let project_meta = project
-                    .as_ref()
-                    .map(|p| p.metadata_json.clone())
-                    .unwrap_or_else(|| serde_json::json!({}));
-                if super::review_fanout::is_enabled(&card.metadata_json, &project_meta) {
-                    let folded = super::review_fanout::run_parallel_reviews(&card).await;
-                    detail = super::review_fanout::append_to_detail(&detail, &folded);
-                }
-                let mut payload = match evidence.and_then(format_dispatch_evidence_brief) {
-                    Some(proof) => serde_json::json!({ "completion_check": proof }),
-                    None => serde_json::json!({}),
-                };
-                // Harness loop, Lane V2: stamp the coordinator session onto
-                // the decision BEFORE it is ever answered, reusing R2's
-                // `minting_session_id` binding — this is the only place that
-                // ever writes this field, so `check_proof`'s Tier-1 arm can
-                // later confirm an `ACTOR_AUTO_LAUNCH` answer is being
-                // consumed by the exact session it was minted for, not some
-                // other headless session in the same process. Read directly
-                // from the installed config (never re-derived from `policy`,
-                // which does not cross into this detached tracker task) —
-                // `headless_auto_land` is only ever `true` when this exact
-                // config is the one that produced it, and every
-                // `handle_goal_completion` test passes `headless_auto_land:
-                // false`, so this global is never touched from a test.
-                let coordinator_session_id = if headless_auto_land {
-                    HEADLESS_DISPATCH_POLICY_CONFIG
-                        .get()
-                        .map(|c| c.coordinator_session_id.clone())
-                } else {
-                    None
-                };
-                if let Some(session_id) = coordinator_session_id.as_deref() {
-                    payload["minting_session_id"] = serde_json::json!(session_id);
-                }
                 // The goal has already moved to Review — a failure to surface
                 // it in the inbox must not fail (or retry) the completion, but
                 // it MUST be visible: retry once, then error-log + durable
                 // metadata trace (bug-sweep wave 1; was `let _ =`).
-                match create_decision_with_retry(
+                match mint_approve_review_decision(
                     pool,
-                    decisions::NewDecision {
-                        kind: "approve_review".to_string(),
-                        goal_id: Some(card_id.to_string()),
-                        project_id: Some(project_id.to_string()),
-                        headline: Some(headline),
-                        detail: Some(detail),
-                        payload,
-                        ..Default::default()
-                    },
+                    card_id,
+                    project_id,
+                    &card,
+                    coordinator_session_id.as_deref(),
                 )
                 .await
                 {
-                    Ok(decision) => {
+                    Ok((decision, card)) => {
                         // Harness loop, Lane V (V1): only a headless Auto
                         // dispatch (see this function's own doc comment) ever
                         // attempts this — every other caller passes `false`
@@ -16288,6 +16395,9 @@ pub async fn drain_dispatched_goals(
             dispatch: dispatch_hook.as_deref(),
             max_redispatch: headless_max_redispatch_from_env(),
             sweep_headroom: headless_sweep_headroom_from_env(),
+            auto_land: HEADLESS_DISPATCH_POLICY_CONFIG.get().is_some_and(|config| {
+                config.auto_land && config.coordinator_session_id == coordinator_session_id
+            }),
         },
     )
     .await
@@ -16310,6 +16420,12 @@ pub(crate) struct DrainRedispatch<'a> {
     /// can pin it exactly, with no process-global env race against the other
     /// drain tests. `Duration::ZERO` = never stand down (Y6's behaviour).
     pub sweep_headroom: std::time::Duration,
+    /// R62c: headless auto-land is on for THIS coordinator's installed
+    /// policy, so the drain may adopt a Review card no completion handler
+    /// surfaced ([`adopt_orphaned_review`]). Carried here, not read from the
+    /// `OnceLock` inside the loop, so a test pins it without touching
+    /// process-global state.
+    pub auto_land: bool,
 }
 
 /// Future returned by a [`DrainIterationHook`] — same shape as
@@ -16821,6 +16937,8 @@ async fn drain_dispatched_goals_with(
     let mut requeued: HashMap<String, String> = HashMap::new();
     // Y6 re-dispatch counts plus R62c's two single-shot allowances.
     let mut sweep_ledger = DrainSweepLedger::default();
+    // R62c: Review cards this drain already tried to adopt (once per card).
+    let mut review_adoptions: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Y6: every goal card this drain has ever awaited, so the sweep can ask
     // "is any completion handler still running?" — see `completion_active`.
     // Y6b (G12 MED-3): it is ALSO this run's DAG — the sweep starts only these
@@ -16961,6 +17079,25 @@ async fn drain_dispatched_goals_with(
                     .is_some_and(|card| headless_unblock_continuation_pending(&card.metadata_json));
             }
             let completion_in_flight = goal_completion_in_flight_within(&card_id, completion_bound);
+            // R62c (r61 s1, see `adopt_orphaned_review`): a Review card
+            // whose worker attempt is over and whose completion handler is
+            // not running was surfaced by nobody when the coordinator moved
+            // it to Review by hand. In a headless auto-land run, adopt it
+            // once — mint its approve_review and run the auto-land — and
+            // re-poll it on the next pass, where it reads as landed
+            // (Finished), rejected back to Ready (Requeued → re-dispatch) or
+            // parked (Finished). Still Review after that falls through to
+            // the pre-existing Park below.
+            if state == GoalState::Review
+                && receipt_terminal
+                && !completion_in_flight
+                && redispatch.auto_land
+                && review_adoptions.insert(card_id.clone())
+                && adopt_orphaned_review(pool, &card_id, &project_id, coordinator_session_id).await
+            {
+                still_pending.insert(session_id, (card_id, project_id));
+                continue;
+            }
             let action =
                 next_drain_action(state, receipt_terminal, completion_in_flight, budget_left);
             match action {
@@ -34109,6 +34246,7 @@ mod tests {
                 dispatch: Some(&dispatcher),
                 max_redispatch: 2,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -34205,6 +34343,7 @@ mod tests {
                 dispatch: Some(&dispatcher),
                 max_redispatch: 2,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -34314,6 +34453,7 @@ mod tests {
                 dispatch: None,
                 max_redispatch: 0,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -34411,6 +34551,7 @@ mod tests {
                 dispatch: None,
                 max_redispatch: 0,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -34509,6 +34650,7 @@ mod tests {
                 // Y6b: never stand the sweep down in this test — the headroom
                 // rule is pinned separately, with its own fixture.
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -34593,6 +34735,7 @@ mod tests {
                 // Y6b: never stand the sweep down in this test — the headroom
                 // rule is pinned separately, with its own fixture.
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -34681,6 +34824,7 @@ mod tests {
                 // headroom window, i.e. the shape of the last seconds of a
                 // real 240s drain.
                 sweep_headroom: std::time::Duration::from_secs(3_600),
+                auto_land: false,
             },
         )
         .await
@@ -34792,6 +34936,7 @@ mod tests {
                 // so the STATIC rule alone would stand the sweep down on
                 // every single poll.
                 sweep_headroom: std::time::Duration::from_secs(3_600),
+                auto_land: false,
             },
         )
         .await
@@ -34971,6 +35116,7 @@ mod tests {
                 dispatch: Some(&dispatcher),
                 max_redispatch: 2,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -35074,6 +35220,7 @@ mod tests {
                 dispatch: Some(&dispatcher),
                 max_redispatch: 2,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -35088,6 +35235,140 @@ mod tests {
         assert!(
             !recorded.contains(&stranger.id),
             "a card this run does not own must still be left alone: {recorded:?}"
+        );
+    }
+
+    /// R62c, durable (M46 r61 s1 `harness-testfix-inventory-suite-green`):
+    /// the coordinator moved the goal to Review by hand while its worker was
+    /// live, so no completion handler minted an `approve_review` or ran the
+    /// headless auto-land, and the drain exited with the card still in
+    /// Review (`0 goal(s) finished, 1 still running at exit`). With auto-land
+    /// on, the drain must adopt it once: mint the decision (bound to this
+    /// coordinator) and drive it through the auto-land's own gates to a
+    /// terminal state. This fixture's worker recorded no verify pass, so the
+    /// honest terminal state is a park, not a landing. With auto-land off the
+    /// card is left exactly as before. Pre-fix repro: no `approve_review` row
+    /// and the card still in Review.
+    #[tokio::test]
+    async fn drain_adopts_a_review_goal_no_completion_handler_surfaced() {
+        async fn orphaned_review_fixture(
+            auto_land: bool,
+        ) -> (
+            tempfile::TempDir,
+            sqlx::Pool<sqlx::Sqlite>,
+            String,
+            cards::Card,
+            DrainSummary,
+        ) {
+            let tmp = tempfile::tempdir().unwrap();
+            let sm = Arc::new(crate::session::SessionManager::new(
+                tmp.path().to_path_buf(),
+            ));
+            let pool = sm.pool_clone().await.unwrap();
+            let coordinator = sm
+                .create_session(
+                    tmp.path().to_path_buf(),
+                    "coordinator".to_string(),
+                    SessionType::Hidden,
+                    GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            let child = sm
+                .create_session_with_parent(
+                    Some(&coordinator.id),
+                    tmp.path().to_path_buf(),
+                    "Goal: moved to review by hand".to_string(),
+                    SessionType::SubAgent,
+                    GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            let card = setup_goal_in_state(&pool, "review", 1).await;
+            attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+            let mut receipt = ExecutionReceipt::new(
+                "permagent",
+                child.id.clone(),
+                serde_json::json!({}),
+                "life-1",
+                chrono::Utc::now().to_rfc3339(),
+                1,
+            );
+            receipt.finalize(ReceiptState::Completed, chrono::Utc::now().to_rfc3339());
+            cards::set_goal_execution_receipt(
+                &pool,
+                &card.id,
+                serde_json::to_value(&receipt).unwrap(),
+            )
+            .await
+            .unwrap();
+            let summary = drain_dispatched_goals_with(
+                &pool,
+                &coordinator.id,
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_millis(10),
+                |_, _| {},
+                None,
+                DrainRedispatch {
+                    dispatch: None,
+                    max_redispatch: 0,
+                    sweep_headroom: std::time::Duration::ZERO,
+                    auto_land,
+                },
+            )
+            .await
+            .unwrap();
+            (tmp, pool, coordinator.id, card, summary)
+        }
+        async fn state_of(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) -> Option<String> {
+            let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
+            cards::get_column(pool, &card.column_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state_binding
+        }
+
+        let (_tmp, pool, coordinator_id, card, summary) = orphaned_review_fixture(true).await;
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT status, payload_json FROM decisions WHERE goal_id = ? AND kind = 'approve_review'",
+        )
+        .bind(&card.id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1, "exactly one approve_review minted: {rows:?}");
+        let payload: serde_json::Value = serde_json::from_str(&rows[0].1).unwrap();
+        assert_eq!(
+            payload.get("minting_session_id").and_then(|v| v.as_str()),
+            Some(coordinator_id.as_str()),
+            "the adopted decision is bound to this run's coordinator, like any headless mint"
+        );
+        assert_eq!(
+            rows[0].0, "superseded",
+            "no verify evidence: the auto-land refuses and supersedes, it never approves"
+        );
+        assert_eq!(
+            state_of(&pool, &card.id).await.as_deref(),
+            Some("failed"),
+            "the orphaned Review goal reaches a terminal (parked) state instead of being \
+             abandoned in Review"
+        );
+        assert_eq!(summary.finished, 1, "{summary:?}");
+
+        let (_tmp, pool, _coordinator_id, card, _summary) = orphaned_review_fixture(false).await;
+        let minted: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE goal_id = ? AND kind = 'approve_review'",
+        )
+        .bind(&card.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(minted, 0, "auto-land off: nothing is minted by the drain");
+        assert_eq!(
+            state_of(&pool, &card.id).await.as_deref(),
+            Some("review"),
+            "auto-land off: the card is left for a human, unchanged"
         );
     }
 
@@ -35279,6 +35560,7 @@ mod tests {
                 dispatch: None,
                 max_redispatch: 0,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -35361,6 +35643,7 @@ mod tests {
                 dispatch: None,
                 max_redispatch: 0,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -35469,6 +35752,7 @@ mod tests {
                 dispatch: None,
                 max_redispatch: 0,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
