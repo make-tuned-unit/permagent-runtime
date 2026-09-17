@@ -19605,6 +19605,159 @@ tokio::task_local! {
     static FRESH_HOLD_VERIFY_CALL_COUNT: std::sync::Arc<std::sync::atomic::AtomicU32>;
 }
 
+/// Lane R62e (A61 misses 1 and 4): the explicit check a goal worker ran
+/// through `verify` and got a genuine PASS from — the `command` (and, when it
+/// stays inside the worktree, the `path`) arguments of that verify request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordedVerifyCommand {
+    command: String,
+    path: Option<String>,
+}
+
+/// Lane R62e (A61 misses 1 and 4): the check command behind the LAST genuine
+/// (non-vacuous, `is_genuine_pass`) verify PASS in `messages`, or `None` when
+/// that pass came from auto-detection (no `command` argument) or no genuine
+/// pass exists at all. Salvage and the hold's fresh re-verify used to
+/// re-auto-detect only, so a worker whose passing check was an explicit
+/// command (`node --experimental-strip-types …` in a `package.json` with no
+/// test script; `/usr/bin/python3 -m pytest`) was re-checked with something
+/// that could never pass and its proven work was stranded.
+///
+/// This only EXTRACTS the command. Whether the session holds genuine verify
+/// evidence at all stays [`verify_evidence_in_messages`]'s call (see
+/// [`session_recorded_verify_command`]). Requests are indexed by id before
+/// any response is read, so a response row saved ahead of its own request
+/// (A61 bug A) still resolves to that request's arguments.
+fn last_genuine_verify_command_in_messages(
+    messages: &[crate::conversation::message::MessageContent],
+) -> Option<RecordedVerifyCommand> {
+    use crate::agents::platform_extensions::developer::verify;
+    use crate::conversation::message::MessageContent;
+
+    let arg = |args: Option<&serde_json::Map<String, serde_json::Value>>, key: &str| {
+        args.and_then(|a| a.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let mut requests: HashMap<&str, Option<RecordedVerifyCommand>> = HashMap::new();
+    for content in messages {
+        let MessageContent::ToolRequest(request) = content else {
+            continue;
+        };
+        let Ok(call) = request.tool_call.as_ref() else {
+            continue;
+        };
+        if !is_verify_tool_name(call.name.as_ref()) {
+            continue;
+        }
+        let args = call.arguments.as_ref();
+        let recorded = arg(args, "command").map(|command| RecordedVerifyCommand {
+            command,
+            path: arg(args, "path"),
+        });
+        requests.insert(request.id.as_str(), recorded);
+    }
+
+    let mut last = None;
+    for content in messages {
+        let MessageContent::ToolResponse(response) = content else {
+            continue;
+        };
+        let Some(recorded) = requests.get(response.id.as_str()) else {
+            continue;
+        };
+        if response
+            .tool_result
+            .as_ref()
+            .is_ok_and(verify::is_genuine_pass)
+        {
+            last = Some(recorded.clone());
+        }
+    }
+    last.flatten()
+}
+
+/// Lane R62e: [`last_genuine_verify_command_in_messages`] over the goal's
+/// recorded worker session (`worker_session_id`), gated on the existing
+/// evidence reader ([`session_verify_evidence`]) crediting a genuine pass —
+/// so this never disagrees with the hold about whether the worker verified.
+async fn session_recorded_verify_command(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+) -> Option<RecordedVerifyCommand> {
+    let session_id = card
+        .metadata_json
+        .get("worker_session_id")
+        .and_then(|v| v.as_str())?;
+    if !session_verify_evidence(pool, Some(session_id))
+        .await
+        .is_genuine()
+    {
+        return None;
+    }
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT content_json FROM messages WHERE session_id = ? ORDER BY id",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await
+    .ok()?;
+    let contents: Vec<crate::conversation::message::MessageContent> = rows
+        .iter()
+        .filter_map(|json| {
+            serde_json::from_str::<Vec<crate::conversation::message::MessageContent>>(json).ok()
+        })
+        .flatten()
+        .collect();
+    last_genuine_verify_command_in_messages(&contents)
+}
+
+/// Lane R62e: the `VerifyParams` salvage and the hold's fresh re-verify run
+/// — the worker's recorded passing command when there is one, auto-detection
+/// (`command: None`) only when there is not. A recorded `path` is kept only
+/// when it resolves inside `worktree` (relative, no `..`; or absolute under
+/// the worktree, made relative); anything else runs at the worktree root.
+/// Vacuous-pass detection is unchanged: callers still gate on
+/// `is_genuine_pass`, which rejects a zero-tests or smoke-only re-run.
+fn fresh_verify_params(
+    recorded: Option<&RecordedVerifyCommand>,
+    worktree: &std::path::Path,
+    time_box: std::time::Duration,
+    acceptance_criteria: Vec<String>,
+) -> crate::agents::platform_extensions::developer::verify::VerifyParams {
+    let path = recorded.and_then(|r| r.path.as_deref()).and_then(|p| {
+        let candidate = std::path::Path::new(p);
+        let relative = if candidate.is_absolute() {
+            candidate.strip_prefix(worktree).ok()?.to_path_buf()
+        } else {
+            candidate.to_path_buf()
+        };
+        let escapes = relative.components().any(|c| {
+            !matches!(
+                c,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        });
+        (!escapes && !relative.as_os_str().is_empty())
+            .then(|| relative.to_string_lossy().into_owned())
+    });
+    crate::agents::platform_extensions::developer::verify::VerifyParams {
+        command: recorded.map(|r| r.command.clone()),
+        path,
+        timeout_secs: Some(time_box.as_secs()),
+        scope: None,
+        risk: None,
+        changed_paths: None,
+        acceptance_criteria: if acceptance_criteria.is_empty() {
+            None
+        } else {
+            Some(acceptance_criteria)
+        },
+    }
+}
+
 /// R42a-b (G29 HIGH-1): run the SAME real, time-boxed `verify` call
 /// [`maybe_salvage_committed_work`] already runs before crediting ANY
 /// committed work — factored out of that function's construction (`
@@ -19627,7 +19780,12 @@ tokio::task_local! {
 /// verify-bound-to-head discipline on its own trunk-relative override —
 /// `commits_unlanded_at_trunk > 0` alone is not evidence the commit was
 /// ever checked, exactly the gap R42a-b closed here for `maybe_hold_review`.
+///
+/// Lane R62e (A61 misses 1 and 4): re-runs the worker's own recorded passing
+/// check ([`session_recorded_verify_command`]) when there is one, and only
+/// auto-detects when none is recorded.
 pub(crate) async fn run_fresh_verify_for_hold(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
     worktree_path: &std::path::Path,
 ) -> bool {
@@ -19645,19 +19803,13 @@ pub(crate) async fn run_fresh_verify_for_hold(
     };
 
     let acceptance_criteria = collect_acceptance_criteria(&card.metadata_json, &card.description);
-    let verify_params = crate::agents::platform_extensions::developer::verify::VerifyParams {
-        command: None,
-        path: None,
-        timeout_secs: Some(time_box.as_secs()),
-        scope: None,
-        risk: None,
-        changed_paths: None,
-        acceptance_criteria: if acceptance_criteria.is_empty() {
-            None
-        } else {
-            Some(acceptance_criteria)
-        },
-    };
+    let recorded = session_recorded_verify_command(pool, card).await;
+    let verify_params = fresh_verify_params(
+        recorded.as_ref(),
+        worktree_path,
+        time_box,
+        acceptance_criteria,
+    );
     let verify_run =
         tokio::time::timeout(
             time_box,
@@ -20037,19 +20189,23 @@ async fn maybe_salvage_committed_work(
     // registry lookup could tell it.
     let salvage_acceptance_criteria =
         collect_acceptance_criteria(&card.metadata_json, &card.description);
-    let verify_params = crate::agents::platform_extensions::developer::verify::VerifyParams {
-        command: None,
-        path: None,
-        timeout_secs: Some(time_box.as_secs()),
-        scope: None,
-        risk: None,
-        changed_paths: None,
-        acceptance_criteria: if salvage_acceptance_criteria.is_empty() {
-            None
-        } else {
-            Some(salvage_acceptance_criteria)
-        },
-    };
+    // Lane R62e (A61 miss 1): re-run the check the worker itself passed, not
+    // a fresh auto-detection that may have nothing runnable to find.
+    let recorded_command = session_recorded_verify_command(pool, card).await;
+    if let Some(recorded) = recorded_command.as_ref() {
+        tracing::info!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            command = %recorded.command,
+            "salvage: re-running the worker's recorded passing verify command"
+        );
+    }
+    let verify_params = fresh_verify_params(
+        recorded_command.as_ref(),
+        worktree_path,
+        time_box,
+        salvage_acceptance_criteria,
+    );
     let verify_run =
         tokio::time::timeout(
             time_box,
@@ -20675,9 +20831,7 @@ async fn call_reviewer_provider(
     provider_id: &str,
     model_id: &str,
     session: Session,
-    task_spec: &str,
-    diff_for_prompt: &str,
-    verify_note: &str,
+    prompt: &str,
 ) -> Result<crate::conversation::message::Message, ReviewerCallFailure> {
     let model_config = crate::model::ModelConfig::new(model_id)
         .map(|c| c.with_canonical_limits(provider_id))
@@ -20700,12 +20854,6 @@ async fn call_reviewer_provider(
             }
         })?;
 
-    let prompt = crate::cost_router::build_review_prompt(
-        task_spec,
-        diff_for_prompt,
-        &format!("no automated checks ran; review the diff on its merits ({verify_note})"),
-        &[],
-    );
     let user_message = Message::user().with_text(prompt);
 
     let completion = tokio::time::timeout(
@@ -20752,9 +20900,7 @@ async fn call_reviewer_provider_checked(
     provider_id: &str,
     model_id: &str,
     session: Session,
-    task_spec: &str,
-    diff_for_prompt: &str,
-    verify_note: &str,
+    prompt: &str,
 ) -> Result<crate::conversation::message::Message, ReviewerCallFailure> {
     if let Some(sid) = session_id {
         if let Some(class) = crate::cost_router::provider_circuit::reason_if_open(sid, provider_id)
@@ -20765,15 +20911,7 @@ async fn call_reviewer_provider_checked(
             )));
         }
     }
-    call_reviewer_provider(
-        provider_id,
-        model_id,
-        session,
-        task_spec,
-        diff_for_prompt,
-        verify_note,
-    )
-    .await
+    call_reviewer_provider(provider_id, model_id, session, prompt).await
 }
 
 /// Lane R28b (A27 Miss 3): resolve the ONE fallback reviewer candidate for a
@@ -20809,6 +20947,281 @@ async fn resolve_session_tier_fallback(
         return None;
     }
     Some((provider, model))
+}
+
+/// Lane R62e: bounds on the repository context gathered for the salvage
+/// reviewer — symbols looked up, call-site lines kept per changed signature,
+/// definition lines kept per called function, and characters per line.
+const SALVAGE_REVIEW_CONTEXT_MAX_SYMBOLS: usize = 8;
+const SALVAGE_REVIEW_CONTEXT_MAX_CALL_SITES: usize = 12;
+const SALVAGE_REVIEW_CONTEXT_MAX_DEFINITIONS: usize = 3;
+const SALVAGE_REVIEW_CONTEXT_MAX_LINE_CHARS: usize = 240;
+
+/// Lane R62e (A61 miss 1): what the salvage reviewer sees beyond the diff.
+/// The s2 reviewer returned UNCERTAIN ("cannot verify quoteShipping signature
+/// accepts three parameters … files not included in diff") because the brief
+/// carried only a call-site diff. This mirrors the main review path
+/// (`goose-server` `verification::call_site_enumerations_for_review`): E7
+/// call sites for every signature the diff changes, plus the definition
+/// lines of the functions the diff's added lines call.
+#[derive(Debug, Default)]
+struct SalvageReviewContext {
+    call_site_enumerations: Vec<crate::cost_router::CallSiteEnumeration>,
+    /// `file:line: definition` lines, already bounded.
+    callee_definitions: Vec<String>,
+}
+
+/// Names that read as `name(` on a changed line but are language keywords or
+/// control flow, never a repository function worth looking up.
+const SALVAGE_REVIEW_CALL_STOPWORDS: &[&str] = &[
+    "if",
+    "for",
+    "while",
+    "switch",
+    "return",
+    "catch",
+    "function",
+    "match",
+    "typeof",
+    "new",
+    "super",
+    "await",
+    "async",
+    "fn",
+    "def",
+    "elif",
+    "with",
+    "not",
+    "and",
+    "or",
+    "in",
+    "sizeof",
+    "require",
+    "import",
+    "export",
+    "assert",
+    "print",
+    "println",
+    "format",
+    "vec",
+    "Some",
+    "Ok",
+    "Err",
+    "self",
+    "this",
+    "constructor",
+    "len",
+    "str",
+    "int",
+    "list",
+    "dict",
+    "set",
+];
+
+/// Lane R62e: every function name called (`name(`) on an ADDED line of a
+/// unified diff, in first-seen order, deduplicated, stopwords dropped, capped
+/// at [`SALVAGE_REVIEW_CONTEXT_MAX_SYMBOLS`].
+fn called_symbols_on_added_lines(diff: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in diff.lines() {
+        if !line.starts_with('+') || line.starts_with("+++") {
+            continue;
+        }
+        let mut ident = String::new();
+        let mut pending: Option<String> = None;
+        for c in line.chars().skip(1) {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '$' {
+                pending = None;
+                ident.push(c);
+                continue;
+            }
+            if !ident.is_empty() {
+                pending = Some(std::mem::take(&mut ident));
+            }
+            if c.is_whitespace() {
+                continue;
+            }
+            if c == '(' {
+                if let Some(name) = pending.take() {
+                    let valid = name.chars().count() >= 2
+                        && name.chars().next().is_some_and(|f| !f.is_ascii_digit())
+                        && !SALVAGE_REVIEW_CALL_STOPWORDS.contains(&name.as_str());
+                    if valid && !out.contains(&name) {
+                        out.push(name);
+                        if out.len() >= SALVAGE_REVIEW_CONTEXT_MAX_SYMBOLS {
+                            return out;
+                        }
+                    }
+                }
+            }
+            pending = None;
+        }
+    }
+    out
+}
+
+/// Char-safe cap on one context line handed to the reviewer.
+fn clamp_review_context_line(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= SALVAGE_REVIEW_CONTEXT_MAX_LINE_CHARS {
+        return trimmed.to_string();
+    }
+    let mut clamped: String = trimmed
+        .chars()
+        .take(SALVAGE_REVIEW_CONTEXT_MAX_LINE_CHARS)
+        .collect();
+    clamped.push('…');
+    clamped
+}
+
+/// Lane R62e: split one `git grep -n` output line (`path:line:text`) into
+/// its parts. `None` for anything that does not parse.
+fn parse_grep_line(line: &str) -> Option<(String, usize, String)> {
+    let mut parts = line.splitn(3, ':');
+    let file = parts.next()?.to_string();
+    let number = parts.next()?.trim().parse::<usize>().ok()?;
+    let text = parts.next()?.to_string();
+    (!file.is_empty()).then_some((file, number, text))
+}
+
+/// Lane R62e: does `text` define `symbol`? The E7 recognizer
+/// ([`crate::cost_router::call_site_completeness::definition_in_line`]) plus
+/// the `const|let|var name =` binding shape an arrow function uses.
+fn line_defines_symbol(text: &str, symbol: &str) -> bool {
+    if crate::cost_router::call_site_completeness::definition_in_line(text)
+        .is_some_and(|(name, _)| name == symbol)
+    {
+        return true;
+    }
+    let trimmed = text.trim_start();
+    let trimmed = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+    ["const ", "let ", "var "].iter().any(|kw| {
+        trimmed
+            .strip_prefix(kw)
+            .and_then(|rest| rest.trim_start().strip_prefix(symbol))
+            .is_some_and(|rest| {
+                let rest = rest.trim_start();
+                rest.starts_with('=') || rest.starts_with(':')
+            })
+    })
+}
+
+/// Lane R62e: the definition lines for `symbol` in `git grep -n -w` output,
+/// rendered `file:line: text` and capped at
+/// [`SALVAGE_REVIEW_CONTEXT_MAX_DEFINITIONS`].
+fn definition_lines_from_grep(symbol: &str, grep_output: &str) -> Vec<String> {
+    grep_output
+        .lines()
+        .filter_map(parse_grep_line)
+        .filter(|(_, _, text)| line_defines_symbol(text, symbol))
+        .take(SALVAGE_REVIEW_CONTEXT_MAX_DEFINITIONS)
+        .map(|(file, number, text)| {
+            format!("{file}:{number}: {}", clamp_review_context_line(&text))
+        })
+        .collect()
+}
+
+/// Lane R62e: the call sites of `change.symbol` in `git grep -n -w` output
+/// (a `symbol(` call on a line that is not itself its definition), capped at
+/// [`SALVAGE_REVIEW_CONTEXT_MAX_CALL_SITES`].
+fn call_sites_from_grep(
+    change: &crate::cost_router::SignatureChange,
+    grep_output: &str,
+) -> crate::cost_router::CallSiteEnumeration {
+    let call = regex::Regex::new(&format!(r"\b{}\s*\(", regex::escape(&change.symbol))).ok();
+    let call_sites = grep_output
+        .lines()
+        .filter_map(parse_grep_line)
+        .filter(|(_, _, text)| {
+            call.as_ref().is_some_and(|re| re.is_match(text))
+                && !line_defines_symbol(text, &change.symbol)
+        })
+        .take(SALVAGE_REVIEW_CONTEXT_MAX_CALL_SITES)
+        .map(|(file, line, text)| crate::cost_router::CallSite {
+            file,
+            line,
+            text: clamp_review_context_line(&text),
+        })
+        .collect();
+    crate::cost_router::CallSiteEnumeration {
+        symbol: change.symbol.clone(),
+        file: change.file.clone(),
+        call_sites,
+    }
+}
+
+/// Lane R62e: gather [`SalvageReviewContext`] for `diff` from the goal
+/// worktree with `git grep` over tracked files only. Every failure (no
+/// match exits 1, a timeout) degrades to less context, never an error.
+async fn gather_salvage_review_context(
+    worktree_path: &std::path::Path,
+    diff: &str,
+) -> SalvageReviewContext {
+    let mut context = SalvageReviewContext::default();
+    let changes = crate::cost_router::detect_signature_changes(diff);
+    for change in changes.iter().take(SALVAGE_REVIEW_CONTEXT_MAX_SYMBOLS) {
+        let grep = git_in_worktree(
+            worktree_path,
+            &["grep", "-n", "-I", "-w", "-F", "-e", &change.symbol],
+        )
+        .await
+        .unwrap_or_default();
+        context
+            .call_site_enumerations
+            .push(call_sites_from_grep(change, &grep));
+    }
+    for symbol in called_symbols_on_added_lines(diff) {
+        if changes.iter().any(|c| c.symbol == symbol) {
+            continue;
+        }
+        let grep = git_in_worktree(
+            worktree_path,
+            &["grep", "-n", "-I", "-w", "-F", "-e", &symbol],
+        )
+        .await
+        .unwrap_or_default();
+        context
+            .callee_definitions
+            .extend(definition_lines_from_grep(&symbol, &grep));
+    }
+    context
+}
+
+/// Lane R62e: the salvage reviewer's prompt — the same data-fenced
+/// `build_review_prompt` shape as before, with the harness-gathered callee
+/// definitions appended to the verify slot (which salvage already uses for
+/// its "no automated checks ran" note) and, when the diff changes a
+/// signature, the E7 `BEGIN_CALL_SITES` section the main review path sends.
+fn build_salvage_review_prompt(
+    task_spec: &str,
+    diff: &str,
+    verify_note: &str,
+    context: &SalvageReviewContext,
+) -> String {
+    let mut verify_output =
+        format!("no automated checks ran; review the diff on its merits ({verify_note})");
+    if !context.callee_definitions.is_empty() {
+        verify_output.push_str(
+            "\n\nRepository context gathered by the harness (read-only, not part of the diff) \
+             — definitions of the functions the diff's added lines call:\n",
+        );
+        for line in &context.callee_definitions {
+            verify_output.push_str("  ");
+            verify_output.push_str(line);
+            verify_output.push('\n');
+        }
+    }
+    if context.call_site_enumerations.is_empty() {
+        crate::cost_router::build_review_prompt(task_spec, diff, &verify_output, &[])
+    } else {
+        crate::cost_router::build_review_prompt_with_call_sites(
+            task_spec,
+            diff,
+            &verify_output,
+            &[],
+            &crate::cost_router::render_call_site_section(&context.call_site_enumerations),
+        )
+    }
 }
 
 /// Lane R22c-c: dispatch the SAME cross-family reviewer gate a live
@@ -20952,6 +21365,11 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         card.title,
         collect_acceptance_criteria(&card.metadata_json, &card.description).join("\n")
     );
+    // Lane R62e (A61 miss 1): give the reviewer the callee definitions and
+    // E7 call sites the diff alone does not show.
+    let review_context = gather_salvage_review_context(worktree_path, &diff_for_prompt).await;
+    let prompt =
+        build_salvage_review_prompt(&task_spec, &diff_for_prompt, verify_note, &review_context);
 
     // Lane R28b (A27 Miss 3): the first attempt is always the selected
     // `pick`. On a provider-unavailable/billing/auth-class failure (the
@@ -20966,9 +21384,7 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         &pick.provider,
         &pick.model,
         session.clone(),
-        &task_spec,
-        &diff_for_prompt,
-        verify_note,
+        &prompt,
     )
     .await
     {
@@ -20997,9 +21413,7 @@ async fn dispatch_cross_family_reviewer_for_salvage(
                         &fb_provider,
                         &fb_model,
                         session.clone(),
-                        &task_spec,
-                        &diff_for_prompt,
-                        verify_note,
+                        &prompt,
                     )
                     .await
                     {
@@ -21027,7 +21441,14 @@ async fn dispatch_cross_family_reviewer_for_salvage(
 
     let outcome = crate::cost_router::parse_review(&response.as_concat_text());
     let diff_substantive = changed_lines > crate::cost_router::review_gate::TRIVIAL_MAX_LINES;
-    match crate::cost_router::gate_decision(&outcome, diff_substantive, 0) {
+    // Lane R62e: the same E7 gate the main review path applies — an
+    // enumerated call site the reviewer never accounted for holds.
+    match crate::cost_router::gate_decision_with_call_sites(
+        &outcome,
+        diff_substantive,
+        0,
+        &review_context.call_site_enumerations,
+    ) {
         crate::cost_router::GateDecision::Proceed { .. } => ReviewerGateOutcome::Approved {
             checked: outcome.checked.clone(),
             reviewer_provider,
@@ -21676,7 +22097,7 @@ async fn maybe_hold_review(
                         if recorded_pass_at_head {
                             true
                         } else {
-                            run_fresh_verify_for_hold(card, worktree_path).await
+                            run_fresh_verify_for_hold(pool, card, worktree_path).await
                         }
                     };
                     if verified_at_head {
@@ -29258,6 +29679,329 @@ mod tests {
         assert_ne!(success, rejected);
         assert_ne!(success, unreachable);
         assert_ne!(rejected, unreachable);
+    }
+
+    // ── Lane R62e: salvage/fresh re-verify reuse the worker's proven command ──
+
+    fn r62e_verify_request(
+        id: &str,
+        tool: &str,
+        command: Option<&str>,
+    ) -> crate::conversation::message::MessageContent {
+        use rmcp::model::CallToolRequestParams;
+        let mut call = CallToolRequestParams::new(tool.to_string());
+        if let Some(command) = command {
+            call = call.with_arguments(serde_json::Map::from_iter([(
+                "command".to_string(),
+                serde_json::json!(command),
+            )]));
+        }
+        crate::conversation::message::MessageContent::tool_request(id, Ok(call))
+    }
+
+    fn r62e_verify_response(
+        id: &str,
+        verdict: &str,
+        vacuous_reason: Option<&str>,
+    ) -> crate::conversation::message::MessageContent {
+        use rmcp::model::{CallToolResult, Content};
+        let mut result = if verdict == "pass" {
+            CallToolResult::success(vec![Content::text("PASS")])
+        } else {
+            CallToolResult::error(vec![Content::text("FAIL")])
+        };
+        result.structured_content = Some(serde_json::json!({
+            "kind": crate::agents::platform_extensions::developer::verify::VERIFICATION_OBSERVATION_KIND,
+            "command": "check",
+            "verdict": verdict,
+            "evidence": verdict,
+            "vacuous_reason": vacuous_reason,
+        }));
+        crate::conversation::message::MessageContent::tool_response(id, Ok(result))
+    }
+
+    /// A61 miss 1 shape: the genuine PASS row was saved ahead of its own
+    /// request row. The recorded command must still resolve.
+    #[test]
+    fn last_genuine_verify_command_pairs_a_response_stored_before_its_request() {
+        let messages = vec![
+            r62e_verify_response("call-1", "pass", None),
+            r62e_verify_request(
+                "call-1",
+                "developer__verify",
+                Some("node --experimental-strip-types check.ts"),
+            ),
+        ];
+        assert_eq!(
+            last_genuine_verify_command_in_messages(&messages),
+            Some(RecordedVerifyCommand {
+                command: "node --experimental-strip-types check.ts".to_string(),
+                path: None,
+            })
+        );
+    }
+
+    /// Only a genuine verify PASS names the command: a vacuous pass, a
+    /// failure and a non-verify tool never do, and when the LAST genuine
+    /// pass was auto-detected (no `command`) re-verify auto-detects too.
+    #[test]
+    fn last_genuine_verify_command_ignores_vacuous_failed_and_non_verify_passes() {
+        let mut messages = vec![
+            r62e_verify_request("v1", "developer__verify", Some("python3 -m unittest")),
+            r62e_verify_response(
+                "v1",
+                "pass",
+                Some("the check's own output reports zero tests ran"),
+            ),
+            r62e_verify_request("v2", "developer__verify", Some("npm test")),
+            r62e_verify_response("v2", "fail", None),
+            r62e_verify_request("s1", "developer__shell", Some("true")),
+            r62e_verify_response("s1", "pass", None),
+        ];
+        assert_eq!(last_genuine_verify_command_in_messages(&messages), None);
+
+        messages.push(r62e_verify_request(
+            "v3",
+            "developer__verify",
+            Some("/usr/bin/python3 -m pytest -q"),
+        ));
+        messages.push(r62e_verify_response("v3", "pass", None));
+        assert_eq!(
+            last_genuine_verify_command_in_messages(&messages).map(|recorded| recorded.command),
+            Some("/usr/bin/python3 -m pytest -q".to_string())
+        );
+
+        messages.push(r62e_verify_request("v4", "developer__verify", None));
+        messages.push(r62e_verify_response("v4", "pass", None));
+        assert_eq!(
+            last_genuine_verify_command_in_messages(&messages),
+            None,
+            "the latest genuine pass was auto-detected, so re-verify auto-detects"
+        );
+    }
+
+    #[test]
+    fn fresh_verify_params_uses_the_recorded_command_and_keeps_only_in_worktree_paths() {
+        let worktree = std::path::Path::new("/tmp/goal-wt");
+        let time_box = std::time::Duration::from_secs(90);
+
+        let none = fresh_verify_params(None, worktree, time_box, Vec::new());
+        assert_eq!(
+            none.command, None,
+            "nothing recorded falls back to auto-detect"
+        );
+        assert_eq!(none.path, None);
+        assert_eq!(none.timeout_secs, Some(90));
+
+        let recorded = |path: Option<&str>| RecordedVerifyCommand {
+            command: "npm run check".to_string(),
+            path: path.map(str::to_string),
+        };
+        let relative = fresh_verify_params(
+            Some(&recorded(Some("web"))),
+            worktree,
+            time_box,
+            vec!["criterion".to_string()],
+        );
+        assert_eq!(relative.command.as_deref(), Some("npm run check"));
+        assert_eq!(relative.path.as_deref(), Some("web"));
+        assert_eq!(
+            relative.acceptance_criteria,
+            Some(vec!["criterion".to_string()])
+        );
+
+        let inside = fresh_verify_params(
+            Some(&recorded(Some("/tmp/goal-wt/web"))),
+            worktree,
+            time_box,
+            Vec::new(),
+        );
+        assert_eq!(inside.path.as_deref(), Some("web"));
+
+        for escaping in ["/etc", "../other", "web/../../x"] {
+            let params = fresh_verify_params(
+                Some(&recorded(Some(escaping))),
+                worktree,
+                time_box,
+                Vec::new(),
+            );
+            assert_eq!(params.path, None, "{escaping} must not leave the worktree");
+            assert_eq!(params.command.as_deref(), Some("npm run check"));
+        }
+    }
+
+    async fn r62e_stamp_recorded_verify(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        card_id: &str,
+        command: &str,
+    ) {
+        let session_id = format!("r62e-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&session_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        stamp_worker_session(pool, card_id, &session_id).await;
+        append_tool_message(
+            pool,
+            &session_id,
+            "assistant",
+            r62e_verify_request("r62e-call", "developer__verify", Some(command)),
+        )
+        .await;
+        append_tool_message(
+            pool,
+            &session_id,
+            "user",
+            r62e_verify_response("r62e-call", "pass", None),
+        )
+        .await;
+    }
+
+    /// A61 misses 1 and 4: a worktree with nothing auto-detection can run
+    /// (no manifest) but whose worker genuinely passed an explicit check.
+    /// The fresh re-verify re-runs that command and passes; without the
+    /// recorded command it cannot; and a recorded command that now fails
+    /// does not fall back to auto-detection.
+    #[tokio::test]
+    async fn run_fresh_verify_for_hold_reruns_the_workers_recorded_passing_command() {
+        let pool = test_pool().await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("marker.txt"), "proven\n").unwrap();
+
+        let unrecorded = setup_goal_in_state(&pool, "in_progress", 1).await;
+        assert!(
+            !run_fresh_verify_for_hold(&pool, &unrecorded, dir.path()).await,
+            "auto-detection alone finds nothing runnable here"
+        );
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        r62e_stamp_recorded_verify(&pool, &card.id, "test -f marker.txt").await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert!(
+            run_fresh_verify_for_hold(&pool, &card, dir.path()).await,
+            "the worker's recorded passing command must be what the fresh verify re-runs"
+        );
+
+        std::fs::remove_file(dir.path().join("marker.txt")).unwrap();
+        assert!(
+            !run_fresh_verify_for_hold(&pool, &card, dir.path()).await,
+            "a recorded command that now fails is a real failure, never a fallback"
+        );
+    }
+
+    const R62E_CALL_SITE_DIFF: &str =
+        "diff --git a/src/api/quoteHandler.ts b/src/api/quoteHandler.ts\n\
+--- a/src/api/quoteHandler.ts\n\
++++ b/src/api/quoteHandler.ts\n\
+@@ -3,3 +3,3 @@\n\
+ export function handleQuoteRequest(order: Order): QuoteResponse {\n\
+-  return { shippingCents: quoteShipping(order.weightKg, order.zone) };\n\
++  return { shippingCents: quoteShipping(order.weightKg, order.zone, order.packageType) };\n\
+ }\n";
+
+    #[test]
+    fn salvage_review_context_extracts_called_symbols_and_definition_lines() {
+        let symbols = called_symbols_on_added_lines(R62E_CALL_SITE_DIFF);
+        assert_eq!(symbols, vec!["quoteShipping".to_string()]);
+        assert!(
+            called_symbols_on_added_lines("+  if (x) { return foo (1); }\n")
+                .contains(&"foo".to_string())
+        );
+        assert!(
+            !called_symbols_on_added_lines("+  if (x) { return; }\n").contains(&"if".to_string())
+        );
+
+        let grep = "src/api/quoteHandler.ts:4:  return { shippingCents: quoteShipping(order.weightKg, order.zone) };\n\
+src/shipping/quote.ts:7:export function quoteShipping(weightKg: number, zone: Zone, packageType: PackageType): number {\n\
+src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
+        let definitions = definition_lines_from_grep("quoteShipping", grep);
+        assert_eq!(
+            definitions,
+            vec![
+                "src/shipping/quote.ts:7: export function quoteShipping(weightKg: number, zone: \
+                 Zone, packageType: PackageType): number {"
+                    .to_string()
+            ]
+        );
+        assert!(line_defines_symbol(
+            "export const quoteShipping = (w: number) => w;",
+            "quoteShipping"
+        ));
+
+        let change = crate::cost_router::SignatureChange {
+            symbol: "quoteShipping".to_string(),
+            file: "src/shipping/quote.ts".to_string(),
+            old_signature: String::new(),
+            new_signature: String::new(),
+        };
+        let enumeration = call_sites_from_grep(&change, grep);
+        let sites: Vec<String> = enumeration
+            .call_sites
+            .iter()
+            .map(|site| format!("{}:{}", site.file, site.line))
+            .collect();
+        assert_eq!(
+            sites,
+            vec!["src/api/quoteHandler.ts:4", "src/admin/manualQuote.ts:5"],
+            "call sites only, never the definition line"
+        );
+
+        let context = SalvageReviewContext {
+            call_site_enumerations: vec![enumeration],
+            callee_definitions: definitions,
+        };
+        let prompt = build_salvage_review_prompt("task", R62E_CALL_SITE_DIFF, "note", &context);
+        assert!(prompt.contains("no automated checks ran; review the diff on its merits (note)"));
+        assert!(prompt.contains("src/shipping/quote.ts:7: export function quoteShipping("));
+        assert!(prompt.contains("BEGIN_CALL_SITES"));
+        assert!(prompt.contains("src/admin/manualQuote.ts:5"));
+
+        let bare =
+            build_salvage_review_prompt("task", "diff", "note", &SalvageReviewContext::default());
+        assert!(!bare.contains("BEGIN_CALL_SITES"));
+        assert!(!bare.contains("Repository context gathered"));
+    }
+
+    /// A61 miss 1: the s2 reviewer said UNCERTAIN because the call-site
+    /// diff never showed `quoteShipping`'s new signature. The gathered
+    /// context must carry it from the real worktree.
+    #[tokio::test]
+    async fn gather_salvage_review_context_shows_the_callee_signature_a_call_site_diff_omits() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        r20b_git(root, &["init", "-q", "-b", "main"]);
+        r20b_git(root, &["config", "user.email", "test@example.com"]);
+        r20b_git(root, &["config", "user.name", "Test"]);
+        r20b_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir_all(root.join("src/shipping")).unwrap();
+        std::fs::create_dir_all(root.join("src/api")).unwrap();
+        std::fs::write(
+            root.join("src/shipping/quote.ts"),
+            "export function quoteShipping(weightKg: number, zone: Zone, packageType: PackageType): number {\n  return 1;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/api/quoteHandler.ts"),
+            "export function handleQuoteRequest(order: Order): QuoteResponse {\n  return { shippingCents: quoteShipping(order.weightKg, order.zone, order.packageType) };\n}\n",
+        )
+        .unwrap();
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "base"]);
+
+        let context = gather_salvage_review_context(root, R62E_CALL_SITE_DIFF).await;
+        assert!(
+            context.call_site_enumerations.is_empty(),
+            "the diff changes no signature itself"
+        );
+        assert_eq!(
+            context.callee_definitions,
+            vec![
+                "src/shipping/quote.ts:1: export function quoteShipping(weightKg: number, zone: \
+                 Zone, packageType: PackageType): number {"
+                    .to_string()
+            ]
+        );
     }
 
     /// Lane R28b (A27 Miss 3): the fallback decision — reused from the same
