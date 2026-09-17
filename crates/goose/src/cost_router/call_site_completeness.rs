@@ -63,14 +63,21 @@ pub struct SignatureChange {
 }
 
 /// The definition-line patterns this module recognizes: Rust `fn`, Python
-/// `def`, a JS/TS `function` declaration, and a generic `name(params) {`
-/// method shape (Java/Go/C-family, and JS/TS class methods) that requires a
-/// trailing `{` so an ordinary call statement is never mistaken for a
-/// definition. A signature change this misses is a false NEGATIVE — no HOLD
-/// is raised for it — which is why [`enumerate_call_sites`]'s recall-first,
-/// name-based matching is a second, independent line of defense once a
-/// change IS detected, not a substitute for widening this list further as
-/// new languages show up in the loop.
+/// `def`, a JS/TS `function` declaration, a JS/TS `const name = (params) =>`
+/// arrow function, and a generic `name(params) {` method shape (Java/Go/
+/// C-family, and JS/TS class methods) that requires a trailing `{` so an
+/// ordinary call statement is never mistaken for a definition. A signature
+/// change this misses is a false NEGATIVE — no HOLD is raised for it — which
+/// is why [`enumerate_call_sites`]'s recall-first, name-based matching is a
+/// second, independent line of defense once a change IS detected, not a
+/// substitute for widening this list further as new languages show up in the
+/// loop.
+///
+/// Every pattern here is matched against a string that may itself be several
+/// diff lines joined with `\n` (see [`collect_definitions_in_run`]) — a
+/// reflowed multi-line signature — so `[^)]*` (which, unlike `.`, matches
+/// newlines by default) is what lets a parameter list spanning lines close
+/// on the line that actually holds its `)`.
 fn definition_patterns() -> &'static [Regex] {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
@@ -86,6 +93,14 @@ fn definition_patterns() -> &'static [Regex] {
             // JS/TS function declaration: `function name(params)` / `export async function* name(params)`
             Regex::new(
                 r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\(([^)]*)\)",
+            )
+            .expect("static regex is valid"),
+            // JS/TS arrow function assigned to a binding: `const name = (params) => ` /
+            // `export const name: T = async (params): R => {`. The trailing `=>` is
+            // load-bearing — without it `const name = (params)` alone could be almost
+            // any expression, not necessarily a function.
+            Regex::new(
+                r"^\s*(?:export\s+)?(?:default\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::\s*[^=]+?)?=\s*(?:async\s+)?\(([^)]*)\)\s*(?::\s*[A-Za-z0-9_<>\[\].,\s|]+)?\s*=>",
             )
             .expect("static regex is valid"),
             // Generic method-shaped definition: `name(params) {` / `name(params): Type {`,
@@ -125,10 +140,14 @@ fn normalize_params(params: &str) -> String {
     // `a, b` must compare equal — only a change to the parameter LIST, not
     // its formatting, should ever count as a signature change) by splitting
     // on commas first, collapsing whitespace within each part, then
-    // rejoining with a single canonical `, ` separator.
+    // rejoining with a single canonical `, ` separator. Empty parts are
+    // dropped so a trailing comma — the norm once a parameter list is
+    // reflowed one-per-line — never counts as a phantom parameter, and a
+    // parameter-less `()` still normalizes to `""`.
     params
         .split(',')
         .map(|part| part.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -146,25 +165,111 @@ fn strip_diff_path_prefix(path: &str) -> String {
         .to_string()
 }
 
+/// Bound on how many consecutive same-sign diff lines [`collect_definitions_in_run`]
+/// will join when a definition pattern needs more than the line it starts on
+/// to reach its closing `)` — generous enough for any real signature (even a
+/// heavily-annotated one), cheap enough to never matter for harness latency.
+const MAX_SIGNATURE_JOIN_LINES: usize = 40;
+
+/// Scan one contiguous run of same-sign (all `+` or all `-`) diff content
+/// lines from a single file for function/method definitions. A definition
+/// that fits on one line is found at window length 1, exactly as before; a
+/// definition whose parameter list was reflowed across several lines is
+/// found by growing the window one line at a time and joining with `\n`
+/// until [`definition_in_line`] matches. Stopping at the SMALLEST matching
+/// window (rather than always taking the whole run) is what keeps two
+/// back-to-back one-line definitions in the same run — no blank/context line
+/// between them — from being fused into one candidate signature.
+fn collect_definitions_in_run(
+    run: &[String],
+    file: &str,
+    map: &mut HashMap<(String, String), (String, String)>,
+    order: &mut Vec<(String, String)>,
+) {
+    let mut i = 0;
+    while i < run.len() {
+        let max_len = (run.len() - i).min(MAX_SIGNATURE_JOIN_LINES);
+        let mut found: Option<(usize, String, String)> = None;
+        for len in 1..=max_len {
+            let joined = run[i..i + len].join("\n");
+            if let Some((name, params)) = definition_in_line(&joined) {
+                found = Some((len, name, params));
+                break;
+            }
+        }
+        match found {
+            Some((len, name, params)) => {
+                let raw = run[i..i + len].join("\n").trim().to_string();
+                let key = (file.to_string(), name);
+                if !map.contains_key(&key) {
+                    order.push(key.clone());
+                }
+                map.insert(key, (params, raw));
+                i += len;
+            }
+            None => i += 1,
+        }
+    }
+}
+
+/// Process a completed run (if non-empty) into `map`/`order` and clear it.
+/// Called whenever a run of same-sign diff lines ends — the opposite sign
+/// appears, a context/hunk-header line appears, or the file changes — since
+/// a signature never spans across any of those boundaries.
+fn flush_run(
+    run: &mut Vec<String>,
+    file: Option<&str>,
+    map: &mut HashMap<(String, String), (String, String)>,
+    order: &mut Vec<(String, String)>,
+) {
+    if !run.is_empty() {
+        if let Some(file) = file {
+            collect_definitions_in_run(run, file, map, order);
+        }
+        run.clear();
+    }
+}
+
 /// Find every function/method signature change in a unified diff: a symbol
 /// defined on BOTH the removed (`-`) and added (`+`) side of the SAME file,
 /// whose parameter lists differ. Deliberately not hunk-scoped — a large
 /// rewrite can separate the old and new definition lines into different
 /// hunks — so old/new definitions are collected per (file, symbol) across the
 /// WHOLE diff and compared once at the end.
+///
+/// A definition line is not required to fit on a single diff line: consecutive
+/// added lines (and, separately, consecutive removed lines) are joined and
+/// tried together so a signature reflowed across several lines — the common
+/// shape a formatter produces once a parameter list gets long — is still
+/// recognized. See [`collect_definitions_in_run`].
 // Boundary-safe by construction: `b_idx` is `str::find`'s index for the ASCII
 // literal " b/" and the `+ 3` is that literal's own byte length, i.e. the
 // match's end boundary, so the slice cannot split a UTF-8 character.
 #[allow(clippy::string_slice)]
 pub fn detect_signature_changes(diff: &str) -> Vec<SignatureChange> {
     let mut current_file: Option<String> = None;
-    // (file, symbol) -> (normalized params, raw trimmed line)
+    // (file, symbol) -> (normalized params, raw trimmed line(s))
     let mut removed: HashMap<(String, String), (String, String)> = HashMap::new();
     let mut added: HashMap<(String, String), (String, String)> = HashMap::new();
     let mut order: Vec<(String, String)> = Vec::new();
 
+    let mut added_run: Vec<String> = Vec::new();
+    let mut removed_run: Vec<String> = Vec::new();
+
     for raw_line in diff.lines() {
         if let Some(rest) = raw_line.strip_prefix("+++ ") {
+            flush_run(
+                &mut added_run,
+                current_file.as_deref(),
+                &mut added,
+                &mut order,
+            );
+            flush_run(
+                &mut removed_run,
+                current_file.as_deref(),
+                &mut removed,
+                &mut order,
+            );
             let path = strip_diff_path_prefix(rest.trim());
             if path != "/dev/null" {
                 current_file = Some(path);
@@ -173,39 +278,95 @@ pub fn detect_signature_changes(diff: &str) -> Vec<SignatureChange> {
         }
         if raw_line.starts_with("--- ") {
             // The old-side header; the file identity comes from `+++` above.
+            flush_run(
+                &mut added_run,
+                current_file.as_deref(),
+                &mut added,
+                &mut order,
+            );
+            flush_run(
+                &mut removed_run,
+                current_file.as_deref(),
+                &mut removed,
+                &mut order,
+            );
             continue;
         }
         if let Some(rest) = raw_line.strip_prefix("diff --git ") {
             // "a/<path> b/<path>" — tentatively set from the b/ side; a
             // following `+++` line (the common case) overrides this.
+            flush_run(
+                &mut added_run,
+                current_file.as_deref(),
+                &mut added,
+                &mut order,
+            );
+            flush_run(
+                &mut removed_run,
+                current_file.as_deref(),
+                &mut removed,
+                &mut order,
+            );
             if let Some(b_idx) = rest.find(" b/") {
                 current_file = Some(rest[b_idx + 3..].trim().to_string());
             }
             continue;
         }
 
-        let Some(file) = current_file.clone() else {
+        if current_file.is_none() {
             continue;
-        };
+        }
 
         if let Some(content) = raw_line.strip_prefix('+') {
-            if let Some((name, params)) = definition_in_line(content) {
-                let key = (file, name);
-                if !added.contains_key(&key) {
-                    order.push(key.clone());
-                }
-                added.insert(key, (params, content.trim().to_string()));
-            }
-        } else if let Some(content) = raw_line.strip_prefix('-') {
-            if let Some((name, params)) = definition_in_line(content) {
-                let key = (file, name);
-                if !removed.contains_key(&key) {
-                    order.push(key.clone());
-                }
-                removed.insert(key, (params, content.trim().to_string()));
-            }
+            // An added line ends any removed-run in progress (a diff never
+            // interleaves +/- within what should be read as one signature).
+            flush_run(
+                &mut removed_run,
+                current_file.as_deref(),
+                &mut removed,
+                &mut order,
+            );
+            added_run.push(content.to_string());
+            continue;
         }
+        if let Some(content) = raw_line.strip_prefix('-') {
+            flush_run(
+                &mut added_run,
+                current_file.as_deref(),
+                &mut added,
+                &mut order,
+            );
+            removed_run.push(content.to_string());
+            continue;
+        }
+
+        // A context line or hunk header ends any run in progress: a
+        // signature never spans across unchanged/context lines.
+        flush_run(
+            &mut added_run,
+            current_file.as_deref(),
+            &mut added,
+            &mut order,
+        );
+        flush_run(
+            &mut removed_run,
+            current_file.as_deref(),
+            &mut removed,
+            &mut order,
+        );
     }
+    flush_run(
+        &mut added_run,
+        current_file.as_deref(),
+        &mut added,
+        &mut order,
+    );
+    flush_run(
+        &mut removed_run,
+        current_file.as_deref(),
+        &mut removed,
+        &mut order,
+    );
 
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -513,6 +674,133 @@ mod tests {
                      pub fn foo(a: i32) {\n\
                      -    a + 1\n\
                      +    a + 2\n\
+                     }\n";
+        assert!(detect_signature_changes(diff).is_empty());
+    }
+
+    // ── multi-line signatures (Lane R65c / M49 r65 s1) ──────────────────────
+
+    #[test]
+    fn r65_s1_multiline_typescript_signature_is_detected() {
+        // Exact repro from M49 record r65 s1
+        // (harness-refactor-shipping-quote-signature): the parameter list is
+        // reflowed across multiple lines with a new trailing parameter, and
+        // the old single-line-only detector missed it entirely.
+        let diff = "--- a/src/shipping/quote.ts\n\
+                     +++ b/src/shipping/quote.ts\n\
+                     @@ -10,3 +10,7 @@\n\
+                     -export function computeManualQuote(weightKg: number, zone: Zone): number {\n\
+                     +export function computeManualQuote(\n\
+                     +  weightKg: number,\n\
+                     +  zone: Zone,\n\
+                     +  packageType: PackageType,\n\
+                     +): number {\n";
+        let changes = detect_signature_changes(diff);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].symbol, "computeManualQuote");
+        assert_eq!(changes[0].file, "src/shipping/quote.ts");
+        assert!(changes[0]
+            .new_signature
+            .contains("packageType: PackageType"));
+    }
+
+    #[test]
+    fn quote_shipping_multiline_signature_is_also_detected() {
+        // Same reflow shape applied to `quoteShipping` — the other function
+        // named in r65 s1 — to confirm multi-line joining is general and not
+        // special-cased to a single function name.
+        let diff = "--- a/src/shipping/quote.ts\n\
+                     +++ b/src/shipping/quote.ts\n\
+                     @@ -20,3 +20,7 @@\n\
+                     -export function quoteShipping(weightKg: number, zone: Zone): number {\n\
+                     +export function quoteShipping(\n\
+                     +  weightKg: number,\n\
+                     +  zone: Zone,\n\
+                     +  packageType: PackageType,\n\
+                     +): number {\n";
+        let changes = detect_signature_changes(diff);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].symbol, "quoteShipping");
+    }
+
+    #[test]
+    fn reflowed_multiline_signature_with_no_param_change_is_not_flagged() {
+        // The signature only moved onto multiple lines; the parameter list
+        // itself (names and arity) is identical, so this must NOT fire.
+        let diff = "--- a/src/quote.ts\n\
+                     +++ b/src/quote.ts\n\
+                     @@ -1,2 +1,5 @@\n\
+                     -export function foo(a: number, b: number) {\n\
+                     +export function foo(\n\
+                     +  a: number,\n\
+                     +  b: number,\n\
+                     +) {\n";
+        assert!(detect_signature_changes(diff).is_empty());
+    }
+
+    #[test]
+    fn typescript_arrow_function_multiline_signature_is_detected() {
+        let diff = "--- a/src/quote.ts\n\
+                     +++ b/src/quote.ts\n\
+                     @@ -1,2 +1,6 @@\n\
+                     -const computeQuote = (weightKg: number, zone: Zone) => {\n\
+                     +const computeQuote = (\n\
+                     +  weightKg: number,\n\
+                     +  zone: Zone,\n\
+                     +  packageType: PackageType,\n\
+                     +) => {\n";
+        let changes = detect_signature_changes(diff);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].symbol, "computeQuote");
+        assert!(changes[0].new_signature.contains("packageType"));
+    }
+
+    #[test]
+    fn rust_multiline_pub_fn_signature_is_detected() {
+        let diff = "--- a/src/lib.rs\n\
+                     +++ b/src/lib.rs\n\
+                     @@ -1,3 +1,5 @@\n\
+                     -pub fn shipping_quote(order: &Order) -> Quote {\n\
+                     +pub fn shipping_quote(\n\
+                     +    order: &Order,\n\
+                     +    opts: &QuoteOpts,\n\
+                     +) -> Quote {\n";
+        let changes = detect_signature_changes(diff);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].symbol, "shipping_quote");
+        assert!(changes[0].new_signature.contains("opts: &QuoteOpts"));
+    }
+
+    #[test]
+    fn python_multiline_def_with_new_parameter_is_detected() {
+        let diff = "--- a/quote.py\n\
+                     +++ b/quote.py\n\
+                     @@ -1,3 +1,6 @@\n\
+                     -def compute_quote(weight_kg, zone):\n\
+                     +def compute_quote(\n\
+                     +    weight_kg,\n\
+                     +    zone,\n\
+                     +    package_type=None,\n\
+                     +):\n";
+        let changes = detect_signature_changes(diff);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].symbol, "compute_quote");
+        assert!(changes[0].new_signature.contains("package_type=None"));
+    }
+
+    #[test]
+    fn multiline_body_only_change_is_not_flagged() {
+        // The (multi-line) signature itself is unchanged context; only the
+        // body changed.
+        let diff = "--- a/src/lib.rs\n\
+                     +++ b/src/lib.rs\n\
+                     @@ -1,4 +1,4 @@\n\
+                     pub fn foo(\n\
+                         a: i32,\n\
+                         b: i32,\n\
+                     ) {\n\
+                     -    a + b\n\
+                     +    a + b + 1\n\
                      }\n";
         assert!(detect_signature_changes(diff).is_empty());
     }
