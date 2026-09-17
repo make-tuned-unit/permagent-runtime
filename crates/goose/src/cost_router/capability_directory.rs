@@ -81,6 +81,14 @@ use crate::config::agent_identity::WorkerBillingClass;
 /// capable verifiers.
 pub const PLANNER_STRENGTH_BAND: f64 = 0.03;
 
+/// The strength band for a ROUTINE plan (ruling 2026-09-17: the expert planner
+/// is for complex plans, not the default). Every candidate that clears the
+/// ORCHESTRATE floor (or is graduated for it) is equally fit to plan routine
+/// work, so the band is unbounded and the cheapest capable planner wins
+/// ([`CapabilityDirectory::routine_planner`]). Named rather than inlined so a
+/// tighter routine band (e.g. 0.10) is a one-line, reviewable change.
+pub const ROUTINE_PLANNER_STRENGTH_BAND: f64 = f64::INFINITY;
+
 /// The micro-suite pass rate below which evidence EXCLUDES a role even when
 /// the KB heuristic would otherwise admit it (Excellence DAG's ≥80% gate).
 /// Evidence beats the KB heuristic in both directions: it can graduate a
@@ -560,20 +568,7 @@ impl CapabilityDirectory {
     /// `graduated=true` with a failing pass rate must never win the planner
     /// pick just because the flag says so).
     pub fn planner(&self) -> Option<(RoleModel, PlannerReason)> {
-        let floor = WorkflowRole::Orchestrate
-            .capability_floor()
-            .orchestration_min;
-        let candidates: Vec<&CapabilityCard> = self
-            .cards
-            .iter()
-            .filter(|c| !evidence_excludes_role(c, WorkflowRole::Orchestrate))
-            .filter(|c| {
-                c.strengths.orchestration >= floor
-                    || c.role(WorkflowRole::Orchestrate)
-                        .map(|e| e.graduated())
-                        .unwrap_or(false)
-            })
-            .collect();
+        let candidates = self.planner_candidates();
         if candidates.is_empty() {
             return None;
         }
@@ -609,6 +604,95 @@ impl CapabilityDirectory {
             },
             reason,
         ))
+    }
+
+    /// The cards eligible to plan: not excluded by evidence, and clearing the
+    /// ORCHESTRATE floor or graduated for it. Shared by [`Self::planner`] and
+    /// [`Self::routine_planner`] so the expert and routine picks can never
+    /// disagree about who is capable.
+    fn planner_candidates(&self) -> Vec<&CapabilityCard> {
+        let floor = WorkflowRole::Orchestrate
+            .capability_floor()
+            .orchestration_min;
+        self.cards
+            .iter()
+            .filter(|c| !evidence_excludes_role(c, WorkflowRole::Orchestrate))
+            .filter(|c| {
+                c.strengths.orchestration >= floor
+                    || c.role(WorkflowRole::Orchestrate)
+                        .map(|e| e.graduated())
+                        .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    /// The ROUTINE planner (ruling 2026-09-17): among the same candidates
+    /// [`Self::planner`] considers, the cheapest capable one
+    /// ([`super::recommend::cheapest_within_band`] with
+    /// [`ROUTINE_PLANNER_STRENGTH_BAND`]) — or the session `coordinator` itself
+    /// when it clears the planner floor and costs no more than that pick (no
+    /// second provider for a plan the running model can write as well). The
+    /// frontier model is used for routine work only when it is itself the
+    /// cheapest capable planner. `spend_capped` only labels the reason (a
+    /// complex plan downgraded by a spend cap). Returns the route (`None` =
+    /// the session coordinator) and the reason; `None` overall when no
+    /// candidate is capable.
+    pub fn routine_planner(
+        &self,
+        coordinator: Option<&RoleModel>,
+        spend_capped: bool,
+    ) -> Option<(Option<RoleModel>, PlannerReason)> {
+        let candidates = self.planner_candidates();
+        let banded = super::recommend::cheapest_within_band(
+            &candidates,
+            ROUTINE_PLANNER_STRENGTH_BAND,
+            |c: &CapabilityCard| c.strengths.orchestration,
+            CapabilityCard::blended_cost_per_mtok,
+            card_id_order,
+        )?;
+        let pick = banded.pick;
+        if let Some(rm) = coordinator {
+            if let Some((orchestration, cost)) = self.planner_profile(rm) {
+                if pin_clears_orchestrate_floor(&rm.provider, &rm.model, self)
+                    && cost <= pick.blended_cost_per_mtok()
+                {
+                    return Some((
+                        None,
+                        PlannerReason::RoutineCoordinator {
+                            orchestration,
+                            cost_per_mtok: cost,
+                            spend_capped,
+                        },
+                    ));
+                }
+            }
+        }
+        Some((
+            Some(RoleModel {
+                provider: pick.provider.clone(),
+                model: pick.model.clone(),
+            }),
+            PlannerReason::RoutineCheapestCapable {
+                orchestration: pick.strengths.orchestration,
+                cost_per_mtok: pick.blended_cost_per_mtok(),
+                spend_capped,
+            },
+        ))
+    }
+
+    /// `(orchestration strength, blended $/Mtok)` for a provider/model: its card
+    /// when present, else its knowledge-base row. `None` when neither exists
+    /// (an unrated model is never assumed cheap or capable).
+    fn planner_profile(&self, rm: &RoleModel) -> Option<(f64, f64)> {
+        if let Some(card) = self
+            .cards
+            .iter()
+            .find(|c| c.provider == rm.provider && c.model == rm.model)
+        {
+            return Some((card.strengths.orchestration, card.blended_cost_per_mtok()));
+        }
+        lookup_with_confidence(&rm.provider, &rm.model)
+            .map(|(k, _)| (k.orchestration_strength, k.blended_cost_per_mtok()))
     }
 
     /// G7 finding F2: the model dispatch actually uses for `role` (or `None`
@@ -784,6 +868,21 @@ pub enum PlannerReason {
     /// Nothing clears the floor and nothing is pinned/graduated — the
     /// session model runs it, and this string is the visible reason.
     SessionFallback { reason: String },
+    /// A ROUTINE plan (ruling 2026-09-17) went to the cheapest capable planner
+    /// ([`CapabilityDirectory::routine_planner`]). `spend_capped` means the plan
+    /// was COMPLEX but the spend cap withheld the expert planner.
+    RoutineCheapestCapable {
+        orchestration: f64,
+        cost_per_mtok: f64,
+        spend_capped: bool,
+    },
+    /// A ROUTINE plan stayed on the session coordinator: it clears the planner
+    /// floor and no capable planner is cheaper. The route is `None`.
+    RoutineCoordinator {
+        orchestration: f64,
+        cost_per_mtok: f64,
+        spend_capped: bool,
+    },
 }
 
 impl PlannerReason {
@@ -807,7 +906,82 @@ impl PlannerReason {
             ),
             PlannerReason::Pinned { via } => format!("explicit pin ({via})"),
             PlannerReason::SessionFallback { reason } => reason.clone(),
+            PlannerReason::RoutineCheapestCapable {
+                orchestration,
+                cost_per_mtok,
+                spend_capped,
+            } => format!(
+                "{} — cheapest planner clearing the ORCHESTRATE floor (agentic \
+                 {orchestration:.2}, ${cost_per_mtok:.2}/Mtok); the expert planner is reserved \
+                 for complex plans",
+                routine_label(*spend_capped)
+            ),
+            PlannerReason::RoutineCoordinator {
+                orchestration,
+                cost_per_mtok,
+                spend_capped,
+            } => format!(
+                "{} — the session coordinator clears the ORCHESTRATE floor (agentic \
+                 {orchestration:.2}, ${cost_per_mtok:.2}/Mtok) and no capable planner is cheaper",
+                routine_label(*spend_capped)
+            ),
         }
+    }
+}
+
+fn routine_label(spend_capped: bool) -> &'static str {
+    if spend_capped {
+        "complex plan, but the spend cap is at its gate so the expert planner is withheld"
+    } else {
+        "routine plan"
+    }
+}
+
+/// The planning-complexity inputs [`resolve_planner_for_complexity`] gates on
+/// (ruling 2026-09-17). Built by the decomposition path from facts only
+/// ([`super::planner_complexity::assess_planning_complexity`], the session's
+/// own provider/model, and the budget verdict).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannerGate {
+    pub complexity: super::planner_complexity::PlanningComplexity,
+    /// The session coordinator's provider/model, when known.
+    pub coordinator: Option<RoleModel>,
+    /// The session's spend has reached the Gate or Hard band.
+    pub spend_capped: bool,
+}
+
+/// [`resolve_planner`] with the planning-complexity gate (ruling 2026-09-17:
+/// the expert planner is for complex tasks, not the default):
+///
+/// 1. An explicit pin (`ORCHESTRATOR_DECOMPOSITION_*`, then
+///    `PERMAGENT_ROLE_ORCHESTRATE_*`) is the USER's decision and wins for
+///    ROUTINE and COMPLEX alike — exactly [`resolve_planner`]'s pin arms.
+/// 2. COMPLEX, spend not capped → the expert planner:
+///    [`CapabilityDirectory::planner`] (strongest configured, cost deciding only
+///    inside [`PLANNER_STRENGTH_BAND`]).
+/// 3. ROUTINE, or COMPLEX under a spend cap →
+///    [`CapabilityDirectory::routine_planner`] (cheapest capable, or the
+///    coordinator itself).
+/// 4. Nothing capable → the session coordinator with [`resolve_planner`]'s
+///    visible fallback reason.
+///
+/// Pure: pins, directory and gate are handed in.
+pub fn resolve_planner_for_complexity(
+    decomposition_pin: Option<RoleModel>,
+    role_pin: Option<RoleModel>,
+    directory: &CapabilityDirectory,
+    gate: &PlannerGate,
+) -> (Option<RoleModel>, PlannerReason) {
+    use super::planner_complexity::PlanningComplexity;
+    if decomposition_pin.is_some() || role_pin.is_some() {
+        return resolve_planner(decomposition_pin, role_pin, directory);
+    }
+    if gate.complexity == PlanningComplexity::Complex && !gate.spend_capped {
+        return resolve_planner(None, None, directory);
+    }
+    match directory.routine_planner(gate.coordinator.as_ref(), gate.spend_capped) {
+        Some(routed) => routed,
+        None => resolve_planner(None, None, directory),
     }
 }
 
@@ -1481,6 +1655,150 @@ mod tests {
                 assert!(reason.contains("ORCHESTRATE"));
             }
             other => panic!("expected SessionFallback, got {other:?}"),
+        }
+    }
+
+    // ── Planning-complexity gate (ruling 2026-09-17) ─────────────────────────
+
+    fn gate(
+        complexity: crate::cost_router::planner_complexity::PlanningComplexity,
+        coordinator: Option<RoleModel>,
+        spend_capped: bool,
+    ) -> PlannerGate {
+        PlannerGate {
+            complexity,
+            coordinator,
+            spend_capped,
+        }
+    }
+
+    fn rm(provider: &str, model: &str) -> RoleModel {
+        RoleModel {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    /// Real knowledge-base numbers: Fable 5 (0.95, $60), Opus 4.8 (0.886, $30),
+    /// GLM 5.2 (0.81, $5.80), and a below-floor local.
+    fn mixed_directory() -> CapabilityDirectory {
+        directory_of(vec![
+            card("anthropic", "claude-fable-5", 0.95, 10.0, 50.0, false),
+            card("anthropic", "claude-opus-4-8", 0.886, 5.0, 25.0, false),
+            card("zai", "glm-5.2", 0.81, 1.4, 4.4, false),
+            card("ollama", "qwen3-coder", 0.55, 0.0, 0.0, true),
+        ])
+    }
+
+    #[test]
+    fn routine_plan_goes_to_the_cheapest_capable_planner_complex_to_the_expert() {
+        use crate::cost_router::planner_complexity::PlanningComplexity::{Complex, Routine};
+        let dir = mixed_directory();
+
+        let (route, reason) =
+            resolve_planner_for_complexity(None, None, &dir, &gate(Routine, None, false));
+        assert_eq!(route, Some(rm("zai", "glm-5.2")));
+        assert!(matches!(
+            reason,
+            PlannerReason::RoutineCheapestCapable {
+                spend_capped: false,
+                ..
+            }
+        ));
+        assert!(reason.describe().contains("routine plan"));
+
+        let (route, reason) =
+            resolve_planner_for_complexity(None, None, &dir, &gate(Complex, None, false));
+        assert_eq!(route, Some(rm("anthropic", "claude-fable-5")));
+        assert!(matches!(reason, PlannerReason::Strongest { .. }));
+    }
+
+    /// The below-floor local is never a routine planner, however cheap; and the
+    /// frontier model plans routine work only when it is the cheapest capable.
+    #[test]
+    fn routine_planner_respects_the_floor_and_uses_the_frontier_only_when_cheapest() {
+        use crate::cost_router::planner_complexity::PlanningComplexity::Routine;
+        let only_frontier = directory_of(vec![
+            card("anthropic", "claude-fable-5", 0.95, 10.0, 50.0, false),
+            card("ollama", "qwen3-coder", 0.55, 0.0, 0.0, true),
+        ]);
+        let (route, _) =
+            resolve_planner_for_complexity(None, None, &only_frontier, &gate(Routine, None, false));
+        assert_eq!(route, Some(rm("anthropic", "claude-fable-5")));
+
+        let nothing_capable = directory_of(vec![card("ollama", "qwen3", 0.48, 0.0, 0.0, true)]);
+        let (route, reason) = resolve_planner_for_complexity(
+            None,
+            None,
+            &nothing_capable,
+            &gate(Routine, None, false),
+        );
+        assert_eq!(route, None);
+        assert!(matches!(reason, PlannerReason::SessionFallback { .. }));
+    }
+
+    /// A routine plan stays on the coordinator when it clears the floor and no
+    /// capable planner is cheaper; a pricier coordinator does not.
+    #[test]
+    fn routine_plan_uses_the_coordinator_when_it_is_capable_and_no_dearer() {
+        use crate::cost_router::planner_complexity::PlanningComplexity::Routine;
+        let dir = mixed_directory();
+        let cheap_coordinator = gate(Routine, Some(rm("zai", "glm-5.2")), false);
+        let (route, reason) = resolve_planner_for_complexity(None, None, &dir, &cheap_coordinator);
+        assert_eq!(route, None, "the session coordinator runs it");
+        assert!(matches!(reason, PlannerReason::RoutineCoordinator { .. }));
+
+        let dear_coordinator = gate(Routine, Some(rm("anthropic", "claude-fable-5")), false);
+        let (route, _) = resolve_planner_for_complexity(None, None, &dir, &dear_coordinator);
+        assert_eq!(route, Some(rm("zai", "glm-5.2")));
+    }
+
+    /// A complex plan under a spend cap is withheld from the expert planner.
+    #[test]
+    fn complex_plan_under_a_spend_cap_gets_the_routine_planner() {
+        use crate::cost_router::planner_complexity::PlanningComplexity::Complex;
+        let dir = mixed_directory();
+        let (route, reason) =
+            resolve_planner_for_complexity(None, None, &dir, &gate(Complex, None, true));
+        assert_eq!(route, Some(rm("zai", "glm-5.2")));
+        assert!(matches!(
+            reason,
+            PlannerReason::RoutineCheapestCapable {
+                spend_capped: true,
+                ..
+            }
+        ));
+        assert!(reason.describe().contains("spend cap"));
+    }
+
+    /// An explicit user pin (either level) wins for ROUTINE and COMPLEX alike.
+    #[test]
+    fn a_user_orchestrate_pin_wins_for_routine_and_complex() {
+        use crate::cost_router::planner_complexity::PlanningComplexity::{Complex, Routine};
+        let dir = mixed_directory();
+        let pin = rm("anthropic", "claude-fable-5");
+        for complexity in [Routine, Complex] {
+            for spend_capped in [false, true] {
+                let g = gate(complexity, Some(rm("zai", "glm-5.2")), spend_capped);
+                let (route, reason) =
+                    resolve_planner_for_complexity(None, Some(pin.clone()), &dir, &g);
+                assert_eq!(route, Some(pin.clone()), "{complexity:?}");
+                assert_eq!(
+                    reason,
+                    PlannerReason::Pinned {
+                        via: "PERMAGENT_ROLE_ORCHESTRATE_PROVIDER/MODEL"
+                    }
+                );
+                let decomposition = rm("openai", "gpt-5.6");
+                let (route, reason) = resolve_planner_for_complexity(
+                    Some(decomposition.clone()),
+                    Some(pin.clone()),
+                    &dir,
+                    &g,
+                );
+                assert_eq!(route, Some(decomposition));
+                assert!(matches!(reason, PlannerReason::Pinned { .. }));
+            }
         }
     }
 

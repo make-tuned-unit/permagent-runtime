@@ -71,7 +71,7 @@ const HARD_SIGNALS: &[&str] = &[
 
 /// Work that is well-specified and largely typing. Same rule: these name a kind
 /// of edit, not a claimed difficulty.
-const MECHANICAL_SIGNALS: &[&str] = &[
+pub(crate) const MECHANICAL_SIGNALS: &[&str] = &[
     "typo",
     "rename",
     "readme",
@@ -87,7 +87,7 @@ const MECHANICAL_SIGNALS: &[&str] = &[
 ];
 
 /// Acceptance criteria above this count read as a multi-part goal.
-const MANY_CRITERIA: usize = 5;
+pub(crate) const MANY_CRITERIA: usize = 5;
 /// Files above this count read as a broad change.
 const MANY_FILES: usize = 8;
 
