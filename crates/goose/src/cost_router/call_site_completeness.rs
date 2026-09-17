@@ -1036,6 +1036,39 @@ mod tests {
         assert!(missing_call_sites(&enumerations, &verdicts).is_empty());
     }
 
+    /// Lane R66a: absent means no line at all; an explicit MISSED is not
+    /// absent (it is a judgement), though both are missing.
+    #[test]
+    fn r66a_absent_call_sites_are_the_ones_with_no_line_at_all() {
+        let enumerations = vec![enumeration(
+            "shippingQuote",
+            vec![
+                cs("src/checkout.ts", 3),
+                cs("admin/manualQuote.ts", 2),
+                cs("api/handler.ts", 9),
+            ],
+        )];
+        let verdicts = vec![
+            CallSiteVerdict {
+                symbol: "shippingQuote".to_string(),
+                site: "src/checkout.ts:3".to_string(),
+                status: CallSiteStatus::Updated,
+                note: String::new(),
+            },
+            CallSiteVerdict {
+                symbol: "shippingQuote".to_string(),
+                site: "admin/manualQuote.ts:2".to_string(),
+                status: CallSiteStatus::Missed,
+                note: "still two arguments".to_string(),
+            },
+        ];
+        let absent = absent_call_sites(&enumerations, &verdicts);
+        assert_eq!(absent.len(), 1);
+        assert_eq!(absent[0].file, "api/handler.ts");
+        assert_eq!(missing_call_sites(&enumerations, &verdicts).len(), 2);
+        assert!(absent_call_sites(&[], &[]).is_empty());
+    }
+
     #[test]
     fn no_enumerations_means_nothing_can_be_missing() {
         assert!(missing_call_sites(&[], &[]).is_empty());
