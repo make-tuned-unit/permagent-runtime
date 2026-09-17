@@ -43072,11 +43072,33 @@ mod tests {
             .await
             .unwrap();
 
+        // Session ids are `YYYYMMDD_N`, and `N` is numbered PER DATABASE
+        // (`session_manager`'s INSERT derives it from `MAX(SUBSTR(id, 10))
+        // + 1` inside the one file), so every fixture in this binary that
+        // stands up a fresh tempdir DB mints the very same id -- typically
+        // `20260916_1`. `GOAL_WORKERS` is process-global and keyed by CARD id,
+        // so two such fixtures put the identical session id under two
+        // different cards and `live_goal_worker_card_for_session` answers with
+        // whichever the map iterates first. The `goal_workers` serial key
+        // cannot close this: the production registrar in `dispatch_goal_fn`
+        // registers workers too, and the dispatch tests that reach it are not
+        // in that group. Give this fixture's worker an id no other test can
+        // mint. The row is fresh and has no children, so renaming its primary
+        // key is safe, and the `YYYYMMDD_` prefix is preserved so the id
+        // sequencer above still parses it.
+        let worker_session_id = format!("{}_{}", dead_session.id, uuid::Uuid::new_v4().simple());
+        sqlx::query("UPDATE sessions SET id = ? WHERE id = ?")
+            .bind(&worker_session_id)
+            .bind(&dead_session.id)
+            .execute(pool)
+            .await
+            .unwrap();
+
         let dispatched_at = chrono::Utc::now() - chrono::Duration::seconds(dispatched_secs_ago);
         let mut meta = serde_json::json!({
             "attempt_count": 1,
             "goal_state": "in_progress",
-            "worker_session_id": dead_session.id,
+            "worker_session_id": worker_session_id,
             "worker_key": "permagent",
             "dispatched_at": dispatched_at.to_rfc3339(),
         });
