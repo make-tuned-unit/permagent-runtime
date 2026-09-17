@@ -291,16 +291,14 @@ static PROCESS_LOGIN_PATH: LazyLock<Arc<LoginPath>> = LazyLock::new(|| Arc::new(
 /// can never resolve a program differently. A unit test build gets a fresh,
 /// already-resolved `None` instead: tests never spawn a login shell and never
 /// initialize the process-wide cell.
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(test)))]
 pub(crate) fn shared_login_path() -> Arc<LoginPath> {
-    #[cfg(test)]
-    {
-        Arc::new(LoginPath::resolved(None))
-    }
-    #[cfg(not(test))]
-    {
-        Arc::clone(&PROCESS_LOGIN_PATH)
-    }
+    Arc::clone(&PROCESS_LOGIN_PATH)
+}
+
+#[cfg(all(not(windows), test))]
+pub(crate) fn shared_login_path() -> Arc<LoginPath> {
+    Arc::new(LoginPath::resolved(None))
 }
 
 pub struct ShellTool {

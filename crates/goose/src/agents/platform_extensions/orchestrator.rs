@@ -18152,7 +18152,9 @@ fn scan_verify_evidence(
             // Lane R62b-3: keep scanning past the first genuine pass (the
             // verdict is unchanged) so every vacuous pass is accounted for.
             if verify::is_genuine_pass(result) {
-                credited.get_or_insert((response.id.as_str(), result));
+                if credited.is_none() {
+                    credited = Some((response.id.as_str(), result));
+                }
             } else if let Some(reason) = verify::vacuous_pass_reason(result) {
                 refused_vacuous.push(response.id.as_str());
                 vacuous_reason = Some(reason);
