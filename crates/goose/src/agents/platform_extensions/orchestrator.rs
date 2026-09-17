@@ -571,6 +571,7 @@ const ROADMAP_PLANNING_PROOF_KEYS: &[&str] = &[
     "planner",
     "planner_reason",
     "planner_physical",
+    "planner_fallback",
 ];
 
 /// The [`ROADMAP_PLANNING_METADATA_KEY`] record from a `roadmap_proposal`
@@ -4995,35 +4996,33 @@ impl OrchestratorClient {
     /// Resolve the provider that PLANS the roadmap decomposition — the
     /// 2026-09-09 ruling ("plan on the strongest model, work on the cheapest
     /// graduated one"), see the module-level comment above for the full
-    /// precedence and rationale. `None` means the caller falls through to the
-    /// session coordinator — always with a visible `tracing::info` reason,
-    /// never a silent `warn`.
+    /// precedence and rationale. `Err` names why this route cannot plan; the
+    /// caller walks the planner ranking (Lane R65a).
     ///
-    /// `session_id`: Lane R36a — when the resolved planner route's provider
-    /// already had its circuit opened THIS session (a prior billing/auth/
-    /// outage-class failure, `handle_decompose_roadmap`'s own escalation
-    /// arm below), skip straight to the session coordinator instead of
-    /// re-discovering the same dead provider. `None` disables the check
-    /// (no session to scope it to — e.g. a unit test with no live session).
+    /// `session_id`: Lane R36a — when the planner route's provider already had
+    /// its circuit opened THIS session (a prior billing/auth/outage-class
+    /// failure), refuse it instead of re-discovering the same dead provider.
+    /// `None` disables the check (no session to scope it to — e.g. a unit test
+    /// with no live session).
     ///
-    /// `route`/`reason`: the planner route the caller already resolved (the
-    /// decomposition path resolves it once, complexity-gated, and reuses it for
-    /// the roadmap receipt so the two can never disagree).
+    /// `rm`/`reason`: the planner route the caller resolved (the decomposition
+    /// path resolves it once, complexity-gated, and reuses it for the roadmap
+    /// receipt so the two can never disagree).
+    ///
+    /// `request_bytes`: Lane R65a (r65 s1) — the provider is built on a model
+    /// config a paid reservation can authorize: canonical limits, an output
+    /// bound for a plan ([`bounded_planner_model_config`]), and for a
+    /// chargeable provider a context bound from the request itself. r65 s1's
+    /// `anthropic/claude-fable-5` has no canonical output limit, so every
+    /// complex plan was refused ("maximum output tokens are required for a
+    /// paid reservation") and silently answered by the session's model.
     async fn resolve_decomposition_provider(
         &self,
         session_id: Option<&str>,
-        route: Option<crate::cost_router::RoleModel>,
+        rm: crate::cost_router::RoleModel,
         reason: &crate::cost_router::PlannerReason,
-    ) -> Option<Arc<dyn Provider>> {
-        let Some(rm) = route else {
-            tracing::info!(
-                target: "permagentd::orchestrator",
-                reason = %reason.describe(),
-                "roadmap decomposition: using the session coordinator",
-            );
-            return None;
-        };
-
+        request_bytes: usize,
+    ) -> Result<Arc<dyn Provider>, String> {
         if let Some(sid) = session_id {
             if let Some(class) =
                 crate::cost_router::provider_circuit::reason_if_open(sid, &rm.provider)
@@ -5032,9 +5031,12 @@ impl OrchestratorClient {
                     target: "permagentd::orchestrator",
                     planner = %format!("{}/{}", rm.provider, rm.model),
                     reason = %class,
-                    "roadmap decomposition: planner provider circuit open — using the session coordinator",
+                    "roadmap decomposition: planner provider circuit open",
                 );
-                return None;
+                return Err(format!(
+                    "the planner provider {}/{} is circuit-open this session ({class})",
+                    rm.provider, rm.model
+                ));
             }
         }
 
@@ -5045,19 +5047,41 @@ impl OrchestratorClient {
             "roadmap decomposition: planner selected",
         );
 
-        match providers::create_with_named_model(&rm.provider, &rm.model, Vec::new()).await {
-            Ok(provider) => Some(provider),
-            Err(e) => {
-                tracing::warn!(
-                    target: "permagentd::orchestrator",
-                    "Planner provider {}/{} unavailable ({}); using the session coordinator",
-                    rm.provider,
-                    rm.model,
-                    e
-                );
-                None
-            }
+        let unavailable = |e: String| {
+            tracing::warn!(
+                target: "permagentd::orchestrator",
+                "Planner provider {}/{} unavailable ({})",
+                rm.provider,
+                rm.model,
+                e
+            );
+            format!(
+                "the planner provider {}/{} is unavailable: {e}",
+                rm.provider, rm.model
+            )
+        };
+        let config = crate::model::ModelConfig::new(&rm.model)
+            .map_err(|e| unavailable(e.to_string()))?
+            .with_canonical_limits(&rm.provider);
+        let provider = providers::create(
+            &rm.provider,
+            bounded_planner_model_config(config, request_bytes, false),
+            Vec::new(),
+        )
+        .await
+        .map_err(|e| unavailable(e.to_string()))?;
+        if !provider.cost_tier().is_chargeable() {
+            return Ok(provider);
         }
+        // A paid hold is sized from the model config: bound the input side by
+        // this request rather than the model's whole context window.
+        providers::create(
+            &rm.provider,
+            bounded_planner_model_config(provider.get_model_config(), request_bytes, true),
+            Vec::new(),
+        )
+        .await
+        .map_err(|e| unavailable(e.to_string()))
     }
 
     /// R27b (harness loop, "A26 analysis" section 1 Q2/Q3, lever 3):
@@ -11202,6 +11226,8 @@ impl OrchestratorClient {
             }
         }
 
+        // Lane R65a: the request's size bounds a paid planner's reservation.
+        let request_bytes = system.len() + user_text.len();
         let user_message = crate::conversation::message::Message::user().with_text(user_text);
         let session = self
             .context
@@ -11251,56 +11277,61 @@ impl OrchestratorClient {
         // produced `goals` — what physically answered, recorded on the
         // proposal and the roadmap's cards.
         let mut answered_model: Option<String> = None;
-        let (goals, actual_planner) = match self
-            .resolve_decomposition_provider(
-                Some(session_id),
-                planner_route.clone(),
-                &planner_reason,
-            )
-            .await
-        {
-            Some(planner) => {
+        // Lane R65a (r65 s1): a planner that fails — a spend refusal, a
+        // provider or credential failure, an unusable answer — hands the plan
+        // to the next planner by the SAME objective ranking that chose it
+        // (`resolve_planner_fallback`), never straight to the session's own
+        // model; only an exhausted ranking reaches the session coordinator.
+        // Every hop is recorded as `planner_fallback` and traced.
+        let directory = crate::cost_router::cached_capability_directory().await;
+        let (manager_ref, session_ref, user_message_ref) = (&manager, &session, &user_message);
+        let (planned, fallback_hops) = walk_planner_ranking(
+            planner_route.clone(),
+            planner_reason.clone(),
+            |tried| {
+                crate::cost_router::capability_directory::resolve_planner_fallback(
+                    &directory,
+                    &planner_gate,
+                    tried,
+                )
+            },
+            move |rm, reason| async move {
+                let planner = match self
+                    .resolve_decomposition_provider(Some(session_id), rm, &reason, request_bytes)
+                    .await
+                {
+                    Ok(planner) => planner,
+                    Err(e) => return Err(e),
+                };
+                let mut answered = None;
                 match run_decomposition(
                     &planner,
-                    &manager,
-                    &session,
+                    manager_ref,
+                    session_ref,
                     system,
-                    &user_message,
-                    &mut answered_model,
+                    user_message_ref,
+                    &mut answered,
                 )
                 .await
                 {
-                    Ok(g) => (DecompositionOutcome::Goals(g), planner),
-                    Err(planner_err) => {
-                        let reason = match &planner_err {
-                            DecompositionError::Provider(e) => e.clone(),
-                            DecompositionError::Unparseable { err, .. } => {
-                                format!("unparseable output ({})", err)
-                            }
-                        };
-                        tracing::warn!(
-                            target: "permagentd::orchestrator",
-                            "Planner decomposition failed ({}); escalating to default provider",
-                            reason
-                        );
-                        open_provider_circuit(Some(session_id), planner.get_name(), &reason);
-                        let default = self.get_provider().await?;
-                        answered_model = None;
-                        let outcome = finalize_decomposition(
-                            run_decomposition(
-                                &default,
-                                &manager,
-                                &session,
-                                system,
-                                &user_message,
-                                &mut answered_model,
-                            )
-                            .await,
-                        )?;
-                        (outcome, default)
+                    Ok(goals) => Ok((DecompositionOutcome::Goals(goals), planner, answered)),
+                    Err(DecompositionError::Provider(e)) => {
+                        open_provider_circuit(Some(session_id), planner.get_name(), &e);
+                        Err(e)
+                    }
+                    Err(DecompositionError::Unparseable { err, .. }) => {
+                        Err(format!("unparseable output ({})", err))
                     }
                 }
-            }
+            },
+        )
+        .await;
+        let planned = planned.map(|(outcome, planner, answered)| {
+            answered_model = answered;
+            (outcome, planner)
+        });
+        let (goals, actual_planner) = match planned {
+            Some(planned) => planned,
             None => {
                 let default = self.get_provider().await?;
                 let outcome = finalize_decomposition(
@@ -11317,6 +11348,33 @@ impl OrchestratorClient {
                 (outcome, default)
             }
         };
+        let mut planner_fallback = planner_fallback_record(&fallback_hops);
+        // Never a silent substitution: a plan answered by anything other than
+        // the intended route always carries a recorded reason.
+        if let Some(gap) = unrecorded_planner_substitution(
+            planner_route.as_ref(),
+            actual_planner.get_name(),
+            &actual_planner.get_model_config().model_name,
+            planner_fallback.as_ref(),
+        ) {
+            tracing::error!(
+                target: "permagentd::orchestrator",
+                planner_complexity = %planning_complexity.complexity.as_str(),
+                "{gap}",
+            );
+            planner_fallback = Some(serde_json::json!({
+                "from": planner_route
+                    .as_ref()
+                    .map(|rm| format!("{}/{}", rm.provider, rm.model)),
+                "to": format!(
+                    "{}/{}",
+                    actual_planner.get_name(),
+                    actual_planner.get_model_config().model_name
+                ),
+                "reason": gap,
+                "class": "unrecorded_substitution",
+            }));
+        }
         let physical_planner = answered_planner(
             actual_planner.get_name(),
             &actual_planner.get_model_config().model_name,
@@ -11449,6 +11507,8 @@ impl OrchestratorClient {
             "planner": planner_label.clone(),
             "planner_reason": planner_reason.describe(),
             "planner_physical": physical_planner.clone(),
+            // Lane R65a: why the physical planner is not the intended one.
+            "planner_fallback": planner_fallback,
         });
         let saved = sqlx::query(
             "UPDATE projects
@@ -13185,6 +13245,212 @@ fn parse_roadmap_response(response: &str) -> Result<Vec<goal_state::ProposedGoal
     // Try parsing as bare array
     serde_json::from_str::<Vec<goal_state::ProposedGoal>>(json_str)
         .map_err(|e| format!("Failed to parse response as goals: {}", e))
+}
+
+/// Lane R65a: output tokens a decomposition answer may use. A plan is a JSON
+/// goal list; this bounds a paid planner's reservation without truncating one.
+const PLANNER_MAX_OUTPUT_TOKENS: i32 = 16_000;
+
+/// Lane R65a: tokens allowed for provider-side message framing on top of the
+/// request's own bytes.
+const PLANNER_REQUEST_FRAMING_TOKENS: usize = 2_048;
+
+/// Lane R65a: how many ranked planners one decomposition tries before the
+/// session coordinator.
+const PLANNER_FALLBACK_MAX_ROUTES: usize = 3;
+
+/// Lane R65a: a planner model config a paid reservation can authorize.
+/// `max_tokens` is set to [`PLANNER_MAX_OUTPUT_TOKENS`] (or kept when already
+/// lower). With `bound_context`, `context_limit` is capped at an upper bound
+/// on this request: every byte of the system prompt and user message is at
+/// most one token, the stricter retry resends the first answer (at most the
+/// output bound) plus a short instruction, and framing is bounded by
+/// [`PLANNER_REQUEST_FRAMING_TOKENS`]; the answer's own output bound sits on
+/// top. Pure.
+fn bounded_planner_model_config(
+    mut config: crate::model::ModelConfig,
+    request_bytes: usize,
+    bound_context: bool,
+) -> crate::model::ModelConfig {
+    let output = config
+        .max_tokens
+        .filter(|t| *t > 0)
+        .map_or(PLANNER_MAX_OUTPUT_TOKENS, |t| {
+            t.min(PLANNER_MAX_OUTPUT_TOKENS)
+        });
+    config.max_tokens = Some(output);
+    if bound_context {
+        let output = usize::try_from(output).unwrap_or(0);
+        let request_bound = request_bytes
+            .saturating_add(output)
+            .saturating_add(PLANNER_REQUEST_FRAMING_TOKENS)
+            .saturating_add(output);
+        config.context_limit = Some(
+            config
+                .context_limit
+                .map_or(request_bound, |limit| limit.min(request_bound)),
+        );
+    }
+    config
+}
+
+/// Lane R65a: one step down the planner ranking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannerFallbackHop {
+    from: String,
+    /// The next planner, or `session` when the ranking is exhausted.
+    to: String,
+    reason: String,
+    class: &'static str,
+}
+
+impl PlannerFallbackHop {
+    fn new(
+        from: &crate::cost_router::RoleModel,
+        to: Option<&crate::cost_router::RoleModel>,
+        reason: &str,
+    ) -> Self {
+        Self {
+            from: format!("{}/{}", from.provider, from.model),
+            to: to
+                .map(|rm| format!("{}/{}", rm.provider, rm.model))
+                .unwrap_or_else(|| "session".to_string()),
+            reason: reason.to_string(),
+            class: planner_failure_class(reason),
+        }
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "from": self.from,
+            "to": self.to,
+            "reason": self.reason,
+            "class": self.class,
+        })
+    }
+}
+
+/// Lane R65a: the kind of planner failure, for the fallback record. Pure over
+/// the failure text.
+fn planner_failure_class(reason: &str) -> &'static str {
+    if reason.contains("budget refused provider call")
+        || reason.contains("budget gate required before provider call")
+    {
+        return "spend_refused";
+    }
+    if reason.contains("provider budget is unknown") {
+        return "reservation_unauthorized";
+    }
+    if reason.contains("circuit-open")
+        || reason.contains("is unavailable:")
+        || crate::providers::errors::classify_unavailable(reason).is_some()
+    {
+        return "provider_unavailable";
+    }
+    if reason.starts_with("unparseable output") {
+        return "unparseable";
+    }
+    "provider_error"
+}
+
+/// Lane R65a: plan down the objective planner ranking. `attempt` tries one
+/// route (its `Err` names why it could not plan); on failure `next_route`
+/// resolves the next planner from every route tried so far
+/// (`resolve_planner_fallback` in production), up to
+/// [`PLANNER_FALLBACK_MAX_ROUTES`] routes. Returns the first success, or
+/// `None` when the ranking is exhausted (the caller then uses the session
+/// coordinator), plus one traced [`PlannerFallbackHop`] per failure.
+async fn walk_planner_ranking<T, N, A, AFut>(
+    first: Option<crate::cost_router::RoleModel>,
+    first_reason: crate::cost_router::PlannerReason,
+    mut next_route: N,
+    mut attempt: A,
+) -> (Option<T>, Vec<PlannerFallbackHop>)
+where
+    N: FnMut(
+        &[crate::cost_router::RoleModel],
+    ) -> (
+        Option<crate::cost_router::RoleModel>,
+        crate::cost_router::PlannerReason,
+    ),
+    A: FnMut(crate::cost_router::RoleModel, crate::cost_router::PlannerReason) -> AFut,
+    AFut: std::future::Future<Output = Result<T, String>>,
+{
+    let mut tried: Vec<crate::cost_router::RoleModel> = Vec::new();
+    let mut hops: Vec<PlannerFallbackHop> = Vec::new();
+    let mut route = first;
+    let mut reason = first_reason;
+    while let Some(rm) = route.take() {
+        tried.push(rm.clone());
+        let failure = match attempt(rm.clone(), reason.clone()).await {
+            Ok(planned) => return (Some(planned), hops),
+            Err(failure) => failure,
+        };
+        let (next, next_reason) = if tried.len() >= PLANNER_FALLBACK_MAX_ROUTES {
+            (
+                None,
+                crate::cost_router::PlannerReason::SessionFallback {
+                    reason: format!(
+                        "{PLANNER_FALLBACK_MAX_ROUTES} ranked planners failed — using the \
+                         session coordinator"
+                    ),
+                },
+            )
+        } else {
+            next_route(&tried)
+        };
+        let hop = PlannerFallbackHop::new(&rm, next.as_ref(), &failure);
+        tracing::warn!(
+            target: "permagentd::orchestrator",
+            from = %hop.from,
+            to = %hop.to,
+            class = hop.class,
+            next_reason = %next_reason.describe(),
+            "Planner decomposition failed ({}); falling back by the planner ranking to {}",
+            failure,
+            hop.to
+        );
+        hops.push(hop);
+        route = next;
+        reason = next_reason;
+    }
+    (None, hops)
+}
+
+/// Lane R65a: the `planner_fallback` record — the first hop's `from`, the last
+/// hop's `to`, the first failure's `reason` and `class`, and every hop.
+/// `None` when the intended planner answered.
+fn planner_fallback_record(hops: &[PlannerFallbackHop]) -> Option<serde_json::Value> {
+    let first = hops.first()?;
+    let last = hops.last()?;
+    Some(serde_json::json!({
+        "from": first.from,
+        "to": last.to,
+        "reason": first.reason,
+        "class": first.class,
+        "hops": hops.iter().map(PlannerFallbackHop::to_json).collect::<Vec<_>>(),
+    }))
+}
+
+/// Lane R65a: `Some(reason)` when the planner that answered (`provider` /
+/// its configured `model`) is not the intended `route` and no fallback was
+/// recorded — the silent substitution r65 s1 hit. `None` when the intended
+/// route answered, when the route was the session coordinator all along, or
+/// when a fallback record explains the difference. Pure.
+fn unrecorded_planner_substitution(
+    route: Option<&crate::cost_router::RoleModel>,
+    provider: &str,
+    model: &str,
+    fallback: Option<&serde_json::Value>,
+) -> Option<String> {
+    let route = route?;
+    if fallback.is_some() || (route.provider == provider && route.model == model) {
+        return None;
+    }
+    Some(format!(
+        "planner {}/{} was routed but {provider}/{model} answered with no recorded fallback",
+        route.provider, route.model
+    ))
 }
 
 /// `provider/model` of the planner that physically answered a decompose call:
@@ -33836,8 +34102,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
 
     /// Lane R36a: `resolve_decomposition_provider` must skip a planner
     /// route whose provider already has an open circuit in this session —
-    /// returning `None` (fall through to the session coordinator) without
-    /// ever calling `providers::create_with_named_model` for it. Exercised
+    /// returning `Err` (the caller walks the planner ranking) without
+    /// ever constructing a provider for it. Exercised
     /// indirectly: with no `PERMAGENT_ROLE_ORCHESTRATE_PROVIDER`/pack pin
     /// configured in the test env, `resolve_planner_route` itself may
     /// already return `None` (no eligible planner) — this test only pins
@@ -33864,10 +34130,10 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         if let Some(rm) = route {
             crate::cost_router::provider_circuit::open(&session, &rm.provider, "billing");
             let resolved = client
-                .resolve_decomposition_provider(Some(&session), Some(rm.clone()), &reason)
+                .resolve_decomposition_provider(Some(&session), rm.clone(), &reason, 0)
                 .await;
             assert!(
-                resolved.is_none(),
+                resolved.is_err(),
                 "a planner route whose provider's circuit is open this session must never \
                  be resolved to a live provider"
             );

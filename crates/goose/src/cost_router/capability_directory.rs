@@ -568,7 +568,13 @@ impl CapabilityDirectory {
     /// `graduated=true` with a failing pass rate must never win the planner
     /// pick just because the flag says so).
     pub fn planner(&self) -> Option<(RoleModel, PlannerReason)> {
-        let candidates = self.planner_candidates();
+        self.planner_excluding(&[])
+    }
+
+    /// [`Self::planner`] over the candidates not in `excluded` — the same
+    /// ranking, walked past planners that already failed (Lane R65a).
+    pub fn planner_excluding(&self, excluded: &[RoleModel]) -> Option<(RoleModel, PlannerReason)> {
+        let candidates = self.planner_candidates_excluding(excluded);
         if candidates.is_empty() {
             return None;
         }
@@ -610,12 +616,17 @@ impl CapabilityDirectory {
     /// ORCHESTRATE floor or graduated for it. Shared by [`Self::planner`] and
     /// [`Self::routine_planner`] so the expert and routine picks can never
     /// disagree about who is capable.
-    fn planner_candidates(&self) -> Vec<&CapabilityCard> {
+    fn planner_candidates_excluding(&self, excluded: &[RoleModel]) -> Vec<&CapabilityCard> {
         let floor = WorkflowRole::Orchestrate
             .capability_floor()
             .orchestration_min;
         self.cards
             .iter()
+            .filter(|c| {
+                !excluded
+                    .iter()
+                    .any(|rm| rm.provider == c.provider && rm.model == c.model)
+            })
             .filter(|c| !evidence_excludes_role(c, WorkflowRole::Orchestrate))
             .filter(|c| {
                 c.strengths.orchestration >= floor
@@ -642,7 +653,18 @@ impl CapabilityDirectory {
         coordinator: Option<&RoleModel>,
         spend_capped: bool,
     ) -> Option<(Option<RoleModel>, PlannerReason)> {
-        let candidates = self.planner_candidates();
+        self.routine_planner_excluding(coordinator, spend_capped, &[])
+    }
+
+    /// [`Self::routine_planner`] over the candidates not in `excluded` (Lane
+    /// R65a).
+    pub fn routine_planner_excluding(
+        &self,
+        coordinator: Option<&RoleModel>,
+        spend_capped: bool,
+        excluded: &[RoleModel],
+    ) -> Option<(Option<RoleModel>, PlannerReason)> {
+        let candidates = self.planner_candidates_excluding(excluded);
         let banded = super::recommend::cheapest_within_band(
             &candidates,
             ROUTINE_PLANNER_STRENGTH_BAND,
@@ -982,6 +1004,49 @@ pub fn resolve_planner_for_complexity(
     match directory.routine_planner(gate.coordinator.as_ref(), gate.spend_capped) {
         Some(routed) => routed,
         None => resolve_planner(None, None, directory),
+    }
+}
+
+/// Lane R65a: the planner to try after `tried` failed (a spend refusal, a
+/// provider or credential failure, an unusable answer) — the SAME objective
+/// ranking [`resolve_planner_for_complexity`] chose the first route by, with
+/// every tried route removed: a COMPLEX plan (not spend-capped) walks
+/// [`CapabilityDirectory::planner`]'s strongest-first ranking; anything else
+/// walks [`CapabilityDirectory::routine_planner`]'s cheapest-capable ranking
+/// (which may name the session coordinator, route `None`). Pins are not
+/// consulted: a pinned planner that failed falls through to the ranking.
+/// `(None, SessionFallback)` when the ranking is exhausted. Pure.
+pub fn resolve_planner_fallback(
+    directory: &CapabilityDirectory,
+    gate: &PlannerGate,
+    tried: &[RoleModel],
+) -> (Option<RoleModel>, PlannerReason) {
+    use super::planner_complexity::PlanningComplexity;
+    let exhausted = || {
+        (
+            None,
+            PlannerReason::SessionFallback {
+                reason: format!(
+                    "every ranked planner was tried and failed ({}) — using the session \
+                     coordinator",
+                    tried
+                        .iter()
+                        .map(|rm| format!("{}/{}", rm.provider, rm.model))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            },
+        )
+    };
+    if gate.complexity == PlanningComplexity::Complex && !gate.spend_capped {
+        return match directory.planner_excluding(tried) {
+            Some((rm, reason)) => (Some(rm), reason),
+            None => exhausted(),
+        };
+    }
+    match directory.routine_planner_excluding(gate.coordinator.as_ref(), gate.spend_capped, tried) {
+        Some(routed) => routed,
+        None => exhausted(),
     }
 }
 
