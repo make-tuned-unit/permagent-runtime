@@ -11,13 +11,23 @@
 //! | Role         | Default model                 | Where it runs                         |
 //! |--------------|-------------------------------|---------------------------------------|
 //! | `Edit`       | `claude-sonnet-5`             | the interactive main coding loop      |
-//! | `Hard`       | `claude-opus-4-8`             | planning / hard reasoning (Frontier)  |
+//! | `Hard`       | directory-derived (see below) | planning / hard reasoning (Frontier)  |
 //! | `Mechanical` | `claude-haiku-4-5-20251001`   | apply-diff/summarize/grep (CheapCloud)|
 //! | `Local`      | `qwen3` (ollama, $0)          | on-device mechanical (Local/Mesh)     |
 //!
 //! Every field is overridable via `PERMAGENT_PACK_*` config/env keys (the
 //! defaults are the owner's spend/quality call, surfaced for tuning), mirroring the
 //! pure-core-plus-thin-env-wrapper convention in [`super::budget`].
+//!
+//! `Hard` has NO vendor constant (N1 finding 2, rulings 2026-08-18 / 2026-09-09):
+//! [`load_packs`] derives it from the models the user actually has — the
+//! recommender's objective ORCHESTRATE pick ([`derive_hard_pack`], the same rule
+//! the "Apply recommended routing" flow and the directory's planner use) — and
+//! only when nothing configured clears the planner floor falls back to the
+//! cheapest KEYED model that does ([`cheapest_keyed_capable_hard_pack`]). The
+//! config-free [`ModelPacks::default`] can see no keys, so its `hard` is the
+//! cheapest knowledge-base model that clears the floor: data-derived, never a
+//! vendor pick, and replaced by [`load_packs`] whenever anything is configured.
 //!
 //! Cache discipline (see [`super::cache`]) is why `Edit` is a distinct role
 //! rather than a `Tier`: the main loop stays on ONE stable model (the operator's
@@ -29,6 +39,7 @@
 //! offloads.
 
 use super::mesh::MeshGateInputs;
+use super::recommend::{AvailableModel, WorkflowRole};
 use super::tier::{TaskSignals, Tier};
 
 // ── Config keys (all optional; unset ⇒ the pack default) ─────────────────────
@@ -62,8 +73,6 @@ const PROVIDER_ANTHROPIC: &str = "anthropic";
 /// The local Ollama provider id (see `providers::ollama`).
 const PROVIDER_OLLAMA: &str = "ollama";
 
-/// Planner / hard reasoning — the frontier escalation target.
-const DEFAULT_HARD_MODEL: &str = "claude-opus-4-8";
 /// Editor — the interactive main coding loop (stable, cache-warm).
 const DEFAULT_EDIT_MODEL: &str = "claude-sonnet-5";
 /// Apply/mechanical cloud work — apply-diff, summarize, grep-triage.
@@ -149,12 +158,17 @@ pub struct ModelPacks {
 }
 
 impl Default for ModelPacks {
-    /// The shipped tiered packs: Opus 4.8 (hard) · Sonnet 5 (edit) · Haiku 4.5
-    /// (mechanical) · Ollama/qwen3 (local $0).
+    /// The config-free tiered packs: Sonnet 5 (edit) · Haiku 4.5 (mechanical) ·
+    /// Ollama/qwen3 (local $0) · and a `hard` pack derived from the knowledge
+    /// base, not named: with no keys visible here, the cheapest model that
+    /// clears the ORCHESTRATE floor ([`cheapest_keyed_capable_hard_pack`] with
+    /// every provider treated as reachable). [`load_packs`] replaces it with the
+    /// directory-derived pick over the models actually configured.
     fn default() -> Self {
         Self {
             edit: ModelPack::new(PROVIDER_ANTHROPIC, DEFAULT_EDIT_MODEL),
-            hard: ModelPack::new(PROVIDER_ANTHROPIC, DEFAULT_HARD_MODEL),
+            hard: cheapest_keyed_capable_hard_pack(|_| true)
+                .unwrap_or_else(|| ModelPack::new("", "")),
             mechanical: ModelPack::new(PROVIDER_ANTHROPIC, DEFAULT_MECHANICAL_MODEL),
             local: ModelPack::new(PROVIDER_OLLAMA, DEFAULT_LOCAL_MODEL),
         }
@@ -230,20 +244,115 @@ pub fn packs_from(
 }
 
 /// Load the tiered packs from config/env, falling back to the shipped defaults for
-/// any unset key. Thin wrapper over [`packs_from`].
+/// any unset key. Thin wrapper over [`packs_from`]. When NEITHER `HARD` key is set,
+/// the hard pack is derived from the models actually configured
+/// ([`derive_hard_pack`] over sync, network-free discovery and the live key
+/// check); the config-free default survives only when nothing configured yields
+/// a capable planner.
 pub fn load_packs() -> ModelPacks {
     let cfg = crate::config::Config::global();
     let read = |key: &str| cfg.get_param::<String>(key).ok();
-    packs_from(
+    let hard_provider = read(KEY_HARD_PROVIDER);
+    let hard_model = read(KEY_HARD_MODEL);
+    let hard_unset = hard_provider.is_none() && hard_model.is_none();
+    let mut packs = packs_from(
         read(KEY_EDIT_PROVIDER),
         read(KEY_EDIT_MODEL),
-        read(KEY_HARD_PROVIDER),
-        read(KEY_HARD_MODEL),
+        hard_provider,
+        hard_model,
         read(KEY_MECHANICAL_PROVIDER),
         read(KEY_MECHANICAL_MODEL),
         read(KEY_LOCAL_PROVIDER),
         read(KEY_LOCAL_MODEL),
-    )
+    );
+    if hard_unset {
+        let available = super::recommend::discover_available_models();
+        if let Some(derived) = derive_hard_pack(&available, provider_has_key) {
+            packs.hard = derived;
+        }
+    }
+    packs
+}
+
+// ── The HARD pack, derived (N1 finding 2) ────────────────────────────────────
+
+/// Pure: the cheapest NON-local knowledge-base model that clears the
+/// ORCHESTRATE floor among providers `provider_keyed` accepts (cost ties →
+/// stronger → stable id). The HARD fallback when the configured models yield no
+/// capable planner: cheapest capable, never a vendor constant. `None` when no
+/// keyed provider serves a floor-clearing model.
+pub fn cheapest_keyed_capable_hard_pack(
+    provider_keyed: impl Fn(&str) -> bool,
+) -> Option<ModelPack> {
+    let floor = WorkflowRole::Orchestrate.capability_floor();
+    super::knowledge::KNOWN_MODELS
+        .iter()
+        .filter(|m| !m.is_local && floor.clears(m) && provider_keyed(m.provider))
+        .min_by(|a, b| {
+            a.blended_cost_per_mtok()
+                .total_cmp(&b.blended_cost_per_mtok())
+                .then_with(|| {
+                    b.orchestration_strength
+                        .total_cmp(&a.orchestration_strength)
+                })
+                .then_with(|| a.provider.cmp(b.provider))
+                .then_with(|| a.model.cmp(b.model))
+        })
+        .map(|m| ModelPack::new(m.provider, m.model))
+}
+
+/// Pure: the directory-derived HARD pack over the models the user has — the
+/// recommender's objective ORCHESTRATE pick
+/// ([`super::recommend::recommend_from_available`], the "Apply recommended
+/// routing" flow's own rule, banded exactly like the directory's planner) when it
+/// clears the floor, keyed back to the id the user actually has; otherwise
+/// [`cheapest_keyed_capable_hard_pack`]. A provider absent from `available` and
+/// unkeyed can never be returned, so a surface without Anthropic never yields an
+/// Anthropic HARD pack.
+pub fn derive_hard_pack(
+    available: &[AvailableModel],
+    provider_keyed: impl Fn(&str) -> bool,
+) -> Option<ModelPack> {
+    let rec = super::recommend::recommend_from_available(available);
+    let objective = rec.recommendations.iter().find(|r| {
+        r.role == WorkflowRole::Orchestrate
+            && r.floor_met
+            && !r.provider.is_empty()
+            && !r.model.is_empty()
+    });
+    if let Some(r) = objective {
+        let exact = available
+            .iter()
+            .any(|a| a.provider == r.provider && a.model == r.model);
+        let model = if exact {
+            r.model.clone()
+        } else {
+            available
+                .iter()
+                .filter(|a| a.provider == r.provider)
+                .find(|a| {
+                    super::knowledge::lookup(&a.provider, &a.model)
+                        .is_some_and(|k| k.provider == r.provider && k.model == r.model)
+                })
+                .map(|a| a.model.clone())
+                .unwrap_or_else(|| r.model.clone())
+        };
+        return Some(ModelPack {
+            provider: r.provider.clone(),
+            model,
+        });
+    }
+    cheapest_keyed_capable_hard_pack(provider_keyed)
+}
+
+/// Live "this provider has a real key configured" — keyless (local) and unknown
+/// providers do NOT count, so the HARD fallback never names a provider the
+/// operator cannot bill.
+fn provider_has_key(provider: &str) -> bool {
+    match super::recommend::provider_key_env(provider) {
+        Some(env) if !env.trim().is_empty() => super::cheap::is_key_configured(&env),
+        _ => false,
+    }
 }
 
 // ── Explicit pins (the delegate seam) ────────────────────────────────────────
@@ -267,8 +376,7 @@ pub fn load_packs() -> ModelPacks {
 /// The review gate's cross-family diversity preference still runs and still warns
 /// when the reviewer shares the author's family; it does not override the pin —
 /// an operator's explicit choice is not second-guessed.
-pub fn pack_role_for_workflow_role(role: super::recommend::WorkflowRole) -> Option<Role> {
-    use super::recommend::WorkflowRole;
+pub fn pack_role_for_workflow_role(role: WorkflowRole) -> Option<Role> {
     match role {
         WorkflowRole::Orchestrate | WorkflowRole::Review => Some(Role::Hard),
         WorkflowRole::Edit => Some(Role::Edit),
@@ -502,15 +610,77 @@ mod tests {
         assert_eq!(role_for_tier(Tier::MeshFree), Role::Local);
     }
 
-    // ── The routing decision: hard→Opus, edit→Sonnet, mechanical→Haiku,
-    //    local→Ollama (the test bar's exact mapping) ─────────────────────────
+    // ── The routing decision: hard→derived, edit→Sonnet, mechanical→Haiku,
+    //    local→Ollama ────────────────────────────────────────────────────────
 
+    /// N1 finding 2: the config-free HARD pack is derived from the knowledge
+    /// base (cheapest model clearing the ORCHESTRATE floor), not a vendor
+    /// constant, and it clears the floor.
     #[test]
-    fn hard_maps_to_opus() {
+    fn default_hard_is_the_cheapest_kb_model_that_clears_the_planner_floor() {
         let p = ModelPacks::default();
-        assert_eq!(p.model_for(Role::Hard), "claude-opus-4-8");
-        assert_eq!(p.model_for_tier(Tier::Frontier), "claude-opus-4-8");
-        assert_eq!(p.pack_for(Role::Hard).provider, "anthropic");
+        let hard = p.pack_for(Role::Hard);
+        assert_eq!(
+            Some(hard.clone()),
+            cheapest_keyed_capable_hard_pack(|_| true)
+        );
+        assert_eq!(p.model_for_tier(Tier::Frontier), hard.model);
+        let row = crate::cost_router::knowledge::lookup(&hard.provider, &hard.model)
+            .expect("the default hard pack is a knowledge-base row");
+        assert!(WorkflowRole::Orchestrate.capability_floor().clears(row));
+        assert!(!row.is_local);
+        // No other floor-clearing cloud row is cheaper.
+        for m in crate::cost_router::knowledge::KNOWN_MODELS {
+            if !m.is_local && WorkflowRole::Orchestrate.capability_floor().clears(m) {
+                assert!(m.blended_cost_per_mtok() >= row.blended_cost_per_mtok());
+            }
+        }
+    }
+
+    fn am(provider: &str, model: &str) -> AvailableModel {
+        AvailableModel::new(provider, model)
+    }
+
+    /// The directory-derived HARD pack is the objective planner pick among the
+    /// models the user has — and a surface without Anthropic never yields an
+    /// Anthropic HARD pack, neither from the pick nor from the fallback.
+    #[test]
+    fn derived_hard_pack_never_names_a_vendor_the_user_does_not_have() {
+        let keyed = |p: &str| p == "openai" || p == "zai";
+        let available = [am("openai", "gpt-5.6"), am("zai", "glm-5.2")];
+        let hard = derive_hard_pack(&available, keyed).expect("two floor-clearers");
+        assert_ne!(hard.provider, "anthropic");
+        assert!(available
+            .iter()
+            .any(|a| a.provider == hard.provider && a.model == hard.model));
+        // gpt-5.6 (0.83) and glm-5.2 (0.81) sit inside the planner band, so cost
+        // decides: GLM 5.2 at $5.80/Mtok over GPT-5.6 at $35.
+        assert_eq!(hard, ModelPack::new("zai", "glm-5.2"));
+
+        // Nothing configured clears the floor → the cheapest KEYED capable model,
+        // still not Anthropic because Anthropic is not keyed.
+        let weak = [am("openai", "gpt-5.6-mini")];
+        let fallback = derive_hard_pack(&weak, keyed).expect("openai/zai are keyed");
+        assert_ne!(fallback.provider, "anthropic");
+        assert!(fallback.provider == "openai" || fallback.provider == "zai");
+
+        // Nothing keyed and nothing capable configured → no HARD pack at all.
+        assert_eq!(derive_hard_pack(&weak, |_| false), None);
+        assert_eq!(derive_hard_pack(&[], |_| false), None);
+    }
+
+    /// With Anthropic available the pick is still the objective one: Fable 5's
+    /// orchestration lead (0.95 vs Opus 0.886) is outside the planner band, so the
+    /// strongest planner wins on merit, not on vendor.
+    #[test]
+    fn derived_hard_pack_follows_the_objective_pick_when_anthropic_is_available() {
+        let available = [
+            am("anthropic", "claude-fable-5"),
+            am("anthropic", "claude-opus-4-8"),
+            am("zai", "glm-5.2"),
+        ];
+        let hard = derive_hard_pack(&available, |_| true).unwrap();
+        assert_eq!(hard, ModelPack::new("anthropic", "claude-fable-5"));
     }
 
     #[test]
@@ -545,7 +715,7 @@ mod tests {
     // ── resolve: task class → tier → correct pack model ────────────────────
 
     #[test]
-    fn hard_reasoning_resolves_to_the_opus_pack() {
+    fn hard_reasoning_resolves_to_the_hard_pack() {
         let p = ModelPacks::default();
         // A multi-file change is reasoning → Frontier → the hard pack.
         let s = TaskSignals {
@@ -554,7 +724,7 @@ mod tests {
         };
         let (tier, pack) = resolve(&s, no_pool(), &p);
         assert_eq!(tier, Tier::Frontier);
-        assert_eq!(pack.model, "claude-opus-4-8");
+        assert_eq!(pack, p.pack_for(Role::Hard));
     }
 
     #[test]
@@ -612,7 +782,7 @@ mod tests {
         assert_eq!(p.local.model, "qwen3-coder:30b");
         // …and untouched fields keep the shipped defaults.
         assert_eq!(p.edit.provider, "anthropic");
-        assert_eq!(p.hard.model, "claude-opus-4-8");
+        assert_eq!(p.hard, ModelPacks::default().hard);
         assert_eq!(p.local.provider, "ollama");
     }
 

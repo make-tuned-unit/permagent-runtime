@@ -13,7 +13,7 @@
 //! [`resolve_role_model_or_derived`]) and, when that has no floor-clearing entry
 //! for the role either, falls through to the CURRENT single-model behaviour — the
 //! parent/session model. The tiered-pack defaults in [`super::packs`]
-//! (`ModelPacks::default()` — Opus/Sonnet/Haiku/Ollama) are the cost-router's
+//! (`ModelPacks::default()` — derived HARD/Sonnet/Haiku/Ollama) are the cost-router's
 //! internal escalation ladder (and a named preset the user may explicitly apply);
 //! they are **never** consulted by the dispatch path. Set nothing, stay
 //! single-model — no vendor default applies.
