@@ -44684,8 +44684,18 @@ mod tests {
         };
 
         let narrowed = scoped_child_session_extensions_fn(&context, None).await;
+        // Compared by `key()`, the identity `narrow_extensions_for_agent`
+        // itself matches grants on -- not `name()`. The parent set is never
+        // just the fixture: `EnabledExtensionsState::extensions_or_default`
+        // additively merges every extension the config has enabled, and the
+        // config migration seeds every default-enabled platform extension into
+        // ANY config, even an empty one. So the platform `Extension Manager`
+        // arrives beside this fixture's builtin `extensionmanager`; both carry
+        // the key `extensionmanager` and both are correctly granted, but their
+        // `name()`s differ, which made a name-set comparison fail on every
+        // machine regardless of what that machine had configured.
         let names: std::collections::HashSet<String> =
-            narrowed.iter().map(|ext| ext.name()).collect();
+            narrowed.iter().map(|ext| ext.key()).collect();
         let expected: std::collections::HashSet<String> = LEAN_CODING_PROFILE_EXTENSION_KEYS
             .iter()
             .map(|s| s.to_string())
@@ -44762,7 +44772,7 @@ mod tests {
 
         let unrestricted = scoped_child_session_extensions_fn(&context, None).await;
         let names: std::collections::HashSet<String> =
-            unrestricted.iter().map(|ext| ext.name()).collect();
+            unrestricted.iter().map(|ext| ext.key()).collect();
         for unrelated in ["finance", "crm", "social_content"] {
             assert!(
                 names.contains(unrelated),
@@ -44770,9 +44780,18 @@ mod tests {
                  (including unrelated '{unrelated}'), got: {names:?}"
             );
         }
+        // Against `parent_extensions_fn` itself, which is the contract this
+        // message names -- never against the fixture's length. The parent set
+        // is the fixture PLUS every default-enabled platform extension (see
+        // the headline test above), so pinning the fixture's nine failed on
+        // every machine; comparing to the real parent answers the question
+        // actually being asked, whether anything was narrowed away.
+        let parent = parent_extensions_fn(&context);
+        let parent_keys: Vec<String> = parent.iter().map(|ext| ext.key()).collect();
+        let unrestricted_keys: Vec<String> =
+            unrestricted.iter().map(|ext| ext.key()).collect();
         assert_eq!(
-            unrestricted.len(),
-            r27b_lean_profile_plus_unrelated_extras().len(),
+            unrestricted_keys, parent_keys,
             "must be identical to parent_extensions_fn's own output, not narrowed at all"
         );
     }
