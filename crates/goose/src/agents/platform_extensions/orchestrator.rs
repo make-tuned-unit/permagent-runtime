@@ -16400,30 +16400,143 @@ pub(crate) fn median_duration(durations: &[std::time::Duration]) -> Option<std::
     Some(sorted[sorted.len() / 2])
 }
 
+/// Why the drain's sweep is starting a card — which allowance the dispatch
+/// spends (R62c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DrainDispatchKind {
+    /// An ordinary re-dispatch, counted against the per-card
+    /// `max_redispatch` budget (Y6).
+    Budgeted,
+    /// R62c: the one automatic continuation R18g's headless unblock granted
+    /// this goal. It is its own single dispatch: it neither checks nor
+    /// spends the re-dispatch budget, because the unblock is exactly the
+    /// case where that budget was already spent getting here (A61 Miss 4:
+    /// two drain re-dispatches, then `headless_unblock` + `requeue`, and no
+    /// fifth session ever started).
+    UnblockContinuation,
+    /// R62c: a goal of this run that has never been dispatched at all, given
+    /// one first dispatch when the drain would otherwise quiesce, even if
+    /// refusals already spent its budget (A61 Miss 1: the drain quit with
+    /// 480 s of its 540 s cap left while `e406` was `never_dispatched`).
+    FirstDispatch,
+}
+
+/// What the drain's sweep has already spent in this drain, per card.
+#[derive(Debug, Default)]
+pub(crate) struct DrainSweepLedger {
+    /// Y6: ordinary re-dispatch attempts per card.
+    pub redispatch_counts: HashMap<String, u32>,
+    /// R62c: cards whose headless-unblock continuation this drain has
+    /// already tried to dispatch. The durable half of "once per goal" is
+    /// [`headless_unblock_continuation_pending`]; this set bounds a
+    /// continuation whose dispatch was refused (and so never stamped
+    /// `dispatched_at`) to one try instead of one per poll.
+    pub continuation_tried: std::collections::HashSet<String>,
+    /// R62c: never-dispatched cards this drain already gave their
+    /// quiescence first dispatch.
+    pub first_dispatch_tried: std::collections::HashSet<String>,
+}
+
+/// One run-scoped Ready card as the dispatch selector sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DrainCandidate {
+    pub card_id: String,
+    /// [`headless_unblock_continuation_pending`] on the card's metadata.
+    pub continuation_pending: bool,
+    /// Not awaited by this drain and [`goal_never_dispatched`] on its
+    /// metadata.
+    pub never_dispatched: bool,
+}
+
+/// R62c: true while R18g's headless unblock has resumed this goal
+/// (`resumed_by_headless_unblock_at`) and no dispatch has happened since.
+///
+/// Every dispatch stamps `dispatched_at` on the card (`dispatch_goal_fn`'s
+/// claim patch), so "dispatched after the resume" is the durable,
+/// path-independent proof the continuation was consumed — whether the drain,
+/// the coordinator or a nudge started it, and across drains. R18g itself
+/// fires at most once per goal (`headless_unblock_count`), so the stamp, and
+/// therefore this continuation, exists at most once per goal. An unparseable
+/// timestamp reads as "not pending" (no extra dispatch on bad data).
+pub(crate) fn headless_unblock_continuation_pending(metadata: &serde_json::Value) -> bool {
+    let parse = |key: &str| {
+        metadata
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(chrono::DateTime::parse_from_rfc3339)
+    };
+    let Some(Ok(resumed_at)) = parse("resumed_by_headless_unblock_at") else {
+        return false;
+    };
+    match parse("dispatched_at") {
+        None => true,
+        Some(Ok(dispatched_at)) => dispatched_at < resumed_at,
+        Some(Err(_)) => false,
+    }
+}
+
+/// R62c: true when nothing has ever started a worker for this goal — no
+/// dispatch stamp, no execution receipt, no attempt counted. The caller must
+/// also exclude cards this drain awaits (those have a worker session).
+pub(crate) fn goal_never_dispatched(metadata: &serde_json::Value) -> bool {
+    metadata.get("first_dispatched_at").is_none()
+        && metadata.get("dispatched_at").is_none()
+        && metadata.get("execution_receipt").is_none()
+        && metadata
+            .get("attempt_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            == 0
+}
+
 /// The dispatch half of the drain policy: which of the currently-eligible
-/// Ready cards this pass should start.
+/// Ready cards this pass should start, and on which allowance.
 ///
 /// Skips a card that already has a live worker in the wait set (a
 /// belt-and-braces check — `eligible_ready_goals` only returns `Ready` cards
 /// and `dispatch_goal_fn` takes the Ready→InProgress claim atomically, so a
-/// double dispatch is refused downstream either way), and a card that has
-/// already spent its per-run re-dispatch budget. Preserves input order and
-/// never names the same card twice.
-pub(crate) fn next_dispatch_actions(
-    ready_card_ids: &[String],
+/// double dispatch is refused downstream either way). Then, in order:
+///   - an unconsumed headless-unblock continuation not yet tried in this
+///     drain → [`DrainDispatchKind::UnblockContinuation`], whatever the
+///     re-dispatch count (R62c);
+///   - re-dispatch budget left → [`DrainDispatchKind::Budgeted`] (Y6);
+///   - only while `quiescing`, a never-dispatched card not yet given its
+///     first dispatch in this drain → [`DrainDispatchKind::FirstDispatch`]
+///     (R62c).
+///
+/// `max_redispatch == 0` stays the documented off switch for the whole
+/// sweep, continuations included. Preserves input order and never names the
+/// same card twice.
+pub(crate) fn next_drain_dispatches(
+    candidates: &[DrainCandidate],
     live_card_ids: &std::collections::HashSet<String>,
-    redispatch_counts: &HashMap<String, u32>,
+    ledger: &DrainSweepLedger,
     max_redispatch: u32,
-) -> Vec<String> {
-    let mut chosen: Vec<String> = Vec::new();
-    for card_id in ready_card_ids {
-        if live_card_ids.contains(card_id) || chosen.iter().any(|c| c == card_id) {
+    quiescing: bool,
+) -> Vec<(String, DrainDispatchKind)> {
+    let mut chosen: Vec<(String, DrainDispatchKind)> = Vec::new();
+    if max_redispatch == 0 {
+        return chosen;
+    }
+    for candidate in candidates {
+        let card_id = &candidate.card_id;
+        if live_card_ids.contains(card_id) || chosen.iter().any(|(c, _)| c == card_id) {
             continue;
         }
-        if redispatch_counts.get(card_id).copied().unwrap_or(0) >= max_redispatch {
+        let kind = if candidate.continuation_pending && !ledger.continuation_tried.contains(card_id)
+        {
+            DrainDispatchKind::UnblockContinuation
+        } else if ledger.redispatch_counts.get(card_id).copied().unwrap_or(0) < max_redispatch {
+            DrainDispatchKind::Budgeted
+        } else if quiescing
+            && candidate.never_dispatched
+            && !ledger.first_dispatch_tried.contains(card_id)
+        {
+            DrainDispatchKind::FirstDispatch
+        } else {
             continue;
-        }
-        chosen.push(card_id.clone());
+        };
+        chosen.push((card_id.clone(), kind));
     }
     chosen
 }
@@ -16499,17 +16612,26 @@ pub(crate) fn run_scoped_ready_goals(
 /// side door: the roadmap dispatch guard, the approval payload check, E3's
 /// requeue cross-check and Y4b's liveness all sit on that rail unchanged.
 ///
-/// The counter is incremented per ATTEMPT, not per success, so a goal whose
+/// Every allowance is spent per ATTEMPT, not per success, so a goal whose
 /// dispatch is refused every time (no eligible worker, exhausted budget)
-/// cannot spin the drain.
+/// cannot spin the drain. The one exception is R56a's write-scope WAIT,
+/// which refunds whichever allowance it spent (see [`next_drain_dispatches`]
+/// for the three allowances, R62c).
+///
+/// `quiescing` is true on a pass where nothing this drain awaits is still
+/// running and nothing new appeared — the pass that would otherwise count
+/// toward the loop's idle exit. Only then may a never-dispatched card of
+/// this run get its [`DrainDispatchKind::FirstDispatch`].
+#[allow(clippy::too_many_arguments)]
 async fn redispatch_ready_goals(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     coordinator_session_id: &str,
     project_ids: &std::collections::BTreeSet<String>,
     live_card_ids: &std::collections::HashSet<String>,
     awaited_cards: &std::collections::HashSet<String>,
-    redispatch_counts: &mut HashMap<String, u32>,
+    ledger: &mut DrainSweepLedger,
     redispatch: &DrainRedispatch<'_>,
+    quiescing: bool,
 ) -> u32 {
     let max_redispatch = redispatch.max_redispatch;
     if max_redispatch == 0 || awaited_cards.is_empty() {
@@ -16520,13 +16642,13 @@ async fn redispatch_ready_goals(
     };
     let mut attempted = 0u32;
     for project_id in project_ids {
-        let ready = match eligible_ready_goals(pool, project_id).await {
+        let candidates = match eligible_ready_goals(pool, project_id).await {
             Ok(mut goals) => {
                 // Lane R26b item 3: a goal resumed by R18g's headless
                 // unblock already burned real attempts getting back to
                 // Ready — prioritise it over an ordinary Ready goal in
                 // this project's own eligible set so it is the first
-                // candidate `next_dispatch_actions` considers below,
+                // candidate `next_drain_dispatches` considers below,
                 // rather than losing every scheduling tie to goals that
                 // have not yet spent anything. Stable sort: relative
                 // order among goals that agree on this key (both stamped,
@@ -16537,7 +16659,19 @@ async fn redispatch_ready_goals(
                         .get("resumed_by_headless_unblock_at")
                         .is_none()
                 });
-                run_scoped_ready_goals(&goals, awaited_cards, coordinator_session_id)
+                let scoped = run_scoped_ready_goals(&goals, awaited_cards, coordinator_session_id);
+                goals
+                    .iter()
+                    .filter(|card| scoped.contains(&card.id))
+                    .map(|card| DrainCandidate {
+                        card_id: card.id.clone(),
+                        continuation_pending: headless_unblock_continuation_pending(
+                            &card.metadata_json,
+                        ),
+                        never_dispatched: !awaited_cards.contains(&card.id)
+                            && goal_never_dispatched(&card.metadata_json),
+                    })
+                    .collect::<Vec<_>>()
             }
             Err(e) => {
                 tracing::warn!(
@@ -16548,12 +16682,27 @@ async fn redispatch_ready_goals(
                 continue;
             }
         };
-        // Bound outside the loop: `next_dispatch_actions` borrows the counter
-        // map immutably and the loop body then mutates it.
-        let selected =
-            next_dispatch_actions(&ready, live_card_ids, redispatch_counts, max_redispatch);
-        for card_id in selected {
-            *redispatch_counts.entry(card_id.clone()).or_insert(0) += 1;
+        // Bound outside the loop: `next_drain_dispatches` borrows the ledger
+        // immutably and the loop body then mutates it.
+        let selected = next_drain_dispatches(
+            &candidates,
+            live_card_ids,
+            ledger,
+            max_redispatch,
+            quiescing,
+        );
+        for (card_id, kind) in selected {
+            match kind {
+                DrainDispatchKind::Budgeted => {
+                    *ledger.redispatch_counts.entry(card_id.clone()).or_insert(0) += 1;
+                }
+                DrainDispatchKind::UnblockContinuation => {
+                    ledger.continuation_tried.insert(card_id.clone());
+                }
+                DrainDispatchKind::FirstDispatch => {
+                    ledger.first_dispatch_tried.insert(card_id.clone());
+                }
+            }
             attempted += 1;
             match dispatch(card_id.clone()).await {
                 Ok(session_id) => tracing::info!(
@@ -16561,8 +16710,9 @@ async fn redispatch_ready_goals(
                     goal_id = %card_id,
                     project_id = %project_id,
                     session_id = %session_id,
-                    "drain re-dispatched a Ready goal (attempt {})",
-                    redispatch_counts[&card_id]
+                    kind = ?kind,
+                    "drain re-dispatched a Ready goal (budgeted attempts {})",
+                    ledger.redispatch_counts.get(&card_id).copied().unwrap_or(0)
                 ),
                 Err(e) if refusal_is_scope_wait(&e) => {
                     // R56a: a scope conflict against a goal that is still
@@ -16573,9 +16723,22 @@ async fn redispatch_ready_goals(
                     // leaves InProgress. Bounded by the drain's own cap and
                     // poll interval (one extra query per poll), and it never
                     // reports itself as a dispatch, so a pass made only of
-                    // these can still quiesce.
-                    if let Some(count) = redispatch_counts.get_mut(&card_id) {
-                        *count = count.saturating_sub(1);
+                    // these can still quiesce. R62c: the refund covers
+                    // whichever allowance was spent, so a scope wait can
+                    // consume neither the unblock continuation nor a
+                    // never-dispatched card's first dispatch.
+                    match kind {
+                        DrainDispatchKind::Budgeted => {
+                            if let Some(count) = ledger.redispatch_counts.get_mut(&card_id) {
+                                *count = count.saturating_sub(1);
+                            }
+                        }
+                        DrainDispatchKind::UnblockContinuation => {
+                            ledger.continuation_tried.remove(&card_id);
+                        }
+                        DrainDispatchKind::FirstDispatch => {
+                            ledger.first_dispatch_tried.remove(&card_id);
+                        }
                     }
                     attempted = attempted.saturating_sub(1);
                     tracing::debug!(
@@ -16590,6 +16753,7 @@ async fn redispatch_ready_goals(
                         target: "permagentd::brain",
                         goal_id = %card_id,
                         project_id = %project_id,
+                        kind = ?kind,
                         "drain re-dispatch did not start goal: {e}"
                     );
                     // Lane R26b item 1: do not silently drop a refusal
@@ -16655,7 +16819,8 @@ async fn drain_dispatched_goals_with(
     // whatever is still here at the cap is parked, so Y2-2's "never leave a
     // goal silently non-terminal" guarantee survives the change.
     let mut requeued: HashMap<String, String> = HashMap::new();
-    let mut redispatch_counts: HashMap<String, u32> = HashMap::new();
+    // Y6 re-dispatch counts plus R62c's two single-shot allowances.
+    let mut sweep_ledger = DrainSweepLedger::default();
     // Y6: every goal card this drain has ever awaited, so the sweep can ask
     // "is any completion handler still running?" — see `completion_active`.
     // Y6b (G12 MED-3): it is ALSO this run's DAG — the sweep starts only these
@@ -16768,8 +16933,33 @@ async fn drain_dispatched_goals_with(
                 "{}",
                 drain_poll_debug_line(&session_id, &card_id, state, receipt_terminal),
             );
-            let budget_left =
-                redispatch_counts.get(&card_id).copied().unwrap_or(0) < redispatch.max_redispatch;
+            let mut budget_left = sweep_ledger
+                .redispatch_counts
+                .get(&card_id)
+                .copied()
+                .unwrap_or(0)
+                < redispatch.max_redispatch;
+            // R62c (A61 Miss 4): R18g's headless unblock requeues the card to
+            // Ready and grants ONE automatic continuation, but it fires only
+            // after the goal has been held twice — by which point the drain
+            // had already re-dispatched it `max_redispatch` times, so this
+            // arm returned Park and the granted continuation never ran (no
+            // fifth session, `ready_unconsumed` at exit). An unconsumed
+            // continuation is its own allowance, outside the re-dispatch
+            // budget. Read only in exactly that shape, so the common poll
+            // costs no extra query.
+            if !budget_left
+                && redispatch.max_redispatch > 0
+                && state == GoalState::Ready
+                && receipt_terminal
+                && !sweep_ledger.continuation_tried.contains(&card_id)
+            {
+                budget_left = cards::get_card(pool, &card_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|card| headless_unblock_continuation_pending(&card.metadata_json));
+            }
             let completion_in_flight = goal_completion_in_flight_within(&card_id, completion_bound);
             let action =
                 next_drain_action(state, receipt_terminal, completion_in_flight, budget_left);
@@ -16951,6 +17141,12 @@ async fn drain_dispatched_goals_with(
                  new worker to finish"
             );
         }
+        // R62c (A61 Miss 1): the pass that would count toward the idle exit.
+        // Only on such a pass may the sweep give a never-dispatched goal of
+        // this run its first dispatch past a spent re-dispatch budget — the
+        // drain must not quiesce with wall budget left while a Ready goal of
+        // its own roadmap has never run.
+        let quiescing = pending.is_empty() && !discovered_new && !completion_active;
         let dispatched_now = if completion_active || inside_headroom {
             0
         } else {
@@ -16960,8 +17156,9 @@ async fn drain_dispatched_goals_with(
                 &projects,
                 &live_card_ids,
                 &awaited_cards,
-                &mut redispatch_counts,
+                &mut sweep_ledger,
                 &redispatch,
+                quiescing,
             )
             .await
         };
@@ -33641,24 +33838,395 @@ mod tests {
     #[test]
     fn next_dispatch_actions_respects_liveness_and_the_per_card_budget() {
         let live: std::collections::HashSet<String> = ["live".to_string()].into_iter().collect();
-        let mut counts: HashMap<String, u32> = HashMap::new();
-        counts.insert("spent".to_string(), 2);
-        counts.insert("half".to_string(), 1);
+        let mut ledger = DrainSweepLedger::default();
+        ledger.redispatch_counts.insert("spent".to_string(), 2);
+        ledger.redispatch_counts.insert("half".to_string(), 1);
+        let plain = |id: &str| DrainCandidate {
+            card_id: id.to_string(),
+            continuation_pending: false,
+            never_dispatched: false,
+        };
         let ready = vec![
-            "live".to_string(),
-            "spent".to_string(),
-            "half".to_string(),
-            "fresh".to_string(),
-            "fresh".to_string(),
+            plain("live"),
+            plain("spent"),
+            plain("half"),
+            plain("fresh"),
+            plain("fresh"),
         ];
         assert_eq!(
-            next_dispatch_actions(&ready, &live, &counts, 2),
-            vec!["half".to_string(), "fresh".to_string()]
+            next_drain_dispatches(&ready, &live, &ledger, 2, false),
+            vec![
+                ("half".to_string(), DrainDispatchKind::Budgeted),
+                ("fresh".to_string(), DrainDispatchKind::Budgeted)
+            ]
         );
         assert!(
-            next_dispatch_actions(&ready, &live, &counts, 0).is_empty(),
+            next_drain_dispatches(&ready, &live, &ledger, 0, true).is_empty(),
             "max_redispatch=0 is the documented off switch"
         );
+    }
+
+    /// R62c, pure (A61 Miss 4 and Miss 1). A headless-unblock continuation
+    /// is its own single dispatch outside the re-dispatch budget, and a
+    /// never-dispatched card gets one first dispatch past a spent budget —
+    /// but only while the drain is quiescing, and each only once per drain.
+    #[test]
+    fn next_drain_dispatches_grants_the_continuation_and_first_dispatch_outside_the_budget() {
+        let live: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut ledger = DrainSweepLedger::default();
+        ledger.redispatch_counts.insert("resumed".to_string(), 2);
+        ledger.redispatch_counts.insert("never".to_string(), 2);
+        ledger.redispatch_counts.insert("spent".to_string(), 2);
+        let candidates = vec![
+            DrainCandidate {
+                card_id: "resumed".to_string(),
+                continuation_pending: true,
+                never_dispatched: false,
+            },
+            DrainCandidate {
+                card_id: "never".to_string(),
+                continuation_pending: false,
+                never_dispatched: true,
+            },
+            DrainCandidate {
+                card_id: "spent".to_string(),
+                continuation_pending: false,
+                never_dispatched: false,
+            },
+        ];
+        assert_eq!(
+            next_drain_dispatches(&candidates, &live, &ledger, 2, false),
+            vec![(
+                "resumed".to_string(),
+                DrainDispatchKind::UnblockContinuation
+            )],
+            "a spent budget must not refuse the unblock's continuation; a never-dispatched card \
+             waits for quiescence"
+        );
+        assert_eq!(
+            next_drain_dispatches(&candidates, &live, &ledger, 2, true),
+            vec![
+                (
+                    "resumed".to_string(),
+                    DrainDispatchKind::UnblockContinuation
+                ),
+                ("never".to_string(), DrainDispatchKind::FirstDispatch),
+            ],
+            "quiescing: the never-dispatched card gets its first dispatch; an ordinary spent card \
+             still does not"
+        );
+        ledger.continuation_tried.insert("resumed".to_string());
+        ledger.first_dispatch_tried.insert("never".to_string());
+        assert!(
+            next_drain_dispatches(&candidates, &live, &ledger, 2, true).is_empty(),
+            "each allowance is spent once per drain"
+        );
+        // With budget left, a pending continuation is still the continuation
+        // (it never spends a budget unit), and budget beats first dispatch.
+        let mut fresh = DrainSweepLedger::default();
+        fresh.redispatch_counts.insert("never".to_string(), 1);
+        assert_eq!(
+            next_drain_dispatches(&candidates, &live, &fresh, 2, true),
+            vec![
+                (
+                    "resumed".to_string(),
+                    DrainDispatchKind::UnblockContinuation
+                ),
+                ("never".to_string(), DrainDispatchKind::Budgeted),
+                ("spent".to_string(), DrainDispatchKind::Budgeted),
+            ]
+        );
+    }
+
+    /// R62c, pure: the durable "continuation not yet consumed" and "never
+    /// dispatched" readings of card metadata.
+    #[test]
+    fn headless_unblock_continuation_pending_and_never_dispatched_read_card_metadata() {
+        let resumed = "2026-09-17T01:22:00+00:00";
+        assert!(headless_unblock_continuation_pending(&serde_json::json!({
+            "resumed_by_headless_unblock_at": resumed,
+            "dispatched_at": "2026-09-17T01:21:14+00:00",
+        })));
+        assert!(headless_unblock_continuation_pending(&serde_json::json!({
+            "resumed_by_headless_unblock_at": resumed,
+        })));
+        assert!(
+            !headless_unblock_continuation_pending(&serde_json::json!({
+                "resumed_by_headless_unblock_at": resumed,
+                "dispatched_at": "2026-09-17T01:22:05+00:00",
+            })),
+            "a dispatch after the resume consumed the continuation, whoever started it"
+        );
+        assert!(!headless_unblock_continuation_pending(
+            &serde_json::json!({ "dispatched_at": "2026-09-17T01:21:14+00:00" })
+        ));
+        assert!(
+            !headless_unblock_continuation_pending(&serde_json::json!({
+                "resumed_by_headless_unblock_at": "not a time",
+            })),
+            "bad data never earns an extra dispatch"
+        );
+
+        assert!(goal_never_dispatched(&serde_json::json!({})));
+        assert!(goal_never_dispatched(
+            &serde_json::json!({ "attempt_count": 0 })
+        ));
+        assert!(!goal_never_dispatched(
+            &serde_json::json!({ "attempt_count": 1 })
+        ));
+        assert!(!goal_never_dispatched(&serde_json::json!({
+            "first_dispatched_at": "2026-09-17T01:21:14+00:00",
+            "attempt_count": 0,
+        })));
+        assert!(!goal_never_dispatched(
+            &serde_json::json!({ "execution_receipt": {} })
+        ));
+    }
+
+    /// R62c, durable (A61 Miss 4, `harness-cli-argparse-log-filter`): the
+    /// drain re-dispatched the card twice, the second attempt was held and
+    /// R18g's headless unblock requeued it with its one continuation — and
+    /// the drain parked it on the spent budget, so no fifth session ever ran.
+    /// The continuation must now dispatch exactly once, and never a fourth
+    /// attempt after it. Pre-fix repro: `recorded` holds two ids, not three.
+    #[tokio::test]
+    async fn drain_sweep_dispatches_a_headless_unblock_continuation_after_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+
+        // Every attempt, including the pre-drain one: a new worker session of
+        // this coordinator, attached to the card, whose attempt is already
+        // over with the card left Ready (a `hold_done` requeue).
+        async fn finished_attempt(
+            sm: &crate::session::SessionManager,
+            pool: &sqlx::Pool<sqlx::Sqlite>,
+            coordinator_id: &str,
+            card_id: &str,
+            dir: std::path::PathBuf,
+        ) {
+            let child = sm
+                .create_session_with_parent(
+                    Some(coordinator_id),
+                    dir,
+                    "Goal: held and requeued".to_string(),
+                    SessionType::SubAgent,
+                    GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            attach_worker_session_to_card(pool, card_id, &child.id).await;
+            let mut receipt = ExecutionReceipt::new(
+                "permagent",
+                child.id.clone(),
+                serde_json::json!({}),
+                "life-1",
+                chrono::Utc::now().to_rfc3339(),
+                1,
+            );
+            receipt.finalize(ReceiptState::Failed, chrono::Utc::now().to_rfc3339());
+            cards::set_goal_execution_receipt(
+                pool,
+                card_id,
+                serde_json::to_value(&receipt).unwrap(),
+            )
+            .await
+            .unwrap();
+        }
+        finished_attempt(
+            &sm,
+            &pool,
+            &coordinator.id,
+            &card.id,
+            tmp.path().to_path_buf(),
+        )
+        .await;
+
+        let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&log);
+        let sm_hook = Arc::clone(&sm);
+        let pool_hook = pool.clone();
+        let coordinator_id = coordinator.id.clone();
+        let dir = tmp.path().to_path_buf();
+        let dispatcher: Box<GoalDispatchHook> = Box::new(move |card_id: String| {
+            let sink = Arc::clone(&sink);
+            let sm = Arc::clone(&sm_hook);
+            let pool = pool_hook.clone();
+            let coordinator_id = coordinator_id.clone();
+            let dir = dir.clone();
+            Box::pin(async move {
+                let call = {
+                    let mut log = sink.lock().unwrap();
+                    log.push(card_id.clone());
+                    log.len()
+                };
+                let now = chrono::Utc::now();
+                let stamps = if call == 2 {
+                    // The second re-dispatch is held twice and R18g resumes
+                    // it: `dispatched_at` predates the resume stamp.
+                    serde_json::json!({
+                        "dispatched_at": (now - chrono::Duration::seconds(30)).to_rfc3339(),
+                        "resumed_by_headless_unblock_at": now.to_rfc3339(),
+                    })
+                } else {
+                    serde_json::json!({
+                        "dispatched_at": (now + chrono::Duration::seconds(30)).to_rfc3339(),
+                    })
+                };
+                sqlx::query(
+                    "UPDATE cards SET metadata_json = json_patch(metadata_json, ?) WHERE id = ?",
+                )
+                .bind(stamps.to_string())
+                .bind(&card_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+                finished_attempt(&sm, &pool, &coordinator_id, &card_id, dir).await;
+                Ok(format!("redispatched-session-for-{card_id}"))
+            }) as GoalDispatchFuture
+        });
+
+        let _summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            |_, _| {},
+            None,
+            DrainRedispatch {
+                dispatch: Some(&dispatcher),
+                max_redispatch: 2,
+                sweep_headroom: std::time::Duration::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+
+        let recorded = log.lock().unwrap().clone();
+        assert_eq!(
+            recorded,
+            vec![card.id.clone(), card.id.clone(), card.id.clone()],
+            "two budgeted re-dispatches plus exactly one headless-unblock continuation: \
+             {recorded:?}"
+        );
+    }
+
+    /// R62c, durable (A61 Miss 1, `harness-refactor-shipping-quote-signature`):
+    /// a Ready goal of this run's own roadmap whose every dispatch so far was
+    /// refused (spending its whole budget) was left `never_dispatched` while
+    /// the drain quit with most of its cap unused. Before quiescing, the drain
+    /// must give it one first dispatch — and only one. Pre-fix repro:
+    /// `recorded` holds two ids and the sibling is still Ready.
+    #[tokio::test]
+    async fn drain_gives_a_never_dispatched_goal_its_first_dispatch_before_quiescing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: finished root".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let finished_root = setup_goal_in_state(&pool, "complete", 1).await;
+        attach_worker_session_to_card(&pool, &finished_root.id, &child.id).await;
+        let sibling = setup_goal_in_state(&pool, "ready", 0).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, \
+             '$.created_by_session_id', ?) WHERE id = ?",
+        )
+        .bind(&coordinator.id)
+        .bind(&sibling.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Refuses (not a write-scope wait, so nothing is refunded) until the
+        // third call, then claims the card.
+        let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&log);
+        let pool_hook = pool.clone();
+        let dispatcher: Box<GoalDispatchHook> = Box::new(move |card_id: String| {
+            let sink = Arc::clone(&sink);
+            let pool = pool_hook.clone();
+            Box::pin(async move {
+                let call = {
+                    let mut log = sink.lock().unwrap();
+                    log.push(card_id.clone());
+                    log.len()
+                };
+                if call < 3 {
+                    return Err(format!(
+                        "No suitable worker available for goal '{card_id}' right now"
+                    ));
+                }
+                move_card_to_goal_state(&pool, &card_id, "in_progress").await;
+                Ok(format!("redispatched-session-for-{card_id}"))
+            }) as GoalDispatchFuture
+        });
+
+        let start = std::time::Instant::now();
+        let cap = std::time::Duration::from_secs(5);
+        let _summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            cap,
+            std::time::Duration::from_millis(10),
+            |_, _| {},
+            None,
+            DrainRedispatch {
+                dispatch: Some(&dispatcher),
+                max_redispatch: 2,
+                sweep_headroom: std::time::Duration::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+
+        let recorded = log.lock().unwrap().clone();
+        assert_eq!(
+            recorded,
+            vec![sibling.id.clone(), sibling.id.clone(), sibling.id.clone()],
+            "two budgeted attempts, then exactly one first dispatch before quiescing: \
+             {recorded:?}"
+        );
+        assert!(
+            start.elapsed() < cap / 2,
+            "the first dispatch is bounded; the drain still quiesces long before the cap"
+        );
+        let sibling = cards::get_card(&pool, &sibling.id).await.unwrap().unwrap();
+        let column = cards::get_column(&pool, &sibling.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(column.state_binding.as_deref(), Some("in_progress"));
     }
 
     /// Y6 (i), durable. A worker whose completion handler is still running
@@ -34344,7 +34912,8 @@ mod tests {
     /// dispatched and that depends on nothing this run dispatched — a card a
     /// human left on the board — must never be started by the drain's sweep.
     /// Pre-fix repro: `eligible_ready_goals`' project-wide list went straight
-    /// into `next_dispatch_actions`, so the stranger was dispatched on the
+    /// into the sweep's dispatch selector (then `next_dispatch_actions`, now
+    /// `next_drain_dispatches`), so the stranger was dispatched on the
     /// first pass.
     #[tokio::test]
     async fn drain_sweep_does_not_dispatch_a_ready_card_outside_this_runs_dag() {
