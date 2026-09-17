@@ -3080,6 +3080,10 @@ pub const TURN_BUDGET_NUDGE_THRESHOLD: u32 = 3;
 /// `monologue_nudged` bounds the S5 nudge in `agent.rs`, so this function
 /// stays a pure question of "turns_taken/max_turns," not "have I already
 /// said this."
+///
+/// Lane R62f (A61 miss 2): `has_explicit_cap` alone is not enough — a
+/// headless coordinator run with `--max-turns` also has one, and was told to
+/// `git commit` NOW. Callers pass [`turn_budget_nudge_applies`] instead.
 pub fn turn_budget_nudge_text(
     turns_taken: u32,
     max_turns: u32,
@@ -3104,9 +3108,42 @@ pub fn turn_budget_nudge_text(
     ))
 }
 
+/// Lane R62f (A61 miss 2): whether a session is a dispatched goal worker the
+/// turn-budget nudge is for — an explicit `max_turns` cap AND a `SubAgent`
+/// session (goal workers are always `SubAgent`, see `security::write_jail`'s
+/// `JailRole::GoalWorker`). A top-level coordinator (a `User`/`Terminal`
+/// session) given a turn cap by the headless CLI is not in a goal worktree
+/// and must never be told to `git commit`.
+pub fn turn_budget_nudge_applies(
+    max_turns: Option<u32>,
+    session_type: crate::session::SessionType,
+) -> bool {
+    max_turns.is_some() && matches!(session_type, crate::session::SessionType::SubAgent)
+}
+
 #[cfg(test)]
 mod turn_budget_nudge_tests {
     use super::*;
+
+    /// Lane R62f (A61 miss 2): the s3 named-check coordinator, run headless
+    /// with a turn cap, received "3 actions remain … git commit NOW".
+    #[test]
+    fn nudge_applies_only_to_capped_sub_agent_sessions() {
+        use crate::session::SessionType;
+        assert!(turn_budget_nudge_applies(Some(25), SessionType::SubAgent));
+        for coordinator in [
+            SessionType::User,
+            SessionType::Terminal,
+            SessionType::Scheduled,
+            SessionType::Hidden,
+        ] {
+            assert!(
+                !turn_budget_nudge_applies(Some(15), coordinator),
+                "{coordinator:?} with a turn cap is not a goal worker"
+            );
+        }
+        assert!(!turn_budget_nudge_applies(None, SessionType::SubAgent));
+    }
 
     #[test]
     fn no_nudge_without_an_explicit_cap() {

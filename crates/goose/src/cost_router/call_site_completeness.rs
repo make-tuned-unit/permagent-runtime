@@ -102,8 +102,10 @@ fn definition_patterns() -> &'static [Regex] {
 
 /// Does `line` define a function/method, and if so, what is its name and
 /// (whitespace-normalized) parameter list? Tries each pattern in
-/// [`definition_patterns`] in order and returns the first match.
-fn definition_in_line(line: &str) -> Option<(String, String)> {
+/// [`definition_patterns`] in order and returns the first match. Public so
+/// the orchestrator's salvage reviewer (Lane R62e) can show the reviewer a
+/// callee's definition line using the same recognizer E7 uses.
+pub fn definition_in_line(line: &str) -> Option<(String, String)> {
     for re in definition_patterns() {
         if let Some(caps) = re.captures(line) {
             let name = caps.get(1)?.as_str().to_string();

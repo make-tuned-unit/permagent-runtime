@@ -590,6 +590,7 @@ async fn land_approved_goal(
                                 };
                             let verified = recorded_pass_at_head
                                 || crate::agents::platform_extensions::orchestrator::run_fresh_verify_for_hold(
+                                    pool,
                                     &card,
                                     worktree_path,
                                 )

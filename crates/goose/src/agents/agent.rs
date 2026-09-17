@@ -2061,6 +2061,12 @@ impl Agent {
             .count();
 
         let working_dir = session.working_dir.clone();
+        // Lane R62f (A61 miss 2): the turn-budget "git commit NOW" nudge is
+        // for dispatched goal workers only, never a capped coordinator.
+        let turn_budget_nudge_eligible = crate::after_turn::turn_budget_nudge_applies(
+            session_config.max_turns,
+            session.session_type,
+        );
         let reply_stream_span = tracing::info_span!(target: "permagent::agents::agent", "reply_stream", session.id = %session_config.id);
         let inner = Box::pin(async_stream::try_stream! {
             // Working on entry; Drop records done/error on every exit path (#348).
@@ -3579,12 +3585,13 @@ impl Agent {
                 // `no_tools_called` branch above. `has_explicit_cap` (`session_
                 // config.max_turns.is_some()`) is what keeps this off ordinary
                 // interactive chats — see `turn_budget_nudge_text`'s own doc
-                // comment.
+                // comment. R62f: and `turn_budget_nudge_applies` keeps it off a
+                // capped top-level coordinator.
                 if !turn_budget_nudged {
                     if let Some(nudge_text) = crate::after_turn::turn_budget_nudge_text(
                         turns_taken,
                         max_turns,
-                        session_config.max_turns.is_some(),
+                        turn_budget_nudge_eligible,
                     ) {
                         turn_budget_nudged = true;
                         let nudge = Message::user().with_text(nudge_text);

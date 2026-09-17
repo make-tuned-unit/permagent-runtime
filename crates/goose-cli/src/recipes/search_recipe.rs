@@ -189,5 +189,17 @@ mod tests {
                 && instructions.contains("a headless run refuses it"),
             "coding recipe must say memory is repo-scoped and how (and when) to ask for more"
         );
+        // Lane R59b: a coordinator asked to review `payment.py` without
+        // editing it wrote the review inline, declined to escalate, and was
+        // parked with neither a roadmap nor an escalation
+        // (`select-review-request-does-not-mutate`). A review request is a
+        // one-goal, read-only roadmap — never an inline review ending in prose.
+        assert!(
+            instructions.contains("A request to review")
+                && instructions.contains("ONE read-only goal")
+                && instructions.contains("never review it inline and end the turn in"),
+            "coding recipe must route a review request to a one-goal read-only roadmap, not an \
+             inline prose review"
+        );
     }
 }
