@@ -362,3 +362,291 @@ pub async fn goal_owned_by_live_foreign_process(
         .await
         .is_some()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::platform_extensions::execution_receipt::{ExecutionReceipt, ReceiptState};
+    use crate::session::SessionManager;
+
+    async fn temp_pool() -> (tempfile::TempDir, Pool<Sqlite>) {
+        let dir = tempfile::tempdir().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let pool = sm.pool_clone().await.unwrap();
+        (dir, pool)
+    }
+
+    fn at(secs: i64) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-09-17T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+            + chrono::Duration::seconds(secs)
+    }
+
+    async fn insert_lease(
+        pool: &Pool<Sqlite>,
+        lease_id: &str,
+        lifecycle_id: &str,
+        phase: &str,
+        heartbeat_at: DateTime<Utc>,
+    ) {
+        sqlx::query(
+            "INSERT INTO harness_process_leases (
+                lease_id, lifecycle_id, session_id, session_name, working_dir, mode, pid,
+                phase, started_at, heartbeat_at
+            ) VALUES (?, ?, 'sess-1', 'fix auth', '/work/repo', 'headless', 4242, ?, ?, ?)",
+        )
+        .bind(lease_id)
+        .bind(lifecycle_id)
+        .bind(phase)
+        .bind(lease_timestamp(
+            heartbeat_at - chrono::Duration::seconds(600),
+        ))
+        .bind(lease_timestamp(heartbeat_at))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn lease_schema_applies_twice_on_a_migrated_database() {
+        let (_dir, pool) = temp_pool().await;
+        // The session manager already applied it once while initializing.
+        crate::session::spectral_schema::apply_harness_process_leases_schema(&pool)
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_harness_process_leases_schema(&pool)
+            .await
+            .unwrap();
+        let objects: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master
+             WHERE tbl_name = 'harness_process_leases' ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(objects.contains(&"harness_process_leases".to_string()));
+        assert!(objects.contains(&"idx_harness_leases_phase_hb".to_string()));
+        assert!(objects.contains(&"idx_harness_leases_lifecycle".to_string()));
+
+        // A database that reopens (daemon restart / second process) runs the
+        // chain again without error and keeps its rows.
+        insert_lease(&pool, "l-1", "life-1", "idle", at(0)).await;
+        crate::session::spectral_schema::apply_harness_process_leases_schema(&pool)
+            .await
+            .unwrap();
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM harness_process_leases")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[tokio::test]
+    async fn lease_schema_is_part_of_a_fresh_database() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'harness_process_leases'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn classify_is_live_through_45_seconds_and_lost_after() {
+        let now = at(100);
+        for phase in ["starting", "turn", "idle", "draining"] {
+            assert_eq!(
+                classify_parts(phase, &lease_timestamp(at(100 - 45)), now),
+                LeaseLiveness::Live,
+                "{phase} at exactly the window is live"
+            );
+            assert_eq!(
+                classify_parts(phase, &lease_timestamp(at(100 - 46)), now),
+                LeaseLiveness::Lost,
+                "{phase} one second past the window is lost"
+            );
+        }
+        assert_eq!(
+            classify_parts("exited", &lease_timestamp(now), now),
+            LeaseLiveness::Ended
+        );
+        assert_eq!(
+            classify_parts("exited", &lease_timestamp(at(-9999)), now),
+            LeaseLiveness::Ended,
+            "exited is ended however stale"
+        );
+        assert_eq!(
+            classify_parts("idle", "not a timestamp", now),
+            LeaseLiveness::Lost,
+            "an unreadable heartbeat never reads as live"
+        );
+        assert_eq!(
+            classify_parts("idle", &lease_timestamp(at(105)), now),
+            LeaseLiveness::Live,
+            "a heartbeat slightly ahead of the reader's clock is live"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_lease_for_lifecycle_returns_only_a_live_row() {
+        let (_dir, pool) = temp_pool().await;
+        let now = Utc::now();
+        insert_lease(
+            &pool,
+            "old",
+            "life-live",
+            "exited",
+            now - chrono::Duration::hours(2),
+        )
+        .await;
+        insert_lease(
+            &pool,
+            "live",
+            "life-live",
+            "turn",
+            now - chrono::Duration::seconds(5),
+        )
+        .await;
+        insert_lease(
+            &pool,
+            "stale",
+            "life-lost",
+            "draining",
+            now - chrono::Duration::seconds(60),
+        )
+        .await;
+        insert_lease(&pool, "done", "life-ended", "exited", now).await;
+
+        let live = live_lease_for_lifecycle(&pool, "life-live").await.unwrap();
+        assert_eq!(live.lease_id, "live");
+        assert_eq!(live.pid, 4242);
+        assert_eq!(live.session_name.as_deref(), Some("fix auth"));
+        assert!(live_lease_for_lifecycle(&pool, "life-lost").await.is_none());
+        assert!(live_lease_for_lifecycle(&pool, "life-ended")
+            .await
+            .is_none());
+        assert!(live_lease_for_lifecycle(&pool, "never-seen")
+            .await
+            .is_none());
+        assert_eq!(
+            live_lease_for_lifecycle_at(&pool, "life-live", now + chrono::Duration::seconds(51))
+                .await,
+            None,
+            "the same row is lost once the reader's clock passes the window"
+        );
+    }
+
+    fn receipt_meta(
+        lifecycle: &str,
+        heartbeat: DateTime<Utc>,
+        terminal: bool,
+    ) -> serde_json::Value {
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            "worker-1",
+            serde_json::json!({}),
+            lifecycle,
+            heartbeat.to_rfc3339(),
+            1,
+        );
+        if terminal {
+            receipt.finalize(ReceiptState::Completed, heartbeat.to_rfc3339());
+        }
+        serde_json::json!({
+            "dispatched_lifecycle": lifecycle,
+            "execution_receipt": receipt,
+        })
+    }
+
+    #[tokio::test]
+    async fn foreign_owner_follows_the_lease_then_the_receipt() {
+        let (_dir, pool) = temp_pool().await;
+        let now = Utc::now();
+
+        // Our own lifecycle is never foreign, however fresh.
+        let own = receipt_meta("life-own", now, false);
+        assert!(live_foreign_owner_at(&pool, &own, "life-own", now)
+            .await
+            .is_none());
+
+        // A live lease for the dispatching lifecycle: owned, described.
+        insert_lease(
+            &pool,
+            "t1",
+            "life-terminal",
+            "draining",
+            now - chrono::Duration::seconds(7),
+        )
+        .await;
+        let meta = serde_json::json!({ "dispatched_lifecycle": "life-terminal" });
+        let owner = live_foreign_owner_at(&pool, &meta, "life-daemon", now)
+            .await
+            .expect("a live lease owns the goal");
+        assert!(!owner.is_receipt_only());
+        let line = owner.describe();
+        assert!(line.contains("running in terminal"), "{line}");
+        assert!(
+            line.contains("/work/repo") && line.contains("pid 4242"),
+            "{line}"
+        );
+        assert!(line.contains("heartbeat 7s ago"), "{line}");
+
+        // A stale lease decides "gone", even when the receipt is still fresh.
+        insert_lease(
+            &pool,
+            "t2",
+            "life-crashed",
+            "turn",
+            now - chrono::Duration::seconds(90),
+        )
+        .await;
+        let crashed = receipt_meta("life-crashed", now - chrono::Duration::seconds(10), false);
+        assert!(live_foreign_owner_at(&pool, &crashed, "life-daemon", now)
+            .await
+            .is_none());
+
+        // No lease row at all: a fresh non-terminal receipt vouches.
+        let daemon_goal = receipt_meta(
+            "life-old-daemon",
+            now - chrono::Duration::seconds(20),
+            false,
+        );
+        let owner = live_foreign_owner_at(&pool, &daemon_goal, "life-cli", now)
+            .await
+            .expect("a fresh foreign receipt owns the goal");
+        assert!(owner.is_receipt_only());
+        assert!(owner.describe().contains("life-old-daemon"));
+
+        // ...but not once stale, and never when terminal.
+        let stale = receipt_meta(
+            "life-old-daemon",
+            now - chrono::Duration::seconds(91),
+            false,
+        );
+        assert!(live_foreign_owner_at(&pool, &stale, "life-cli", now)
+            .await
+            .is_none());
+        let finished = receipt_meta("life-old-daemon", now, true);
+        assert!(live_foreign_owner_at(&pool, &finished, "life-cli", now)
+            .await
+            .is_none());
+
+        // Nothing to go on at all.
+        assert!(
+            live_foreign_owner_at(&pool, &serde_json::json!({}), "life-cli", now)
+                .await
+                .is_none()
+        );
+    }
+}

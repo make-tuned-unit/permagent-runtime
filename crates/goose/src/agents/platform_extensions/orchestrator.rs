@@ -26538,6 +26538,7 @@ async fn reconcile_in_progress_goals_with_dispatch(
                         card_id.clone(),
                         project_id.clone(),
                         std::time::Duration::from_secs(execution_receipt::HEARTBEAT_INTERVAL_SECS),
+                        goal_dispatch_hook_snapshot,
                     ));
                 }
                 report.record(disposition);
@@ -26692,12 +26693,15 @@ pub async fn sweep_orphaned_goal_worktrees(
 /// `poll` until the goal leaves In Progress, is redispatched by this process,
 /// or no live owner remains; then runs the ordinary single-goal recovery and,
 /// if that requeued it, the same bounded Ready nudge the boot pass uses.
+/// `resolve_dispatch` is read when the nudge happens, not at spawn time, so a
+/// dispatcher installed after boot is still used.
 async fn recheck_foreign_owned_goal(
     pool: sqlx::Pool<sqlx::Sqlite>,
     manager: Option<Arc<AgentManager>>,
     card_id: String,
     project_id: String,
     poll: std::time::Duration,
+    resolve_dispatch: fn() -> Option<GoalDispatchHookHandle>,
 ) {
     loop {
         tokio::time::sleep(poll).await;
@@ -26732,7 +26736,7 @@ async fn recheck_foreign_owned_goal(
         }
         match resume_single_goal(&pool, &manager, &card_id, &project_id).await {
             Ok(ResumeDisposition::RequeuedNoCharge | ResumeDisposition::RequeuedCharged) => {
-                let dispatch = goal_dispatch_hook_snapshot();
+                let dispatch = resolve_dispatch();
                 dispatch_ready_goals_with(
                     &pool,
                     &project_id,
@@ -42403,6 +42407,233 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         );
     }
 
+    /// Hazard B: the boot pass runs in every process that loads the
+    /// orchestrator, including each new terminal session. A goal a live
+    /// terminal dispatched carries a lifecycle that is not this process's,
+    /// which used to be taken as proof of a dead prior daemon. With a live
+    /// lease for that lifecycle the goal is left exactly as it was.
+    #[tokio::test]
+    async fn resume_leaves_a_goal_owned_by_a_live_terminal_lease_untouched() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &card, "other-terminal-lifecycle").await;
+        insert_harness_lease(&pool, "other-terminal-lifecycle", "idle", 3).await;
+
+        let before = cards::get_card(&pool, &card.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata_json;
+
+        let disposition = resume_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            disposition,
+            ResumeDisposition::OwnedByLiveForeignProcess { recheck: false }
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("in_progress"));
+        assert_eq!(
+            updated.metadata_json, before,
+            "the reconciler must not write to a goal a live terminal owns"
+        );
+        assert!(updated.metadata_json.get("last_error").is_none());
+        assert!(updated
+            .metadata_json
+            .get(RESTART_FORGIVEN_LIFECYCLE)
+            .is_none());
+    }
+
+    /// Crash recovery survives: the lease exists but is lost (the terminal
+    /// was killed; nothing wrote `exited`). The goal is reclaimed to Ready
+    /// exactly as a prior-lifecycle orphan always was.
+    #[tokio::test]
+    async fn resume_reclaims_a_goal_whose_terminal_lease_is_lost() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &card, "killed-terminal-lifecycle").await;
+        insert_harness_lease(
+            &pool,
+            "killed-terminal-lifecycle",
+            "draining",
+            crate::harness_lease::LEASE_LIVE_WINDOW_SECS + 1,
+        )
+        .await;
+
+        let disposition = resume_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+        assert_eq!(disposition, ResumeDisposition::RequeuedNoCharge);
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("ready"));
+    }
+
+    /// Stamp a non-terminal execution receipt from `lifecycle` whose heartbeat
+    /// is `heartbeat_secs_ago` old.
+    async fn stamp_foreign_receipt(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        card_id: &str,
+        lifecycle: &str,
+        heartbeat_secs_ago: i64,
+    ) {
+        let beat = chrono::Utc::now() - chrono::Duration::seconds(heartbeat_secs_ago);
+        let receipt = ExecutionReceipt::new(
+            "permagent",
+            "foreign-worker",
+            serde_json::json!({}),
+            lifecycle,
+            beat.to_rfc3339(),
+            1,
+        );
+        let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
+        let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+        meta.insert(
+            "dispatched_lifecycle".to_string(),
+            serde_json::json!(lifecycle),
+        );
+        meta.insert(
+            "execution_receipt".to_string(),
+            serde_json::to_value(receipt).unwrap(),
+        );
+        cards::update_card(
+            pool,
+            card_id,
+            cards::UpdateCard {
+                metadata_json: Some(serde_json::Value::Object(meta)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    /// No lease row (the dispatcher was a daemon, or a CLI that predates
+    /// leases) but a fresh foreign receipt heartbeat: left alone for now, and
+    /// flagged for a recheck so a quick restart of that process does not
+    /// strand the goal.
+    #[tokio::test]
+    async fn resume_defers_a_goal_with_only_a_fresh_foreign_receipt() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_foreign_receipt(&pool, &card.id, "just-restarted-daemon-lifecycle", 10).await;
+
+        let disposition = resume_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            disposition,
+            ResumeDisposition::OwnedByLiveForeignProcess { recheck: true }
+        );
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("in_progress"));
+    }
+
+    /// The deferred recheck recovers the goal once no live owner remains: the
+    /// receipt has gone stale, so the ordinary recovery runs and the goal is
+    /// requeued. The dispatcher is injected as "none installed" so this never
+    /// touches the process-global hook.
+    #[tokio::test]
+    async fn deferred_recheck_recovers_the_goal_once_the_foreign_receipt_is_stale() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_foreign_receipt(
+            &pool,
+            &card.id,
+            "gone-daemon-lifecycle",
+            execution_receipt::DEFAULT_STALENESS_SECS + 5,
+        )
+        .await;
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            recheck_foreign_owned_goal(
+                pool.clone(),
+                None,
+                card.id.clone(),
+                card.project_id.clone(),
+                std::time::Duration::from_millis(1),
+                || None,
+            ),
+        )
+        .await
+        .expect("the recheck ends once it has acted");
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("ready"));
+    }
+
+    /// The recheck stops without acting when the goal is no longer in flight
+    /// (its owner finished it meanwhile).
+    #[tokio::test]
+    async fn deferred_recheck_does_nothing_once_the_goal_left_in_progress() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            recheck_foreign_owned_goal(
+                pool.clone(),
+                None,
+                card.id.clone(),
+                card.project_id.clone(),
+                std::time::Duration::from_millis(1),
+                || None,
+            ),
+        )
+        .await
+        .expect("the recheck returns when there is nothing to do");
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(updated.metadata_json, card.metadata_json);
+    }
+
+    /// The boot report counts foreign-owned goals on their own line and does
+    /// not count them as reconciled.
+    #[tokio::test]
+    async fn the_boot_report_counts_goals_owned_by_a_live_terminal() {
+        let pool = test_pool().await;
+        crate::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+        let foreign = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &foreign, "busy-terminal-lifecycle").await;
+        insert_harness_lease(&pool, "busy-terminal-lifecycle", "turn", 1).await;
+
+        let report = reconcile_in_progress_goals_with_dispatch(&pool, &None, None).await;
+        assert_eq!(report.examined, 1);
+        assert_eq!(report.owned_by_live_foreign_process, 1);
+        assert_eq!(report.reconciled(), 0);
+        assert!(
+            report
+                .detail()
+                .contains("1 left untouched: owned by a live process elsewhere"),
+            "{}",
+            report.detail()
+        );
+        let updated = cards::get_card(&pool, &foreign.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("in_progress"));
+    }
+
     /// Restart recovery must continue approved unattended work: requeueing an
     /// orphan to Ready is only half a recovery if the daemon leaves it waiting
     /// for a human to call resume_roadmap. The normal dispatcher seam must take
@@ -50222,6 +50453,161 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         assert!(
             updated.metadata_json.get("retry_count").is_none(),
             "R3's auto-requeue must never fire on a live worker: {:?}",
+            updated.metadata_json
+        );
+    }
+
+    // ── Cross-process ownership: a terminal harness run's goals ──────────
+
+    /// Insert a harness lease for `lifecycle` whose heartbeat is
+    /// `heartbeat_secs_ago` old, the way a terminal harness process writes it.
+    async fn insert_harness_lease(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        lifecycle: &str,
+        phase: &str,
+        heartbeat_secs_ago: i64,
+    ) {
+        let beat = chrono::Utc::now() - chrono::Duration::seconds(heartbeat_secs_ago);
+        sqlx::query(
+            "INSERT INTO harness_process_leases (
+                lease_id, lifecycle_id, session_id, session_name, working_dir, mode, pid,
+                phase, started_at, heartbeat_at
+            ) VALUES (?, ?, 'terminal-session', 'lease test run', '/work/terminal-repo',
+                      'headless', 31337, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::now_v7().to_string())
+        .bind(lifecycle)
+        .bind(phase)
+        .bind(crate::harness_lease::lease_timestamp(
+            beat - chrono::Duration::seconds(300),
+        ))
+        .bind(crate::harness_lease::lease_timestamp(beat))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Hazard A: `goal_status` read from another process (the daemon's chat,
+    /// a second terminal) on a goal a live terminal run dispatched. Every
+    /// in-process signal says "dead" and the card is exactly R3's shape, so
+    /// before the lease check this requeued the goal and redispatched it
+    /// beside the live worker. Now it reports the owner and changes nothing.
+    #[tokio::test]
+    async fn goal_status_leaves_a_goal_owned_by_a_live_terminal_lease_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = dead_silent_worker_goal(&pool, &sm, None, 200).await;
+        stamp_meta(
+            &pool,
+            &card.id,
+            "dispatched_lifecycle",
+            "live-terminal-lifecycle",
+        )
+        .await;
+        insert_harness_lease(&pool, "live-terminal-lifecycle", "draining", 5).await;
+
+        let client = OrchestratorClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        })
+        .unwrap();
+        let before_decisions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        let result = client
+            .handle_goal_status(Some(args))
+            .await
+            .expect("goal_status must report a foreign-owned goal normally");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("the normal path returns the status JSON");
+        assert_eq!(
+            parsed.get("session_alive").and_then(|v| v.as_bool()),
+            Some(true),
+            "a goal a live terminal owns is alive: {text}"
+        );
+        let owner = parsed.get("owner").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            owner.contains("running in terminal")
+                && owner.contains("/work/terminal-repo")
+                && owner.contains("pid 31337")
+                && owner.contains("heartbeat"),
+            "the owner line names the terminal: {text}"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert!(
+            updated.metadata_json.get("retry_count").is_none(),
+            "R3 must never requeue a goal a live terminal owns: {:?}",
+            updated.metadata_json
+        );
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("in_progress"));
+        assert_eq!(
+            updated.metadata_json.get("worker_session_id"),
+            card.metadata_json.get("worker_session_id"),
+            "no new worker may be dispatched over the live one"
+        );
+        let after_decisions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(before_decisions, after_decisions);
+    }
+
+    /// The other side of Hazard A: a LOST lease (the terminal crashed; its
+    /// heartbeat is past the live window) is not ownership, so R3's existing
+    /// recovery still fires exactly as it did before leases existed.
+    #[tokio::test]
+    async fn goal_status_still_recovers_a_goal_whose_terminal_lease_is_lost() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = dead_silent_worker_goal(&pool, &sm, None, 200).await;
+        stamp_meta(
+            &pool,
+            &card.id,
+            "dispatched_lifecycle",
+            "crashed-terminal-lifecycle",
+        )
+        .await;
+        insert_harness_lease(
+            &pool,
+            "crashed-terminal-lifecycle",
+            "turn",
+            crate::harness_lease::LEASE_LIVE_WINDOW_SECS + 30,
+        )
+        .await;
+
+        let client = OrchestratorClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        })
+        .unwrap();
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        client
+            .handle_goal_status(Some(args))
+            .await
+            .expect("goal_status must succeed even when the redispatch cannot");
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("retry_count")
+                .and_then(|v| v.as_u64()),
+            Some(1),
+            "a crashed terminal's goal takes R3's recovery: {:?}",
             updated.metadata_json
         );
     }

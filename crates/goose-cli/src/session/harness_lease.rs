@@ -149,6 +149,27 @@ impl HarnessLease {
         if !wants_harness_lease(coding_harness) {
             return None;
         }
+        Self::start_for_session_with_lifecycle(
+            session_manager,
+            session_id,
+            permagent::agents::platform_extensions::orchestrator::daemon_lifecycle_id(),
+            interactive,
+            recipe_title,
+            timing,
+        )
+        .await
+    }
+
+    /// [`HarnessLease::start_for_session`] for a harness session, with the
+    /// lifecycle id passed in rather than read from the process.
+    async fn start_for_session_with_lifecycle(
+        session_manager: &SessionManager,
+        session_id: &str,
+        lifecycle_id: &str,
+        interactive: bool,
+        recipe_title: Option<&str>,
+        timing: LeaseTiming,
+    ) -> Option<Self> {
         let pool = match session_manager.pool_clone().await {
             Ok(pool) => pool,
             Err(error) => {
@@ -167,9 +188,7 @@ impl HarnessLease {
         let project_id =
             permagent::harness_lease::project_id_for_working_dir(&pool, &session.working_dir).await;
         let start = LeaseStart {
-            lifecycle_id:
-                permagent::agents::platform_extensions::orchestrator::daemon_lifecycle_id()
-                    .to_string(),
+            lifecycle_id: lifecycle_id.to_string(),
             session_id: session_id.to_string(),
             session_name: Some(session.name.clone()).filter(|name| !name.is_empty()),
             working_dir: session.working_dir.to_string_lossy().into_owned(),
@@ -413,4 +432,283 @@ async fn git_toplevel(dir: &std::path::Path) -> Option<String> {
     }
     let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!root.is_empty()).then_some(root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use permagent::config::GooseMode;
+    use permagent::session::session_manager::SessionType;
+    use std::sync::atomic::AtomicI64;
+
+    const HARNESS_TITLE: &str = "Permagent Coding Harness";
+
+    async fn temp_session(dir: &tempfile::TempDir) -> (SessionManager, String) {
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "lease test".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        (sm, session.id)
+    }
+
+    /// A clock that advances one second per read, so each write is distinct
+    /// and ordered without sleeping.
+    fn stepping_clock() -> LeaseClock {
+        let base = DateTime::parse_from_rfc3339("2026-09-17T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ticks = Arc::new(AtomicI64::new(0));
+        Arc::new(move || base + chrono::Duration::seconds(ticks.fetch_add(1, Ordering::SeqCst)))
+    }
+
+    fn quiet_timing() -> LeaseTiming {
+        LeaseTiming {
+            heartbeat_interval: Duration::from_secs(3600),
+            activity_min_gap: Duration::from_secs(3600),
+            clock: stepping_clock(),
+        }
+    }
+
+    #[derive(Debug)]
+    struct Row {
+        lifecycle_id: String,
+        session_id: String,
+        session_name: Option<String>,
+        working_dir: String,
+        mode: String,
+        recipe: Option<String>,
+        pid: i64,
+        phase: String,
+        started_at: String,
+        heartbeat_at: String,
+        last_activity: Option<String>,
+        last_activity_at: Option<String>,
+        ended_at: Option<String>,
+        exit_status: Option<String>,
+    }
+
+    async fn row(pool: &Pool<Sqlite>, lease_id: &str) -> Row {
+        use sqlx::Row as _;
+        let r = sqlx::query(
+            "SELECT lifecycle_id, session_id, session_name, working_dir, mode, recipe, pid, phase,
+                    started_at, heartbeat_at, last_activity, last_activity_at, ended_at, exit_status
+             FROM harness_process_leases WHERE lease_id = ?",
+        )
+        .bind(lease_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        Row {
+            lifecycle_id: r.get("lifecycle_id"),
+            session_id: r.get("session_id"),
+            session_name: r.get("session_name"),
+            working_dir: r.get("working_dir"),
+            mode: r.get("mode"),
+            recipe: r.get("recipe"),
+            pid: r.get("pid"),
+            phase: r.get("phase"),
+            started_at: r.get("started_at"),
+            heartbeat_at: r.get("heartbeat_at"),
+            last_activity: r.get("last_activity"),
+            last_activity_at: r.get("last_activity_at"),
+            ended_at: r.get("ended_at"),
+            exit_status: r.get("exit_status"),
+        }
+    }
+
+    async fn lease_count(pool: &Pool<Sqlite>) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM harness_process_leases")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_non_harness_session_writes_no_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sm, session_id) = temp_session(&dir).await;
+        let lease = HarnessLease::start_for_session(
+            &sm,
+            &session_id,
+            false,
+            true,
+            Some("Some other recipe"),
+            quiet_timing(),
+        )
+        .await;
+        assert!(lease.is_none());
+        let pool = sm.pool_clone().await.unwrap();
+        assert_eq!(lease_count(&pool).await, 0);
+    }
+
+    #[tokio::test]
+    async fn phase_transitions_write_the_expected_rows_into_the_temp_root_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sm, session_id) = temp_session(&dir).await;
+        let lease = HarnessLease::start_for_session_with_lifecycle(
+            &sm,
+            &session_id,
+            "lifecycle-under-test",
+            false,
+            Some(HARNESS_TITLE),
+            quiet_timing(),
+        )
+        .await
+        .expect("a harness session writes a lease");
+        let pool = sm.pool_clone().await.unwrap();
+        assert_eq!(lease_count(&pool).await, 1);
+
+        let started = row(&pool, lease.lease_id()).await;
+        assert_eq!(started.lifecycle_id, "lifecycle-under-test");
+        assert_eq!(started.session_id, session_id);
+        assert_eq!(started.session_name.as_deref(), Some("lease test"));
+        assert_eq!(started.working_dir, dir.path().to_string_lossy());
+        assert_eq!(started.mode, "headless");
+        assert_eq!(started.recipe.as_deref(), Some(HARNESS_TITLE));
+        assert_eq!(started.pid, i64::from(std::process::id()));
+        assert_eq!(started.phase, "starting");
+        assert_eq!(started.heartbeat_at, started.started_at);
+        assert!(started.ended_at.is_none() && started.exit_status.is_none());
+
+        let mut last_beat = started.heartbeat_at.clone();
+        for phase in [LeasePhase::Turn, LeasePhase::Idle, LeasePhase::Draining] {
+            lease.set_phase(phase).await;
+            let now = row(&pool, lease.lease_id()).await;
+            assert_eq!(now.phase, phase.as_str());
+            assert!(
+                now.heartbeat_at > last_beat,
+                "a phase write refreshes the heartbeat"
+            );
+            last_beat = now.heartbeat_at;
+        }
+
+        lease.finish("completed").await;
+        let ended = row(&pool, lease.lease_id()).await;
+        assert_eq!(ended.phase, "exited");
+        assert_eq!(ended.exit_status.as_deref(), Some("completed"));
+        assert!(ended.ended_at.is_some());
+        assert_eq!(
+            permagent::harness_lease::classify_parts(&ended.phase, &ended.heartbeat_at, Utc::now()),
+            permagent::harness_lease::LeaseLiveness::Ended
+        );
+
+        // Exited is final: later phase writes and a second finish change nothing.
+        lease.set_phase(LeasePhase::Turn).await;
+        lease.finish("failed").await;
+        let still = row(&pool, lease.lease_id()).await;
+        assert_eq!(still.phase, "exited");
+        assert_eq!(still.exit_status.as_deref(), Some("completed"));
+        assert_eq!(still.ended_at, ended.ended_at);
+    }
+
+    #[tokio::test]
+    async fn an_interactive_harness_session_records_its_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sm, session_id) = temp_session(&dir).await;
+        let lease = HarnessLease::start_for_session_with_lifecycle(
+            &sm,
+            &session_id,
+            "lifecycle-interactive",
+            true,
+            Some(HARNESS_TITLE),
+            quiet_timing(),
+        )
+        .await
+        .unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+        assert_eq!(row(&pool, lease.lease_id()).await.mode, "interactive");
+        lease.finish("completed").await;
+    }
+
+    #[tokio::test]
+    async fn the_heartbeat_task_advances_heartbeat_at_between_turns_and_stops_at_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sm, session_id) = temp_session(&dir).await;
+        let timing = LeaseTiming {
+            heartbeat_interval: Duration::from_millis(10),
+            activity_min_gap: Duration::from_secs(3600),
+            clock: stepping_clock(),
+        };
+        let lease = HarnessLease::start_for_session_with_lifecycle(
+            &sm,
+            &session_id,
+            "lifecycle-heartbeat",
+            false,
+            Some(HARNESS_TITLE),
+            timing,
+        )
+        .await
+        .unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+        let started = row(&pool, lease.lease_id()).await;
+
+        // No phase write happens here: only the background task can move it.
+        let mut beats = 0;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut last = started.heartbeat_at.clone();
+        while beats < 2 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            let now = row(&pool, lease.lease_id()).await;
+            assert_eq!(
+                now.phase, "starting",
+                "the heartbeat never changes the phase"
+            );
+            if now.heartbeat_at > last {
+                beats += 1;
+                last = now.heartbeat_at;
+            }
+        }
+        assert!(
+            beats >= 2,
+            "the heartbeat task must keep beating on its own"
+        );
+
+        lease.finish("completed").await;
+        let ended = row(&pool, lease.lease_id()).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let later = row(&pool, lease.lease_id()).await;
+        assert_eq!(
+            later.heartbeat_at, ended.heartbeat_at,
+            "no beats after exit"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_activity_is_a_throttled_truncated_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sm, session_id) = temp_session(&dir).await;
+        let lease = HarnessLease::start_for_session_with_lifecycle(
+            &sm,
+            &session_id,
+            "lifecycle-activity",
+            false,
+            Some(HARNESS_TITLE),
+            quiet_timing(),
+        )
+        .await
+        .unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+
+        let long_name: String = "é".repeat(LEASE_ACTIVITY_MAX_CHARS + 20);
+        assert!(lease.record_tool_activity(&long_name).await);
+        let first = row(&pool, lease.lease_id()).await;
+        let stored = first.last_activity.clone().unwrap();
+        assert_eq!(stored.chars().count(), LEASE_ACTIVITY_MAX_CHARS);
+        assert!(first.last_activity_at.is_some());
+
+        assert!(
+            !lease.record_tool_activity("developer__shell").await,
+            "a second call inside the gap is throttled"
+        );
+        let second = row(&pool, lease.lease_id()).await;
+        assert_eq!(second.last_activity, first.last_activity);
+
+        lease.finish("completed").await;
+    }
 }
