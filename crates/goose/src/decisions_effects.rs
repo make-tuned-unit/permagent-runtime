@@ -615,6 +615,36 @@ async fn land_approved_goal(
         (None, "")
     };
 
+    // R62d (A61 Miss 5): a goal `maybe_hold_review` allowed as already
+    // satisfied at its baseline (a genuine verify bound to this attempt,
+    // nothing to commit, the trunk already carrying its files as verified)
+    // has nothing to land by construction. Complete it with the receipt's
+    // honest note and NO landing outcome — never a fabricated "landed" —
+    // instead of parking it for "no commits past the baseline". Only when
+    // the trunk check itself found nothing unlanded, and only while the
+    // receipt still names this worker session at the worktree's current
+    // head.
+    if rolling_commits_empty
+        && trunk_relative_head.is_none()
+        && refusal_reason == "nothing_unlanded"
+    {
+        if let Some(worktree) = worktree_path_hint {
+            if let Some(note) =
+                crate::agents::platform_extensions::orchestrator::already_satisfied_receipt_still_holds(
+                    &card,
+                    std::path::Path::new(worktree),
+                )
+                .await
+            {
+                tracing::info!(
+                    goal_id,
+                    "land_skipped reason=already_satisfied: {note}"
+                );
+                return (None, Some(format!("note: {note}")));
+            }
+        }
+    }
+
     // Missing evidence or empty history cannot establish committed work.
     // Preserve an actionable refusal even if the upstream hold was bypassed.
     if rolling_commits_empty && trunk_relative_head.is_none() {
@@ -3764,6 +3794,186 @@ mod tests {
                 .is_none(),
             "a goal that actually lands must never also be left parked with an unblock decision"
         );
+    }
+
+    /// R62d (A61 Miss 5): the goal `maybe_hold_review` allowed as already
+    /// satisfied at its baseline has nothing to land by construction. The
+    /// approval must complete it with the receipt's honest note and no
+    /// landing outcome, never park it for "no commits past the baseline" —
+    /// but only while the receipt names the card's current worker session;
+    /// a stale receipt still refuses and parks exactly as
+    /// `land_approved_goal_still_refuses_when_nothing_is_unlanded_anywhere`.
+    #[tokio::test]
+    async fn approving_an_already_satisfied_goal_completes_it_without_a_landing() {
+        struct Approved {
+            pool: Pool<Sqlite>,
+            goal_id: String,
+            effect: Option<String>,
+            note: Option<String>,
+            _repo: tempfile::TempDir,
+            _worktrees: tempfile::TempDir,
+        }
+        async fn approve_with_receipt(receipt_session: &str) -> Approved {
+            let (repo, _head) = repo_with_finished_goal_branch();
+            let root = repo.path().to_string_lossy().into_owned();
+            let base_sha = git_in(repo.path(), &["rev-parse", "main"]);
+            let worktrees_root = tempfile::tempdir().unwrap();
+            let worktree_path = worktrees_root.path().join("already-satisfied");
+            git_in(
+                repo.path(),
+                &[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    worktree_path.to_str().unwrap(),
+                    &base_sha,
+                ],
+            );
+            let pool = test_pool().await;
+            let project = crate::projects::create_project(
+                &pool,
+                crate::projects::CreateProject {
+                    name: "Already satisfied test".to_string(),
+                    root_path: Some(root.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            crate::cards::seed_goal_columns(&pool, &project.id)
+                .await
+                .unwrap();
+            let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+                .await
+                .unwrap()
+                .unwrap();
+            let goal = crate::cards::create_card(
+                &pool,
+                crate::cards::CreateCard {
+                    project_id: project.id.clone(),
+                    title: "Goal a sibling already satisfied".to_string(),
+                    description: Some("test".to_string()),
+                    card_type: Some("goal".to_string()),
+                    column_id: Some(review.id),
+                    created_by: None,
+                    metadata_json: Some(serde_json::json!({
+                        "attempt_count": 1,
+                        "goal_state": "review",
+                        "worker_session_id": "sess-current",
+                        "dispatch_evidence": {
+                            "worktree_path": worktree_path.to_string_lossy(),
+                            "baseline_commit": base_sha,
+                            "head_commit": base_sha,
+                            "commits": [],
+                            "verdict": {"status": "pass"},
+                        },
+                        "already_satisfied": {
+                            "note": "already satisfied at baseline: test receipt — nothing was landed for this goal",
+                            "trunk_head": base_sha,
+                            "head": base_sha,
+                            "worker_session_id": receipt_session,
+                            "scope": [],
+                        },
+                    })),
+                },
+            )
+            .await
+            .unwrap();
+            let d = decisions::create_decision(
+                &pool,
+                NewDecision {
+                    kind: "approve_review".to_string(),
+                    goal_id: Some(goal.id.clone()),
+                    project_id: Some(project.id.clone()),
+                    headline: Some("Review the finished work".to_string()),
+                    detail: Some("evidence".to_string()),
+                    payload: serde_json::json!({}),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            decisions::answer_decision(
+                &pool,
+                &d.id,
+                &DecisionAnswer {
+                    answer: "approve".to_string(),
+                    ..Default::default()
+                },
+                ACTOR_JESSE,
+            )
+            .await
+            .unwrap();
+            let answered = decisions::get_decision(&pool, &d.id)
+                .await
+                .unwrap()
+                .unwrap();
+            let proof = DecisionProof::from_answered_row(&answered).unwrap();
+            let (effect, note) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+                .await
+                .unwrap();
+            assert_eq!(
+                git_in(repo.path(), &["rev-parse", "main"]),
+                base_sha,
+                "the trunk never moves: there is nothing to land"
+            );
+            Approved {
+                pool,
+                goal_id: goal.id,
+                effect,
+                note,
+                _repo: repo,
+                _worktrees: worktrees_root,
+            }
+        }
+
+        let Approved {
+            pool,
+            goal_id,
+            effect,
+            note,
+            _repo,
+            _worktrees,
+        } = approve_with_receipt("sess-current").await;
+        let effect = effect.unwrap_or_default();
+        assert!(effect.contains("Review → Complete"), "effect: {effect}");
+        assert!(!effect.contains("parked"), "effect: {effect}");
+        let note = note.expect("the already-satisfied note is reported");
+        assert!(
+            note.contains("already satisfied at baseline"),
+            "note: {note}"
+        );
+        assert_eq!(goal_state_of(&pool, &goal_id).await, "complete");
+        let card = crate::cards::get_card(&pool, &goal_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            card.metadata_json
+                .pointer("/dispatch_evidence/landing")
+                .is_none(),
+            "no landing receipt of any kind is fabricated"
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &goal_id, "unblock")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let Approved {
+            pool,
+            goal_id,
+            effect,
+            note,
+            _repo,
+            _worktrees,
+        } = approve_with_receipt("sess-an-earlier-attempt").await;
+        assert!(effect.unwrap_or_default().contains("parked"));
+        assert!(note
+            .unwrap_or_default()
+            .contains("no commits past the baseline"));
+        assert_eq!(goal_state_of(&pool, &goal_id).await, "failed");
     }
 
     /// R43a (A38 Miss 2): the override above must still refuse when there is

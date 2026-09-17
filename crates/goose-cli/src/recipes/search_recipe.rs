@@ -201,5 +201,14 @@ mod tests {
             "coding recipe must route a review request to a one-goal read-only roadmap, not an \
              inline prose review"
         );
+        // R56a: a write-scope refusal is transient and self-clearing. The
+        // coordinator that escalates it burns the run's one escalation and
+        // ends parked with the sibling never dispatched.
+        assert!(
+            instructions.contains("write scope conflicts with active goal")
+                && instructions.contains("is a WAIT"),
+            "coding recipe must tell the coordinator a write-scope refusal is a wait, not an \
+             escalation"
+        );
     }
 }

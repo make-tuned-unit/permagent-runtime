@@ -116,6 +116,10 @@ instructions: |
      reason out the full implementation in your own context — you decompose, route,
      dispatch, review and land. If you notice yourself drafting code or a
      step-by-step fix, stop and dispatch that goal.
+     A dispatch refused with "write scope conflicts with active goal" is a WAIT,
+     not a blocker: the daemon starts that card by itself once the conflicting
+     goal leaves InProgress. Say so and carry on — never escalate it, and never
+     re-issue the identical dispatch.
   5. Finish only after the roadmap's required checks and review evidence pass.
      Do not work around a denied direct tool call or tell the user to edit.
   6. Never end a turn without a roadmap having been created THROUGH THE TOOL,

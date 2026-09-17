@@ -1755,6 +1755,80 @@ fn merge_call_site_fan_out_goals(
     (merged, merged_away)
 }
 
+/// R56a: the most real files a DERIVED write scope may claim for one goal.
+/// A card whose own text names more paths than this is describing a sweep,
+/// not a scoped edit, and the derivation declines rather than claiming a
+/// broad scope on the planner's behalf.
+const DERIVED_WRITE_SCOPE_MAX_PATHS: usize = 8;
+
+/// R56a (harness loop, held-out fixture `select-failing-test-decompose-
+/// before-create`): derive a per-goal [`write_scope::WRITE_SCOPE_KEY`] from
+/// the real files each goal's own title/description names, but ONLY when the
+/// whole proposal is unambiguous.
+///
+/// The defect this closes: nothing in the pipeline ever wrote a
+/// `write_scope` onto a goal card. `write_scope::metadata_conflict` treats a
+/// missing scope as unproven — correct, since a worktree isolates branches,
+/// not merge collisions — so the SECOND root goal of any multi-root roadmap
+/// was refused dispatch against the first ("write scope is missing or empty
+/// for a non-read-only node") for as long as the first stayed InProgress,
+/// even when the two cards name different files. The planner cannot fix this
+/// itself: `ProposedGoal` has no metadata field for a model to fill in.
+///
+/// Deliberately conservative, because an under-claimed scope is what lets two
+/// workers collide:
+/// - at least two goals, and a non-empty `RepoFacts` file list (no facts,
+///   no proof — decline);
+/// - EVERY goal must name at least one file that actually exists here
+///   (`goal_named_files`, title+description only: acceptance criteria are
+///   excluded on purpose, since disjoint cards routinely share one test
+///   oracle they never write);
+/// - each goal's set is bounded by [`DERIVED_WRITE_SCOPE_MAX_PATHS`];
+/// - every path is normalized and validated by the SAME
+///   [`write_scope::declared_write_scope`] the dispatcher parses with, so a
+///   derived value can never turn a dispatch into a metadata error;
+/// - the sets must be pairwise non-overlapping under the dispatcher's own
+///   [`write_scope::scopes_overlap`] rule (directory claims descendants).
+///
+/// Any failure declines for the WHOLE proposal — a half-stamped roadmap
+/// would prove nothing, since an undeclared sibling still serializes
+/// everything. Overlapping-file goals never reach here as separate cards
+/// anyway: `merge_overlapping_file_goals` above has already coalesced them.
+///
+/// Returns goal-index -> normalized scope. The caller stamps it only where a
+/// card has no declared scope of its own, so this can never widen one.
+pub(crate) fn derive_disjoint_write_scopes(
+    goals: &[goal_state::ProposedGoal],
+    facts: &RepoFacts,
+) -> std::collections::BTreeMap<usize, Vec<String>> {
+    if goals.len() < 2 || facts.files.is_empty() {
+        return std::collections::BTreeMap::new();
+    }
+    let mut scopes: Vec<Vec<String>> = Vec::with_capacity(goals.len());
+    for goal in goals {
+        let named: Vec<String> = goal_named_files(goal, facts).into_iter().collect();
+        if named.is_empty() || named.len() > DERIVED_WRITE_SCOPE_MAX_PATHS {
+            return std::collections::BTreeMap::new();
+        }
+        // Normalize through the dispatcher's own parser, never a second
+        // notion of what a valid repository-relative path is.
+        let key = super::write_scope::WRITE_SCOPE_KEY;
+        let candidate = serde_json::json!({ key: named });
+        match super::write_scope::declared_write_scope(&candidate) {
+            Ok(Some(paths)) if !paths.is_empty() => scopes.push(paths),
+            _ => return std::collections::BTreeMap::new(),
+        }
+    }
+    for (i, left) in scopes.iter().enumerate() {
+        for right in scopes.iter().skip(i + 1) {
+            if super::write_scope::scopes_overlap(left, right) {
+                return std::collections::BTreeMap::new();
+            }
+        }
+    }
+    scopes.into_iter().enumerate().collect()
+}
+
 /// True when `token` is shaped like a filename (`word.ext`, a short
 /// alphanumeric extension) — the R52b "mechanical call-site" merge below
 /// masks these out of a goal's title/description before comparing two
@@ -2367,7 +2441,253 @@ pub(crate) fn ground_roadmap_goals(
         }
     }
 
+    // R62c (R56a root cause 3, option (b)): LAST, after every per-goal
+    // criteria rewrite above, so `ground_acceptance_criteria`'s empty-list
+    // fallback can never re-add the oracle this moves.
+    if goals.len() > 1 {
+        receipts.extend(chain_goals_sharing_a_whole_suite_oracle(&mut goals, facts));
+    }
+
     (goals, receipts)
+}
+
+/// Normalised comparison key for "the same acceptance criterion" across
+/// goals: case, surrounding whitespace, internal whitespace runs and a
+/// trailing full stop are not a difference.
+fn shared_criterion_key(criterion: &str) -> String {
+    criterion
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches('.')
+        .to_lowercase()
+}
+
+/// R62c: does `criterion` run a whole test suite command — command-shaped
+/// (names a detected check command, quotes a command in backticks, reads
+/// "run …", or claims an exit status / "passes") AND test-shaped? Only such
+/// a criterion is a candidate oracle for
+/// [`chain_goals_sharing_a_whole_suite_oracle`]; prose ("all tests still
+/// pass") and build-only commands are left alone.
+fn is_whole_suite_command_criterion(criterion: &str, facts: &RepoFacts) -> bool {
+    let lower = criterion.trim().to_lowercase();
+    if lower.starts_with(&UNVERIFIED_CRITERION_PREFIX.to_lowercase())
+        || lower.starts_with(PROBE_FILE_EXISTS_PREFIX)
+        || lower.starts_with(PROBE_SYMBOL_DEFINED_PREFIX)
+    {
+        return false;
+    }
+    let names_check = facts
+        .check_commands
+        .iter()
+        .any(|check| !check.is_empty() && lower.contains(&check.to_lowercase()));
+    let command_shaped = names_check
+        || lower.contains('`')
+        || lower.starts_with("run ")
+        || lower.starts_with(PROBE_COMMAND_PREFIX)
+        || lower.contains(" exits")
+        || lower.contains("exit code")
+        || lower.contains(" passes");
+    let test_shaped = lower.contains("test") || lower.contains("jest");
+    command_shaped && test_shaped
+}
+
+/// R62c: the scoped probe(s) an earlier card of a shared-oracle chain gets
+/// when moving the oracle would leave it with no acceptance criterion at
+/// all — a check it can pass in its own worktree without its siblings'
+/// fixes. Built only from real files the card's own title/description
+/// names ([`goal_named_files`]), non-test files preferred, at most three,
+/// rendered in R21b's `probe:*` grammar so `verify` runs them as real
+/// checks. Empty when the card names no usable file (the caller then
+/// declines to move the oracle).
+fn scoped_probes_for_chained_goal(
+    goal: &goal_state::ProposedGoal,
+    facts: &RepoFacts,
+    oracle: &str,
+    last_title: &str,
+) -> Vec<String> {
+    let path_is_plain = |path: &str| {
+        !path.is_empty()
+            && path
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-'))
+    };
+    let is_test_file = |path: &str| {
+        let name = path.rsplit('/').next().unwrap_or(path).to_lowercase();
+        name.starts_with("test_")
+            || name.contains("_test.")
+            || name.contains(".test.")
+            || name.contains(".spec.")
+            || path.to_lowercase().split('/').any(|seg| seg == "tests")
+    };
+    let mut named: Vec<String> = goal_named_files(goal, facts)
+        .into_iter()
+        .filter(|path| path_is_plain(path))
+        .collect();
+    named.sort();
+    let non_test: Vec<String> = named
+        .iter()
+        .filter(|path| !is_test_file(path))
+        .cloned()
+        .collect();
+    let files = if non_test.is_empty() { named } else { non_test };
+    let has_cargo = facts.manifests.iter().any(|m| m == "Cargo.toml");
+    let note = format!(
+        "a check this card can pass on its own; the shared suite check \"{oracle}\" runs on \
+         '{last_title}', which depends on this card (R62c)"
+    );
+    let mut probes: Vec<String> = Vec::new();
+    for path in files.iter().take(3) {
+        let extension = path.rsplit('.').next().unwrap_or("").to_lowercase();
+        let shape = match extension.as_str() {
+            "py" => ProbeShape::Command {
+                cmd: format!("python3 -m py_compile {path}"),
+            },
+            "js" | "mjs" | "cjs" => ProbeShape::Command {
+                cmd: format!("node --check {path}"),
+            },
+            "sh" | "bash" => ProbeShape::Command {
+                cmd: format!("bash -n {path}"),
+            },
+            "rs" if has_cargo => ProbeShape::Command {
+                cmd: "cargo check".to_string(),
+            },
+            _ => ProbeShape::FileExists { path: path.clone() },
+        };
+        let probe = format!("{} — {note}", shape.render());
+        if !probes.contains(&probe) {
+            probes.push(probe);
+        }
+    }
+    probes
+}
+
+/// R62c (R56a root cause 3, option (b); A61 Miss 5, s4
+/// `select-failing-test-decompose-before-create`; r58 q3): two or more
+/// file-disjoint goals that each carry the SAME whole-suite acceptance
+/// criterion (`python3 test_checkout.py exits with code 0`) can never each
+/// pass it: every goal runs in its own worktree off trunk with only its own
+/// fix, and the suite asserts all of them. Both roots held, burned their
+/// attempts and parked, whether serialized or parallel.
+///
+/// Rather than merge them (which the protected invariant
+/// `ground_roadmap_goals_keeps_a_split_when_every_goal_names_a_real_file`
+/// forbids), chain them: in the roadmap's own topological order, each
+/// member gains a `depends_on` on the previous member, and the shared
+/// criterion stays only on the LAST member, which starts on a trunk that
+/// already carries every earlier fix. An earlier member keeps its other
+/// criteria; if moving the oracle would leave it none, it gets
+/// [`scoped_probes_for_chained_goal`]. When some earlier member would be
+/// left with nothing and no probe can be derived, the group is left exactly
+/// as proposed (and the receipt says so) — never a card with no check.
+/// Edges only ever point forward in one fixed topological order, so the
+/// roadmap stays acyclic; a proposal that is already cyclic is untouched
+/// (validation rejects it right after grounding). Returns one receipt per
+/// group changed or declined.
+fn chain_goals_sharing_a_whole_suite_oracle(
+    goals: &mut [goal_state::ProposedGoal],
+    facts: &RepoFacts,
+) -> Vec<String> {
+    let mut receipts = Vec::new();
+    let Ok(order) = goal_state::topological_order(goals) else {
+        return receipts;
+    };
+    let mut position = vec![0usize; goals.len()];
+    for (pos, &index) in order.iter().enumerate() {
+        position[index] = pos;
+    }
+    // Candidate oracles in first-appearance order, one entry per key, with
+    // the text as first written (for the receipt and the probe note).
+    let mut oracles: Vec<(String, String)> = Vec::new();
+    for goal in goals.iter() {
+        for criterion in &goal.acceptance_criteria {
+            let key = shared_criterion_key(criterion);
+            if is_whole_suite_command_criterion(criterion, facts)
+                && !oracles.iter().any(|(k, _)| *k == key)
+            {
+                oracles.push((key, criterion.clone()));
+            }
+        }
+    }
+    for (key, oracle) in oracles {
+        let mut members: Vec<usize> = (0..goals.len())
+            .filter(|&i| {
+                goals[i]
+                    .acceptance_criteria
+                    .iter()
+                    .any(|c| shared_criterion_key(c) == key)
+            })
+            .collect();
+        if members.len() < 2 {
+            continue;
+        }
+        members.sort_by_key(|&i| position[i]);
+        let Some((&last, earlier)) = members.split_last() else {
+            continue;
+        };
+        let last_title = goals[last].title.clone();
+        let mut additions: Vec<(usize, Vec<String>)> = Vec::new();
+        let mut declined_for: Option<String> = None;
+        for &i in earlier {
+            let keeps_another = goals[i]
+                .acceptance_criteria
+                .iter()
+                .any(|c| shared_criterion_key(c) != key);
+            if keeps_another {
+                continue;
+            }
+            let probes = scoped_probes_for_chained_goal(&goals[i], facts, &oracle, &last_title);
+            if probes.is_empty() {
+                declined_for = Some(goals[i].title.clone());
+                break;
+            }
+            additions.push((i, probes));
+        }
+        if let Some(title) = declined_for {
+            tracing::info!(
+                target: "permagentd::orchestrator",
+                members = members.len(),
+                "decompose_shared_oracle_chain_declined=1"
+            );
+            receipts.push(format!(
+                "{} goal(s) share the whole-suite check \"{oracle}\", which none of them can pass \
+                 alone in its own worktree, but '{title}' has no other criterion and names no file \
+                 to give it a scoped one — left as proposed (decompose_shared_oracle_chain_declined=1)",
+                members.len()
+            ));
+            continue;
+        }
+        for (i, probes) in additions {
+            goals[i].acceptance_criteria.extend(probes);
+        }
+        for &i in earlier {
+            goals[i]
+                .acceptance_criteria
+                .retain(|c| shared_criterion_key(c) != key);
+        }
+        for pair in members.windows(2) {
+            let (previous, next) = (pair[0], pair[1]);
+            if !goals[next].depends_on.contains(&previous) {
+                goals[next].depends_on.push(previous);
+            }
+        }
+        tracing::info!(
+            target: "permagentd::orchestrator",
+            members = members.len(),
+            "decompose_chained_shared_oracle={}",
+            members.len()
+        );
+        let titles: Vec<String> = members.iter().map(|&i| goals[i].title.clone()).collect();
+        receipts.push(format!(
+            "chained {} goal(s) that each named the whole-suite check \"{oracle}\" ({}): no one \
+             of them can pass it alone in its own worktree, so each now depends on the one before \
+             and the check stays only on '{last_title}' (decompose_chained_shared_oracle={})",
+            members.len(),
+            titles.join(" -> "),
+            members.len()
+        ));
+    }
+    receipts
 }
 
 // ── R21b: create_roadmap-time acceptance-criteria validation ────────────
@@ -3845,6 +4165,7 @@ async fn materialize_roadmap_transaction(
         session_mode,
         calling_session_id,
         &std::collections::BTreeMap::new(),
+        &std::collections::BTreeMap::new(),
     )
     .await
 }
@@ -3889,6 +4210,13 @@ async fn materialize_roadmap_transaction_with_budget(
     // that path (both `#[cfg(test)]` callers, and a `create_roadmap` call
     // whose AC was already grounded).
     ac_rewrite_notes: &std::collections::BTreeMap<usize, Vec<String>>,
+    // R56a: goal-index -> the write scope `derive_disjoint_write_scopes`
+    // proved for this proposal, stamped onto each card below so the
+    // dispatcher can prove two roots are file-disjoint instead of
+    // serializing them. Empty for every caller that has no repo facts to
+    // derive from (both `#[cfg(test)]` callers, a single-goal roadmap, a
+    // proposal whose goals do not each name one real file).
+    derived_write_scopes: &std::collections::BTreeMap<usize, Vec<String>>,
 ) -> Result<RoadmapMaterialization, String> {
     validate_roadmap_goals(goals)?;
     let mut tx = pool
@@ -4103,6 +4431,19 @@ async fn materialize_roadmap_transaction_with_budget(
         if let Some(notes) = ac_rewrite_notes.get(&idx) {
             meta.insert("ac_rewritten".to_string(), serde_json::json!(true));
             meta.insert("ac_rewritten_notes".to_string(), serde_json::json!(notes));
+        }
+        // R56a: the derived, proven-disjoint write scope (see
+        // `derive_disjoint_write_scopes`). Inserted only when this card has
+        // no scope of its own, so a declared scope is never widened — today
+        // `meta` is built fresh here and nothing else writes the key, and the
+        // guard keeps that true if a future caller starts declaring one.
+        if let Some(paths) = derived_write_scopes.get(&idx) {
+            if !paths.is_empty() && !meta.contains_key(super::write_scope::WRITE_SCOPE_KEY) {
+                meta.insert(
+                    super::write_scope::WRITE_SCOPE_KEY.to_string(),
+                    serde_json::json!(paths),
+                );
+            }
         }
         let card_id = cards::create_goal_card_in_tx(
             &mut tx,
@@ -6531,6 +6872,24 @@ async fn finalize_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, state:
     }
 }
 
+/// The one phrase a write-scope dispatch refusal is recognised by (R56a).
+/// Written into the refusal built in `dispatch_goal_to` and matched by
+/// [`refusal_is_scope_wait`], so the drain's "this is a WAIT, not a terminal
+/// refusal" test can never drift from the text that triggers it.
+pub(crate) const WRITE_SCOPE_CONFLICT_REFUSAL: &str = "write scope conflicts with active goal";
+
+/// R56a: true when a dispatch refusal says only "another goal currently
+/// holds the write scope" — a transient, self-clearing condition, not a
+/// verdict about this goal. Nothing was started, no worker or model budget
+/// was spent, and the same card becomes dispatchable the moment the
+/// conflicting goal leaves `in_progress`. The drain therefore retries it on
+/// a later poll instead of charging it a re-dispatch attempt (which,
+/// at the default budget of 2, otherwise burned the card's whole allowance
+/// on refusals before the conflict could clear).
+pub(crate) fn refusal_is_scope_wait(dispatch_error: &str) -> bool {
+    dispatch_error.contains(WRITE_SCOPE_CONFLICT_REFUSAL)
+}
+
 /// Refuse a parallel dispatch when a ready goal's declared write scope
 /// overlaps an in-flight sibling in the same project. Worktrees isolate
 /// branches, not merge conflicts; this gate keeps independent nodes parallel
@@ -6563,7 +6922,7 @@ async fn write_scope_conflict(
             .map_err(|e| format!("active goal {active_id} has invalid metadata: {e}"))?;
         if let Some(reason) = super::write_scope::metadata_conflict(candidate_meta, &metadata)? {
             return Ok(Some(format!(
-                "write scope conflicts with active goal '{title}' ({active_id}): {reason}"
+                "{WRITE_SCOPE_CONFLICT_REFUSAL} '{title}' ({active_id}): {reason}"
             )));
         }
     }
@@ -11071,6 +11430,19 @@ impl OrchestratorClient {
         // finding 3) so a proof minted in one Auto session cannot be consumed
         // by a different Auto session in the same project.
         let calling_session_id = self.context.session.as_ref().map(|s| s.id.as_str());
+        // R56a: derived from the FINAL goals (after the AC revalidation
+        // above may have rewritten them), against the same `facts` that pass
+        // used. A machine diagnostic, so it goes to tracing only — never
+        // into the user-visible note this call returns.
+        let derived_write_scopes = derive_disjoint_write_scopes(&goals, &facts);
+        if !derived_write_scopes.is_empty() {
+            tracing::info!(
+                target: "permagentd::orchestrator",
+                goals = derived_write_scopes.len(),
+                "create_roadmap_derived_write_scopes={}",
+                derived_write_scopes.len()
+            );
+        }
         let materialized = materialize_roadmap_transaction_with_budget(
             &pool,
             &project.id,
@@ -11083,6 +11455,7 @@ impl OrchestratorClient {
             session_mode,
             calling_session_id,
             &ac_rewrite_notes,
+            &derived_write_scopes,
         )
         .await?;
 
@@ -15018,6 +15391,206 @@ fn wall_budget_exhausted_refusal(metadata: &serde_json::Value) -> Option<WallBud
     })
 }
 
+/// Mint the `approve_review` decision for a goal that has just reached
+/// Review: headline, evidence-citing detail, publish-sequence note, the
+/// optional parallel review fan-out, and (in a headless auto-land run) the
+/// V2 `minting_session_id` binding. Returns the decision together with the
+/// refreshed card it was built from. Extracted from
+/// [`handle_goal_completion`] (R62c) so the drain's orphaned-Review adoption
+/// ([`adopt_orphaned_review`]) mints exactly the same decision rather than a
+/// second, drifting copy.
+async fn mint_approve_review_decision(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    card: &cards::Card,
+    coordinator_session_id: Option<&str>,
+) -> Result<(decisions::Decision, cards::Card), String> {
+    let headline = format!("Review the finished work on \"{}\"", card.title);
+    let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
+        let cut: String = headline
+            .chars()
+            .take(decisions::MAX_HEADLINE_CHARS - 1)
+            .collect();
+        format!("{}…", cut)
+    } else {
+        headline
+    };
+    // Layer 1: cite the deterministic evidence the tracker just
+    // persisted, so the decision itself carries proof-of-work
+    // (commit SHA, push target, diffstat) rather than a bare
+    // "reported success". The full structured evidence lives on the
+    // card metadata (`dispatch_evidence`) where the Evidence panel
+    // and Discuss-with-Henry read it; the decision payload carries
+    // only the schema's `completion_check` line (ApproveReviewPayload
+    // is deny_unknown_fields). Absent evidence (in-process subagent,
+    // pre-existing goals) falls back to the original wording / `{}`.
+    let project = crate::projects::get_project(pool, project_id)
+        .await
+        .ok()
+        .flatten();
+    // Lane R21a: `maybe_hold_review` above may have just persisted
+    // a read-only review receipt straight to the DB — `card` here
+    // is a snapshot from before that call, so refresh it (falling
+    // back to the stale copy on a read failure, which only means
+    // the decision detail below omits the receipt, never a hard
+    // failure of the completion itself).
+    let card = cards::get_card(pool, card_id)
+        .await
+        .ok()
+        .flatten()
+        // Clone rather than move: `card` is the caller's borrowed snapshot.
+        .unwrap_or_else(|| card.clone());
+    let evidence = card.metadata_json.get("dispatch_evidence");
+    let read_only_review = card.metadata_json.get("read_only_review");
+    let mut detail = build_review_detail(card_id, evidence, read_only_review);
+    // Publish sequence (#457): when the project declares ordered
+    // post-push steps, the review decision must say push ≠ live —
+    // the daemon has not run the sequence, so approving does not
+    // make the change user-visible. Best-effort: a project-load
+    // failure only drops the note, never the decision.
+    if let Some(note) = project
+        .as_ref()
+        .map(|p| publish_sequence::parse_publish_sequence(&p.metadata_json))
+        .as_deref()
+        .and_then(publish_sequence::review_pending_note)
+    {
+        detail = format!("{detail}\n\n{note}");
+    }
+    let project_meta = project
+        .as_ref()
+        .map(|p| p.metadata_json.clone())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if super::review_fanout::is_enabled(&card.metadata_json, &project_meta) {
+        let folded = super::review_fanout::run_parallel_reviews(&card).await;
+        detail = super::review_fanout::append_to_detail(&detail, &folded);
+    }
+    let mut payload = match evidence.and_then(format_dispatch_evidence_brief) {
+        Some(proof) => serde_json::json!({ "completion_check": proof }),
+        None => serde_json::json!({}),
+    };
+    // Harness loop, Lane V2: stamp the coordinator session onto
+    // the decision BEFORE it is ever answered, reusing R2's
+    // `minting_session_id` binding — this is the only place that
+    // ever writes this field, so `check_proof`'s Tier-1 arm can
+    // later confirm an `ACTOR_AUTO_LAUNCH` answer is being
+    // consumed by the exact session it was minted for, not some
+    // other headless session in the same process. The caller reads
+    // it from the installed headless config (never re-derived from
+    // `policy`, which does not cross into a detached tracker task)
+    // and passes `None` outside a headless auto-land run.
+    if let Some(session_id) = coordinator_session_id {
+        payload["minting_session_id"] = serde_json::json!(session_id);
+    }
+    let decision = create_decision_with_retry(
+        pool,
+        decisions::NewDecision {
+            kind: "approve_review".to_string(),
+            goal_id: Some(card_id.to_string()),
+            project_id: Some(project_id.to_string()),
+            headline: Some(headline),
+            detail: Some(detail),
+            payload,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok((decision, card))
+}
+
+/// R62c (r61 s1 `harness-testfix-inventory-suite-green`, M46): adopt a goal
+/// that reached Review without ever passing through
+/// [`handle_goal_completion`]'s Review arm, so the headless auto-land it
+/// should have had actually runs.
+///
+/// The shape: the coordinator called `goal_advance{action: review}` while
+/// the goal's worker was still live (audit `transition:review`
+/// 02:49:37.878; the worker's session ended 02:49:49 and its teardown
+/// checkpoint committed 02:49:50). That manual path moves the card to Review
+/// but mints no `approve_review` decision and never auto-lands; the worker's
+/// own completion handler then found the card "not in_progress — manual
+/// intervention assumed" and skipped. Nothing was left that would ever act
+/// on the card, so the drain parked nothing (`handle_goal_timeout` no-ops on
+/// Review), went idle and exited with most of its wall budget unused:
+/// `0 goal(s) finished, 1 still running at exit`, commit 0669b43 never
+/// landed, oracle failed. Waiting longer could not have helped — no reviewer
+/// or auto-land was running.
+///
+/// Narrow on purpose: only a card for which NO `approve_review` decision was
+/// ever minted (open, answered or superseded). A card whose completion
+/// handler already minted one and whose auto-land deliberately left it open
+/// (e.g. an unresolved UNVERIFIED criterion) is never retried here. The
+/// decision is minted by the same [`mint_approve_review_decision`] the
+/// completion handler uses, and the landing goes through the same
+/// [`auto_land_headless_goal`] gates (verify evidence, vacuous refusal,
+/// read-only and salvage rules) — this adds a caller, never a looser gate.
+/// Returns `true` when it minted a decision and ran the auto-land.
+async fn adopt_orphaned_review(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    coordinator_session_id: &str,
+) -> bool {
+    let Ok(Some(card)) = cards::get_card(pool, card_id).await else {
+        return false;
+    };
+    let minted: Result<i64, sqlx::Error> = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM decisions WHERE goal_id = ? AND kind = 'approve_review'",
+    )
+    .bind(card_id)
+    .fetch_one(pool)
+    .await;
+    match minted {
+        Ok(0) => {}
+        Ok(_) => return false,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                "drain could not check for an approve_review decision on a Review goal: {e}"
+            );
+            return false;
+        }
+    }
+    match mint_approve_review_decision(
+        pool,
+        card_id,
+        project_id,
+        &card,
+        Some(coordinator_session_id),
+    )
+    .await
+    {
+        Ok((decision, card)) => {
+            tracing::info!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                decision_id = %decision.id,
+                "drain adopted an orphaned Review goal: no completion handler surfaced it, \
+                 minted its approve_review and ran the headless auto-land"
+            );
+            auto_land_headless_goal(
+                pool,
+                &decision.id,
+                &card,
+                true,
+                Some(coordinator_session_id),
+            )
+            .await;
+            true
+        }
+        Err(e) => {
+            tracing::error!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                "drain found an orphaned Review goal but could not mint its approve_review: {e}"
+            );
+            record_decision_create_failure(pool, card_id, "approve_review", &e).await;
+            false
+        }
+    }
+}
+
 pub async fn handle_goal_completion(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
@@ -15104,113 +15677,20 @@ pub async fn handle_goal_completion(
                 .await?
                 .is_none()
             {
-                let headline = format!("Review the finished work on \"{}\"", card.title);
-                let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
-                    let cut: String = headline
-                        .chars()
-                        .take(decisions::MAX_HEADLINE_CHARS - 1)
-                        .collect();
-                    format!("{}…", cut)
-                } else {
-                    headline
-                };
-                // Layer 1: cite the deterministic evidence the tracker just
-                // persisted, so the decision itself carries proof-of-work
-                // (commit SHA, push target, diffstat) rather than a bare
-                // "reported success". The full structured evidence lives on the
-                // card metadata (`dispatch_evidence`) where the Evidence panel
-                // and Discuss-with-Henry read it; the decision payload carries
-                // only the schema's `completion_check` line (ApproveReviewPayload
-                // is deny_unknown_fields). Absent evidence (in-process subagent,
-                // pre-existing goals) falls back to the original wording / `{}`.
-                let project = crate::projects::get_project(pool, project_id)
-                    .await
-                    .ok()
-                    .flatten();
-                // Lane R21a: `maybe_hold_review` above may have just persisted
-                // a read-only review receipt straight to the DB — `card` here
-                // is a snapshot from before that call, so refresh it (falling
-                // back to the stale copy on a read failure, which only means
-                // the decision detail below omits the receipt, never a hard
-                // failure of the completion itself).
-                let card = cards::get_card(pool, card_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    // Clone rather than move: this shadowing binding is scoped
-                    // to this block, and the OUTER `card` is still read further
-                    // down (the "moved to Review" log line).
-                    .unwrap_or_else(|| card.clone());
-                let evidence = card.metadata_json.get("dispatch_evidence");
-                let read_only_review = card.metadata_json.get("read_only_review");
-                let mut detail = build_review_detail(card_id, evidence, read_only_review);
-                // Publish sequence (#457): when the project declares ordered
-                // post-push steps, the review decision must say push ≠ live —
-                // the daemon has not run the sequence, so approving does not
-                // make the change user-visible. Best-effort: a project-load
-                // failure only drops the note, never the decision.
-                if let Some(note) = project
-                    .as_ref()
-                    .map(|p| publish_sequence::parse_publish_sequence(&p.metadata_json))
-                    .as_deref()
-                    .and_then(publish_sequence::review_pending_note)
-                {
-                    detail = format!("{detail}\n\n{note}");
-                }
-                let project_meta = project
-                    .as_ref()
-                    .map(|p| p.metadata_json.clone())
-                    .unwrap_or_else(|| serde_json::json!({}));
-                if super::review_fanout::is_enabled(&card.metadata_json, &project_meta) {
-                    let folded = super::review_fanout::run_parallel_reviews(&card).await;
-                    detail = super::review_fanout::append_to_detail(&detail, &folded);
-                }
-                let mut payload = match evidence.and_then(format_dispatch_evidence_brief) {
-                    Some(proof) => serde_json::json!({ "completion_check": proof }),
-                    None => serde_json::json!({}),
-                };
-                // Harness loop, Lane V2: stamp the coordinator session onto
-                // the decision BEFORE it is ever answered, reusing R2's
-                // `minting_session_id` binding — this is the only place that
-                // ever writes this field, so `check_proof`'s Tier-1 arm can
-                // later confirm an `ACTOR_AUTO_LAUNCH` answer is being
-                // consumed by the exact session it was minted for, not some
-                // other headless session in the same process. Read directly
-                // from the installed config (never re-derived from `policy`,
-                // which does not cross into this detached tracker task) —
-                // `headless_auto_land` is only ever `true` when this exact
-                // config is the one that produced it, and every
-                // `handle_goal_completion` test passes `headless_auto_land:
-                // false`, so this global is never touched from a test.
-                let coordinator_session_id = if headless_auto_land {
-                    HEADLESS_DISPATCH_POLICY_CONFIG
-                        .get()
-                        .map(|c| c.coordinator_session_id.clone())
-                } else {
-                    None
-                };
-                if let Some(session_id) = coordinator_session_id.as_deref() {
-                    payload["minting_session_id"] = serde_json::json!(session_id);
-                }
                 // The goal has already moved to Review — a failure to surface
                 // it in the inbox must not fail (or retry) the completion, but
                 // it MUST be visible: retry once, then error-log + durable
                 // metadata trace (bug-sweep wave 1; was `let _ =`).
-                match create_decision_with_retry(
+                match mint_approve_review_decision(
                     pool,
-                    decisions::NewDecision {
-                        kind: "approve_review".to_string(),
-                        goal_id: Some(card_id.to_string()),
-                        project_id: Some(project_id.to_string()),
-                        headline: Some(headline),
-                        detail: Some(detail),
-                        payload,
-                        ..Default::default()
-                    },
+                    card_id,
+                    project_id,
+                    &card,
+                    coordinator_session_id.as_deref(),
                 )
                 .await
                 {
-                    Ok(decision) => {
+                    Ok((decision, card)) => {
                         // Harness loop, Lane V (V1): only a headless Auto
                         // dispatch (see this function's own doc comment) ever
                         // attempts this — every other caller passes `false`
@@ -16553,6 +17033,9 @@ pub async fn drain_dispatched_goals(
             dispatch: dispatch_hook.as_deref(),
             max_redispatch: headless_max_redispatch_from_env(),
             sweep_headroom: headless_sweep_headroom_from_env(),
+            auto_land: HEADLESS_DISPATCH_POLICY_CONFIG.get().is_some_and(|config| {
+                config.auto_land && config.coordinator_session_id == coordinator_session_id
+            }),
         },
     )
     .await
@@ -16575,6 +17058,12 @@ pub(crate) struct DrainRedispatch<'a> {
     /// can pin it exactly, with no process-global env race against the other
     /// drain tests. `Duration::ZERO` = never stand down (Y6's behaviour).
     pub sweep_headroom: std::time::Duration,
+    /// R62c: headless auto-land is on for THIS coordinator's installed
+    /// policy, so the drain may adopt a Review card no completion handler
+    /// surfaced ([`adopt_orphaned_review`]). Carried here, not read from the
+    /// `OnceLock` inside the loop, so a test pins it without touching
+    /// process-global state.
+    pub auto_land: bool,
 }
 
 /// Future returned by a [`DrainIterationHook`] — same shape as
@@ -16665,30 +17154,143 @@ pub(crate) fn median_duration(durations: &[std::time::Duration]) -> Option<std::
     Some(sorted[sorted.len() / 2])
 }
 
+/// Why the drain's sweep is starting a card — which allowance the dispatch
+/// spends (R62c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DrainDispatchKind {
+    /// An ordinary re-dispatch, counted against the per-card
+    /// `max_redispatch` budget (Y6).
+    Budgeted,
+    /// R62c: the one automatic continuation R18g's headless unblock granted
+    /// this goal. It is its own single dispatch: it neither checks nor
+    /// spends the re-dispatch budget, because the unblock is exactly the
+    /// case where that budget was already spent getting here (A61 Miss 4:
+    /// two drain re-dispatches, then `headless_unblock` + `requeue`, and no
+    /// fifth session ever started).
+    UnblockContinuation,
+    /// R62c: a goal of this run that has never been dispatched at all, given
+    /// one first dispatch when the drain would otherwise quiesce, even if
+    /// refusals already spent its budget (A61 Miss 1: the drain quit with
+    /// 480 s of its 540 s cap left while `e406` was `never_dispatched`).
+    FirstDispatch,
+}
+
+/// What the drain's sweep has already spent in this drain, per card.
+#[derive(Debug, Default)]
+pub(crate) struct DrainSweepLedger {
+    /// Y6: ordinary re-dispatch attempts per card.
+    pub redispatch_counts: HashMap<String, u32>,
+    /// R62c: cards whose headless-unblock continuation this drain has
+    /// already tried to dispatch. The durable half of "once per goal" is
+    /// [`headless_unblock_continuation_pending`]; this set bounds a
+    /// continuation whose dispatch was refused (and so never stamped
+    /// `dispatched_at`) to one try instead of one per poll.
+    pub continuation_tried: std::collections::HashSet<String>,
+    /// R62c: never-dispatched cards this drain already gave their
+    /// quiescence first dispatch.
+    pub first_dispatch_tried: std::collections::HashSet<String>,
+}
+
+/// One run-scoped Ready card as the dispatch selector sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DrainCandidate {
+    pub card_id: String,
+    /// [`headless_unblock_continuation_pending`] on the card's metadata.
+    pub continuation_pending: bool,
+    /// Not awaited by this drain and [`goal_never_dispatched`] on its
+    /// metadata.
+    pub never_dispatched: bool,
+}
+
+/// R62c: true while R18g's headless unblock has resumed this goal
+/// (`resumed_by_headless_unblock_at`) and no dispatch has happened since.
+///
+/// Every dispatch stamps `dispatched_at` on the card (`dispatch_goal_fn`'s
+/// claim patch), so "dispatched after the resume" is the durable,
+/// path-independent proof the continuation was consumed — whether the drain,
+/// the coordinator or a nudge started it, and across drains. R18g itself
+/// fires at most once per goal (`headless_unblock_count`), so the stamp, and
+/// therefore this continuation, exists at most once per goal. An unparseable
+/// timestamp reads as "not pending" (no extra dispatch on bad data).
+pub(crate) fn headless_unblock_continuation_pending(metadata: &serde_json::Value) -> bool {
+    let parse = |key: &str| {
+        metadata
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(chrono::DateTime::parse_from_rfc3339)
+    };
+    let Some(Ok(resumed_at)) = parse("resumed_by_headless_unblock_at") else {
+        return false;
+    };
+    match parse("dispatched_at") {
+        None => true,
+        Some(Ok(dispatched_at)) => dispatched_at < resumed_at,
+        Some(Err(_)) => false,
+    }
+}
+
+/// R62c: true when nothing has ever started a worker for this goal — no
+/// dispatch stamp, no execution receipt, no attempt counted. The caller must
+/// also exclude cards this drain awaits (those have a worker session).
+pub(crate) fn goal_never_dispatched(metadata: &serde_json::Value) -> bool {
+    metadata.get("first_dispatched_at").is_none()
+        && metadata.get("dispatched_at").is_none()
+        && metadata.get("execution_receipt").is_none()
+        && metadata
+            .get("attempt_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            == 0
+}
+
 /// The dispatch half of the drain policy: which of the currently-eligible
-/// Ready cards this pass should start.
+/// Ready cards this pass should start, and on which allowance.
 ///
 /// Skips a card that already has a live worker in the wait set (a
 /// belt-and-braces check — `eligible_ready_goals` only returns `Ready` cards
 /// and `dispatch_goal_fn` takes the Ready→InProgress claim atomically, so a
-/// double dispatch is refused downstream either way), and a card that has
-/// already spent its per-run re-dispatch budget. Preserves input order and
-/// never names the same card twice.
-pub(crate) fn next_dispatch_actions(
-    ready_card_ids: &[String],
+/// double dispatch is refused downstream either way). Then, in order:
+///   - an unconsumed headless-unblock continuation not yet tried in this
+///     drain → [`DrainDispatchKind::UnblockContinuation`], whatever the
+///     re-dispatch count (R62c);
+///   - re-dispatch budget left → [`DrainDispatchKind::Budgeted`] (Y6);
+///   - only while `quiescing`, a never-dispatched card not yet given its
+///     first dispatch in this drain → [`DrainDispatchKind::FirstDispatch`]
+///     (R62c).
+///
+/// `max_redispatch == 0` stays the documented off switch for the whole
+/// sweep, continuations included. Preserves input order and never names the
+/// same card twice.
+pub(crate) fn next_drain_dispatches(
+    candidates: &[DrainCandidate],
     live_card_ids: &std::collections::HashSet<String>,
-    redispatch_counts: &HashMap<String, u32>,
+    ledger: &DrainSweepLedger,
     max_redispatch: u32,
-) -> Vec<String> {
-    let mut chosen: Vec<String> = Vec::new();
-    for card_id in ready_card_ids {
-        if live_card_ids.contains(card_id) || chosen.iter().any(|c| c == card_id) {
+    quiescing: bool,
+) -> Vec<(String, DrainDispatchKind)> {
+    let mut chosen: Vec<(String, DrainDispatchKind)> = Vec::new();
+    if max_redispatch == 0 {
+        return chosen;
+    }
+    for candidate in candidates {
+        let card_id = &candidate.card_id;
+        if live_card_ids.contains(card_id) || chosen.iter().any(|(c, _)| c == card_id) {
             continue;
         }
-        if redispatch_counts.get(card_id).copied().unwrap_or(0) >= max_redispatch {
+        let kind = if candidate.continuation_pending && !ledger.continuation_tried.contains(card_id)
+        {
+            DrainDispatchKind::UnblockContinuation
+        } else if ledger.redispatch_counts.get(card_id).copied().unwrap_or(0) < max_redispatch {
+            DrainDispatchKind::Budgeted
+        } else if quiescing
+            && candidate.never_dispatched
+            && !ledger.first_dispatch_tried.contains(card_id)
+        {
+            DrainDispatchKind::FirstDispatch
+        } else {
             continue;
-        }
-        chosen.push(card_id.clone());
+        };
+        chosen.push((card_id.clone(), kind));
     }
     chosen
 }
@@ -16712,14 +17314,33 @@ pub(crate) fn next_dispatch_actions(
 /// the project is by definition a stranger, and a roadmap existing says
 /// nothing about whether this run owns it. (The drain also returns before the
 /// loop when there are no descendant sessions at all.)
+///
+/// R56a adds the third membership test: a card THIS coordinator's own
+/// `create_roadmap` minted (`metadata_json.created_by_session_id`, stamped by
+/// `materialize_roadmap_transaction_with_budget`). Awaited-or-dependent alone
+/// could never reach a SIBLING ROOT — a second root goal with no
+/// `depends_on` whose very first dispatch was refused (a write-scope conflict
+/// against the first root, `select-failing-test-decompose-before-create`
+/// 2026-09-16: `park_reason … never_dispatched`). It has no worker session,
+/// so it never joins `awaited_cards`; it depends on nothing, so it is never a
+/// dependent — the sweep could not see it on any poll, and the run exited
+/// with it never started. Ownership by this run's own coordinator session is
+/// exactly as narrow: a card a human left Ready, or one another session
+/// created, still carries a different id (or none) and stays a stranger.
 pub(crate) fn run_scoped_ready_goals(
     ready: &[cards::Card],
     awaited_cards: &std::collections::HashSet<String>,
+    coordinator_session_id: &str,
 ) -> Vec<String> {
     ready
         .iter()
         .filter(|card| {
             awaited_cards.contains(&card.id)
+                || card
+                    .metadata_json
+                    .get("created_by_session_id")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|owner| owner == coordinator_session_id)
                 || card
                     .metadata_json
                     .get("depends_on")
@@ -16745,17 +17366,26 @@ pub(crate) fn run_scoped_ready_goals(
 /// side door: the roadmap dispatch guard, the approval payload check, E3's
 /// requeue cross-check and Y4b's liveness all sit on that rail unchanged.
 ///
-/// The counter is incremented per ATTEMPT, not per success, so a goal whose
+/// Every allowance is spent per ATTEMPT, not per success, so a goal whose
 /// dispatch is refused every time (no eligible worker, exhausted budget)
-/// cannot spin the drain.
+/// cannot spin the drain. The one exception is R56a's write-scope WAIT,
+/// which refunds whichever allowance it spent (see [`next_drain_dispatches`]
+/// for the three allowances, R62c).
+///
+/// `quiescing` is true on a pass where nothing this drain awaits is still
+/// running and nothing new appeared — the pass that would otherwise count
+/// toward the loop's idle exit. Only then may a never-dispatched card of
+/// this run get its [`DrainDispatchKind::FirstDispatch`].
+#[allow(clippy::too_many_arguments)]
 async fn redispatch_ready_goals(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     coordinator_session_id: &str,
     project_ids: &std::collections::BTreeSet<String>,
     live_card_ids: &std::collections::HashSet<String>,
     awaited_cards: &std::collections::HashSet<String>,
-    redispatch_counts: &mut HashMap<String, u32>,
+    ledger: &mut DrainSweepLedger,
     redispatch: &DrainRedispatch<'_>,
+    quiescing: bool,
 ) -> u32 {
     let max_redispatch = redispatch.max_redispatch;
     if max_redispatch == 0 || awaited_cards.is_empty() {
@@ -16766,13 +17396,13 @@ async fn redispatch_ready_goals(
     };
     let mut attempted = 0u32;
     for project_id in project_ids {
-        let ready = match eligible_ready_goals(pool, project_id).await {
+        let candidates = match eligible_ready_goals(pool, project_id).await {
             Ok(mut goals) => {
                 // Lane R26b item 3: a goal resumed by R18g's headless
                 // unblock already burned real attempts getting back to
                 // Ready — prioritise it over an ordinary Ready goal in
                 // this project's own eligible set so it is the first
-                // candidate `next_dispatch_actions` considers below,
+                // candidate `next_drain_dispatches` considers below,
                 // rather than losing every scheduling tie to goals that
                 // have not yet spent anything. Stable sort: relative
                 // order among goals that agree on this key (both stamped,
@@ -16783,7 +17413,19 @@ async fn redispatch_ready_goals(
                         .get("resumed_by_headless_unblock_at")
                         .is_none()
                 });
-                run_scoped_ready_goals(&goals, awaited_cards)
+                let scoped = run_scoped_ready_goals(&goals, awaited_cards, coordinator_session_id);
+                goals
+                    .iter()
+                    .filter(|card| scoped.contains(&card.id))
+                    .map(|card| DrainCandidate {
+                        card_id: card.id.clone(),
+                        continuation_pending: headless_unblock_continuation_pending(
+                            &card.metadata_json,
+                        ),
+                        never_dispatched: !awaited_cards.contains(&card.id)
+                            && goal_never_dispatched(&card.metadata_json),
+                    })
+                    .collect::<Vec<_>>()
             }
             Err(e) => {
                 tracing::warn!(
@@ -16794,12 +17436,27 @@ async fn redispatch_ready_goals(
                 continue;
             }
         };
-        // Bound outside the loop: `next_dispatch_actions` borrows the counter
-        // map immutably and the loop body then mutates it.
-        let selected =
-            next_dispatch_actions(&ready, live_card_ids, redispatch_counts, max_redispatch);
-        for card_id in selected {
-            *redispatch_counts.entry(card_id.clone()).or_insert(0) += 1;
+        // Bound outside the loop: `next_drain_dispatches` borrows the ledger
+        // immutably and the loop body then mutates it.
+        let selected = next_drain_dispatches(
+            &candidates,
+            live_card_ids,
+            ledger,
+            max_redispatch,
+            quiescing,
+        );
+        for (card_id, kind) in selected {
+            match kind {
+                DrainDispatchKind::Budgeted => {
+                    *ledger.redispatch_counts.entry(card_id.clone()).or_insert(0) += 1;
+                }
+                DrainDispatchKind::UnblockContinuation => {
+                    ledger.continuation_tried.insert(card_id.clone());
+                }
+                DrainDispatchKind::FirstDispatch => {
+                    ledger.first_dispatch_tried.insert(card_id.clone());
+                }
+            }
             attempted += 1;
             match dispatch(card_id.clone()).await {
                 Ok(session_id) => tracing::info!(
@@ -16807,14 +17464,50 @@ async fn redispatch_ready_goals(
                     goal_id = %card_id,
                     project_id = %project_id,
                     session_id = %session_id,
-                    "drain re-dispatched a Ready goal (attempt {})",
-                    redispatch_counts[&card_id]
+                    kind = ?kind,
+                    "drain re-dispatched a Ready goal (budgeted attempts {})",
+                    ledger.redispatch_counts.get(&card_id).copied().unwrap_or(0)
                 ),
+                Err(e) if refusal_is_scope_wait(&e) => {
+                    // R56a: a scope conflict against a goal that is still
+                    // InProgress is a WAIT, not a refusal of this card.
+                    // Refund the attempt — nothing was started and no
+                    // worker/model budget was spent — so the card is still
+                    // dispatchable on the poll after the conflicting goal
+                    // leaves InProgress. Bounded by the drain's own cap and
+                    // poll interval (one extra query per poll), and it never
+                    // reports itself as a dispatch, so a pass made only of
+                    // these can still quiesce. R62c: the refund covers
+                    // whichever allowance was spent, so a scope wait can
+                    // consume neither the unblock continuation nor a
+                    // never-dispatched card's first dispatch.
+                    match kind {
+                        DrainDispatchKind::Budgeted => {
+                            if let Some(count) = ledger.redispatch_counts.get_mut(&card_id) {
+                                *count = count.saturating_sub(1);
+                            }
+                        }
+                        DrainDispatchKind::UnblockContinuation => {
+                            ledger.continuation_tried.remove(&card_id);
+                        }
+                        DrainDispatchKind::FirstDispatch => {
+                            ledger.first_dispatch_tried.remove(&card_id);
+                        }
+                    }
+                    attempted = attempted.saturating_sub(1);
+                    tracing::debug!(
+                        target: "permagentd::brain",
+                        goal_id = %card_id,
+                        project_id = %project_id,
+                        "drain re-dispatch waiting on an active goal's write scope, will retry: {e}"
+                    );
+                }
                 Err(e) => {
                     tracing::debug!(
                         target: "permagentd::brain",
                         goal_id = %card_id,
                         project_id = %project_id,
+                        kind = ?kind,
                         "drain re-dispatch did not start goal: {e}"
                     );
                     // Lane R26b item 1: do not silently drop a refusal
@@ -16880,7 +17573,10 @@ async fn drain_dispatched_goals_with(
     // whatever is still here at the cap is parked, so Y2-2's "never leave a
     // goal silently non-terminal" guarantee survives the change.
     let mut requeued: HashMap<String, String> = HashMap::new();
-    let mut redispatch_counts: HashMap<String, u32> = HashMap::new();
+    // Y6 re-dispatch counts plus R62c's two single-shot allowances.
+    let mut sweep_ledger = DrainSweepLedger::default();
+    // R62c: Review cards this drain already tried to adopt (once per card).
+    let mut review_adoptions: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Y6: every goal card this drain has ever awaited, so the sweep can ask
     // "is any completion handler still running?" — see `completion_active`.
     // Y6b (G12 MED-3): it is ALSO this run's DAG — the sweep starts only these
@@ -16993,9 +17689,53 @@ async fn drain_dispatched_goals_with(
                 "{}",
                 drain_poll_debug_line(&session_id, &card_id, state, receipt_terminal),
             );
-            let budget_left =
-                redispatch_counts.get(&card_id).copied().unwrap_or(0) < redispatch.max_redispatch;
+            let mut budget_left = sweep_ledger
+                .redispatch_counts
+                .get(&card_id)
+                .copied()
+                .unwrap_or(0)
+                < redispatch.max_redispatch;
+            // R62c (A61 Miss 4): R18g's headless unblock requeues the card to
+            // Ready and grants ONE automatic continuation, but it fires only
+            // after the goal has been held twice — by which point the drain
+            // had already re-dispatched it `max_redispatch` times, so this
+            // arm returned Park and the granted continuation never ran (no
+            // fifth session, `ready_unconsumed` at exit). An unconsumed
+            // continuation is its own allowance, outside the re-dispatch
+            // budget. Read only in exactly that shape, so the common poll
+            // costs no extra query.
+            if !budget_left
+                && redispatch.max_redispatch > 0
+                && state == GoalState::Ready
+                && receipt_terminal
+                && !sweep_ledger.continuation_tried.contains(&card_id)
+            {
+                budget_left = cards::get_card(pool, &card_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|card| headless_unblock_continuation_pending(&card.metadata_json));
+            }
             let completion_in_flight = goal_completion_in_flight_within(&card_id, completion_bound);
+            // R62c (r61 s1, see `adopt_orphaned_review`): a Review card
+            // whose worker attempt is over and whose completion handler is
+            // not running was surfaced by nobody when the coordinator moved
+            // it to Review by hand. In a headless auto-land run, adopt it
+            // once — mint its approve_review and run the auto-land — and
+            // re-poll it on the next pass, where it reads as landed
+            // (Finished), rejected back to Ready (Requeued → re-dispatch) or
+            // parked (Finished). Still Review after that falls through to
+            // the pre-existing Park below.
+            if state == GoalState::Review
+                && receipt_terminal
+                && !completion_in_flight
+                && redispatch.auto_land
+                && review_adoptions.insert(card_id.clone())
+                && adopt_orphaned_review(pool, &card_id, &project_id, coordinator_session_id).await
+            {
+                still_pending.insert(session_id, (card_id, project_id));
+                continue;
+            }
             let action =
                 next_drain_action(state, receipt_terminal, completion_in_flight, budget_left);
             match action {
@@ -17176,6 +17916,12 @@ async fn drain_dispatched_goals_with(
                  new worker to finish"
             );
         }
+        // R62c (A61 Miss 1): the pass that would count toward the idle exit.
+        // Only on such a pass may the sweep give a never-dispatched goal of
+        // this run its first dispatch past a spent re-dispatch budget — the
+        // drain must not quiesce with wall budget left while a Ready goal of
+        // its own roadmap has never run.
+        let quiescing = pending.is_empty() && !discovered_new && !completion_active;
         let dispatched_now = if completion_active || inside_headroom {
             0
         } else {
@@ -17185,8 +17931,9 @@ async fn drain_dispatched_goals_with(
                 &projects,
                 &live_card_ids,
                 &awaited_cards,
-                &mut redispatch_counts,
+                &mut sweep_ledger,
                 &redispatch,
+                quiescing,
             )
             .await
         };
@@ -19311,9 +20058,44 @@ async fn worktree_has_uncommitted_work(
     let no_commits = git_in_worktree(worktree, &["rev-list", "--max-count=1", &range])
         .await?
         .is_empty();
-    let tracked_status =
-        git_in_worktree(worktree, &["status", "--porcelain", "--untracked-files=no"]).await?;
+    // No `--ignored`: excluded/ignored files are never listed. R62d: a tracked
+    // regenerated artefact (bytecode a checkpoint committed before the
+    // worktree excluded it) is dropped too — running the tests rewrites it,
+    // and that is not uncommitted work (A61 Miss 5: ` M
+    // __pycache__/inventory.cpython-314.pyc` held a goal whose verify passed).
+    let tracked_status = without_generated_artefact_entries(
+        &git_in_worktree(worktree, &["status", "--porcelain", "--untracked-files=no"]).await?,
+    );
     Ok((no_commits, tracked_status))
+}
+
+/// R62d: the path a `git status --porcelain` (v1) line names — the
+/// destination of a rename/copy (`R  old -> new`), surrounding quotes
+/// removed. Tolerates the leading-space loss [`git_in_worktree`]'s trim
+/// causes on the first line (` M path` arrives as `M path`).
+fn porcelain_entry_path(line: &str) -> Option<String> {
+    let (_status, rest) = line.trim_start().split_once(' ')?;
+    let path = rest.trim_start();
+    let path = path.rsplit(" -> ").next().unwrap_or(path);
+    let path = path.trim().trim_matches('"');
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// R62d: `status` (porcelain v1) with every entry naming a regenerated
+/// artefact ([`goal_engine::is_generated_artefact_path`]) removed; an
+/// artefact-only status becomes empty. Unparseable lines are kept, so this
+/// can only ever hide an artefact, never real work. Trimmed, matching
+/// [`git_in_worktree`]'s own output contract.
+fn without_generated_artefact_entries(status: &str) -> String {
+    status
+        .lines()
+        .filter(|line| {
+            !porcelain_entry_path(line).is_some_and(|p| goal_engine::is_generated_artefact_path(&p))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }
 
 // ── R28a: teardown checkpoint for uncommitted worker changes ────────────────
@@ -19386,7 +20168,13 @@ async fn checkpoint_uncommitted_changes_in(
     reason: &str,
 ) -> Result<Option<CheckpointCommit>, String> {
     let status = git_in_worktree(worktree, &["status", "--porcelain"]).await?;
-    if status.trim().is_empty() {
+    // R62d (A61 Miss 5: `d190c7c Checkpoint: regenerated bytecode
+    // artifacts`): regenerated bytecode/caches alone are not worker output —
+    // never checkpoint them into the goal branch.
+    if without_generated_artefact_entries(&status)
+        .trim()
+        .is_empty()
+    {
         return Ok(None);
     }
     // Captured BEFORE staging/committing so the scan below has an exact
@@ -19394,6 +20182,34 @@ async fn checkpoint_uncommitted_changes_in(
     // content — never the worker's own (already-scanned) prior commits.
     let pre_commit_head = git_in_worktree(worktree, &["rev-parse", "HEAD"]).await?;
     git_in_worktree(worktree, &["add", "-A"]).await?;
+    // R62d: a goal worktree already excludes UNTRACKED artefacts
+    // (`goal_engine::install_generated_artefact_excludes`); a TRACKED one a
+    // test run rewrote would still be staged by `add -A`, so unstage it.
+    let staged_artefacts: Vec<String> = git_in_worktree(
+        worktree,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--cached",
+            "--name-only",
+        ],
+    )
+    .await?
+    .lines()
+    .map(str::trim)
+    // A still-quoted name (control characters) is left staged rather
+    // than handed to `reset` in a form it cannot match.
+    .filter(|path| {
+        !path.is_empty() && !path.starts_with('"') && goal_engine::is_generated_artefact_path(path)
+    })
+    .map(str::to_string)
+    .collect();
+    if !staged_artefacts.is_empty() {
+        let mut reset: Vec<&str> = vec!["reset", "-q", "--"];
+        reset.extend(staged_artefacts.iter().map(String::as_str));
+        git_in_worktree(worktree, &reset).await?;
+    }
     let staged = git_in_worktree(worktree, &["diff", "--cached", "--name-only"]).await?;
     let files = staged
         .lines()
@@ -19643,6 +20459,115 @@ mod r28a_checkpoint_tests {
         r28a_git(root, &["add", "-A"]);
         r28a_git(root, &["commit", "-q", "-m", "seed"]);
         dir
+    }
+
+    /// The A61 Miss 5 workspace shape: bytecode an earlier checkpoint already
+    /// committed, so the goal-worktree exclude cannot hide it any more.
+    fn r62d_repo_with_tracked_bytecode() -> tempfile::TempDir {
+        let dir = r28a_seeded_repo();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("__pycache__")).unwrap();
+        std::fs::write(
+            root.join("__pycache__/inventory.cpython-314.pyc"),
+            "bytecode v1",
+        )
+        .unwrap();
+        r28a_git(root, &["add", "-A"]);
+        r28a_git(root, &["commit", "-q", "-m", "checkpoint with bytecode"]);
+        dir
+    }
+
+    /// R62d (A61 Miss 5: `d190c7c Checkpoint: regenerated bytecode
+    /// artifacts`): a test run that only rewrote tracked bytecode gets no
+    /// checkpoint commit, and a real change alongside it is committed
+    /// without the bytecode.
+    #[tokio::test]
+    async fn checkpoint_excludes_bytecode_artifacts() {
+        let dir = r62d_repo_with_tracked_bytecode();
+        let root = dir.path();
+        let log_before = r28a_git(root, &["log", "--oneline"]).lines().count();
+
+        std::fs::write(
+            root.join("__pycache__/inventory.cpython-314.pyc"),
+            "bytecode v2",
+        )
+        .unwrap();
+        let result = checkpoint_uncommitted_changes_in(root, "worker_finished")
+            .await
+            .unwrap();
+        assert_eq!(result, None, "regenerated bytecode alone is not work");
+        assert_eq!(
+            r28a_git(root, &["log", "--oneline"]).lines().count(),
+            log_before
+        );
+
+        std::fs::write(root.join("a.txt"), "one\nreal fix\n").unwrap();
+        let commit = checkpoint_uncommitted_changes_in(root, "worker_finished")
+            .await
+            .unwrap()
+            .expect("the real change is still checkpointed");
+        assert_eq!(commit.files, 1);
+        assert_eq!(
+            r28a_git(root, &["show", "--name-only", "--format=", "HEAD"]),
+            "a.txt",
+            "the checkpoint commit carries only the real change"
+        );
+    }
+
+    /// R62d (A61 Miss 5, inventory root msg 142): ` M
+    /// __pycache__/inventory.cpython-314.pyc` after a passing test run read as
+    /// uncommitted work and held the goal. The hold/salvage inspection must
+    /// not see it, while a real tracked edit still counts.
+    #[tokio::test]
+    async fn worktree_has_uncommitted_work_ignores_rewritten_tracked_bytecode() {
+        let dir = r62d_repo_with_tracked_bytecode();
+        let root = dir.path();
+        let baseline = r28a_git(root, &["rev-parse", "HEAD"]);
+
+        std::fs::write(
+            root.join("__pycache__/inventory.cpython-314.pyc"),
+            "bytecode v2",
+        )
+        .unwrap();
+        let (no_commits, status) = worktree_has_uncommitted_work(root, &baseline)
+            .await
+            .unwrap();
+        assert!(no_commits);
+        assert_eq!(status, "", "rewritten bytecode is not uncommitted work");
+
+        std::fs::write(root.join("a.txt"), "one\nstill uncommitted\n").unwrap();
+        let (_, status) = worktree_has_uncommitted_work(root, &baseline)
+            .await
+            .unwrap();
+        assert_eq!(status, "M a.txt", "a real tracked edit still counts");
+    }
+
+    #[test]
+    fn porcelain_entries_drop_only_generated_artefacts() {
+        assert_eq!(
+            porcelain_entry_path("M __pycache__/x.pyc").as_deref(),
+            Some("__pycache__/x.pyc"),
+            "the first line arrives with its leading space trimmed"
+        );
+        assert_eq!(porcelain_entry_path(" M a.txt").as_deref(), Some("a.txt"));
+        assert_eq!(
+            porcelain_entry_path("R  old.py -> new.py").as_deref(),
+            Some("new.py")
+        );
+        assert_eq!(
+            porcelain_entry_path("?? \"odd name.pyc\"").as_deref(),
+            Some("odd name.pyc")
+        );
+        assert_eq!(
+            without_generated_artefact_entries(
+                "M __pycache__/a.pyc\n M inventory.py\n M .pytest_cache/v/x"
+            ),
+            "M inventory.py"
+        );
+        assert_eq!(
+            without_generated_artefact_entries("M __pycache__/a.pyc\n M stray.pyc"),
+            ""
+        );
     }
 
     #[tokio::test]
@@ -22392,6 +23317,130 @@ async fn record_synthetic_verify_evidence(
     tx.commit().await.map_err(|e| e.to_string())
 }
 
+/// R62d (A61_R60_MISSES.md Miss 5): gather
+/// [`crate::cost_router::hold_done::BaselineSatisfactionFacts`] live for this
+/// attempt and, when [`crate::cost_router::hold_done::goal_already_satisfied_at_baseline`]
+/// holds, return the receipt to record. The shape: after the pricing root
+/// landed a commit fixing BOTH files, the inventory root's workers
+/// (`_5/_6/_7`) found the fix already on their baseline, got a genuine verify
+/// PASS (msg 139-140) and had nothing to commit — and were held as "verified
+/// but uncommitted" until the drain gave up.
+///
+/// Read-only, never mutating; `None` whenever any fact cannot be established
+/// (no worktree, no trusted trunk, a git failure). The scoped-file check
+/// compares the worktree HEAD against the trunk HEAD over the goal's declared
+/// `write_scope` — or the whole tree when it declares none — so the trunk
+/// really carries exactly what the passing verify ran against.
+async fn already_satisfied_at_baseline_receipt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    worker_session_id: Option<&str>,
+    expects_change: bool,
+) -> Option<serde_json::Value> {
+    let (_baseline, worktree) = resolve_goal_baseline_and_worktree(pool, &card.metadata_json)
+        .await
+        .ok()
+        .flatten()?;
+    let worktree_path = std::path::Path::new(&worktree);
+    let genuine = session_verify_evidence(pool, worker_session_id)
+        .await
+        .is_genuine();
+    let (commits_past_baseline, tracked) = match goal_has_uncommitted_work(pool, card).await {
+        Ok((no_commits, tracked)) => (!no_commits, tracked),
+        Err(_) => return None,
+    };
+    // Untracked files count too: a verify can pass on a new file nobody
+    // committed, which is work, not a satisfied baseline.
+    let all_status = git_in_worktree(worktree_path, &["status", "--porcelain"])
+        .await
+        .ok()?;
+    let worktree_clean =
+        tracked.trim().is_empty() && without_generated_artefact_entries(&all_status).is_empty();
+    let (unlanded, trunk_head) = match commits_unlanded_at_trunk(pool, card, worktree_path).await {
+        Ok((unlanded, trunk_head)) => (Some(unlanded), Some(trunk_head)),
+        Err(_) => (None, None),
+    };
+    let head = worktree_head_commit(worktree_path).await?;
+    let scope = super::write_scope::declared_write_scope(&card.metadata_json)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let scoped_files_match_trunk = match &trunk_head {
+        Some(trunk_head) => {
+            let mut args: Vec<&str> =
+                vec!["diff", "--name-only", trunk_head.as_str(), "HEAD", "--"];
+            args.extend(scope.iter().map(String::as_str));
+            git_in_worktree(worktree_path, &args)
+                .await
+                .is_ok_and(|diff| diff.trim().is_empty())
+        }
+        None => false,
+    };
+    let facts = crate::cost_router::hold_done::BaselineSatisfactionFacts {
+        expects_change,
+        genuine_verify_this_attempt: genuine,
+        commits_past_baseline,
+        worktree_clean,
+        unlanded_at_trunk: unlanded,
+        scoped_files_match_trunk,
+        worker_live: goal_worker_is_live(&card.id),
+    };
+    if !crate::cost_router::hold_done::goal_already_satisfied_at_baseline(&facts) {
+        return None;
+    }
+    let trunk_head = trunk_head?;
+    let scope_label = if scope.is_empty() {
+        "the whole tree".to_string()
+    } else {
+        scope.join(", ")
+    };
+    Some(serde_json::json!({
+        "note": format!(
+            "already satisfied at baseline: this attempt's own verify genuinely passed with \
+             no change to commit, and the trunk already carries {scope_label} exactly as \
+             verified — nothing was landed for this goal"
+        ),
+        "trunk_head": trunk_head,
+        "head": head,
+        "worker_session_id": worker_session_id,
+        "scope": scope,
+        "recorded_at": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+/// R62d: the landing-side half of the already-satisfied rule. `Some(note)`
+/// when the card carries an [`crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY`]
+/// receipt recorded for its CURRENT worker session at the worktree's CURRENT
+/// head (nothing moved since the hold allowed it) — the approval then
+/// completes the goal with that note and no landing outcome. `None`
+/// otherwise, and the landing path refuses exactly as before.
+pub(crate) async fn already_satisfied_receipt_still_holds(
+    card: &cards::Card,
+    worktree_path: &std::path::Path,
+) -> Option<String> {
+    let receipt = card
+        .metadata_json
+        .get(crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY)?;
+    let current_session = card
+        .metadata_json
+        .get("worker_session_id")
+        .and_then(|v| v.as_str());
+    if receipt.get("worker_session_id").and_then(|v| v.as_str()) != current_session
+        || current_session.is_none()
+    {
+        return None;
+    }
+    let recorded_head = receipt.get("head").and_then(|v| v.as_str())?;
+    let current_head = worktree_head_commit(worktree_path).await?;
+    if !sha_matches(recorded_head, &current_head) {
+        return None;
+    }
+    receipt
+        .get("note")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
 /// Hold a premature InProgress → Review. `None` means allow the transition.
 /// R47 (A44): `dispatch_evidence.head_commit` is a full 40-char sha today, but
 /// records written before R47 hold a `--short` abbreviation. Treat the two as the
@@ -22600,12 +23649,41 @@ async fn maybe_hold_review(
             }
         }
     }
+    // R62d (A61 Miss 5): the one narrow Allow for a goal whose acceptance
+    // already passes at its baseline — see
+    // `already_satisfied_at_baseline_receipt`. Only consulted in exactly the
+    // shape that would otherwise hold as "verified but uncommitted" (a
+    // genuine pass, no commits, nothing dirty, the R42a override above found
+    // nothing); the receipt is persisted only if the outcome below Allows.
+    let mut already_satisfied: Option<serde_json::Value> = None;
+    if uncommitted_work
+        && verify_ran
+        && expects_change
+        && inspection_error.is_none()
+        && tracked_status.trim().is_empty()
+        && unlanded_checkpoint_note.is_none()
+    {
+        already_satisfied =
+            already_satisfied_at_baseline_receipt(pool, card, session_id, expects_change).await;
+        if let Some(receipt) = &already_satisfied {
+            tracing::info!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                trunk_head = receipt.get("trunk_head").and_then(|v| v.as_str()).unwrap_or(""),
+                "goal already satisfied at baseline: genuine verify, nothing to commit, trunk \
+                 carries the goal's files as verified"
+            );
+            uncommitted_work = false;
+        }
+    }
     // A read-only goal is only still read-only when the worktree is
     // genuinely clean: zero commits past baseline (`uncommitted_work` here
     // really means "no commits exist" — see `goal_has_uncommitted_work`'s doc
     // comment) AND no tracked modifications sitting dirty either. Any commit
     // or any tracked change means the worker mutated something, so the
     // ordinary commit-required rule takes back over.
+    // R62d: an already-satisfied Allow only ever applies to a mutating goal
+    // (`expects_change`), so it never reaches the read-only rule below.
     let worktree_mutated = !uncommitted_work || !tracked_status.trim().is_empty();
     // Only worth the query when the goal is actually a read-only candidate —
     // an ordinary mutating goal never consults its worker's report text.
@@ -22652,6 +23730,26 @@ async fn maybe_hold_review(
 
     match outcome {
         crate::cost_router::HoldOutcome::Allow => {
+            // R62d: record the already-satisfied receipt the landing path
+            // reads (`already_satisfied_receipt_still_holds`). A failure to
+            // write it only means the approval later refuses to land
+            // "nothing" and parks, exactly as before this lane.
+            if let Some(receipt) = already_satisfied.take() {
+                if let Err(e) = persist_card_meta(pool, &card.id, |m| {
+                    m.insert(
+                        crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY.to_string(),
+                        receipt.clone(),
+                    );
+                })
+                .await
+                {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        goal_id = %card.id,
+                        "could not record the already-satisfied receipt: {e}"
+                    );
+                }
+            }
             // Lane R21a: this Allow was reached via the read-only rule (no
             // code change expected, worktree genuinely clean, a real review
             // report on file) rather than a verified commit. Record the
@@ -31324,6 +32422,161 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         );
     }
 
+    /// R62d (A61 Miss 5, inventory root `_5/_6/_7`): a sibling already landed
+    /// this goal's fix, so the worker's verify genuinely passes with nothing
+    /// to commit. Pre-fix this held forever as "verified but uncommitted".
+    /// Now it Allows and records an `already_satisfied` receipt bound to this
+    /// worker session and head — and still Holds when the verify is vacuous,
+    /// when the worker left an untracked file behind, or when the trunk's copy
+    /// of the goal's files differs from what was verified.
+    #[tokio::test]
+    async fn hold_allows_a_goal_satisfied_at_baseline() {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Shape {
+            Satisfied,
+            VacuousVerify,
+            UntrackedFile,
+            TrunkMovedTheFile,
+        }
+        async fn run(
+            shape: Shape,
+        ) -> (
+            Option<String>,
+            cards::Card,
+            tempfile::TempDir,
+            tempfile::TempDir,
+        ) {
+            let pool = test_pool().await;
+            let trunk = tempfile::tempdir().unwrap();
+            let troot = trunk.path();
+            r20b_git(troot, &["init", "-q", "-b", "main"]);
+            r20b_git(troot, &["config", "user.email", "test@example.com"]);
+            r20b_git(troot, &["config", "user.name", "Test"]);
+            r20b_git(troot, &["config", "commit.gpgsign", "false"]);
+            std::fs::write(
+                troot.join("inventory.py"),
+                "def decrement_stock(n, k):\n    return n - k\n",
+            )
+            .unwrap();
+            r20b_git(troot, &["add", "-A"]);
+            r20b_git(troot, &["commit", "-q", "-m", "sibling landed both fixes"]);
+            let base_sha = r20b_git(troot, &["rev-parse", "HEAD"]);
+
+            let goal_dir = tempfile::tempdir().unwrap();
+            let clone_out = std::process::Command::new("git")
+                .args(["clone", "-q"])
+                .arg(troot)
+                .arg(goal_dir.path())
+                .output()
+                .expect("git clone must succeed for this test");
+            assert!(clone_out.status.success());
+            let gpath = goal_dir.path();
+            r20b_git(gpath, &["checkout", "-q", "-b", "goal/r62d-satisfied"]);
+            match shape {
+                Shape::UntrackedFile => {
+                    std::fs::write(gpath.join("new_fix.py"), "x = 1\n").unwrap();
+                }
+                Shape::TrunkMovedTheFile => {
+                    std::fs::write(
+                        troot.join("inventory.py"),
+                        "def decrement_stock(n, k):\n    return max(n - k, 0)\n",
+                    )
+                    .unwrap();
+                    r20b_git(troot, &["commit", "-q", "-am", "trunk changed it again"]);
+                    r20b_git(gpath, &["fetch", "-q", "origin", "main"]);
+                }
+                _ => {}
+            }
+            // Regenerated bytecode never blocks the rule.
+            std::fs::create_dir_all(gpath.join("__pycache__")).unwrap();
+            std::fs::write(gpath.join("__pycache__/inventory.cpython-314.pyc"), "bc").unwrap();
+            std::fs::write(gpath.join(".git/info/exclude"), "__pycache__/\n").unwrap();
+
+            sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+                .bind(troot.to_string_lossy().as_ref())
+                .bind(crate::projects::PERSONAL_PROJECT_ID)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+            cards::set_goal_dispatch_evidence(
+                &pool,
+                &card.id,
+                serde_json::json!({
+                    "worktree_path": gpath.to_string_lossy(),
+                    "head_commit": base_sha,
+                    "commits": [],
+                    "baseline_commit": base_sha,
+                    "files_changed": 0,
+                    "insertions": 0,
+                    "deletions": 0,
+                }),
+            )
+            .await
+            .unwrap();
+            if shape == Shape::VacuousVerify {
+                stamp_vacuous_verify_exchange(&pool, &card.id).await;
+            } else {
+                stamp_successful_verify(&pool, &card.id).await;
+            }
+            let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+            let held = maybe_hold_review(&pool, &card, false, None).await.unwrap();
+            let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+            (held, card, trunk, goal_dir)
+        }
+
+        let (held, card, _trunk, goal_dir) = run(Shape::Satisfied).await;
+        assert!(
+            held.is_none(),
+            "already satisfied at baseline must Allow: {held:?}"
+        );
+        let receipt = card
+            .metadata_json
+            .get(crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY)
+            .expect("the Allow records an already_satisfied receipt");
+        assert_eq!(
+            receipt.get("worker_session_id").and_then(|v| v.as_str()),
+            card.metadata_json
+                .get("worker_session_id")
+                .and_then(|v| v.as_str()),
+            "bound to this attempt's worker session"
+        );
+        assert!(receipt
+            .get("note")
+            .and_then(|v| v.as_str())
+            .is_some_and(|n| n.contains("nothing was landed")));
+        assert!(
+            already_satisfied_receipt_still_holds(&card, goal_dir.path())
+                .await
+                .is_some(),
+            "the landing path accepts the receipt while nothing has moved"
+        );
+
+        for (shape, why) in [
+            (
+                Shape::VacuousVerify,
+                "a vacuous verify never earns the Allow",
+            ),
+            (
+                Shape::UntrackedFile,
+                "an untracked file left behind is work, not a satisfied baseline",
+            ),
+            (
+                Shape::TrunkMovedTheFile,
+                "the trunk's copy of the file differs from what was verified",
+            ),
+        ] {
+            let (held, card, _trunk, _goal_dir) = run(shape).await;
+            assert!(held.is_some(), "{why}");
+            assert!(
+                card.metadata_json
+                    .get(crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY)
+                    .is_none(),
+                "{why}: no receipt"
+            );
+        }
+    }
+
     /// (c) The goal branch carries a real, unlanded commit AND the worktree
     /// also has a genuine dirty change sitting on top of it. Per
     /// `decide_goal_hold`'s own stated intent ("Any role after a successful
@@ -34821,24 +36074,397 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     #[test]
     fn next_dispatch_actions_respects_liveness_and_the_per_card_budget() {
         let live: std::collections::HashSet<String> = ["live".to_string()].into_iter().collect();
-        let mut counts: HashMap<String, u32> = HashMap::new();
-        counts.insert("spent".to_string(), 2);
-        counts.insert("half".to_string(), 1);
+        let mut ledger = DrainSweepLedger::default();
+        ledger.redispatch_counts.insert("spent".to_string(), 2);
+        ledger.redispatch_counts.insert("half".to_string(), 1);
+        let plain = |id: &str| DrainCandidate {
+            card_id: id.to_string(),
+            continuation_pending: false,
+            never_dispatched: false,
+        };
         let ready = vec![
-            "live".to_string(),
-            "spent".to_string(),
-            "half".to_string(),
-            "fresh".to_string(),
-            "fresh".to_string(),
+            plain("live"),
+            plain("spent"),
+            plain("half"),
+            plain("fresh"),
+            plain("fresh"),
         ];
         assert_eq!(
-            next_dispatch_actions(&ready, &live, &counts, 2),
-            vec!["half".to_string(), "fresh".to_string()]
+            next_drain_dispatches(&ready, &live, &ledger, 2, false),
+            vec![
+                ("half".to_string(), DrainDispatchKind::Budgeted),
+                ("fresh".to_string(), DrainDispatchKind::Budgeted)
+            ]
         );
         assert!(
-            next_dispatch_actions(&ready, &live, &counts, 0).is_empty(),
+            next_drain_dispatches(&ready, &live, &ledger, 0, true).is_empty(),
             "max_redispatch=0 is the documented off switch"
         );
+    }
+
+    /// R62c, pure (A61 Miss 4 and Miss 1). A headless-unblock continuation
+    /// is its own single dispatch outside the re-dispatch budget, and a
+    /// never-dispatched card gets one first dispatch past a spent budget —
+    /// but only while the drain is quiescing, and each only once per drain.
+    #[test]
+    fn next_drain_dispatches_grants_the_continuation_and_first_dispatch_outside_the_budget() {
+        let live: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut ledger = DrainSweepLedger::default();
+        ledger.redispatch_counts.insert("resumed".to_string(), 2);
+        ledger.redispatch_counts.insert("never".to_string(), 2);
+        ledger.redispatch_counts.insert("spent".to_string(), 2);
+        let candidates = vec![
+            DrainCandidate {
+                card_id: "resumed".to_string(),
+                continuation_pending: true,
+                never_dispatched: false,
+            },
+            DrainCandidate {
+                card_id: "never".to_string(),
+                continuation_pending: false,
+                never_dispatched: true,
+            },
+            DrainCandidate {
+                card_id: "spent".to_string(),
+                continuation_pending: false,
+                never_dispatched: false,
+            },
+        ];
+        assert_eq!(
+            next_drain_dispatches(&candidates, &live, &ledger, 2, false),
+            vec![(
+                "resumed".to_string(),
+                DrainDispatchKind::UnblockContinuation
+            )],
+            "a spent budget must not refuse the unblock's continuation; a never-dispatched card \
+             waits for quiescence"
+        );
+        assert_eq!(
+            next_drain_dispatches(&candidates, &live, &ledger, 2, true),
+            vec![
+                (
+                    "resumed".to_string(),
+                    DrainDispatchKind::UnblockContinuation
+                ),
+                ("never".to_string(), DrainDispatchKind::FirstDispatch),
+            ],
+            "quiescing: the never-dispatched card gets its first dispatch; an ordinary spent card \
+             still does not"
+        );
+        ledger.continuation_tried.insert("resumed".to_string());
+        ledger.first_dispatch_tried.insert("never".to_string());
+        assert!(
+            next_drain_dispatches(&candidates, &live, &ledger, 2, true).is_empty(),
+            "each allowance is spent once per drain"
+        );
+        // With budget left, a pending continuation is still the continuation
+        // (it never spends a budget unit), and budget beats first dispatch.
+        let mut fresh = DrainSweepLedger::default();
+        fresh.redispatch_counts.insert("never".to_string(), 1);
+        assert_eq!(
+            next_drain_dispatches(&candidates, &live, &fresh, 2, true),
+            vec![
+                (
+                    "resumed".to_string(),
+                    DrainDispatchKind::UnblockContinuation
+                ),
+                ("never".to_string(), DrainDispatchKind::Budgeted),
+                ("spent".to_string(), DrainDispatchKind::Budgeted),
+            ]
+        );
+    }
+
+    /// R62c, pure: the durable "continuation not yet consumed" and "never
+    /// dispatched" readings of card metadata.
+    #[test]
+    fn headless_unblock_continuation_pending_and_never_dispatched_read_card_metadata() {
+        let resumed = "2026-09-17T01:22:00+00:00";
+        assert!(headless_unblock_continuation_pending(&serde_json::json!({
+            "resumed_by_headless_unblock_at": resumed,
+            "dispatched_at": "2026-09-17T01:21:14+00:00",
+        })));
+        assert!(headless_unblock_continuation_pending(&serde_json::json!({
+            "resumed_by_headless_unblock_at": resumed,
+        })));
+        assert!(
+            !headless_unblock_continuation_pending(&serde_json::json!({
+                "resumed_by_headless_unblock_at": resumed,
+                "dispatched_at": "2026-09-17T01:22:05+00:00",
+            })),
+            "a dispatch after the resume consumed the continuation, whoever started it"
+        );
+        assert!(!headless_unblock_continuation_pending(
+            &serde_json::json!({ "dispatched_at": "2026-09-17T01:21:14+00:00" })
+        ));
+        assert!(
+            !headless_unblock_continuation_pending(&serde_json::json!({
+                "resumed_by_headless_unblock_at": "not a time",
+            })),
+            "bad data never earns an extra dispatch"
+        );
+
+        assert!(goal_never_dispatched(&serde_json::json!({})));
+        assert!(goal_never_dispatched(
+            &serde_json::json!({ "attempt_count": 0 })
+        ));
+        assert!(!goal_never_dispatched(
+            &serde_json::json!({ "attempt_count": 1 })
+        ));
+        assert!(!goal_never_dispatched(&serde_json::json!({
+            "first_dispatched_at": "2026-09-17T01:21:14+00:00",
+            "attempt_count": 0,
+        })));
+        assert!(!goal_never_dispatched(
+            &serde_json::json!({ "execution_receipt": {} })
+        ));
+    }
+
+    /// R62c, durable (A61 Miss 4, `harness-cli-argparse-log-filter`): the
+    /// drain re-dispatched the card twice, the second attempt was held and
+    /// R18g's headless unblock requeued it with its one continuation — and
+    /// the drain parked it on the spent budget, so no fifth session ever ran.
+    /// The continuation must now dispatch exactly once, and never a fourth
+    /// attempt after it. Pre-fix repro: `recorded` holds two ids, not three.
+    #[tokio::test]
+    async fn drain_sweep_dispatches_a_headless_unblock_continuation_after_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+
+        // Every attempt, including the pre-drain one: a new worker session of
+        // this coordinator, attached to the card, whose attempt is already
+        // over with the card left Ready (a `hold_done` requeue).
+        async fn finished_attempt(
+            sm: &crate::session::SessionManager,
+            pool: &sqlx::Pool<sqlx::Sqlite>,
+            coordinator_id: &str,
+            card_id: &str,
+            dir: std::path::PathBuf,
+        ) {
+            let child = sm
+                .create_session_with_parent(
+                    Some(coordinator_id),
+                    dir,
+                    "Goal: held and requeued".to_string(),
+                    SessionType::SubAgent,
+                    GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            attach_worker_session_to_card(pool, card_id, &child.id).await;
+            let mut receipt = ExecutionReceipt::new(
+                "permagent",
+                child.id.clone(),
+                serde_json::json!({}),
+                "life-1",
+                chrono::Utc::now().to_rfc3339(),
+                1,
+            );
+            receipt.finalize(ReceiptState::Failed, chrono::Utc::now().to_rfc3339());
+            cards::set_goal_execution_receipt(
+                pool,
+                card_id,
+                serde_json::to_value(&receipt).unwrap(),
+            )
+            .await
+            .unwrap();
+        }
+        finished_attempt(
+            &sm,
+            &pool,
+            &coordinator.id,
+            &card.id,
+            tmp.path().to_path_buf(),
+        )
+        .await;
+
+        let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&log);
+        let sm_hook = Arc::clone(&sm);
+        let pool_hook = pool.clone();
+        let coordinator_id = coordinator.id.clone();
+        let dir = tmp.path().to_path_buf();
+        let dispatcher: Box<GoalDispatchHook> = Box::new(move |card_id: String| {
+            let sink = Arc::clone(&sink);
+            let sm = Arc::clone(&sm_hook);
+            let pool = pool_hook.clone();
+            let coordinator_id = coordinator_id.clone();
+            let dir = dir.clone();
+            Box::pin(async move {
+                let call = {
+                    let mut log = sink.lock().unwrap();
+                    log.push(card_id.clone());
+                    log.len()
+                };
+                let now = chrono::Utc::now();
+                let stamps = if call == 2 {
+                    // The second re-dispatch is held twice and R18g resumes
+                    // it: `dispatched_at` predates the resume stamp.
+                    serde_json::json!({
+                        "dispatched_at": (now - chrono::Duration::seconds(30)).to_rfc3339(),
+                        "resumed_by_headless_unblock_at": now.to_rfc3339(),
+                    })
+                } else {
+                    serde_json::json!({
+                        "dispatched_at": (now + chrono::Duration::seconds(30)).to_rfc3339(),
+                    })
+                };
+                sqlx::query(
+                    "UPDATE cards SET metadata_json = json_patch(metadata_json, ?) WHERE id = ?",
+                )
+                .bind(stamps.to_string())
+                .bind(&card_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+                finished_attempt(&sm, &pool, &coordinator_id, &card_id, dir).await;
+                Ok(format!("redispatched-session-for-{card_id}"))
+            }) as GoalDispatchFuture
+        });
+
+        let _summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            |_, _| {},
+            None,
+            DrainRedispatch {
+                dispatch: Some(&dispatcher),
+                max_redispatch: 2,
+                sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let recorded = log.lock().unwrap().clone();
+        assert_eq!(
+            recorded,
+            vec![card.id.clone(), card.id.clone(), card.id.clone()],
+            "two budgeted re-dispatches plus exactly one headless-unblock continuation: \
+             {recorded:?}"
+        );
+    }
+
+    /// R62c, durable (A61 Miss 1, `harness-refactor-shipping-quote-signature`):
+    /// a Ready goal of this run's own roadmap whose every dispatch so far was
+    /// refused (spending its whole budget) was left `never_dispatched` while
+    /// the drain quit with most of its cap unused. Before quiescing, the drain
+    /// must give it one first dispatch — and only one. Pre-fix repro:
+    /// `recorded` holds two ids and the sibling is still Ready.
+    #[tokio::test]
+    async fn drain_gives_a_never_dispatched_goal_its_first_dispatch_before_quiescing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: finished root".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let finished_root = setup_goal_in_state(&pool, "complete", 1).await;
+        attach_worker_session_to_card(&pool, &finished_root.id, &child.id).await;
+        let sibling = setup_goal_in_state(&pool, "ready", 0).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, \
+             '$.created_by_session_id', ?) WHERE id = ?",
+        )
+        .bind(&coordinator.id)
+        .bind(&sibling.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Refuses (not a write-scope wait, so nothing is refunded) until the
+        // third call, then claims the card.
+        let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&log);
+        let pool_hook = pool.clone();
+        let dispatcher: Box<GoalDispatchHook> = Box::new(move |card_id: String| {
+            let sink = Arc::clone(&sink);
+            let pool = pool_hook.clone();
+            Box::pin(async move {
+                let call = {
+                    let mut log = sink.lock().unwrap();
+                    log.push(card_id.clone());
+                    log.len()
+                };
+                if call < 3 {
+                    return Err(format!(
+                        "No suitable worker available for goal '{card_id}' right now"
+                    ));
+                }
+                move_card_to_goal_state(&pool, &card_id, "in_progress").await;
+                Ok(format!("redispatched-session-for-{card_id}"))
+            }) as GoalDispatchFuture
+        });
+
+        let start = std::time::Instant::now();
+        let cap = std::time::Duration::from_secs(5);
+        let _summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            cap,
+            std::time::Duration::from_millis(10),
+            |_, _| {},
+            None,
+            DrainRedispatch {
+                dispatch: Some(&dispatcher),
+                max_redispatch: 2,
+                sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let recorded = log.lock().unwrap().clone();
+        assert_eq!(
+            recorded,
+            vec![sibling.id.clone(), sibling.id.clone(), sibling.id.clone()],
+            "two budgeted attempts, then exactly one first dispatch before quiescing: \
+             {recorded:?}"
+        );
+        assert!(
+            start.elapsed() < cap / 2,
+            "the first dispatch is bounded; the drain still quiesces long before the cap"
+        );
+        let sibling = cards::get_card(&pool, &sibling.id).await.unwrap().unwrap();
+        let column = cards::get_column(&pool, &sibling.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(column.state_binding.as_deref(), Some("in_progress"));
     }
 
     /// Y6 (i), durable. A worker whose completion handler is still running
@@ -34926,6 +36552,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 dispatch: None,
                 max_redispatch: 0,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -35023,6 +36650,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 dispatch: None,
                 max_redispatch: 0,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -35121,6 +36749,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 // Y6b: never stand the sweep down in this test — the headroom
                 // rule is pinned separately, with its own fixture.
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -35205,6 +36834,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 // Y6b: never stand the sweep down in this test — the headroom
                 // rule is pinned separately, with its own fixture.
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -35293,6 +36923,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 // headroom window, i.e. the shape of the last seconds of a
                 // real 240s drain.
                 sweep_headroom: std::time::Duration::from_secs(3_600),
+                auto_land: false,
             },
         )
         .await
@@ -35404,6 +37035,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 // so the STATIC rule alone would stand the sweep down on
                 // every single poll.
                 sweep_headroom: std::time::Duration::from_secs(3_600),
+                auto_land: false,
             },
         )
         .await
@@ -35452,39 +37084,71 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// question; the drain's sweep must only continue this run's own DAG.
     #[test]
     fn run_scoped_ready_goals_keeps_awaited_cards_and_their_dependents() {
-        fn ready_card(id: &str, depends_on: &[&str]) -> cards::Card {
-            cards::Card {
-                id: id.to_string(),
-                project_id: "proj".to_string(),
-                card_type: "goal".to_string(),
-                title: id.to_string(),
-                description: String::new(),
-                column_id: "ready-col".to_string(),
-                position: 0,
-                created_by: "test".to_string(),
-                assigned_to: None,
-                metadata_json: serde_json::json!({ "depends_on": depends_on }),
-                created_at: String::new(),
-                updated_at: String::new(),
-                archived_at: None,
-            }
-        }
         let ready = vec![
-            ready_card("awaited", &[]),
-            ready_card("dependent", &["awaited"]),
-            ready_card("stranger", &[]),
-            ready_card("someone-elses-dependent", &["not-ours"]),
+            run_scope_ready_card("awaited", &[], None),
+            run_scope_ready_card("dependent", &["awaited"], None),
+            run_scope_ready_card("stranger", &[], None),
+            run_scope_ready_card("someone-elses-dependent", &["not-ours"], None),
         ];
         let awaited: std::collections::HashSet<String> =
             ["awaited".to_string()].into_iter().collect();
         assert_eq!(
-            run_scoped_ready_goals(&ready, &awaited),
+            run_scoped_ready_goals(&ready, &awaited, "coordinator-1"),
             vec!["awaited".to_string(), "dependent".to_string()],
             "only this run's own cards and their dependents"
         );
         assert!(
-            run_scoped_ready_goals(&ready, &std::collections::HashSet::new()).is_empty(),
+            run_scoped_ready_goals(&ready, &std::collections::HashSet::new(), "coordinator-1")
+                .is_empty(),
             "no awaited cards means no DAG of this run's to continue — never a project-wide sweep"
+        );
+    }
+
+    fn run_scope_ready_card(
+        id: &str,
+        depends_on: &[&str],
+        created_by_session_id: Option<&str>,
+    ) -> cards::Card {
+        let mut metadata = serde_json::json!({ "depends_on": depends_on });
+        if let Some(owner) = created_by_session_id {
+            metadata["created_by_session_id"] = serde_json::json!(owner);
+        }
+        cards::Card {
+            id: id.to_string(),
+            project_id: "proj".to_string(),
+            card_type: "goal".to_string(),
+            title: id.to_string(),
+            description: String::new(),
+            column_id: "ready-col".to_string(),
+            position: 0,
+            created_by: "test".to_string(),
+            assigned_to: None,
+            metadata_json: metadata,
+            created_at: String::new(),
+            updated_at: String::new(),
+            archived_at: None,
+        }
+    }
+
+    /// R56a, pure. A SIBLING ROOT of this run's own roadmap — a second root
+    /// goal whose first dispatch was refused, so it has no worker session and
+    /// depends on nothing — must be sweepable, while a stranger card with no
+    /// owner, and one owned by a DIFFERENT session, stay out of scope.
+    #[test]
+    fn run_scoped_ready_goals_keeps_a_never_dispatched_sibling_root_of_this_run() {
+        let ready = vec![
+            run_scope_ready_card("awaited", &[], Some("coordinator-1")),
+            run_scope_ready_card("sibling-root", &[], Some("coordinator-1")),
+            run_scope_ready_card("other-runs-root", &[], Some("coordinator-2")),
+            run_scope_ready_card("stranger", &[], None),
+        ];
+        let awaited: std::collections::HashSet<String> =
+            ["awaited".to_string()].into_iter().collect();
+        assert_eq!(
+            run_scoped_ready_goals(&ready, &awaited, "coordinator-1"),
+            vec!["awaited".to_string(), "sibling-root".to_string()],
+            "a root this run's own create_roadmap minted must be reachable by the sweep, and \
+             nothing else new"
         );
     }
 
@@ -35492,7 +37156,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// dispatched and that depends on nothing this run dispatched — a card a
     /// human left on the board — must never be started by the drain's sweep.
     /// Pre-fix repro: `eligible_ready_goals`' project-wide list went straight
-    /// into `next_dispatch_actions`, so the stranger was dispatched on the
+    /// into the sweep's dispatch selector (then `next_dispatch_actions`, now
+    /// `next_drain_dispatches`), so the stranger was dispatched on the
     /// first pass.
     #[tokio::test]
     async fn drain_sweep_does_not_dispatch_a_ready_card_outside_this_runs_dag() {
@@ -35550,6 +37215,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 dispatch: Some(&dispatcher),
                 max_redispatch: 2,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -35571,6 +37237,259 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             Some("ready"),
             "a card outside this run's DAG must be left exactly where it was"
         );
+    }
+
+    /// R56a, durable. The `select-failing-test-decompose-before-create`
+    /// repro: a SIBLING ROOT of this run's own roadmap whose first dispatch
+    /// was refused has no worker session and no `depends_on`, so pre-fix the
+    /// sweep could not see it on any poll and the run exited with
+    /// `park_reason … never_dispatched`. It is this run's card —
+    /// `created_by_session_id` is the coordinator that minted it — so the
+    /// sweep must start it, while a stranger card is still left alone.
+    #[tokio::test]
+    async fn drain_sweep_dispatches_a_never_dispatched_sibling_root_of_this_runs_roadmap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: first root".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        // The first root: its worker attempt is over and the card is Ready
+        // again, exactly as in the sibling test above.
+        let first_root = setup_goal_in_state(&pool, "ready", 1).await;
+        attach_worker_session_to_card(&pool, &first_root.id, &child.id).await;
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            child.id.clone(),
+            serde_json::json!({}),
+            "life-1",
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::Failed, chrono::Utc::now().to_rfc3339());
+        cards::set_goal_execution_receipt(
+            &pool,
+            &first_root.id,
+            serde_json::to_value(&receipt).unwrap(),
+        )
+        .await
+        .unwrap();
+        // The second root of the SAME roadmap: never dispatched, depends on
+        // nothing, minted by this coordinator's own `create_roadmap`.
+        let sibling_root = setup_goal_in_state(&pool, "ready", 0).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, \
+             '$.created_by_session_id', ?) WHERE id = ?",
+        )
+        .bind(&coordinator.id)
+        .bind(&sibling_root.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // A card nobody in this run owns.
+        let stranger = setup_goal_in_state(&pool, "ready", 0).await;
+
+        let (dispatcher, recorded) = drain_claiming_dispatcher(pool.clone());
+        let _summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            |_, _| {},
+            None,
+            DrainRedispatch {
+                dispatch: Some(&dispatcher),
+                max_redispatch: 2,
+                sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let recorded = recorded.lock().unwrap().clone();
+        assert!(
+            recorded.contains(&sibling_root.id),
+            "the never-dispatched sibling root of this run's own roadmap must be swept: \
+             {recorded:?}"
+        );
+        assert!(
+            !recorded.contains(&stranger.id),
+            "a card this run does not own must still be left alone: {recorded:?}"
+        );
+    }
+
+    /// R62c, durable (M46 r61 s1 `harness-testfix-inventory-suite-green`):
+    /// the coordinator moved the goal to Review by hand while its worker was
+    /// live, so no completion handler minted an `approve_review` or ran the
+    /// headless auto-land, and the drain exited with the card still in
+    /// Review (`0 goal(s) finished, 1 still running at exit`). With auto-land
+    /// on, the drain must adopt it once: mint the decision (bound to this
+    /// coordinator) and drive it through the auto-land's own gates to a
+    /// terminal state. This fixture's worker recorded no verify pass, so the
+    /// honest terminal state is a park, not a landing. With auto-land off the
+    /// card is left exactly as before. Pre-fix repro: no `approve_review` row
+    /// and the card still in Review.
+    #[tokio::test]
+    async fn drain_adopts_a_review_goal_no_completion_handler_surfaced() {
+        async fn orphaned_review_fixture(
+            auto_land: bool,
+        ) -> (
+            tempfile::TempDir,
+            sqlx::Pool<sqlx::Sqlite>,
+            String,
+            cards::Card,
+            DrainSummary,
+        ) {
+            let tmp = tempfile::tempdir().unwrap();
+            let sm = Arc::new(crate::session::SessionManager::new(
+                tmp.path().to_path_buf(),
+            ));
+            let pool = sm.pool_clone().await.unwrap();
+            let coordinator = sm
+                .create_session(
+                    tmp.path().to_path_buf(),
+                    "coordinator".to_string(),
+                    SessionType::Hidden,
+                    GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            let child = sm
+                .create_session_with_parent(
+                    Some(&coordinator.id),
+                    tmp.path().to_path_buf(),
+                    "Goal: moved to review by hand".to_string(),
+                    SessionType::SubAgent,
+                    GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            let card = setup_goal_in_state(&pool, "review", 1).await;
+            attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+            let mut receipt = ExecutionReceipt::new(
+                "permagent",
+                child.id.clone(),
+                serde_json::json!({}),
+                "life-1",
+                chrono::Utc::now().to_rfc3339(),
+                1,
+            );
+            receipt.finalize(ReceiptState::Completed, chrono::Utc::now().to_rfc3339());
+            cards::set_goal_execution_receipt(
+                &pool,
+                &card.id,
+                serde_json::to_value(&receipt).unwrap(),
+            )
+            .await
+            .unwrap();
+            let summary = drain_dispatched_goals_with(
+                &pool,
+                &coordinator.id,
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_millis(10),
+                |_, _| {},
+                None,
+                DrainRedispatch {
+                    dispatch: None,
+                    max_redispatch: 0,
+                    sweep_headroom: std::time::Duration::ZERO,
+                    auto_land,
+                },
+            )
+            .await
+            .unwrap();
+            (tmp, pool, coordinator.id, card, summary)
+        }
+        async fn state_of(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) -> Option<String> {
+            let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
+            cards::get_column(pool, &card.column_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state_binding
+        }
+
+        let (_tmp, pool, coordinator_id, card, summary) = orphaned_review_fixture(true).await;
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT status, payload_json FROM decisions WHERE goal_id = ? AND kind = 'approve_review'",
+        )
+        .bind(&card.id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1, "exactly one approve_review minted: {rows:?}");
+        let payload: serde_json::Value = serde_json::from_str(&rows[0].1).unwrap();
+        assert_eq!(
+            payload.get("minting_session_id").and_then(|v| v.as_str()),
+            Some(coordinator_id.as_str()),
+            "the adopted decision is bound to this run's coordinator, like any headless mint"
+        );
+        assert_eq!(
+            rows[0].0, "superseded",
+            "no verify evidence: the auto-land refuses and supersedes, it never approves"
+        );
+        assert_eq!(
+            state_of(&pool, &card.id).await.as_deref(),
+            Some("failed"),
+            "the orphaned Review goal reaches a terminal (parked) state instead of being \
+             abandoned in Review"
+        );
+        assert_eq!(summary.finished, 1, "{summary:?}");
+
+        let (_tmp, pool, _coordinator_id, card, _summary) = orphaned_review_fixture(false).await;
+        let minted: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE goal_id = ? AND kind = 'approve_review'",
+        )
+        .bind(&card.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(minted, 0, "auto-land off: nothing is minted by the drain");
+        assert_eq!(
+            state_of(&pool, &card.id).await.as_deref(),
+            Some("review"),
+            "auto-land off: the card is left for a human, unchanged"
+        );
+    }
+
+    /// R56a, pure. A write-scope refusal must be recognised as a WAIT from
+    /// the exact text `write_scope_conflict` builds — the drain refunds the
+    /// re-dispatch attempt for this shape only, so the phrase and its test
+    /// share one const.
+    #[test]
+    fn scope_conflict_refusal_reads_as_a_wait_and_other_refusals_do_not() {
+        let refusal = format!(
+            "Goal 'Fix inventory.py' remains Ready and was not dispatched: \
+             {WRITE_SCOPE_CONFLICT_REFUSAL} 'Fix pricing.py' (card-1): write scope is missing or \
+             empty for a non-read-only node. Wait for the active goal to finish or narrow its \
+             declared 'write_scope' paths."
+        );
+        assert!(refusal_is_scope_wait(&refusal));
+        assert!(!refusal_is_scope_wait(
+            "No suitable worker available for goal 'Fix inventory.py'"
+        ));
+        assert!(!refusal_is_scope_wait(
+            "attempt cap exhausted (spent=3,cap=3)"
+        ));
     }
 
     /// Y6b: the two new headless env knobs parse and are named the way their
@@ -35740,6 +37659,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 dispatch: None,
                 max_redispatch: 0,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -35822,6 +37742,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 dispatch: None,
                 max_redispatch: 0,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -35930,6 +37851,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 dispatch: None,
                 max_redispatch: 0,
                 sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
             },
         )
         .await
@@ -39732,6 +41654,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             GooseMode::Approve,
             None,
             &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
         )
         .await
         .unwrap();
@@ -39742,6 +41665,80 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             .unwrap();
         let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
         assert_eq!(metadata["budget_task_id"], "approving-task");
+    }
+
+    /// R56a, durable. The derived scope must actually land on the card
+    /// metadata the dispatcher reads (`write_scope_conflict` ->
+    /// `write_scope::metadata_conflict`), not merely be computed. Pre-fix,
+    /// no code path ever wrote the key, so two roots of one roadmap always
+    /// read as "write scope is missing or empty for a non-read-only node"
+    /// and the second was refused dispatch until the first left InProgress.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn materialized_goals_carry_the_derived_write_scope() {
+        let pool = test_pool().await;
+        let goals = vec![
+            goal_state::ProposedGoal {
+                title: "Fix pricing.py".to_string(),
+                description: "repair apply_discount in pricing.py".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+            goal_state::ProposedGoal {
+                title: "Fix inventory.py".to_string(),
+                description: "repair decrement_stock in inventory.py".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+        ];
+        let facts = RepoFacts {
+            files: vec!["pricing.py".to_string(), "inventory.py".to_string()],
+            file_count: 2,
+            ..Default::default()
+        };
+        let derived = derive_disjoint_write_scopes(&goals, &facts);
+        assert_eq!(derived.len(), 2, "fixture precondition: {derived:?}");
+
+        let (hash, decision_id) =
+            install_answered_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let order = goal_state::topological_order(&goals).unwrap();
+        let materialized = materialize_roadmap_transaction_with_budget(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+            None,
+            GooseMode::Approve,
+            None,
+            &std::collections::BTreeMap::new(),
+            &derived,
+        )
+        .await
+        .unwrap();
+
+        let mut metadata = Vec::new();
+        for card_id in &materialized.created_ids {
+            let card = cards::get_card(&pool, card_id).await.unwrap().unwrap();
+            metadata.push(card.metadata_json);
+        }
+        let key = crate::agents::platform_extensions::write_scope::WRITE_SCOPE_KEY;
+        assert_eq!(metadata[0][key], serde_json::json!(["pricing.py"]));
+        assert_eq!(metadata[1][key], serde_json::json!(["inventory.py"]));
+        assert_eq!(
+            crate::agents::platform_extensions::write_scope::metadata_conflict(
+                &metadata[0],
+                &metadata[1]
+            )
+            .unwrap(),
+            None,
+            "the dispatcher must now be able to prove the two roots are file-disjoint"
+        );
     }
 
     #[test]
@@ -40038,6 +42035,224 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         assert!(!receipts.iter().any(|r| r.contains("right-sized")));
     }
 
+    /// R62c (R56a root cause 3, option (b); A61 Miss 5 and r58 q3,
+    /// `select-failing-test-decompose-before-create`): two file-disjoint
+    /// roots whose only criterion is the same whole-suite oracle. Neither can
+    /// pass it in its own worktree, so they are chained and the oracle stays
+    /// only on the last; the first gets a probe it can pass alone, scoped to
+    /// its own file (not the test file its description also mentions). The
+    /// split itself survives.
+    #[test]
+    fn ground_roadmap_goals_chains_goals_sharing_a_whole_suite_oracle() {
+        let facts = RepoFacts {
+            files: vec![
+                "pricing.py".to_string(),
+                "inventory.py".to_string(),
+                "test_checkout.py".to_string(),
+            ],
+            file_count: 3,
+            ..Default::default()
+        };
+        let allowed = tags(&["code_edit", "shell"]);
+        let oracle = "`python3 test_checkout.py` exits with code 0";
+        let goals = vec![
+            goal(
+                "Fix discount calculation in pricing.py",
+                "Repair apply_discount in pricing.py so test_checkout.py stops failing on it.",
+                &[oracle],
+                &["code_edit"],
+            ),
+            goal(
+                "Fix stock decrement in inventory.py",
+                "Repair decrement_stock in inventory.py.",
+                &[oracle],
+                &["code_edit"],
+            ),
+        ];
+        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed, None);
+
+        assert_eq!(grounded.len(), 2, "the split is kept");
+        assert!(grounded[0].depends_on.is_empty());
+        assert_eq!(
+            grounded[1].depends_on,
+            vec![0],
+            "the later goal waits for the earlier one to land"
+        );
+        assert!(
+            !grounded[0].acceptance_criteria.iter().any(|c| c == oracle),
+            "the shared oracle moves off the earlier goal: {:?}",
+            grounded[0].acceptance_criteria
+        );
+        assert_eq!(
+            grounded[1]
+                .acceptance_criteria
+                .iter()
+                .filter(|c| *c == oracle)
+                .count(),
+            1,
+            "the shared oracle stays on the last goal: {:?}",
+            grounded[1].acceptance_criteria
+        );
+        assert!(
+            grounded[0]
+                .acceptance_criteria
+                .iter()
+                .any(|c| c.starts_with(&format!(
+                    "{PROBE_COMMAND_PREFIX} cmd=\"python3 -m py_compile pricing.py\""
+                ))),
+            "the earlier goal gets a probe scoped to its own non-test file: {:?}",
+            grounded[0].acceptance_criteria
+        );
+        assert!(
+            !grounded[0]
+                .acceptance_criteria
+                .iter()
+                .any(|c| c.contains("py_compile test_checkout.py")),
+            "never a probe on the shared test file"
+        );
+        assert!(
+            receipts
+                .iter()
+                .any(|r| r.contains("decompose_chained_shared_oracle=2")),
+            "receipts: {receipts:?}"
+        );
+        assert!(!receipts.iter().any(|r| r.contains("right-sized")));
+    }
+
+    /// R62c: the protected split above (`cargo test` shared by `src/a.rs` and
+    /// `src/b.rs`) keeps both goals and gains the order; the earlier Rust card
+    /// gets `cargo check`, which it can pass on its own. Three members chain
+    /// in order, and an earlier member that keeps another criterion of its
+    /// own gains no probe.
+    #[test]
+    fn ground_roadmap_goals_chains_a_shared_cargo_test_in_order_and_keeps_own_criteria() {
+        let facts = RepoFacts {
+            manifests: vec!["Cargo.toml".to_string()],
+            files: vec![
+                "src/a.rs".to_string(),
+                "src/b.rs".to_string(),
+                "src/c.rs".to_string(),
+            ],
+            file_count: 3,
+            check_commands: vec!["cargo test".to_string()],
+            ..Default::default()
+        };
+        let allowed = tags(&["code_edit", "shell"]);
+        let goals = vec![
+            goal(
+                "Fix src/a.rs",
+                "edit src/a.rs",
+                &["`cargo test` passes"],
+                &["code_edit"],
+            ),
+            goal(
+                "Fix src/b.rs",
+                "edit src/b.rs",
+                &["`cargo test` passes", "`cargo test b_parses` passes"],
+                &["code_edit"],
+            ),
+            goal(
+                "Fix src/c.rs",
+                "edit src/c.rs",
+                &["`cargo test` passes."],
+                &["code_edit"],
+            ),
+        ];
+        let (grounded, _receipts) = ground_roadmap_goals(goals, &facts, &allowed, None);
+        assert_eq!(grounded.len(), 3);
+        assert!(grounded[0].depends_on.is_empty());
+        assert_eq!(grounded[1].depends_on, vec![0]);
+        assert_eq!(grounded[2].depends_on, vec![1]);
+        assert!(goal_state::topological_order(&grounded).is_ok());
+        assert_eq!(
+            grounded[0].acceptance_criteria.len(),
+            1,
+            "{:?}",
+            grounded[0].acceptance_criteria
+        );
+        assert!(grounded[0].acceptance_criteria[0]
+            .starts_with(&format!("{PROBE_COMMAND_PREFIX} cmd=\"cargo check\"")));
+        assert_eq!(
+            grounded[1].acceptance_criteria,
+            vec!["`cargo test b_parses` passes".to_string()],
+            "an earlier goal with its own criterion keeps it and gains no probe"
+        );
+        assert_eq!(
+            grounded[2].acceptance_criteria,
+            vec!["`cargo test` passes.".to_string()],
+            "the oracle (matched ignoring a trailing full stop) stays only on the last goal"
+        );
+    }
+
+    /// R62c negative controls: goals whose test criteria differ are left
+    /// exactly as proposed, and a group whose earlier member would be left
+    /// with no check and names no file is declined, not half-applied.
+    #[test]
+    fn ground_roadmap_goals_leaves_disjoint_or_unprovable_oracles_unchained() {
+        let facts = RepoFacts {
+            manifests: vec!["setup.py".to_string()],
+            files: vec![
+                "pricing.py".to_string(),
+                "inventory.py".to_string(),
+                "tests/test_pricing.py".to_string(),
+                "tests/test_inventory.py".to_string(),
+            ],
+            file_count: 4,
+            ..Default::default()
+        };
+        let allowed = tags(&["code_edit", "shell"]);
+        let goals = vec![
+            goal(
+                "Fix pricing.py",
+                "Repair apply_discount in pricing.py.",
+                &["`python3 -m pytest tests/test_pricing.py` passes"],
+                &["code_edit"],
+            ),
+            goal(
+                "Fix inventory.py",
+                "Repair decrement_stock in inventory.py.",
+                &["`python3 -m pytest tests/test_inventory.py` passes"],
+                &["code_edit"],
+            ),
+        ];
+        let (grounded, receipts) = ground_roadmap_goals(goals.clone(), &facts, &allowed, None);
+        assert_eq!(grounded, goals, "disjoint oracles: unchanged");
+        assert!(!receipts
+            .iter()
+            .any(|r| r.contains("decompose_chained_shared_oracle")));
+
+        let files: Vec<String> = (0..50).map(|i| format!("src/f{i}.rs")).collect();
+        let large = RepoFacts {
+            manifests: vec!["Cargo.toml".to_string()],
+            file_count: files.len(),
+            files,
+            check_commands: vec!["cargo test".to_string()],
+            ..Default::default()
+        };
+        let unnamed = vec![
+            goal(
+                "Goal A",
+                "do the first thing",
+                &["`cargo test` passes"],
+                &[],
+            ),
+            goal(
+                "Goal B",
+                "do the second thing",
+                &["`cargo test` passes"],
+                &[],
+            ),
+        ];
+        let (grounded, receipts) = ground_roadmap_goals(unnamed.clone(), &large, &allowed, None);
+        assert_eq!(
+            grounded, unnamed,
+            "no scoped probe derivable for Goal A: left as proposed"
+        );
+        assert!(receipts
+            .iter()
+            .any(|r| r.contains("decompose_shared_oracle_chain_declined=1")));
+    }
+
     /// Parser-style edge-case fixes often arrive from the planner as one card
     /// per flag even though every card edits the same CLI file. A manifest-less
     /// fixture is still a real repository, and those overlapping writers must
@@ -40087,6 +42302,124 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         assert!(receipts
             .iter()
             .any(|receipt| receipt.contains("decompose_merged_overlapping_files=1")));
+    }
+
+    /// R56a, pure. The held-out `select-failing-test-decompose-before-create`
+    /// shape: two roots, each naming one real file the other never mentions.
+    /// Both cards must come out with a derived `write_scope`, and the
+    /// dispatcher's own conflict rule must then read them as independent —
+    /// before this lane neither card had a scope at all, so the second root's
+    /// dispatch was refused for as long as the first stayed InProgress
+    /// ("write scope is missing or empty for a non-read-only node").
+    #[test]
+    fn derive_disjoint_write_scopes_stamps_one_real_file_per_disjoint_goal() {
+        let facts = RepoFacts {
+            files: vec![
+                "pricing.py".to_string(),
+                "inventory.py".to_string(),
+                "test_checkout.py".to_string(),
+            ],
+            file_count: 3,
+            ..Default::default()
+        };
+        let goals = vec![
+            goal(
+                "Fix discount calculation in pricing.py",
+                "Repair apply_discount in pricing.py. Verify by running the integration test.",
+                &["python3 test_checkout.py exits with code 0"],
+                &["code_edit"],
+            ),
+            goal(
+                "Fix stock decrement in inventory.py",
+                "Repair decrement_stock in inventory.py. Verify by running the integration test.",
+                &["python3 test_checkout.py exits with code 0"],
+                &["code_edit"],
+            ),
+        ];
+
+        let derived = derive_disjoint_write_scopes(&goals, &facts);
+        assert_eq!(
+            derived.get(&0),
+            Some(&vec!["pricing.py".to_string()]),
+            "the shared test oracle lives in the acceptance criteria and must never be claimed \
+             as a write: {derived:?}"
+        );
+        assert_eq!(derived.get(&1), Some(&vec!["inventory.py".to_string()]));
+
+        let key = crate::agents::platform_extensions::write_scope::WRITE_SCOPE_KEY;
+        let left = serde_json::json!({ key: derived[&0] });
+        let right = serde_json::json!({ key: derived[&1] });
+        assert_eq!(
+            crate::agents::platform_extensions::write_scope::metadata_conflict(&left, &right)
+                .unwrap(),
+            None,
+            "the derived scopes must let the dispatcher prove the two roots are disjoint"
+        );
+    }
+
+    /// R56a, pure. The derivation declines for the WHOLE proposal rather
+    /// than half-stamping it: a goal that names no real file cannot be
+    /// proven disjoint from anything, and an undeclared sibling serializes
+    /// the roadmap anyway.
+    #[test]
+    fn derive_disjoint_write_scopes_declines_when_any_goal_is_unproven() {
+        let facts = RepoFacts {
+            files: vec!["pricing.py".to_string(), "inventory.py".to_string()],
+            file_count: 2,
+            ..Default::default()
+        };
+        let no_file_named = vec![
+            goal(
+                "Fix pricing",
+                "Repair apply_discount in pricing.py",
+                &[],
+                &["code_edit"],
+            ),
+            goal(
+                "Write the release note",
+                "Summarise the fix for the changelog",
+                &[],
+                &["code_edit"],
+            ),
+        ];
+        assert!(
+            derive_disjoint_write_scopes(&no_file_named, &facts).is_empty(),
+            "a goal naming no real file leaves the split unproven"
+        );
+
+        let overlapping = vec![
+            goal(
+                "Fix pricing",
+                "Repair apply_discount in pricing.py",
+                &[],
+                &["code_edit"],
+            ),
+            goal(
+                "Guard pricing input",
+                "Also edit pricing.py to reject negative input",
+                &[],
+                &["code_edit"],
+            ),
+        ];
+        assert!(
+            derive_disjoint_write_scopes(&overlapping, &facts).is_empty(),
+            "two goals naming the same file must keep serializing, never be declared disjoint"
+        );
+
+        let single = vec![goal(
+            "Fix pricing",
+            "Repair apply_discount in pricing.py",
+            &[],
+            &["code_edit"],
+        )];
+        assert!(
+            derive_disjoint_write_scopes(&single, &facts).is_empty(),
+            "a one-goal roadmap has no sibling to prove anything against"
+        );
+        assert!(
+            derive_disjoint_write_scopes(&no_file_named, &RepoFacts::default()).is_empty(),
+            "no repo facts means no proof"
+        );
     }
 
     /// R52b, pure: the `harness-refactor-shipping-quote-signature` fixture
