@@ -92,9 +92,10 @@ pub use cache::{
     PrefixSegment, CANONICAL_PREFIX, HARNESS_PREFIX,
 };
 pub use call_site_completeness::{
-    absent_call_sites, detect_signature_changes, enumerate_call_sites, missing_call_sites,
-    parse_call_site_line, render_call_site_section, CallSite, CallSiteEnumeration, CallSiteStatus,
-    CallSiteVerdict, SignatureChange,
+    absent_call_sites, detect_signature_changes, enumerate_call_sites, line_defines_symbol,
+    missing_call_sites, parse_call_site_line, render_call_site_section,
+    unaccounted_call_site_files, CallSite, CallSiteEnumeration, CallSiteStatus, CallSiteVerdict,
+    SignatureChange, UnaccountedCallSiteFile,
 };
 pub use capability_directory::{
     annotate_orchestrate_refusal, billing_class_for, card_role_graduation_json,

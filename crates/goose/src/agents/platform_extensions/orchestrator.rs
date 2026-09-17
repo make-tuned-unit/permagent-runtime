@@ -24069,26 +24069,13 @@ fn parse_grep_line(line: &str) -> Option<(String, usize, String)> {
     (!file.is_empty()).then_some((file, number, text))
 }
 
-/// Lane R62e: does `text` define `symbol`? The E7 recognizer
-/// ([`crate::cost_router::call_site_completeness::definition_in_line`]) plus
-/// the `const|let|var name =` binding shape an arrow function uses.
+/// Lane R62e: does `text` define `symbol`? The shared E7 recognizer
+/// ([`crate::cost_router::line_defines_symbol`]) — a one-line definition, a
+/// reflowed definition's head line (Lane R67a), or a `const|let|var name =`
+/// binding — so this `git grep` seam and the pure enumeration agree on what a
+/// definition is, and a definition never lands in the call-site list.
 fn line_defines_symbol(text: &str, symbol: &str) -> bool {
-    if crate::cost_router::call_site_completeness::definition_in_line(text)
-        .is_some_and(|(name, _)| name == symbol)
-    {
-        return true;
-    }
-    let trimmed = text.trim_start();
-    let trimmed = trimmed.strip_prefix("export ").unwrap_or(trimmed);
-    ["const ", "let ", "var "].iter().any(|kw| {
-        trimmed
-            .strip_prefix(kw)
-            .and_then(|rest| rest.trim_start().strip_prefix(symbol))
-            .is_some_and(|rest| {
-                let rest = rest.trim_start();
-                rest.starts_with('=') || rest.starts_with(':')
-            })
-    })
+    crate::cost_router::line_defines_symbol(text, symbol)
 }
 
 /// Lane R62e: the definition lines for `symbol` in `git grep -n -w` output,
@@ -25059,9 +25046,20 @@ fn review_round_from_response(
                 .iter()
                 .map(|site| format!("{}:{}", site.file, site.line))
                 .collect();
+            // Lane R67a: name the FILES (and their symbols) the reviewer owes
+            // a line for, and say that one line per file is enough — the old
+            // bare `file:line` list read as a demand for one line per line.
+            let files: Vec<String> = crate::cost_router::unaccounted_call_site_files(
+                call_site_enumerations,
+                &outcome.call_sites,
+            )
+            .iter()
+            .map(|group| format!("{} in {}", group.symbol, group.file))
+            .collect();
             tracing::info!(
                 target: "permagentd::brain",
                 absent_call_sites = sites.len(),
+                absent_call_site_files = files.len(),
                 verdict = outcome.verdict.as_str(),
                 "reviewer wrote no CALLSITE line for listed call sites and no other finding; \
                  reading the review as UNCERTAIN",
@@ -25069,9 +25067,12 @@ fn review_round_from_response(
             return ReviewRound::CallSiteTableIncomplete {
                 reason: format!(
                     "the reviewer did not complete the required CALLSITE table: no CALLSITE \
-                     line for {} listed call site(s) ({}) and no other concrete finding",
+                     line for {} listed call site(s) in {} file(s) ({}) and no other concrete \
+                     finding — one CALLSITE line per changed symbol per file (the line number \
+                     is optional) covers a whole file",
                     sites.len(),
-                    sites.join(", ")
+                    files.len(),
+                    files.join("; ")
                 ),
                 sites,
             };
@@ -55807,6 +55808,46 @@ mod r66a_tests {
         )
         .expect("sent back");
         assert!(lines[0].contains("src/admin/manualQuote.ts:5"));
+    }
+
+    /// Lane R67a: the r67 s1 send-back, at the round level. A reviewer that
+    /// answers one CALLSITE line per FILE — with no line numbers — now
+    /// APPROVES instead of being rejected by the harness's own E7 complaint,
+    /// and when it does leave a file out, the incomplete-table reason names
+    /// the file and its symbol and says one line per file is enough.
+    #[test]
+    fn r67a_one_callsite_line_per_file_lets_the_round_approve() {
+        let sites = quote_call_sites();
+        let per_file = "VERDICT: APPROVE\nCHECKED: every listed call site of quoteShipping\n\
+                        CALLSITE quoteShipping | src/admin/manualQuote.ts | UPDATED | passes \
+                        packageType\n\
+                        CALLSITE quoteShipping | src/shipping/quote.ts | UPDATED | passes \
+                        packageType";
+        assert_eq!(
+            review_round_from_response(per_file, 40, &sites),
+            ReviewRound::Approved {
+                checked: "every listed call site of quoteShipping".to_string()
+            }
+        );
+
+        let one_file_only = "VERDICT: APPROVE\nCHECKED: the admin caller\n\
+                             CALLSITE quoteShipping | src/admin/manualQuote.ts | UPDATED | passes \
+                             packageType";
+        match review_round_from_response(one_file_only, 40, &sites) {
+            ReviewRound::CallSiteTableIncomplete { reason, sites } => {
+                assert_eq!(sites, vec!["src/shipping/quote.ts:15"]);
+                assert!(reason.contains("CALLSITE table"), "{reason}");
+                assert!(
+                    reason.contains("quoteShipping in src/shipping/quote.ts"),
+                    "{reason}"
+                );
+                assert!(
+                    reason.contains("one CALLSITE line per changed symbol per file"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected an incomplete table, got {other:?}"),
+        }
     }
 
     #[tokio::test]
