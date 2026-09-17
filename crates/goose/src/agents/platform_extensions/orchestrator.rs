@@ -17273,6 +17273,13 @@ async fn independent_review_before_auto_land(
                     let verification_shown = verification
                         .as_ref()
                         .map(|v| serde_json::json!({ "command": v.command, "head": v.head }));
+                    // Lane R68a: wall-clock time actually spent across every
+                    // reviewer call this review makes (first reviewer's
+                    // attempts plus, on escalation, the escalated
+                    // reviewer's) — bounded by `reviewer_gate_total_budget`
+                    // inside the call below, and recorded here regardless
+                    // of which branch the call returns through.
+                    let review_started = std::time::Instant::now();
                     let run = review_goal_diff_with_cross_family_reviewer(
                         pool,
                         card,
@@ -17282,6 +17289,7 @@ async fn independent_review_before_auto_land(
                         calling_session_id,
                     )
                     .await;
+                    let review_seconds_consumed = review_started.elapsed().as_secs();
                     let findings = run.findings;
                     let (review, mut record) = match run.outcome {
                         ReviewerGateOutcome::Approved {
@@ -17331,6 +17339,13 @@ async fn independent_review_before_auto_land(
                         if let Some(escalation) = run.escalation {
                             obj.insert("escalation".to_string(), escalation);
                         }
+                        // Lane R68a: observability for the total review-time
+                        // budget added alongside the per-attempt timeout —
+                        // how much of it this review actually spent.
+                        obj.insert(
+                            "review_seconds_consumed".to_string(),
+                            serde_json::json!(review_seconds_consumed),
+                        );
                     }
                     (review, record)
                 }
@@ -23796,6 +23811,131 @@ fn review_kind_timeout(kind: &GoalReviewKind<'_>) -> std::time::Duration {
     }
 }
 
+/// Env override for [`DEFAULT_REVIEWER_GATE_TOTAL_BUDGET_SECS`]. Same
+/// `PERMAGENT_<NAME>_ENV`/`DEFAULT_<NAME>` naming and raw-`std::env::var`
+/// idiom as [`PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS_ENV`] and its siblings.
+pub const PERMAGENT_REVIEWER_GATE_TOTAL_BUDGET_SECS_ENV: &str =
+    "PERMAGENT_REVIEWER_GATE_TOTAL_BUDGET_SECS";
+
+/// Default for [`PERMAGENT_REVIEWER_GATE_TOTAL_BUDGET_SECS_ENV`]: 600
+/// seconds.
+///
+/// The per-attempt retry this lane added means a single reviewer can now
+/// legitimately spend up to `2 × DEFAULT_REVIEWER_GATE_TIMEOUT_SECS`, and an
+/// UNCERTAIN/errored first reviewer escalates to a second one that can do
+/// the same — up to `4 × DEFAULT_REVIEWER_GATE_TIMEOUT_SECS` (~20 minutes)
+/// in the worst case, with nothing capping the SUM. This bounds that sum
+/// across BOTH reviewers for one goal's independent review, so the
+/// retry-plus-escalation ladder can never make an auto-land review outlive
+/// the goal's own run. See [`reviewer_gate_total_budget`] for how it
+/// combines with the goal's own remaining wall-clock budget when one is
+/// configured.
+pub const DEFAULT_REVIEWER_GATE_TOTAL_BUDGET_SECS: u64 = 600;
+
+fn reviewer_gate_total_budget_from_env() -> u64 {
+    match std::env::var(PERMAGENT_REVIEWER_GATE_TOTAL_BUDGET_SECS_ENV) {
+        Ok(v) => v
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(DEFAULT_REVIEWER_GATE_TOTAL_BUDGET_SECS),
+        Err(_) => DEFAULT_REVIEWER_GATE_TOTAL_BUDGET_SECS,
+    }
+}
+
+/// Below this much remaining review budget, another reviewer call is not
+/// worth attempting at all: a call this short is very unlikely to answer
+/// before it is cut off anyway, so the honest "could not be obtained" park
+/// is faster and cheaper than making it.
+const REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS: u64 = 30;
+
+/// The total wall-clock budget for ALL reviewer calls across one goal's
+/// independent review — shared (not per-cycle) by the first reviewer's
+/// attempts and the escalated reviewer's, so a slow first reviewer leaves
+/// less of it for the escalation. The unverified salvage path never
+/// escalates (Lane R65a scoped escalation to `GoalReviewKind::Verified`
+/// only), so its own fixed [`REVIEWER_GATE_SALVAGE_TIMEOUT_SECS`] already
+/// bounds its one-reviewer worst case to twice that value; a total budget
+/// on top would only ever matter if it were SMALLER, which would silently
+/// shrink the salvage retry this lane shipped, so salvage's budget is
+/// exactly that natural ceiling rather than the configurable one below.
+///
+/// For `GoalReviewKind::Verified` (the auto-land/escalation path this was
+/// written for): the smaller of [`DEFAULT_REVIEWER_GATE_TOTAL_BUDGET_SECS`]
+/// (or its env override) and the goal's own remaining wall-clock budget —
+/// [`remaining_wall_budget_secs`], the SAME helper the headless drain and
+/// `wall_budget_exhausted_refusal` already use — when the goal has one
+/// configured. A review must never be allowed to spend more of a goal's run
+/// than the goal itself has left.
+fn reviewer_gate_total_budget(
+    kind: &GoalReviewKind<'_>,
+    metadata: &serde_json::Value,
+) -> std::time::Duration {
+    match kind {
+        GoalReviewKind::Salvage { .. } => {
+            std::time::Duration::from_secs(REVIEWER_GATE_SALVAGE_TIMEOUT_SECS).saturating_mul(2)
+        }
+        GoalReviewKind::Verified { .. } => {
+            let configured = reviewer_gate_total_budget_from_env();
+            let capped = match remaining_wall_budget_secs(metadata) {
+                WallBudgetCeiling::Unbounded => configured,
+                WallBudgetCeiling::Remaining(remaining) => configured.min(remaining),
+            };
+            std::time::Duration::from_secs(capped)
+        }
+    }
+}
+
+/// Lane R68a: tracks how much of a goal's total review budget
+/// ([`reviewer_gate_total_budget`]) is left, across every reviewer call the
+/// review makes. `started` is real wall-clock time; the `#[cfg(test)]`
+/// constructor lets tests simulate a budget already mostly spent without
+/// sleeping for real.
+struct ReviewTimeBudget {
+    total: std::time::Duration,
+    started: std::time::Instant,
+}
+
+impl ReviewTimeBudget {
+    fn new(total: std::time::Duration) -> Self {
+        Self {
+            total,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    /// Lane R68a test seam: a budget that already has `elapsed` spent
+    /// against it, with no real sleeping. `Instant` subtraction here is
+    /// safe for any `elapsed` well under the process's own uptime, which
+    /// every test value in this lane is.
+    #[cfg(test)]
+    fn with_elapsed(total: std::time::Duration, elapsed: std::time::Duration) -> Self {
+        Self {
+            total,
+            started: std::time::Instant::now() - elapsed,
+        }
+    }
+
+    fn remaining(&self) -> std::time::Duration {
+        self.total.saturating_sub(self.started.elapsed())
+    }
+}
+
+/// `Some(timeout)`, bounded by BOTH `call_timeout` and whatever remains of
+/// `budget`, when there is still enough of it left to be worth spending on
+/// a call at all; `None` when the remaining budget is under
+/// [`REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS`] and the caller must park
+/// instead of making another call.
+fn reviewer_gate_attempt_timeout(
+    call_timeout: std::time::Duration,
+    budget: &ReviewTimeBudget,
+) -> Option<std::time::Duration> {
+    let remaining = budget.remaining();
+    if remaining < std::time::Duration::from_secs(REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS) {
+        return None;
+    }
+    Some(call_timeout.min(remaining))
+}
+
 /// Lane R22c-e (G26 MED-2): the reviewer's prompt window, in characters
 /// (not bytes — `git diff` output is arbitrary UTF-8, and a byte-index
 /// slice can land mid-codepoint and panic). A diff over this size is NEVER
@@ -23980,10 +24120,13 @@ async fn call_reviewer_provider_checked(
 
 /// What one reviewer-call CYCLE ([`run_reviewer_call_cycle`]) produced:
 /// either a response (on the first try, or the one same-reviewer retry —
-/// `attempts` says which), or one of the three failure classes a single
-/// attempt can end in. [`Errored`](Self::Errored) is the Lane R68a case:
-/// BOTH the initial attempt and the retry timed out, so nothing was ever
-/// parsed — this must never be read as an UNCERTAIN verdict downstream.
+/// `attempts` says which), or one of the four outcomes a single attempt (or
+/// the total review budget) can end in. [`Errored`](Self::Errored) is the
+/// Lane R68a case: BOTH the initial attempt and the retry timed out, so
+/// nothing was ever parsed. [`BudgetExhausted`](Self::BudgetExhausted) is
+/// the (also Lane R68a) case where the goal's total review budget
+/// ([`ReviewTimeBudget`]) ran out before this cycle could even make a call
+/// worth attempting — neither reads as an UNCERTAIN verdict downstream.
 #[derive(Debug)]
 enum ReviewCycleOutcome {
     Responded {
@@ -23993,6 +24136,13 @@ enum ReviewCycleOutcome {
     Errored {
         reason: String,
         elapsed_secs: u64,
+    },
+    /// The goal's total review budget had under
+    /// [`REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS`] left when this cycle asked
+    /// for a timeout, so no call was made at all — `remaining_secs` is what
+    /// was left.
+    BudgetExhausted {
+        remaining_secs: u64,
     },
     Unavailable(String),
     Other(String),
@@ -24008,15 +24158,34 @@ enum ReviewCycleOutcome {
 /// the reviewer escalation). Generic over `attempt_call` so tests can inject
 /// a deterministic fake attempt instead of a real provider call and a real
 /// multi-minute wait.
-async fn run_reviewer_call_cycle<F, Fut>(mut attempt_call: F) -> ReviewCycleOutcome
+///
+/// `call_timeout` is the per-kind bound ([`review_kind_timeout`]);
+/// `attempt_call` is handed the ACTUAL bound to use for that one attempt —
+/// [`reviewer_gate_attempt_timeout`] shrinks it to whatever remains of
+/// `budget`, so a first reviewer that burns most of the goal's total review
+/// budget leaves less of it for its own retry or a later escalation. When
+/// `budget` is already too thin to be worth spending on a call at all
+/// (under [`REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS`]), `attempt_call` is never
+/// invoked and this returns [`ReviewCycleOutcome::BudgetExhausted`]
+/// immediately — an exhausted budget parks without another call.
+async fn run_reviewer_call_cycle<F, Fut>(
+    call_timeout: std::time::Duration,
+    budget: &ReviewTimeBudget,
+    mut attempt_call: F,
+) -> ReviewCycleOutcome
 where
-    F: FnMut() -> Fut,
+    F: FnMut(std::time::Duration) -> Fut,
     Fut: std::future::Future<
         Output = Result<crate::conversation::message::Message, ReviewerCallFailure>,
     >,
 {
+    let Some(attempt_timeout) = reviewer_gate_attempt_timeout(call_timeout, budget) else {
+        return ReviewCycleOutcome::BudgetExhausted {
+            remaining_secs: budget.remaining().as_secs(),
+        };
+    };
     let started = std::time::Instant::now();
-    match attempt_call().await {
+    match attempt_call(attempt_timeout).await {
         Ok(message) => {
             return ReviewCycleOutcome::Responded {
                 message,
@@ -24035,7 +24204,12 @@ where
             );
         }
     }
-    match attempt_call().await {
+    let Some(retry_timeout) = reviewer_gate_attempt_timeout(call_timeout, budget) else {
+        return ReviewCycleOutcome::BudgetExhausted {
+            remaining_secs: budget.remaining().as_secs(),
+        };
+    };
+    match attempt_call(retry_timeout).await {
         Ok(message) => ReviewCycleOutcome::Responded {
             message,
             attempts: 2,
@@ -24060,9 +24234,10 @@ async fn call_reviewer_provider_with_timeout_retry(
     model_id: &str,
     session: Session,
     prompt: &str,
-    timeout: std::time::Duration,
+    call_timeout: std::time::Duration,
+    budget: &ReviewTimeBudget,
 ) -> ReviewCycleOutcome {
-    run_reviewer_call_cycle(move || {
+    run_reviewer_call_cycle(call_timeout, budget, move |attempt_timeout| {
         let session = session.clone();
         async move {
             call_reviewer_provider_checked(
@@ -24071,7 +24246,7 @@ async fn call_reviewer_provider_with_timeout_retry(
                 model_id,
                 session,
                 prompt,
-                timeout,
+                attempt_timeout,
             )
             .await
         }
@@ -24872,6 +25047,11 @@ async fn review_goal_diff_with_cross_family_reviewer(
     // through to the escalation ladder below like any other inconclusive
     // round.
     let call_timeout = review_kind_timeout(kind);
+    // Lane R68a: caps the SUM of every reviewer call this review makes (the
+    // first reviewer's attempts and, below, the escalated reviewer's) —
+    // see `reviewer_gate_total_budget`'s doc comment for why and how it
+    // combines with the goal's own remaining wall-clock budget.
+    let budget = ReviewTimeBudget::new(reviewer_gate_total_budget(kind, &card.metadata_json));
     let first: ReviewAttempt = match call_reviewer_provider_with_timeout_retry(
         calling_session_id,
         &pick.provider,
@@ -24879,6 +25059,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
         session.clone(),
         &prompt,
         call_timeout,
+        &budget,
     )
     .await
     {
@@ -24903,6 +25084,12 @@ async fn review_goal_diff_with_cross_family_reviewer(
             provider: pick.provider.clone(),
             model: pick.model.clone(),
             attempts: 2,
+        },
+        ReviewCycleOutcome::BudgetExhausted { remaining_secs } => ReviewAttempt {
+            round: review_budget_exhausted_round(remaining_secs),
+            provider: pick.provider.clone(),
+            model: pick.model.clone(),
+            attempts: 0,
         },
         ReviewCycleOutcome::Other(reason) => {
             return GoalReviewRun::single(ReviewerGateOutcome::Unreachable { reason });
@@ -24929,6 +25116,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
                     session.clone(),
                     &prompt,
                     call_timeout,
+                    &budget,
                 )
                 .await
                 {
@@ -24953,6 +25141,12 @@ async fn review_goal_diff_with_cross_family_reviewer(
                         provider: fb_provider,
                         model: fb_model,
                         attempts: 2,
+                    },
+                    ReviewCycleOutcome::BudgetExhausted { remaining_secs } => ReviewAttempt {
+                        round: review_budget_exhausted_round(remaining_secs),
+                        provider: fb_provider,
+                        model: fb_model,
+                        attempts: 0,
                     },
                     ReviewCycleOutcome::Unavailable(second_reason)
                     | ReviewCycleOutcome::Other(second_reason) => {
@@ -24988,9 +25182,27 @@ async fn review_goal_diff_with_cross_family_reviewer(
             &review_context.call_site_enumerations,
             calling_session_id,
             call_timeout,
+            &budget,
         )
     })
     .await
+}
+
+/// Lane R68a: the round recorded when [`ReviewTimeBudget`] ran out before a
+/// cycle could make a call worth attempting at all — `attempts: 0` on the
+/// [`ReviewAttempt`] this feeds distinguishes it from
+/// [`ReviewRound::Errored`]'s other case (both raw attempts made, both
+/// timed out). Reads as `errored`, never `uncertain`, so it never claims a
+/// verdict was reached.
+fn review_budget_exhausted_round(remaining_secs: u64) -> ReviewRound {
+    ReviewRound::Errored {
+        reason: format!(
+            "the goal's review budget was exhausted before this reviewer could be tried \
+             ({remaining_secs}s remained, under the {REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS}s \
+             minimum for another attempt)"
+        ),
+        elapsed_secs: 0,
+    }
 }
 
 /// Lane R65a: the one escalated review after an UNCERTAIN (see
@@ -25012,6 +25224,7 @@ async fn escalated_goal_review(
     enumerations: &[crate::cost_router::CallSiteEnumeration],
     calling_session_id: Option<&str>,
     call_timeout: std::time::Duration,
+    budget: &ReviewTimeBudget,
 ) -> (Result<ReviewAttempt, String>, serde_json::Value) {
     let (answered_provider, answered_model) = answered;
     // Ruling 2026-09-17: the one escalation goes to the next reviewer
@@ -25081,6 +25294,7 @@ async fn escalated_goal_review(
         session,
         prompt,
         call_timeout,
+        budget,
     )
     .await
     {
@@ -25109,6 +25323,15 @@ async fn escalated_goal_review(
                 provider: pick.provider.clone(),
                 model: pick.model.clone(),
                 attempts: 2,
+            }),
+            record,
+        ),
+        ReviewCycleOutcome::BudgetExhausted { remaining_secs } => (
+            Ok(ReviewAttempt {
+                round: review_budget_exhausted_round(remaining_secs),
+                provider: pick.provider.clone(),
+                model: pick.model.clone(),
+                attempts: 0,
             }),
             record,
         ),
@@ -56497,6 +56720,13 @@ mod r68a_tests {
         std::env::remove_var(PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS_ENV);
     }
 
+    /// A generous budget (far more than `call_timeout` could ever need)
+    /// that behaves as if unbounded for tests that are not exercising the
+    /// budget itself.
+    fn ample_budget() -> ReviewTimeBudget {
+        ReviewTimeBudget::new(std::time::Duration::from_secs(3600))
+    }
+
     /// A reviewer that times out once, then answers on the retry: the round
     /// records the retry's answer with `attempts: 2` (Lane R68a's "one
     /// errored attempt then approve" — the SAME round's JSON carries both
@@ -56504,8 +56734,10 @@ mod r68a_tests {
     /// final answer). No timeout at all is `attempts: 1`.
     #[tokio::test]
     async fn a_reviewer_that_times_out_once_then_answers_is_recorded_with_two_attempts() {
+        let call_timeout = std::time::Duration::from_secs(300);
+        let budget = ample_budget();
         let calls = AtomicUsize::new(0);
-        let outcome = run_reviewer_call_cycle(|| {
+        let outcome = run_reviewer_call_cycle(call_timeout, &budget, |_timeout| {
             let n = calls.fetch_add(1, Ordering::SeqCst);
             async move {
                 if n == 0 {
@@ -56522,8 +56754,9 @@ mod r68a_tests {
             other => panic!("expected the retry to answer, got {other:?}"),
         }
 
+        let budget = ample_budget();
         let calls = AtomicUsize::new(0);
-        let outcome = run_reviewer_call_cycle(|| {
+        let outcome = run_reviewer_call_cycle(call_timeout, &budget, |_timeout| {
             calls.fetch_add(1, Ordering::SeqCst);
             async move { Ok(Message::assistant().with_text("VERDICT: APPROVE\nCHECKED: it")) }
         })
@@ -56544,9 +56777,14 @@ mod r68a_tests {
     /// with the reviewer, elapsed time and attempt count all present.
     #[tokio::test]
     async fn a_reviewer_that_times_out_twice_is_recorded_as_errored_not_uncertain() {
-        let outcome = run_reviewer_call_cycle(|| async {
-            Err::<crate::conversation::message::Message, _>(ReviewerCallFailure::TimedOut)
-        })
+        let budget = ample_budget();
+        let outcome = run_reviewer_call_cycle(
+            std::time::Duration::from_secs(300),
+            &budget,
+            |_timeout| async {
+                Err::<crate::conversation::message::Message, _>(ReviewerCallFailure::TimedOut)
+            },
+        )
         .await;
         let (reason, elapsed_secs) = match outcome {
             ReviewCycleOutcome::Errored {
@@ -56723,6 +56961,141 @@ mod r68a_tests {
         assert_ne!(
             REVIEWER_GATE_SALVAGE_TIMEOUT_SECS,
             DEFAULT_REVIEWER_GATE_TIMEOUT_SECS
+        );
+    }
+
+    /// The total-budget env knob is named the way its siblings are.
+    #[test]
+    fn reviewer_gate_total_budget_env_name_and_default_match_the_family() {
+        assert_eq!(
+            PERMAGENT_REVIEWER_GATE_TOTAL_BUDGET_SECS_ENV,
+            "PERMAGENT_REVIEWER_GATE_TOTAL_BUDGET_SECS"
+        );
+        assert_eq!(DEFAULT_REVIEWER_GATE_TOTAL_BUDGET_SECS, 600);
+    }
+
+    /// A first reviewer that burns most of the goal's total review budget
+    /// leaves a SHORTENED timeout for whatever calls next (its own retry,
+    /// or an escalation) — the shared `ReviewTimeBudget` is what makes this
+    /// true regardless of which cycle asks it, so this exercises the same
+    /// `reviewer_gate_attempt_timeout` both a first and an escalated cycle
+    /// call. No real sleeping: `ReviewTimeBudget::with_elapsed` fakes the
+    /// clock.
+    #[test]
+    fn a_first_reviewer_that_burns_most_of_the_budget_leaves_a_shortened_timeout() {
+        let call_timeout = std::time::Duration::from_secs(300);
+        // 200s total, 150s already spent ⇒ 50s left: above the 30s
+        // minimum-useful floor, but far under call_timeout.
+        let budget = ReviewTimeBudget::with_elapsed(
+            std::time::Duration::from_secs(200),
+            std::time::Duration::from_secs(150),
+        );
+        let bounded = reviewer_gate_attempt_timeout(call_timeout, &budget)
+            .expect("50s remaining is still above the minimum-useful floor");
+        assert!(
+            bounded < call_timeout,
+            "the escalated/retry timeout must be shortened, got {bounded:?}"
+        );
+        assert!(
+            bounded <= std::time::Duration::from_secs(50),
+            "must never exceed what actually remains, got {bounded:?}"
+        );
+    }
+
+    /// An exhausted budget (under the 30s minimum) parks without another
+    /// call: `run_reviewer_call_cycle` returns `BudgetExhausted` and NEVER
+    /// invokes `attempt_call` at all.
+    #[tokio::test]
+    async fn an_exhausted_budget_parks_without_another_call() {
+        let call_timeout = std::time::Duration::from_secs(300);
+        // 60s total, 55s already spent ⇒ 5s left, under the 30s floor.
+        let budget = ReviewTimeBudget::with_elapsed(
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(55),
+        );
+        let calls = AtomicUsize::new(0);
+        let outcome = run_reviewer_call_cycle(call_timeout, &budget, |_timeout| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async move { Ok(Message::assistant().with_text("VERDICT: APPROVE\nCHECKED: it")) }
+        })
+        .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "an exhausted budget must never make a call"
+        );
+        match outcome {
+            ReviewCycleOutcome::BudgetExhausted { remaining_secs } => {
+                assert!(remaining_secs < REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS);
+            }
+            other => panic!("expected BudgetExhausted, got {other:?}"),
+        }
+
+        // Feeding that outcome into a round reads as `errored`, never
+        // `uncertain`/`request_changes`, and the reason names the budget
+        // exhaustion explicitly (the "note" the escalation-ladder wording
+        // then inherits via `describe_inconclusive`).
+        let round = review_budget_exhausted_round(5);
+        assert_eq!(round.label(), "errored");
+        assert!(
+            round.reason().contains("review budget was exhausted"),
+            "{}",
+            round.reason()
+        );
+        let a = attempt(round, "anthropic", "claude-fable-5", 0);
+        match a.into_outcome() {
+            ReviewerGateOutcome::Unreachable { reason } => {
+                assert!(!reason.contains("UNCERTAIN"), "{reason}");
+                assert!(reason.contains("review budget was exhausted"), "{reason}");
+            }
+            other => panic!("expected Unreachable, got {other:?}"),
+        }
+    }
+
+    /// The total budget never exceeds the goal's own remaining wall budget
+    /// when one is known, even though the configured/default total budget
+    /// (600s) is much larger.
+    #[test]
+    #[serial_test::serial]
+    fn the_total_budget_never_exceeds_the_goals_remaining_wall_budget() {
+        std::env::remove_var(PERMAGENT_REVIEWER_GATE_TOTAL_BUDGET_SECS_ENV);
+        // A goal dispatched 550s ago with a 560s wall-clock cap has ~10s of
+        // its own run left — far less than the 600s default review budget.
+        let first_dispatched_at = chrono::Utc::now() - chrono::Duration::seconds(550);
+        let metadata = serde_json::json!({
+            "budget": { "wallclock_cap_secs": 560 },
+            "first_dispatched_at": first_dispatched_at.to_rfc3339(),
+        });
+        let budget =
+            reviewer_gate_total_budget(&GoalReviewKind::Verified { verification: None }, &metadata);
+        assert!(
+            budget <= std::time::Duration::from_secs(15),
+            "must be capped by the goal's own remaining wall budget, got {budget:?}"
+        );
+        assert!(
+            budget < std::time::Duration::from_secs(DEFAULT_REVIEWER_GATE_TOTAL_BUDGET_SECS),
+            "must be smaller than the uncapped default, got {budget:?}"
+        );
+
+        // With no wall-clock cap configured at all, the goal is unbounded
+        // from this question's point of view, so the review falls back to
+        // the plain configured/default total budget.
+        let unbounded = reviewer_gate_total_budget(
+            &GoalReviewKind::Verified { verification: None },
+            &serde_json::json!({}),
+        );
+        assert_eq!(
+            unbounded,
+            std::time::Duration::from_secs(DEFAULT_REVIEWER_GATE_TOTAL_BUDGET_SECS)
+        );
+
+        // Salvage's budget is its own fixed double-timeout ceiling,
+        // regardless of the goal's wall budget.
+        let salvage =
+            reviewer_gate_total_budget(&GoalReviewKind::Salvage { verify_note: "x" }, &metadata);
+        assert_eq!(
+            salvage,
+            std::time::Duration::from_secs(REVIEWER_GATE_SALVAGE_TIMEOUT_SECS * 2)
         );
     }
 }

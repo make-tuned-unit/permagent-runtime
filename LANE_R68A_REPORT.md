@@ -95,7 +95,52 @@ All in `crates/goose/src/agents/platform_extensions/orchestrator.rs`.
 - A genuine double-UNCERTAIN (no timeout involved anywhere) is byte-for-byte unchanged: still
   "both reviewers were UNCERTAIN: ...".
 
-### 4. Spend honesty
+### 4. A total review-time budget bounds the whole retry-plus-escalation path per goal
+
+Follow-up (same lane, before merge): the worst case flagged in the first pass — up to
+`4 × DEFAULT_REVIEWER_GATE_TIMEOUT_SECS` (~20 minutes) for one goal's review — is now capped.
+
+- `PERMAGENT_REVIEWER_GATE_TOTAL_BUDGET_SECS_ENV` / `DEFAULT_REVIEWER_GATE_TOTAL_BUDGET_SECS = 600`
+  — same env-knob idiom as the per-attempt timeout.
+- `reviewer_gate_total_budget(kind, metadata) -> Duration`: for `GoalReviewKind::Verified`, the
+  smaller of the configured/default 600s and the goal's own remaining wall-clock budget, read via
+  `remaining_wall_budget_secs` — the SAME helper the headless drain (`headless_wallclock_cap_patch`
+  et al.) and `wall_budget_exhausted_refusal` already use, grepped for per the ask. A review can
+  never spend more of a goal's run than the goal itself has left. For `GoalReviewKind::Salvage`
+  (which never escalates), the budget is left at its own natural `REVIEWER_GATE_SALVAGE_TIMEOUT_SECS
+  × 2` ceiling — the total-budget mechanism composes cleanly through the same code path without
+  changing salvage's behavior at all.
+- `ReviewTimeBudget { total, started }`: one instance per goal review, constructed once in
+  `review_goal_diff_with_cross_family_reviewer` and threaded (by reference) through the first
+  reviewer's cycle AND the escalated reviewer's cycle, so time the first reviewer spends is
+  unavailable to the escalation. `remaining()` is real wall-clock (`Instant`); a `#[cfg(test)]`
+  `with_elapsed` constructor lets tests fake "already mostly spent" without sleeping (same idiom as
+  existing `Instant::now() - Duration` fakes elsewhere in this crate, e.g. `providers/wait_status.rs`).
+- `reviewer_gate_attempt_timeout(call_timeout, budget) -> Option<Duration>`: `Some(min(call_timeout,
+  remaining))` normally; `None` when `remaining` is under `REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS = 30`
+  — a call that short is unlikely to answer before being cut off anyway. `run_reviewer_call_cycle`
+  now asks this BEFORE every raw attempt (the first call AND the retry), so a first reviewer that
+  burns most of the budget leaves a correspondingly shorter timeout for its own retry, and the same
+  mechanism shortens the escalated reviewer's timeout too (it shares the same `ReviewTimeBudget`).
+  When it returns `None`, `run_reviewer_call_cycle` returns `ReviewCycleOutcome::BudgetExhausted`
+  and **never calls `attempt_call` at all** — an exhausted budget parks without another call, not a
+  degenerate near-zero-timeout call.
+- `BudgetExhausted` feeds `review_budget_exhausted_round(remaining_secs)`, which builds a
+  `ReviewRound::Errored` whose reason explicitly says *"the goal's review budget was exhausted
+  before this reviewer could be tried"* — `attempts: 0` on the `ReviewAttempt` distinguishes it from
+  the "both raw attempts made, both timed out" `Errored` case. Because it is the same `Errored`
+  variant, it flows through the exact escalation-ladder wiring from part 3 for free: it escalates
+  when a stronger reviewer exists and hasn't been tried, and every "could not be obtained" refusal
+  automatically inherits the "review budget was exhausted" note via `describe_inconclusive()` — no
+  separate wording path was needed.
+- `auto_land_review.review_seconds_consumed`: `independent_review_before_auto_land` times the whole
+  `review_goal_diff_with_cross_family_reviewer` call with a plain `Instant` and records the elapsed
+  seconds on the card regardless of which branch the call returns through (approved, refused,
+  diff-too-large, budget-exhausted, ...). This was simpler and more accurate than threading a
+  consumed-seconds field through `GoalReviewRun`/`finish_goal_review_with_escalation` (which are
+  also exercised directly by unit tests with no real timer involved).
+
+### 5. Spend honesty
 
 `cost_router::routing_receipt`'s `cost_routing dispatches` counter is fed only by
 `dispatch_goal_fn` (ordinary goal/worker dispatch) and, per Lane R63c, the `delegate`/`delegate_many`
@@ -136,6 +181,19 @@ New module `r68a_tests` in `orchestrator.rs`:
   keeps the exact R65a wording ("both reviewers were UNCERTAIN"), never "could not be obtained".
 - `salvage_and_auto_land_timeouts_are_independent_constants` — regression guard against
   re-merging the two constants.
+- `reviewer_gate_total_budget_env_name_and_default_match_the_family` — knob name/default.
+- `a_first_reviewer_that_burns_most_of_the_budget_leaves_a_shortened_timeout` — a budget with 50s
+  left (of 200s total) yields a `reviewer_gate_attempt_timeout` under both the per-kind timeout and
+  the 50s actually remaining; no sleeping (`ReviewTimeBudget::with_elapsed`).
+- `an_exhausted_budget_parks_without_another_call` — a budget with 5s left (under the 30s floor):
+  `run_reviewer_call_cycle` returns `BudgetExhausted` and the fake `attempt_call` counter stays at
+  0; also checks `review_budget_exhausted_round`'s wording ("review budget was exhausted", never
+  "UNCERTAIN") and that it maps to `Unreachable` through `into_outcome()`.
+- `the_total_budget_never_exceeds_the_goals_remaining_wall_budget` — a goal metadata fixture with
+  `wallclock_cap_secs: 560` and `first_dispatched_at` 550s ago (≈10s of its own run left) caps the
+  review budget to that, far under the 600s default; a goal with no wall-clock cap at all falls back
+  to the plain default; salvage's budget stays its own fixed ceiling regardless. `#[serial_test::serial]`
+  (env-var mutation).
 
 ## Gate filters
 
@@ -166,10 +224,19 @@ byte-for-byte preserved).
   (matching its pre-existing meaning: round 1 = first reviewer, round 2 = escalated reviewer)
   rather than by raw HTTP attempt.
 - **Escalation now also fires on a double-timeout for `GoalReviewKind::Verified`**, which was
-  previously impossible (a timeout always parked immediately). This is the fix, but it does mean a
-  verified goal's review can now spend up to `2 × DEFAULT_REVIEWER_GATE_TIMEOUT_SECS` (first
-  reviewer's two attempts) plus another `2 × DEFAULT_REVIEWER_GATE_TIMEOUT_SECS` (escalated
-  reviewer's two attempts) — up to ~20 minutes wall time in the worst case — before parking. Given
-  auto-land is headless and unattended, this trades latency for not throwing away a working
-  reviewer's answer, which matches the evidence and the task's intent, but it's worth knowing if a
-  drain/wallclock cap sits tightly above this call.
+  previously impossible (a timeout always parked immediately). **Closed by part 4**: the total
+  review-time budget (600s default, or less when the goal's own remaining wall-clock budget is
+  smaller) now bounds the SUM of every reviewer call this review makes, so the retry-plus-escalation
+  path can no longer outlive the run — the theoretical ~20 minute worst case from the first pass is
+  gone. Given auto-land is headless and unattended, spending up to the full 600s on a genuinely
+  working stronger reviewer (rather than throwing its answer away at 120s) still matches the
+  evidence and the task's intent.
+- **The total budget is per-review, not cumulative across a goal's re-dispatches.** If a headless
+  goal is sent back and re-reviewed more than once (Lane R66a's send-back path), each review gets
+  its own fresh `reviewer_gate_total_budget` — it does not subtract time spent by an EARLIER
+  review's rounds. This mirrors how `review_kind_timeout`/the per-attempt timeout already worked
+  and was not something the ask called out; flagging it as a possible future tightening if a goal's
+  cumulative review time (across sent-back rounds) ever needs its own ceiling.
+- **`review_seconds_consumed` is recorded only for the `GoalReviewKind::Verified` (auto-land) path**,
+  at the one call site in `independent_review_before_auto_land` — the salvage path's own outcome
+  record (`SalvageOutcome`) was not touched, since the ask specifically named `auto_land_review`.
