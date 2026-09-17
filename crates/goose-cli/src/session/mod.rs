@@ -286,6 +286,11 @@ pub struct CliSession {
     /// CLEAR the previous turn's memories instead of leaving them standing as
     /// background for an unrelated question.
     recall_installed: bool,
+    /// Which memories this session's recall may read (Lane R61a): the repo
+    /// the session works in, plus whatever the user approved at the terminal
+    /// for this session. Held here and nowhere else, so it ends with the
+    /// process.
+    memory_scope: brain_sync::MemoryScope,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -406,13 +411,14 @@ impl CliSession {
         output_format: String,
         coding_harness: bool,
     ) -> Self {
-        let messages = agent
+        let session = agent
             .config
             .session_manager
             .get_session(&session_id, true)
             .await
-            .map(|session| session.conversation.unwrap_or_default())
             .unwrap();
+        let memory_scope = brain_sync::MemoryScope::for_working_dir(&session.working_dir);
+        let messages = session.conversation.unwrap_or_default();
 
         CliSession {
             agent,
@@ -429,6 +435,7 @@ impl CliSession {
             coding_harness,
             composer: None,
             recall_installed: false,
+            memory_scope,
         }
     }
 
@@ -1873,7 +1880,10 @@ impl CliSession {
         // Bounded and silent: a wedged daemon costs this turn 750ms once, and a
         // missing one costs nothing at all (no token file ⇒ no network attempt).
         let turn_idx = self.messages.len();
-        if let Some(context) = brain_sync::recall_context(&user_text).await {
+        //
+        // Scoped (Lane R61a): only this repo's memories, plus scopes the user
+        // approved for this session through `request_memory_access`.
+        if let Some(context) = brain_sync::recall_context(&user_text, &self.memory_scope).await {
             self.recall_installed = true;
             let contributions = context
                 .spectral_memories
@@ -2082,6 +2092,41 @@ impl CliSession {
                                     principal_type: PrincipalType::Tool,
                                     permission,
                                 }).await;
+                            } else if let Some((request_id, arguments)) = find_memory_access_request(&message) {
+                                // Lane R61a: the model asked for memories
+                                // beyond this repo. The agent is parked on the
+                                // frontend tool until this CLI answers, and
+                                // the answer is the user's, from the terminal.
+                                let can_prompt = interactive
+                                    && std::io::stdin().is_terminal()
+                                    && std::io::stdout().is_terminal();
+                                if can_prompt {
+                                    output::hide_thinking();
+                                    let _ = progress_bars.hide();
+                                    if let Some(c) = composer.as_mut() {
+                                        c.suspend();
+                                    }
+                                }
+                                let text = answer_memory_access_request(
+                                    &self.agent,
+                                    &mut self.memory_scope,
+                                    arguments.as_ref(),
+                                    can_prompt,
+                                )
+                                .await;
+                                if can_prompt {
+                                    if let Some(c) = composer.as_mut() {
+                                        c.resume();
+                                    }
+                                }
+                                self.agent
+                                    .handle_tool_result(
+                                        request_id,
+                                        Ok(rmcp::model::CallToolResult::success(vec![
+                                            rmcp::model::Content::text(text),
+                                        ])),
+                                    )
+                                    .await;
                             } else if let Some((elicitation_id, elicitation_message, schema)) = find_elicitation_request(&message) {
                                 if !interactive {
                                     // Non-interactive/headless mode: cannot collect user input
@@ -2336,14 +2381,22 @@ impl CliSession {
             .map(|m| m.as_concat_text())
             .collect::<Vec<_>>()
             .join("\n");
+        // The same working directory recall is scoped by (Lane R61a), so the
+        // daemon attributes this turn to the project the next recall asks for.
         brain_sync::persist_turn(
             self.session_id.clone(),
             turn_idx,
             user_text,
             assistant_text,
-            std::env::current_dir()
-                .ok()
-                .map(|p| p.display().to_string()),
+            self.memory_scope
+                .working_dir()
+                .map(str::to_string)
+                .or_else(|| {
+                    std::env::current_dir()
+                        .ok()
+                        .map(|p| p.display().to_string())
+                }),
+            self.memory_scope.repo_root().map(str::to_string),
         );
 
         if let Some(e) = fatal {
@@ -2788,6 +2841,126 @@ fn prompt_tool_confirmation(security_prompt: &Option<String>) -> Result<Permissi
             }
         }
     }
+}
+
+/// Extract a `request_memory_access` frontend tool call from a message.
+fn find_memory_access_request(
+    message: &Message,
+) -> Option<(String, Option<serde_json::Map<String, Value>>)> {
+    message.content.iter().find_map(|content| match content {
+        MessageContent::FrontendToolRequest(request) => match &request.tool_call {
+            Ok(call) if call.name == brain_sync::MEMORY_ACCESS_TOOL_NAME => {
+                Some((request.id.clone(), call.arguments.clone()))
+            }
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// Answer one `request_memory_access` call (Lane R61a) and return the tool
+/// result text.
+///
+/// Resolves the requested project against the session database's registry (so
+/// the user is shown exactly what they would grant), then lets
+/// [`brain_sync::decide_memory_access`] decide: refused without a terminal,
+/// otherwise the user's answer from [`prompt_memory_access`]. An approved
+/// request searches the granted scope once and returns what it finds.
+async fn answer_memory_access_request(
+    agent: &Agent,
+    scope: &mut brain_sync::MemoryScope,
+    arguments: Option<&serde_json::Map<String, Value>>,
+    can_prompt: bool,
+) -> String {
+    // No terminal, no one to approve: refused before anything is read, and the
+    // scope stays this repo's.
+    if !can_prompt {
+        tracing::info!(
+            target: "permagent::memory_access",
+            decision = brain_sync::MemoryAccessDecision::Refused.kind(),
+            "memory access request refused: no interactive terminal"
+        );
+        return brain_sync::MEMORY_ACCESS_HEADLESS_REFUSAL.to_string();
+    }
+    let request = match brain_sync::parse_memory_access_request(arguments) {
+        Ok(request) => request,
+        Err(error) => return format!("Invalid request_memory_access call: {error}"),
+    };
+    let pool = match agent.config.session_manager.pool_clone().await {
+        Ok(pool) => pool,
+        Err(error) => {
+            tracing::warn!(%error, "memory access: session database unavailable");
+            return "The project registry is unavailable, so no memory access was requested. \
+                    Continue with this repo's context."
+                .to_string();
+        }
+    };
+    let target = match brain_sync::resolve_memory_target(&pool, &request.target).await {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let repo_paths: Vec<&str> = [scope.working_dir(), scope.repo_root()]
+        .into_iter()
+        .flatten()
+        .collect();
+    let current_repo_wing = if repo_paths.is_empty() {
+        None
+    } else {
+        permagent::session_wing::resolve_project_wing_for_paths(&pool, &repo_paths).await
+    };
+    let decision = brain_sync::decide_memory_access(
+        scope,
+        &target,
+        current_repo_wing.as_deref(),
+        &request.reason,
+        can_prompt,
+        prompt_memory_access,
+    );
+    tracing::info!(
+        target: "permagent::memory_access",
+        scope = %target.label(),
+        decision = decision.kind(),
+        can_prompt,
+        "memory access request decided"
+    );
+    let memories = match &decision {
+        brain_sync::MemoryAccessDecision::Granted { search_scope, .. } => {
+            brain_sync::search_granted(search_scope, &request.query, &target).await
+        }
+        _ => None,
+    };
+    brain_sync::memory_access_result_text(&decision, &target, memories.as_deref())
+}
+
+/// Ask the user, in the terminal, whether the harness may read memories beyond
+/// this repo. Same `cliclack::select` surface as tool approval, with no
+/// "Always Allow": a memory grant never outlives the session. Any prompt
+/// failure, including Ctrl-C, is a denial.
+fn prompt_memory_access(prompt: &brain_sync::MemoryAccessPrompt) -> brain_sync::MemoryGrantAnswer {
+    use brain_sync::MemoryGrantAnswer;
+    output::hide_thinking();
+    println!(
+        "\nPermagent is asking to read memories from outside this repo.\n  Scope:  {}\n  Reason: {}",
+        prompt.target_label, prompt.reason
+    );
+    cliclack::select("Allow memory access beyond this repo?")
+        .item(
+            MemoryGrantAnswer::AllowOnce,
+            "Allow once",
+            "Search it for this request only",
+        )
+        .item(
+            MemoryGrantAnswer::AllowForSession,
+            "Allow for this session",
+            "Also include it in recall until this session ends",
+        )
+        .item(
+            MemoryGrantAnswer::Deny,
+            "Deny",
+            "Keep memory scoped to this repo",
+        )
+        .interact()
+        .unwrap_or(MemoryGrantAnswer::Deny)
 }
 
 /// Extract tool confirmation request from a message
