@@ -106,8 +106,11 @@ Commits (branch `lane/R65a`):
 
 ### Exact cause (from the eval child's own log)
 
-The CLI log of every failing run has this line
-(`data/logs/cli/<date>/20260917_*.log`, 15:14:38 and 15:20:50):
+Two runs planned COMPLEX (`cli-argparse-log-filter` and `refactor-shipping-quote-signature`; both
+routed to `anthropic/claude-fable-5` and both recorded as answered by
+`custom_deepseek/deepseek-flash`). The makefile run planned ROUTINE and was correctly answered by
+`minimax/MiniMax-M2.5`, which is why none of the three has anthropic ledger rows. Both COMPLEX runs'
+CLI logs (`data/logs/cli/<date>/20260917_*.log`, 15:14:38 and 15:20:50) have this line:
 
 ```
 Planner decomposition failed (LLM decomposition failed: provider budget is unknown; refusing call:
