@@ -176,5 +176,18 @@ mod tests {
             "coding recipe must decide a silent implementation detail from the existing code's \
              convention and proceed, not escalate it"
         );
+        // Lane R61a (ruling 2026-09-16): the harness only sees memories about
+        // the repo it is in unless the user approves more at the terminal. The
+        // coordinator must know its recall is repo-scoped, that the only way
+        // wider is `request_memory_access`, and that it is for requests which
+        // actually need another project — not a reflex.
+        assert!(
+            instructions.contains("Your recalled memory is scoped to this repo")
+                && instructions.contains("`request_memory_access`")
+                && instructions.contains("actually needs another project's patterns")
+                && instructions.contains("user approves or denies it in the terminal")
+                && instructions.contains("a headless run refuses it"),
+            "coding recipe must say memory is repo-scoped and how (and when) to ask for more"
+        );
     }
 }
