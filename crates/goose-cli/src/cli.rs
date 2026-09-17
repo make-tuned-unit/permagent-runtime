@@ -1702,7 +1702,17 @@ async fn handle_run_command(
     .await;
 
     if run_behavior.interactive {
-        session.interactive(input_config.contents).await
+        let result = session.interactive(input_config.contents).await;
+        // `interactive` marks a clean exit itself; this covers the error path
+        // (idempotent), so only a crash leaves the lease to read as lost.
+        session
+            .finish_harness_lease(if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            })
+            .await;
+        result
     } else if let Some(contents) = input_config.contents {
         let session_start = std::time::Instant::now();
         let session_type = if recipe.is_some() { "recipe" } else { "run" };
@@ -1753,6 +1763,9 @@ async fn handle_run_command(
             .drain_dispatched_goals(std::time::Duration::from_secs(drain_cap_secs))
             .await;
         session.print_harness_receipts();
+        session
+            .finish_harness_lease(if succeeded { "completed" } else { "failed" })
+            .await;
         log_session_completion(&session, session_start, session_type, succeeded).await;
         result
     } else {

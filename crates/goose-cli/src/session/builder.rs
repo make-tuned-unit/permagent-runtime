@@ -1542,7 +1542,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // `new_primary_agent` installed that several hundred lines ago.
     let persona_name = agent_ptr.persona_display_name().await;
 
-    let session = CliSession::new(
+    let mut session = CliSession::new(
         Arc::try_unwrap(agent_ptr).unwrap_or_else(|_| panic!("There should be no more references")),
         session_id.clone(),
         debug_mode,
@@ -1554,6 +1554,13 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         coding_harness,
     )
     .await;
+
+    // A coding-harness process announces itself in `harness_process_leases`
+    // for its whole lifetime, so the daemon and other terminals can see it is
+    // live (and notice when it is not). No-op for any other session.
+    session
+        .start_harness_lease(session_config.interactive, recipe.map(|r| r.title.as_str()))
+        .await;
 
     configure_session_prompts(&session, config, &session_config, &session_id).await;
 
