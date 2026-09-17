@@ -40,6 +40,10 @@ const WORKER_PACK_ROLES: [&str; 2] = ["MECHANICAL", "LOCAL"];
 /// `provider`/`model`, mixed tier or not.
 const COORDINATOR_PACK_ROLES: [&str; 2] = ["HARD", "EDIT"];
 
+// The worker and coordinator role sets partition every pinned pack role, so a
+// role added to `PACK_ROLES` must be assigned to one side explicitly.
+const _: () = assert!(PACK_ROLES.len() == WORKER_PACK_ROLES.len() + COORDINATOR_PACK_ROLES.len());
+
 /// A model tier: the provider + model the harness runs under for a task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tier {
