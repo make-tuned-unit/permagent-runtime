@@ -262,42 +262,38 @@ pub fn scan_verify_positions(messages: &[Message]) -> VerifyPositions {
     for msg in messages {
         for content in &msg.content {
             index += 1;
-            match content {
-                MessageContent::ToolResponse(resp) => {
-                    use crate::agents::platform_extensions::developer::verify;
+            let MessageContent::ToolResponse(resp) = content else {
+                continue;
+            };
+            use crate::agents::platform_extensions::developer::verify;
 
-                    let Some(kind) = pending.remove(resp.id.as_str()) else {
-                        continue;
-                    };
-                    match kind {
-                        Kind::Mutation => {
-                            let succeeded = resp
-                                .tool_result
-                                .as_ref()
-                                .is_ok_and(|result| result.is_error != Some(true));
-                            if succeeded {
-                                positions.last_mutation = Some(index);
-                            }
-                        }
-                        Kind::Verify => {
-                            let Ok(result) = resp.tool_result.as_ref() else {
-                                continue;
-                            };
-                            if !verify::is_authoritative_pass(result) {
-                                continue;
-                            }
-                            positions.last_verify = Some(index);
-                            // X-verify-2: reflects the LATEST recorded verify
-                            // only — overwritten every time, same as
-                            // `last_verify` itself.
-                            positions.vacuous_reason = verify::vacuous_pass_reason(result);
-                            positions.vacuous_pass = positions.vacuous_reason.is_some();
-                            positions.vacuous_call_id =
-                                positions.vacuous_pass.then(|| resp.id.clone());
-                        }
+            let Some(kind) = pending.remove(resp.id.as_str()) else {
+                continue;
+            };
+            match kind {
+                Kind::Mutation => {
+                    let succeeded = resp
+                        .tool_result
+                        .as_ref()
+                        .is_ok_and(|result| result.is_error != Some(true));
+                    if succeeded {
+                        positions.last_mutation = Some(index);
                     }
                 }
-                _ => {}
+                Kind::Verify => {
+                    let Ok(result) = resp.tool_result.as_ref() else {
+                        continue;
+                    };
+                    if !verify::is_authoritative_pass(result) {
+                        continue;
+                    }
+                    positions.last_verify = Some(index);
+                    // X-verify-2: reflects the LATEST recorded verify only —
+                    // overwritten every time, same as `last_verify` itself.
+                    positions.vacuous_reason = verify::vacuous_pass_reason(result);
+                    positions.vacuous_pass = positions.vacuous_reason.is_some();
+                    positions.vacuous_call_id = positions.vacuous_pass.then(|| resp.id.clone());
+                }
             }
         }
     }
