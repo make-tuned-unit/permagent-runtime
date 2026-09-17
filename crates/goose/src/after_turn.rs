@@ -578,15 +578,26 @@ impl ReviewerMandate {
         } else {
             crate::cost_router::review_pack_pin().map(crate::cost_router::pack_to_role_model)
         };
-        // Lane R63c: the SAME cross-family candidate the real dispatch
-        // (`summon::resolve_review_dispatch`) escalates to — the cheapest
-        // capable different-family model, not the derived map's strongest
-        // REVIEW entry — so this prediction cannot promise a route the
-        // dispatch will not take.
+        // Lane R63c / Lane N3: the SAME cross-family candidate the real
+        // dispatch (`summon::resolve_review_dispatch`) escalates to — the
+        // objective assignment for this review from the goal's trunk-relative
+        // diff (`orchestrator::assign_delegate_reviewer`, ruling 2026-09-17),
+        // not the derived map's strongest REVIEW entry nor a `HEAD`-relative
+        // size — so this prediction cannot promise a route the dispatch will
+        // not take.
         let cross_family_candidate = if routing_is_role_pin || review_pin.is_some() {
             None
         } else {
-            crate::cost_router::cheapest_cross_family_reviewer(author, &available, lines)
+            let pool = manager.pool_clone().await.ok();
+            crate::agents::platform_extensions::orchestrator::assign_delegate_reviewer(
+                pool.as_ref(),
+                &session,
+                author,
+                &available,
+            )
+            .await
+            .assignment
+            .pick_role_model()
         };
         let dispatch = crate::cost_router::resolve_actual_review_dispatch(
             routing_is_role_pin,

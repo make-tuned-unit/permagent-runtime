@@ -2611,13 +2611,14 @@ impl SummonClient {
             });
         let targets =
             delegate_audit_targets(role_pin, pack_pin, review_inputs.cloned(), session_pair);
-        let audit = crate::cost_router::audit_delegate_dispatch(
+        let mut audit = crate::cost_router::audit_delegate_dispatch(
             actual,
             targets.pin.as_ref(),
             targets.pin_exception.as_ref(),
             targets.reference.as_ref(),
             &crate::cost_router::routing_matrix::nominal_call_cost,
         );
+        audit.cheapest_capable &= review_floor_holds(actual, review_inputs, &targets);
         tracing::info!(
             target: "permagentd::brain",
             role = role.map(|r| r.as_str()).unwrap_or("none"),
@@ -2672,10 +2673,11 @@ impl SummonClient {
     /// (`PackPin`/`Escalated`/`Session` — none of them review-aware, since
     /// `PackPin` here means `Role::Hard`'s pin), review's OWN dispatch
     /// precedence takes over: a dedicated `PERMAGENT_PACK_REVIEW_*` pin,
-    /// else cross-family escalation to the cheapest capable cross-family
-    /// reviewer (Lane R63c, `cost_router::cheapest_cross_family_reviewer` —
-    /// previously the derived map's strongest REVIEW entry), else the
-    /// ordinary chain's answer honestly labeled same-family.
+    /// else cross-family escalation to the objectively assigned reviewer
+    /// (Lane N3, `orchestrator::assign_delegate_reviewer` →
+    /// `recommend::assign_reviewer`; before it Lane R63c's size-only
+    /// cheapest pick, and before that the derived map's strongest REVIEW
+    /// entry), else the ordinary chain's answer honestly labeled same-family.
     ///
     /// Lane R63c: returns the dispatch together with the dedicated review pin
     /// and the cross-family candidate it was decided against, so the
@@ -2694,29 +2696,40 @@ impl SummonClient {
         // already resolved correctly and `resolve_actual_review_dispatch`
         // passes it straight through, so a pinned dispatch must not pay for
         // an answer it will not use.
-        let (review_pin, cross_family_candidate, review_spend) = if routing_is_role_pin {
-            (None, None, None)
+        let (review_pin, assignment, cross_family_candidate, review_spend) = if routing_is_role_pin
+        {
+            (None, None, None, None)
         } else {
             let review_pin =
                 crate::cost_router::review_pack_pin().map(crate::cost_router::pack_to_role_model);
             // Lane R63c (M47 r63 s5): the cross-family escalation target is
-            // the CHEAPEST capable different-family model, not the derived
-            // map's REVIEW entry — the recommender ranks REVIEW by strength
-            // first (`recommend::review_rank`), so that entry was
-            // `claude-fable-5` and a one-line DeepSeek diff bought a $1.97
-            // frontier review. `after_turn::ReviewerMandate::assess` computes
-            // the identical candidate so its prediction cannot drift.
-            let cross_family_candidate = if review_pin.is_none() {
+            // never the derived map's REVIEW entry (ranked by strength first,
+            // so `claude-fable-5`). Lane N3 (M48 r64 s5, ruling 2026-09-17):
+            // nor is it sized by `git diff HEAD` in this directory, which reads
+            // 0 after an auto-land. It is the objective assignment for THIS
+            // review — complexity from the goal's trunk-relative diff and its
+            // enumerated call sites, then `recommend::assign_reviewer`'s floor
+            // and proportional price rule. `after_turn::ReviewerMandate::assess`
+            // calls the same `assign_delegate_reviewer`, so its prediction
+            // cannot drift.
+            let assignment = if review_pin.is_none() {
                 let available = crate::cost_router::discover_available_models_async().await;
-                let lines = crate::after_turn::changed_lines(&session.working_dir).await;
-                crate::cost_router::cheapest_cross_family_reviewer(
-                    author_provider.zip(author_model),
-                    &available,
-                    lines,
+                let pool = self.context.session_manager.pool_clone().await.ok();
+                Some(
+                    crate::agents::platform_extensions::orchestrator::assign_delegate_reviewer(
+                        pool.as_ref(),
+                        session,
+                        author_provider.zip(author_model),
+                        &available,
+                    )
+                    .await,
                 )
             } else {
                 None
             };
+            let cross_family_candidate = assignment
+                .as_ref()
+                .and_then(|a| a.assignment.pick_role_model());
             // Review's cross-family escalation is not behind the general
             // `PERMAGENT_DELEGATE_ALLOW_ESCALATION` knob (review's whole
             // value IS the cross-family check), so its spend band is read
@@ -2728,7 +2741,7 @@ impl SummonClient {
             } else {
                 self.escalation_spend_band(session).await
             };
-            (review_pin, cross_family_candidate, review_spend)
+            (review_pin, assignment, cross_family_candidate, review_spend)
         };
         let dispatch = crate::cost_router::resolve_actual_review_dispatch(
             routing_is_role_pin,
@@ -2755,10 +2768,31 @@ impl SummonClient {
                 .unwrap_or_else(|| author_model.unwrap_or("session")),
             "review dispatch resolved",
         );
+        // Lane N3: the assignment goes on the goal card under review through
+        // the goal gate's own writer (no-op without a goal).
+        if let Some(live) = assignment.as_ref() {
+            if let Ok(pool) = self.context.session_manager.pool_clone().await {
+                let selected_source = if dispatch.role_model.is_some()
+                    && dispatch.role_model == cross_family_candidate
+                {
+                    "assigned"
+                } else {
+                    "review_dispatch"
+                };
+                crate::agents::platform_extensions::orchestrator::record_delegate_reviewer_assignment(
+                    &pool,
+                    live,
+                    dispatch.role_model.as_ref(),
+                    selected_source,
+                )
+                .await;
+            }
+        }
         ReviewDispatchResolution {
             dispatch,
             review_pin,
             cross_family_candidate,
+            review_floor: assignment.as_ref().map(|a| a.assignment.floor),
         }
     }
 
@@ -2829,10 +2863,12 @@ impl SummonClient {
                 dispatch,
                 review_pin,
                 cross_family_candidate,
+                review_floor,
             } = self.resolve_review_dispatch(session, &routing, spend).await;
             review_audit_inputs = Some(ReviewAuditInputs {
                 review_pack_pin: review_pin,
                 cross_family: cross_family_candidate,
+                review_floor,
             });
             // A clean author pair, not `session_pair` above — that one
             // substitutes the placeholder string "the session model" when
@@ -3549,6 +3585,7 @@ fn delegate_audit_targets(
         Some(ReviewAuditInputs {
             review_pack_pin,
             cross_family,
+            ..
         }) => {
             if let Some(dedicated) = role_pin.or(review_pack_pin) {
                 return DelegateAuditTargets {
@@ -3581,12 +3618,50 @@ fn delegate_audit_targets(
 
 /// Lane R63c: the review role's own routing inputs, carried from
 /// [`SummonClient::resolve_review_dispatch`] to the receipt audit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct ReviewAuditInputs {
     /// The dedicated `PERMAGENT_PACK_REVIEW_*` pin, when one was read.
     review_pack_pin: Option<crate::cost_router::RoleModel>,
-    /// The cheapest capable cross-family reviewer, when one was computed.
+    /// The objectively assigned cross-family reviewer (Lane N3,
+    /// `recommend::assign_reviewer`), when one was computed.
     cross_family: Option<crate::cost_router::RoleModel>,
+    /// Lane N3: that assignment's review-complexity floor.
+    review_floor: Option<f64>,
+}
+
+/// Lane N3: the review half of the `cheapest_capable` judgement.
+///
+/// With no dedicated review pin, the audit's reference is the assigned
+/// reviewer, so a child on that pick is cheapest-capable by definition: the
+/// assignment IS the objective cheapest model clearing this review's
+/// complexity floor (ruling 2026-09-17). `audit_delegate_dispatch` also
+/// accepts anything no pricier than the reference, which for review would
+/// count a cheaper model that falls below the floor (an explicit per-call
+/// `model: claude-haiku-4-5` on a complex review) as capable. This closes that:
+/// a child that is not the reference must clear the floor on its
+/// knowledge-base strength (an unrated model is unproven). Every other case
+/// (non-review, a dedicated pin, no assignment) is left to the pure audit.
+fn review_floor_holds(
+    actual: (&str, &str),
+    review: Option<&ReviewAuditInputs>,
+    targets: &DelegateAuditTargets,
+) -> bool {
+    let Some(ReviewAuditInputs {
+        cross_family: Some(assigned),
+        review_floor: Some(floor),
+        ..
+    }) = review
+    else {
+        return true;
+    };
+    if targets.reference.as_ref() != Some(assigned) {
+        return true;
+    }
+    let is_assigned = assigned.provider.eq_ignore_ascii_case(actual.0)
+        && assigned.model.eq_ignore_ascii_case(actual.1);
+    is_assigned
+        || crate::cost_router::knowledge::lookup(actual.0, actual.1)
+            .is_some_and(|k| k.orchestration_strength >= *floor)
 }
 
 /// Lane R63c: what a delegate child is audited against (see
@@ -3604,8 +3679,11 @@ struct ReviewDispatchResolution {
     dispatch: crate::cost_router::ReviewerDispatch,
     /// The dedicated `PERMAGENT_PACK_REVIEW_*` pin, when one was read.
     review_pin: Option<crate::cost_router::RoleModel>,
-    /// The cheapest capable cross-family reviewer, when one was computed.
+    /// The objectively assigned cross-family reviewer (Lane N3), when one was
+    /// computed.
     cross_family_candidate: Option<crate::cost_router::RoleModel>,
+    /// Lane N3: that assignment's review-complexity floor.
+    review_floor: Option<f64>,
 }
 
 /// Preserve the existing role-router summary while attaching the final,
@@ -5728,12 +5806,13 @@ You review code."#;
     }
 
     /// The reviewer delegate's real resolution chain, minus the provider
-    /// construction: `delegate_routing` (role pin → pack pin → escalation →
-    /// session), then review's own precedence with the SAME cross-family
-    /// candidate `resolve_review_dispatch` now computes.
+    /// construction and the git/DB measurement: `delegate_routing` (role pin →
+    /// pack pin → escalation → session), then review's own precedence with the
+    /// SAME cross-family candidate `resolve_review_dispatch` now computes
+    /// (Lane N3: `recommend::assign_reviewer` over the measured facts).
     fn r63_review_dispatch(
         derived: &crate::cost_router::DerivedRoleMap,
-        changed_lines: usize,
+        facts: crate::cost_router::recommend::ReviewFacts,
     ) -> (
         crate::cost_router::DelegateRouting,
         Option<crate::cost_router::RoleModel>,
@@ -5749,7 +5828,8 @@ You review code."#;
         );
         let review_pin = cr::review_pack_pin().map(cr::pack_to_role_model);
         let candidate = if review_pin.is_none() {
-            cr::cheapest_cross_family_reviewer(Some(R63_AUTHOR), &r63_available(), changed_lines)
+            cr::recommend::assign_reviewer(facts, Some(R63_AUTHOR), &r63_available())
+                .pick_role_model()
         } else {
             None
         };
@@ -5763,6 +5843,14 @@ You review code."#;
             Some(cr::BudgetBand::Ok),
         );
         (routing, review_pin, candidate, dispatch)
+    }
+
+    /// A one-line change's review facts.
+    fn r63_one_line() -> crate::cost_router::recommend::ReviewFacts {
+        crate::cost_router::recommend::ReviewFacts {
+            changed_lines: 1,
+            ..Default::default()
+        }
     }
 
     /// Pinned packs: an ordinary role delegate lands on the pin even with the
@@ -5785,7 +5873,8 @@ You review code."#;
         assert_eq!(edit.source, cr::DelegateSource::PackPin);
         assert_eq!(edit.role_model, Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1)));
 
-        let (routing, review_pin, candidate, dispatch) = r63_review_dispatch(&derived, 1);
+        let (routing, review_pin, candidate, dispatch) =
+            r63_review_dispatch(&derived, r63_one_line());
         assert_eq!(routing.source, cr::DelegateSource::PackPin, "HARD pin read");
         assert!(review_pin.is_none());
         let target = dispatch
@@ -5815,6 +5904,7 @@ You review code."#;
             Some(ReviewAuditInputs {
                 review_pack_pin: review_pin.clone(),
                 cross_family: candidate.clone(),
+                review_floor: None,
             }),
             session_pair.clone(),
         );
@@ -5847,7 +5937,8 @@ You review code."#;
         use crate::cost_router as cr;
         let _g = r63_env(Some(R63_AUTHOR), Some(("anthropic", "claude-sonnet-5")));
         let derived = cr::derive_role_map(&r63_available());
-        let (routing, review_pin, candidate, dispatch) = r63_review_dispatch(&derived, 1);
+        let (routing, review_pin, candidate, dispatch) =
+            r63_review_dispatch(&derived, r63_one_line());
         let pinned = r63_rm("anthropic", "claude-sonnet-5");
         assert_eq!(review_pin, Some(pinned.clone()));
         assert_eq!(dispatch.role_model, Some(pinned.clone()));
@@ -5857,6 +5948,7 @@ You review code."#;
             Some(ReviewAuditInputs {
                 review_pack_pin: review_pin,
                 cross_family: candidate,
+                review_floor: None,
             }),
             Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1)),
         );
@@ -5894,11 +5986,237 @@ You review code."#;
             assert_eq!(routing.role_model, None, "inherits the session pair");
         }
 
-        let (_routing, _pin, candidate, dispatch) = r63_review_dispatch(&derived, 1);
+        let (_routing, _pin, candidate, dispatch) = r63_review_dispatch(&derived, r63_one_line());
         let target = dispatch.role_model.expect("a cross-family reviewer");
         assert_eq!(Some(target.clone()), candidate);
         assert_ne!(Some(target.clone()), planner, "never the planner model");
         assert_ne!(target.model, "claude-fable-5");
+    }
+
+    // ── Lane N3 (M48 r64 s5): the reviewer delegate's objective assignment ──
+
+    /// The r64 s5 change as the delegate now measures it (trunk-relative):
+    /// `quoteShipping` gains `packageType`, and its four call sites change.
+    const N3_S5_DIFF: &str = "diff --git a/src/shipping/quote.ts b/src/shipping/quote.ts\n\
+--- a/src/shipping/quote.ts\n\
++++ b/src/shipping/quote.ts\n\
+@@ -1,3 +1,4 @@\n\
+-export function quoteShipping(weightKg: number, zone: Zone): number {\n\
++export function quoteShipping(weightKg: number, zone: Zone, packageType: PackageType): number {\n\
+diff --git a/src/checkout/checkout.ts b/src/checkout/checkout.ts\n\
+--- a/src/checkout/checkout.ts\n\
++++ b/src/checkout/checkout.ts\n\
+@@ -2 +2 @@\n\
+-  return quoteShipping(order.weightKg, order.zone);\n\
++  return quoteShipping(order.weightKg, order.zone, order.packageType);\n\
+diff --git a/src/cart/cartSummary.ts b/src/cart/cartSummary.ts\n\
+--- a/src/cart/cartSummary.ts\n\
++++ b/src/cart/cartSummary.ts\n\
+@@ -2 +2 @@\n\
+-  return quoteShipping(order.weightKg, order.zone);\n\
++  return quoteShipping(order.weightKg, order.zone, order.packageType);\n\
+diff --git a/src/api/quoteHandler.ts b/src/api/quoteHandler.ts\n\
+--- a/src/api/quoteHandler.ts\n\
++++ b/src/api/quoteHandler.ts\n\
+@@ -2 +2 @@\n\
+-  return quoteShipping(order.weightKg, order.zone);\n\
++  return quoteShipping(order.weightKg, order.zone, order.packageType);\n\
+diff --git a/src/admin/manualQuote.ts b/src/admin/manualQuote.ts\n\
+--- a/src/admin/manualQuote.ts\n\
++++ b/src/admin/manualQuote.ts\n\
+@@ -2 +2 @@\n\
+-  return quoteShipping(weightKg, zone);\n\
++  return quoteShipping(weightKg, zone, \"standard\");\n";
+
+    /// A one-line comment typo fix.
+    const N3_TYPO_DIFF: &str = "diff --git a/src/pager.rs b/src/pager.rs\n\
+--- a/src/pager.rs\n\
++++ b/src/pager.rs\n\
+@@ -1 +1 @@\n\
+-// Retruns the last page.\n\
++// Returns the last page.\n";
+
+    /// `delegate_cost_audit`'s composition for a review child: the pure audit,
+    /// then the review floor.
+    fn n3_judge(
+        actual: (&str, &str),
+        inputs: &ReviewAuditInputs,
+        targets: &DelegateAuditTargets,
+    ) -> crate::cost_router::DelegateCostAudit {
+        let mut audit = crate::cost_router::audit_delegate_dispatch(
+            actual,
+            targets.pin.as_ref(),
+            targets.pin_exception.as_ref(),
+            targets.reference.as_ref(),
+            &crate::cost_router::routing_matrix::nominal_call_cost,
+        );
+        audit.cheapest_capable &= review_floor_holds(actual, Some(inputs), targets);
+        audit
+    }
+
+    /// The r64 s5 shape on the `dschat` tier: a signature change with four
+    /// call sites is COMPLEX (floor 0.80), so the delegate reviewer is the
+    /// cheapest cross-family model clearing 0.80 (`claude-sonnet-5`), not
+    /// `claude-haiku-4-5` (0.63). The receipt audit counts that assigned
+    /// reviewer as cheapest-capable and pack-honoured; a haiku child on the
+    /// same review is not capable, and a fable child is not cheapest.
+    #[test]
+    fn n3_a_complex_review_is_assigned_a_capable_reviewer_and_the_audit_accepts_it() {
+        use crate::cost_router as cr;
+        use cr::recommend::{assess_review_complexity, ReviewComplexity, ReviewFacts};
+        let _g = r63_env(Some(R63_AUTHOR), None);
+        let derived = cr::derive_role_map(&r63_available());
+        let facts = ReviewFacts::from_diff(N3_S5_DIFF, 4);
+        let verdict = assess_review_complexity(&facts);
+        assert_eq!(verdict.complexity, ReviewComplexity::Complex, "{verdict:?}");
+        assert_eq!(verdict.floor, 0.80);
+
+        let (routing, review_pin, candidate, dispatch) = r63_review_dispatch(&derived, facts);
+        let target = dispatch
+            .role_model
+            .clone()
+            .expect("a cross-family reviewer");
+        assert_eq!(Some(target.clone()), candidate);
+        assert!(!target.model.starts_with("claude-haiku"), "{target:?}");
+        assert_eq!(target, r63_rm("anthropic", "claude-sonnet-5"));
+
+        let inputs = ReviewAuditInputs {
+            review_pack_pin: review_pin,
+            cross_family: candidate,
+            review_floor: Some(verdict.floor),
+        };
+        let targets = delegate_audit_targets(
+            None,
+            routing.role_model.clone(),
+            Some(inputs.clone()),
+            Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1)),
+        );
+        let assigned = n3_judge(("anthropic", "claude-sonnet-5"), &inputs, &targets);
+        assert!(
+            assigned.cheapest_capable && assigned.pack_honored,
+            "{assigned:?}"
+        );
+        let haiku = n3_judge(
+            ("anthropic", "claude-haiku-4-5-20251001"),
+            &inputs,
+            &targets,
+        );
+        assert!(
+            !haiku.cheapest_capable,
+            "below the complex floor: {haiku:?}"
+        );
+        let fable = n3_judge(("anthropic", "claude-fable-5"), &inputs, &targets);
+        assert!(
+            !fable.cheapest_capable,
+            "pricier than the assignment: {fable:?}"
+        );
+    }
+
+    /// A one-line typo is ROUTINE (floor 0.60): the cheapest cross-family
+    /// model clearing it, and the audit counts it cheapest-capable.
+    #[test]
+    fn n3_a_one_line_typo_review_is_assigned_the_cheapest_clearing_model() {
+        use crate::cost_router as cr;
+        use cr::recommend::{assess_review_complexity, ReviewComplexity, ReviewFacts};
+        let _g = r63_env(Some(R63_AUTHOR), None);
+        let derived = cr::derive_role_map(&r63_available());
+        let facts = ReviewFacts::from_diff(N3_TYPO_DIFF, 0);
+        let verdict = assess_review_complexity(&facts);
+        assert_eq!(verdict.complexity, ReviewComplexity::Routine, "{verdict:?}");
+
+        let (routing, review_pin, candidate, dispatch) = r63_review_dispatch(&derived, facts);
+        let haiku = r63_rm("anthropic", "claude-haiku-4-5-20251001");
+        assert_eq!(dispatch.role_model, Some(haiku.clone()));
+
+        let inputs = ReviewAuditInputs {
+            review_pack_pin: review_pin,
+            cross_family: candidate,
+            review_floor: Some(verdict.floor),
+        };
+        let targets = delegate_audit_targets(
+            None,
+            routing.role_model,
+            Some(inputs.clone()),
+            Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1)),
+        );
+        let audit = n3_judge(
+            (haiku.provider.as_str(), haiku.model.as_str()),
+            &inputs,
+            &targets,
+        );
+        assert!(audit.cheapest_capable && audit.pack_honored, "{audit:?}");
+    }
+
+    /// A dedicated `PERMAGENT_PACK_REVIEW_*` pin still wins over a COMPLEX
+    /// assignment: no assignment is made, the pin is dispatched, and the
+    /// audit judges the child against the pin.
+    #[test]
+    fn n3_a_dedicated_review_pack_pin_still_wins_over_a_complex_assignment() {
+        use crate::cost_router as cr;
+        let _g = r63_env(
+            Some(R63_AUTHOR),
+            Some(("anthropic", "claude-haiku-4-5-20251001")),
+        );
+        let derived = cr::derive_role_map(&r63_available());
+        let facts = cr::recommend::ReviewFacts::from_diff(N3_S5_DIFF, 4);
+        let (routing, review_pin, candidate, dispatch) = r63_review_dispatch(&derived, facts);
+        let pinned = r63_rm("anthropic", "claude-haiku-4-5-20251001");
+        assert_eq!(candidate, None, "a pinned review is not assigned");
+        assert_eq!(dispatch.role_model, Some(pinned.clone()));
+
+        let inputs = ReviewAuditInputs {
+            review_pack_pin: review_pin,
+            cross_family: candidate,
+            review_floor: None,
+        };
+        let targets = delegate_audit_targets(
+            None,
+            routing.role_model,
+            Some(inputs.clone()),
+            Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1)),
+        );
+        let audit = n3_judge(
+            ("anthropic", "claude-haiku-4-5-20251001"),
+            &inputs,
+            &targets,
+        );
+        assert!(audit.cheapest_capable && audit.pack_honored, "{audit:?}");
+    }
+
+    /// A `PERMAGENT_ROLE_REVIEW_*` pin still wins over a COMPLEX assignment.
+    #[test]
+    fn n3_a_review_role_pin_still_wins_over_a_complex_assignment() {
+        use crate::cost_router as cr;
+        use crate::cost_router::packs::*;
+        let (p, m) = R63_AUTHOR;
+        let _g = env_lock::lock_env([
+            (KEY_EDIT_PROVIDER, Some(p)),
+            (KEY_EDIT_MODEL, Some(m)),
+            (KEY_HARD_PROVIDER, Some(p)),
+            (KEY_HARD_MODEL, Some(m)),
+            (KEY_MECHANICAL_PROVIDER, Some(p)),
+            (KEY_MECHANICAL_MODEL, Some(m)),
+            (KEY_LOCAL_PROVIDER, Some(p)),
+            (KEY_LOCAL_MODEL, Some(m)),
+            (KEY_REVIEW_PROVIDER, None),
+            (KEY_REVIEW_MODEL, None),
+            ("PERMAGENT_ROLE_REVIEW_PROVIDER", Some("anthropic")),
+            (
+                "PERMAGENT_ROLE_REVIEW_MODEL",
+                Some("claude-haiku-4-5-20251001"),
+            ),
+            ("PERMAGENT_ROLE_EDIT_PROVIDER", None),
+            ("PERMAGENT_ROLE_EDIT_MODEL", None),
+            (crate::cost_router::KEY_ALLOW_ESCALATION, None),
+        ]);
+        let derived = cr::derive_role_map(&r63_available());
+        let facts = cr::recommend::ReviewFacts::from_diff(N3_S5_DIFF, 4);
+        let (routing, _review_pin, _candidate, dispatch) = r63_review_dispatch(&derived, facts);
+        assert_eq!(routing.source, cr::DelegateSource::RolePin);
+        assert_eq!(
+            dispatch.role_model,
+            Some(r63_rm("anthropic", "claude-haiku-4-5-20251001"))
+        );
     }
 
     /// The receipt: a delegate child's routing receipt carries its audit, and
