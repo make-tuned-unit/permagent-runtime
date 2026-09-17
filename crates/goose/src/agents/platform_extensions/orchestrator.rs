@@ -16837,7 +16837,36 @@ async fn auto_land_headless_goal(
 
     // r64 s5: a verifier pass is not an independent review. A non-trivial
     // change lands only after a cross-family reviewer approves it.
-    match independent_review_before_auto_land(pool, card, calling_session_id).await {
+    let review = independent_review_before_auto_land(pool, card, calling_session_id).await;
+    settle_verified_goal_review(
+        pool,
+        decision_id,
+        card,
+        auto_land_allowed,
+        calling_session_id,
+        review,
+        headless_max_redispatch_from_env(),
+    )
+    .await;
+}
+
+/// The tail of [`auto_land_headless_goal`] for a goal with genuine verify
+/// evidence, once [`independent_review_before_auto_land`] has decided: land
+/// (no review needed, or approved), send the goal back to its worker once with
+/// the review's concrete findings (Lane R66a, [`send_goal_back_with_review_findings`]),
+/// or park with the refusal. `max_redispatch` is the headless re-dispatch
+/// budget ([`PERMAGENT_HEADLESS_MAX_REDISPATCH_ENV`]), passed in so a test pins
+/// it without touching the environment.
+async fn settle_verified_goal_review(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    decision_id: &str,
+    card: &cards::Card,
+    auto_land_allowed: bool,
+    calling_session_id: Option<&str>,
+    review: AutoLandReview,
+    max_redispatch: u32,
+) {
+    match review {
         AutoLandReview::NotRequired { reason } => {
             tracing::debug!(
                 target: "permagentd::brain",
@@ -16846,6 +16875,49 @@ async fn auto_land_headless_goal(
             );
         }
         AutoLandReview::Approved => {}
+        AutoLandReview::ChangesRequested { reason, findings } => {
+            // Lane R66a: concrete findings on a verified goal go back to its
+            // worker once (headless only; a human reads the review otherwise),
+            // within the goal's attempt, re-dispatch and wall budgets.
+            let park_reason = if auto_land_allowed {
+                match send_goal_back_with_review_findings(
+                    pool,
+                    decision_id,
+                    &card.id,
+                    &findings,
+                    max_redispatch,
+                )
+                .await
+                {
+                    Ok(round) => {
+                        tracing::info!(
+                            target: "permagentd::brain",
+                            goal_id = %card.id,
+                            decision_id = %decision_id,
+                            round,
+                            findings = findings.len(),
+                            "headless Auto: independent review requested changes on goal '{}'; \
+                             sent back to its worker with the findings",
+                            card.title
+                        );
+                        return;
+                    }
+                    Err(why) => format!("{reason}; not sent back to the worker: {why}"),
+                }
+            } else {
+                reason
+            };
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                decision_id = %decision_id,
+                "headless_approve_refused reason=independent_review: goal '{}': {}",
+                card.title,
+                park_reason
+            );
+            park_refused_auto_land(pool, decision_id, card, auto_land_allowed, &park_reason).await;
+            return;
+        }
         AutoLandReview::Refused { reason } => {
             tracing::warn!(
                 target: "permagentd::brain",
@@ -17024,6 +17096,12 @@ enum AutoLandReview {
     NotRequired { reason: String },
     /// A cross-family reviewer approved the diff.
     Approved,
+    /// Lane R66a: the review requested changes with concrete findings, which
+    /// a headless run may send back to the worker once.
+    ChangesRequested {
+        reason: String,
+        findings: Vec<String>,
+    },
     /// A review was required and did not approve (or could not run).
     Refused { reason: String },
 }
@@ -17099,6 +17177,7 @@ async fn independent_review_before_auto_land(
                         calling_session_id,
                     )
                     .await;
+                    let findings = run.findings;
                     let (review, mut record) = match run.outcome {
                         ReviewerGateOutcome::Approved {
                             checked,
@@ -17118,11 +17197,16 @@ async fn independent_review_before_auto_land(
                         ReviewerGateOutcome::Refused { reason: refusal }
                         | ReviewerGateOutcome::Unreachable { reason: refusal }
                         | ReviewerGateOutcome::DiffTooLarge { reason: refusal } => (
-                            AutoLandReview::Refused {
-                                reason: format!(
+                            {
+                                let reason = format!(
                                     "an independent review is required ({reason}) and did not \
                                      approve: {refusal}"
-                                ),
+                                );
+                                if findings.is_empty() {
+                                    AutoLandReview::Refused { reason }
+                                } else {
+                                    AutoLandReview::ChangesRequested { reason, findings }
+                                }
                             },
                             serde_json::json!({
                                 "required": true,
@@ -17160,9 +17244,27 @@ async fn independent_review_before_auto_land(
         auto_land_review = %record,
         "headless Auto: independent review before auto-land",
     );
+    record_auto_land_review(pool, &card.id, record).await;
+    outcome
+}
+
+/// Write `auto_land_review` on the card. Lane R66a: a goal sent back once
+/// keeps its earlier review rounds (read fresh: the caller's card snapshot can
+/// predate the send-back record). Best-effort: a write failure is logged.
+async fn record_auto_land_review(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    record: serde_json::Value,
+) {
+    let prior = cards::get_card(pool, card_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|c| c.metadata_json.get(AUTO_LAND_REVIEW_METADATA_KEY).cloned());
+    let record = auto_land_review_carrying_sent_back_rounds(prior.as_ref(), record);
     if let Err(e) = cards::merge_card_metadata(
         pool,
-        &card.id,
+        card_id,
         serde_json::json!({ AUTO_LAND_REVIEW_METADATA_KEY: record }),
         false,
     )
@@ -17170,15 +17272,274 @@ async fn independent_review_before_auto_land(
     {
         tracing::warn!(
             target: "permagentd::brain",
-            goal_id = %card.id,
+            goal_id = %card_id,
             "could not record the auto-land review outcome: {e}"
         );
     }
-    outcome
 }
 
 /// Card metadata key for [`independent_review_before_auto_land`]'s outcome.
 pub(crate) const AUTO_LAND_REVIEW_METADATA_KEY: &str = "auto_land_review";
+
+// ── Lane R66a: send a reviewed goal back to its worker once ─────────────────
+//
+// M50 r66 s1: two verified goals were genuinely wrong, and the independent
+// review said so with concrete findings (a broken `--help` flag; call sites
+// the change did not account for). Both were parked with wall and attempt
+// budget left, so nothing landed although a worker could have acted on the
+// findings. A REQUEST_CHANGES with concrete findings now returns the goal to
+// Ready ONCE, with the findings attached to the next worker brief as data; the
+// ordinary re-dispatch rail restarts it from its own branch tip, and the
+// re-completed, re-verified goal is reviewed again by the same assignment. A
+// second REQUEST_CHANGES parks with both reviews recorded.
+
+/// Protected card metadata key: how many times a review sent this goal back.
+pub(crate) const REVIEW_SEND_BACK_COUNT_METADATA_KEY: &str = "review_send_back_count";
+/// Protected card metadata key: when the one send-back returned the goal to
+/// Ready. The drain reads it the way it reads `resumed_by_headless_unblock_at`.
+pub(crate) const SENT_BACK_BY_REVIEW_AT_METADATA_KEY: &str = "sent_back_by_review_at";
+/// Card metadata key: the finding lines the next worker brief renders as data
+/// (`dispatch_brief::retry_context_block`).
+pub(crate) const REVIEW_FINDINGS_METADATA_KEY: &str = "review_findings_to_address";
+/// At most this many finding lines reach the worker.
+const REVIEW_FINDINGS_MAX_LINES: usize = 12;
+/// Each finding line is cut to this many characters.
+const REVIEW_FINDING_MAX_CHARS: usize = 400;
+
+/// The review's finding lines as the worker will see them: one line each
+/// (newlines folded), each cut to [`REVIEW_FINDING_MAX_CHARS`] characters, at
+/// most [`REVIEW_FINDINGS_MAX_LINES`] lines, blanks dropped.
+pub(crate) fn review_findings_for_worker(findings: &[String]) -> Vec<String> {
+    findings
+        .iter()
+        .map(|f| f.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|f| !f.is_empty())
+        .take(REVIEW_FINDINGS_MAX_LINES)
+        .map(|f| {
+            if f.chars().count() > REVIEW_FINDING_MAX_CHARS {
+                let cut: String = f.chars().take(REVIEW_FINDING_MAX_CHARS - 1).collect();
+                format!("{cut}…")
+            } else {
+                f
+            }
+        })
+        .collect()
+}
+
+/// Whether a goal whose review requested changes may be sent back to its
+/// worker (pure): `Ok(lines)` with the findings to hand over, or `Err(why)` it
+/// parks instead. Refused when there is no concrete finding, when this goal
+/// was already sent back once, when headless re-dispatch is off
+/// (`max_redispatch == 0`), when the goal's re-dispatches so far
+/// (`attempt_count - 1`) already use the re-dispatch budget, or when the
+/// goal's attempt/token/wall budget (`budget_exhausted`) or the wall time left
+/// for another attempt (`wall_refusal`) says no.
+pub(crate) fn review_send_back_gate(
+    metadata: &serde_json::Value,
+    findings: &[String],
+    max_redispatch: u32,
+    budget_exhausted: Option<String>,
+    wall_refusal: Option<String>,
+) -> Result<Vec<String>, String> {
+    let lines = review_findings_for_worker(findings);
+    if lines.is_empty() {
+        return Err("the review cited no concrete finding to act on".to_string());
+    }
+    let prior = metadata
+        .get(REVIEW_SEND_BACK_COUNT_METADATA_KEY)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if prior >= 1 {
+        return Err(
+            "the goal was already sent back once for review findings; a second request for \
+             changes parks"
+                .to_string(),
+        );
+    }
+    if max_redispatch == 0 {
+        return Err("headless re-dispatch is disabled".to_string());
+    }
+    let redispatches = current_attempt_count(metadata).saturating_sub(1);
+    if redispatches >= u64::from(max_redispatch) {
+        return Err(format!(
+            "the re-dispatch budget is spent ({redispatches}/{max_redispatch})"
+        ));
+    }
+    if let Some(exhausted) = budget_exhausted {
+        return Err(format!("the goal budget is exhausted: {exhausted}"));
+    }
+    if let Some(refusal) = wall_refusal {
+        return Err(format!(
+            "the wall budget is too small for another attempt: {refusal}"
+        ));
+    }
+    Ok(lines)
+}
+
+/// `auto_land_review` as recorded when the goal is sent back: outcome
+/// `sent_back`, the deciding (last) review round marked `sent_back: true`, and
+/// the finding lines handed to the worker.
+fn auto_land_review_marked_sent_back(
+    record: Option<&serde_json::Value>,
+    lines: &[String],
+    round: u64,
+) -> serde_json::Value {
+    let mut record = record
+        .cloned()
+        .filter(|r| r.is_object())
+        .unwrap_or_else(|| serde_json::json!({ "required": true }));
+    if let Some(obj) = record.as_object_mut() {
+        obj.insert("outcome".to_string(), serde_json::json!("sent_back"));
+        if let Some(last) = obj
+            .get_mut("reviews")
+            .and_then(|v| v.as_array_mut())
+            .and_then(|reviews| reviews.last_mut())
+            .and_then(|v| v.as_object_mut())
+        {
+            last.insert("sent_back".to_string(), serde_json::json!(true));
+        }
+        obj.insert(
+            "send_back".to_string(),
+            serde_json::json!({
+                "round": round,
+                "findings": lines,
+                "recorded_at": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+    }
+    record
+}
+
+/// A new `auto_land_review` record, carrying the review rounds of an earlier
+/// record that sent the goal back (renumbered so the new rounds follow them)
+/// and that record's `send_back`. Any other earlier record is replaced.
+fn auto_land_review_carrying_sent_back_rounds(
+    prior: Option<&serde_json::Value>,
+    mut record: serde_json::Value,
+) -> serde_json::Value {
+    let Some(prior) =
+        prior.filter(|p| p.get("outcome").and_then(|v| v.as_str()) == Some("sent_back"))
+    else {
+        return record;
+    };
+    let mut reviews = prior
+        .get("reviews")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let offset = reviews.len() as u64;
+    let current = record
+        .get("reviews")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for mut review in current {
+        if let Some(obj) = review.as_object_mut() {
+            let round = obj.get("round").and_then(|v| v.as_u64()).unwrap_or(0);
+            obj.insert("round".to_string(), serde_json::json!(round + offset));
+        }
+        reviews.push(review);
+    }
+    if let Some(obj) = record.as_object_mut() {
+        obj.insert("reviews".to_string(), serde_json::Value::Array(reviews));
+        if let Some(send_back) = prior.get("send_back") {
+            obj.insert("send_back".to_string(), send_back.clone());
+        }
+    }
+    record
+}
+
+/// Lane R66a: return a verified goal whose independent review requested
+/// changes to Ready ONCE, with the findings attached to its next brief as data.
+///
+/// Reuses the existing rails: [`review_send_back_gate`] bounds it by the
+/// goal's attempt/token/wall budget ([`goal_transition::check_budget`],
+/// [`wall_budget_exhausted_refusal`]) and the headless re-dispatch budget;
+/// [`goal_transition::return_to_ready`] (the bounded-refinement path) moves the
+/// card Review → Ready without charging an attempt (the re-dispatch charges
+/// it) and writes the protected counter, the resume stamp and the findings in
+/// the same transaction; the now-moot `approve_review` is superseded after the
+/// move. The re-dispatch continues from the worker's own branch tip
+/// (`prior_goal_branch_tip`: nothing here marks that branch rejected), is
+/// started by the drain's sweep ([`next_drain_dispatches`]), and its completion
+/// goes through the same verify gates and [`independent_review_before_auto_land`]
+/// again. Returns the send-back round, or why the goal parks instead.
+async fn send_goal_back_with_review_findings(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    decision_id: &str,
+    card_id: &str,
+    findings: &[String],
+    max_redispatch: u32,
+) -> Result<u64, String> {
+    // Fresh: the review record was written after the caller's snapshot.
+    let card = cards::get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("goal '{card_id}' not found"))?;
+    let budget_exhausted = goal_transition::check_budget(pool, &card.metadata_json)
+        .await?
+        .map(|e| e.describe());
+    let wall_refusal = wall_budget_exhausted_refusal(&card.metadata_json).map(|r| r.reason);
+    let lines = review_send_back_gate(
+        &card.metadata_json,
+        findings,
+        max_redispatch,
+        budget_exhausted,
+        wall_refusal,
+    )?;
+    let round = card
+        .metadata_json
+        .get(REVIEW_SEND_BACK_COUNT_METADATA_KEY)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        + 1;
+    let mut patch = serde_json::Map::new();
+    patch.insert(
+        REVIEW_SEND_BACK_COUNT_METADATA_KEY.to_string(),
+        serde_json::json!(round),
+    );
+    patch.insert(
+        SENT_BACK_BY_REVIEW_AT_METADATA_KEY.to_string(),
+        serde_json::json!(chrono::Utc::now().to_rfc3339()),
+    );
+    patch.insert(
+        REVIEW_FINDINGS_METADATA_KEY.to_string(),
+        serde_json::json!(lines),
+    );
+    patch.insert(
+        AUTO_LAND_REVIEW_METADATA_KEY.to_string(),
+        auto_land_review_marked_sent_back(
+            card.metadata_json.get(AUTO_LAND_REVIEW_METADATA_KEY),
+            &lines,
+            round,
+        ),
+    );
+    goal_transition::return_to_ready(
+        pool,
+        card_id,
+        decisions::ACTOR_HEADLESS_POLICY,
+        "the independent review requested changes: sent back once to address its findings \
+         (listed in this brief as review findings), then verify and declare done again",
+        None,
+        patch,
+    )
+    .await
+    .map_err(String::from)?;
+    if let Err(e) = decisions::supersede_decision(
+        pool,
+        decision_id,
+        "the independent review requested changes; the goal was sent back to its worker once",
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            decision_id = %decision_id,
+            "sent the goal back but left its approve_review decision open: {e}"
+        );
+    }
+    Ok(round)
+}
 
 /// Harness loop, Lane Y10b: park a goal whose auto-land was REFUSED, naming
 /// the refusal.
@@ -18008,6 +18369,12 @@ pub(crate) enum DrainDispatchKind {
     /// refusals already spent its budget (A61 Miss 1: the drain quit with
     /// 480 s of its 540 s cap left while `e406` was `never_dispatched`).
     FirstDispatch,
+    /// Lane R66a: the one send-back an independent review granted this goal
+    /// ([`review_send_back_continuation_pending`]), used only when the
+    /// re-dispatch budget is already spent — the send-back itself was gated
+    /// on that budget, so a drain whose own count drifted from it must not
+    /// strand the goal in Ready. Shares `continuation_tried`.
+    ReviewSendBack,
 }
 
 /// What the drain's sweep has already spent in this drain, per card.
@@ -18032,6 +18399,9 @@ pub(crate) struct DrainCandidate {
     pub card_id: String,
     /// [`headless_unblock_continuation_pending`] on the card's metadata.
     pub continuation_pending: bool,
+    /// Lane R66a: [`review_send_back_continuation_pending`] on the card's
+    /// metadata.
+    pub send_back_pending: bool,
     /// Not awaited by this drain and [`goal_never_dispatched`] on its
     /// metadata.
     pub never_dispatched: bool,
@@ -18048,13 +18418,28 @@ pub(crate) struct DrainCandidate {
 /// therefore this continuation, exists at most once per goal. An unparseable
 /// timestamp reads as "not pending" (no extra dispatch on bad data).
 pub(crate) fn headless_unblock_continuation_pending(metadata: &serde_json::Value) -> bool {
+    stamp_undispatched_since(metadata, "resumed_by_headless_unblock_at")
+}
+
+/// Lane R66a: true while a review send-back
+/// ([`SENT_BACK_BY_REVIEW_AT_METADATA_KEY`]) has returned this goal to Ready
+/// and no dispatch has happened since — the same "dispatched after the stamp"
+/// proof as [`headless_unblock_continuation_pending`]. The send-back fires at
+/// most once per goal ([`REVIEW_SEND_BACK_COUNT_METADATA_KEY`]).
+pub(crate) fn review_send_back_continuation_pending(metadata: &serde_json::Value) -> bool {
+    stamp_undispatched_since(metadata, SENT_BACK_BY_REVIEW_AT_METADATA_KEY)
+}
+
+/// Whether the RFC 3339 stamp at `stamp_key` exists and no `dispatched_at`
+/// follows it. An unparseable timestamp reads as "not pending".
+fn stamp_undispatched_since(metadata: &serde_json::Value, stamp_key: &str) -> bool {
     let parse = |key: &str| {
         metadata
             .get(key)
             .and_then(|v| v.as_str())
             .map(chrono::DateTime::parse_from_rfc3339)
     };
-    let Some(Ok(resumed_at)) = parse("resumed_by_headless_unblock_at") else {
+    let Some(Ok(resumed_at)) = parse(stamp_key) else {
         return false;
     };
     match parse("dispatched_at") {
@@ -18089,6 +18474,8 @@ pub(crate) fn goal_never_dispatched(metadata: &serde_json::Value) -> bool {
 ///     drain → [`DrainDispatchKind::UnblockContinuation`], whatever the
 ///     re-dispatch count (R62c);
 ///   - re-dispatch budget left → [`DrainDispatchKind::Budgeted`] (Y6);
+///   - an unconsumed review send-back not yet tried in this drain →
+///     [`DrainDispatchKind::ReviewSendBack`] (Lane R66a);
 ///   - only while `quiescing`, a never-dispatched card not yet given its
 ///     first dispatch in this drain → [`DrainDispatchKind::FirstDispatch`]
 ///     (R62c).
@@ -18117,6 +18504,8 @@ pub(crate) fn next_drain_dispatches(
             DrainDispatchKind::UnblockContinuation
         } else if ledger.redispatch_counts.get(card_id).copied().unwrap_or(0) < max_redispatch {
             DrainDispatchKind::Budgeted
+        } else if candidate.send_back_pending && !ledger.continuation_tried.contains(card_id) {
+            DrainDispatchKind::ReviewSendBack
         } else if quiescing
             && candidate.never_dispatched
             && !ledger.first_dispatch_tried.contains(card_id)
@@ -18257,6 +18646,9 @@ async fn redispatch_ready_goals(
                         continuation_pending: headless_unblock_continuation_pending(
                             &card.metadata_json,
                         ),
+                        send_back_pending: review_send_back_continuation_pending(
+                            &card.metadata_json,
+                        ),
                         never_dispatched: !awaited_cards.contains(&card.id)
                             && goal_never_dispatched(&card.metadata_json),
                     })
@@ -18285,7 +18677,7 @@ async fn redispatch_ready_goals(
                 DrainDispatchKind::Budgeted => {
                     *ledger.redispatch_counts.entry(card_id.clone()).or_insert(0) += 1;
                 }
-                DrainDispatchKind::UnblockContinuation => {
+                DrainDispatchKind::UnblockContinuation | DrainDispatchKind::ReviewSendBack => {
                     ledger.continuation_tried.insert(card_id.clone());
                 }
                 DrainDispatchKind::FirstDispatch => {
@@ -18322,7 +18714,8 @@ async fn redispatch_ready_goals(
                                 *count = count.saturating_sub(1);
                             }
                         }
-                        DrainDispatchKind::UnblockContinuation => {
+                        DrainDispatchKind::UnblockContinuation
+                        | DrainDispatchKind::ReviewSendBack => {
                             ledger.continuation_tried.remove(&card_id);
                         }
                         DrainDispatchKind::FirstDispatch => {
@@ -18549,7 +18942,10 @@ async fn drain_dispatched_goals_with(
                     .await
                     .ok()
                     .flatten()
-                    .is_some_and(|card| headless_unblock_continuation_pending(&card.metadata_json));
+                    .is_some_and(|card| {
+                        headless_unblock_continuation_pending(&card.metadata_json)
+                            || review_send_back_continuation_pending(&card.metadata_json)
+                    });
             }
             let completion_in_flight = goal_completion_in_flight_within(&card_id, completion_bound);
             // R62c (r61 s1, see `adopt_orphaned_review`): a Review card
@@ -24405,10 +24801,21 @@ enum ReviewRound {
     },
     RequestChanges {
         reason: String,
+        /// Lane R66a: one line per concrete finding (`[LENS] summary
+        /// (evidence)`), what a send-back hands the worker.
+        findings: Vec<String>,
     },
     /// The verdict was UNCERTAIN, or no verdict could be read.
     Uncertain {
         reason: String,
+    },
+    /// Lane R66a: read as UNCERTAIN — the reviewer wrote no CALLSITE line at
+    /// all for these listed call sites (`file:line`) and gave no other
+    /// concrete finding, so it never completed the required table. An
+    /// explicit MISSED is a REQUEST_CHANGES instead.
+    CallSiteTableIncomplete {
+        reason: String,
+        sites: Vec<String>,
     },
     /// Any other block (an un-evidenced approval, ungrounded findings).
     Blocked {
@@ -24421,7 +24828,9 @@ impl ReviewRound {
         match self {
             ReviewRound::Approved { .. } => "approved",
             ReviewRound::RequestChanges { .. } => "request_changes",
-            ReviewRound::Uncertain { .. } => "uncertain",
+            ReviewRound::Uncertain { .. } | ReviewRound::CallSiteTableIncomplete { .. } => {
+                "uncertain"
+            }
             ReviewRound::Blocked { .. } => "blocked",
         }
     }
@@ -24429,8 +24838,9 @@ impl ReviewRound {
     fn reason(&self) -> &str {
         match self {
             ReviewRound::Approved { checked } => checked,
-            ReviewRound::RequestChanges { reason }
+            ReviewRound::RequestChanges { reason, .. }
             | ReviewRound::Uncertain { reason }
+            | ReviewRound::CallSiteTableIncomplete { reason, .. }
             | ReviewRound::Blocked { reason } => reason,
         }
     }
@@ -24464,6 +24874,9 @@ impl ReviewAttempt {
                 detail_key.to_string(),
                 serde_json::json!(self.round.reason()),
             );
+            if let ReviewRound::CallSiteTableIncomplete { sites, .. } = &self.round {
+                obj.insert("absent_call_sites".to_string(), serde_json::json!(sites));
+            }
         }
         record
     }
@@ -24475,8 +24888,9 @@ impl ReviewAttempt {
                 reviewer_provider: self.provider,
                 reviewer_model: self.model,
             },
-            ReviewRound::RequestChanges { reason }
+            ReviewRound::RequestChanges { reason, .. }
             | ReviewRound::Uncertain { reason }
+            | ReviewRound::CallSiteTableIncomplete { reason, .. }
             | ReviewRound::Blocked { reason } => ReviewerGateOutcome::Refused { reason },
         }
     }
@@ -24489,6 +24903,9 @@ struct GoalReviewRun {
     outcome: ReviewerGateOutcome,
     reviews: Vec<serde_json::Value>,
     escalation: Option<serde_json::Value>,
+    /// Lane R66a: the concrete findings when the deciding round requested
+    /// changes; empty for every other outcome.
+    findings: Vec<String>,
 }
 
 impl GoalReviewRun {
@@ -24498,12 +24915,20 @@ impl GoalReviewRun {
             outcome,
             reviews: Vec::new(),
             escalation: None,
+            findings: Vec::new(),
         }
     }
 }
 
 /// The deterministic gate over one reviewer response (Lane R62e's E7 gate
 /// included). An unreadable response is UNCERTAIN (`parse_review` logs it).
+///
+/// Lane R66a: E7 turns every unaccounted call site into a REQUEST_CHANGES,
+/// whether the reviewer judged it MISSED or wrote no CALLSITE line for it at
+/// all. When every unaccounted site is merely absent and the reviewer cited no
+/// other concrete finding, the reviewer did not complete the required table:
+/// that is [`ReviewRound::CallSiteTableIncomplete`], read as UNCERTAIN, so the
+/// one objective escalation applies. An explicit MISSED stays REQUEST_CHANGES.
 fn review_round_from_response(
     response_text: &str,
     changed_lines: usize,
@@ -24511,23 +24936,59 @@ fn review_round_from_response(
 ) -> ReviewRound {
     let outcome = crate::cost_router::parse_review(response_text);
     let diff_substantive = changed_lines > crate::cost_router::review_gate::TRIVIAL_MAX_LINES;
-    match crate::cost_router::gate_decision_with_call_sites(
+    let decision = crate::cost_router::gate_decision_with_call_sites(
         &outcome,
         diff_substantive,
         0,
         call_site_enumerations,
-    ) {
+    );
+    if matches!(
+        decision,
+        crate::cost_router::GateDecision::RequestChanges { .. }
+    ) && outcome.grounded_findings().is_empty()
+    {
+        let absent =
+            crate::cost_router::absent_call_sites(call_site_enumerations, &outcome.call_sites);
+        let unaccounted =
+            crate::cost_router::missing_call_sites(call_site_enumerations, &outcome.call_sites);
+        if !absent.is_empty() && absent.len() == unaccounted.len() {
+            let sites: Vec<String> = absent
+                .iter()
+                .map(|site| format!("{}:{}", site.file, site.line))
+                .collect();
+            tracing::info!(
+                target: "permagentd::brain",
+                absent_call_sites = sites.len(),
+                verdict = outcome.verdict.as_str(),
+                "reviewer wrote no CALLSITE line for listed call sites and no other finding; \
+                 reading the review as UNCERTAIN",
+            );
+            return ReviewRound::CallSiteTableIncomplete {
+                reason: format!(
+                    "the reviewer did not complete the required CALLSITE table: no CALLSITE \
+                     line for {} listed call site(s) ({}) and no other concrete finding",
+                    sites.len(),
+                    sites.join(", ")
+                ),
+                sites,
+            };
+        }
+    }
+    match decision {
         crate::cost_router::GateDecision::Proceed { .. } => ReviewRound::Approved {
             checked: outcome.checked.clone(),
         },
         crate::cost_router::GateDecision::RequestChanges { findings } => {
-            let summary = findings
+            let findings = findings
                 .iter()
                 .map(|f| format!("[{}] {} ({})", f.lens.as_str(), f.summary, f.evidence))
-                .collect::<Vec<_>>()
-                .join("; ");
+                .collect::<Vec<_>>();
             ReviewRound::RequestChanges {
-                reason: format!("the independent reviewer requested changes: {summary}"),
+                reason: format!(
+                    "the independent reviewer requested changes: {}",
+                    findings.join("; ")
+                ),
+                findings,
             }
         }
         crate::cost_router::GateDecision::Block { reason }
@@ -24550,6 +25011,11 @@ fn review_round_from_response(
 /// none could run) plus its escalation record. Only an APPROVE lands; a second
 /// UNCERTAIN, a REQUEST_CHANGES, or no escalation reviewer parks. Every round
 /// is recorded.
+///
+/// Lane R66a: an incomplete CALLSITE table reads as UNCERTAIN here. When both
+/// the first and the escalated reviewer left it incomplete, the harness's own
+/// call-site list becomes the REQUEST_CHANGES finding ("update or account for
+/// these call sites"), so the goal can be sent back rather than parked.
 async fn finish_goal_review_with_escalation<E, Fut>(
     first: ReviewAttempt,
     escalate_uncertain: bool,
@@ -24560,21 +25026,29 @@ where
     Fut: std::future::Future<Output = (Result<ReviewAttempt, String>, serde_json::Value)>,
 {
     let mut reviews = vec![first.to_json(1)];
-    if !(escalate_uncertain && matches!(first.round, ReviewRound::Uncertain { .. })) {
+    let first_unsure = matches!(
+        first.round,
+        ReviewRound::Uncertain { .. } | ReviewRound::CallSiteTableIncomplete { .. }
+    );
+    if !(escalate_uncertain && first_unsure) {
+        let findings = round_findings(&first.round);
         return GoalReviewRun {
             outcome: first.into_outcome(),
             reviews,
             escalation: None,
+            findings,
         };
     }
     let first_reviewer = first.reviewer();
     let first_reason = first.round.reason().to_string();
+    let first_omitted_table = matches!(first.round, ReviewRound::CallSiteTableIncomplete { .. });
     tracing::info!(
         target: "permagentd::brain",
         reviewer = %first_reviewer,
         "independent review UNCERTAIN; escalating once to the next-ranked reviewer",
     );
     let (second, escalation) = escalate(first.provider, first.model).await;
+    let mut findings = Vec::new();
     let outcome = match second {
         Err(why) => ReviewerGateOutcome::Refused {
             reason: format!(
@@ -24585,18 +25059,39 @@ where
         Ok(second) => {
             reviews.push(second.to_json(2));
             let second_uncertain = match &second.round {
-                ReviewRound::Uncertain { reason } => Some(reason.clone()),
+                ReviewRound::Uncertain { reason } => Some((reason.clone(), None)),
+                ReviewRound::CallSiteTableIncomplete { reason, sites } => {
+                    Some((reason.clone(), Some(sites.clone())))
+                }
                 _ => None,
             };
             match second_uncertain {
-                Some(reason) => ReviewerGateOutcome::Refused {
+                Some((_, Some(sites))) if first_omitted_table => {
+                    let listed = sites.join(", ");
+                    findings = vec![format!(
+                        "[CALL_SITE_COMPLETENESS] update or account for these call sites: \
+                         {listed}"
+                    )];
+                    ReviewerGateOutcome::Refused {
+                        reason: format!(
+                            "neither {first_reviewer} nor the escalated reviewer {} completed \
+                             the required CALLSITE table; the listed call sites are requested \
+                             as changes: {listed}",
+                            second.reviewer()
+                        ),
+                    }
+                }
+                Some((reason, _)) => ReviewerGateOutcome::Refused {
                     reason: format!(
                         "both reviewers were UNCERTAIN: {first_reviewer} ({first_reason}); \
                          escalated to {} ({reason})",
                         second.reviewer()
                     ),
                 },
-                None => second.into_outcome(),
+                None => {
+                    findings = round_findings(&second.round);
+                    second.into_outcome()
+                }
             }
         }
     };
@@ -24604,6 +25099,16 @@ where
         outcome,
         reviews,
         escalation: Some(escalation),
+        findings,
+    }
+}
+
+/// Lane R66a: the concrete findings a round carries (a REQUEST_CHANGES), or
+/// none.
+fn round_findings(round: &ReviewRound) -> Vec<String> {
+    match round {
+        ReviewRound::RequestChanges { findings, .. } => findings.clone(),
+        _ => Vec::new(),
     }
 }
 
@@ -38804,6 +39309,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         let plain = |id: &str| DrainCandidate {
             card_id: id.to_string(),
             continuation_pending: false,
+            send_back_pending: false,
             never_dispatched: false,
         };
         let ready = vec![
@@ -38841,16 +39347,19 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             DrainCandidate {
                 card_id: "resumed".to_string(),
                 continuation_pending: true,
+                send_back_pending: false,
                 never_dispatched: false,
             },
             DrainCandidate {
                 card_id: "never".to_string(),
                 continuation_pending: false,
+                send_back_pending: false,
                 never_dispatched: true,
             },
             DrainCandidate {
                 card_id: "spent".to_string(),
                 continuation_pending: false,
+                send_back_pending: false,
                 never_dispatched: false,
             },
         ];
@@ -41316,6 +41825,454 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             ),
             "{ten:?}"
         );
+    }
+
+    // ── Lane R66a: a review's concrete findings go back to the worker once ──
+
+    /// A verified goal in Review with its `approve_review` decision, as the
+    /// completion handler leaves it before the independent review.
+    async fn r66a_reviewed_goal(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        attempt_count: u64,
+    ) -> (cards::Card, decisions::Decision) {
+        let card = setup_goal_in_state(pool, "review", attempt_count).await;
+        stamp_successful_verify(pool, &card.id).await;
+        let decision = v2_review_decision(pool, &card.id, Some("coord-session-1")).await;
+        let card = cards::get_card(pool, &card.id).await.unwrap().unwrap();
+        (card, decision)
+    }
+
+    /// The r66 s1 `cli-argparse` finding.
+    const R66A_HELP_FINDING: &str = "[CORRECTNESS] Help flag (-h/--help) broken due to \
+                                     add_help=False (logfilter/cli.py:7-8, 11)";
+
+    fn r66a_changes_requested() -> AutoLandReview {
+        AutoLandReview::ChangesRequested {
+            reason: format!(
+                "an independent review is required (review complexity is moderate) and did not \
+                 approve: the independent reviewer requested changes: {R66A_HELP_FINDING}"
+            ),
+            findings: vec![R66A_HELP_FINDING.to_string()],
+        }
+    }
+
+    async fn r66a_state(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) -> String {
+        let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
+        cards::get_column(pool, &card.column_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state_binding
+            .unwrap_or_default()
+    }
+
+    /// Interactive (no headless auto-land): the review's request for changes
+    /// is left exactly where a human finds it — the card stays in Review, the
+    /// `approve_review` stays open, nothing is sent back or parked.
+    #[tokio::test]
+    async fn r66a_interactive_review_changes_are_left_for_a_human() {
+        let pool = test_pool().await;
+        let (card, decision) = r66a_reviewed_goal(&pool, 1).await;
+
+        settle_verified_goal_review(
+            &pool,
+            &decision.id,
+            &card,
+            false,
+            None,
+            r66a_changes_requested(),
+            DEFAULT_HEADLESS_MAX_REDISPATCH,
+        )
+        .await;
+
+        assert_eq!(r66a_state(&pool, &card.id).await, "review");
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert!(updated
+            .metadata_json
+            .get(REVIEW_SEND_BACK_COUNT_METADATA_KEY)
+            .is_none());
+        assert!(updated
+            .metadata_json
+            .get(REVIEW_FINDINGS_METADATA_KEY)
+            .is_none());
+        let d = decisions::get_decision(&pool, &decision.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.status, "open", "a human still answers the review");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_none(),
+            "nothing is parked interactively"
+        );
+    }
+
+    /// Receipts stay honest: a goal that reaches Review, is sent back and
+    /// reaches Review again is still one `review_reached`, and the send-back
+    /// itself records nothing (the re-dispatch is what `dispatch_goal_fn`
+    /// counts under `cost_routing dispatches`).
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn r66a_a_sent_back_goal_reaching_review_again_is_not_credited_twice() {
+        fn review_reached() -> u64 {
+            let lines = crate::receipts::snapshot().lines();
+            lines[1]
+                .split_whitespace()
+                .find_map(|field| field.strip_prefix("review_reached="))
+                .and_then(|n| n.parse().ok())
+                .expect("review_reached is known")
+        }
+        let pool = test_pool().await;
+        let (card, decision) = r66a_reviewed_goal(&pool, 1).await;
+        crate::receipts::begin_run();
+        let _ = crate::events::goal_state_changed(
+            &card.id,
+            Some(card.project_id.as_str()),
+            Some("in_progress"),
+            "review",
+            decisions::ACTOR_SYSTEM,
+        );
+        let first_reach = review_reached();
+
+        settle_verified_goal_review(
+            &pool,
+            &decision.id,
+            &card,
+            true,
+            Some("coord-session-1"),
+            r66a_changes_requested(),
+            DEFAULT_HEADLESS_MAX_REDISPATCH,
+        )
+        .await;
+        let after_send_back = review_reached();
+        let _ = crate::events::goal_state_changed(
+            &card.id,
+            Some(card.project_id.as_str()),
+            Some("in_progress"),
+            "review",
+            decisions::ACTOR_SYSTEM,
+        );
+        let after_second_review = review_reached();
+        crate::receipts::end_run();
+
+        assert_eq!(r66a_state(&pool, &card.id).await, "ready");
+        assert_eq!(
+            after_send_back, first_reach,
+            "the send-back records nothing"
+        );
+        assert_eq!(
+            after_second_review, first_reach,
+            "the same goal reaching Review again is not credited twice"
+        );
+    }
+
+    /// The worker re-completed after a send-back: its re-dispatch stamped
+    /// `dispatched_at` and charged an attempt, and its completion moved the
+    /// card back to Review.
+    async fn r66a_redispatched_back_to_review(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) {
+        let review = cards::get_goal_column(pool, crate::projects::PERSONAL_PROJECT_ID, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        sqlx::query(
+            "UPDATE cards SET column_id = ?, metadata_json = json_set(metadata_json, \
+             '$.goal_state', 'review', '$.dispatched_at', ?, '$.attempt_count', \
+             json_extract(metadata_json, '$.attempt_count') + 1) WHERE id = ?",
+        )
+        .bind(&review.id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(card_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn r66a_round(round: u64, reviewer: &str, outcome: &str, detail: &str) -> serde_json::Value {
+        let detail_key = if outcome == "approved" {
+            "checked"
+        } else {
+            "reason"
+        };
+        serde_json::json!({
+            "round": round,
+            "reviewer": reviewer,
+            "outcome": outcome,
+            detail_key: detail,
+        })
+    }
+
+    /// REQUEST_CHANGES on a verified goal: sent back ONCE (Ready, no attempt
+    /// charged, approve_review superseded, the worker's branch kept) with the
+    /// finding reaching the next brief as fenced data; the re-completed goal's
+    /// second review approves and it lands, with both rounds recorded.
+    #[tokio::test]
+    async fn r66a_request_changes_sends_a_verified_goal_back_once_and_a_second_approval_lands() {
+        let (repo, head) = v1_repo_with_finished_goal_branch("r66a-land-run");
+        let root = repo.path().to_string_lossy().into_owned();
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(&root)
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "r66a-land-run", &head).await;
+        stamp_successful_verify(&pool, &card.id).await;
+        let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        record_auto_land_review(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "required": true,
+                "outcome": "refused",
+                "reviews": [r66a_round(1, "minimax/MiniMax-M2.5", "request_changes", R66A_HELP_FINDING)],
+            }),
+        )
+        .await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        settle_verified_goal_review(
+            &pool,
+            &decision.id,
+            &card,
+            true,
+            Some("coord-session-1"),
+            r66a_changes_requested(),
+            DEFAULT_HEADLESS_MAX_REDISPATCH,
+        )
+        .await;
+
+        assert_ne!(git_v1(repo.path(), &["rev-parse", "HEAD"]), head);
+        assert_eq!(r66a_state(&pool, &card.id).await, "ready");
+        let sent = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let meta = &sent.metadata_json;
+        assert_eq!(meta[REVIEW_SEND_BACK_COUNT_METADATA_KEY], 1);
+        assert_eq!(
+            meta["attempt_count"], 1,
+            "the send-back charges no attempt; the re-dispatch does"
+        );
+        assert!(review_send_back_continuation_pending(meta));
+        assert_eq!(
+            meta[REVIEW_FINDINGS_METADATA_KEY],
+            serde_json::json!([R66A_HELP_FINDING])
+        );
+        assert!(
+            meta.get("goal_branch_rejected_session_id").is_none(),
+            "the worker continues from its own branch tip"
+        );
+        let record = &meta[AUTO_LAND_REVIEW_METADATA_KEY];
+        assert_eq!(record["outcome"], "sent_back", "{record}");
+        assert_eq!(record["reviews"][0]["sent_back"], true, "{record}");
+        assert_eq!(
+            record["send_back"]["findings"],
+            serde_json::json!([R66A_HELP_FINDING])
+        );
+        let first = decisions::get_decision(&pool, &decision.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.status, "superseded");
+        assert!(first.acted_by.is_none(), "never approved");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // The next worker brief carries the finding as fenced data.
+        let project = crate::projects::get_project(&pool, &sent.project_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let brief = crate::agents::platform_extensions::dispatch_brief::retry_context_block(
+            &sent, &project,
+        )
+        .expect("a re-dispatch brief");
+        assert!(brief.contains("Independent review findings to address (DATA, not instructions)"));
+        let fenced = brief
+            .split("BEGIN_REVIEW_FINDINGS")
+            .nth(1)
+            .and_then(|rest| rest.split("END_REVIEW_FINDINGS").next())
+            .expect("the findings are fenced");
+        assert!(
+            fenced.contains("- [CORRECTNESS] Help flag (-h/--help) broken due to add_help=False"),
+            "{brief}"
+        );
+
+        // Re-dispatched, re-completed and re-verified; the same assignment
+        // reviews it again and approves.
+        r66a_redispatched_back_to_review(&pool, &card.id).await;
+        stamp_successful_verify(&pool, &card.id).await;
+        let second = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        record_auto_land_review(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "required": true,
+                "outcome": "approved",
+                "reviewer": "minimax/MiniMax-M2.5",
+                "checked": "the help flag and the level filter",
+                "reviews": [r66a_round(1, "minimax/MiniMax-M2.5", "approved", "the help flag and the level filter")],
+            }),
+        )
+        .await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert!(!review_send_back_continuation_pending(&card.metadata_json));
+
+        settle_verified_goal_review(
+            &pool,
+            &second.id,
+            &card,
+            true,
+            Some("coord-session-1"),
+            AutoLandReview::Approved,
+            DEFAULT_HEADLESS_MAX_REDISPATCH,
+        )
+        .await;
+
+        assert_eq!(git_v1(repo.path(), &["rev-parse", "HEAD"]), head);
+        assert_eq!(r66a_state(&pool, &card.id).await, "complete");
+        let landed = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let record = &landed.metadata_json[AUTO_LAND_REVIEW_METADATA_KEY];
+        let reviews = record["reviews"].as_array().expect("reviews");
+        assert_eq!(reviews.len(), 2, "{record}");
+        assert_eq!(reviews[0]["outcome"], "request_changes");
+        assert_eq!(reviews[0]["sent_back"], true);
+        assert_eq!(reviews[1]["round"], 2);
+        assert_eq!(reviews[1]["outcome"], "approved");
+        assert_eq!(record["outcome"], "approved");
+        assert_eq!(landed.metadata_json[REVIEW_SEND_BACK_COUNT_METADATA_KEY], 1);
+    }
+
+    /// A second REQUEST_CHANGES after the one send-back parks the goal, and
+    /// the card keeps both reviews.
+    #[tokio::test]
+    async fn r66a_a_second_request_for_changes_parks_with_both_reviews_recorded() {
+        let pool = test_pool().await;
+        let (card, decision) = r66a_reviewed_goal(&pool, 1).await;
+        record_auto_land_review(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "required": true,
+                "outcome": "refused",
+                "reviews": [r66a_round(1, "minimax/MiniMax-M2.5", "request_changes", R66A_HELP_FINDING)],
+            }),
+        )
+        .await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        settle_verified_goal_review(
+            &pool,
+            &decision.id,
+            &card,
+            true,
+            Some("coord-session-1"),
+            r66a_changes_requested(),
+            DEFAULT_HEADLESS_MAX_REDISPATCH,
+        )
+        .await;
+        assert_eq!(r66a_state(&pool, &card.id).await, "ready");
+
+        r66a_redispatched_back_to_review(&pool, &card.id).await;
+        let second = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        let still_broken = "[CORRECTNESS] -h still exits 2 (logfilter/cli.py:11)";
+        record_auto_land_review(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "required": true,
+                "outcome": "refused",
+                "reviews": [r66a_round(1, "minimax/MiniMax-M2.5", "request_changes", still_broken)],
+            }),
+        )
+        .await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        settle_verified_goal_review(
+            &pool,
+            &second.id,
+            &card,
+            true,
+            Some("coord-session-1"),
+            AutoLandReview::ChangesRequested {
+                reason: format!("the independent reviewer requested changes: {still_broken}"),
+                findings: vec![still_broken.to_string()],
+            },
+            DEFAULT_HEADLESS_MAX_REDISPATCH,
+        )
+        .await;
+
+        assert_eq!(r66a_state(&pool, &card.id).await, "failed");
+        let parked = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(parked.metadata_json[REVIEW_SEND_BACK_COUNT_METADATA_KEY], 1);
+        let record = &parked.metadata_json[AUTO_LAND_REVIEW_METADATA_KEY];
+        assert_eq!(record["outcome"], "refused", "{record}");
+        let reviews = record["reviews"].as_array().expect("reviews");
+        assert_eq!(reviews.len(), 2, "{record}");
+        assert_eq!(reviews[0]["sent_back"], true);
+        assert_eq!(reviews[1]["round"], 2);
+        assert_eq!(reviews[1]["reason"], still_broken);
+        assert!(reviews[1].get("sent_back").is_none());
+        let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .expect("parked with an answerable unblock");
+        assert!(
+            unblock.detail.contains("already sent back once"),
+            "{}",
+            unblock.detail
+        );
+        let second = decisions::get_decision(&pool, &second.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.status, "superseded");
+    }
+
+    /// A goal whose budget is spent is parked with the review's findings, not
+    /// sent back.
+    #[tokio::test]
+    async fn r66a_an_exhausted_budget_parks_without_sending_back() {
+        let pool = test_pool().await;
+        let (card, decision) =
+            r66a_reviewed_goal(&pool, goal_transition::DEFAULT_ATTEMPT_CAP).await;
+
+        settle_verified_goal_review(
+            &pool,
+            &decision.id,
+            &card,
+            true,
+            Some("coord-session-1"),
+            r66a_changes_requested(),
+            // Re-dispatch budget left, so the goal's own attempt cap decides.
+            10,
+        )
+        .await;
+
+        assert_eq!(r66a_state(&pool, &card.id).await, "failed");
+        let parked = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert!(parked
+            .metadata_json
+            .get(REVIEW_SEND_BACK_COUNT_METADATA_KEY)
+            .is_none());
+        assert!(parked
+            .metadata_json
+            .get(SENT_BACK_BY_REVIEW_AT_METADATA_KEY)
+            .is_none());
+        let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .expect("parked");
+        assert!(
+            unblock.detail.contains("not sent back to the worker")
+                && unblock.detail.contains("attempt cap exhausted"),
+            "{}",
+            unblock.detail
+        );
+        assert!(unblock.detail.contains("Help flag"), "the finding is kept");
     }
 
     /// V1 negative: a goal in Review with no durable verifier pass in its
@@ -54266,6 +55223,7 @@ mod r65a_tests {
                 ReviewRound::RequestChanges {
                     reason: "the independent reviewer requested changes: [CORRECTNESS] x (a:1)"
                         .to_string(),
+                    findings: vec!["[CORRECTNESS] x (a:1)".to_string()],
                 },
                 "minimax",
                 "MiniMax-M2.5",
@@ -54284,6 +55242,7 @@ mod r65a_tests {
         ));
         assert_eq!(run.reviews.len(), 1);
         assert!(run.escalation.is_none());
+        assert_eq!(run.findings, vec!["[CORRECTNESS] x (a:1)".to_string()]);
 
         // A non-verified (salvage) review never escalates, even when unsure.
         let run = finish_goal_review_with_escalation(
@@ -54622,6 +55581,393 @@ mod r65a_tests {
             unrecorded_planner_substitution(None, "custom_deepseek", "deepseek-chat", None),
             None,
             "a plan routed to the session coordinator all along is not a substitution"
+        );
+    }
+}
+
+#[cfg(test)]
+mod r66a_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const HELP_FINDING: &str = "[CORRECTNESS] Help flag (-h/--help) broken due to add_help=False \
+                                (logfilter/cli.py:7-8, 11)";
+
+    fn attempt(round: ReviewRound, provider: &str, model: &str) -> ReviewAttempt {
+        ReviewAttempt {
+            round,
+            provider: provider.to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    /// The r66 s1 `refactor-shipping-quote-signature` call sites the reviewer
+    /// left out of its CALLSITE table.
+    fn quote_call_sites() -> Vec<crate::cost_router::CallSiteEnumeration> {
+        vec![crate::cost_router::CallSiteEnumeration {
+            symbol: "quoteShipping".to_string(),
+            file: "src/shipping/quote.ts".to_string(),
+            call_sites: vec![
+                crate::cost_router::CallSite {
+                    file: "src/admin/manualQuote.ts".to_string(),
+                    line: 5,
+                    text: "return quoteShipping(weightKg, zone);".to_string(),
+                },
+                crate::cost_router::CallSite {
+                    file: "src/shipping/quote.ts".to_string(),
+                    line: 15,
+                    text: "return quoteShipping(o.weightKg, o.zone);".to_string(),
+                },
+            ],
+        }]
+    }
+
+    #[test]
+    fn r66a_absent_callsite_lines_with_no_other_finding_read_as_uncertain() {
+        let sites = quote_call_sites();
+        for response in [
+            "VERDICT: APPROVE\nCHECKED: the surcharge and its callers",
+            "VERDICT: UNCERTAIN\nCHECKED: the surcharge",
+            "VERDICT: REQUEST_CHANGES\nCHECKED: the surcharge",
+        ] {
+            match review_round_from_response(response, 40, &sites) {
+                ReviewRound::CallSiteTableIncomplete { reason, sites } => {
+                    assert_eq!(
+                        sites,
+                        vec!["src/admin/manualQuote.ts:5", "src/shipping/quote.ts:15"]
+                    );
+                    assert!(reason.contains("CALLSITE table"), "{reason}");
+                }
+                other => panic!("{response:?} must read as an incomplete table, got {other:?}"),
+            }
+        }
+
+        // One site answered, the other absent: still an incomplete table.
+        let partial = "VERDICT: APPROVE\nCHECKED: callers\nCALLSITE quoteShipping | \
+                       src/admin/manualQuote.ts:5 | UPDATED | passes the package type";
+        match review_round_from_response(partial, 40, &sites) {
+            ReviewRound::CallSiteTableIncomplete { sites, .. } => {
+                assert_eq!(sites, vec!["src/shipping/quote.ts:15"])
+            }
+            other => panic!("expected an incomplete table, got {other:?}"),
+        }
+
+        // A concrete finding of the reviewer's own keeps it a REQUEST_CHANGES.
+        let with_finding = "VERDICT: REQUEST_CHANGES\nCHECKED: rounding\n\
+                            FINDING CORRECTNESS | rounds twice | src/shipping/quote.ts:12";
+        assert!(matches!(
+            review_round_from_response(with_finding, 40, &sites),
+            ReviewRound::RequestChanges { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn r66a_an_incomplete_callsite_table_escalates_once_and_an_approval_lands() {
+        let sites = quote_call_sites();
+        let first = attempt(
+            review_round_from_response("VERDICT: APPROVE\nCHECKED: callers", 40, &sites),
+            "minimax",
+            "MiniMax-M2.5",
+        );
+        let calls = AtomicUsize::new(0);
+        let calls_ref = &calls;
+        let run =
+            finish_goal_review_with_escalation(first, true, move |provider, model| async move {
+                calls_ref.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(
+                    (provider.as_str(), model.as_str()),
+                    ("minimax", "MiniMax-M2.5")
+                );
+                (
+                    Ok(attempt(
+                        ReviewRound::Approved {
+                            checked: "every listed call site".to_string(),
+                        },
+                        "zai",
+                        "glm-5.2",
+                    )),
+                    serde_json::json!({ "from": "minimax/MiniMax-M2.5", "to": "zai/glm-5.2" }),
+                )
+            })
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "exactly one escalation");
+        assert!(matches!(run.outcome, ReviewerGateOutcome::Approved { .. }));
+        assert_eq!(run.reviews[0]["outcome"], "uncertain");
+        assert_eq!(
+            run.reviews[0]["absent_call_sites"],
+            serde_json::json!(["src/admin/manualQuote.ts:5", "src/shipping/quote.ts:15"])
+        );
+        assert_eq!(run.reviews[1]["outcome"], "approved");
+        assert!(run.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn r66a_an_explicit_missed_stays_request_changes_and_can_be_sent_back() {
+        let sites = quote_call_sites();
+        let response = "VERDICT: APPROVE\nCHECKED: callers\n\
+                        CALLSITE quoteShipping | src/admin/manualQuote.ts:5 | MISSED | still \
+                        passes two arguments\n\
+                        CALLSITE quoteShipping | src/shipping/quote.ts:15 | UPDATED | passes \
+                        packageType";
+        let round = review_round_from_response(response, 40, &sites);
+        let ReviewRound::RequestChanges { findings, .. } = &round else {
+            panic!("an explicit MISSED is a request for changes, got {round:?}");
+        };
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("src/admin/manualQuote.ts:5"));
+
+        let calls = AtomicUsize::new(0);
+        let calls_ref = &calls;
+        let run = finish_goal_review_with_escalation(
+            attempt(round, "minimax", "MiniMax-M2.5"),
+            true,
+            move |_, _| async move {
+                calls_ref.fetch_add(1, Ordering::SeqCst);
+                (Err("unreachable".to_string()), serde_json::Value::Null)
+            },
+        )
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no escalation");
+        assert!(matches!(run.outcome, ReviewerGateOutcome::Refused { .. }));
+        assert_eq!(run.findings.len(), 1);
+        let lines = review_send_back_gate(
+            &serde_json::json!({ "attempt_count": 1 }),
+            &run.findings,
+            DEFAULT_HEADLESS_MAX_REDISPATCH,
+            None,
+            None,
+        )
+        .expect("sent back");
+        assert!(lines[0].contains("src/admin/manualQuote.ts:5"));
+    }
+
+    #[tokio::test]
+    async fn r66a_an_escalated_reviewer_that_also_omits_the_table_sends_back_the_call_site_list() {
+        let sites = quote_call_sites();
+        let first =
+            review_round_from_response("VERDICT: UNCERTAIN\nCHECKED: surcharge", 40, &sites);
+        let second = review_round_from_response("VERDICT: APPROVE\nCHECKED: all of it", 40, &sites);
+        let run = finish_goal_review_with_escalation(
+            attempt(first, "minimax", "MiniMax-M2.5"),
+            true,
+            move |_, _| async move {
+                (
+                    Ok(attempt(second, "zai", "glm-5.2")),
+                    serde_json::json!({ "to": "zai/glm-5.2" }),
+                )
+            },
+        )
+        .await;
+        match &run.outcome {
+            ReviewerGateOutcome::Refused { reason } => {
+                assert!(
+                    reason.contains("completed the required CALLSITE table"),
+                    "{reason}"
+                )
+            }
+            other => panic!("expected a request for changes, got {other:?}"),
+        }
+        assert_eq!(
+            run.findings,
+            vec![
+                "[CALL_SITE_COMPLETENESS] update or account for these call sites: \
+                 src/admin/manualQuote.ts:5, src/shipping/quote.ts:15"
+                    .to_string()
+            ]
+        );
+        assert_eq!(run.reviews.len(), 2);
+        assert!(review_send_back_gate(
+            &serde_json::json!({ "attempt_count": 1 }),
+            &run.findings,
+            DEFAULT_HEADLESS_MAX_REDISPATCH,
+            None,
+            None,
+        )
+        .is_ok());
+
+        // A plain UNCERTAIN first, then an incomplete table: two UNCERTAINs park.
+        let second = review_round_from_response("VERDICT: APPROVE\nCHECKED: all of it", 40, &sites);
+        let run = finish_goal_review_with_escalation(
+            attempt(
+                ReviewRound::Uncertain {
+                    reason: "review verdict is UNCERTAIN".to_string(),
+                },
+                "minimax",
+                "MiniMax-M2.5",
+            ),
+            true,
+            move |_, _| async move {
+                (
+                    Ok(attempt(second, "zai", "glm-5.2")),
+                    serde_json::json!({ "to": "zai/glm-5.2" }),
+                )
+            },
+        )
+        .await;
+        assert!(matches!(
+            run.outcome,
+            ReviewerGateOutcome::Refused { ref reason } if reason.contains("both reviewers were UNCERTAIN")
+        ));
+        assert!(run.findings.is_empty());
+    }
+
+    #[test]
+    fn r66a_the_send_back_gate_is_bounded_by_the_budgets_and_fires_once() {
+        let findings = vec![HELP_FINDING.to_string()];
+        let fresh = serde_json::json!({ "attempt_count": 1 });
+        assert_eq!(
+            review_send_back_gate(&fresh, &findings, 2, None, None),
+            Ok(vec![HELP_FINDING.to_string()])
+        );
+        let err = |meta: &serde_json::Value,
+                   findings: &[String],
+                   max: u32,
+                   budget: Option<&str>,
+                   wall: Option<&str>| {
+            review_send_back_gate(
+                meta,
+                findings,
+                max,
+                budget.map(str::to_string),
+                wall.map(str::to_string),
+            )
+            .expect_err("parks")
+        };
+        assert!(err(&fresh, &[" \n ".to_string()], 2, None, None).contains("no concrete finding"));
+        assert!(err(
+            &serde_json::json!({ "attempt_count": 2, "review_send_back_count": 1 }),
+            &findings,
+            2,
+            None,
+            None
+        )
+        .contains("already sent back once"));
+        assert!(err(&fresh, &findings, 0, None, None).contains("disabled"));
+        assert!(err(
+            &serde_json::json!({ "attempt_count": 3 }),
+            &findings,
+            2,
+            None,
+            None
+        )
+        .contains("re-dispatch budget is spent (2/2)"));
+        assert!(err(
+            &fresh,
+            &findings,
+            2,
+            Some("attempt cap exhausted (3/3 attempts)"),
+            None
+        )
+        .contains("attempt cap exhausted"));
+        assert!(err(
+            &fresh,
+            &findings,
+            2,
+            None,
+            Some("120s left, last attempt took 300s")
+        )
+        .contains("wall budget is too small"));
+
+        // Bounded as data: one line per finding, char-truncated, capped.
+        let long = format!("[CORRECTNESS] {}\nsecond line", "é".repeat(1_000));
+        let lines = review_findings_for_worker(&[long]);
+        assert_eq!(lines[0].chars().count(), REVIEW_FINDING_MAX_CHARS);
+        assert!(lines[0].ends_with('…') && !lines[0].contains('\n'));
+        let many: Vec<String> = (0..20).map(|i| format!("[SPEC] finding {i}")).collect();
+        assert_eq!(
+            review_findings_for_worker(&many).len(),
+            REVIEW_FINDINGS_MAX_LINES
+        );
+    }
+
+    #[test]
+    fn r66a_the_review_record_keeps_the_sent_back_round_and_numbers_the_next() {
+        let first = serde_json::json!({
+            "required": true,
+            "outcome": "refused",
+            "reviews": [
+                { "round": 1, "reviewer": "minimax/MiniMax-M2.5", "outcome": "uncertain" },
+                { "round": 2, "reviewer": "zai/glm-5.2", "outcome": "request_changes" },
+            ],
+        });
+        let sent = auto_land_review_marked_sent_back(Some(&first), &[HELP_FINDING.to_string()], 1);
+        assert_eq!(sent["outcome"], "sent_back");
+        assert_eq!(sent["reviews"][1]["sent_back"], true);
+        assert!(sent["reviews"][0].get("sent_back").is_none());
+        assert_eq!(sent["send_back"]["round"], 1);
+        assert_eq!(sent["send_back"]["findings"][0], HELP_FINDING);
+
+        let second = serde_json::json!({
+            "required": true,
+            "outcome": "approved",
+            "reviews": [{ "round": 1, "reviewer": "minimax/MiniMax-M2.5", "outcome": "approved" }],
+        });
+        let carried = auto_land_review_carrying_sent_back_rounds(Some(&sent), second.clone());
+        assert_eq!(carried["outcome"], "approved");
+        let reviews = carried["reviews"].as_array().unwrap();
+        assert_eq!(reviews.len(), 3);
+        assert_eq!(reviews[1]["sent_back"], true);
+        assert_eq!(reviews[2]["round"], 3);
+        assert_eq!(carried["send_back"]["round"], 1);
+
+        // A record that never sent the goal back is simply replaced.
+        assert_eq!(
+            auto_land_review_carrying_sent_back_rounds(Some(&first), second.clone()),
+            second
+        );
+        assert_eq!(
+            auto_land_review_carrying_sent_back_rounds(None, second.clone()),
+            second
+        );
+    }
+
+    #[test]
+    fn r66a_the_drain_starts_a_send_back_even_after_the_redispatch_budget_is_spent() {
+        let stamped = |dispatched_at: Option<&str>| {
+            let mut meta = serde_json::json!({
+                SENT_BACK_BY_REVIEW_AT_METADATA_KEY: "2026-09-17T10:00:00Z",
+            });
+            if let Some(at) = dispatched_at {
+                meta["dispatched_at"] = serde_json::json!(at);
+            }
+            meta
+        };
+        assert!(review_send_back_continuation_pending(&stamped(None)));
+        assert!(review_send_back_continuation_pending(&stamped(Some(
+            "2026-09-17T09:00:00Z"
+        ))));
+        assert!(!review_send_back_continuation_pending(&stamped(Some(
+            "2026-09-17T11:00:00Z"
+        ))));
+        assert!(!review_send_back_continuation_pending(&serde_json::json!(
+            {}
+        )));
+        assert!(!headless_unblock_continuation_pending(&stamped(None)));
+
+        let candidates = vec![DrainCandidate {
+            card_id: "sent".to_string(),
+            continuation_pending: false,
+            send_back_pending: true,
+            never_dispatched: false,
+        }];
+        let live = std::collections::HashSet::new();
+        let mut ledger = DrainSweepLedger::default();
+        assert_eq!(
+            next_drain_dispatches(&candidates, &live, &ledger, 2, false),
+            vec![("sent".to_string(), DrainDispatchKind::Budgeted)],
+            "the re-dispatch budget is spent first"
+        );
+        ledger.redispatch_counts.insert("sent".to_string(), 2);
+        assert_eq!(
+            next_drain_dispatches(&candidates, &live, &ledger, 2, false),
+            vec![("sent".to_string(), DrainDispatchKind::ReviewSendBack)],
+            "a spent budget never strands a sent-back goal in Ready"
+        );
+        ledger.continuation_tried.insert("sent".to_string());
+        assert!(next_drain_dispatches(&candidates, &live, &ledger, 2, false).is_empty());
+        assert!(
+            next_drain_dispatches(&candidates, &live, &DrainSweepLedger::default(), 0, false)
+                .is_empty()
         );
     }
 }

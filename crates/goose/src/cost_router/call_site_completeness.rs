@@ -590,6 +590,30 @@ pub fn missing_call_sites(
     missing
 }
 
+/// Lane R66a: the call sites [`enumerate_call_sites`] found that the
+/// reviewer's table has NO line for at all (any status) — format
+/// non-compliance, as opposed to an explicit `Missed` judgement. A subset of
+/// [`missing_call_sites`]: when the two are equal, every unaccounted site is
+/// one the reviewer simply never wrote a line for.
+pub fn absent_call_sites(
+    enumerations: &[CallSiteEnumeration],
+    verdicts: &[CallSiteVerdict],
+) -> Vec<CallSite> {
+    let mut absent = Vec::new();
+    for e in enumerations {
+        for cs in &e.call_sites {
+            let key = format!("{}:{}", cs.file, cs.line);
+            if !verdicts
+                .iter()
+                .any(|v| v.symbol == e.symbol && v.site == key)
+            {
+                absent.push(cs.clone());
+            }
+        }
+    }
+    absent
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1010,6 +1034,39 @@ mod tests {
             },
         ];
         assert!(missing_call_sites(&enumerations, &verdicts).is_empty());
+    }
+
+    /// Lane R66a: absent means no line at all; an explicit MISSED is not
+    /// absent (it is a judgement), though both are missing.
+    #[test]
+    fn r66a_absent_call_sites_are_the_ones_with_no_line_at_all() {
+        let enumerations = vec![enumeration(
+            "shippingQuote",
+            vec![
+                cs("src/checkout.ts", 3),
+                cs("admin/manualQuote.ts", 2),
+                cs("api/handler.ts", 9),
+            ],
+        )];
+        let verdicts = vec![
+            CallSiteVerdict {
+                symbol: "shippingQuote".to_string(),
+                site: "src/checkout.ts:3".to_string(),
+                status: CallSiteStatus::Updated,
+                note: String::new(),
+            },
+            CallSiteVerdict {
+                symbol: "shippingQuote".to_string(),
+                site: "admin/manualQuote.ts:2".to_string(),
+                status: CallSiteStatus::Missed,
+                note: "still two arguments".to_string(),
+            },
+        ];
+        let absent = absent_call_sites(&enumerations, &verdicts);
+        assert_eq!(absent.len(), 1);
+        assert_eq!(absent[0].file, "api/handler.ts");
+        assert_eq!(missing_call_sites(&enumerations, &verdicts).len(), 2);
+        assert!(absent_call_sites(&[], &[]).is_empty());
     }
 
     #[test]

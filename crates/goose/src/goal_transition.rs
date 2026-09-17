@@ -120,6 +120,13 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     // the goal with nothing to land instead of parking it. Protected so a
     // worker cannot forge one and complete a goal it never verified.
     crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY,
+    // Lane R66a: how many times an independent review sent this goal back
+    // to its worker, and when. The count bounds the send-back to once per
+    // goal and the stamp gives the drain its one continuation, so a worker
+    // cannot reset or forge either via the agent-facing metadata PATCH tool.
+    // Written only through `return_to_ready`'s guarded patch.
+    crate::agents::platform_extensions::orchestrator::REVIEW_SEND_BACK_COUNT_METADATA_KEY,
+    crate::agents::platform_extensions::orchestrator::SENT_BACK_BY_REVIEW_AT_METADATA_KEY,
 ];
 
 /// Lane R22c-e (G26 MED-1): see [`PROTECTED_GOAL_METADATA_KEYS`]'s own
