@@ -5440,12 +5440,15 @@ impl Drop for HeadlessDispatchPolicyTestGuard {
 /// `Drop` instead of leaking "headless is on" into every test that runs
 /// after it.
 ///
-/// Pair with `#[serial_test::serial(headless_dispatch_policy)]` — the shared
-/// key every test that installs the policy uses — so two such tests never
-/// interleave; the guard makes each test's footprint reversible regardless of
-/// run order, but does not by itself stop two guarded tests running
-/// concurrently. Sibling of [`take_goal_dispatch_hook_for_test`], which the
-/// same tests already hold for the dispatch-hook slot.
+/// Pair with `#[serial_test::serial(headless_dispatch_policy)]`, the shared
+/// key for this slot: every test that INSTALLS a policy holds this guard AND
+/// takes the key, and every test whose assertions assume NO policy is
+/// installed takes the same key (without needing the guard). The guard bounds
+/// the leak in time; the key bounds it across threads, since `cargo test`
+/// runs `#[tokio::test]`s in parallel and a restored-on-drop slot is still
+/// installed while the installing test runs. Sibling of
+/// [`take_goal_dispatch_hook_for_test`], which the same tests already hold
+/// for the dispatch-hook slot.
 #[cfg(test)]
 pub(crate) fn take_headless_dispatch_policy_for_test() -> HeadlessDispatchPolicyTestGuard {
     let slot = headless_dispatch_policy_slot();
@@ -32208,36 +32211,20 @@ mod tests {
         .unwrap();
     }
 
+    /// This test assumes headless is OFF. Lane T7 lets it say so honestly:
+    /// the headless policy is a restorable slot, and the one test that
+    /// installs it holds a guard under the `headless_dispatch_policy` serial
+    /// key, so sharing that key here is enough to guarantee no policy is
+    /// installed while this test runs. Before that it could not be
+    /// guaranteed at all, and this test carried a pre-spent R18g budget to
+    /// survive either mode (e0f12037) — removed with the original assertion
+    /// restored, because `maybe_hold_review`'s `HoldOutcome::Park` arm now
+    /// deterministically reaches the park instead of R18g's headless unblock.
     #[tokio::test]
+    #[serial_test::serial(headless_dispatch_policy)]
     async fn repeated_premature_done_parks_after_max_holds() {
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
-        // This test assumes headless is OFF, and cannot guarantee it: the
-        // headless policy lives in `HEADLESS_DISPATCH_POLICY_CONFIG`, a
-        // process-global `OnceLock` that `install_dispatch_hook_for_headless_
-        // session` fills and NOTHING can empty for the life of the binary.
-        // `dispatch_goal_to_and_resume_roadmap_consult_the_installed_headless_
-        // policy` calls that real installer; it restores the dispatch hook it
-        // takes, but a `OnceLock` cannot be restored, so once it has run every
-        // later test reads headless as true. `maybe_hold_review`'s
-        // `HoldOutcome::Park` arm then tries R18g's headless unblock FIRST and
-        // returns early on success, and this card is resumed instead of parked
-        // -- `needs_human_attention` reads `Null`, which is precisely the M24
-        // gate failure Lane R20b-e diagnosed (see the note above
-        // `hold_exhaustion_park_with_uncommitted_work_parks`) recurring from a
-        // different test.
-        //
-        // Spend R18g's once-per-goal budget up front so it refuses on
-        // `once_per_goal_spent` whichever way the global landed. Inert when
-        // headless is off, and the same technique the R20b-e tests already use.
-        persist_card_meta(&pool, &card.id, |m| {
-            m.insert(
-                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
-                serde_json::json!(1),
-            );
-        })
-        .await
-        .unwrap();
 
         for expected_count in 1..=crate::cost_router::MAX_HOLDS {
             handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
@@ -51084,15 +51071,17 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// repo and even with the correct hash for those goals — and no card is
     /// materialized.
     ///
-    /// With the process-wide headless dispatch policy installed by another
-    /// test, this call can instead take the f9ecdb5a canonical-proposal
-    /// recovery and materialize the untouched 2-goal fixture proposal (see
-    /// the comment inline below), which records `verification_integrity`
-    /// `goals` (R41a) process-globally. Keyed to the same serial group as
-    /// R57a's fix (d57d565b) so that conditional write cannot bump the R41a
-    /// counting test's snapshot mid-assert.
+    /// Lane T7: keyed `headless_dispatch_policy` as well, because with a
+    /// headless policy installed this call takes the f9ecdb5a
+    /// canonical-proposal recovery and materializes the untouched 2-goal
+    /// fixture proposal instead of refusing. That key guarantees no policy is
+    /// installed while this test runs, so 98780e3a's mode-dependent branch is
+    /// gone and the exact refusal is asserted unconditionally again. The
+    /// stronger invariant that commit added — no BLOCKER-titled card is ever
+    /// materialized, whatever the outcome — is kept: it is worth asserting in
+    /// its own right.
     #[tokio::test]
-    #[serial_test::serial(receipts_global_registry)]
+    #[serial_test::serial(receipts_global_registry, headless_dispatch_policy)]
     async fn r62g_create_roadmap_refuses_a_blocker_titled_goal_in_a_real_repo() {
         let (tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
@@ -51113,30 +51102,24 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         let cards = crate::cards::goal_cards_created_by_session(&pool, &session.id)
             .await
             .unwrap();
-        // The invariant holds in both modes: no BLOCKER card is ever
-        // materialized. When another test in this binary has installed the
-        // process-wide headless dispatch policy (a OnceLock nothing can
-        // reset), create_roadmap takes the f9ecdb5a canonical-proposal
-        // recovery and materializes the already-vetted decompose proposal
-        // instead of the model's rewrite, so there is no refusal to read.
+        // The invariant, asserted whatever the outcome: no BLOCKER card is
+        // ever materialized.
         assert!(
             cards
                 .iter()
                 .all(|card| !card.title.to_ascii_uppercase().starts_with("BLOCKER")),
             "a BLOCKER-titled card must never be materialized"
         );
-        if !is_headless_dispatch_policy_installed() {
-            let err = result.expect_err("a BLOCKER-titled card must never be materialized");
-            assert!(
-                err.starts_with("No roadmap for a blocker: goal 1 is titled as a blocker"),
-                "{err}"
-            );
-            assert!(err.contains("`escalate`"), "{err}");
-            assert!(
-                cards.is_empty(),
-                "a refused create_roadmap must create no goal cards"
-            );
-        }
+        let err = result.expect_err("a BLOCKER-titled card must never be materialized");
+        assert!(
+            err.starts_with("No roadmap for a blocker: goal 1 is titled as a blocker"),
+            "{err}"
+        );
+        assert!(err.contains("`escalate`"), "{err}");
+        assert!(
+            cards.is_empty(),
+            "a refused create_roadmap must create no goal cards"
+        );
     }
 
     /// A normal proposal in a real repo is unaffected: decompose then create
@@ -51164,15 +51147,13 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// "Remove blocker flag from config" passes the blocker check and reaches
     /// the ordinary proposal-hash check (whose error names the expected hash).
     ///
-    /// With the process-wide headless dispatch policy installed by another
-    /// test, this call can instead take the f9ecdb5a canonical-proposal
-    /// recovery and materialize the untouched 2-goal fixture proposal, which
-    /// records `verification_integrity` `goals` (R41a) process-globally.
-    /// Keyed to the same serial group as R57a's fix (d57d565b) so that
-    /// conditional write cannot bump the R41a counting test's snapshot
-    /// mid-assert.
+    /// Lane T7: keyed `headless_dispatch_policy` for the same reason as the
+    /// refusal test above — with a policy installed this call takes the
+    /// f9ecdb5a canonical-proposal recovery and succeeds instead of reaching
+    /// the hash check — so 98780e3a's mode-dependent match is gone and the
+    /// hash-check error is asserted unconditionally again.
     #[tokio::test]
-    #[serial_test::serial(receipts_global_registry)]
+    #[serial_test::serial(receipts_global_registry, headless_dispatch_policy)]
     async fn r62g_create_roadmap_lets_a_remove_blocker_flag_goal_through() {
         let (tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
@@ -51191,32 +51172,19 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             "Delete the BLOCKER constant from src/config.rs and every reader of it.",
         )];
         let expected_hash = roadmap_proposal_hash(&goals);
-        let result = client
+        let err = client
             .handle_create_roadmap(Some(create_roadmap_args(
                 &serde_json::to_string(&goals).unwrap(),
                 &"f".repeat(64),
                 &approval_decision_id,
             )))
-            .await;
-        // With the process-wide headless policy installed by another test,
-        // create_roadmap recovers the canonical proposal and may succeed; the
-        // invariant under test is only that this title never trips the
-        // blocker check.
-        match result {
-            Err(err) => {
-                assert!(!err.contains("No roadmap for a blocker"), "{err}");
-                if !is_headless_dispatch_policy_installed() {
-                    assert!(
-                        err.contains(&expected_hash),
-                        "the goal must reach the ordinary hash check: {err}"
-                    );
-                }
-            }
-            Ok(_) => assert!(
-                is_headless_dispatch_policy_installed(),
-                "without the headless recovery a wrong hash must still fail"
-            ),
-        }
+            .await
+            .expect_err("a wrong hash for goals that differ from the proposal still fails");
+        assert!(!err.contains("No roadmap for a blocker"), "{err}");
+        assert!(
+            err.contains(&expected_hash),
+            "the goal must reach the ordinary hash check: {err}"
+        );
     }
 
     // ── R45a (harness loop, A42 analysis finding 1): create_roadmap's own
@@ -51292,20 +51260,17 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// still fails — and the error names the exact hash expected for the
     /// goals actually submitted, so a model can recover in one more call.
     ///
-    /// Mode-dependent like the R62g blocker tests (98780e3a): with another
-    /// test in this binary having installed the process-wide
-    /// `HEADLESS_DISPATCH_POLICY_CONFIG` `OnceLock` (nothing can reset it),
-    /// `create_roadmap` takes the f9ecdb5a canonical-proposal recovery —
-    /// `canonical_pending_goals` finds the persisted proposal still matches
-    /// its own stored hash, so `resolve_create_roadmap_proposal_hash` treats
-    /// it as identical-to-pending and proceeds, regardless of the wrong hash
-    /// submitted here. The invariant that holds in either mode: the
-    /// differing `goals_json` this call sent is never itself materialized —
-    /// only the untouched, already-proven canonical proposal is. Only when
-    /// no headless policy is installed does the ordinary hash-mismatch error
-    /// (naming the differing goals' own expected hash) apply.
+    /// Lane T7: keyed `headless_dispatch_policy` like the R62g blocker tests,
+    /// because with a policy installed `create_roadmap` takes the f9ecdb5a
+    /// canonical-proposal recovery — `canonical_pending_goals` finds the
+    /// persisted proposal still matches its own stored hash, so
+    /// `resolve_create_roadmap_proposal_hash` treats it as identical-to-pending
+    /// and proceeds regardless of the wrong hash submitted here. With that key
+    /// no policy can be installed while this test runs, so 38a49a95's
+    /// mode-dependent branch is gone and the hash-mismatch error is asserted
+    /// unconditionally again.
     #[tokio::test]
-    #[serial_test::serial(receipts_global_registry)]
+    #[serial_test::serial(receipts_global_registry, headless_dispatch_policy)]
     async fn goals_json_that_differs_from_the_pending_proposal_still_requires_the_correct_hash() {
         let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
         let pool = sm.pool_clone().await.unwrap();
@@ -51320,40 +51285,18 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         let wrong_hash = "f".repeat(64);
         assert_ne!(wrong_hash, expected_hash);
 
-        let result = client
+        let err = client
             .handle_create_roadmap(Some(create_roadmap_args(
                 &different_goals_json,
                 &wrong_hash,
                 &approval_decision_id,
             )))
-            .await;
-
-        if is_headless_dispatch_policy_installed() {
-            let text = result
-                .expect(
-                    "with the headless canonical-proposal recovery installed, differing \
-                     goals_json paired with a wrong hash recovers the untouched pending \
-                     proposal instead of failing",
-                )
-                .content[0]
-                .as_text()
-                .unwrap()
-                .text
-                .clone();
-            assert!(
-                !text.contains("A goal decompose_roadmap never proposed"),
-                "the headless recovery must materialize the canonical pending proposal, \
-                 never the caller's differing goals_json: {text}"
-            );
-        } else {
-            let err = result.expect_err(
-                "goals that do not match the pending proposal and a wrong hash must fail",
-            );
-            assert!(
-                err.contains(&expected_hash),
-                "the error must name the exact expected hash for these goals: {err}"
-            );
-        }
+            .await
+            .expect_err("goals that do not match the pending proposal and a wrong hash must fail");
+        assert!(
+            err.contains(&expected_hash),
+            "the error must name the exact expected hash for these goals: {err}"
+        );
     }
 
     /// A headless session that genuinely cannot reproduce the hash (goals
