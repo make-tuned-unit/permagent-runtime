@@ -1491,6 +1491,34 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         }
     }
 
+    // Lane R61a: the coding harness's recall is scoped to the repo it works in
+    // (`brain_sync::MemoryScope`). The one way to widen it is to ASK: a
+    // frontend tool, so the call parks in the agent until this CLI's session
+    // loop answers it with the user's terminal decision (or a refusal when
+    // there is no terminal). A failed registration leaves the harness
+    // repo-scoped with no way to widen — the safe direction.
+    if coding_harness {
+        if let Err(error) = agent_ptr
+            .add_extension(
+                ExtensionConfig::Frontend {
+                    name: super::brain_sync::MEMORY_ACCESS_EXTENSION_NAME.to_string(),
+                    description: "Ask the user for memory access beyond this repo".to_string(),
+                    tools: vec![super::brain_sync::memory_access_tool()],
+                    instructions: Some(super::brain_sync::MEMORY_ACCESS_INSTRUCTIONS.to_string()),
+                    bundled: None,
+                    available_tools: Vec::new(),
+                },
+                &session_id,
+            )
+            .await
+        {
+            tracing::warn!(
+                %error,
+                "could not register request_memory_access; memory recall stays repo-scoped"
+            );
+        }
+    }
+
     let edit_mode = config
         .get_param::<String>("EDIT_MODE")
         .ok()

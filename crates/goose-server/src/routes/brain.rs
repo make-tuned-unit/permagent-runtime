@@ -24,6 +24,131 @@ pub struct BrainSearchQuery {
     pub offset: usize,
     #[serde(default)]
     pub limit: Option<usize>,
+    /// Lane R61a: the working directory of the Harness session asking. When
+    /// any `scope_*` parameter is present the search is SCOPED — see
+    /// [`SearchScope`]. Resolved here, against the daemon's own project
+    /// registry, to the project whose `root_path` contains it.
+    #[serde(default)]
+    pub scope_cwd: Option<String>,
+    /// The main checkout of the repo `scope_cwd` is in, when it is a linked git
+    /// worktree (a worktree's own directory is under no project root).
+    #[serde(default)]
+    pub scope_repo_root: Option<String>,
+    /// Comma-separated wing slugs of other projects the USER approved for
+    /// this session. Never chosen by a model: the CLI only sends slugs its
+    /// terminal approval prompt granted.
+    #[serde(default)]
+    pub scope_projects: Option<String>,
+    /// The user approved "all memories" for this session.
+    #[serde(default)]
+    pub scope_all: Option<bool>,
+}
+
+/// Which memories a search may return (Lane R61a).
+///
+/// The ruling (Jesse, 2026-09-16): the harness only ever sees memories about
+/// the project repo it is actively in, unless the user approves more at the
+/// terminal. The CLI enforces who may widen; this is where the rows are
+/// actually cut, so a scoped caller cannot receive an out-of-scope row even if
+/// its own filtering were wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchScope {
+    /// No `scope_*` parameter: the Brain view's whole-brain search, unchanged.
+    Unscoped,
+    /// An explicit "all memories" grant. The same rows as `Unscoped`, but the
+    /// caller had to say so.
+    All,
+    /// Only Spectral memories whose wing is in this set. Chat transcript rows
+    /// carry no project attribution and are excluded. An EMPTY set returns
+    /// nothing: a directory no project claims gets no memories, never all of
+    /// them (fail closed).
+    Wings(std::collections::BTreeSet<String>),
+}
+
+impl SearchScope {
+    /// Build the scope from the request and the wing its working directory
+    /// resolved to (`None` when no project owns it or nothing was sent).
+    pub fn from_query(params: &BrainSearchQuery, cwd_wing: Option<String>) -> Self {
+        let scoped = params.scope_cwd.is_some()
+            || params.scope_repo_root.is_some()
+            || params.scope_projects.is_some()
+            || params.scope_all.is_some();
+        if !scoped {
+            return Self::Unscoped;
+        }
+        if params.scope_all == Some(true) {
+            return Self::All;
+        }
+        let mut wings: std::collections::BTreeSet<String> = cwd_wing.into_iter().collect();
+        wings.extend(
+            params
+                .scope_projects
+                .as_deref()
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|slug| !slug.is_empty())
+                .map(str::to_string),
+        );
+        Self::Wings(wings)
+    }
+
+    /// Whether chat-transcript (FTS) rows may be returned at all.
+    fn allows_chat(&self) -> bool {
+        !matches!(self, Self::Wings(_))
+    }
+
+    /// Whether a memory with this wing is inside the scope. Unattributed
+    /// memories (`None`) are inside only an unscoped or all-memories search.
+    pub fn admits(&self, wing: Option<&str>) -> bool {
+        match self {
+            Self::Unscoped | Self::All => true,
+            Self::Wings(wings) => wing.is_some_and(|wing| wings.contains(wing)),
+        }
+    }
+}
+
+/// Resolve the request's scope, reading the project registry only when a
+/// working directory was sent.
+async fn resolve_search_scope(state: &AppState, params: &BrainSearchQuery) -> SearchScope {
+    let paths: Vec<&str> = [
+        params.scope_cwd.as_deref(),
+        params.scope_repo_root.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let cwd_wing = if paths.is_empty() {
+        None
+    } else {
+        match state.session_manager().pool_clone().await {
+            Ok(pool) => {
+                permagent::session_wing::resolve_project_wing_for_paths(&pool, &paths).await
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    %error,
+                    "scoped brain search could not open the project registry; no project memories"
+                );
+                None
+            }
+        }
+    };
+    let scope = SearchScope::from_query(params, cwd_wing);
+    tracing::debug!(target: "permagentd::brain", ?scope, "brain search scope");
+    scope
+}
+
+/// Cut recall hits down to the scope, BEFORE layering, so out-of-scope rows
+/// never spend the search budget either.
+fn retain_in_scope(
+    hits: Vec<spectral::ingest::MemoryHit>,
+    scope: &SearchScope,
+) -> Vec<spectral::ingest::MemoryHit> {
+    hits.into_iter()
+        .filter(|hit| scope.admits(hit.wing.as_deref()))
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,13 +235,21 @@ async fn query_spectral(
     query: &str,
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
+    scope: &SearchScope,
 ) -> anyhow::Result<Vec<BrainSearchResult>> {
+    if matches!(scope, SearchScope::Wings(wings) if wings.is_empty()) {
+        return Ok(Vec::new());
+    }
     let brain = match state.brain.as_ref() {
         Some(b) => b,
         None => return Ok(Vec::new()),
     };
 
-    let recall_result = brain.recall(query, spectral::Visibility::Private).await?;
+    let mut recall_result = brain.recall(query, spectral::Visibility::Private).await?;
+    // Spectral's wing match is a ranking boost, not a filter, so the cut is
+    // applied to what recall returned. Known cost: a scoped search can come
+    // back shorter than an unscoped one when other projects outrank this one.
+    recall_result.memory_hits = retain_in_scope(recall_result.memory_hits, scope);
     let ts = Utc::now();
     if let Some(ref s) = since {
         if ts < *s {
@@ -196,29 +329,29 @@ async fn brain_search(
 ) -> Result<Json<BrainSearchResponse>, crate::routes::errors::ErrorResponse> {
     let limit = params.limit.unwrap_or(50).min(200);
     let source_filter = params.source.as_deref().unwrap_or("both");
+    let scope = resolve_search_scope(&state, &params).await;
+    // A scoped search never returns chat transcript rows: they carry no
+    // project attribution, so none of them is provably this repo's.
+    let want_fts = source_filter != "memory" && scope.allows_chat();
+    let want_spectral = source_filter != "chat";
 
-    let (fts_results, spectral_results) = match source_filter {
-        "memory" => (
-            Vec::new(),
-            query_spectral(&state, &params.q, params.since, params.until)
-                .await
-                .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?,
-        ),
-        "chat" => (
-            query_fts(&state, &params.q, params.since, params.until)
-                .await
-                .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?,
-            Vec::new(),
-        ),
-        _ => {
-            let (fts, spectral) = tokio::try_join!(
-                query_fts(&state, &params.q, params.since, params.until),
-                query_spectral(&state, &params.q, params.since, params.until),
-            )
-            .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
-            (fts, spectral)
-        }
-    };
+    let (fts_results, spectral_results) = tokio::try_join!(
+        async {
+            if want_fts {
+                query_fts(&state, &params.q, params.since, params.until).await
+            } else {
+                Ok(Vec::new())
+            }
+        },
+        async {
+            if want_spectral {
+                query_spectral(&state, &params.q, params.since, params.until, &scope).await
+            } else {
+                Ok(Vec::new())
+            }
+        },
+    )
+    .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
 
     let fts_count = fts_results.len();
     let spectral_count = spectral_results.len();
@@ -1359,5 +1492,119 @@ mod tests {
         .unwrap();
         assert_eq!(res.memories.len(), 1);
         assert_eq!(res.memories[0].id, "a");
+    }
+
+    // ── Lane R61a: repo-scoped search ──
+
+    fn scoped_query(
+        cwd: Option<&str>,
+        projects: Option<&str>,
+        all: Option<bool>,
+    ) -> BrainSearchQuery {
+        BrainSearchQuery {
+            q: "retry policy".to_string(),
+            since: None,
+            until: None,
+            source: None,
+            offset: 0,
+            limit: None,
+            scope_cwd: cwd.map(str::to_string),
+            scope_repo_root: None,
+            scope_projects: projects.map(str::to_string),
+            scope_all: all,
+        }
+    }
+
+    fn hit_in(key: &str, wing: Option<&str>) -> spectral::ingest::MemoryHit {
+        spectral::ingest::MemoryHit {
+            id: format!("id-{key}"),
+            key: key.to_string(),
+            content: format!("memory {key}"),
+            wing: wing.map(str::to_string),
+            hall: None,
+            signal_score: 0.9,
+            visibility: "private".to_string(),
+            hits: 1,
+            source: Some("chat".to_string()),
+            device_id: None,
+            confidence: 1.0,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            declarative_density: None,
+            description: None,
+            source_brain_id: None,
+            signature: None,
+        }
+    }
+
+    /// Rows from two projects plus general chat memory. A search scoped to the
+    /// harness's repo returns only that repo's rows.
+    fn two_project_fixture() -> Vec<spectral::ingest::MemoryHit> {
+        vec![
+            hit_in("acme-1", Some("acme-api")),
+            hit_in("plekk-1", Some("plekk")),
+            hit_in("acme-2", Some("acme-api")),
+            hit_in("general-1", None),
+            hit_in("plekk-2", Some("plekk")),
+        ]
+    }
+
+    fn keys(hits: &[spectral::ingest::MemoryHit]) -> Vec<&str> {
+        hits.iter().map(|hit| hit.key.as_str()).collect()
+    }
+
+    #[test]
+    fn a_scoped_search_returns_only_the_current_projects_memories() {
+        let scope = SearchScope::from_query(
+            &scoped_query(Some("/work/acme-api"), None, None),
+            Some("acme-api".into()),
+        );
+        let kept = retain_in_scope(two_project_fixture(), &scope);
+        assert_eq!(keys(&kept), ["acme-1", "acme-2"]);
+        assert!(
+            !scope.allows_chat(),
+            "chat transcript rows carry no project attribution and are never in a repo scope"
+        );
+    }
+
+    #[test]
+    fn a_directory_no_project_claims_gets_no_memories_not_all_of_them() {
+        let scope = SearchScope::from_query(&scoped_query(Some("/tmp/scratch"), None, None), None);
+        assert_eq!(scope, SearchScope::Wings(Default::default()));
+        assert!(retain_in_scope(two_project_fixture(), &scope).is_empty());
+        let explicit_false = SearchScope::from_query(&scoped_query(None, None, Some(false)), None);
+        assert!(
+            retain_in_scope(two_project_fixture(), &explicit_false).is_empty(),
+            "`scope_all=false` alone is still a scoped search with nothing in it"
+        );
+    }
+
+    #[test]
+    fn a_granted_project_widens_the_scope_by_exactly_that_project() {
+        let scope = SearchScope::from_query(
+            &scoped_query(Some("/work/acme-api"), Some(" plekk , "), None),
+            Some("acme-api".into()),
+        );
+        let kept = retain_in_scope(two_project_fixture(), &scope);
+        assert_eq!(keys(&kept), ["acme-1", "plekk-1", "acme-2", "plekk-2"]);
+        assert!(!scope.admits(None), "unattributed memories stay out");
+    }
+
+    #[test]
+    fn only_an_all_memories_grant_or_no_scope_at_all_admits_unattributed_rows() {
+        let all = SearchScope::from_query(
+            &scoped_query(Some("/work/acme-api"), None, Some(true)),
+            None,
+        );
+        assert_eq!(all, SearchScope::All);
+        assert_eq!(retain_in_scope(two_project_fixture(), &all).len(), 5);
+        let unscoped = SearchScope::from_query(&scoped_query(None, None, None), None);
+        assert_eq!(
+            unscoped,
+            SearchScope::Unscoped,
+            "the Brain view's own search sends no scope and is unchanged"
+        );
+        assert!(unscoped.allows_chat());
     }
 }

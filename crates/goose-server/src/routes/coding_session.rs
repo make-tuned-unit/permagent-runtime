@@ -244,6 +244,11 @@ pub struct CodingTurnReq {
     pub user_text: String,
     pub assistant_text: String,
     pub working_dir: Option<String>,
+    /// Lane R61a: the main checkout of the repo `working_dir` is in, when the
+    /// harness runs in a linked git worktree. Asked together with
+    /// `working_dir` when the turn is attributed to a project.
+    #[serde(default)]
+    pub repo_root: Option<String>,
     /// Original event time in epoch milliseconds when supplied by the
     /// harness; omitted requests use the enqueue time.
     pub event_at: Option<i64>,
@@ -286,11 +291,38 @@ async fn remember_coding_turn(
         .cloned()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let pool = state.session_manager().pool_clone().await.ok();
-    let cwd_evidence = req
-        .working_dir
-        .as_deref()
-        .map(|cwd| format!("Harness working directory: {cwd}"))
-        .unwrap_or_default();
+    // Lane R61a: a harness turn must carry its repo's project attribution, or
+    // the repo-scoped recall the harness now runs could never find it. The
+    // session is pinned to the project that owns its working directory, and
+    // the directory (plus the main checkout, for a worktree) goes into the
+    // turn's tool text, where the drain's root-path check corroborates it.
+    let paths: Vec<&str> = [req.working_dir.as_deref(), req.repo_root.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    if let (Some(pool), false) = (pool.as_ref(), paths.is_empty()) {
+        let wing =
+            permagent::session_wing::assert_harness_session_project(pool, &req.session_id, &paths)
+                .await;
+        tracing::debug!(
+            target: "permagentd::brain",
+            session_id = %req.session_id,
+            wing = wing.as_deref().unwrap_or("none"),
+            "harness turn project attribution"
+        );
+    }
+    let cwd_evidence = [
+        req.working_dir
+            .as_deref()
+            .map(|cwd| format!("Harness working directory: {cwd}")),
+        req.repo_root
+            .as_deref()
+            .map(|root| format!("Harness repository root: {root}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n");
     if let Err(error) = crate::brain_ops::persist_chat_turn(
         brain,
         pool,
