@@ -36764,7 +36764,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// pre-fix, `role_model_or_derived` never reads `PERMAGENT_PACK_*` at
     /// all, so this pin had zero effect on the goal-dispatch path.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(receipts_global_registry, routing_env)]
     fn headless_dispatch_honours_a_pack_only_pin() {
         std::env::remove_var("PERMAGENT_ROLE_EDIT_PROVIDER");
         std::env::remove_var("PERMAGENT_ROLE_EDIT_MODEL");
@@ -36791,7 +36791,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// A `PERMAGENT_ROLE_*` pin outranks a `PERMAGENT_PACK_*` pin — the same
     /// precedence `cost_router::delegate::decide_delegate_model` documents.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(receipts_global_registry, routing_env)]
     fn headless_dispatch_role_pin_outranks_pack_pin() {
         std::env::set_var("PERMAGENT_ROLE_EDIT_PROVIDER", "anthropic");
         std::env::set_var("PERMAGENT_ROLE_EDIT_MODEL", "claude-sonnet-5");
@@ -36847,7 +36847,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// byte-identically to calling `role_model_or_derived` directly, pack pin
     /// or not — `PERMAGENT_PACK_*` still has no effect there.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(receipts_global_registry, routing_env)]
     fn daemon_dispatch_ignores_pack_pins_exactly_like_role_model_or_derived() {
         std::env::remove_var("PERMAGENT_ROLE_EDIT_PROVIDER");
         std::env::remove_var("PERMAGENT_ROLE_EDIT_MODEL");
@@ -37078,8 +37078,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     }
 
     #[tokio::test]
-    #[serial_test::serial(receipts_global_registry)]
-    #[serial_test::serial]
+    #[serial_test::serial(receipts_global_registry, routing_env)]
     async fn dispatch_goal_fn_dispatches_an_internal_worker_through_a_headless_policy_with_no_extension_manager(
     ) {
         std::env::set_var("PERMAGENT_ROLE_EDIT_PROVIDER", "ollama");
@@ -37162,8 +37161,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// `PERMAGENT_PACK_*` at all, so this pin had zero effect and the
     /// receipt would have shown the T1 session fallback instead.
     #[tokio::test]
-    #[serial_test::serial(receipts_global_registry)]
-    #[serial_test::serial]
+    #[serial_test::serial(receipts_global_registry, routing_env)]
     async fn dispatch_goal_fn_honours_a_pack_only_pin_for_a_fresh_headless_goal() {
         std::env::remove_var("PERMAGENT_ROLE_MECHANICAL_PROVIDER");
         std::env::remove_var("PERMAGENT_ROLE_MECHANICAL_MODEL");
@@ -37266,8 +37264,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// `Mechanical`, a DIFFERENT role/pack from `Local` — so a Local-pinned
     /// receipt is only possible if the explicit tier actually won.
     #[tokio::test]
-    #[serial_test::serial(receipts_global_registry)]
-    #[serial_test::serial]
+    #[serial_test::serial(receipts_global_registry, routing_env)]
     async fn dispatch_goal_fn_honours_an_explicit_worker_tier_and_records_it_on_the_audit() {
         std::env::remove_var("PERMAGENT_ROLE_LOCAL_PROVIDER");
         std::env::remove_var("PERMAGENT_ROLE_LOCAL_MODEL");
@@ -37848,7 +37845,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// fails exactly like the original S1 defect, on a path S1/T1 never
     /// touched.
     #[tokio::test]
-    #[serial_test::serial]
+    #[serial_test::serial(receipts_global_registry, routing_env)]
     async fn dispatch_goal_to_and_resume_roadmap_consult_the_installed_headless_policy() {
         // Lane T1: force a clean slot for the whole test, regardless of
         // whatever another test in this binary already installed — the
@@ -45540,9 +45537,21 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// test's assertions against the real background completion tracker a
     /// second real dispatch on the same card would spawn.
     #[tokio::test]
-    #[serial_test::serial(receipts_global_registry)]
+    #[serial_test::serial(receipts_global_registry, routing_env)]
     async fn dispatch_of_a_goal_this_session_never_created_increments_verification_integrity_goals_r41a(
     ) {
+        // Routing pins in the environment would make dispatch re-create the
+        // worker provider by name, which only exists here as an in-test mock.
+        let _routing_env = env_lock::lock_env([
+            ("PERMAGENT_ROLE_EDIT_PROVIDER", None::<&str>),
+            ("PERMAGENT_ROLE_EDIT_MODEL", None),
+            ("PERMAGENT_ROLE_ORCHESTRATE_PROVIDER", None),
+            ("PERMAGENT_ROLE_ORCHESTRATE_MODEL", None),
+            ("PERMAGENT_PACK_EDIT_PROVIDER", None),
+            ("PERMAGENT_PACK_EDIT_MODEL", None),
+            ("PERMAGENT_PACK_HARD_PROVIDER", None),
+            ("PERMAGENT_PACK_HARD_MODEL", None),
+        ]);
         crate::receipts::begin_run();
 
         let (tmp, sm, _session, _em, client) =
