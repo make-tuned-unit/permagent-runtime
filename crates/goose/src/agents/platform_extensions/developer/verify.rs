@@ -1384,7 +1384,7 @@ fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
 /// set-head`/a fresh clone), then the conventional local names `main` and
 /// `master`. `None` when nothing matches, letting [`branch_fork_point`]
 /// fall back to its pre-R54a approximation below.
-fn detect_trunk_branch(root: &Path) -> Option<String> {
+pub(crate) fn detect_trunk_branch(root: &Path) -> Option<String> {
     if let Some(sym) = git_stdout(
         root,
         &[

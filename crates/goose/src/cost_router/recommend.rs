@@ -1291,8 +1291,9 @@ pub fn recommend_from_available(available: &[AvailableModel]) -> Recommendation 
 // ([`ReviewerAssignment`]) carries every candidate with its strength and price,
 // so "why this reviewer" is auditable after the fact.
 
-/// The review verdict.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// The review verdict. Ordered ROUTINE < MODERATE < COMPLEX, so a caller can
+/// hold a verdict to a minimum ([`assign_reviewer_at_least`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewComplexity {
     Routine,
@@ -1632,7 +1633,31 @@ pub fn assign_reviewer(
     worker: Option<(&str, &str)>,
     available: &[AvailableModel],
 ) -> ReviewerAssignment {
-    let verdict = assess_review_complexity(&facts);
+    assign_reviewer_at_least(facts, ReviewComplexity::Routine, None, worker, available)
+}
+
+/// [`assign_reviewer`] with the verdict held to at least `minimum`. The
+/// delegate reviewer path uses it when no diff could be measured for the
+/// review (no goal range and a clean working tree): an unmeasured review fails
+/// toward a capable reviewer, never toward the cheapest (ruling 2026-09-17).
+/// `minimum_reason` is recorded among the verdict's reasons when it raises it.
+pub fn assign_reviewer_at_least(
+    facts: ReviewFacts,
+    minimum: ReviewComplexity,
+    minimum_reason: Option<&str>,
+    worker: Option<(&str, &str)>,
+    available: &[AvailableModel],
+) -> ReviewerAssignment {
+    let mut verdict = assess_review_complexity(&facts);
+    if verdict.complexity < minimum {
+        verdict.complexity = minimum;
+        verdict.floor = minimum.floor();
+        verdict.reasons.push(
+            minimum_reason
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("held to at least a {} review", minimum.as_str())),
+        );
+    }
     let floor = verdict.floor;
     let worker_family = worker.map(|(p, m)| super::reviewer_pick::family_of(p, m));
 

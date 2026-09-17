@@ -22,8 +22,11 @@
 //!    a redecompose), a parked goal (Failed, or `needs_human_attention`), or a
 //!    premature-done hold on a goal that never completed.
 //! 2. **Named files** — the objective names at least
-//!    [`PLANNING_MULTI_FILE_THRESHOLD`] distinct file paths (a token with a known
-//!    source/config extension), i.e. a multi-file change with cross-goal ordering.
+//!    [`PLANNING_MULTI_FILE_THRESHOLD`] distinct non-test file paths (a token with
+//!    a known source/config extension), i.e. a multi-file change with cross-goal
+//!    ordering. When the repo's file list is known, a named path counts only if
+//!    it resolves to a real file: a path the objective merely asserts (a glob, a
+//!    file that does not exist) is a claim, not a fact.
 //! 3. **Cross-language** — the named files span at least
 //!    [`PLANNING_CROSS_LANGUAGE_THRESHOLD`] programming languages (an interface
 //!    change on both sides of a boundary).
@@ -36,6 +39,16 @@
 //!    only downward: when the objective reads as mechanical work
 //!    ([`super::assess::MECHANICAL_SIGNALS`] — typo, rename, bump, …) it stays
 //!    ROUTINE.
+//! 6. **Signature change with a fan-out** — the objective asks to add, remove or
+//!    reorder a parameter ([`requests_parameter_change`]) and names a code
+//!    identifier that the repo defines in exactly one non-test source file and
+//!    references from at least [`SIGNATURE_CHANGE_CALLER_FILES_THRESHOLD`] OTHER
+//!    non-test source files ([`scan_identifier_references`]). The objective
+//!    need not name a single file: the callers are read from the repo, never
+//!    from the objective. (r64 s5: `quoteShipping` gains a parameter and four
+//!    quoting surfaces call it — a plan that must thread the change through
+//!    every caller.) The parameter-change wording only says WHAT kind of change
+//!    is asked for; it never promotes on its own, the grounded fan-out does.
 //!
 //! Anything else is ROUTINE. The verdict carries every reason, routine or
 //! complex, so the roadmap proposal and the tracing line are auditable.
@@ -57,6 +70,100 @@ pub const PLANNING_CROSS_LANGUAGE_THRESHOLD: usize = 2;
 /// which an objective that names no file is unscoped enough to need the expert
 /// planner.
 pub const LARGE_REPO_FILE_THRESHOLD: usize = 500;
+
+/// Other non-test source files (besides the defining one) that must reference
+/// an identifier the objective asks to change the parameters of before the
+/// plan is a signature change with a fan-out. Three callers is the same line as
+/// [`PLANNING_MULTI_FILE_THRESHOLD`]: the definition plus three call sites is a
+/// four-file change whose ordering the plan has to get right.
+pub const SIGNATURE_CHANGE_CALLER_FILES_THRESHOLD: usize = 3;
+
+/// Most code identifiers from one objective that are resolved against the repo,
+/// so a long objective cannot turn the scan into one pass per word.
+pub const PLANNING_MAX_IDENTIFIERS: usize = 16;
+
+/// A source file larger than this is skipped by the identifier scan (generated
+/// or vendored code; a hand-written source file is far smaller).
+pub const PLANNING_SCAN_MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Total bytes the identifier scan reads per objective before it stops, so a
+/// huge repo bounds the decomposition's wall time. The scan's counts are then a
+/// lower bound, which can only miss a promotion, never invent one.
+pub const PLANNING_SCAN_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Words that, next to a parameter noun in the same sentence, ask for a change
+/// to a function's parameter list ("one more argument added", "add a
+/// `currency` parameter", "change the signature"). Negated uses ("do not
+/// change the signature") are ignored, see [`NEGATION_WORDS`].
+const PARAMETER_CHANGE_VERBS: &[&str] = &[
+    "add",
+    "adds",
+    "added",
+    "adding",
+    "additional",
+    "another",
+    "more",
+    "extra",
+    "new",
+    "remove",
+    "removes",
+    "removed",
+    "removing",
+    "drop",
+    "drops",
+    "dropped",
+    "dropping",
+    "reorder",
+    "reorders",
+    "reordered",
+    "reordering",
+    "change",
+    "changes",
+    "changed",
+    "changing",
+    "gain",
+    "gains",
+    "gained",
+];
+
+/// The parameter-list nouns [`PARAMETER_CHANGE_VERBS`] must share a sentence
+/// with. "calling convention" is matched as a two-word phrase.
+const PARAMETER_NOUNS: &[&str] = &[
+    "parameter",
+    "parameters",
+    "param",
+    "params",
+    "argument",
+    "arguments",
+    "signature",
+    "signatures",
+    "arity",
+];
+
+/// A change verb preceded (within two words) by one of these is negated.
+const NEGATION_WORDS: &[&str] = &["not", "never", "no", "without", "dont", "don", "t"];
+
+/// Keywords that, directly before an identifier, make that occurrence its
+/// definition (`fn`, `function`, `def`, `func`, `const x =`, `class X`, …).
+const DEFINITION_KEYWORDS: &[&str] = &[
+    "fn",
+    "function",
+    "def",
+    "func",
+    "fun",
+    "class",
+    "struct",
+    "enum",
+    "trait",
+    "interface",
+    "type",
+    "const",
+    "let",
+    "var",
+    "val",
+    "static",
+    "macro_rules",
+];
 
 /// The verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -92,14 +199,59 @@ pub struct PriorPlanHistory {
     pub held_goals: usize,
 }
 
+/// Where one code identifier the objective names lives in the repo — read from
+/// the files, never from the objective ([`scan_identifier_references`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct IdentifierReferences {
+    pub identifier: String,
+    /// Non-test source files with a definition of it (a definition keyword
+    /// directly before the name).
+    pub defined_in: Vec<String>,
+    /// Non-test source files that mention it as a whole word, definitions
+    /// included.
+    pub referenced_in: Vec<String>,
+}
+
+impl IdentifierReferences {
+    /// Non-test source files other than its single definition that reference
+    /// it, or `None` when it is not defined in exactly one file.
+    pub fn caller_files(&self) -> Option<usize> {
+        match self.defined_in.as_slice() {
+            [definition] => Some(
+                self.referenced_in
+                    .iter()
+                    .filter(|f| *f != definition)
+                    .count(),
+            ),
+            _ => None,
+        }
+    }
+}
+
+/// The recorded summary of one resolved identifier (file lists are summarized
+/// to counts so a common name in a large repo cannot bloat the record).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IdentifierSignal {
+    pub identifier: String,
+    pub defined_in: Vec<String>,
+    pub referencing_files: usize,
+}
+
 /// The facts the assessment reads — nothing a model wrote about difficulty.
 #[derive(Debug, Clone, Copy)]
 pub struct PlanningFacts<'a> {
     /// The operator's objective. Read for STRUCTURE only (file tokens, list
-    /// lines) plus the down-only mechanical vocabulary.
+    /// lines, code identifiers, whether a parameter change is asked for) plus
+    /// the down-only mechanical vocabulary.
     pub objective: &'a str,
     /// Files the repo-facts probe walked (capped by that probe).
     pub repo_file_count: usize,
+    /// The repo's files (relative paths) when known. Non-empty turns on
+    /// grounding: named paths count only when they resolve to one of these.
+    /// Empty (no repo, or a greenfield directory) keeps the lexical count.
+    pub repo_files: &'a [String],
+    /// Where the objective's code identifiers live in the repo.
+    pub identifier_references: &'a [IdentifierReferences],
     pub history: PriorPlanHistory,
 }
 
@@ -115,6 +267,19 @@ pub struct PlanningComplexityVerdict {
     pub named_languages: Vec<String>,
     /// Bulleted / numbered requirement lines in the objective.
     pub enumerated_requirements: usize,
+    /// Named paths that did not resolve to a real repo file (not counted).
+    pub unresolved_named_files: Vec<String>,
+    /// Named test files (resolved, not counted toward the multi-file line).
+    pub named_test_files: Vec<String>,
+    /// Whether the objective asks to add, remove or reorder a parameter.
+    pub parameter_change_requested: bool,
+    /// The objective's code identifiers as resolved in the repo.
+    pub identifiers: Vec<IdentifierSignal>,
+    /// Distinct non-test source files that reference any named identifier.
+    pub identifier_reference_files: usize,
+    /// Identifiers whose parameter change fans out to
+    /// [`SIGNATURE_CHANGE_CALLER_FILES_THRESHOLD`] or more caller files.
+    pub signature_changes: Vec<String>,
 }
 
 impl PlanningComplexityVerdict {
@@ -203,12 +368,214 @@ fn is_enumerated_line(line: &str) -> bool {
     )
 }
 
+/// Whether a lowercased named path resolves to a real repo file: the same
+/// relative path, or a repo file whose path ends with `/<named path>` (the
+/// objective said `quote.ts` for `src/shipping/quote.ts`).
+fn path_resolves(named: &str, repo_files: &[String]) -> bool {
+    let named = named.strip_prefix("./").unwrap_or(named);
+    let suffix = format!("/{named}");
+    repo_files.iter().any(|file| {
+        let file = file.replace('\\', "/").to_lowercase();
+        file == named || file.ends_with(&suffix)
+    })
+}
+
+/// The objective's sentences: lines are joined into paragraphs (a blank line or
+/// a bulleted/numbered line starts a new one, so a wrapped sentence stays
+/// whole), then split after `.`, `!` or `?` followed by whitespace, and at `;`.
+fn sentences(text: &str) -> Vec<String> {
+    let mut paragraphs: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || is_enumerated_line(line) {
+            if !current.is_empty() {
+                paragraphs.push(std::mem::take(&mut current));
+            }
+            if trimmed.is_empty() {
+                continue;
+            }
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(trimmed);
+    }
+    if !current.is_empty() {
+        paragraphs.push(current);
+    }
+
+    let mut out = Vec::new();
+    for paragraph in paragraphs {
+        let mut sentence = String::new();
+        let mut chars = paragraph.chars().peekable();
+        while let Some(c) = chars.next() {
+            sentence.push(c);
+            let ends = match c {
+                ';' => true,
+                '.' | '!' | '?' => chars.peek().is_none_or(|n| n.is_whitespace()),
+                _ => false,
+            };
+            if ends {
+                out.push(std::mem::take(&mut sentence));
+            }
+        }
+        if !sentence.trim().is_empty() {
+            out.push(sentence);
+        }
+    }
+    out
+}
+
+/// Whether the objective asks to add, remove or reorder a function parameter:
+/// one sentence holds both a non-negated [`PARAMETER_CHANGE_VERBS`] word and a
+/// [`PARAMETER_NOUNS`] word (or "calling convention"). Describes the KIND of
+/// change only; it never promotes a plan without the repo's fan-out.
+pub fn requests_parameter_change(objective: &str) -> bool {
+    sentences(objective).iter().any(|sentence| {
+        let words: Vec<String> = sentence
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        let has_noun = words.iter().any(|w| PARAMETER_NOUNS.contains(&w.as_str()))
+            || words
+                .windows(2)
+                .any(|pair| pair[0] == "calling" && pair[1] == "convention");
+        let has_verb = words.iter().enumerate().any(|(i, w)| {
+            PARAMETER_CHANGE_VERBS.contains(&w.as_str())
+                && !words[i.saturating_sub(2)..i]
+                    .iter()
+                    .any(|prev| NEGATION_WORDS.contains(&prev.as_str()))
+        });
+        has_noun && has_verb
+    })
+}
+
+fn is_identifier_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Whether the occurrence of an identifier starting at byte `start` of
+/// `bytes` is its definition: the word directly before it (whitespace
+/// skipped) is a [`DEFINITION_KEYWORDS`] entry.
+fn is_definition_at(bytes: &[u8], start: usize) -> bool {
+    let mut end = start;
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    if end == start {
+        return false;
+    }
+    let mut begin = end;
+    while begin > 0 && is_identifier_byte(bytes[begin - 1]) {
+        begin -= 1;
+    }
+    std::str::from_utf8(&bytes[begin..end])
+        .map(|keyword| DEFINITION_KEYWORDS.contains(&keyword))
+        .unwrap_or(false)
+}
+
+/// Resolve `identifiers` against the repo at `root`: for each, the non-test
+/// source files (a programming-language extension, not a test path) that
+/// define it and that mention it as a whole word. Reads only files in
+/// `repo_files` (the repo-facts walk, which already skips vendored and build
+/// directories), bounded by [`PLANNING_SCAN_MAX_FILE_BYTES`] per file and
+/// [`PLANNING_SCAN_MAX_TOTAL_BYTES`] overall; unreadable files are skipped.
+/// These are grounded facts about the repo, not claims in the objective.
+pub fn scan_identifier_references(
+    root: &std::path::Path,
+    repo_files: &[String],
+    identifiers: &[String],
+) -> Vec<IdentifierReferences> {
+    let identifiers: Vec<&String> = identifiers
+        .iter()
+        .filter(|id| !id.is_empty() && id.bytes().all(is_identifier_byte))
+        .take(PLANNING_MAX_IDENTIFIERS)
+        .collect();
+    let mut out: Vec<IdentifierReferences> = identifiers
+        .iter()
+        .map(|id| IdentifierReferences {
+            identifier: (*id).clone(),
+            ..Default::default()
+        })
+        .collect();
+    if out.is_empty() {
+        return out;
+    }
+    let mut total_bytes: u64 = 0;
+    for file in repo_files {
+        let is_source = file
+            .rsplit_once('.')
+            .and_then(|(_, ext)| language_of_extension(&ext.to_lowercase()))
+            .is_some_and(|language| language.is_some());
+        if !is_source || crate::tool_monitor::is_test_path(file) {
+            continue;
+        }
+        let path = root.join(file);
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if meta.len() > PLANNING_SCAN_MAX_FILE_BYTES {
+            continue;
+        }
+        if total_bytes.saturating_add(meta.len()) > PLANNING_SCAN_MAX_TOTAL_BYTES {
+            break;
+        }
+        total_bytes += meta.len();
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let bytes = content.as_bytes();
+        for (slot, id) in out.iter_mut().zip(identifiers.iter()) {
+            let len = id.len();
+            let mut referenced = false;
+            let mut defined = false;
+            for (start, _) in content.match_indices(id.as_str()) {
+                let before_ok = start == 0 || !is_identifier_byte(bytes[start - 1]);
+                let after_ok =
+                    start + len >= bytes.len() || !is_identifier_byte(bytes[start + len]);
+                if !(before_ok && after_ok) {
+                    continue;
+                }
+                referenced = true;
+                if is_definition_at(bytes, start) {
+                    defined = true;
+                    break;
+                }
+            }
+            if referenced {
+                slot.referenced_in.push(file.clone());
+            }
+            if defined {
+                slot.defined_in.push(file.clone());
+            }
+        }
+    }
+    out
+}
+
 /// THE assessment. Pure and deterministic; see the module doc for the signals.
 pub fn assess_planning_complexity(facts: &PlanningFacts<'_>) -> PlanningComplexityVerdict {
+    let grounded = !facts.repo_files.is_empty();
     let mut named_files: Vec<String> = Vec::new();
     let mut named_languages: Vec<String> = Vec::new();
+    let mut unresolved_named_files: Vec<String> = Vec::new();
+    let mut named_test_files: Vec<String> = Vec::new();
     for raw in facts.objective.split_whitespace() {
         if let Some((path, language)) = file_token(raw) {
+            if grounded && !path_resolves(&path, facts.repo_files) {
+                if !unresolved_named_files.contains(&path) {
+                    unresolved_named_files.push(path);
+                }
+                continue;
+            }
+            if crate::tool_monitor::is_test_path(&path) {
+                if !named_test_files.contains(&path) {
+                    named_test_files.push(path);
+                }
+                continue;
+            }
             if !named_files.contains(&path) {
                 named_files.push(path);
             }
@@ -265,6 +632,38 @@ pub fn assess_planning_complexity(facts: &PlanningFacts<'_>) -> PlanningComplexi
             super::assess::MANY_CRITERIA
         ));
     }
+    let parameter_change_requested = requests_parameter_change(facts.objective);
+    let mut signature_changes: Vec<String> = Vec::new();
+    let mut reference_files: Vec<&String> = Vec::new();
+    let mut identifiers: Vec<IdentifierSignal> = Vec::new();
+    for refs in facts.identifier_references {
+        for file in &refs.referenced_in {
+            if !reference_files.contains(&file) {
+                reference_files.push(file);
+            }
+        }
+        identifiers.push(IdentifierSignal {
+            identifier: refs.identifier.clone(),
+            defined_in: refs.defined_in.clone(),
+            referencing_files: refs.referenced_in.len(),
+        });
+        if !parameter_change_requested {
+            continue;
+        }
+        if let Some(callers) = refs.caller_files() {
+            if callers >= SIGNATURE_CHANGE_CALLER_FILES_THRESHOLD {
+                complex.push(format!(
+                    "asks to change the parameters of `{}` (defined in {}), which {callers} other \
+                     source file(s) call (>= {SIGNATURE_CHANGE_CALLER_FILES_THRESHOLD}): a \
+                     signature change that fans out to its callers",
+                    refs.identifier, refs.defined_in[0]
+                ));
+                signature_changes.push(refs.identifier.clone());
+            }
+        }
+    }
+    let identifier_reference_files = reference_files.len();
+
     let lowered = facts.objective.to_lowercase();
     let reads_mechanical = super::assess::MECHANICAL_SIGNALS
         .iter()
@@ -279,45 +678,122 @@ pub fn assess_planning_complexity(facts: &PlanningFacts<'_>) -> PlanningComplexi
         ));
     }
 
-    if !complex.is_empty() {
-        return PlanningComplexityVerdict {
-            complexity: PlanningComplexity::Complex,
-            reasons: complex,
-            named_files,
-            named_languages,
-            enumerated_requirements,
-        };
-    }
-
-    let mut reasons = vec![
-        format!(
-            "names {} file(s) in {} language(s) (multi-file at {PLANNING_MULTI_FILE_THRESHOLD}, \
-             cross-language at {PLANNING_CROSS_LANGUAGE_THRESHOLD})",
-            named_files.len(),
-            named_languages.len()
-        ),
-        format!(
-            "{enumerated_requirements} enumerated requirement(s) (multi-part above {})",
-            super::assess::MANY_CRITERIA
-        ),
-        format!("repo has {} file(s)", facts.repo_file_count),
-        "no pending, parked or held plan history on this project".to_string(),
-    ];
-    if unscoped_large {
-        reasons.push(
-            "names no file in a large repo, but reads as mechanical work — prose may only route \
-             a plan down"
-                .to_string(),
-        );
-    }
+    let complexity = if complex.is_empty() {
+        PlanningComplexity::Routine
+    } else {
+        PlanningComplexity::Complex
+    };
+    let reasons = if complexity == PlanningComplexity::Complex {
+        complex
+    } else {
+        let mut reasons = vec![
+            format!(
+                "names {} non-test file(s) in {} language(s) (multi-file at \
+                 {PLANNING_MULTI_FILE_THRESHOLD}, cross-language at \
+                 {PLANNING_CROSS_LANGUAGE_THRESHOLD})",
+                named_files.len(),
+                named_languages.len()
+            ),
+            format!(
+                "{enumerated_requirements} enumerated requirement(s) (multi-part above {})",
+                super::assess::MANY_CRITERIA
+            ),
+            format!("repo has {} file(s)", facts.repo_file_count),
+            format!(
+                "named identifiers are referenced from {identifier_reference_files} source \
+                 file(s); no parameter change fans out to {SIGNATURE_CHANGE_CALLER_FILES_THRESHOLD} \
+                 or more caller files{}",
+                if parameter_change_requested {
+                    ""
+                } else {
+                    " (no parameter change asked for)"
+                }
+            ),
+            "no pending, parked or held plan history on this project".to_string(),
+        ];
+        if !unresolved_named_files.is_empty() {
+            reasons.push(format!(
+                "{} named path(s) do not exist in the repo and were not counted: {}",
+                unresolved_named_files.len(),
+                unresolved_named_files.join(", ")
+            ));
+        }
+        if unscoped_large {
+            reasons.push(
+                "names no file in a large repo, but reads as mechanical work — prose may only \
+                 route a plan down"
+                    .to_string(),
+            );
+        }
+        reasons
+    };
     PlanningComplexityVerdict {
-        complexity: PlanningComplexity::Routine,
+        complexity,
         reasons,
         named_files,
         named_languages,
         enumerated_requirements,
+        unresolved_named_files,
+        named_test_files,
+        parameter_change_requested,
+        identifiers,
+        identifier_reference_files,
+        signature_changes,
     }
 }
+
+/// r64 s5 (`harness-refactor-shipping-quote-signature`): the fixture repo's
+/// source files, verbatim. Shared by this module's tests and the
+/// orchestrator's end-to-end decomposition test.
+#[cfg(test)]
+pub(crate) const R64_S5_FIXTURE_FILES: &[(&str, &str)] = &[
+    (
+        "src/types.ts",
+        "export type Zone = \"domestic\" | \"international\";\nexport type PackageType = \"standard\" | \"fragile\";\n\nexport interface Order {\n  id: string;\n  weightKg: number;\n  zone: Zone;\n  packageType: PackageType;\n}\n",
+    ),
+    (
+        "src/shipping/quote.ts",
+        "import type { Zone } from \"../types.ts\";\n\nconst BASE_RATE_CENTS_PER_KG: Record<Zone, number> = {\n  domestic: 200,\n  international: 550,\n};\n\n/**\n * Quotes shipping cost in cents for a package of the given weight and zone.\n */\nexport function quoteShipping(weightKg: number, zone: Zone): number {\n  return Math.round(weightKg * BASE_RATE_CENTS_PER_KG[zone]);\n}\n",
+    ),
+    (
+        "src/admin/manualQuote.ts",
+        "import { quoteShipping } from \"../shipping/quote.ts\";\nimport type { Zone } from \"../types.ts\";\n\n/** Support-desk tool: quote shipping for a one-off manual order. */\nexport function computeManualQuote(weightKg: number, zone: Zone): number {\n  return quoteShipping(weightKg, zone);\n}\n",
+    ),
+    (
+        "src/api/quoteHandler.ts",
+        "import { quoteShipping } from \"../shipping/quote.ts\";\nimport type { Order } from \"../types.ts\";\n\nexport interface QuoteResponse {\n  shippingCents: number;\n}\n\n/** The public API handler used by the storefront's quote endpoint. */\nexport function handleQuoteRequest(order: Order): QuoteResponse {\n  return { shippingCents: quoteShipping(order.weightKg, order.zone) };\n}\n",
+    ),
+    (
+        "src/cart/cartSummary.ts",
+        "import { quoteShipping } from \"../shipping/quote.ts\";\nimport type { Order } from \"../types.ts\";\n\n/** Estimated total shipping cost (cents) for every order in a cart preview. */\nexport function estimateCartShipping(orders: Order[]): number {\n  return orders.reduce((sum, o) => sum + quoteShipping(o.weightKg, o.zone), 0);\n}\n",
+    ),
+    (
+        "src/checkout/checkout.ts",
+        "import { quoteShipping } from \"../shipping/quote.ts\";\nimport type { Order } from \"../types.ts\";\n\nexport interface CheckoutSummary {\n  itemsTotalCents: number;\n  shippingCents: number;\n  grandTotalCents: number;\n}\n\nexport function buildCheckoutSummary(order: Order): CheckoutSummary {\n  const itemsTotalCents = 5000; // placeholder demo total, not under test\n  const shippingCents = quoteShipping(order.weightKg, order.zone);\n  return {\n    itemsTotalCents,\n    shippingCents,\n    grandTotalCents: itemsTotalCents + shippingCents,\n  };\n}\n",
+    ),
+    ("README.md", "# Shipping quotes\n"),
+    ("package.json", "{ \"name\": \"shipping\", \"type\": \"module\" }\n"),
+];
+
+/// r64 s5: the fixture task's own prompt — it names surfaces and
+/// `quoteShipping`, but not one file path.
+#[cfg(test)]
+pub(crate) const R64_S5_TASK_PROMPT: &str =
+    "We need to charge 25% more to ship fragile packages, and it has to apply
+everywhere a shipping cost gets quoted -- checkout, the cart preview, the
+admin manual-quote tool, and the storefront's quote API. Right now none of
+them account for whether a package is fragile at all. Add fragile-package
+support end to end so every place that quotes shipping reflects it.
+
+Keep `quoteShipping`'s existing calling convention: it stays a plain
+function taking the same scalar weight and zone arguments it already
+takes today, just with one more scalar argument added for the package
+type (e.g. a \"standard\" / \"fragile\" string) -- do not turn it into a
+function that takes a single `Order`-shaped object instead. The call
+sites that already work with full order objects (checkout, the cart
+preview, the API handler) should keep doing that and just pass the
+package type through the same way they already pass weight and zone.
+";
 
 #[cfg(test)]
 mod tests {
@@ -327,6 +803,8 @@ mod tests {
         PlanningFacts {
             objective,
             repo_file_count,
+            repo_files: &[],
+            identifier_references: &[],
             history: PriorPlanHistory::default(),
         }
     }
@@ -384,6 +862,8 @@ mod tests {
             let v = assess_planning_complexity(&PlanningFacts {
                 objective: "Fix the off-by-one in src/pagination.rs",
                 repo_file_count: 12,
+                repo_files: &[],
+                identifier_references: &[],
                 history,
             });
             assert_eq!(v.complexity, PlanningComplexity::Complex, "{history:?}");
@@ -433,5 +913,187 @@ mod tests {
         ));
         assert_eq!(v.named_files, vec!["package.json".to_string()]);
         assert!(v.named_languages.is_empty());
+    }
+
+    fn write_fixture(files: &[(&str, &str)]) -> (tempfile::TempDir, Vec<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut listed = Vec::new();
+        for (path, content) in files {
+            let full = dir.path().join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(&full, content).unwrap();
+            listed.push(path.to_string());
+        }
+        (dir, listed)
+    }
+
+    fn assess_in_repo(
+        objective: &str,
+        root: &std::path::Path,
+        files: &[String],
+    ) -> PlanningComplexityVerdict {
+        let mut identifiers: Vec<String> =
+            crate::agents::platform_extensions::orchestrator::text_code_identifiers(objective)
+                .into_iter()
+                .collect();
+        identifiers.sort();
+        let references = scan_identifier_references(root, files, &identifiers);
+        assess_planning_complexity(&PlanningFacts {
+            objective,
+            repo_file_count: files.len(),
+            repo_files: files,
+            identifier_references: &references,
+            history: PriorPlanHistory::default(),
+        })
+    }
+
+    /// r64 s5: the fixture prompt names no file path and the repo is tiny, so
+    /// the lexical signals read ROUTINE. The grounded signature signal reads
+    /// the repo: `quoteShipping` is defined in one file and called from four.
+    #[test]
+    fn r64_s5_signature_refactor_prompt_is_complex_against_its_fixture_repo() {
+        let (dir, files) = write_fixture(R64_S5_FIXTURE_FILES);
+        let v = assess_in_repo(R64_S5_TASK_PROMPT, dir.path(), &files);
+        assert_eq!(v.complexity, PlanningComplexity::Complex, "{:?}", v.reasons);
+        assert!(v.named_files.is_empty(), "{:?}", v.named_files);
+        assert!(v.parameter_change_requested);
+        assert_eq!(v.signature_changes, vec!["quoteShipping".to_string()]);
+        let quote = v
+            .identifiers
+            .iter()
+            .find(|i| i.identifier == "quoteShipping")
+            .expect("quoteShipping is resolved");
+        assert_eq!(quote.defined_in, vec!["src/shipping/quote.ts".to_string()]);
+        assert_eq!(quote.referencing_files, 5);
+        assert!(
+            v.reasons.iter().any(|r| r.contains("fans out")),
+            "{:?}",
+            v.reasons
+        );
+        // Without the repo facts the same prompt is ROUTINE: the promotion is
+        // the repo's, not the prose's.
+        let ungrounded = assess_planning_complexity(&facts(R64_S5_TASK_PROMPT, files.len()));
+        assert_eq!(ungrounded.complexity, PlanningComplexity::Routine);
+    }
+
+    #[test]
+    fn a_one_file_typo_fix_stays_routine_in_a_grounded_repo() {
+        let (dir, files) = write_fixture(R64_S5_FIXTURE_FILES);
+        let v = assess_in_repo(
+            "There is a typo in `README.md`: it says \"recieve\" where it should say \
+             \"receive\". Fix it directly.",
+            dir.path(),
+            &files,
+        );
+        assert_eq!(v.complexity, PlanningComplexity::Routine, "{:?}", v.reasons);
+        assert_eq!(v.named_files, vec!["readme.md".to_string()]);
+        assert!(v.signature_changes.is_empty());
+    }
+
+    /// Named paths are claims until the repo shows them: a glob or a file that
+    /// does not exist never counts toward the multi-file line, and named test
+    /// files do not count either (a fix plus its test is still routine).
+    #[test]
+    fn named_paths_count_only_when_they_resolve_and_are_not_tests() {
+        let (dir, files) = write_fixture(&[
+            ("src/pricing.py", "def price():\n    return 1\n"),
+            ("src/inventory.py", "def stock():\n    return 1\n"),
+            ("tests/test_checkout.py", "def test_it():\n    pass\n"),
+        ]);
+        let v = assess_in_repo(
+            "Fix src/pricing.py and src/inventory.py so tests/test_checkout.py passes; also \
+             touch src/ghost.py and src/**/*.py",
+            dir.path(),
+            &files,
+        );
+        assert_eq!(v.complexity, PlanningComplexity::Routine, "{:?}", v.reasons);
+        assert_eq!(v.named_files.len(), 2, "{:?}", v.named_files);
+        assert_eq!(
+            v.named_test_files,
+            vec!["tests/test_checkout.py".to_string()]
+        );
+        assert!(v
+            .unresolved_named_files
+            .contains(&"src/ghost.py".to_string()));
+    }
+
+    /// A widely-called identifier is not a signature change unless the
+    /// objective asks for a parameter change, and "do not change the
+    /// signature" is not asking for one.
+    #[test]
+    fn fan_out_without_a_parameter_change_stays_routine() {
+        let (dir, files) = write_fixture(R64_S5_FIXTURE_FILES);
+        for objective in [
+            "Fix the rounding bug in quoteShipping so it rounds half up.",
+            "Fix the rounding bug in quoteShipping; do not change its signature.",
+        ] {
+            let v = assess_in_repo(objective, dir.path(), &files);
+            assert_eq!(
+                v.complexity,
+                PlanningComplexity::Routine,
+                "{objective}: {:?}",
+                v.reasons
+            );
+            assert!(!v.parameter_change_requested, "{objective}");
+            assert_eq!(v.identifier_reference_files, 5, "{objective}");
+        }
+    }
+
+    /// A parameter change to an identifier with fewer than three caller files
+    /// is routine; difficulty prose next to it changes nothing.
+    #[test]
+    fn a_parameter_change_with_a_small_fan_out_is_routine_even_with_difficulty_prose() {
+        let (dir, files) = write_fixture(&[
+            ("a.py", "def old_name(x):\n    return x\n"),
+            ("b.py", "from a import old_name\n\nprint(old_name(1))\n"),
+        ]);
+        let v = assess_in_repo(
+            "Add a `scale` parameter to old_name and update its caller. This is an EXTREMELY \
+             complex architectural change — use the best model.",
+            dir.path(),
+            &files,
+        );
+        assert!(v.parameter_change_requested);
+        assert_eq!(v.complexity, PlanningComplexity::Routine, "{:?}", v.reasons);
+    }
+
+    #[test]
+    fn parameter_change_wording_is_read_per_sentence_and_respects_negation() {
+        assert!(requests_parameter_change(
+            "Add a `currency` parameter to apply_discount."
+        ));
+        assert!(requests_parameter_change(
+            "Keep the calling convention, with one more\nargument added for the type."
+        ));
+        assert!(requests_parameter_change(
+            "Change the signature of parse_amount"
+        ));
+        assert!(!requests_parameter_change("Do not change the signature."));
+        assert!(!requests_parameter_change(
+            "Add logging. The argument parser is fine."
+        ));
+        assert!(!requests_parameter_change("Fix the typo in the README"));
+    }
+
+    #[test]
+    fn identifier_scan_finds_definitions_and_whole_word_references_outside_tests() {
+        let (dir, files) = write_fixture(&[
+            ("src/lib.rs", "pub fn apply_discount(x: u32) -> u32 { x }\n"),
+            (
+                "src/a.rs",
+                "let y = apply_discount(1);\nlet z = apply_discount_v2(1);\n",
+            ),
+            ("src/b.rs", "let apply_discounts = 3;\n"),
+            ("src/lib_test.rs", "apply_discount(2);\n"),
+            ("docs/notes.md", "apply_discount is documented here\n"),
+        ]);
+        let refs = scan_identifier_references(dir.path(), &files, &["apply_discount".to_string()]);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].defined_in, vec!["src/lib.rs".to_string()]);
+        assert_eq!(
+            refs[0].referenced_in,
+            vec!["src/lib.rs".to_string(), "src/a.rs".to_string()]
+        );
+        assert_eq!(refs[0].caller_files(), Some(1));
     }
 }

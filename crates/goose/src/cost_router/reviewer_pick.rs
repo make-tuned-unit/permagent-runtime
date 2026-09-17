@@ -370,6 +370,12 @@ pub fn select_reviewer(
 /// `None` when nothing different-family clears the floor, or the author is
 /// unknown (no family can be proven different) — the caller's same-family
 /// fallback then applies, honestly labeled.
+///
+/// Lane N3 (M48 r64 s5, ruling 2026-09-17): the reviewer delegate and the
+/// reviewer mandate no longer call this. Its size-only floor read `git diff
+/// HEAD`, which is 0 after an auto-land, so a complex change got the cheapest
+/// reviewer; they now use `orchestrator::assign_delegate_reviewer`
+/// (`recommend::assign_reviewer` over the goal's trunk-relative diff).
 pub fn cheapest_cross_family_reviewer(
     author: Option<(&str, &str)>,
     available: &[AvailableModel],
