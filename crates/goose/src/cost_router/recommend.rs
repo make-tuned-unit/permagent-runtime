@@ -3035,6 +3035,116 @@ diff --git a/src/api.rs b/src/api.rs\n\
         }
     }
 
+    /// Lane R65a (r65 s1): an UNCERTAIN from the cheapest floor-clearing
+    /// reviewer on a MODERATE review escalates to the next floor tier — the
+    /// cheapest STRONGER cross-family model clearing the COMPLEX floor, not the
+    /// frontier row.
+    #[test]
+    fn uncertain_moderate_review_escalates_to_the_cheapest_stronger_reviewer_at_the_next_floor() {
+        let author = Some(("custom_deepseek", "deepseek-chat"));
+        let available = avail(&[
+            ("minimax", "MiniMax-M2.5"),
+            ("zai", "glm-4.5-air"),
+            ("zai", "glm-5.2"),
+            ("google", "gemini-3-pro"),
+            ("xai", "grok-4.5"),
+            ("anthropic", "claude-fable-5"),
+            ("custom_deepseek", "deepseek-chat"),
+        ]);
+        let untested = "--- a/src/a.rs\n+++ b/src/a.rs\n+a\n+b\n+c\n+d\n";
+        let first = assign_reviewer(ReviewFacts::from_diff(untested, 0), author, &available);
+        assert_eq!(first.complexity, ReviewComplexity::Moderate);
+        assert_eq!(first.pick_label().as_deref(), Some("minimax/MiniMax-M2.5"));
+
+        let next = escalate_reviewer_after_uncertain(
+            &first,
+            ("minimax", "MiniMax-M2.5"),
+            author,
+            &available,
+        );
+        assert_eq!(next.complexity, ReviewComplexity::Complex);
+        assert_eq!(
+            next.pick_label().as_deref(),
+            Some("zai/glm-5.2"),
+            "cheapest model above MiniMax's 0.80 that clears the complex floor: {}",
+            next.why
+        );
+        assert!(
+            next.why
+                .contains("escalated once after minimax/MiniMax-M2.5"),
+            "{}",
+            next.why
+        );
+        assert!(
+            next.candidates.iter().all(|c| c.orchestration > 0.80),
+            "only reviewers ranking above the unsure one are considered"
+        );
+        assert!(next
+            .candidates
+            .iter()
+            .all(|c| c.model != "MiniMax-M2.5" && c.family != "deepseek"));
+    }
+
+    /// At COMPLEX there is no higher floor: escalate to the strongest
+    /// cross-family model ranking above the unsure reviewer; with nothing
+    /// above it, there is no escalation pick.
+    #[test]
+    fn uncertain_complex_review_escalates_to_the_strongest_reviewer_above_it_or_none() {
+        let author = Some(("anthropic", "claude-sonnet-5"));
+        let available = avail(&[
+            ("google", "gemini-3-pro"),
+            ("zai", "glm-5.2"),
+            ("xai", "grok-4.5"),
+            ("openai", "gpt-5.6"),
+        ]);
+        let first = assign_reviewer(
+            ReviewFacts::from_diff(SIGNATURE_DIFF, 3),
+            author,
+            &available,
+        );
+        assert_eq!(first.complexity, ReviewComplexity::Complex);
+        assert_eq!(first.pick_label().as_deref(), Some("zai/glm-5.2"));
+
+        let next =
+            escalate_reviewer_after_uncertain(&first, ("zai", "glm-5.2"), author, &available);
+        assert_eq!(
+            next.pick_label().as_deref(),
+            Some("xai/grok-4.5"),
+            "{}",
+            next.why
+        );
+        assert!(
+            next.why.contains("strongest cross-family model"),
+            "{}",
+            next.why
+        );
+        assert_eq!(
+            next.candidates
+                .iter()
+                .filter(|c| c.status == "picked")
+                .count(),
+            1
+        );
+
+        let top = assign_reviewer(
+            ReviewFacts::from_diff(SIGNATURE_DIFF, 3),
+            Some(("openai", "gpt-5.6")),
+            &avail(&[("anthropic", "claude-fable-5"), ("zai", "glm-4.5-air")]),
+        );
+        assert_eq!(
+            top.pick_label().as_deref(),
+            Some("anthropic/claude-fable-5")
+        );
+        let none = escalate_reviewer_after_uncertain(
+            &top,
+            ("anthropic", "claude-fable-5"),
+            Some(("openai", "gpt-5.6")),
+            &avail(&[("anthropic", "claude-fable-5"), ("zai", "glm-4.5-air")]),
+        );
+        assert_eq!(none.pick_label(), None);
+        assert!(none.why.contains("no cross-family model"), "{}", none.why);
+    }
+
     #[test]
     fn unknown_author_gets_no_reviewer_pick() {
         let a = assign_reviewer(

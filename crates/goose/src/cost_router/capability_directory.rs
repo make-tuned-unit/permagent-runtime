@@ -1818,6 +1818,68 @@ mod tests {
         assert_eq!(route, Some(rm("zai", "glm-5.2")));
     }
 
+    /// Lane R65a: a failed planner hands the plan to the next planner by the
+    /// SAME ranking that chose it — strongest-first for a complex plan,
+    /// cheapest-capable for a routine one — and an exhausted ranking names
+    /// every planner tried.
+    #[test]
+    fn planner_fallback_walks_the_same_ranking_past_failed_planners() {
+        use crate::cost_router::planner_complexity::PlanningComplexity::{Complex, Routine};
+        let dir = mixed_directory();
+        let complex = gate(Complex, Some(rm("custom_deepseek", "deepseek-chat")), false);
+
+        let (route, reason) =
+            resolve_planner_fallback(&dir, &complex, &[rm("anthropic", "claude-fable-5")]);
+        assert_eq!(route, Some(rm("anthropic", "claude-opus-4-8")));
+        assert!(
+            matches!(reason, PlannerReason::Strongest { .. }),
+            "{reason:?}"
+        );
+
+        let (route, _) = resolve_planner_fallback(
+            &dir,
+            &complex,
+            &[
+                rm("anthropic", "claude-fable-5"),
+                rm("anthropic", "claude-opus-4-8"),
+            ],
+        );
+        assert_eq!(route, Some(rm("zai", "glm-5.2")));
+
+        let tried_all = [
+            rm("anthropic", "claude-fable-5"),
+            rm("anthropic", "claude-opus-4-8"),
+            rm("zai", "glm-5.2"),
+        ];
+        let (route, reason) = resolve_planner_fallback(&dir, &complex, &tried_all);
+        assert_eq!(route, None);
+        match reason {
+            PlannerReason::SessionFallback { reason } => {
+                assert!(reason.contains("anthropic/claude-fable-5"), "{reason}");
+                assert!(reason.contains("zai/glm-5.2"), "{reason}");
+            }
+            other => panic!("expected SessionFallback, got {other:?}"),
+        }
+
+        // A routine plan walks the cheapest-capable ranking instead: past the
+        // failed cheap planner to the next cheapest, never straight to the
+        // most expensive.
+        let routine = gate(Routine, None, false);
+        let (route, reason) = resolve_planner_fallback(&dir, &routine, &[rm("zai", "glm-5.2")]);
+        assert_eq!(route, Some(rm("anthropic", "claude-opus-4-8")));
+        assert!(matches!(
+            reason,
+            PlannerReason::RoutineCheapestCapable { .. }
+        ));
+
+        // With nothing excluded, the fallback ranking is the first ranking.
+        assert_eq!(
+            dir.planner_excluding(&[]),
+            dir.planner(),
+            "planner_excluding(&[]) is planner()"
+        );
+    }
+
     /// A complex plan under a spend cap is withheld from the expert planner.
     #[test]
     fn complex_plan_under_a_spend_cap_gets_the_routine_planner() {

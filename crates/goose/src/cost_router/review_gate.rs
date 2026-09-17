@@ -1564,6 +1564,132 @@ mod tests {
         assert_eq!(parse_review(raw).verdict, Verdict::RequestChanges);
     }
 
+    // ── Lane R65a: presentation never hides a verdict ───────────────────────
+
+    #[test]
+    fn parse_reads_a_verdict_inside_a_markdown_fence_and_after_prose() {
+        let raw = "I reviewed the diff against the task.\n\n```\nVERDICT: APPROVE\n\
+                   CHECKED: the four call sites and the rounding\n```\n";
+        let (o, problem) = parse_review_with_problem(raw);
+        assert_eq!(o.verdict, Verdict::Approve);
+        assert_eq!(o.checked, "the four call sites and the rounding");
+        assert_eq!(problem, None);
+    }
+
+    #[test]
+    fn parse_tolerates_markdown_decoration_around_the_labeled_lines() {
+        for raw in [
+            "**VERDICT:** APPROVE\n**CHECKED:** x",
+            "**VERDICT**: APPROVE\nCHECKED: x",
+            "- **Verdict:** `APPROVE`\n- CHECKED: x",
+            "### VERDICT: APPROVE\nCHECKED: x",
+            "> VERDICT: APPROVE.\nCHECKED: x",
+            "`VERDICT: APPROVE`\nCHECKED: x",
+            "verdict: approve\nchecked: x",
+        ] {
+            let o = parse_review(raw);
+            assert_eq!(o.verdict, Verdict::Approve, "{raw:?}");
+            assert_eq!(o.checked, "x", "{raw:?}");
+        }
+        assert_eq!(
+            parse_review("VERDICT: **REQUEST CHANGES**\nFINDING SPEC | missed | a.rs:1").verdict,
+            Verdict::RequestChanges
+        );
+        let listed =
+            parse_review("VERDICT: REQUEST_CHANGES\n- FINDING CORRECTNESS | off by one | a.rs:3");
+        assert_eq!(
+            listed.findings.len(),
+            1,
+            "a list-marked FINDING line still parses"
+        );
+    }
+
+    #[test]
+    fn parse_ignores_reasoning_blocks() {
+        let raw = "<think>\nVERDICT: UNCERTAIN — let me look at the call sites first\n</think>\n\
+                   VERDICT: APPROVE\nCHECKED: call sites";
+        assert_eq!(parse_review(raw).verdict, Verdict::Approve);
+
+        // A template that put the opening tag in the prompt: everything up to
+        // the orphan closing tag is reasoning.
+        let raw = "VERDICT: REQUEST_CHANGES maybe?\n</think>\nVERDICT: APPROVE\nCHECKED: y";
+        assert_eq!(parse_review(raw).verdict, Verdict::Approve);
+
+        // An unfinished thought is not a verdict.
+        let (o, problem) = parse_review_with_problem("<thinking>\nVERDICT: APPROVE\n");
+        assert_eq!(o.verdict, Verdict::Uncertain);
+        assert_eq!(problem, Some(ReviewParseProblem::NoVerdictLine));
+    }
+
+    #[test]
+    fn parse_refuses_echoed_grammar_longer_words_and_quoted_diff_lines() {
+        let (o, problem) =
+            parse_review_with_problem("VERDICT: APPROVE|REQUEST_CHANGES|UNCERTAIN\nCHECKED: x");
+        assert_eq!(o.verdict, Verdict::Uncertain);
+        assert_eq!(problem, Some(ReviewParseProblem::UnrecognisedVerdict));
+        assert_eq!(
+            parse_review("VERDICT: APPROVED").verdict,
+            Verdict::Uncertain
+        );
+        let (o, problem) = parse_review_with_problem("-VERDICT: APPROVE\n+VERDICT: APPROVE");
+        assert_eq!(
+            o.verdict,
+            Verdict::Uncertain,
+            "a quoted diff line is not a verdict"
+        );
+        assert_eq!(problem, Some(ReviewParseProblem::NoVerdictLine));
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_missing_verdict_is_logged_with_the_raw_response_and_read_as_uncertain() {
+        let log = CapturedLog::default();
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        let outcome = tracing::subscriber::with_default(subscriber, || {
+            parse_review("The change looks reasonable but I ran out of room")
+        });
+        assert_eq!(outcome.verdict, Verdict::Uncertain);
+        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert!(text.contains("no readable verdict"), "{text}");
+        assert!(text.contains("no VERDICT line"), "{text}");
+        assert!(
+            text.contains("I ran out of room"),
+            "the raw response is logged: {text}"
+        );
+    }
+
+    #[test]
+    fn a_data_section_is_added_before_the_closing_instruction() {
+        let prompt = build_review_prompt("task", "diff", "verify", &[]);
+        let with = with_review_data_section(&prompt, "VERIFICATION", "command: npm test\n");
+        let section = with
+            .find("BEGIN_VERIFICATION\ncommand: npm test\nEND_VERIFICATION")
+            .expect("section present");
+        let closing = with
+            .find("Review this change and output the labeled verdict block.")
+            .unwrap();
+        assert!(section < closing);
+        assert!(with.find("END_PRIOR_FINDINGS").unwrap() < section);
+        assert!(with.ends_with("Review this change and output the labeled verdict block."));
+    }
+
     // ── Gate: APPROVE → proceed, with anti-rubber-stamp ──────────────────────
 
     #[test]
