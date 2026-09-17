@@ -190,6 +190,11 @@ pub struct VerifyPositions {
     /// hold/park message can quote WHY the pass did not count instead of
     /// just asserting that it didn't.
     pub vacuous_reason: Option<String>,
+    /// Lane R62b-3: the tool-call id of that latest vacuous pass, so a guard
+    /// that refuses it can record the refusal against that exact call
+    /// (`developer::verify::record_vacuous_pass_judgement`). `None` whenever
+    /// `vacuous_pass` is false.
+    pub vacuous_call_id: Option<String>,
 }
 
 impl VerifyPositions {
@@ -222,7 +227,7 @@ impl VerifyPositions {
 /// as a mutation would hold turns that only looked at things.
 pub fn scan_verify_positions(messages: &[Message]) -> VerifyPositions {
     use crate::agents::platform_extensions::orchestrator::is_verify_tool_name;
-    use crate::conversation::message::MessageContent;
+    use crate::conversation::message::{tool_requests_by_id, MessageContent};
     use std::collections::HashMap;
 
     #[derive(Clone, Copy, PartialEq)]
@@ -231,7 +236,26 @@ pub fn scan_verify_positions(messages: &[Message]) -> VerifyPositions {
         Verify,
     }
 
-    let mut pending: HashMap<String, Kind> = HashMap::new();
+    // Lane R62a: index every request by tool-call id BEFORE pairing, so a
+    // conversation reloaded from the `messages` table with a response ahead
+    // of its own request still pairs (see `tool_requests_by_id`). Positions
+    // are still the RESPONSE's position, exactly as before.
+    let mut pending: HashMap<&str, Kind> =
+        tool_requests_by_id(messages.iter().flat_map(|msg| &msg.content))
+            .into_iter()
+            .filter_map(|(id, req)| {
+                let name = req.tool_call.as_ref().ok()?.name.as_ref();
+                // Verify wins a name that somehow matches both, so a
+                // "verify" is never miscounted as an edit.
+                if is_verify_tool_name(name) {
+                    Some((id, Kind::Verify))
+                } else if is_mutating_tool_name(name) {
+                    Some((id, Kind::Mutation))
+                } else {
+                    None
+                }
+            })
+            .collect();
     let mut positions = VerifyPositions::default();
     let mut index = 0usize;
 
@@ -239,23 +263,10 @@ pub fn scan_verify_positions(messages: &[Message]) -> VerifyPositions {
         for content in &msg.content {
             index += 1;
             match content {
-                MessageContent::ToolRequest(req) => {
-                    let Ok(call) = req.tool_call.as_ref() else {
-                        continue;
-                    };
-                    let name = call.name.as_ref();
-                    // Verify wins a name that somehow matches both, so a
-                    // "verify" is never miscounted as an edit.
-                    if is_verify_tool_name(name) {
-                        pending.insert(req.id.clone(), Kind::Verify);
-                    } else if is_mutating_tool_name(name) {
-                        pending.insert(req.id.clone(), Kind::Mutation);
-                    }
-                }
                 MessageContent::ToolResponse(resp) => {
                     use crate::agents::platform_extensions::developer::verify;
 
-                    let Some(kind) = pending.remove(&resp.id) else {
+                    let Some(kind) = pending.remove(resp.id.as_str()) else {
                         continue;
                     };
                     match kind {
@@ -281,6 +292,8 @@ pub fn scan_verify_positions(messages: &[Message]) -> VerifyPositions {
                             // `last_verify` itself.
                             positions.vacuous_reason = verify::vacuous_pass_reason(result);
                             positions.vacuous_pass = positions.vacuous_reason.is_some();
+                            positions.vacuous_call_id =
+                                positions.vacuous_pass.then(|| resp.id.clone());
                         }
                     }
                 }
@@ -331,12 +344,24 @@ impl AfterTurn for PrematureDoneGuard {
         // The SAME decision the goal path makes. An interactive session has no
         // declared workflow role, and a session that edited files without
         // verifying is mechanical work by behaviour whatever it was called.
-        match crate::cost_router::decide_hold(
+        let outcome = crate::cost_router::decide_hold(
             crate::cost_router::WorkflowRole::Mechanical,
             verify_ran,
             &signals,
             ctx.prior_holds,
-        ) {
+        );
+        // Lane R62b-3: holding or parking on a vacuous pass is this guard
+        // refusing to credit it as verify evidence.
+        if !matches!(outcome, crate::cost_router::HoldOutcome::Allow) {
+            if let Some(call_id) = positions.vacuous_call_id.as_deref() {
+                crate::agents::platform_extensions::developer::verify::record_vacuous_pass_judgement(
+                    ctx.session_id,
+                    call_id,
+                    false,
+                );
+            }
+        }
+        match outcome {
             crate::cost_router::HoldOutcome::Allow => AfterTurnAction::Allow,
             crate::cost_router::HoldOutcome::Hold { inject_plan, .. } => {
                 // X-verify-2: a vacuous pass is not "no verify at all" —
@@ -3455,6 +3480,33 @@ mod tests {
         assert!(!p.unverified_edits());
     }
 
+    /// Lane R62a (A61 bug A): a conversation reloaded from the `messages`
+    /// table can hold a tool response ahead of its own request. The verify
+    /// after the edit must still pair and cover it.
+    #[test]
+    fn scan_positions_pairs_a_response_stored_before_its_request() {
+        let swapped = |exchange: Message| {
+            let mut content = exchange.content.into_iter();
+            let request = content.next().unwrap();
+            let response = content.next().unwrap();
+            [
+                Message::new(Role::User, 0, vec![response]),
+                Message::new(Role::Assistant, 0, vec![request]),
+            ]
+        };
+        let messages: Vec<Message> = swapped(tool_exchange("developer__edit", "e1", true))
+            .into_iter()
+            .chain(swapped(tool_exchange("developer__verify", "v1", true)))
+            .collect();
+        let p = scan_verify_positions(&messages);
+        assert!(p.last_mutation.is_some(), "the swapped edit must pair");
+        assert!(p.last_verify.is_some(), "the swapped verify must pair");
+        assert!(
+            !p.unverified_edits(),
+            "a genuine verify after the edit covers it"
+        );
+    }
+
     // ── X-verify-2: vacuous passes ─────────────────────────────────────────
 
     #[test]
@@ -3492,7 +3544,10 @@ mod tests {
         assert!(!p.unverified_edits());
     }
 
+    // Lane R62b-3: holding on a vacuous pass records `vacuous_refused` in the
+    // shared receipts registry when a run is active.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn a_vacuous_pass_holds_with_an_honest_message_naming_the_reason() {
         let guard = PrematureDoneGuard::new();
         let turn = vec![
@@ -3511,7 +3566,9 @@ mod tests {
         }
     }
 
+    // Lane R62b-3: see the hold test above.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn a_repeatedly_vacuous_pass_parks_honestly_once_the_hold_budget_is_exhausted() {
         let guard = PrematureDoneGuard::new();
         let turn = vec![
@@ -3528,6 +3585,35 @@ mod tests {
             }
             other => panic!("expected Park, got {other:?}"),
         }
+    }
+
+    /// Lane R62b-3 (coordinator ruling on A61 miss 2): the guard refusing a
+    /// vacuous pass counts `vacuous_refused`, once per call, and never the
+    /// gated `vacuous_passes`.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn refusing_a_vacuous_pass_counts_vacuous_refused_not_vacuous_passes() {
+        let guard = PrematureDoneGuard::new();
+        let turn = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange_vacuous_pass("v1", "0 tests run"),
+        ];
+        let positions = scan_verify_positions(&turn);
+        assert_eq!(positions.vacuous_call_id.as_deref(), Some("v1"));
+
+        crate::receipts::begin_run();
+        let first = guard.after_turn(&ctx(&turn, 0)).await;
+        let second = guard.after_turn(&ctx(&turn, 1)).await;
+        let lines = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+
+        assert!(matches!(first, AfterTurnAction::Continue { .. }));
+        assert!(!matches!(second, AfterTurnAction::Allow));
+        assert!(
+            lines[1].contains("vacuous_passes=0") && lines[1].ends_with("vacuous_refused=1"),
+            "got: {}",
+            lines[1]
+        );
     }
 
     /// The loop is bounded: a hook that keeps holding is eventually made to

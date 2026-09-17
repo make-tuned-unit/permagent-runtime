@@ -5,8 +5,8 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(not(windows))]
 use std::sync::Arc;
-#[cfg(not(windows))]
-use std::sync::Mutex;
+#[cfg(all(not(windows), not(test)))]
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use rmcp::model::{CallToolResult, Content};
@@ -15,8 +15,6 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 #[cfg(not(windows))]
 use tokio::sync::OnceCell;
-#[cfg(not(windows))]
-use tokio::task::JoinHandle;
 use tokio_stream::{wrappers::SplitStream, StreamExt};
 
 use crate::agents::platform_extensions::goal_engine::{self, worker_git_env};
@@ -227,70 +225,100 @@ fn resolve_login_shell_path() -> Option<String> {
     }
 }
 
-/// Resolves the user's login-shell PATH in the background.
+/// The user's login-shell PATH, resolved at most once and then cached.
 ///
-/// Spawned at `ShellTool` construction so the ~hundreds-of-ms cost of sourcing
-/// the user's shell profile overlaps with the rest of agent setup and the
-/// first LLM turn. The first `shell` invocation awaits the result; subsequent
-/// invocations read from the cached cell.
+/// `ShellTool::new` starts resolving it in the background so the
+/// ~hundreds-of-ms cost of sourcing the user's shell profile overlaps with the
+/// rest of agent setup and the first LLM turn. The first `get` awaits the
+/// result; later calls read the cached cell.
+///
+/// Lane R62b: one process-wide instance ([`shared_login_path`]) serves both
+/// the `shell` tool and the `verify` tool, so a check `verify` runs resolves
+/// `python3` (or `node`, `cargo`, ...) on the same PATH the worker's own shell
+/// commands used.
 #[cfg(not(windows))]
-struct LoginPath {
+pub(crate) struct LoginPath {
     cell: OnceCell<Option<Arc<str>>>,
-    handle: Mutex<Option<JoinHandle<Option<String>>>>,
 }
 
 #[cfg(not(windows))]
 impl LoginPath {
-    fn spawn() -> Self {
-        let handle = tokio::task::spawn_blocking(resolve_login_shell_path);
+    #[cfg(not(test))]
+    fn lazy() -> Self {
         Self {
             cell: OnceCell::new(),
-            handle: Mutex::new(Some(handle)),
         }
     }
 
+    /// A PATH that is already known, so no login shell is ever spawned.
     #[cfg(test)]
-    fn resolved(value: Option<String>) -> Self {
+    pub(crate) fn resolved(value: Option<String>) -> Self {
         let cell = OnceCell::new();
         let _ = cell.set(value.map(Arc::from));
-        Self {
-            cell,
-            handle: Mutex::new(None),
-        }
+        Self { cell }
     }
 
-    async fn get(&self) -> Option<Arc<str>> {
+    pub(crate) async fn get(&self) -> Option<Arc<str>> {
         self.cell
             .get_or_init(|| async {
-                let handle = self
-                    .handle
-                    .lock()
-                    .expect("login_path mutex poisoned")
-                    .take();
-                match handle {
-                    Some(h) => h.await.ok().flatten().map(Arc::from),
-                    None => None,
-                }
+                tokio::task::spawn_blocking(resolve_login_shell_path)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(Arc::from)
             })
             .await
             .clone()
     }
+
+    /// Start resolving in the background without waiting for the result.
+    fn prewarm(self: &Arc<Self>) {
+        if self.cell.initialized() {
+            return;
+        }
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            this.get().await;
+        });
+    }
+}
+
+#[cfg(all(not(windows), not(test)))]
+static PROCESS_LOGIN_PATH: LazyLock<Arc<LoginPath>> = LazyLock::new(|| Arc::new(LoginPath::lazy()));
+
+/// Lane R62b: the login-shell PATH source every developer-tool child process
+/// shares — [`ShellTool`] and `verify::VerifyTool` both read it, so the two
+/// can never resolve a program differently. A unit test build gets a fresh,
+/// already-resolved `None` instead: tests never spawn a login shell and never
+/// initialize the process-wide cell.
+#[cfg(all(not(windows), not(test)))]
+pub(crate) fn shared_login_path() -> Arc<LoginPath> {
+    Arc::clone(&PROCESS_LOGIN_PATH)
+}
+
+#[cfg(all(not(windows), test))]
+pub(crate) fn shared_login_path() -> Arc<LoginPath> {
+    Arc::new(LoginPath::resolved(None))
 }
 
 pub struct ShellTool {
     output_dir: tempfile::TempDir,
     call_index: AtomicUsize,
     #[cfg(not(windows))]
-    login_path: LoginPath,
+    login_path: Arc<LoginPath>,
 }
 
 impl ShellTool {
     pub fn new() -> std::io::Result<Self> {
+        #[cfg(not(windows))]
+        let login_path = shared_login_path();
+        #[cfg(not(windows))]
+        login_path.prewarm();
         Ok(Self {
             output_dir: tempfile::tempdir()?,
             call_index: AtomicUsize::new(0),
             #[cfg(not(windows))]
-            login_path: LoginPath::spawn(),
+            login_path,
         })
     }
 
@@ -300,7 +328,7 @@ impl ShellTool {
             output_dir: tempfile::tempdir()?,
             call_index: AtomicUsize::new(0),
             #[cfg(not(windows))]
-            login_path: LoginPath::resolved(None),
+            login_path: Arc::new(LoginPath::resolved(None)),
         })
     }
 
@@ -601,7 +629,27 @@ fn goal_worktree_git_env(working_dir: Option<&std::path::Path>) -> Vec<(String, 
     env
 }
 
-fn build_shell_command(
+/// Lane R62b: the environment a developer-tool child process gets on top of
+/// what it inherits — the login-shell PATH when one resolved, and inside a
+/// goal worktree the push-blocking git config ([`goal_worktree_git_env`]).
+/// [`build_shell_command`] applies it to every `shell` command and `verify`
+/// applies the same pairs to every check it spawns, so a check finds the same
+/// `python3` the worker's shell found (A61 bug B: verify inherited the process
+/// PATH and hit homebrew python 3.14 without pytest, while the shell used
+/// `/usr/bin/python3` with pytest).
+pub(crate) fn child_process_env(
+    working_dir: Option<&std::path::Path>,
+    login_path: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+    if let Some(path) = login_path {
+        env.push(("PATH".to_string(), path.to_string()));
+    }
+    env.extend(goal_worktree_git_env(working_dir));
+    env
+}
+
+pub(crate) fn build_shell_command(
     command_line: &str,
     working_dir: Option<&std::path::Path>,
     login_path: Option<&str>,
@@ -626,12 +674,7 @@ fn build_shell_command(
         if let Some(path) = working_dir {
             command.current_dir(path);
         }
-        if let Some(path) = login_path {
-            command.env("PATH", path);
-        }
-        for (key, value) in goal_worktree_git_env(working_dir) {
-            command.env(key, value);
-        }
+        command.envs(child_process_env(working_dir, login_path));
         command
     };
 
@@ -644,10 +687,7 @@ fn build_shell_command(
             if let Some(dir) = working_dir {
                 command.arg(format!("--directory={}", dir.display()));
             }
-            if let Some(path) = login_path {
-                command.arg(format!("--env=PATH={}", path));
-            }
-            for (key, value) in goal_worktree_git_env(working_dir) {
+            for (key, value) in child_process_env(working_dir, login_path) {
                 command.arg(format!("--env={}={}", key, value));
             }
             command.arg(&shell).arg("-c").arg(command_line);
@@ -658,12 +698,7 @@ fn build_shell_command(
             if let Some(path) = working_dir {
                 command.current_dir(path);
             }
-            if let Some(path) = login_path {
-                command.env("PATH", path);
-            }
-            for (key, value) in goal_worktree_git_env(working_dir) {
-                command.env(key, value);
-            }
+            command.envs(child_process_env(working_dir, login_path));
             command
         }
     };

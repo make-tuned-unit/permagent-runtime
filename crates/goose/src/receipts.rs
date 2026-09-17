@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
-const FIELDS: [(&str, &str, bool); 17] = [
+const FIELDS: [(&str, &str, bool); 18] = [
     ("dag_enforcement", "roadmap_dispatched", true),
     ("dag_enforcement", "bypass_attempts", true),
     ("dag_enforcement", "bypass_passes", true),
@@ -76,9 +76,22 @@ const FIELDS: [(&str, &str, bool); 17] = [
     // re-dispatch after a failed attempt) is only ever counted once.
     ("verification_integrity", "goals", true),
     ("verification_integrity", "review_reached", true),
+    // Lane R62b-3 (coordinator ruling on A61 miss 2): `vacuous_passes` counts
+    // vacuous verify PASSes that an evidence reader CREDITED as verify
+    // evidence, recorded at the credit point
+    // (`developer::verify::record_vacuous_pass_judgement`). It used to be
+    // recorded by the verify tool itself on every vacuous PASS it returned, so
+    // a harness that correctly REFUSED one still failed the qualification gate.
     ("verification_integrity", "vacuous_passes", true),
     ("verification_integrity", "reviewer_mutations", true),
     ("verification_integrity", "reviewer_not_independent", true),
+    // Lane R62b-3 (RECEIPT CONTRACT v1.3): vacuous PASSes an evidence reader
+    // saw and refused to credit. Observability only; the qualification gate
+    // does not read it. Appended at the END of the verification_integrity
+    // line, like R20a/R33a's dag_enforcement keys, so a legacy line (no
+    // trailing key) still parses — see `permagent-eval::harness_log`'s
+    // `VERIFICATION_INTEGRITY_RE` for the optional trailing group.
+    ("verification_integrity", "vacuous_refused", true),
     ("safety_and_trust", "jail_denials", true),
     // Lane R18a: real, not a permanent placeholder. `write_jail.rs::jail_verdict`
     // resolves every write/edit-tool target by its ACTUAL resolved path (not a
@@ -408,8 +421,10 @@ impl Snapshot {
             // Lane R33a: dag_enforcement grew from 6 to 7 keys
             // (`worker_checked` appended), shifting both subsequent ranges by 1.
             ("dag_enforcement", 0..7),
-            ("verification_integrity", 7..12),
-            ("safety_and_trust", 12..17),
+            // Lane R62b-3: verification_integrity grew from 5 to 6 keys
+            // (`vacuous_refused` appended), shifting safety_and_trust by 1.
+            ("verification_integrity", 7..13),
+            ("safety_and_trust", 13..18),
         ]
         .map(|(area, range)| {
             let mut line = format!("receipt {area}");
@@ -503,11 +518,13 @@ mod tests {
         // Lane R20a: safety_and_trust's `jail_denials` shifted from index 9
         // to 11, and verification_integrity's `review_reached` from 5 to 7.
         // Lane R33a: shifted again, to 12 and 8, when `worker_checked` was
-        // appended to dag_enforcement.
-        assert_eq!(registry.snapshot().counts[12], Some(400));
+        // appended to dag_enforcement. Lane R62b-3: jail_denials shifted
+        // again, to 13, when `vacuous_refused` was appended to
+        // verification_integrity.
+        assert_eq!(registry.snapshot().counts[13], Some(400));
         assert_eq!(registry.snapshot().counts[8], Some(1));
         registry.reset();
-        assert_eq!(registry.snapshot().counts[12], Some(0));
+        assert_eq!(registry.snapshot().counts[13], Some(0));
         registry.record("verification_integrity", "review_reached", 1, Some("card"));
         assert_eq!(registry.snapshot().counts[8], Some(1));
     }
@@ -521,11 +538,13 @@ mod tests {
         // (`roadmap_resumed`, `escalated` appended), shifting every
         // subsequent area's values by 2. Lane R33a: grew again, to 7 keys
         // (`worker_checked` appended), shifting every subsequent area's
-        // values by 1 more.
+        // values by 1 more. Lane R62b-3: verification_integrity grew to 6
+        // keys (`vacuous_refused` appended at the end), shifting
+        // safety_and_trust by 1.
         assert_eq!(snapshot.lines(), [
             "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=2 bypass_passes=3 coordinator_mutations=4 roadmap_resumed=5 escalated=6 worker_checked=7",
-            "receipt verification_integrity goals=8 review_reached=9 vacuous_passes=10 reviewer_mutations=11 reviewer_not_independent=12",
-            "receipt safety_and_trust jail_denials=13 jail_bypasses=14 unapproved_skill_runs=15 approval_bypasses=16 adversary_blocks=17",
+            "receipt verification_integrity goals=8 review_reached=9 vacuous_passes=10 reviewer_mutations=11 reviewer_not_independent=12 vacuous_refused=13",
+            "receipt safety_and_trust jail_denials=14 jail_bypasses=15 unapproved_skill_runs=16 approval_bypasses=17 adversary_blocks=18",
         ]);
     }
 
@@ -608,15 +627,16 @@ mod tests {
         // Lane R20a: safety_and_trust's `jail_bypasses` shifted from index
         // 10 to 12 when `roadmap_resumed`/`escalated` were appended to
         // dag_enforcement. Lane R33a: shifted again, to 13, when
-        // `worker_checked` was appended.
+        // `worker_checked` was appended. Lane R62b-3: shifted again, to 14,
+        // when `vacuous_refused` was appended to verification_integrity.
         let registry = Registry::default();
-        assert_eq!(registry.snapshot().counts[13], Some(0));
+        assert_eq!(registry.snapshot().counts[14], Some(0));
         registry.record("safety_and_trust", "jail_bypasses", 1, None);
-        assert_eq!(registry.snapshot().counts[13], Some(1));
+        assert_eq!(registry.snapshot().counts[14], Some(1));
         registry.record("safety_and_trust", "jail_bypasses", 2, None);
-        assert_eq!(registry.snapshot().counts[13], Some(3));
+        assert_eq!(registry.snapshot().counts[14], Some(3));
         registry.reset();
-        assert_eq!(registry.snapshot().counts[13], Some(0));
+        assert_eq!(registry.snapshot().counts[14], Some(0));
     }
 
     /// Lane R17a: the sidecar mechanism itself, exercised through the real
@@ -666,7 +686,7 @@ mod tests {
             [
                 "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 planner=unknown/unknown routed_local=0 routed_cloud=0 fallbacks=0",
                 "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0 roadmap_resumed=0 escalated=0 worker_checked=0",
-                "receipt verification_integrity goals=0 review_reached=0 vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0",
+                "receipt verification_integrity goals=0 review_reached=0 vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0 vacuous_refused=0",
                 "receipt safety_and_trust jail_denials=0 jail_bypasses=0 unapproved_skill_runs=0 approval_bypasses=0 adversary_blocks=0",
             ]
         );
