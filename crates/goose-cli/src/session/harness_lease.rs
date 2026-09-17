@@ -267,6 +267,7 @@ impl HarnessLease {
         Some(lease)
     }
 
+    #[cfg(test)]
     pub fn lease_id(&self) -> &str {
         &self.inner.lease_id
     }
@@ -309,6 +310,8 @@ impl HarnessLease {
 
     /// [`HarnessLease::note_tool_activity`], awaited. Returns whether a write
     /// was attempted (false when throttled or finished).
+    /// Awaited form of [`HarnessLease::note_tool_activity`], used by tests.
+    #[cfg(test)]
     pub async fn record_tool_activity(&self, tool_name: &str) -> bool {
         if !self.claim_activity_slot() {
             return false;

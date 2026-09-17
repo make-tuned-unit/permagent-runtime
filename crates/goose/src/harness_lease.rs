@@ -224,7 +224,8 @@ pub async fn project_id_for_working_dir(
 pub enum ForeignOwnerEvidence {
     /// The dispatching lifecycle holds a live harness lease: a terminal run.
     Lease {
-        lease: Lease,
+        // Boxed: a lease row is much larger than the receipt variant.
+        lease: Box<Lease>,
         heartbeat_age_secs: i64,
     },
     /// No lease describes the dispatching lifecycle, but the goal's execution
@@ -318,7 +319,7 @@ pub async fn live_foreign_owner_at(
                         LiveForeignOwner {
                             lifecycle_id: dispatched.clone(),
                             evidence: ForeignOwnerEvidence::Lease {
-                                lease,
+                                lease: Box::new(lease),
                                 heartbeat_age_secs,
                             },
                         }

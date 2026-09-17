@@ -736,7 +736,7 @@ pub async fn run_status(
         1 => Some(candidates[0]),
         0 => None,
         _ => {
-            let live: Vec<&&LeaseRow> = candidates.iter().filter(|l| is_live(*l)).collect();
+            let live: Vec<&&LeaseRow> = candidates.iter().filter(|l| is_live(l)).collect();
             if selector.is_some() && live.len() == 1 {
                 Some(*live[0])
             } else {
