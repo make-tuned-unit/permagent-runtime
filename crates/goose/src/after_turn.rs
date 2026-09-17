@@ -2355,6 +2355,58 @@ const RULE5_MIDSESSION_PARK_REASON: &str =
      called, and no tool call at all appeared in the final message — on the second consecutive \
      turn to end this way. A question to the user must be an escalate call, never prose.";
 
+/// Lane R58a: the nudge for a headless coordinator that ended a turn in free
+/// text while a Ready root goal it could dispatch sat undispatched — the
+/// `select-checks-worker-before-dispatch` r59 q4 shape, where the coordinator
+/// probed `check_worker`/`routing_roster` and then asked the absent user to
+/// pick the `worker_tier`. Names the resolution path, never dispatches for
+/// the model.
+const RULE5_READY_GOAL_INJECT_TEXT: &str =
+    "Headless run: no user will answer. A Ready goal is still undispatched and nothing was \
+     dispatched or escalated. Make the routing choice yourself — the worker and the cheapest \
+     `worker_tier` the `routing_roster` marks capable for the goal — and call `goal_advance` with \
+     action `dispatch` (or `resume_roadmap` if the roadmap is paused), or call `escalate` with a \
+     concrete blocker. Asking the user to choose a worker, tier, or spend in prose is not a valid \
+     way to end this turn.";
+
+/// Lane R58a: the second-strike sibling of [`RULE5_READY_GOAL_INJECT_TEXT`],
+/// only surfaced when minting the escalation itself fails. The marker
+/// `rule5_ready_goal_undispatched` is the greppable `harness_error` name.
+const RULE5_READY_GOAL_PARK_REASON: &str =
+    "rule5_ready_goal_undispatched: the headless coding coordinator's turn ended in free text \
+     while a Ready goal was still undispatched — no goal_advance dispatch, no escalate, and no \
+     tool call at all in the final message — on the second consecutive turn to end this way. \
+     Make the routing choice and dispatch, or escalate a concrete blocker.";
+
+/// Lane R58a: the tools a coordinator reaches for while PREPARING a dispatch
+/// — any one of them attempted in the transcript is what separates "probed
+/// the roster, then asked the user to pick" (r59 q4: `check_worker` +
+/// `routing_roster`; r56 m3: `routing_roster` + `list_workers`) from a session
+/// about something else entirely that merely shares a cwd with a stale Ready
+/// card. Attempted, not succeeded: a refused `goal_advance` still counts.
+const DISPATCH_PREP_TOOL_NAMES: [&str; 6] = [
+    "check_worker",
+    "list_workers",
+    "routing_roster",
+    "goal_list",
+    "goal_status",
+    "goal_advance",
+];
+
+/// Lane R58a: whether `cards` holds a goal the coordinator could dispatch
+/// right now and never has — a ROOT goal (no dependencies to wait on) sitting
+/// `ready` with no worker session ever recorded. The same shape as
+/// [`crate::cards::first_undispatched_goal`]'s first clause, minus its
+/// in-progress clause (which is a different defect). A goal that was already
+/// dispatched once (R26b's resumed-from-Held stamp, R35a's verified PASS)
+/// carries a worker session and is left to [`NoRoadmapGuard`] and
+/// [`VerifiedGoalAwaitingLandGuard`].
+fn has_undispatched_ready_root_goal(cards: &[crate::cards::SessionGoalCard]) -> bool {
+    cards
+        .iter()
+        .any(|c| c.is_root && c.state_binding == "ready" && !c.has_worker_session)
+}
+
 /// Headless-only backstop: a coding-harness coordinator turn that ends with
 /// no roadmap, no dispatched goal, no `escalate`, and NO TOOL CALL AT ALL in
 /// its final assistant message is a free-text ending — the exact shape
@@ -2414,6 +2466,14 @@ const RULE5_MIDSESSION_PARK_REASON: &str =
 /// represents, and the turn ends `Allow` (exit 0) instead. A second strike
 /// whose final message is NOT a question (a plan in prose, a refusal,
 /// silence) is unaffected by this and still parks exactly as before.
+///
+/// Lane R58a (r59 q4, `select-checks-worker-before-dispatch`): a third shape,
+/// keyed on durable state rather than phrasing — a true headless CLI run, a
+/// Ready root goal no worker ever took, no successful `goal_advance`, and a
+/// free-text ending that none of the shapes above caught (the coordinator
+/// asked the absent user to pick a `worker_tier` without a `?` or a listed
+/// phrase). Nudge on the first strike, minted escalation on the second — see
+/// [`Rule5HonestFailureGuard::decide_undispatched_ready_goal`].
 pub struct Rule5HonestFailureGuard;
 
 impl Rule5HonestFailureGuard {
@@ -2482,6 +2542,53 @@ impl Rule5HonestFailureGuard {
                     RULE5_PARK_REASON
                 }
                 .to_string(),
+            }
+        }
+    }
+
+    /// Lane R58a: the undispatched-Ready-goal shape, folded AFTER
+    /// [`Self::decide`] and only where it returned `Allow` — so neither of
+    /// that function's shapes (nor its tests) changes. [`Self::decide`]'s
+    /// mid-session shape needs the final message to read as a question, and
+    /// r59 q4's routing ask ("One thing I need from you before I dispatch …
+    /// I won't pick that one silently") matched none of
+    /// [`RULE5_QUESTION_PHRASES`] and had no trailing `?`, so a seeded Ready
+    /// card with nothing dispatched ended the run with `escalated=0` and
+    /// `goals=0`. This shape keys on durable state instead of phrasing.
+    ///
+    /// Narrow by construction: the TRUE headless-CLI signal (not merely Auto
+    /// mode — an interactive desktop Auto session has a user who can answer),
+    /// a Ready root goal no worker ever took, a coordinator that was preparing
+    /// a dispatch ([`DISPATCH_PREP_TOOL_NAMES`]), and no successful
+    /// `goal_advance` anywhere in the transcript. Same two-strike rule as [`Self::decide`]:
+    /// nudge on the first free-text turn, park on the second — which
+    /// `after_turn` redirects into R24b's minted escalation.
+    fn decide_undispatched_ready_goal(
+        decided: AfterTurnAction,
+        is_headless_cli_run: bool,
+        has_undispatched_ready_goal: bool,
+        prepared_dispatch: bool,
+        goal_advance_succeeded: bool,
+        consecutive_free_text_turns: u8,
+        prior_holds: u8,
+    ) -> AfterTurnAction {
+        if decided != AfterTurnAction::Allow
+            || !is_headless_cli_run
+            || !has_undispatched_ready_goal
+            || !prepared_dispatch
+            || goal_advance_succeeded
+        {
+            return decided;
+        }
+        let second_strike =
+            consecutive_free_text_turns >= 2 || prior_holds >= crate::cost_router::MAX_HOLDS;
+        if second_strike {
+            AfterTurnAction::Park {
+                reason: RULE5_READY_GOAL_PARK_REASON.to_string(),
+            }
+        } else {
+            AfterTurnAction::Continue {
+                inject: RULE5_READY_GOAL_INJECT_TEXT.to_string(),
             }
         }
     }
@@ -2771,6 +2878,29 @@ impl AfterTurn for Rule5HonestFailureGuard {
             ctx.prior_holds,
         );
 
+        // Lane R58a: a seeded/resumed Ready root goal the coordinator never
+        // dispatched, with a free-text ending that did not read as a question
+        // — see `Self::decide_undispatched_ready_goal`. Only consulted where
+        // `decide` allowed the turn, so the shapes never compete.
+        use crate::agents::platform_extensions::orchestrator::is_headless_dispatch_policy_installed;
+        let ready_goal_shape = action == AfterTurnAction::Allow
+            && has_undispatched_ready_root_goal(&cards)
+            && is_headless_dispatch_policy_installed();
+        let action = if ready_goal_shape {
+            Self::decide_undispatched_ready_goal(
+                action,
+                true, // is_headless_dispatch_policy_installed checked above
+                true, // has_undispatched_ready_root_goal checked above
+                turn_called_any_tool(ctx.messages, &DISPATCH_PREP_TOOL_NAMES),
+                turn_tool_call_succeeded(ctx.messages, &["goal_advance"]),
+                consecutive_free_text_turns,
+                ctx.prior_holds,
+            )
+        } else {
+            action
+        };
+        let ready_goal_shape = ready_goal_shape && action != AfterTurnAction::Allow;
+
         if let AfterTurnAction::Park { .. } = &action {
             // Lane R24b: a free-text turn about to be parked whose final
             // message reads as a question is not a dishonest exit — it is
@@ -2781,7 +2911,11 @@ impl AfterTurn for Rule5HonestFailureGuard {
             // free-text turn that is NOT a question (a plan in prose, a
             // refusal, silence) never enters this branch and keeps today's
             // honest failure below unchanged.
-            if rule5_park_should_escalate_instead(&action, reads_as_question) {
+            // Lane R58a: the undispatched-Ready-goal shape mints on its
+            // second strike whether or not the prose reads as a question —
+            // its trigger is durable state, not phrasing, and an honest
+            // `escalated=1` beats a silent `goals=0` exit.
+            if rule5_park_should_escalate_instead(&action, reads_as_question || ready_goal_shape) {
                 if let Some(question_text) = final_message_text(ctx.messages) {
                     let sink = crate::decision_inbox::escalate::global_decision_sink();
                     match mint_rule5_question_escalation(
@@ -2883,7 +3017,9 @@ impl AfterTurn for Rule5HonestFailureGuard {
             // R18f used to make this a receipt-visible, greppable failure
             // rather than a silent hold.
             let mid_session_question = has_roadmap_cards && has_active_roadmap && reads_as_question;
-            let harness_error = if mid_session_question {
+            let harness_error = if ready_goal_shape {
+                "rule5_ready_goal_undispatched"
+            } else if mid_session_question {
                 "rule5_free_text_question"
             } else {
                 "rule5_free_text_turn"
@@ -6416,5 +6552,283 @@ mod tests {
         );
         let signals = permagent_eval::harness_log::scan(&log);
         assert_eq!(signals.tool_names, vec!["decompose_roadmap", "escalate"]);
+    }
+
+    // ── Lane R58a: a headless free-text turn with a Ready goal undispatched ──
+
+    /// r59 q4's exact final sentence: a routing ask with no trailing `?` and
+    /// none of `RULE5_QUESTION_PHRASES` — why `decide`'s mid-session shape
+    /// allowed it, and why R58a keys on card state instead.
+    fn r59_q4_routing_ask() -> Vec<Message> {
+        vec![
+            tool_exchange("check_worker", "call-1", true),
+            tool_exchange("routing_roster", "call-2", true),
+            Message::assistant().with_text(
+                "One thing I need from you before I dispatch: the routing choice for this card \
+                 is user-visible spend ($0.06/1k on the frontier rung vs $0 on-device), and the \
+                 roster's own descriptions conflict on whether a repo-wide rename counts as \
+                 \"small.\" I won't pick that one silently.",
+            ),
+        ]
+    }
+
+    #[test]
+    fn r58a_the_r59_q4_routing_ask_slips_past_the_mid_session_question_shape() {
+        let messages = r59_q4_routing_ask();
+        assert!(!final_message_has_tool_call(&messages));
+        assert!(!final_message_reads_as_question(&messages));
+        assert_eq!(consecutive_free_text_coordinator_turns(&messages), 1);
+        assert_eq!(
+            Rule5HonestFailureGuard::decide(true, false, true, true, false, 1, 0),
+            AfterTurnAction::Allow,
+            "the pre-R58a shapes allow this turn — the gap this lane closes"
+        );
+    }
+
+    /// Strike 1: seeded Ready goal, nothing dispatched, headless → nudge.
+    #[test]
+    fn r58a_first_free_text_turn_with_an_undispatched_ready_goal_nudges() {
+        let messages = r59_q4_routing_ask();
+        match Rule5HonestFailureGuard::decide_undispatched_ready_goal(
+            AfterTurnAction::Allow,
+            true, // headless CLI run
+            true, // Ready root goal, no worker session
+            turn_called_any_tool(&messages, &DISPATCH_PREP_TOOL_NAMES),
+            turn_tool_call_succeeded(&messages, &["goal_advance"]),
+            consecutive_free_text_coordinator_turns(&messages),
+            0,
+        ) {
+            AfterTurnAction::Continue { inject } => {
+                assert_eq!(inject, RULE5_READY_GOAL_INJECT_TEXT);
+                assert!(inject.contains("no user will answer"));
+                assert!(inject.contains("goal_advance"));
+                assert!(inject.contains("escalate"));
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    /// Strike 2: the same free text after the nudge → park, and the park is
+    /// redirected into R24b's minted escalation even though the prose does
+    /// not read as a question.
+    #[test]
+    fn r58a_second_free_text_turn_parks_and_is_redirected_into_a_minted_escalation() {
+        let mut messages = r59_q4_routing_ask();
+        messages.push(Message::user().with_text(RULE5_READY_GOAL_INJECT_TEXT));
+        messages.push(
+            Message::assistant()
+                .with_text("I still won't pick the routing tier for this card silently."),
+        );
+        assert_eq!(consecutive_free_text_coordinator_turns(&messages), 2);
+        let action = Rule5HonestFailureGuard::decide_undispatched_ready_goal(
+            AfterTurnAction::Allow,
+            true,
+            true,
+            turn_called_any_tool(&messages, &DISPATCH_PREP_TOOL_NAMES),
+            turn_tool_call_succeeded(&messages, &["goal_advance"]),
+            consecutive_free_text_coordinator_turns(&messages),
+            1,
+        );
+        match &action {
+            AfterTurnAction::Park { reason } => {
+                assert_eq!(reason, RULE5_READY_GOAL_PARK_REASON);
+                assert!(reason.starts_with("rule5_ready_goal_undispatched"));
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
+        let reads_as_question = final_message_reads_as_question(&messages);
+        assert!(!reads_as_question);
+        // The live path's `ready_goal_shape` is true exactly when this park
+        // came from `decide_undispatched_ready_goal`, as it did here.
+        let ready_goal_shape = matches!(
+            &action,
+            AfterTurnAction::Park { reason } if reason == RULE5_READY_GOAL_PARK_REASON
+        );
+        assert!(
+            rule5_park_should_escalate_instead(&action, reads_as_question || ready_goal_shape),
+            "the ready-goal shape mints on its second strike regardless of phrasing"
+        );
+    }
+
+    /// An interactive session (no headless dispatch policy installed) has a
+    /// user who can answer — the identical free text is never held.
+    #[test]
+    fn r58a_interactive_session_with_the_same_free_text_is_not_guarded() {
+        let messages = r59_q4_routing_ask();
+        for strikes in [1, 2] {
+            assert_eq!(
+                Rule5HonestFailureGuard::decide_undispatched_ready_goal(
+                    AfterTurnAction::Allow,
+                    false, // interactive: no headless dispatch policy
+                    true,
+                    true,
+                    turn_tool_call_succeeded(&messages, &["goal_advance"]),
+                    strikes,
+                    0,
+                ),
+                AfterTurnAction::Allow
+            );
+        }
+    }
+
+    /// A turn that dispatched (a successful `goal_advance`) is not the shape;
+    /// a refused one still is. Neither is a session with no undispatched
+    /// Ready goal, one that never touched the dispatch path, nor a turn
+    /// `decide` already acted on.
+    #[test]
+    fn r58a_a_turn_that_dispatched_is_not_guarded() {
+        let dispatched = vec![
+            tool_exchange("check_worker", "call-1", true),
+            tool_exchange("orchestrator__goal_advance", "call-2", true),
+            Message::assistant().with_text("Dispatched the rename to claude_code on `local`."),
+        ];
+        assert!(turn_tool_call_succeeded(&dispatched, &["goal_advance"]));
+        assert_eq!(
+            Rule5HonestFailureGuard::decide_undispatched_ready_goal(
+                AfterTurnAction::Allow,
+                true,
+                true,
+                true,
+                turn_tool_call_succeeded(&dispatched, &["goal_advance"]),
+                consecutive_free_text_coordinator_turns(&dispatched),
+                0,
+            ),
+            AfterTurnAction::Allow
+        );
+        // A refused dispatch (is_error) did NOT dispatch — still guarded.
+        let refused = vec![
+            tool_exchange("goal_advance", "call-1", false),
+            Message::assistant().with_text("The dispatch was refused."),
+        ];
+        assert!(!turn_tool_call_succeeded(&refused, &["goal_advance"]));
+        assert!(matches!(
+            Rule5HonestFailureGuard::decide_undispatched_ready_goal(
+                AfterTurnAction::Allow,
+                true,
+                true,
+                turn_called_any_tool(&refused, &DISPATCH_PREP_TOOL_NAMES),
+                turn_tool_call_succeeded(&refused, &["goal_advance"]),
+                consecutive_free_text_coordinator_turns(&refused),
+                0,
+            ),
+            AfterTurnAction::Continue { .. }
+        ));
+        // No undispatched Ready goal → nothing to act on.
+        assert_eq!(
+            Rule5HonestFailureGuard::decide_undispatched_ready_goal(
+                AfterTurnAction::Allow,
+                true,
+                false,
+                true,
+                false,
+                1,
+                0,
+            ),
+            AfterTurnAction::Allow
+        );
+        // A session that never touched the dispatch path (an unrelated task
+        // sharing a cwd with a stale Ready card) is not the shape either.
+        let unrelated = vec![
+            tool_exchange("search", "call-1", true),
+            Message::assistant().with_text("The review found no issues in that module."),
+        ];
+        assert!(!turn_called_any_tool(&unrelated, &DISPATCH_PREP_TOOL_NAMES));
+        assert_eq!(
+            Rule5HonestFailureGuard::decide_undispatched_ready_goal(
+                AfterTurnAction::Allow,
+                true,
+                true,
+                turn_called_any_tool(&unrelated, &DISPATCH_PREP_TOOL_NAMES),
+                false,
+                1,
+                0,
+            ),
+            AfterTurnAction::Allow
+        );
+        // An existing non-Allow decision from `decide` is passed through
+        // unchanged — the shapes never compete.
+        let mid_session = AfterTurnAction::Continue {
+            inject: RULE5_MIDSESSION_INJECT_TEXT.to_string(),
+        };
+        assert_eq!(
+            Rule5HonestFailureGuard::decide_undispatched_ready_goal(
+                mid_session.clone(),
+                true,
+                true,
+                true,
+                false,
+                1,
+                0,
+            ),
+            mid_session
+        );
+    }
+
+    /// Only a Ready ROOT goal no worker ever took counts as dispatchable:
+    /// a dependent Ready goal may be waiting on its dependency, and a goal
+    /// with a worker session belongs to R31b/R35a's own nudges.
+    #[test]
+    fn r58a_has_undispatched_ready_root_goal_only_matches_a_never_dispatched_ready_root() {
+        fn card(
+            state: &str,
+            is_root: bool,
+            has_worker_session: bool,
+        ) -> crate::cards::SessionGoalCard {
+            crate::cards::SessionGoalCard {
+                card_id: "c1".to_string(),
+                title: "goal".to_string(),
+                state_binding: state.to_string(),
+                is_root,
+                has_worker_session,
+            }
+        }
+        assert!(has_undispatched_ready_root_goal(&[card(
+            "ready", true, false
+        )]));
+        assert!(!has_undispatched_ready_root_goal(&[]));
+        assert!(!has_undispatched_ready_root_goal(&[card(
+            "ready", false, false
+        )]));
+        assert!(!has_undispatched_ready_root_goal(&[card(
+            "ready", true, true
+        )]));
+        assert!(!has_undispatched_ready_root_goal(&[
+            card("in_progress", true, true),
+            card("complete", true, true),
+        ]));
+    }
+
+    /// The seeded-fixture shape end to end against the store: a project whose
+    /// root matches the cwd and one Ready root card this session never
+    /// created is seen through `goal_cards_relevant_to_session` and read as
+    /// undispatched.
+    #[tokio::test]
+    async fn r58a_a_seeded_ready_card_reads_as_undispatched_through_the_session_scope() {
+        let pool = crate::session::SessionManager::instance()
+            .pool_clone()
+            .await
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: format!("r58a-seeded-{}", uuid::Uuid::now_v7()),
+                root_path: Some(tmp.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        insert_session_goal_card(&pool, &project.id, "r58a-seeder", "ready", true, None).await;
+
+        let session_id = format!("r58a-coordinator-{}", uuid::Uuid::now_v7());
+        let cards = goal_cards_relevant_to_session(&pool, &session_id, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(cards.len(), 1);
+        assert!(has_undispatched_ready_root_goal(&cards));
     }
 }
