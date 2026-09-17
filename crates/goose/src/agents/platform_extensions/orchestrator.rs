@@ -16818,16 +16818,22 @@ async fn independent_review_before_auto_land(
                     }),
                 ),
                 AutoLandReviewRequirement::Required { reason } => {
-                    match review_goal_diff_with_cross_family_reviewer(
+                    // Lane R65a: the reviewer sees the worker's verify run when
+                    // it is bound to the head this diff was measured from.
+                    let verification = goal_review_verification(pool, card, &session_dir).await;
+                    let verification_shown = verification
+                        .as_ref()
+                        .map(|v| serde_json::json!({ "command": v.command, "head": v.head }));
+                    let run = review_goal_diff_with_cross_family_reviewer(
                         pool,
                         card,
                         &dir,
                         diff,
-                        VERIFIED_GOAL_VERIFY_OUTPUT_LEAD,
+                        &GoalReviewKind::Verified { verification },
                         calling_session_id,
                     )
-                    .await
-                    {
+                    .await;
+                    let (review, mut record) = match run.outcome {
                         ReviewerGateOutcome::Approved {
                             checked,
                             reviewer_provider,
@@ -16860,7 +16866,18 @@ async fn independent_review_before_auto_land(
                                 "refusal": refusal,
                             }),
                         ),
+                    };
+                    if let Some(obj) = record.as_object_mut() {
+                        obj.insert("reviews".to_string(), serde_json::json!(run.reviews));
+                        obj.insert(
+                            "verification_shown".to_string(),
+                            verification_shown.unwrap_or(serde_json::Value::Null),
+                        );
+                        if let Some(escalation) = run.escalation {
+                            obj.insert("escalation".to_string(), escalation);
+                        }
                     }
+                    (review, record)
                 }
             }
         }
@@ -19899,26 +19916,33 @@ async fn session_verify_evidence(
     let Some(sid) = session_id else {
         return VerifyEvidence::None;
     };
-    // Lane R62a: insertion order, same as `load_session_signals`.
+    let contents = session_message_contents(pool, sid).await;
+    let scan = scan_verify_evidence(&contents);
+    record_verify_evidence_receipts(sid, &scan);
+    scan.evidence
+}
+
+/// Every message content of `session_id`, in insertion order (Lane R62a, same
+/// as `load_session_signals`). Empty when the rows cannot be read.
+async fn session_message_contents(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+) -> Vec<crate::conversation::message::MessageContent> {
     let Ok(rows) = sqlx::query_scalar::<_, String>(
         "SELECT content_json FROM messages WHERE session_id = ? ORDER BY id",
     )
-    .bind(sid)
+    .bind(session_id)
     .fetch_all(pool)
     .await
     else {
-        return VerifyEvidence::None;
+        return Vec::new();
     };
-    let contents: Vec<crate::conversation::message::MessageContent> = rows
-        .iter()
+    rows.iter()
         .filter_map(|json| {
             serde_json::from_str::<Vec<crate::conversation::message::MessageContent>>(json).ok()
         })
         .flatten()
-        .collect();
-    let scan = scan_verify_evidence(&contents);
-    record_verify_evidence_receipts(sid, &scan);
-    scan.evidence
+        .collect()
 }
 
 async fn session_had_successful_verify(
@@ -23415,6 +23439,7 @@ fn build_salvage_review_prompt(
         diff,
         &salvage_verify_output_lead(verify_note),
         context,
+        None,
     )
 }
 
@@ -23432,13 +23457,213 @@ const VERIFIED_GOAL_VERIFY_OUTPUT_LEAD: &str =
      against the task and every acceptance criterion on its merits, including every surface \
      the task names";
 
+/// Lane R65a: the verify slot's lead for a verified goal whose worker's passing
+/// verify command is bound to the reviewed head, shown in
+/// `BEGIN_VERIFICATION`.
+const VERIFIED_GOAL_WITH_EVIDENCE_LEAD: &str =
+    "the goal's worker recorded a passing verify run after its last file edit, at the head \
+     this diff was measured from; its command and output tail are in BEGIN_VERIFICATION. \
+     That pass proves only what that command checks — judge whether the command actually \
+     exercises the change, and review the diff against the task and every acceptance \
+     criterion on its merits, including every surface the task names";
+
+/// The marker a planner criterion carries when the repo had no check command
+/// to ground it (see `ground_acceptance_criteria`).
+const UNVERIFIED_NO_CHECK_MARKER: &str =
+    "UNVERIFIED (no detected check command in this repo) — kept for human review: ";
+
+/// Lane R65a: the worker's own passing verify run, bound to the head the
+/// reviewed diff was measured from — what the verified auto-land path has and
+/// the salvage path does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GoalReviewVerification {
+    command: String,
+    output_tail: String,
+    head: String,
+}
+
+/// Characters of verify output shown to the reviewer (the tail — where a test
+/// runner prints its summary).
+const REVIEW_VERIFICATION_OUTPUT_TAIL_CHARS: usize = 2_000;
+
+/// The last `max` characters of `text`, marked when cut.
+fn tail_chars(text: &str, max: usize) -> String {
+    let total = text.chars().count();
+    if total <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().skip(total - max).collect();
+    format!("…{kept}")
+}
+
+impl GoalReviewVerification {
+    /// The body of the `BEGIN_VERIFICATION` data section.
+    fn render(&self) -> String {
+        format!(
+            "head: {}\ncommand: {}\nverdict: pass\noutput tail:\n{}",
+            self.head, self.command, self.output_tail
+        )
+    }
+}
+
+/// Lane R65a: the worker's LAST genuine (non-vacuous, authoritative) verify
+/// pass, as `(command, evidence)`, provided no file-mutating tool call came
+/// after it — a pass followed by an edit does not describe the final tree.
+/// Pure over the transcript.
+fn credited_verification_after_last_edit(
+    messages: &[crate::conversation::message::MessageContent],
+) -> Option<(String, String)> {
+    use crate::agents::platform_extensions::developer::verify;
+    use crate::conversation::message::{tool_requests_by_id, MessageContent};
+
+    let requests = tool_requests_by_id(messages);
+    let mut last_pass: Option<(usize, String, String)> = None;
+    let mut last_edit: Option<usize> = None;
+    for (index, content) in messages.iter().enumerate() {
+        match content {
+            MessageContent::ToolRequest(request) => {
+                if request
+                    .tool_call
+                    .as_ref()
+                    .is_ok_and(|call| crate::after_turn::is_mutating_tool_name(call.name.as_ref()))
+                {
+                    last_edit = Some(index);
+                }
+            }
+            MessageContent::ToolResponse(response) => {
+                let is_verify = requests.get(response.id.as_str()).is_some_and(|request| {
+                    request
+                        .tool_call
+                        .as_ref()
+                        .is_ok_and(|call| is_verify_tool_name(call.name.as_ref()))
+                });
+                if !is_verify {
+                    continue;
+                }
+                let Ok(result) = response.tool_result.as_ref() else {
+                    continue;
+                };
+                if !verify::is_genuine_pass(result) {
+                    continue;
+                }
+                let Some(observation) = result.structured_content.as_ref().and_then(|v| {
+                    serde_json::from_value::<verify::VerificationObservation>(v.clone()).ok()
+                }) else {
+                    continue;
+                };
+                let Some(command) = observation
+                    .command
+                    .map(|c| c.trim().to_string())
+                    .filter(|c| !c.is_empty())
+                else {
+                    continue;
+                };
+                last_pass = Some((index, command, observation.evidence.unwrap_or_default()));
+            }
+            _ => {}
+        }
+    }
+    let (pass_index, command, evidence) = last_pass?;
+    if last_edit.is_some_and(|edit| edit > pass_index) {
+        return None;
+    }
+    Some((command, evidence))
+}
+
+/// Lane R65a: the task spec a verified goal's reviewer reads. Criteria the
+/// planner marked "no detected check command" are listed separately, without
+/// the marker, as criteria no automated check covered — to be judged from the
+/// diff — rather than as unmet requirements. Every other criterion is listed
+/// as written.
+fn verified_goal_review_task_spec(title: &str, criteria: &[String]) -> String {
+    let mut checked: Vec<&str> = Vec::new();
+    let mut unchecked: Vec<&str> = Vec::new();
+    for criterion in criteria {
+        match criterion.strip_prefix(UNVERIFIED_NO_CHECK_MARKER) {
+            Some(rest) if !rest.trim().is_empty() => unchecked.push(rest.trim()),
+            _ => checked.push(criterion.as_str()),
+        }
+    }
+    let mut spec = title.to_string();
+    if !checked.is_empty() {
+        spec.push_str("\n\nAcceptance criteria:");
+        for criterion in &checked {
+            spec.push_str("\n- ");
+            spec.push_str(criterion);
+        }
+    }
+    if !unchecked.is_empty() {
+        spec.push_str(
+            "\n\nAcceptance criteria with no detected check command in this repo (no automated \
+             check covered them; that is not a finding that they are unmet — judge each one \
+             from the diff):",
+        );
+        for criterion in &unchecked {
+            spec.push_str("\n- ");
+            spec.push_str(criterion);
+        }
+    }
+    spec
+}
+
+/// Lane R65a: the verification a verified goal's reviewer may be shown — the
+/// worker session's last genuine verify pass with no edit after it
+/// ([`credited_verification_after_last_edit`]), and only while the goal's
+/// worktree still sits at the recorded `dispatch_evidence.head_commit` (the
+/// head [`goal_trunk_relative_diff`] measures the reviewed diff to). `None`
+/// when any link is missing: the reviewer then gets the plain lead, never an
+/// unbound claim.
+async fn goal_review_verification(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    worktree: &std::path::Path,
+) -> Option<GoalReviewVerification> {
+    let head = card
+        .metadata_json
+        .pointer("/dispatch_evidence/head_commit")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|h| !h.is_empty())?
+        .to_string();
+    if !worktree.is_dir() {
+        return None;
+    }
+    let current = git_in_worktree(worktree, &["rev-parse", "HEAD"])
+        .await
+        .ok()?;
+    if !sha_matches(&head, current.trim()) {
+        tracing::info!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            recorded_head = %head,
+            current_head = %current.trim(),
+            "review verification not shown: the worktree moved past the recorded head",
+        );
+        return None;
+    }
+    let session_id = card
+        .metadata_json
+        .get("worker_session_id")
+        .and_then(|v| v.as_str())?;
+    let contents = session_message_contents(pool, session_id).await;
+    let (command, evidence) = credited_verification_after_last_edit(&contents)?;
+    Some(GoalReviewVerification {
+        command,
+        output_tail: tail_chars(&evidence, REVIEW_VERIFICATION_OUTPUT_TAIL_CHARS),
+        head,
+    })
+}
+
 /// The goal reviewer's prompt: [`build_salvage_review_prompt`]'s shape with the
-/// verify slot's lead supplied by the caller.
+/// verify slot's lead supplied by the caller, plus (Lane R65a) a
+/// `BEGIN_VERIFICATION` data section when the goal carries bound verify
+/// evidence.
 fn build_goal_review_prompt(
     task_spec: &str,
     diff: &str,
     verify_output_lead: &str,
     context: &SalvageReviewContext,
+    verification: Option<&GoalReviewVerification>,
 ) -> String {
     let mut verify_output = verify_output_lead.to_string();
     if !context.callee_definitions.is_empty() {
@@ -23452,7 +23677,7 @@ fn build_goal_review_prompt(
             verify_output.push('\n');
         }
     }
-    if context.call_site_enumerations.is_empty() {
+    let prompt = if context.call_site_enumerations.is_empty() {
         crate::cost_router::build_review_prompt(task_spec, diff, &verify_output, &[])
     } else {
         crate::cost_router::build_review_prompt_with_call_sites(
@@ -23462,6 +23687,14 @@ fn build_goal_review_prompt(
             &[],
             &crate::cost_router::render_call_site_section(&context.call_site_enumerations),
         )
+    };
+    match verification {
+        Some(v) => crate::cost_router::review_gate::with_review_data_section(
+            &prompt,
+            "VERIFICATION",
+            &v.render(),
+        ),
+        None => prompt,
     }
 }
 
@@ -23522,26 +23755,28 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         card,
         worktree_path,
         diff,
-        &salvage_verify_output_lead(verify_note),
+        &GoalReviewKind::Salvage { verify_note },
         calling_session_id,
     )
     .await
+    .outcome
 }
 
 /// The cross-family reviewer gate on a goal's diff, shared by the salvage path
 /// ([`dispatch_cross_family_reviewer_for_salvage`]) and the review a non-trivial
 /// verified goal gets before headless auto-land
 /// ([`independent_review_before_auto_land`], r64 s5). `context_dir` is the
-/// checkout the harness reads callee definitions and call sites from;
-/// `verify_output_lead` opens the prompt's verify slot.
+/// checkout the harness reads callee definitions and call sites from; `kind`
+/// decides the prompt's verify slot and task spec and whether an UNCERTAIN
+/// review escalates once (Lane R65a: verified goals only).
 async fn review_goal_diff_with_cross_family_reviewer(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
     context_dir: &std::path::Path,
     diff: String,
-    verify_output_lead: &str,
+    kind: &GoalReviewKind<'_>,
     calling_session_id: Option<&str>,
-) -> ReviewerGateOutcome {
+) -> GoalReviewRun {
     let changed_lines = count_diff_changed_lines(&diff);
     // Lane R22c-e (G26 MED-2): character count, not `diff.len()` (bytes) —
     // `git diff` output is arbitrary UTF-8, so a byte-length comparison
@@ -23551,13 +23786,13 @@ async fn review_goal_diff_with_cross_family_reviewer(
     // — park honestly instead of approving on a partial read.
     let diff_char_count = diff.chars().count();
     if diff_char_count > REVIEWER_GATE_MAX_DIFF_CHARS {
-        return ReviewerGateOutcome::DiffTooLarge {
+        return GoalReviewRun::single(ReviewerGateOutcome::DiffTooLarge {
             reason: format!(
                 "the diff is {diff_char_count} characters, over the \
                  {REVIEWER_GATE_MAX_DIFF_CHARS}-character review window — an independent \
                  reviewer must see the full diff, never a truncated one"
             ),
-        };
+        });
     }
     let diff_for_prompt = diff;
 
@@ -23567,20 +23802,20 @@ async fn review_goal_diff_with_cross_family_reviewer(
         .and_then(|v| v.as_str())
         .map(str::to_string)
     else {
-        return ReviewerGateOutcome::Refused {
+        return GoalReviewRun::single(ReviewerGateOutcome::Refused {
             reason: "no worker session recorded to attribute the review to".to_string(),
-        };
+        });
     };
     let manager = SessionManager::instance();
     let session = match manager.get_session(&worker_session_id, false).await {
         Ok(s) => s,
         Err(e) => {
-            return ReviewerGateOutcome::Refused {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused {
                 reason: format!(
                     "the goal's worker session could not be read to pick an independent \
                      reviewer: {e}"
                 ),
-            };
+            });
         }
     };
     let worker = match (
@@ -23635,7 +23870,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
     record_reviewer_assignment(pool, &card.id, &assignment, selection.pick()).await;
     let mut pick = match selection {
         crate::cost_router::ReviewerSelection::Unavailable { reason } => {
-            return ReviewerGateOutcome::Refused { reason };
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused { reason });
         }
         crate::cost_router::ReviewerSelection::Reviewer(pick) => pick,
     };
@@ -23653,22 +23888,37 @@ async fn review_goal_diff_with_cross_family_reviewer(
     if let crate::cost_router::SpendDecision::Refuse { reason } =
         crate::cost_router::reviewer_spend_gate(&pick, &verdict)
     {
-        return ReviewerGateOutcome::Refused { reason };
+        return GoalReviewRun::single(ReviewerGateOutcome::Refused { reason });
     }
 
-    let task_spec = format!(
-        "{}\n\n{}",
-        card.title,
-        collect_acceptance_criteria(&card.metadata_json, &card.description).join("\n")
-    );
+    let criteria = collect_acceptance_criteria(&card.metadata_json, &card.description);
+    let (task_spec, verify_output_lead, verification) = match kind {
+        GoalReviewKind::Salvage { verify_note } => (
+            format!("{}\n\n{}", card.title, criteria.join("\n")),
+            salvage_verify_output_lead(verify_note),
+            None,
+        ),
+        // Lane R65a: a verified goal's reviewer sees the bound verify run when
+        // there is one, and criteria no check covered are not framed as unmet.
+        GoalReviewKind::Verified { verification } => (
+            verified_goal_review_task_spec(&card.title, &criteria),
+            if verification.is_some() {
+                VERIFIED_GOAL_WITH_EVIDENCE_LEAD.to_string()
+            } else {
+                VERIFIED_GOAL_VERIFY_OUTPUT_LEAD.to_string()
+            },
+            verification.as_ref(),
+        ),
+    };
     // Lane R62e (A61 miss 1): give the reviewer the callee definitions and
     // E7 call sites the diff alone does not show (gathered above, before the
     // reviewer assignment that also reads them).
     let prompt = build_goal_review_prompt(
         &task_spec,
         &diff_for_prompt,
-        verify_output_lead,
+        &verify_output_lead,
         &review_context,
+        verification,
     );
 
     // Lane R28b (A27 Miss 3): the first attempt is always the selected
@@ -23690,7 +23940,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
     {
         Ok(response) => (response, pick.provider.clone(), pick.model.clone()),
         Err(ReviewerCallFailure::Other(reason)) => {
-            return ReviewerGateOutcome::Unreachable { reason };
+            return GoalReviewRun::single(ReviewerGateOutcome::Unreachable { reason });
         }
         Err(ReviewerCallFailure::Unavailable(first_reason)) => {
             // R36a: this failure (or an already-open circuit
@@ -23721,38 +23971,288 @@ async fn review_goal_diff_with_cross_family_reviewer(
                         Err(ReviewerCallFailure::Unavailable(second_reason))
                         | Err(ReviewerCallFailure::Other(second_reason)) => {
                             open_provider_circuit(calling_session_id, &fb_provider, &second_reason);
-                            return ReviewerGateOutcome::Unreachable {
+                            return GoalReviewRun::single(ReviewerGateOutcome::Unreachable {
                                 reason: format!(
                                     "{first_reason}; retried on the session's own tier model \
                                      {fb_provider}/{fb_model}, which also failed: {second_reason}"
                                 ),
-                            };
+                            });
                         }
                     }
                 }
                 None => {
-                    return ReviewerGateOutcome::Unreachable {
+                    return GoalReviewRun::single(ReviewerGateOutcome::Unreachable {
                         reason: first_reason,
-                    };
+                    });
                 }
             }
         }
     };
 
-    let outcome = crate::cost_router::parse_review(&response.as_concat_text());
+    let first = ReviewAttempt {
+        round: review_round_from_response(
+            &response.as_concat_text(),
+            changed_lines,
+            &review_context.call_site_enumerations,
+        ),
+        provider: reviewer_provider,
+        model: reviewer_model,
+    };
+    let escalate_uncertain = matches!(kind, GoalReviewKind::Verified { .. });
+    let worker_ref = worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str()));
+    finish_goal_review_with_escalation(first, escalate_uncertain, |provider, model| {
+        escalated_goal_review(
+            &assignment,
+            (provider, model),
+            worker_ref,
+            &available,
+            changed_lines,
+            session.clone(),
+            &prompt,
+            &review_context.call_site_enumerations,
+            calling_session_id,
+        )
+    })
+    .await
+}
+
+/// Lane R65a: the one escalated review after an UNCERTAIN (see
+/// [`finish_goal_review_with_escalation`]): the next reviewer the same
+/// objective ranking puts above the one that was unsure
+/// (`recommend::escalate_reviewer_after_uncertain`), under the same
+/// cross-family selection and spend gate as the first review, on the same
+/// prompt. Returns the review (or why none could run) and the escalation
+/// record.
+#[allow(clippy::too_many_arguments)]
+async fn escalated_goal_review(
+    assignment: &crate::cost_router::recommend::ReviewerAssignment,
+    answered: (String, String),
+    worker_ref: Option<(&str, &str)>,
+    available: &[crate::cost_router::AvailableModel],
+    changed_lines: usize,
+    session: Session,
+    prompt: &str,
+    enumerations: &[crate::cost_router::CallSiteEnumeration],
+    calling_session_id: Option<&str>,
+) -> (Result<ReviewAttempt, String>, serde_json::Value) {
+    let (answered_provider, answered_model) = answered;
+    // Ruling 2026-09-17: the one escalation goes to the next reviewer
+    // the same objective ranking puts above the one that was unsure.
+    let escalation = crate::cost_router::recommend::escalate_reviewer_after_uncertain(
+        assignment,
+        (answered_provider.as_str(), answered_model.as_str()),
+        worker_ref,
+        available,
+    );
+    let mut record = serde_json::json!({
+        "from": format!("{answered_provider}/{answered_model}"),
+        "assignment": escalation.to_json(),
+    });
+    let Some(escalated) = escalation.pick_role_model() else {
+        return (Err(escalation.why.clone()), record);
+    };
+    let selection = crate::cost_router::select_reviewer(
+        worker_ref,
+        None,
+        Some(&escalated),
+        available,
+        changed_lines,
+    );
+    let mut pick = match selection {
+        crate::cost_router::ReviewerSelection::Reviewer(pick)
+            if pick.provider == escalated.provider && pick.model == escalated.model =>
+        {
+            pick
+        }
+        _ => {
+            return (
+                Err(format!(
+                    "the escalation reviewer {}/{} could not be selected as an \
+                     independent cross-family reviewer",
+                    escalated.provider, escalated.model
+                )),
+                record,
+            );
+        }
+    };
+    pick.why = escalation.why.clone();
+    if let Some(obj) = record.as_object_mut() {
+        obj.insert(
+            "to".to_string(),
+            serde_json::json!(format!("{}/{}", pick.provider, pick.model)),
+        );
+    }
+    // The spend cap applies to the escalation exactly as to the first
+    // review.
+    let cfg = crate::cost_router::budget::load_budget_config();
+    let verdict = crate::cost_router::budget_verdict(0.0, 0.0, &cfg);
+    if let crate::cost_router::SpendDecision::Refuse { reason } =
+        crate::cost_router::reviewer_spend_gate(&pick, &verdict)
+    {
+        return (Err(reason), record);
+    }
+    match call_reviewer_provider_checked(
+        calling_session_id,
+        &pick.provider,
+        &pick.model,
+        session,
+        prompt,
+    )
+    .await
+    {
+        Ok(response) => (
+            Ok(ReviewAttempt {
+                round: review_round_from_response(
+                    &response.as_concat_text(),
+                    changed_lines,
+                    enumerations,
+                ),
+                provider: pick.provider.clone(),
+                model: pick.model.clone(),
+            }),
+            record,
+        ),
+        Err(ReviewerCallFailure::Unavailable(reason)) => {
+            open_provider_circuit(calling_session_id, &pick.provider, &reason);
+            (Err(reason), record)
+        }
+        Err(ReviewerCallFailure::Other(reason)) => (Err(reason), record),
+    }
+}
+
+/// Which goal review [`review_goal_diff_with_cross_family_reviewer`] runs.
+enum GoalReviewKind<'a> {
+    /// An unverified salvage: nothing automated ran.
+    Salvage { verify_note: &'a str },
+    /// A verified goal before headless auto-land, with its bound verify run
+    /// when one exists (Lane R65a).
+    Verified {
+        verification: Option<GoalReviewVerification>,
+    },
+}
+
+/// One reviewer's judgement of a goal diff, after the deterministic gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReviewRound {
+    Approved {
+        checked: String,
+    },
+    RequestChanges {
+        reason: String,
+    },
+    /// The verdict was UNCERTAIN, or no verdict could be read.
+    Uncertain {
+        reason: String,
+    },
+    /// Any other block (an un-evidenced approval, ungrounded findings).
+    Blocked {
+        reason: String,
+    },
+}
+
+impl ReviewRound {
+    fn label(&self) -> &'static str {
+        match self {
+            ReviewRound::Approved { .. } => "approved",
+            ReviewRound::RequestChanges { .. } => "request_changes",
+            ReviewRound::Uncertain { .. } => "uncertain",
+            ReviewRound::Blocked { .. } => "blocked",
+        }
+    }
+
+    fn reason(&self) -> &str {
+        match self {
+            ReviewRound::Approved { checked } => checked,
+            ReviewRound::RequestChanges { reason }
+            | ReviewRound::Uncertain { reason }
+            | ReviewRound::Blocked { reason } => reason,
+        }
+    }
+}
+
+/// A review round and the reviewer that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReviewAttempt {
+    round: ReviewRound,
+    provider: String,
+    model: String,
+}
+
+impl ReviewAttempt {
+    fn reviewer(&self) -> String {
+        format!("{}/{}", self.provider, self.model)
+    }
+
+    fn to_json(&self, round: usize) -> serde_json::Value {
+        let mut record = serde_json::json!({
+            "round": round,
+            "reviewer": self.reviewer(),
+            "outcome": self.round.label(),
+        });
+        let detail_key = match self.round {
+            ReviewRound::Approved { .. } => "checked",
+            _ => "reason",
+        };
+        if let Some(obj) = record.as_object_mut() {
+            obj.insert(
+                detail_key.to_string(),
+                serde_json::json!(self.round.reason()),
+            );
+        }
+        record
+    }
+
+    fn into_outcome(self) -> ReviewerGateOutcome {
+        match self.round {
+            ReviewRound::Approved { checked } => ReviewerGateOutcome::Approved {
+                checked,
+                reviewer_provider: self.provider,
+                reviewer_model: self.model,
+            },
+            ReviewRound::RequestChanges { reason }
+            | ReviewRound::Uncertain { reason }
+            | ReviewRound::Blocked { reason } => ReviewerGateOutcome::Refused { reason },
+        }
+    }
+}
+
+/// What [`review_goal_diff_with_cross_family_reviewer`] produced: the gate
+/// outcome plus every review round and the escalation, for the card record.
+#[derive(Debug)]
+struct GoalReviewRun {
+    outcome: ReviewerGateOutcome,
+    reviews: Vec<serde_json::Value>,
+    escalation: Option<serde_json::Value>,
+}
+
+impl GoalReviewRun {
+    /// An outcome reached before any reviewer answered.
+    fn single(outcome: ReviewerGateOutcome) -> Self {
+        Self {
+            outcome,
+            reviews: Vec::new(),
+            escalation: None,
+        }
+    }
+}
+
+/// The deterministic gate over one reviewer response (Lane R62e's E7 gate
+/// included). An unreadable response is UNCERTAIN (`parse_review` logs it).
+fn review_round_from_response(
+    response_text: &str,
+    changed_lines: usize,
+    call_site_enumerations: &[crate::cost_router::CallSiteEnumeration],
+) -> ReviewRound {
+    let outcome = crate::cost_router::parse_review(response_text);
     let diff_substantive = changed_lines > crate::cost_router::review_gate::TRIVIAL_MAX_LINES;
-    // Lane R62e: the same E7 gate the main review path applies — an
-    // enumerated call site the reviewer never accounted for holds.
     match crate::cost_router::gate_decision_with_call_sites(
         &outcome,
         diff_substantive,
         0,
-        &review_context.call_site_enumerations,
+        call_site_enumerations,
     ) {
-        crate::cost_router::GateDecision::Proceed { .. } => ReviewerGateOutcome::Approved {
+        crate::cost_router::GateDecision::Proceed { .. } => ReviewRound::Approved {
             checked: outcome.checked.clone(),
-            reviewer_provider,
-            reviewer_model,
         },
         crate::cost_router::GateDecision::RequestChanges { findings } => {
             let summary = findings
@@ -23760,15 +24260,84 @@ async fn review_goal_diff_with_cross_family_reviewer(
                 .map(|f| format!("[{}] {} ({})", f.lens.as_str(), f.summary, f.evidence))
                 .collect::<Vec<_>>()
                 .join("; ");
-            ReviewerGateOutcome::Refused {
+            ReviewRound::RequestChanges {
                 reason: format!("the independent reviewer requested changes: {summary}"),
             }
         }
         crate::cost_router::GateDecision::Block { reason }
+            if outcome.verdict == crate::cost_router::review_gate::Verdict::Uncertain =>
+        {
+            ReviewRound::Uncertain { reason }
+        }
+        crate::cost_router::GateDecision::Block { reason }
         | crate::cost_router::GateDecision::Escalate { reason }
         | crate::cost_router::GateDecision::ReviewUnavailable { reason } => {
-            ReviewerGateOutcome::Refused { reason }
+            ReviewRound::Blocked { reason }
         }
+    }
+}
+
+/// Lane R65a (ruling 2026-09-17): finish a goal review. When
+/// `escalate_uncertain` and the first reviewer returned UNCERTAIN (not
+/// REQUEST_CHANGES, not any other block), escalate ONCE: `escalate` is called
+/// with the reviewer that was unsure and returns the escalated review (or why
+/// none could run) plus its escalation record. Only an APPROVE lands; a second
+/// UNCERTAIN, a REQUEST_CHANGES, or no escalation reviewer parks. Every round
+/// is recorded.
+async fn finish_goal_review_with_escalation<E, Fut>(
+    first: ReviewAttempt,
+    escalate_uncertain: bool,
+    escalate: E,
+) -> GoalReviewRun
+where
+    E: FnOnce(String, String) -> Fut,
+    Fut: std::future::Future<Output = (Result<ReviewAttempt, String>, serde_json::Value)>,
+{
+    let mut reviews = vec![first.to_json(1)];
+    if !(escalate_uncertain && matches!(first.round, ReviewRound::Uncertain { .. })) {
+        return GoalReviewRun {
+            outcome: first.into_outcome(),
+            reviews,
+            escalation: None,
+        };
+    }
+    let first_reviewer = first.reviewer();
+    let first_reason = first.round.reason().to_string();
+    tracing::info!(
+        target: "permagentd::brain",
+        reviewer = %first_reviewer,
+        "independent review UNCERTAIN; escalating once to the next-ranked reviewer",
+    );
+    let (second, escalation) = escalate(first.provider, first.model).await;
+    let outcome = match second {
+        Err(why) => ReviewerGateOutcome::Refused {
+            reason: format!(
+                "{first_reviewer} was UNCERTAIN ({first_reason}) and no escalation review \
+                 could run: {why}"
+            ),
+        },
+        Ok(second) => {
+            reviews.push(second.to_json(2));
+            let second_uncertain = match &second.round {
+                ReviewRound::Uncertain { reason } => Some(reason.clone()),
+                _ => None,
+            };
+            match second_uncertain {
+                Some(reason) => ReviewerGateOutcome::Refused {
+                    reason: format!(
+                        "both reviewers were UNCERTAIN: {first_reviewer} ({first_reason}); \
+                         escalated to {} ({reason})",
+                        second.reviewer()
+                    ),
+                },
+                None => second.into_outcome(),
+            }
+        }
+    };
+    GoalReviewRun {
+        outcome,
+        reviews,
+        escalation: Some(escalation),
     }
 }
 

@@ -86,16 +86,6 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    /// Parse the strict uppercase token the reviewer must emit.
-    fn parse_token(tok: &str) -> Option<Verdict> {
-        match tok.trim() {
-            "APPROVE" => Some(Verdict::Approve),
-            "REQUEST_CHANGES" => Some(Verdict::RequestChanges),
-            "UNCERTAIN" => Some(Verdict::Uncertain),
-            _ => None,
-        }
-    }
-
     /// Stable label for logs / surfaces.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -300,11 +290,187 @@ impl ReviewOutcome {
 
 // ── Parsing (strict labeled lines; default-to-reject) ─────────────────────────
 
+/// How much of an unreadable reviewer response is written to tracing.
+const UNREADABLE_REVIEW_LOG_CHARS: usize = 2_000;
+
+/// Reasoning-block tag pairs some models leave in their visible text. Their
+/// contents are the model thinking aloud (often drafting a verdict it later
+/// revises), never the verdict block itself.
+const REASONING_BLOCK_TAGS: &[(&str, &str)] = &[
+    ("<think>", "</think>"),
+    ("<thinking>", "</thinking>"),
+    ("<reasoning>", "</reasoning>"),
+    ("<THINK>", "</THINK>"),
+    ("<Thinking>", "</Thinking>"),
+];
+
+/// Why a reviewer response yielded no readable verdict (it is then
+/// [`Verdict::Uncertain`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewParseProblem {
+    /// No `VERDICT:` line anywhere outside reasoning blocks.
+    NoVerdictLine,
+    /// `VERDICT:` lines were present, but none carried a recognised token.
+    UnrecognisedVerdict,
+}
+
+impl ReviewParseProblem {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReviewParseProblem::NoVerdictLine => "no VERDICT line",
+            ReviewParseProblem::UnrecognisedVerdict => "no recognised VERDICT token",
+        }
+    }
+}
+
+/// Remove reasoning blocks (`<think>…</think>` and its siblings) from a
+/// response. A closing tag with no opening tag before it (a template that put
+/// the opening tag in the prompt) drops everything up to it; an opening tag
+/// that is never closed drops the rest — an unfinished thought is not a verdict.
+fn strip_reasoning_blocks(raw: &str) -> String {
+    let mut rest = raw;
+    // A leading orphan close tag: everything before it was reasoning.
+    for (open, close) in REASONING_BLOCK_TAGS {
+        if let Some((before, after)) = rest.split_once(close) {
+            if !before.contains(open) {
+                rest = after;
+            }
+        }
+    }
+    let mut out = String::with_capacity(rest.len());
+    loop {
+        let earliest = REASONING_BLOCK_TAGS
+            .iter()
+            .filter_map(|(open, close)| rest.find(open).map(|at| (at, *open, *close)))
+            .min_by_key(|(at, _, _)| *at);
+        let Some((_, open, close)) = earliest else {
+            out.push_str(rest);
+            break;
+        };
+        let Some((before, after_open)) = rest.split_once(open) else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(before);
+        match after_open.split_once(close) {
+            Some((_, after)) => rest = after,
+            None => break,
+        }
+    }
+    out
+}
+
+/// A labeled line's value, tolerant of markdown decoration: list markers,
+/// blockquotes, headings, emphasis and inline code around the label
+/// (`- **VERDICT:** APPROVE`, `` `VERDICT: APPROVE` ``, `### Verdict: APPROVE`).
+/// The label matches in upper, title or lower case, and must be followed by a
+/// colon (emphasis between the label and the colon is allowed).
+fn labeled_value<'a>(line: &'a str, label: &str) -> Option<&'a str> {
+    let s = strip_line_decoration(line);
+    let lower = label.to_ascii_lowercase();
+    let mut title = String::with_capacity(label.len());
+    for (i, c) in lower.chars().enumerate() {
+        if i == 0 {
+            title.push(c.to_ascii_uppercase());
+        } else {
+            title.push(c);
+        }
+    }
+    let rest = s
+        .strip_prefix(label)
+        .or_else(|| s.strip_prefix(title.as_str()))
+        .or_else(|| s.strip_prefix(lower.as_str()))?;
+    let rest = rest.trim_start_matches(|c: char| matches!(c, '*' | '_' | '`' | ' ' | '\t'));
+    rest.strip_prefix(':')
+}
+
+/// Strip the markdown a model may put in front of a labeled line: whitespace,
+/// blockquote markers, a list marker (`-`, `*` or `+` followed by whitespace),
+/// a heading (`#` run followed by whitespace), and emphasis or inline-code
+/// characters. A bare `-`/`+` glued to the text is NOT stripped, so a quoted
+/// diff line (`-VERDICT: APPROVE`) never reads as the reviewer's own verdict.
+fn strip_line_decoration(line: &str) -> &str {
+    let mut s = line;
+    loop {
+        let before = s;
+        s = s.trim_start();
+        if let Some(rest) = s.strip_prefix('>') {
+            s = rest;
+        }
+        for marker in ["- ", "* ", "+ ", "-\t", "*\t", "+\t"] {
+            if let Some(rest) = s.strip_prefix(marker) {
+                s = rest;
+            }
+        }
+        let unhashed = s.trim_start_matches('#');
+        if unhashed.len() != s.len() && unhashed.starts_with(char::is_whitespace) {
+            s = unhashed;
+        }
+        s = s.trim_start_matches(['*', '_', '`']);
+        if s.len() == before.len() {
+            return s;
+        }
+    }
+}
+
+/// Strip markdown emphasis/code decoration and surrounding whitespace from a
+/// labeled value.
+fn undecorate(value: &str) -> &str {
+    value.trim_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '_' | '`'))
+}
+
+/// Read a verdict token from a `VERDICT:` line's value. Tolerates decoration
+/// (`**APPROVE**`, `` `UNCERTAIN` ``), trailing punctuation or prose
+/// (`APPROVE.`, `REQUEST_CHANGES — see findings`), and `REQUEST CHANGES` /
+/// `REQUEST-CHANGES`. Refuses anything that is not exactly one of the three
+/// tokens: a longer word (`APPROVED`), and the grammar echoed back
+/// (`APPROVE|REQUEST_CHANGES|UNCERTAIN`).
+fn parse_verdict_value(value: &str) -> Option<Verdict> {
+    let cleaned = value.trim_start_matches(|c: char| {
+        c.is_whitespace() || matches!(c, '*' | '_' | '`' | '"' | '\'' | '[' | '(')
+    });
+    let upper = cleaned.to_ascii_uppercase();
+    const TOKENS: &[(&str, Verdict)] = &[
+        ("REQUEST_CHANGES", Verdict::RequestChanges),
+        ("REQUEST CHANGES", Verdict::RequestChanges),
+        ("REQUEST-CHANGES", Verdict::RequestChanges),
+        ("APPROVE", Verdict::Approve),
+        ("UNCERTAIN", Verdict::Uncertain),
+    ];
+    for (label, verdict) in TOKENS {
+        let Some(after) = upper.strip_prefix(label) else {
+            continue;
+        };
+        if after
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return None;
+        }
+        let tail = after.trim_start_matches(|c: char| {
+            c.is_whitespace() || matches!(c, '*' | '_' | '`' | '"' | '\'' | ']' | ')')
+        });
+        if tail.starts_with('|') || tail.starts_with('/') {
+            return None;
+        }
+        return Some(*verdict);
+    }
+    None
+}
+
 /// Parse the reviewer's labeled output into a [`ReviewOutcome`]. Deliberately
-/// lenient about extra prose but strict about the verdict token: an absent or
-/// unrecognized `VERDICT:` line degrades to [`Verdict::Uncertain`] — a review we
-/// cannot read is NOT an approval. `FINDING` lines that fail to parse (bad lens,
-/// no summary) are dropped rather than aborting the whole parse.
+/// lenient about extra prose and presentation but strict about the verdict
+/// token: an absent or unrecognized `VERDICT:` line degrades to
+/// [`Verdict::Uncertain`] — a review we cannot read is NOT an approval — and
+/// the raw response (truncated) is written to tracing so the unreadable
+/// response is visible. `FINDING` lines that fail to parse (bad lens, no
+/// summary) are dropped rather than aborting the whole parse.
+///
+/// Presentation tolerated (r65: a verdict hidden by presentation must not read
+/// as UNCERTAIN): reasoning blocks (`<think>…</think>`) are ignored, markdown
+/// fences, list markers, headings and emphasis around a labeled line are
+/// stripped, and the labeled lines may appear anywhere in the response.
 ///
 /// Grammar (one per line, order-free):
 /// - `VERDICT: APPROVE|REQUEST_CHANGES|UNCERTAIN`
@@ -312,20 +478,40 @@ impl ReviewOutcome {
 /// - `FINDING <LENS> | <summary> | <concrete failing input or path>`
 /// - `CALLSITE <symbol> | <file:line> | UPDATED|UNAFFECTED|MISSED | <note>` (E7)
 pub fn parse_review(raw: &str) -> ReviewOutcome {
+    let (outcome, problem) = parse_review_with_problem(raw);
+    if let Some(problem) = problem {
+        let head: String = raw.chars().take(UNREADABLE_REVIEW_LOG_CHARS).collect();
+        tracing::warn!(
+            target: "permagent::cost_router::review_gate",
+            problem = problem.as_str(),
+            response_chars = raw.chars().count(),
+            response_head = %head,
+            "reviewer response had no readable verdict; treated as UNCERTAIN",
+        );
+    }
+    outcome
+}
+
+/// [`parse_review`] without the logging, also naming why no verdict was read
+/// (`None` when a verdict token was read).
+pub fn parse_review_with_problem(raw: &str) -> (ReviewOutcome, Option<ReviewParseProblem>) {
     let mut verdict: Option<Verdict> = None;
+    let mut saw_verdict_line = false;
     let mut checked = String::new();
     let mut findings: Vec<ReviewFinding> = Vec::new();
     let mut call_sites: Vec<CallSiteVerdict> = Vec::new();
 
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("VERDICT:") {
+    let visible = strip_reasoning_blocks(raw);
+    for line in visible.lines() {
+        let trimmed = strip_line_decoration(line);
+        if let Some(rest) = labeled_value(line, "VERDICT") {
+            saw_verdict_line = true;
             // The FIRST valid verdict wins; a later stray token cannot override it.
             if verdict.is_none() {
-                verdict = Verdict::parse_token(rest);
+                verdict = parse_verdict_value(rest);
             }
-        } else if let Some(rest) = trimmed.strip_prefix("CHECKED:") {
-            let c = rest.trim();
+        } else if let Some(rest) = labeled_value(line, "CHECKED") {
+            let c = undecorate(rest);
             if !c.is_empty() {
                 checked = c.to_string();
             }
@@ -340,12 +526,20 @@ pub fn parse_review(raw: &str) -> ReviewOutcome {
         }
     }
 
-    ReviewOutcome {
-        verdict: verdict.unwrap_or(Verdict::Uncertain),
-        checked,
-        findings,
-        call_sites,
-    }
+    let problem = match (verdict, saw_verdict_line) {
+        (Some(_), _) => None,
+        (None, true) => Some(ReviewParseProblem::UnrecognisedVerdict),
+        (None, false) => Some(ReviewParseProblem::NoVerdictLine),
+    };
+    (
+        ReviewOutcome {
+            verdict: verdict.unwrap_or(Verdict::Uncertain),
+            checked,
+            findings,
+            call_sites,
+        },
+        problem,
+    )
 }
 
 /// Parse the tail of a `FINDING <LENS> | <summary> | <evidence>` line. Returns
@@ -1142,6 +1336,22 @@ pub fn build_review_prompt_with_call_sites(
         prior,
         call_site_section.trim()
     )
+}
+
+/// The closing instruction every [`build_review_prompt`] variant ends with.
+const REVIEW_PROMPT_CLOSING: &str = "\n\nReview this change and output the labeled verdict block.";
+
+/// Add one more DATA-FENCED `BEGIN_<NAME>`/`END_<NAME>` section to a prompt
+/// built by [`build_review_prompt`] or [`build_review_prompt_with_call_sites`],
+/// just before its closing instruction (appended at the end when the closing
+/// instruction is absent). The system prompt's fencing rule makes its body
+/// data, never instructions.
+pub fn with_review_data_section(prompt: &str, name: &str, body: &str) -> String {
+    let section = format!("BEGIN_{name}\n{}\nEND_{name}", body.trim());
+    match prompt.rsplit_once(REVIEW_PROMPT_CLOSING) {
+        Some((head, tail)) => format!("{head}\n{section}{REVIEW_PROMPT_CLOSING}{tail}"),
+        None => format!("{prompt}\n{section}"),
+    }
 }
 
 /// Shared "what did prior rounds already find" renderer for
