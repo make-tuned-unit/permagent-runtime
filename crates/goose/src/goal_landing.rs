@@ -18,6 +18,11 @@
 //! A refusal is never a silent no-op: the outcome is surfaced on the approval
 //! response, because "approved" that did nothing is the bug this replaces.
 //!
+//! `land` itself stays fast-forward only. Lane R63b adds one headless-only
+//! retry in `decisions_effects::land_approved_goal`: with parallel sibling
+//! goals, a scope-disjoint branch is rebased onto the moved trunk in its own
+//! worktree, re-verified, and then handed back to this same `land`.
+//!
 //! Local only — nothing here pushes. The remote is a separate decision.
 
 use std::path::Path;
