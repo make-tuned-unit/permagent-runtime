@@ -10728,6 +10728,25 @@ impl OrchestratorClient {
             daemon_lifecycle_id(),
             chrono::Utc::now(),
         );
+        // Cross-process ownership. Every signal above is local to THIS
+        // process, so a goal a terminal harness run dispatched always looks
+        // dead from the daemon (or from another terminal), and R3 below would
+        // requeue it and start a duplicate worker beside the live one. A live
+        // harness lease for the dispatching lifecycle, or a fresh receipt
+        // heartbeat from another lifecycle, means someone else owns it: report
+        // that and change nothing. A stale lease is not ownership, so a
+        // crashed terminal's goal still takes the recovery path.
+        let foreign_owner = if state == "in_progress" {
+            crate::harness_lease::live_foreign_owner_at(
+                &pool,
+                &card.metadata_json,
+                daemon_lifecycle_id(),
+                chrono::Utc::now(),
+            )
+            .await
+        } else {
+            None
+        };
 
         let retry_count = meta
             .and_then(|m| m.get("retry_count"))
@@ -10754,6 +10773,7 @@ impl OrchestratorClient {
             && engine_is_internal
             && min_grace_elapsed
             && receipt_not_live
+            && foreign_owner.is_none()
         {
             let requested_worker = worker_key.map(|s| s.to_string());
             let dead_session = worker_session_id.unwrap_or("?").to_string();
@@ -10869,7 +10889,7 @@ impl OrchestratorClient {
             }
         }
 
-        let result = serde_json::json!({
+        let mut result = serde_json::json!({
             "card_id": card_id,
             "title": card.title,
             "state": state,
@@ -10877,11 +10897,14 @@ impl OrchestratorClient {
             "worker_session_id": worker_session_id,
             "started_at": dispatched_at,
             "completed_at": completed_at,
-            "session_alive": session_alive,
+            "session_alive": session_alive || foreign_owner.is_some(),
             "attempt_count": attempt_count,
             "error": last_error,
             "needs_human_attention": needs_human_attention,
         });
+        if let Some(owner) = foreign_owner.as_ref() {
+            result["owner"] = serde_json::json!(owner.describe());
+        }
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&result).unwrap_or_default(),
@@ -26048,6 +26071,12 @@ pub fn classify_restart_charge(meta: &serde_json::Value) -> RestartCharge {
 pub enum ResumeDisposition {
     /// Dispatched in THIS lifecycle — a live tracker owns it; not an orphan.
     OwnedByLiveTracker,
+    /// Owned by a live process OTHER than this one: a terminal harness run
+    /// with a live lease, or a lifecycle whose worker receipt is still being
+    /// heartbeated. Left untouched. `recheck` is set when only the receipt
+    /// vouched for it (no lease), so the caller re-examines the goal once
+    /// that heartbeat goes stale instead of stranding it.
+    OwnedByLiveForeignProcess { recheck: bool },
     /// The worker session is still alive; a polling tracker was re-attached.
     Reattached,
     /// The worktree held committed work — routed to Review with evidence.
@@ -26070,6 +26099,8 @@ pub struct ReconcileReport {
     /// In-flight goal cards found, including those a live tracker owns.
     pub examined: usize,
     pub owned_by_live_tracker: usize,
+    /// In-flight goals owned by a live process elsewhere, left untouched.
+    pub owned_by_live_foreign_process: usize,
     pub reattached: usize,
     pub resumed_to_review: usize,
     pub requeued_no_charge: usize,
@@ -26099,6 +26130,9 @@ impl ReconcileReport {
     fn record(&mut self, disposition: ResumeDisposition) {
         match disposition {
             ResumeDisposition::OwnedByLiveTracker => self.owned_by_live_tracker += 1,
+            ResumeDisposition::OwnedByLiveForeignProcess { .. } => {
+                self.owned_by_live_foreign_process += 1
+            }
             ResumeDisposition::Reattached => self.reattached += 1,
             ResumeDisposition::ResumedToReview => self.resumed_to_review += 1,
             ResumeDisposition::RequeuedNoCharge => self.requeued_no_charge += 1,
@@ -26134,6 +26168,7 @@ impl ReconcileReport {
         format!(
             "Boot reconciliation of in-flight goals (daemon lifecycle {}):\n\
              - examined: {} in-flight goal(s); {} already owned by a live tracker in this process\n\
+             - {} left untouched: owned by a live process elsewhere (terminal harness lease or fresh worker receipt)\n\
              - {} requeued to Ready — no attempt charged (restart interruption)\n\
              - {} requeued to Ready — attempt charged\n\
              - {} recovered to Review from committed worktree evidence\n\
@@ -26146,6 +26181,7 @@ impl ReconcileReport {
             daemon_lifecycle_id(),
             self.examined,
             self.owned_by_live_tracker,
+            self.owned_by_live_foreign_process,
             self.requeued_no_charge,
             self.requeued_charged,
             self.resumed_to_review,
@@ -26495,6 +26531,15 @@ async fn reconcile_in_progress_goals_with_dispatch(
                 ) {
                     projects_to_nudge.insert(project_id.clone());
                 }
+                if disposition == (ResumeDisposition::OwnedByLiveForeignProcess { recheck: true }) {
+                    tokio::spawn(recheck_foreign_owned_goal(
+                        pool.clone(),
+                        manager.clone(),
+                        card_id.clone(),
+                        project_id.clone(),
+                        std::time::Duration::from_secs(execution_receipt::HEARTBEAT_INTERVAL_SECS),
+                    ));
+                }
                 report.record(disposition);
             }
             Err(e) => {
@@ -26640,6 +26685,76 @@ pub async fn sweep_orphaned_goal_worktrees(
     Ok(())
 }
 
+/// Re-examine a goal the boot pass left alone because only a foreign worker
+/// receipt vouched for it (no harness lease). Without this, a quick restart of
+/// the process that dispatched it would strand the goal: its receipt is still
+/// fresh when this process boots, and the boot pass runs once. Polls every
+/// `poll` until the goal leaves In Progress, is redispatched by this process,
+/// or no live owner remains; then runs the ordinary single-goal recovery and,
+/// if that requeued it, the same bounded Ready nudge the boot pass uses.
+async fn recheck_foreign_owned_goal(
+    pool: sqlx::Pool<sqlx::Sqlite>,
+    manager: Option<Arc<AgentManager>>,
+    card_id: String,
+    project_id: String,
+    poll: std::time::Duration,
+) {
+    loop {
+        tokio::time::sleep(poll).await;
+        let Ok(Some(card)) = cards::get_card(&pool, &card_id).await else {
+            return;
+        };
+        let in_progress = matches!(
+            cards::get_column(&pool, &card.column_id).await,
+            Ok(Some(column)) if column.state_binding.as_deref() == Some("in_progress")
+        );
+        if !in_progress {
+            return;
+        }
+        if card
+            .metadata_json
+            .get("dispatched_lifecycle")
+            .and_then(|v| v.as_str())
+            == Some(daemon_lifecycle_id())
+        {
+            return;
+        }
+        if crate::harness_lease::live_foreign_owner_at(
+            &pool,
+            &card.metadata_json,
+            daemon_lifecycle_id(),
+            chrono::Utc::now(),
+        )
+        .await
+        .is_some()
+        {
+            continue;
+        }
+        match resume_single_goal(&pool, &manager, &card_id, &project_id).await {
+            Ok(ResumeDisposition::RequeuedNoCharge | ResumeDisposition::RequeuedCharged) => {
+                let dispatch = goal_dispatch_hook_snapshot();
+                dispatch_ready_goals_with(
+                    &pool,
+                    &project_id,
+                    dispatch.as_deref(),
+                    "restart reconciliation",
+                )
+                .await;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    goal_id = %card_id,
+                    "Deferred reconciliation of a formerly foreign-owned goal failed: {}",
+                    error
+                );
+            }
+        }
+        return;
+    }
+}
+
 async fn resume_single_goal(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     manager: &Option<Arc<AgentManager>>,
@@ -26669,6 +26784,33 @@ async fn resume_single_goal(
             card.title
         );
         return Ok(ResumeDisposition::OwnedByLiveTracker);
+    }
+
+    // A different lifecycle is not proof of a dead one. This pass runs in
+    // EVERY process that loads the orchestrator — each new terminal session
+    // as well as daemon boot — so a goal a still-running terminal dispatched
+    // reaches here too, and the checks below (in-process AgentManager, an
+    // external pid) cannot see its in-process worker. Leave a goal owned by a
+    // live process elsewhere alone. A lost (stale) lease is not ownership, so
+    // a crashed run's goals still fall through to recovery.
+    if let Some(owner) = crate::harness_lease::live_foreign_owner_at(
+        pool,
+        &card.metadata_json,
+        daemon_lifecycle_id(),
+        chrono::Utc::now(),
+    )
+    .await
+    {
+        tracing::info!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            "Goal '{}' is {} — not reclaiming",
+            card.title,
+            owner.describe()
+        );
+        return Ok(ResumeDisposition::OwnedByLiveForeignProcess {
+            recheck: owner.is_receipt_only(),
+        });
     }
 
     let session_id = meta

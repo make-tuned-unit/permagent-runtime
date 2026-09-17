@@ -216,3 +216,149 @@ pub async fn project_id_for_working_dir(
         .max_by_key(|(len, _)| *len)
         .map(|(_, id)| id)
 }
+
+/// Why a goal is believed to be owned by a live process other than this one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ForeignOwnerEvidence {
+    /// The dispatching lifecycle holds a live harness lease: a terminal run.
+    Lease {
+        lease: Lease,
+        heartbeat_age_secs: i64,
+    },
+    /// No lease describes the dispatching lifecycle, but the goal's execution
+    /// receipt is non-terminal and was heartbeated recently. That beat is
+    /// written by the dispatching process's completion tracker, so it is
+    /// readable across processes even though `ExecutionReceipt::is_live` is
+    /// bound to the reader's own lifecycle.
+    ReceiptHeartbeat { heartbeat_age_secs: i64 },
+}
+
+/// A live owner of a goal, outside the reading process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LiveForeignOwner {
+    /// The goal's `dispatched_lifecycle`, when it carries one.
+    pub lifecycle_id: Option<String>,
+    pub evidence: ForeignOwnerEvidence,
+}
+
+impl LiveForeignOwner {
+    /// True when the only evidence is the receipt heartbeat (no lease row).
+    pub fn is_receipt_only(&self) -> bool {
+        matches!(self.evidence, ForeignOwnerEvidence::ReceiptHeartbeat { .. })
+    }
+
+    /// One human-readable line, e.g. `running in terminal "fix auth" at
+    /// /repo (pid 4242), heartbeat 7s ago`.
+    pub fn describe(&self) -> String {
+        match &self.evidence {
+            ForeignOwnerEvidence::Lease {
+                lease,
+                heartbeat_age_secs,
+            } => {
+                let place = match lease.session_name.as_deref().filter(|n| !n.is_empty()) {
+                    Some(name) => format!("\"{name}\" at {}", lease.working_dir),
+                    None => lease.working_dir.clone(),
+                };
+                format!(
+                    "running in terminal {place} (pid {}), heartbeat {}s ago",
+                    lease.pid,
+                    (*heartbeat_age_secs).max(0)
+                )
+            }
+            ForeignOwnerEvidence::ReceiptHeartbeat { heartbeat_age_secs } => format!(
+                "owned by another live process (lifecycle {}), worker receipt heartbeat {}s ago",
+                self.lifecycle_id.as_deref().unwrap_or("unknown"),
+                (*heartbeat_age_secs).max(0)
+            ),
+        }
+    }
+}
+
+/// The live foreign owner of a goal, judged from its card metadata, or `None`
+/// when the goal belongs to `own_lifecycle` or nothing proves a live owner.
+///
+/// - A goal whose `dispatched_lifecycle` is `own_lifecycle` is never foreign:
+///   the caller's in-process registries already answer for it.
+/// - When the dispatching lifecycle has lease rows, the lease decides: live
+///   means owned; lost or ended means the owner is gone, whatever the receipt
+///   says, so a crashed terminal's goals recover as soon as its lease is stale.
+/// - With no lease rows (the daemon, or a CLI build that predates leases), a
+///   non-terminal receipt heartbeated within
+///   [`DEFAULT_STALENESS_SECS`](crate::agents::platform_extensions::execution_receipt::DEFAULT_STALENESS_SECS)
+///   means owned, regardless of lifecycle.
+pub async fn live_foreign_owner_at(
+    pool: &Pool<Sqlite>,
+    metadata: &serde_json::Value,
+    own_lifecycle: &str,
+    now: DateTime<Utc>,
+) -> Option<LiveForeignOwner> {
+    use crate::agents::platform_extensions::execution_receipt::{
+        ExecutionReceipt, DEFAULT_STALENESS_SECS,
+    };
+
+    let dispatched = metadata
+        .get("dispatched_lifecycle")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    if dispatched.as_deref() == Some(own_lifecycle) {
+        return None;
+    }
+
+    if let Some(lifecycle) = dispatched.as_deref() {
+        match leases_for_lifecycle(pool, lifecycle).await {
+            Ok(leases) if !leases.is_empty() => {
+                return leases
+                    .into_iter()
+                    .find(|lease| classify(lease, now) == LeaseLiveness::Live)
+                    .map(|lease| {
+                        let heartbeat_age_secs =
+                            heartbeat_age_secs(&lease.heartbeat_at, now).unwrap_or(0);
+                        LiveForeignOwner {
+                            lifecycle_id: dispatched.clone(),
+                            evidence: ForeignOwnerEvidence::Lease {
+                                lease,
+                                heartbeat_age_secs,
+                            },
+                        }
+                    });
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::debug!(
+                    lifecycle,
+                    %error,
+                    "harness lease lookup failed; falling back to the execution receipt"
+                );
+            }
+        }
+    }
+
+    let receipt = metadata
+        .get("execution_receipt")
+        .cloned()
+        .and_then(|v| serde_json::from_value::<ExecutionReceipt>(v).ok())?;
+    if receipt.dispatched_lifecycle == own_lifecycle || receipt.state.is_terminal() {
+        return None;
+    }
+    let age = heartbeat_age_secs(&receipt.last_heartbeat_at, now)?;
+    (age <= DEFAULT_STALENESS_SECS).then(|| LiveForeignOwner {
+        lifecycle_id: dispatched.or(Some(receipt.dispatched_lifecycle.clone())),
+        evidence: ForeignOwnerEvidence::ReceiptHeartbeat {
+            heartbeat_age_secs: age,
+        },
+    })
+}
+
+/// True when `card` is owned by a live process other than `own_lifecycle`'s
+/// (see [`live_foreign_owner_at`]). Status reads and restart recovery must
+/// neither requeue nor redispatch such a goal.
+pub async fn goal_owned_by_live_foreign_process(
+    pool: &Pool<Sqlite>,
+    card: &crate::cards::Card,
+    own_lifecycle: &str,
+) -> bool {
+    live_foreign_owner_at(pool, &card.metadata_json, own_lifecycle, Utc::now())
+        .await
+        .is_some()
+}
