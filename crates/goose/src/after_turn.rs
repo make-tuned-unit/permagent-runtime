@@ -190,6 +190,11 @@ pub struct VerifyPositions {
     /// hold/park message can quote WHY the pass did not count instead of
     /// just asserting that it didn't.
     pub vacuous_reason: Option<String>,
+    /// Lane R62b-3: the tool-call id of that latest vacuous pass, so a guard
+    /// that refuses it can record the refusal against that exact call
+    /// (`developer::verify::record_vacuous_pass_judgement`). `None` whenever
+    /// `vacuous_pass` is false.
+    pub vacuous_call_id: Option<String>,
 }
 
 impl VerifyPositions {
@@ -287,6 +292,8 @@ pub fn scan_verify_positions(messages: &[Message]) -> VerifyPositions {
                             // `last_verify` itself.
                             positions.vacuous_reason = verify::vacuous_pass_reason(result);
                             positions.vacuous_pass = positions.vacuous_reason.is_some();
+                            positions.vacuous_call_id =
+                                positions.vacuous_pass.then(|| resp.id.clone());
                         }
                     }
                 }
@@ -337,12 +344,24 @@ impl AfterTurn for PrematureDoneGuard {
         // The SAME decision the goal path makes. An interactive session has no
         // declared workflow role, and a session that edited files without
         // verifying is mechanical work by behaviour whatever it was called.
-        match crate::cost_router::decide_hold(
+        let outcome = crate::cost_router::decide_hold(
             crate::cost_router::WorkflowRole::Mechanical,
             verify_ran,
             &signals,
             ctx.prior_holds,
-        ) {
+        );
+        // Lane R62b-3: holding or parking on a vacuous pass is this guard
+        // refusing to credit it as verify evidence.
+        if !matches!(outcome, crate::cost_router::HoldOutcome::Allow) {
+            if let Some(call_id) = positions.vacuous_call_id.as_deref() {
+                crate::agents::platform_extensions::developer::verify::record_vacuous_pass_judgement(
+                    ctx.session_id,
+                    call_id,
+                    false,
+                );
+            }
+        }
+        match outcome {
             crate::cost_router::HoldOutcome::Allow => AfterTurnAction::Allow,
             crate::cost_router::HoldOutcome::Hold { inject_plan, .. } => {
                 // X-verify-2: a vacuous pass is not "no verify at all" —
@@ -3488,7 +3507,10 @@ mod tests {
         assert!(!p.unverified_edits());
     }
 
+    // Lane R62b-3: holding on a vacuous pass records `vacuous_refused` in the
+    // shared receipts registry when a run is active.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn a_vacuous_pass_holds_with_an_honest_message_naming_the_reason() {
         let guard = PrematureDoneGuard::new();
         let turn = vec![
@@ -3507,7 +3529,9 @@ mod tests {
         }
     }
 
+    // Lane R62b-3: see the hold test above.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn a_repeatedly_vacuous_pass_parks_honestly_once_the_hold_budget_is_exhausted() {
         let guard = PrematureDoneGuard::new();
         let turn = vec![
@@ -3524,6 +3548,35 @@ mod tests {
             }
             other => panic!("expected Park, got {other:?}"),
         }
+    }
+
+    /// Lane R62b-3 (coordinator ruling on A61 miss 2): the guard refusing a
+    /// vacuous pass counts `vacuous_refused`, once per call, and never the
+    /// gated `vacuous_passes`.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn refusing_a_vacuous_pass_counts_vacuous_refused_not_vacuous_passes() {
+        let guard = PrematureDoneGuard::new();
+        let turn = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange_vacuous_pass("v1", "0 tests run"),
+        ];
+        let positions = scan_verify_positions(&turn);
+        assert_eq!(positions.vacuous_call_id.as_deref(), Some("v1"));
+
+        crate::receipts::begin_run();
+        let first = guard.after_turn(&ctx(&turn, 0)).await;
+        let second = guard.after_turn(&ctx(&turn, 1)).await;
+        let lines = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+
+        assert!(matches!(first, AfterTurnAction::Continue { .. }));
+        assert!(!matches!(second, AfterTurnAction::Allow));
+        assert!(
+            lines[1].contains("vacuous_passes=0") && lines[1].ends_with("vacuous_refused=1"),
+            "got: {}",
+            lines[1]
+        );
     }
 
     /// The loop is bounded: a hook that keeps holding is eventually made to

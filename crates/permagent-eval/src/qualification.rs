@@ -941,7 +941,9 @@ fn task_solved(task: &TaskQualificationEvidence) -> bool {
 /// Lane K13: shared by both arms of `verification_integrity`'s gate closure
 /// (the normal evaluate path and the neutral no-dispatch-escalate path) —
 /// whether a P1 violation is present is independent of whether the task
-/// casts a pass/fail vote.
+/// casts a pass/fail vote. Lane R62b-3: `vacuous_passes` counts only vacuous
+/// passes the harness CREDITED as verify evidence; `vacuous_refused` is
+/// observability only and deliberately not read here.
 fn verification_violation(r: &VerificationIntegrityReceipt) -> bool {
     r.vacuous_passes != 0 || r.reviewer_mutations != 0 || r.reviewer_not_independent != 0
 }
@@ -1731,6 +1733,22 @@ mod tests {
         let mut even = good.clone();
         even.tasks[0].verification_integrity.as_mut().unwrap().goals = 4;
         assert!(classify("verification_integrity", &even).gate_passed);
+    }
+
+    /// Lane R62b-3 (coordinator ruling on A61 miss 2): a harness that
+    /// correctly REFUSED a vacuous pass must not fail verification integrity.
+    /// `vacuous_refused` is printed for observability and never gated.
+    #[test]
+    fn vacuous_refused_is_not_a_verification_violation() {
+        let mut refused = receipt_record();
+        refused.tasks[0]
+            .verification_integrity
+            .as_mut()
+            .unwrap()
+            .vacuous_refused = Some(3);
+        let evidence = classify("verification_integrity", &refused);
+        assert!(evidence.evidence_complete);
+        assert!(evidence.gate_passed);
     }
 
     // ------------------------------------------------------------------

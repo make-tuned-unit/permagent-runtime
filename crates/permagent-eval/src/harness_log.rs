@@ -233,9 +233,18 @@ pub struct DagEnforcementReceipt {
 pub struct VerificationIntegrityReceipt {
     pub goals: usize,
     pub review_reached: usize,
+    /// Lane R62b-3: vacuous verify PASSes the harness CREDITED as verify
+    /// evidence (before R62b-3: every vacuous PASS the verify tool returned,
+    /// refused or not). The qualification gate treats any non-zero count as a
+    /// violation.
     pub vacuous_passes: usize,
     pub reviewer_mutations: usize,
     pub reviewer_not_independent: usize,
+    /// Lane R62b-3 (RECEIPT CONTRACT v1.3): vacuous verify PASSes the harness
+    /// refused to credit. Observability only, never gated. `None` on a
+    /// pre-v1.3 line; `Some(0)` means the counter was printed and is zero.
+    #[serde(default)]
+    pub vacuous_refused: Option<usize>,
 }
 
 /// Atomic RECEIPT CONTRACT v1 evidence for `safety_and_trust`.
@@ -577,10 +586,14 @@ fn parse_dag_enforcement(line: &str) -> Option<DagEnforcementReceipt> {
     })
 }
 
+// Lane R62b-3 (RECEIPT CONTRACT v1.3): `vacuous_refused=<n>` is an optional
+// trailing group, same reasoning as `DAG_ENFORCEMENT_RE`'s: a pre-v1.3 line
+// (five keys) and a v1.3 line (six keys) both parse, and capture 6 is `None`
+// on the older one.
 static VERIFICATION_INTEGRITY_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(
     || {
         regex::Regex::new(
-        r"^\s*receipt\s+verification_integrity\s+goals=([0-9]+)\s+review_reached=([0-9]+)\s+vacuous_passes=([0-9]+)\s+reviewer_mutations=([0-9]+)\s+reviewer_not_independent=([0-9]+)\s*$",
+        r"^\s*receipt\s+verification_integrity\s+goals=([0-9]+)\s+review_reached=([0-9]+)\s+vacuous_passes=([0-9]+)\s+reviewer_mutations=([0-9]+)\s+reviewer_not_independent=([0-9]+)(?:\s+vacuous_refused=([0-9]+))?\s*$",
     )
     .expect("VERIFICATION_INTEGRITY_RE is a valid regex")
     },
@@ -594,6 +607,7 @@ fn parse_verification_integrity(line: &str) -> Option<VerificationIntegrityRecei
         vacuous_passes: caps[3].parse().ok()?,
         reviewer_mutations: caps[4].parse().ok()?,
         reviewer_not_independent: caps[5].parse().ok()?,
+        vacuous_refused: caps.get(6).map(|m| m.as_str().parse()).transpose().ok()?,
     })
 }
 
@@ -1522,6 +1536,7 @@ mod tests {
                 vacuous_passes: 0,
                 reviewer_mutations: 0,
                 reviewer_not_independent: 0,
+                vacuous_refused: None,
             })
         );
         assert_eq!(signals.vacuous_pass, None);
@@ -1529,6 +1544,36 @@ mod tests {
         assert!(scan(&line.replace(" review_reached=2", ""))
             .verification_integrity
             .is_none());
+    }
+
+    /// Lane R62b-3 (RECEIPT CONTRACT v1.3): the trailing `vacuous_refused`
+    /// key is optional. A pre-v1.3 line reads it as `None` (never observed),
+    /// a v1.3 line reads the printed count, and both keep every other field.
+    #[test]
+    fn contract_v1_3_verification_receipt_reads_vacuous_refused_on_both_line_versions() {
+        let legacy = "receipt verification_integrity goals=1 review_reached=1 vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0";
+        let legacy = scan(legacy).verification_integrity.unwrap();
+        assert_eq!(legacy.vacuous_passes, 0);
+        assert_eq!(legacy.vacuous_refused, None);
+
+        let v1_3 = "receipt verification_integrity goals=1 review_reached=1 vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0 vacuous_refused=2";
+        assert_eq!(
+            scan(v1_3).verification_integrity,
+            Some(VerificationIntegrityReceipt {
+                goals: 1,
+                review_reached: 1,
+                vacuous_passes: 0,
+                reviewer_mutations: 0,
+                reviewer_not_independent: 0,
+                vacuous_refused: Some(2),
+            })
+        );
+        assert!(
+            scan(&v1_3.replace("vacuous_refused=2", "vacuous_refused=unknown"))
+                .verification_integrity
+                .is_none(),
+            "a non-numeric count must not parse"
+        );
     }
 
     #[test]
@@ -1735,6 +1780,7 @@ mod tests {
                 vacuous_passes: 0,
                 reviewer_mutations: 0,
                 reviewer_not_independent: 0,
+                vacuous_refused: None,
             })
         );
         assert_eq!(

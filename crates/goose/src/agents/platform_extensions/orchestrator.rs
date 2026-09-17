@@ -18101,21 +18101,31 @@ impl VerifyEvidence {
     }
 }
 
+/// Lane R62b-3: [`scan_verify_evidence`]'s verdict plus WHICH verify calls it
+/// judged, so the session reader can record the receipt at the point where
+/// evidence is credited or refused.
+struct VerifyEvidenceScan<'a> {
+    evidence: VerifyEvidence,
+    /// The first genuine pass, the one `evidence` credits: (tool-call id,
+    /// result).
+    credited: Option<(&'a str, &'a rmcp::model::CallToolResult)>,
+    /// Tool-call ids of every vacuous pass seen. None of them is credited.
+    refused_vacuous: Vec<&'a str>,
+}
+
 /// Scan for verify-tool evidence: a genuine, paired, successful
-/// (`is_error != true`) response to a verify-named request wins outright the
-/// instant it's found. A vacuous pass never short-circuits the scan — a
-/// LATER genuine pass in the same transcript still counts — but its reason
-/// is remembered in case no genuine pass ever turns up. Plain prose, an
-/// unpaired request, an RPC error, and a `CallToolResult` carrying
-/// `is_error=true` are all non-evidence — same as before this function
-/// existed. `.is_genuine()` on the result is what `maybe_hold_review` and
-/// `auto_land_headless_goal` — the ONLY two consumers of verify evidence —
-/// both gate on; G5 finding 1: before this function existed, both callers
-/// went through a predicate that checked `is_authoritative_pass` alone, so a
-/// smoke-only or zero-tests PASS satisfied it identically to a real one.
-fn verify_evidence_in_messages(
+/// (`is_error != true`) response to a verify-named request wins. A vacuous
+/// pass never outranks it — a LATER genuine pass in the same transcript still
+/// counts — but its reason is remembered in case no genuine pass ever turns
+/// up. Plain prose, an unpaired request, an RPC error, and a `CallToolResult`
+/// carrying `is_error=true` are all non-evidence. `.is_genuine()` on the
+/// verdict is what `maybe_hold_review` and `auto_land_headless_goal` gate on
+/// (through `session_verify_evidence`); G5 finding 1: before this existed,
+/// both went through a predicate that checked `is_authoritative_pass` alone,
+/// so a smoke-only or zero-tests PASS satisfied it identically to a real one.
+fn scan_verify_evidence(
     messages: &[crate::conversation::message::MessageContent],
-) -> VerifyEvidence {
+) -> VerifyEvidenceScan<'_> {
     use crate::agents::platform_extensions::developer::verify;
     use crate::conversation::message::{tool_requests_by_id, MessageContent};
 
@@ -18129,6 +18139,8 @@ fn verify_evidence_in_messages(
             .is_ok_and(|call| is_verify_tool_name(call.name.as_ref()))
     });
     let mut vacuous_reason = None;
+    let mut credited = None;
+    let mut refused_vacuous = Vec::new();
     for content in messages {
         let MessageContent::ToolResponse(response) = content else {
             continue;
@@ -18137,18 +18149,54 @@ fn verify_evidence_in_messages(
             continue;
         }
         if let Ok(result) = response.tool_result.as_ref() {
+            // Lane R62b-3: keep scanning past the first genuine pass (the
+            // verdict is unchanged) so every vacuous pass is accounted for.
             if verify::is_genuine_pass(result) {
-                return VerifyEvidence::Genuine;
-            }
-            if let Some(reason) = verify::vacuous_pass_reason(result) {
+                credited.get_or_insert((response.id.as_str(), result));
+            } else if let Some(reason) = verify::vacuous_pass_reason(result) {
+                refused_vacuous.push(response.id.as_str());
                 vacuous_reason = Some(reason);
             }
         }
     }
-    match vacuous_reason {
-        Some(reason) => VerifyEvidence::Vacuous(reason),
-        None => VerifyEvidence::None,
+    let evidence = match (credited, vacuous_reason) {
+        (Some(_), _) => VerifyEvidence::Genuine,
+        (None, Some(reason)) => VerifyEvidence::Vacuous(reason),
+        (None, None) => VerifyEvidence::None,
+    };
+    VerifyEvidenceScan {
+        evidence,
+        credited,
+        refused_vacuous,
     }
+}
+
+/// Lane R62b-3 (coordinator ruling on A61 miss 2): the receipt for what this
+/// session's evidence read credited and refused. This is the one point where a
+/// worker's verify evidence is credited, since every orchestrator gate reads
+/// `session_verify_evidence`. `vacuous_passes` is recorded only if the
+/// credited pass is itself vacuous. `scan_verify_evidence` credits only
+/// `is_genuine_pass`, so today that is a measured zero, not a hoped-for one.
+/// Every vacuous pass the read saw was refused and counts `vacuous_refused`.
+fn record_verify_evidence_receipts(session_id: &str, scan: &VerifyEvidenceScan<'_>) {
+    use crate::agents::platform_extensions::developer::verify;
+
+    if let Some((call_id, result)) = scan.credited {
+        if verify::vacuous_pass_reason(result).is_some() {
+            verify::record_vacuous_pass_judgement(session_id, call_id, true);
+        }
+    }
+    for call_id in &scan.refused_vacuous {
+        verify::record_vacuous_pass_judgement(session_id, call_id, false);
+    }
+}
+
+/// The verdict alone, for tests of the pure scan.
+#[cfg(test)]
+fn verify_evidence_in_messages(
+    messages: &[crate::conversation::message::MessageContent],
+) -> VerifyEvidence {
+    scan_verify_evidence(messages).evidence
 }
 
 async fn session_verify_evidence(
@@ -18175,7 +18223,9 @@ async fn session_verify_evidence(
         })
         .flatten()
         .collect();
-    verify_evidence_in_messages(&contents)
+    let scan = scan_verify_evidence(&contents);
+    record_verify_evidence_receipts(sid, &scan);
+    scan.evidence
 }
 
 async fn session_had_successful_verify(
@@ -26626,6 +26676,104 @@ mod tests {
         );
     }
 
+    /// Rename every tool request/response in an exchange fixture to `id`.
+    fn with_call_id(
+        mut exchange: Vec<crate::conversation::message::MessageContent>,
+        id: &str,
+    ) -> Vec<crate::conversation::message::MessageContent> {
+        use crate::conversation::message::MessageContent;
+        for content in &mut exchange {
+            match content {
+                MessageContent::ToolRequest(request) => request.id = id.to_string(),
+                MessageContent::ToolResponse(response) => response.id = id.to_string(),
+                _ => {}
+            }
+        }
+        exchange
+    }
+
+    /// Lane R62b-3: the evidence scan names what it credited and what it
+    /// refused. A vacuous pass is refused even when a genuine pass follows it,
+    /// and the verdict is unchanged.
+    #[test]
+    fn scan_verify_evidence_names_the_credited_pass_and_every_refused_vacuous_pass() {
+        let mut messages = with_call_id(vacuous_verify_exchange(), "vacuous-1");
+        messages.extend(with_call_id(verify_exchange(true), "genuine-1"));
+        messages.extend(with_call_id(vacuous_verify_exchange(), "vacuous-2"));
+        let scan = scan_verify_evidence(&messages);
+        assert!(scan.evidence.is_genuine());
+        assert_eq!(scan.credited.map(|(id, _)| id), Some("genuine-1"));
+        assert_eq!(scan.refused_vacuous, vec!["vacuous-1", "vacuous-2"]);
+
+        let only_vacuous = with_call_id(vacuous_verify_exchange(), "vacuous-1");
+        let scan = scan_verify_evidence(&only_vacuous);
+        assert!(matches!(scan.evidence, VerifyEvidence::Vacuous(_)));
+        assert!(scan.credited.is_none());
+        assert_eq!(scan.refused_vacuous, vec!["vacuous-1"]);
+    }
+
+    /// Lane R62b-3 (coordinator ruling on A61 miss 2): the hold review and the
+    /// landing gate both refuse a vacuous pass. Reading it, however many
+    /// times, records `vacuous_refused=1` and leaves the gated
+    /// `vacuous_passes` at 0.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn a_refused_vacuous_pass_counts_vacuous_refused_not_vacuous_passes() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_vacuous_verify_exchange(&pool, &card.id).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let session_id = card
+            .metadata_json
+            .get("worker_session_id")
+            .and_then(|v| v.as_str())
+            .expect("the stamp binds a worker session")
+            .to_string();
+
+        crate::receipts::begin_run();
+        let first = session_verify_evidence(&pool, Some(&session_id)).await;
+        let second = session_verify_evidence(&pool, Some(&session_id)).await;
+        let lines = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+
+        assert!(matches!(first, VerifyEvidence::Vacuous(_)));
+        assert!(matches!(second, VerifyEvidence::Vacuous(_)));
+        assert!(
+            lines[1].contains("vacuous_passes=0") && lines[1].ends_with("vacuous_refused=1"),
+            "got: {}",
+            lines[1]
+        );
+    }
+
+    /// Lane R62b-3: if an evidence read ever credits a vacuous pass, the
+    /// credit point records it as `vacuous_passes`, never as refused.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn a_credited_vacuous_pass_counts_vacuous_passes() {
+        let messages = with_call_id(vacuous_verify_exchange(), "vacuous-credited");
+        let crate::conversation::message::MessageContent::ToolResponse(response) = &messages[1]
+        else {
+            panic!("the fixture's second item is the response");
+        };
+        let result = response.tool_result.as_ref().unwrap();
+        let scan = VerifyEvidenceScan {
+            evidence: VerifyEvidence::Genuine,
+            credited: Some(("vacuous-credited", result)),
+            refused_vacuous: Vec::new(),
+        };
+
+        crate::receipts::begin_run();
+        record_verify_evidence_receipts("worker-session", &scan);
+        let lines = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+
+        assert!(
+            lines[1].contains("vacuous_passes=1") && lines[1].ends_with("vacuous_refused=0"),
+            "got: {}",
+            lines[1]
+        );
+    }
+
     #[tokio::test]
     async fn failed_verify_exchange_requeues_instead_of_reviewing() {
         let pool = test_pool().await;
@@ -26647,7 +26795,10 @@ mod tests {
     /// verify pass is vacuous must be held back to Ready exactly like a
     /// worker session with a real failure or no verify at all — never
     /// treated as "verified" just because the wire result says PASS.
+    // Lane R62b-3: reading a vacuous pass records `vacuous_refused` in the
+    // shared receipts registry when a run is active.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn vacuous_verify_exchange_requeues_instead_of_reviewing() {
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
@@ -35521,7 +35672,9 @@ mod tests {
     /// on the other end of the `approve_review`, so the refusal must behave
     /// exactly as it did before — decision open, card still in Review, no
     /// park.
+    // Lane R62b-3: records `vacuous_refused` when a receipts run is active.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn a_refusal_without_auto_land_leaves_the_approve_review_open() {
         let (repo, head) = v1_repo_with_finished_goal_branch("v1-noautoland-run");
         let root = repo.path().to_string_lossy().into_owned();
@@ -35573,7 +35726,9 @@ mod tests {
     /// stays open for a human, and — unlike the no-pass case — a durable
     /// receipt naming the reason is recorded on the card so a reviewer sees
     /// why headless landing declined to act.
+    // Lane R62b-3: records `vacuous_refused` when a receipts run is active.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn headless_auto_land_does_not_land_a_goal_with_only_a_vacuous_verifier_pass() {
         let (repo, head) = v1_repo_with_finished_goal_branch("v1-vacuous-noland-run");
         let root = repo.path().to_string_lossy().into_owned();

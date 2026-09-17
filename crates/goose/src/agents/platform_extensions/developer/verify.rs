@@ -124,6 +124,29 @@ pub fn is_genuine_pass(result: &CallToolResult) -> bool {
     is_authoritative_pass(result) && vacuous_pass_reason(result).is_none()
 }
 
+/// Lane R62b-3 (coordinator ruling on A61 miss 2): record what an evidence
+/// reader did with one vacuous verify PASS. `credited` records
+/// `verification_integrity.vacuous_passes`, the gated count of vacuous passes
+/// accepted as verify evidence. Otherwise it records `vacuous_refused`, which
+/// is observability only. Before this, `pass_result` counted `vacuous_passes`
+/// for every vacuous PASS the tool RETURNED, so a harness that correctly
+/// refused one (s3 named-check, msg 32-33 refused at msg 43/57) still failed
+/// verification integrity. Counted once per `session_id` and tool-call id, so
+/// the several readers that judge the same transcript (the after-turn guard,
+/// the hold review, the headless landing gate) count one pass once.
+pub fn record_vacuous_pass_judgement(session_id: &str, call_id: &str, credited: bool) {
+    let key = if credited {
+        "vacuous_passes"
+    } else {
+        "vacuous_refused"
+    };
+    crate::receipts::record_once(
+        "verification_integrity",
+        key,
+        &format!("{session_id}\n{call_id}"),
+    );
+}
+
 /// The verification boundary requested by the caller. `Auto` is deliberately
 /// conservative: it scopes checks to the changed files and never upgrades a
 /// docs or package change into a workspace-wide Rust test.
@@ -2951,10 +2974,10 @@ fn vacuous_pass_reason_for_checks(
 fn pass_result(checks: &[Check], outputs: &[String], dir: &Path) -> CallToolResult {
     let labels: Vec<&str> = checks.iter().map(|check| check.label.as_str()).collect();
     let message = format!("PASS - all checks passed: {}.", labels.join(", "));
+    // Lane R62b-3: no receipt here. Returning a vacuous PASS is not crediting
+    // it; the evidence readers record the judgement
+    // (`record_vacuous_pass_judgement`).
     let vacuous_reason = vacuous_pass_reason_for_checks(checks, outputs, dir);
-    if vacuous_reason.is_some() {
-        crate::receipts::record("verification_integrity", "vacuous_passes");
-    }
     observation(
         CallToolResult::success(vec![Content::text(message.clone()).with_priority(0.0)]),
         Some(&labels.join(", ")),
@@ -3065,7 +3088,7 @@ pub const NO_CHECKS_VERDICT: &str = "no_checks";
 /// `is_authoritative_pass` requires `verdict == "pass"`, this result now
 /// automatically reads as "no verify evidence" to every consumer that
 /// predicate feeds (`after_turn::scan_verify_positions`,
-/// `orchestrator::verify_evidence_in_messages`) — the done-claim path treats
+/// `orchestrator::scan_verify_evidence`) — the done-claim path treats
 /// it exactly like an unverified edit, which still routes to Review for the
 /// cross-family reviewer to inspect, rather than auto-landing on an
 /// unearned green.
@@ -5709,11 +5732,10 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
     /// R21c's headline receipt fix: zero checks — and no acceptance-criteria
     /// probe available to stand in for one — must never increment
-    /// `vacuous_passes`. `pass_result` is the only site in this module that
-    /// increments it, and `no_checks_result` never calls it; this test
+    /// `vacuous_passes`. Lane R62b-3: no result builder in this module records
+    /// it any more (see `record_vacuous_pass_judgement`); this test still
     /// exercises the real global registry end to end (the same pattern
-    /// `receipts.rs`'s own sidecar tests use) so a future refactor that
-    /// routes `no_checks_result` through `pass_result` would be caught here.
+    /// `receipts.rs`'s own sidecar tests use) so a regression is caught here.
     #[test]
     #[serial_test::serial(receipts_global_registry)]
     fn zero_checks_never_increments_the_vacuous_passes_receipt() {
@@ -5924,5 +5946,53 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         assert!(!is_genuine_pass(&result));
         assert!(vacuous_pass_reason(&result)
             .is_some_and(|reason| reason.contains("only defines tests")));
+    }
+
+    /// Lane R62b-3: returning a vacuous PASS is not crediting it. The verify
+    /// tool's own result builder must not move either vacuous counter.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn returning_a_vacuous_pass_does_not_move_the_verification_integrity_receipt() {
+        crate::receipts::begin_run();
+        let before = crate::receipts::snapshot().lines();
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &["test result: ok. 0 passed; 0 failed; 0 ignored".to_string()],
+            Path::new("."),
+        );
+        let after = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+        assert!(vacuous_pass_reason(&result).is_some());
+        assert_eq!(before[1], after[1]);
+        assert!(
+            after[1].contains("vacuous_passes=0") && after[1].ends_with("vacuous_refused=0"),
+            "got: {}",
+            after[1]
+        );
+    }
+
+    /// Lane R62b-3: a refused vacuous pass counts `vacuous_refused` and leaves
+    /// the gated `vacuous_passes` at 0, once per session and call however
+    /// many readers judge it. A credited one counts `vacuous_passes`.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn vacuous_pass_judgements_split_refused_from_credited() {
+        crate::receipts::begin_run();
+        record_vacuous_pass_judgement("worker-1", "call-a", false);
+        record_vacuous_pass_judgement("worker-1", "call-a", false);
+        let refused = crate::receipts::snapshot().lines();
+        record_vacuous_pass_judgement("worker-1", "call-b", true);
+        let credited = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+        assert!(
+            refused[1].contains("vacuous_passes=0") && refused[1].ends_with("vacuous_refused=1"),
+            "got: {}",
+            refused[1]
+        );
+        assert!(
+            credited[1].contains("vacuous_passes=1") && credited[1].ends_with("vacuous_refused=1"),
+            "got: {}",
+            credited[1]
+        );
     }
 }
