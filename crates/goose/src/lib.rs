@@ -56,6 +56,7 @@ pub mod growth;
 pub mod hall_backfill;
 pub mod hall_rules;
 pub mod harness_lease;
+pub mod harness_runs;
 pub mod hints;
 pub mod identity;
 pub mod inbox;
