@@ -1055,6 +1055,32 @@ async fn prior_plan_history(
     }
 }
 
+/// Ruling 2026-09-17 planning-complexity input (r64 s5): where the objective's
+/// camelCase / snake_case identifiers ([`text_code_identifiers`], sorted so the
+/// [`crate::cost_router::planner_complexity::PLANNING_MAX_IDENTIFIERS`] cap is
+/// deterministic) are defined and referenced in the repo at `root`, read from
+/// the repo-facts file list. Empty with no repo root or no files. Blocking file
+/// reads: call it off the async runtime.
+fn planning_identifier_references(
+    objective: &str,
+    repo_files: &[String],
+    root: Option<&std::path::Path>,
+) -> Vec<crate::cost_router::planner_complexity::IdentifierReferences> {
+    let Some(root) = root else {
+        return Vec::new();
+    };
+    if repo_files.is_empty() {
+        return Vec::new();
+    }
+    let mut identifiers: Vec<String> = text_code_identifiers(objective).into_iter().collect();
+    identifiers.sort();
+    crate::cost_router::planner_complexity::scan_identifier_references(
+        root,
+        repo_files,
+        &identifiers,
+    )
+}
+
 /// Builds the `payload` for the roadmap-approval `kind='choice'` Decision
 /// Inbox request — the single source of truth for this shape.
 /// `handle_decompose_roadmap` calls this to file the real decision, and
@@ -1716,7 +1742,13 @@ const CODE_IDENTIFIER_STOPWORDS: &[&str] = &[
 /// identifiers named in a goal's title or description, with file-shaped
 /// tokens dropped first so `quoteHandler.ts` never reads as an identifier.
 fn goal_code_identifiers(goal: &goal_state::ProposedGoal) -> HashSet<String> {
-    let text = format!("{} {}", goal.title, goal.description);
+    text_code_identifiers(&format!("{} {}", goal.title, goal.description))
+}
+
+/// The camelCase / snake_case code identifiers [`goal_code_identifiers`] reads,
+/// from any text. Shared with the planning-complexity assessment, which
+/// resolves the objective's identifiers against the repo.
+pub(crate) fn text_code_identifiers(text: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     for token in text.split_whitespace() {
         if looks_like_file_token(token) {
@@ -10932,11 +10964,27 @@ impl OrchestratorClient {
         // complex plans, not the default). Facts only — repo facts, the
         // objective's structure, and this project's plan history — never a
         // model's claim about difficulty.
+        // r64 s5: named paths are grounded against the repo's files, and the
+        // objective's code identifiers are resolved in the repo so a signature
+        // change that fans out to its callers is COMPLEX even when the
+        // objective names no file.
+        let identifier_references = {
+            let objective = objective.clone();
+            let files = facts.files.clone();
+            let root = facts_dir.map(std::path::Path::to_path_buf);
+            tokio::task::spawn_blocking(move || {
+                planning_identifier_references(&objective, &files, root.as_deref())
+            })
+            .await
+            .unwrap_or_default()
+        };
         let planning_complexity =
             crate::cost_router::planner_complexity::assess_planning_complexity(
                 &crate::cost_router::planner_complexity::PlanningFacts {
                     objective: &objective,
                     repo_file_count: facts.file_count,
+                    repo_files: &facts.files,
+                    identifier_references: &identifier_references,
                     history: prior_plan_history(&pool, &project).await,
                 },
             );
@@ -10945,6 +10993,8 @@ impl OrchestratorClient {
             project = %project.slug,
             planner_complexity = %planning_complexity.complexity.as_str(),
             reasons = %planning_complexity.reasons.join("; "),
+            signature_changes = %planning_complexity.signature_changes.join(","),
+            identifier_reference_files = planning_complexity.identifier_reference_files,
             "roadmap decomposition: planning complexity assessed",
         );
 
@@ -13032,6 +13082,14 @@ fn parse_roadmap_response(response: &str) -> Result<Vec<goal_state::ProposedGoal
 /// Run one decomposition pass against `provider`: call the model, parse goals,
 /// and retry once with a stricter prompt if the first parse fails. Used for
 /// both the cheap pass and the strong-model escalation (#249).
+///
+/// The call runs on the provider's OWN model (`complete_accounted`), never its
+/// fast model. r64 s5: the planning-complexity gate routed a COMPLEX plan to
+/// `anthropic/claude-fable-5`, but `complete_fast_accounted` swapped in the
+/// Anthropic provider's default fast model (`claude-haiku-4-5`,
+/// `providers/anthropic.rs`), so a Haiku plan was billed while the receipt
+/// named Fable. The planner is chosen by the gate; the provider may not
+/// silently downgrade it.
 async fn run_decomposition(
     provider: &Arc<dyn Provider>,
     manager: &Arc<SessionManager>,
@@ -13039,7 +13097,7 @@ async fn run_decomposition(
     system: &str,
     user_message: &crate::conversation::message::Message,
 ) -> Result<Vec<goal_state::ProposedGoal>, DecompositionError> {
-    let (response, _usage) = AccountedFastCompletion::complete_fast_accounted(
+    let (response, _usage) = AccountedFastCompletion::complete_accounted(
         Arc::clone(manager),
         session.clone(),
         Arc::clone(provider),
@@ -13063,7 +13121,7 @@ async fn run_decomposition(
                  Output ONLY the JSON object with the \"goals\" array. No prose, no markdown fences."
                     .to_string(),
             );
-            let (retry_resp, _) = AccountedFastCompletion::complete_fast_accounted(
+            let (retry_resp, _) = AccountedFastCompletion::complete_accounted(
                 Arc::clone(manager),
                 session.clone(),
                 Arc::clone(provider),
@@ -40619,6 +40677,54 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         .await
         .unwrap();
         (project, card)
+    }
+
+    /// r64 s5, end to end through the decomposition's own fact gathering:
+    /// `RepoFacts::gather` on the fixture repo plus
+    /// `planning_identifier_references` make the fixture prompt (no file path,
+    /// an 8-file repo) COMPLEX, while a one-file typo fix stays ROUTINE.
+    #[test]
+    fn n4_decomposition_facts_make_the_r64_s5_objective_complex_and_a_typo_routine() {
+        use crate::cost_router::planner_complexity::{
+            assess_planning_complexity, PlanningComplexity, PlanningFacts, PriorPlanHistory,
+            R64_S5_FIXTURE_FILES, R64_S5_TASK_PROMPT,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        for (path, content) in R64_S5_FIXTURE_FILES {
+            let full = dir.path().join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, content).unwrap();
+        }
+        let facts = RepoFacts::gather(dir.path());
+        assert!(facts.file_count < 500, "the fixture is a small repo");
+        let assess = |objective: &str| {
+            let references =
+                planning_identifier_references(objective, &facts.files, Some(dir.path()));
+            assess_planning_complexity(&PlanningFacts {
+                objective,
+                repo_file_count: facts.file_count,
+                repo_files: &facts.files,
+                identifier_references: &references,
+                history: PriorPlanHistory::default(),
+            })
+        };
+        let s5 = assess(R64_S5_TASK_PROMPT);
+        assert_eq!(
+            s5.complexity,
+            PlanningComplexity::Complex,
+            "{:?}",
+            s5.reasons
+        );
+        assert_eq!(s5.signature_changes, vec!["quoteShipping".to_string()]);
+        let typo = assess("Fix the typo \"recieve\" in README.md.");
+        assert_eq!(
+            typo.complexity,
+            PlanningComplexity::Routine,
+            "{:?}",
+            typo.reasons
+        );
+        // No repo root: nothing to resolve, nothing promoted by the scan.
+        assert!(planning_identifier_references(R64_S5_TASK_PROMPT, &facts.files, None).is_empty());
     }
 
     /// Ruling 2026-09-17: the planning-complexity gate's plan-history input
