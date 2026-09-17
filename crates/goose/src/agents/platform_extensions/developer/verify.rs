@@ -3107,13 +3107,319 @@ fn uninvoked_python_tests_reason(check: &Check, output: &str, dir: &Path) -> Opt
     ))
 }
 
+/// Lane R65b: how one top-level segment of a shell command line joins to the
+/// segment before it — the operators [`split_shell_segments`] splits on.
+/// `Seq` covers both `;` and a newline: both hand the shell's exit status to
+/// whatever runs next, exactly the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellConnector {
+    And,
+    Or,
+    Seq,
+}
+
+/// Lane R65b: one top-level command segment of a shell command line, as
+/// [`split_shell_segments`] finds it. `connector_before` is the operator
+/// joining this segment to the previous one (`None` for the first segment).
+#[derive(Debug, Clone, PartialEq)]
+struct ShellSegment {
+    connector_before: Option<ShellConnector>,
+    text: String,
+}
+
+/// Lane R65b: split `command` into the top-level segments a POSIX shell
+/// would sequence — on `;`, a newline, `&&`, or `||` — WITHOUT treating any
+/// such character found inside a single- or double-quoted string as a
+/// separator (so `echo "a || b"` is one segment, not three). Deliberately
+/// not a full shell grammar (no subshells, no `$(...)`, no backslash
+/// escaping outside quotes): it exists only to let the exit-status-masking
+/// checks below see how a check's command is SEQUENCED.
+fn split_shell_segments(command: &str) -> Vec<ShellSegment> {
+    fn push_segment(
+        segments: &mut Vec<ShellSegment>,
+        current: &mut String,
+        connector: Option<ShellConnector>,
+    ) {
+        segments.push(ShellSegment {
+            connector_before: connector,
+            text: current.trim().to_string(),
+        });
+        current.clear();
+    }
+
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut pending_connector: Option<ShellConnector> = None;
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            current.push(c);
+            if q == '"' && c == '\\' {
+                // An escaped character inside a double-quoted string (e.g.
+                // `\"`) never ends the string early.
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+                continue;
+            }
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                current.push(c);
+            }
+            '\n' | ';' => {
+                push_segment(&mut segments, &mut current, pending_connector.take());
+                pending_connector = Some(ShellConnector::Seq);
+            }
+            '&' if chars.peek() == Some(&'&') => {
+                chars.next();
+                push_segment(&mut segments, &mut current, pending_connector.take());
+                pending_connector = Some(ShellConnector::And);
+            }
+            '|' if chars.peek() == Some(&'|') => {
+                chars.next();
+                push_segment(&mut segments, &mut current, pending_connector.take());
+                pending_connector = Some(ShellConnector::Or);
+            }
+            _ => current.push(c),
+        }
+    }
+    push_segment(&mut segments, &mut current, pending_connector.take());
+    segments.retain(|segment| !segment.text.is_empty());
+    segments
+}
+
+/// Lane R65b: split one [`ShellSegment`]'s text into words the way a POSIX
+/// shell would — just enough to read a command's program name and its first
+/// argument for [`shell_word_always_succeeds`], not a full shell grammar.
+/// Quotes are consumed as delimiters (their contents survive, unquoted).
+fn shell_words(segment: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut chars = segment.chars();
+
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            if q == '"' && c == '\\' {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+                continue;
+            }
+            if c == q {
+                quote = None;
+            } else {
+                current.push(c);
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                in_word = true;
+            }
+            c if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut current));
+                    in_word = false;
+                }
+            }
+            _ => {
+                current.push(c);
+                in_word = true;
+            }
+        }
+    }
+    if in_word {
+        words.push(current);
+    }
+    words
+}
+
+/// Lane R65b: true when a shell segment's OWN exit status can never be
+/// anything but success, regardless of what it does — the shape used to mask
+/// a real check's failure (`|| true`, `|| :`, `|| exit 0`, `|| echo …`, a
+/// trailing `; true`/`; echo …`/`; printf …`, or the `node -e '…'` one-liner
+/// the r65 s1 fixture used as a fake "no runner" stand-in). Deliberately
+/// narrow: `exit` only counts with a literal `0` argument (bare `exit`
+/// forwards `$?`, and `exit 1` is a legitimate FAILING fallback), and no
+/// other program name is treated as unconditionally successful.
+fn shell_word_always_succeeds(words: &[String]) -> bool {
+    match words.first().map(String::as_str) {
+        Some("true") | Some(":") | Some("echo") | Some("printf") => true,
+        Some("exit") => words.get(1).map(String::as_str) == Some("0"),
+        Some("node") => words.get(1).map(String::as_str) == Some("-e"),
+        _ => false,
+    }
+}
+
+/// Lane R65b: render `segments` with every index in `masked` (and its
+/// connector) removed — the "mask stripped" command [`exit_masking_reason`]
+/// suggests running directly instead of the swallowed check.
+fn render_segments_without(
+    segments: &[ShellSegment],
+    masked: &std::collections::BTreeSet<usize>,
+) -> String {
+    let mut out = String::new();
+    for (index, segment) in segments.iter().enumerate() {
+        if masked.contains(&index) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(match segment.connector_before {
+                Some(ShellConnector::And) => " && ",
+                Some(ShellConnector::Or) => " || ",
+                Some(ShellConnector::Seq) => "; ",
+                None => " ",
+            });
+        }
+        out.push_str(&segment.text);
+    }
+    out
+}
+
+/// Lane R65b: the final vacuous-reason text for an exit-status-masking
+/// command — always names the offending `fragment`, and when a concrete
+/// mask-stripped command is available (R64a's own style: a vacuous reason
+/// that names the exact fix rather than describing it), suggests calling
+/// `verify` again with it as the `command` parameter instead of the generic
+/// "run the test command directly".
+fn masking_reason_text(fragment: &str, suggested_command: Option<&str>) -> String {
+    let tail = match suggested_command.map(str::trim) {
+        Some(command) if !command.is_empty() => {
+            format!("call `verify` again with the `command` parameter set to `{command}`")
+        }
+        _ => "run the test command directly".to_string(),
+    };
+    format!(
+        "the check command masks its own exit status (`{fragment}`), so a PASS proves nothing; \
+         {tail}"
+    )
+}
+
+/// Lane R65b: `set +e` turns off the shell's default fail-fast behavior for
+/// everything after it; without some later `$?`-checking propagation (an
+/// `exit $?`, an `... $? ... || exit 1`, or similar), the script's own exit
+/// status ends up being whatever its LAST command happened to return — the
+/// same trap as [`exit_masking_reason`]'s trailing-command case, just spelled
+/// with `set` instead of `;`. Deliberately loose about what counts as
+/// "propagation": anything mentioning `$?` after the `set +e` is taken as
+/// evidence the script means to check it, since a false negative here (an
+/// undetected genuine propagation) is the safe direction — see this module's
+/// standing bias toward missing a vacuous pass over blocking a real one.
+fn set_minus_e_masking_reason(segments: &[ShellSegment]) -> Option<String> {
+    let set_index = segments.iter().position(|segment| {
+        let words = shell_words(&segment.text);
+        words.first().map(String::as_str) == Some("set") && words.iter().any(|word| word == "+e")
+    })?;
+    let propagated = segments[set_index + 1..]
+        .iter()
+        .any(|segment| segment.text.contains("$?"));
+    if propagated {
+        return None;
+    }
+    Some(masking_reason_text("set +e", None))
+}
+
+/// Lane R65b (M49 r65 s1, fixture `harness-refactor-shipping-quote-signature`):
+/// a check command whose own exit status structurally CANNOT reflect whether
+/// the real test/build step it wraps passed or failed. Evidence: the
+/// worker's "passing" verify command was of the form `<real test command> ||
+/// true; node -e 'console.log("no runner")'` — that exits 0 no matter what
+/// the real command did, because a `||` fallback that always succeeds
+/// swallows its failure AND the trailing `; node -e …` makes the shell's
+/// final exit status come from a command that never ran anything at all. The
+/// existing vacuous-pass checks never caught this: they inspect the check's
+/// OUTPUT for test-count markers, but a masked exit status can accompany
+/// output that looks perfectly innocent (or empty). This one instead reads
+/// the command's TEXT with a small shell-aware tokenizer
+/// ([`split_shell_segments`]) that respects quoting.
+///
+/// Flags, in order: (1) a `||` fallback whose right-hand side always
+/// succeeds ([`shell_word_always_succeeds`]) — `|| true`, `|| :`, `|| exit
+/// 0`, `|| echo …`; (2) a trailing unconditional command after a `;`/newline
+/// that always succeeds, since a shell's own exit status is always the LAST
+/// command's; (3) [`set_minus_e_masking_reason`]. Deliberately does NOT flag
+/// an ordinary chain (`cmd1 && cmd2`, `cd dir && pytest`), a pipeline
+/// (`set -o pipefail` or not), or a `||` fallback that itself FAILS (`||
+/// exit 1`, `|| false`) — none of those hide a failing exit code.
+fn exit_masking_reason(command: &str) -> Option<String> {
+    let segments = split_shell_segments(command);
+    if segments.len() < 2 {
+        return set_minus_e_masking_reason(&segments);
+    }
+
+    let mut masked = std::collections::BTreeSet::new();
+    for (index, segment) in segments.iter().enumerate() {
+        if segment.connector_before == Some(ShellConnector::Or)
+            && shell_word_always_succeeds(&shell_words(&segment.text))
+        {
+            masked.insert(index);
+        }
+    }
+    let last_index = segments.len() - 1;
+    let last = &segments[last_index];
+    if last.connector_before == Some(ShellConnector::Seq)
+        && shell_word_always_succeeds(&shell_words(&last.text))
+    {
+        masked.insert(last_index);
+    }
+
+    if masked.is_empty() {
+        return set_minus_e_masking_reason(&segments);
+    }
+
+    let fragment: String = masked
+        .iter()
+        .map(|&index| {
+            let segment = &segments[index];
+            match segment.connector_before {
+                Some(ShellConnector::And) => format!("&& {}", segment.text),
+                Some(ShellConnector::Or) => format!("|| {}", segment.text),
+                Some(ShellConnector::Seq) => format!("; {}", segment.text),
+                None => segment.text.clone(),
+            }
+        })
+        .collect();
+    let suggestion = render_segments_without(&segments, &masked);
+    Some(masking_reason_text(&fragment, Some(&suggestion)))
+}
+
+/// Lane R65b: [`exit_masking_reason`] applied to every check whose `exec` is
+/// [`Exec::Shell`] — today, exactly the explicit-`command` path
+/// ([`VerifyTool::verify_with_cwd`]). A [`Check::direct`] check never goes
+/// through a shell at all, so `||`/`;`/`&&` in its arguments are inert
+/// literal text, not operators, and can never mask anything; a
+/// [`Check::probe`] auto-detected acceptance-criterion check only builds an
+/// `Exec::Shell` check TEMPORARILY, inside [`run_probe_check`]'s own
+/// delegation to run it, so its `Exec::Probe(ProbeKind::CommandExitsZero)`
+/// form here is out of scope for this lane.
+fn exit_status_masking_reason(checks: &[Check]) -> Option<String> {
+    checks.iter().find_map(|check| match &check.exec {
+        Exec::Shell(command) => exit_masking_reason(command),
+        _ => None,
+    })
+}
+
 /// X-verify-2: why a set of PASSED checks does not count as real coverage, if
-/// any reason applies. Checked in order: (1) every check that ran was a
+/// any reason applies. Checked in order: (1) Lane R65b: a check's own command
+/// TEXT masks its exit status ([`exit_status_masking_reason`]) — checked
+/// before output-shape inspection because a masked exit code can accompany
+/// output that looks perfectly ordinary; (2) every check that ran was a
 /// syntax-only smoke ([`Check::is_smoke`]) — the code was never executed at
-/// all; (2) the combined output of the checks that actually ran contains a
+/// all; (3) the combined output of the checks that actually ran contains a
 /// recognized "zero tests" marker ([`ZERO_TESTS_RE`]) AND no counter-marker
 /// ([`NONZERO_TESTS_RE`]) proving some other target in the same output did run
-/// tests — a real test command that nonetheless collected/ran nothing; (3)
+/// tests — a real test command that nonetheless collected/ran nothing; (4)
 /// Lane R62b-2: a check ran a Python test file as a plain script that never
 /// invokes its tests ([`uninvoked_python_tests_reason`]). `dir` is the
 /// directory the checks ran in. `None` when none applies: a genuine pass.
@@ -3122,6 +3428,9 @@ fn vacuous_pass_reason_for_checks(
     outputs: &[String],
     dir: &Path,
 ) -> Option<String> {
+    if let Some(reason) = exit_status_masking_reason(checks) {
+        return Some(reason);
+    }
     if !checks.is_empty() && checks.iter().all(|check| check.is_smoke) {
         return Some(
             "only a syntax-only smoke check ran (e.g. `py_compile`/`node --check`) — the code \
@@ -6285,6 +6594,154 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             credited[1].contains("vacuous_passes=1") && credited[1].ends_with("vacuous_refused=1"),
             "got: {}",
             credited[1]
+        );
+    }
+
+    /// Lane R65b (M49 r65 s1): a `||` fallback that always succeeds swallows
+    /// whatever the real check's exit status would have been.
+    #[test]
+    fn or_fallback_that_always_succeeds_is_vacuous() {
+        let dir = tempfile::tempdir().unwrap();
+        for fallback in ["true", ":", "exit 0", "echo done"] {
+            let command = format!("pytest -q || {fallback}");
+            let result = pass_result(&[Check::shell(&command)], &["ok".to_string()], dir.path());
+            let reason = vacuous_pass_reason(&result)
+                .unwrap_or_else(|| panic!("expected `{command}` to be vacuous"));
+            assert!(
+                reason.contains("masks its own exit status"),
+                "got: {reason}"
+            );
+            assert!(reason.contains(&format!("|| {fallback}")), "got: {reason}");
+        }
+    }
+
+    /// Lane R65b: a shell's own exit status is always its LAST command's, so
+    /// an always-succeeding tail after `;` (or a newline) masks whatever ran
+    /// before it, exactly as the r65 s1 fixture's `node -e 'console.log(…)'`
+    /// tail did.
+    #[test]
+    fn trailing_unconditional_command_after_separator_is_vacuous() {
+        let dir = tempfile::tempdir().unwrap();
+        for tail in [
+            "true",
+            "echo done",
+            "exit 0",
+            "node -e 'console.log(1)'",
+            "printf ok",
+        ] {
+            let command = format!("pytest -q; {tail}");
+            let result = pass_result(&[Check::shell(&command)], &["ok".to_string()], dir.path());
+            let reason = vacuous_pass_reason(&result)
+                .unwrap_or_else(|| panic!("expected `{command}` to be vacuous"));
+            assert!(
+                reason.contains("masks its own exit status"),
+                "got: {reason}"
+            );
+        }
+        // The same trailing shape over a newline instead of `;`.
+        let result = pass_result(
+            &[Check::shell("pytest -q\ntrue")],
+            &["ok".to_string()],
+            dir.path(),
+        );
+        assert!(vacuous_pass_reason(&result).is_some());
+    }
+
+    /// Lane R65b: `set +e` with no later `$?`-checking propagation leaves the
+    /// script's exit status entirely up to whatever ran last.
+    #[test]
+    fn set_plus_e_without_later_propagation_is_vacuous() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = pass_result(
+            &[Check::shell("set +e\npytest -q")],
+            &["ok".to_string()],
+            dir.path(),
+        );
+        let reason = vacuous_pass_reason(&result).expect("vacuous");
+        assert!(reason.contains("set +e"), "got: {reason}");
+    }
+
+    /// Lane R65b: `set +e` followed by an explicit `$?` check propagates the
+    /// real status, so this is not masking.
+    #[test]
+    fn set_plus_e_with_later_exit_status_check_is_genuine() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = pass_result(
+            &[Check::shell("set +e\npytest -q\nexit $?")],
+            &["1 passed".to_string()],
+            dir.path(),
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+    }
+
+    /// Lane R65b: ordinary chains, a pipeline, and a `||` fallback that
+    /// itself FAILS never hide a failing exit code, so none of these are
+    /// masking.
+    #[test]
+    fn ordinary_chains_and_failing_fallbacks_stay_genuine() {
+        let dir = tempfile::tempdir().unwrap();
+        for command in [
+            "pytest -q && echo done",
+            "cd subdir && pytest -q",
+            "set -o pipefail && cargo test | tee out.log",
+            "pytest -q || exit 1",
+            "pytest -q || false",
+        ] {
+            let result = pass_result(
+                &[Check::shell(command)],
+                &["1 passed".to_string()],
+                dir.path(),
+            );
+            assert_eq!(
+                vacuous_pass_reason(&result),
+                None,
+                "`{command}` must not be flagged as masking"
+            );
+        }
+    }
+
+    /// Lane R65b: a `||` or `;` that appears only INSIDE a quoted string is
+    /// not a shell operator and must never be mistaken for one.
+    #[test]
+    fn quoted_operators_inside_a_string_are_not_shell_operators() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = pass_result(
+            &[Check::shell("pytest -q && echo \"a || b; c\"")],
+            &["1 passed".to_string()],
+            dir.path(),
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+    }
+
+    /// Lane R65b (M49 r65 s1, fixture `harness-refactor-shipping-quote-signature`):
+    /// the worker's "passing" verify command, verbatim in shape — a real
+    /// test command whose failure is swallowed by `|| true`, then a trailing
+    /// `node -e 'console.log("no runner")'` that always succeeds and whose
+    /// exit status is therefore all `verify` actually saw. Also checks the
+    /// suggested fix names the mask-stripped command directly (R64a's own
+    /// style), not just a generic "run it yourself".
+    #[test]
+    fn r65_s1_command_is_vacuous_with_a_mask_stripped_suggestion() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_command = "npm test --silent";
+        let command = format!("{real_command} || true; node -e 'console.log(\"no runner\")'");
+        let result = pass_result(
+            &[Check::shell(&command)],
+            &["(no output)".to_string()],
+            dir.path(),
+        );
+        assert!(is_authoritative_pass(&result));
+        assert!(!is_genuine_pass(&result));
+        let reason = vacuous_pass_reason(&result).expect("vacuous");
+        assert!(
+            reason.contains("masks its own exit status"),
+            "got: {reason}"
+        );
+        assert!(reason.contains("|| true"), "got: {reason}");
+        assert!(reason.contains("node -e"), "got: {reason}");
+        assert!(
+            reason.contains(&format!("set to `{real_command}`")),
+            "got: {reason}"
         );
     }
 }
