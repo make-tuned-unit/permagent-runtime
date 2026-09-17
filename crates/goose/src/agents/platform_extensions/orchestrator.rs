@@ -17244,9 +17244,19 @@ async fn independent_review_before_auto_land(
         auto_land_review = %record,
         "headless Auto: independent review before auto-land",
     );
-    // Lane R66a: a goal sent back once keeps its earlier review rounds (read
-    // fresh: the caller's card snapshot can predate the send-back record).
-    let prior = cards::get_card(pool, &card.id)
+    record_auto_land_review(pool, &card.id, record).await;
+    outcome
+}
+
+/// Write `auto_land_review` on the card. Lane R66a: a goal sent back once
+/// keeps its earlier review rounds (read fresh: the caller's card snapshot can
+/// predate the send-back record). Best-effort: a write failure is logged.
+async fn record_auto_land_review(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    record: serde_json::Value,
+) {
+    let prior = cards::get_card(pool, card_id)
         .await
         .ok()
         .flatten()
@@ -17254,7 +17264,7 @@ async fn independent_review_before_auto_land(
     let record = auto_land_review_carrying_sent_back_rounds(prior.as_ref(), record);
     if let Err(e) = cards::merge_card_metadata(
         pool,
-        &card.id,
+        card_id,
         serde_json::json!({ AUTO_LAND_REVIEW_METADATA_KEY: record }),
         false,
     )
@@ -17262,11 +17272,10 @@ async fn independent_review_before_auto_land(
     {
         tracing::warn!(
             target: "permagentd::brain",
-            goal_id = %card.id,
+            goal_id = %card_id,
             "could not record the auto-land review outcome: {e}"
         );
     }
-    outcome
 }
 
 /// Card metadata key for [`independent_review_before_auto_land`]'s outcome.
@@ -41815,6 +41824,147 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 AutoLandReviewRequirement::Required { .. }
             ),
             "{ten:?}"
+        );
+    }
+
+    // ── Lane R66a: a review's concrete findings go back to the worker once ──
+
+    /// A verified goal in Review with its `approve_review` decision, as the
+    /// completion handler leaves it before the independent review.
+    async fn r66a_reviewed_goal(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        attempt_count: u64,
+    ) -> (cards::Card, decisions::Decision) {
+        let card = setup_goal_in_state(pool, "review", attempt_count).await;
+        stamp_successful_verify(pool, &card.id).await;
+        let decision = v2_review_decision(pool, &card.id, Some("coord-session-1")).await;
+        let card = cards::get_card(pool, &card.id).await.unwrap().unwrap();
+        (card, decision)
+    }
+
+    /// The r66 s1 `cli-argparse` finding.
+    const R66A_HELP_FINDING: &str = "[CORRECTNESS] Help flag (-h/--help) broken due to \
+                                     add_help=False (logfilter/cli.py:7-8, 11)";
+
+    fn r66a_changes_requested() -> AutoLandReview {
+        AutoLandReview::ChangesRequested {
+            reason: format!(
+                "an independent review is required (review complexity is moderate) and did not \
+                 approve: the independent reviewer requested changes: {R66A_HELP_FINDING}"
+            ),
+            findings: vec![R66A_HELP_FINDING.to_string()],
+        }
+    }
+
+    async fn r66a_state(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) -> String {
+        let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
+        cards::get_column(pool, &card.column_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state_binding
+            .unwrap_or_default()
+    }
+
+    /// Interactive (no headless auto-land): the review's request for changes
+    /// is left exactly where a human finds it — the card stays in Review, the
+    /// `approve_review` stays open, nothing is sent back or parked.
+    #[tokio::test]
+    async fn r66a_interactive_review_changes_are_left_for_a_human() {
+        let pool = test_pool().await;
+        let (card, decision) = r66a_reviewed_goal(&pool, 1).await;
+
+        settle_verified_goal_review(
+            &pool,
+            &decision.id,
+            &card,
+            false,
+            None,
+            r66a_changes_requested(),
+            DEFAULT_HEADLESS_MAX_REDISPATCH,
+        )
+        .await;
+
+        assert_eq!(r66a_state(&pool, &card.id).await, "review");
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert!(updated
+            .metadata_json
+            .get(REVIEW_SEND_BACK_COUNT_METADATA_KEY)
+            .is_none());
+        assert!(updated
+            .metadata_json
+            .get(REVIEW_FINDINGS_METADATA_KEY)
+            .is_none());
+        let d = decisions::get_decision(&pool, &decision.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.status, "open", "a human still answers the review");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_none(),
+            "nothing is parked interactively"
+        );
+    }
+
+    /// Receipts stay honest: a goal that reaches Review, is sent back and
+    /// reaches Review again is still one `review_reached`, and the send-back
+    /// itself records nothing (the re-dispatch is what `dispatch_goal_fn`
+    /// counts under `cost_routing dispatches`).
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn r66a_a_sent_back_goal_reaching_review_again_is_not_credited_twice() {
+        fn review_reached() -> u64 {
+            let lines = crate::receipts::snapshot().lines();
+            lines[1]
+                .split_whitespace()
+                .find_map(|field| field.strip_prefix("review_reached="))
+                .and_then(|n| n.parse().ok())
+                .expect("review_reached is known")
+        }
+        let pool = test_pool().await;
+        let (card, decision) = r66a_reviewed_goal(&pool, 1).await;
+        crate::receipts::begin_run();
+        let _ = crate::events::goal_state_changed(
+            &card.id,
+            Some(card.project_id.as_str()),
+            Some("in_progress"),
+            "review",
+            decisions::ACTOR_SYSTEM,
+        );
+        let first_reach = review_reached();
+
+        settle_verified_goal_review(
+            &pool,
+            &decision.id,
+            &card,
+            true,
+            Some("coord-session-1"),
+            r66a_changes_requested(),
+            DEFAULT_HEADLESS_MAX_REDISPATCH,
+        )
+        .await;
+        let after_send_back = review_reached();
+        let _ = crate::events::goal_state_changed(
+            &card.id,
+            Some(card.project_id.as_str()),
+            Some("in_progress"),
+            "review",
+            decisions::ACTOR_SYSTEM,
+        );
+        let after_second_review = review_reached();
+        crate::receipts::end_run();
+
+        assert_eq!(r66a_state(&pool, &card.id).await, "ready");
+        assert_eq!(
+            after_send_back, first_reach,
+            "the send-back records nothing"
+        );
+        assert_eq!(
+            after_second_review, first_reach,
+            "the same goal reaching Review again is not credited twice"
         );
     }
 
