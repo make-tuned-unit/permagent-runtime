@@ -41359,6 +41359,7 @@ mod tests {
     /// (`select-existing-roadmap-resumes-not-redecomposes`, 3 of 10
     /// headless DeepSeek records).
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn goal_advance_dispatch_refuses_a_paused_roadmaps_ready_goal_and_names_resume_roadmap() {
         use crate::projects::PERSONAL_PROJECT_ID;
         let tmp = tempfile::tempdir().unwrap();
@@ -41496,6 +41497,7 @@ mod tests {
     /// unpaused project's dispatch is untouched by R57a — it fails, or
     /// succeeds, for exactly the reasons it did before.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn dispatch_of_an_unpaused_projects_goal_is_untouched_by_the_pause_gate() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(crate::session::SessionManager::new(
@@ -45050,8 +45052,7 @@ mod tests {
         // actually being asked, whether anything was narrowed away.
         let parent = parent_extensions_fn(&context);
         let parent_keys: Vec<String> = parent.iter().map(|ext| ext.key()).collect();
-        let unrestricted_keys: Vec<String> =
-            unrestricted.iter().map(|ext| ext.key()).collect();
+        let unrestricted_keys: Vec<String> = unrestricted.iter().map(|ext| ext.key()).collect();
         assert_eq!(
             unrestricted_keys, parent_keys,
             "must be identical to parent_extensions_fn's own output, not narrowed at all"
