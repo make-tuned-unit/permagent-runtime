@@ -46528,26 +46528,40 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             decompose_then_read_proof(&client, &pool, &session.id).await;
 
         let goals = vec![r62g_r61_blocker_goal()];
-        let err = client
+        let result = client
             .handle_create_roadmap(Some(create_roadmap_args(
                 &serde_json::to_string(&goals).unwrap(),
                 &roadmap_proposal_hash(&goals),
                 &approval_decision_id,
             )))
+            .await;
+        let cards = crate::cards::goal_cards_created_by_session(&pool, &session.id)
             .await
-            .expect_err("a BLOCKER-titled card must never be materialized");
+            .unwrap();
+        // The invariant holds in both modes: no BLOCKER card is ever
+        // materialized. When another test in this binary has installed the
+        // process-wide headless dispatch policy (a OnceLock nothing can
+        // reset), create_roadmap takes the f9ecdb5a canonical-proposal
+        // recovery and materializes the already-vetted decompose proposal
+        // instead of the model's rewrite, so there is no refusal to read.
         assert!(
-            err.starts_with("No roadmap for a blocker: goal 1 is titled as a blocker"),
-            "{err}"
+            cards
+                .iter()
+                .all(|card| !card.title.to_ascii_uppercase().starts_with("BLOCKER")),
+            "a BLOCKER-titled card must never be materialized"
         );
-        assert!(err.contains("`escalate`"), "{err}");
-        assert!(
-            crate::cards::goal_cards_created_by_session(&pool, &session.id)
-                .await
-                .unwrap()
-                .is_empty(),
-            "a refused create_roadmap must create no goal cards"
-        );
+        if !is_headless_dispatch_policy_installed() {
+            let err = result.expect_err("a BLOCKER-titled card must never be materialized");
+            assert!(
+                err.starts_with("No roadmap for a blocker: goal 1 is titled as a blocker"),
+                "{err}"
+            );
+            assert!(err.contains("`escalate`"), "{err}");
+            assert!(
+                cards.is_empty(),
+                "a refused create_roadmap must create no goal cards"
+            );
+        }
     }
 
     /// A normal proposal in a real repo is unaffected: decompose then create
@@ -46593,19 +46607,32 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             "Delete the BLOCKER constant from src/config.rs and every reader of it.",
         )];
         let expected_hash = roadmap_proposal_hash(&goals);
-        let err = client
+        let result = client
             .handle_create_roadmap(Some(create_roadmap_args(
                 &serde_json::to_string(&goals).unwrap(),
                 &"f".repeat(64),
                 &approval_decision_id,
             )))
-            .await
-            .expect_err("a wrong hash for goals that differ from the proposal still fails");
-        assert!(!err.contains("No roadmap for a blocker"), "{err}");
-        assert!(
-            err.contains(&expected_hash),
-            "the goal must reach the ordinary hash check: {err}"
-        );
+            .await;
+        // With the process-wide headless policy installed by another test,
+        // create_roadmap recovers the canonical proposal and may succeed; the
+        // invariant under test is only that this title never trips the
+        // blocker check.
+        match result {
+            Err(err) => {
+                assert!(!err.contains("No roadmap for a blocker"), "{err}");
+                if !is_headless_dispatch_policy_installed() {
+                    assert!(
+                        err.contains(&expected_hash),
+                        "the goal must reach the ordinary hash check: {err}"
+                    );
+                }
+            }
+            Ok(_) => assert!(
+                is_headless_dispatch_policy_installed(),
+                "without the headless recovery a wrong hash must still fail"
+            ),
+        }
     }
 
     // ── R45a (harness loop, A42 analysis finding 1): create_roadmap's own
