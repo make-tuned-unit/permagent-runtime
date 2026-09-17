@@ -668,7 +668,7 @@ impl VerifyTool {
         // genuine `pass_result`.
         match smoke_without_real_check {
             Some(reason) => no_checks_result(&reason),
-            None => pass_result(&checks, &passed_outputs),
+            None => pass_result(&checks, &passed_outputs, &base_dir),
         }
     }
 }
@@ -2833,15 +2833,96 @@ fn nonzero_test_marker(output: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
+/// Lane R62b-2: a Python test definition — a `def test*(` function or method,
+/// or a class deriving from a `TestCase`.
+static PYTHON_TEST_DEFINITION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)^[ \t]*(?:async[ \t]+)?def[ \t]+test\w*[ \t]*\(|^[ \t]*class[ \t]+\w+[ \t]*\([^)]*\bTestCase\b",
+    )
+    .unwrap()
+});
+
+/// Lane R62b-2: anything that makes running a Python file as a script actually
+/// run its tests — a `__main__` guard (whatever it calls), `unittest.main`,
+/// `pytest.main`, or an unindented, module-level call to a `test*` function.
+/// Deliberately broad: a file that matches is never flagged.
+static PYTHON_TEST_RUNNER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)__main__|\bunittest\.main\b|\bpytest\.main\b|^test\w*[ \t]*\(").unwrap()
+});
+
+/// Lane R62b-2: unittest's own count line (`Ran 3 tests in 0.001s`), which
+/// [`NONZERO_TESTS_RE`] does not cover.
+static RAN_TESTS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bran [1-9]\d* tests?\b").unwrap());
+
+/// Lane R62b-2: the `.py` file a check runs as a plain script
+/// (`python3 test_calc.py`, direct or as a two-word shell command), if that is
+/// all the check does. Anything more elaborate (flags, `-m`, pipes, `&&`) is
+/// not a bare script run and returns `None`.
+fn python_script_target(check: &Check) -> Option<&str> {
+    let (program, script) = match &check.exec {
+        Exec::Direct { program, args } => match args.as_slice() {
+            [script] => (program.as_str(), script.as_str()),
+            _ => return None,
+        },
+        Exec::Shell(command_line) => {
+            let mut words = command_line.split_whitespace();
+            match (words.next(), words.next(), words.next()) {
+                (Some(program), Some(script), None) => (program, script),
+                _ => return None,
+            }
+        }
+        Exec::Markdown { .. } | Exec::Probe(_) => return None,
+    };
+    let is_python = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("python"));
+    (is_python && script.ends_with(".py") && !script.starts_with('-')).then_some(script)
+}
+
+/// Lane R62b-2 (A61 miss 2, latent): the "genuine" pass credited in 10 of 11
+/// `select-named-check-uses-verify-tool` runs was `python3 test_calc.py` on a
+/// pytest-style file. The file only DEFINES `test_add` and never calls it, so
+/// running it as a script imports the module and exits 0 without running a
+/// single test, and prints no zero-tests marker either. Flag a python script
+/// check whose target file defines tests but has no runner invocation
+/// ([`PYTHON_TEST_RUNNER_RE`]), when its own output shows no test count. A
+/// file that runs its tests from a `__main__` guard is never flagged, and an
+/// unreadable file is left alone.
+fn uninvoked_python_tests_reason(check: &Check, output: &str, dir: &Path) -> Option<String> {
+    let script = python_script_target(check)?;
+    if nonzero_test_marker(output).is_some() || RAN_TESTS_RE.is_match(output) {
+        return None;
+    }
+    let source = std::fs::read_to_string(dir.join(script)).ok()?;
+    if !PYTHON_TEST_DEFINITION_RE.is_match(&source) || PYTHON_TEST_RUNNER_RE.is_match(&source) {
+        return None;
+    }
+    Some(format!(
+        "`{label}` ran `{script}` as a plain script, but that file only defines tests (no \
+         `if __name__ == \"__main__\"` runner, `unittest.main()` or `pytest.main()`), so it \
+         exited 0 without running any test — run it with a test runner, e.g. `python3 -m \
+         pytest {script}`",
+        label = check.label,
+    ))
+}
+
 /// X-verify-2: why a set of PASSED checks does not count as real coverage, if
 /// any reason applies. Checked in order: (1) every check that ran was a
 /// syntax-only smoke ([`Check::is_smoke`]) — the code was never executed at
 /// all; (2) the combined output of the checks that actually ran contains a
 /// recognized "zero tests" marker ([`ZERO_TESTS_RE`]) AND no counter-marker
 /// ([`NONZERO_TESTS_RE`]) proving some other target in the same output did run
-/// tests — a real test command that nonetheless collected/ran nothing. `None`
-/// when neither applies: a genuine pass.
-fn vacuous_pass_reason_for_checks(checks: &[Check], outputs: &[String]) -> Option<String> {
+/// tests — a real test command that nonetheless collected/ran nothing; (3)
+/// Lane R62b-2: a check ran a Python test file as a plain script that never
+/// invokes its tests ([`uninvoked_python_tests_reason`]). `dir` is the
+/// directory the checks ran in. `None` when none applies: a genuine pass.
+fn vacuous_pass_reason_for_checks(
+    checks: &[Check],
+    outputs: &[String],
+    dir: &Path,
+) -> Option<String> {
     if !checks.is_empty() && checks.iter().all(|check| check.is_smoke) {
         return Some(
             "only a syntax-only smoke check ran (e.g. `py_compile`/`node --check`) — the code \
@@ -2856,14 +2937,21 @@ fn vacuous_pass_reason_for_checks(checks: &[Check], outputs: &[String]) -> Optio
     if nonzero_test_marker(&combined).is_some() {
         return None;
     }
-    zero_test_marker(&combined)
-        .map(|marker| format!("the check's own output reports zero tests ran (\"{marker}\")"))
+    if let Some(marker) = zero_test_marker(&combined) {
+        return Some(format!(
+            "the check's own output reports zero tests ran (\"{marker}\")"
+        ));
+    }
+    checks
+        .iter()
+        .zip(outputs)
+        .find_map(|(check, output)| uninvoked_python_tests_reason(check, output, dir))
 }
 
-fn pass_result(checks: &[Check], outputs: &[String]) -> CallToolResult {
+fn pass_result(checks: &[Check], outputs: &[String], dir: &Path) -> CallToolResult {
     let labels: Vec<&str> = checks.iter().map(|check| check.label.as_str()).collect();
     let message = format!("PASS - all checks passed: {}.", labels.join(", "));
-    let vacuous_reason = vacuous_pass_reason_for_checks(checks, outputs);
+    let vacuous_reason = vacuous_pass_reason_for_checks(checks, outputs, dir);
     if vacuous_reason.is_some() {
         crate::receipts::record("verification_integrity", "vacuous_passes");
     }
@@ -3013,6 +3101,7 @@ mod tests {
         let result = pass_result(
             &[Check::direct("cargo", &["test"])],
             &["test result: ok. 3 passed; 0 failed; 0 ignored".to_string()],
+            Path::new("."),
         );
         let observation: VerificationObservation =
             serde_json::from_value(result.structured_content.unwrap()).unwrap();
@@ -3060,6 +3149,7 @@ mod tests {
             )
             .smoke_only()],
             &[String::new()],
+            Path::new("."),
         );
         assert!(
             is_authoritative_pass(&result),
@@ -3113,6 +3203,7 @@ mod tests {
         let result = pass_result(
             &[Check::direct("cargo", &["test"])],
             &["test result: ok. 0 passed; 0 failed; 0 ignored".to_string()],
+            Path::new("."),
         );
         assert!(is_authoritative_pass(&result));
         let reason = vacuous_pass_reason(&result);
@@ -3127,6 +3218,7 @@ mod tests {
         let result = pass_result(
             &[Check::direct("cargo", &["test"])],
             &["test result: ok. 120 passed; 0 failed; 0 ignored".to_string()],
+            Path::new("."),
         );
         assert_eq!(
             vacuous_pass_reason(&result),
@@ -3155,7 +3247,11 @@ running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ";
-        let result = pass_result(&[Check::direct("cargo", &["test"])], &[output.to_string()]);
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &[output.to_string()],
+            Path::new("."),
+        );
         assert!(is_authoritative_pass(&result));
         assert_eq!(
             vacuous_pass_reason(&result),
@@ -3184,7 +3280,11 @@ running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ";
-        let result = pass_result(&[Check::direct("cargo", &["test"])], &[output.to_string()]);
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &[output.to_string()],
+            Path::new("."),
+        );
         let reason = vacuous_pass_reason(&result);
         assert!(
             reason.as_deref().is_some_and(|r| r.contains("zero tests")),
@@ -3206,6 +3306,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
                 "test result: ok. 6 passed; 0 failed; 0 ignored".to_string(),
                 "test result: ok. 0 passed; 0 failed; 0 ignored".to_string(),
             ],
+            Path::new("."),
         );
         assert_eq!(vacuous_pass_reason(&result), None);
     }
@@ -3219,7 +3320,11 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             "===== 12 passed, 1 skipped in 0.42s =====",
             "Tests:       3 passed, 3 total\nSnapshots:   0 total",
         ] {
-            let result = pass_result(&[Check::direct("pytest", &["-q"])], &[genuine.to_string()]);
+            let result = pass_result(
+                &[Check::direct("pytest", &["-q"])],
+                &[genuine.to_string()],
+                Path::new("."),
+            );
             assert_eq!(
                 vacuous_pass_reason(&result),
                 None,
@@ -3231,7 +3336,11 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             "No tests found, exiting with code 0\nNo test files",
             "===== 0 passed in 0.01s =====",
         ] {
-            let result = pass_result(&[Check::direct("pytest", &["-q"])], &[empty.to_string()]);
+            let result = pass_result(
+                &[Check::direct("pytest", &["-q"])],
+                &[empty.to_string()],
+                Path::new("."),
+            );
             assert!(
                 vacuous_pass_reason(&result).is_some(),
                 "an empty run must stay vacuous: {empty:?}"
@@ -3290,6 +3399,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             )
             .smoke_only()],
             &[String::new()],
+            Path::new("."),
         );
         assert!(
             is_authoritative_pass(&result),
@@ -3307,6 +3417,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         let result = pass_result(
             &[Check::direct("cargo", &["test"])],
             &["test result: ok. 0 passed; 0 failed; 0 ignored".to_string()],
+            Path::new("."),
         );
         assert!(!is_genuine_pass(&result));
     }
@@ -3316,6 +3427,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         let result = pass_result(
             &[Check::direct("cargo", &["test"])],
             &["test result: ok. 120 passed; 0 failed; 0 ignored".to_string()],
+            Path::new("."),
         );
         assert!(is_genuine_pass(&result));
     }
@@ -4458,6 +4570,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
                 Check::direct("go", &["test", "./..."]),
             ],
             &[String::new(), "ok  \tpkg\t0.003s".to_string()],
+            Path::new("."),
         );
         assert_eq!(result.is_error, Some(false));
         let text = text_of(&result);
@@ -5676,5 +5789,140 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         assert_eq!(result.is_error, Some(true));
         let text = text_of(&result);
         assert!(text.contains(&format!("PATH={login}")), "got: {text}");
+    }
+
+    /// Lane R62b-2 (A61 miss 2): the named-check fixture's `test_calc.py`,
+    /// verbatim — pytest-style, defines `test_add`, never calls it.
+    const PYTEST_STYLE_TEST_CALC: &str =
+        "from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n";
+
+    /// Lane R62b-2: running a pytest-style file as a plain script exits 0
+    /// without running a test. That pass is vacuous, whether the script run
+    /// was auto-detected (direct) or given as an explicit two-word command.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn a_python_test_file_run_as_a_script_without_a_runner_is_vacuous() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test_calc.py"), PYTEST_STYLE_TEST_CALC).unwrap();
+        for check in [
+            Check::direct("python3", &["test_calc.py"]),
+            Check::shell("python3 test_calc.py"),
+            Check::shell("/usr/bin/python3 test_calc.py"),
+        ] {
+            let result = pass_result(
+                std::slice::from_ref(&check),
+                &["(no output)".to_string()],
+                dir.path(),
+            );
+            assert!(is_authoritative_pass(&result), "{}", check.label);
+            assert!(!is_genuine_pass(&result), "{}", check.label);
+            let reason = vacuous_pass_reason(&result).expect("vacuous");
+            assert!(reason.contains("only defines tests"), "got: {reason}");
+            assert!(
+                reason.contains("python3 -m pytest test_calc.py"),
+                "got: {reason}"
+            );
+        }
+
+        // A unittest.TestCase with no runner is the same shape.
+        std::fs::write(
+            dir.path().join("test_case.py"),
+            "import unittest\n\nclass TestAdd(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(1, 1)\n",
+        )
+        .unwrap();
+        let result = pass_result(
+            &[Check::direct("python3", &["test_case.py"])],
+            &["(no output)".to_string()],
+            dir.path(),
+        );
+        assert!(vacuous_pass_reason(&result).is_some());
+    }
+
+    /// Lane R62b-2: kept narrow. A file that calls its own tests, a plain
+    /// script with no test definitions, output that shows a test count, and
+    /// a real test runner command are all still genuine passes.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn python_script_checks_that_really_run_tests_stay_genuine() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = [
+            // The failing-test fixture's own shape: a `__main__` guard.
+            (
+                "test_guard.py",
+                "def test_checkout():\n    assert True\n\n\nif __name__ == \"__main__\":\n    test_checkout()\n    print(\"ok\")\n",
+            ),
+            (
+                "test_unittest_main.py",
+                "import unittest\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        pass\n\nunittest.main()\n",
+            ),
+            (
+                "test_top_level_call.py",
+                "def test_add():\n    assert 1 + 1 == 2\n\ntest_add()\n",
+            ),
+            ("test_plain_asserts.py", "assert 1 + 1 == 2\n"),
+        ];
+        for (name, source) in files {
+            std::fs::write(dir.path().join(name), source).unwrap();
+            let result = pass_result(
+                &[Check::direct("python3", &[name])],
+                &["ok".to_string()],
+                dir.path(),
+            );
+            assert_eq!(vacuous_pass_reason(&result), None, "{name}");
+        }
+
+        std::fs::write(dir.path().join("test_calc.py"), PYTEST_STYLE_TEST_CALC).unwrap();
+        // The script's own output proves tests ran.
+        let result = pass_result(
+            &[Check::direct("python3", &["test_calc.py"])],
+            &["...\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK".to_string()],
+            dir.path(),
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+        // A real runner is not a plain script run.
+        let result = pass_result(
+            &[Check::shell("python3 -m pytest test_calc.py")],
+            &["===== 1 passed in 0.01s =====".to_string()],
+            dir.path(),
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+    }
+
+    /// Lane R62b-2, end to end: auto-detection picks `python3 test_calc.py`
+    /// for the named-check fixture's manifestless workspace. It exits 0, and
+    /// verify must now report that PASS as vacuous rather than genuine.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn auto_detected_script_run_of_a_pytest_style_file_is_vacuous() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("calc.py"),
+            "def add(a, b):\n    return a + b\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("test_calc.py"), PYTEST_STYLE_TEST_CALC).unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("python3", &["test_calc.py"])]
+        );
+        let result = VerifyTool::new()
+            .verify_with_cwd(
+                VerifyParams {
+                    command: None,
+                    path: None,
+                    timeout_secs: Some(30),
+                    scope: None,
+                    risk: None,
+                    changed_paths: None,
+                    acceptance_criteria: None,
+                },
+                Some(dir.path()),
+                None,
+            )
+            .await;
+        assert!(is_authoritative_pass(&result), "got: {}", text_of(&result));
+        assert!(!is_genuine_pass(&result));
+        assert!(vacuous_pass_reason(&result)
+            .is_some_and(|reason| reason.contains("only defines tests")));
     }
 }
