@@ -448,11 +448,30 @@ enum CheckOutcome {
     SpawnError(String),
 }
 
-pub struct VerifyTool;
+pub struct VerifyTool {
+    /// Lane R62b: the same login-shell PATH source the `shell` tool uses
+    /// ([`super::shell::shared_login_path`]), so every check runs with the
+    /// child environment the worker's own shell commands get.
+    #[cfg(not(windows))]
+    login_path: std::sync::Arc<super::shell::LoginPath>,
+}
 
 impl VerifyTool {
     pub fn new() -> Self {
-        Self
+        Self {
+            #[cfg(not(windows))]
+            login_path: super::shell::shared_login_path(),
+        }
+    }
+
+    /// A tool whose checks run with exactly this login-shell PATH.
+    #[cfg(all(test, not(windows)))]
+    fn with_login_path(login_path: Option<&str>) -> Self {
+        Self {
+            login_path: std::sync::Arc::new(super::shell::LoginPath::resolved(
+                login_path.map(str::to_string),
+            )),
+        }
     }
 
     /// R21c-b: `session_id` is the CALLING session (the worker's own session,
@@ -571,6 +590,12 @@ impl VerifyTool {
         };
 
         let timeout_secs = params.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        #[cfg(not(windows))]
+        let login_path = self.login_path.get().await;
+        #[cfg(not(windows))]
+        let login_path = login_path.as_deref();
+        #[cfg(windows)]
+        let login_path: Option<&str> = None;
 
         // Fail-fast: run checks in order, returning the first failure with its
         // full errors (you can't meaningfully test what won't build).
@@ -579,7 +604,7 @@ impl VerifyTool {
         // tests ran.
         let mut passed_outputs: Vec<String> = Vec::with_capacity(checks.len());
         for check in &checks {
-            match run_check(check, &base_dir, timeout_secs).await {
+            match run_check(check, &base_dir, timeout_secs, login_path).await {
                 CheckOutcome::Passed { output } => {
                     passed_outputs.push(output);
                     continue;
@@ -1722,13 +1747,17 @@ fn makefile_check_target(dir: &Path) -> Option<String> {
 
 // --- execution --------------------------------------------------------------
 
-async fn run_check(check: &Check, dir: &Path, timeout_secs: u64) -> CheckOutcome {
-    if let Exec::Markdown { files } = &check.exec {
-        return run_markdown_checks(files, timeout_secs).await;
-    }
-    if let Exec::Probe(kind) = &check.exec {
-        return run_probe_check(kind, dir, timeout_secs).await;
-    }
+/// The process a `Direct` or `Shell` check spawns (`None` for the in-process
+/// markdown and probe checks). Lane R62b: the child gets
+/// [`super::shell::child_process_env`], the same environment the `shell` tool
+/// gives the worker's commands. Before this, checks inherited the process
+/// PATH, so `python3` could resolve to a different interpreter than the one
+/// the worker had just used successfully in its shell.
+fn check_command(
+    check: &Check,
+    dir: &Path,
+    login_path: Option<&str>,
+) -> Option<tokio::process::Command> {
     let mut command = match &check.exec {
         Exec::Direct { program, args } => {
             let mut command = tokio::process::Command::new(program);
@@ -1736,11 +1765,30 @@ async fn run_check(check: &Check, dir: &Path, timeout_secs: u64) -> CheckOutcome
             command
         }
         Exec::Shell(command_line) => shell_command(command_line),
-        Exec::Markdown { .. } => unreachable!("markdown checks return before spawning a process"),
-        Exec::Probe(_) => unreachable!("probe checks return before spawning a process"),
+        Exec::Markdown { .. } | Exec::Probe(_) => return None,
     };
     command
         .current_dir(dir)
+        .envs(super::shell::child_process_env(Some(dir), login_path));
+    Some(command)
+}
+
+async fn run_check(
+    check: &Check,
+    dir: &Path,
+    timeout_secs: u64,
+    login_path: Option<&str>,
+) -> CheckOutcome {
+    if let Exec::Markdown { files } = &check.exec {
+        return run_markdown_checks(files, timeout_secs).await;
+    }
+    if let Exec::Probe(kind) = &check.exec {
+        return run_probe_check(kind, dir, timeout_secs, login_path).await;
+    }
+    let Some(mut command) = check_command(check, dir, login_path) else {
+        unreachable!("markdown and probe checks return before spawning a process");
+    };
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1938,7 +1986,12 @@ fn safe_probe_path(dir: &Path, rel_path: &str) -> Result<PathBuf, String> {
 /// `CommandExitsZero` delegates to the ordinary `Shell` path (same spawn,
 /// timeout, and output-capture behavior as any other check) rather than
 /// duplicating it.
-async fn run_probe_check(kind: &ProbeKind, dir: &Path, timeout_secs: u64) -> CheckOutcome {
+async fn run_probe_check(
+    kind: &ProbeKind,
+    dir: &Path,
+    timeout_secs: u64,
+    login_path: Option<&str>,
+) -> CheckOutcome {
     match kind {
         ProbeKind::FileExists(rel_path) => {
             let full_path = match safe_probe_path(dir, rel_path) {
@@ -2006,7 +2059,13 @@ async fn run_probe_check(kind: &ProbeKind, dir: &Path, timeout_secs: u64) -> Che
             // sized (E0733). One `Box::pin` anywhere in the cycle is enough;
             // put it here, on the rarer probe path, rather than taxing every
             // ordinary check.
-            Box::pin(run_check(&Check::shell(command_line), dir, timeout_secs)).await
+            Box::pin(run_check(
+                &Check::shell(command_line),
+                dir,
+                timeout_secs,
+                login_path,
+            ))
+            .await
         }
     }
 }
@@ -4815,7 +4874,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             panic!("expected a probe");
         };
         assert!(matches!(
-            run_probe_check(&nonzero, dir.path(), 5).await,
+            run_probe_check(&nonzero, dir.path(), 5, None).await,
             CheckOutcome::Passed { .. }
         ));
 
@@ -4828,7 +4887,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             panic!("expected a probe");
         };
         assert!(matches!(
-            run_probe_check(&lines, dir.path(), 5).await,
+            run_probe_check(&lines, dir.path(), 5, None).await,
             CheckOutcome::Passed { .. }
         ));
     }
@@ -5253,6 +5312,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             &ProbeKind::FileExists("/etc/hosts".to_string()),
             dir.path(),
             5,
+            None,
         )
         .await;
         assert!(
@@ -5268,6 +5328,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             &ProbeKind::FileExists("../outside.txt".to_string()),
             dir.path(),
             5,
+            None,
         )
         .await;
         assert!(
@@ -5284,6 +5345,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             &ProbeKind::FileExists("fizzbuzz.py".to_string()),
             dir.path(),
             5,
+            None,
         )
         .await;
         assert!(matches!(found, CheckOutcome::Passed { .. }));
@@ -5292,6 +5354,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             &ProbeKind::FileExists("missing.py".to_string()),
             dir.path(),
             5,
+            None,
         )
         .await;
         assert!(matches!(missing, CheckOutcome::Failed { .. }));
@@ -5551,5 +5614,67 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             "an honest NO CHECKS result must not move the verification_integrity line"
         );
         assert!(after[1].contains("vacuous_passes=0"), "got: {}", after[1]);
+    }
+
+    /// Lane R62b (A61 bug B): a check `verify` spawns gets exactly the child
+    /// environment the `shell` tool gives the worker's commands — the same
+    /// login-shell PATH and the same goal-worktree git config — whether it is
+    /// an auto-detected direct check or an explicit shell command.
+    #[test]
+    fn check_command_gets_the_same_child_env_as_the_shell_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let login = "/r62b/login-shell/bin:/usr/bin:/bin";
+        let env_of = |command: &tokio::process::Command| {
+            command
+                .as_std()
+                .get_envs()
+                .map(|(key, value)| (key.to_owned(), value.map(|v| v.to_owned())))
+                .collect::<Vec<_>>()
+        };
+        let shell = super::super::shell::build_shell_command(
+            "python3 -m pytest -q",
+            Some(dir.path()),
+            Some(login),
+        );
+        for check in [
+            Check::direct("python3", &["test_calc.py"]),
+            Check::shell("python3 -m pytest -q"),
+        ] {
+            let command = check_command(&check, dir.path(), Some(login)).expect("a spawned check");
+            assert_eq!(env_of(&command), env_of(&shell), "{}", check.label);
+            assert!(
+                env_of(&command).contains(&("PATH".into(), Some(login.into()))),
+                "{}",
+                check.label
+            );
+        }
+        assert!(check_command(&Check::markdown(Vec::new()), dir.path(), Some(login)).is_none());
+    }
+
+    /// Lane R62b: end to end through `VerifyTool` — the check really runs
+    /// with the tool's login-shell PATH, not the process PATH.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn verify_runs_checks_on_the_login_shell_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let login = "/r62b-login-shell/bin:/usr/bin:/bin";
+        let result = VerifyTool::with_login_path(Some(login))
+            .verify_with_cwd(
+                VerifyParams {
+                    command: Some("echo \"PATH=$PATH\"; exit 3".to_string()),
+                    path: None,
+                    timeout_secs: Some(30),
+                    scope: None,
+                    risk: None,
+                    changed_paths: None,
+                    acceptance_criteria: None,
+                },
+                Some(dir.path()),
+                None,
+            )
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        let text = text_of(&result);
+        assert!(text.contains(&format!("PATH={login}")), "got: {text}");
     }
 }
