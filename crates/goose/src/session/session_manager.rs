@@ -1829,6 +1829,10 @@ impl SessionStorage {
                     // databases already past the numbered ladder receive the
                     // restart/terminal-history store on their first boot.
                     spectral_schema::apply_harness_run_snapshots_schema(&self.pool).await?;
+                    // Harness process leases: version-independent for the same
+                    // reason, so an upgraded database gets the table on its
+                    // first boot.
+                    spectral_schema::apply_harness_process_leases_schema(&self.pool).await?;
                     // v38: first-party analytics events (#23). New table +
                     // index, additive and idempotent.
                     if version < 38 {
