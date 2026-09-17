@@ -18047,8 +18047,11 @@ async fn load_session_signals(
     use crate::conversation::message::{Message, MessageContent};
     use rmcp::model::Role;
 
+    // Lane R62a: insertion order (`id` is INTEGER PRIMARY KEY AUTOINCREMENT),
+    // not `created_timestamp`. The seconds-resolution timestamp can put a tool
+    // response ahead of its own request; `id` never does.
     let rows: Vec<String> = match sqlx::query_scalar::<_, String>(
-        "SELECT content_json FROM messages WHERE session_id = ? ORDER BY created_timestamp, id",
+        "SELECT content_json FROM messages WHERE session_id = ? ORDER BY id",
     )
     .bind(session_id)
     .fetch_all(pool)
@@ -18114,33 +18117,32 @@ fn verify_evidence_in_messages(
     messages: &[crate::conversation::message::MessageContent],
 ) -> VerifyEvidence {
     use crate::agents::platform_extensions::developer::verify;
-    use crate::conversation::message::MessageContent;
-    use std::collections::HashSet;
+    use crate::conversation::message::{tool_requests_by_id, MessageContent};
 
-    let mut pending = HashSet::new();
+    // Lane R62a: index requests first, then pair. A persisted transcript can
+    // hold a response ahead of its own request (see `tool_requests_by_id`).
+    let mut pending = tool_requests_by_id(messages);
+    pending.retain(|_, request| {
+        request
+            .tool_call
+            .as_ref()
+            .is_ok_and(|call| is_verify_tool_name(call.name.as_ref()))
+    });
     let mut vacuous_reason = None;
     for content in messages {
-        match content {
-            MessageContent::ToolRequest(request) => {
-                if request
-                    .tool_call
-                    .as_ref()
-                    .is_ok_and(|call| is_verify_tool_name(call.name.as_ref()))
-                {
-                    pending.insert(request.id.as_str());
-                }
+        let MessageContent::ToolResponse(response) = content else {
+            continue;
+        };
+        if pending.remove(response.id.as_str()).is_none() {
+            continue;
+        }
+        if let Ok(result) = response.tool_result.as_ref() {
+            if verify::is_genuine_pass(result) {
+                return VerifyEvidence::Genuine;
             }
-            MessageContent::ToolResponse(response) if pending.remove(response.id.as_str()) => {
-                if let Ok(result) = response.tool_result.as_ref() {
-                    if verify::is_genuine_pass(result) {
-                        return VerifyEvidence::Genuine;
-                    }
-                    if let Some(reason) = verify::vacuous_pass_reason(result) {
-                        vacuous_reason = Some(reason);
-                    }
-                }
+            if let Some(reason) = verify::vacuous_pass_reason(result) {
+                vacuous_reason = Some(reason);
             }
-            _ => {}
         }
     }
     match vacuous_reason {
@@ -18156,8 +18158,9 @@ async fn session_verify_evidence(
     let Some(sid) = session_id else {
         return VerifyEvidence::None;
     };
+    // Lane R62a: insertion order, same as `load_session_signals`.
     let Ok(rows) = sqlx::query_scalar::<_, String>(
-        "SELECT content_json FROM messages WHERE session_id = ? ORDER BY created_timestamp, id",
+        "SELECT content_json FROM messages WHERE session_id = ? ORDER BY id",
     )
     .bind(sid)
     .fetch_all(pool)
@@ -18197,13 +18200,13 @@ async fn session_final_review_report(
     session_id: Option<&str>,
 ) -> Option<String> {
     let sid = session_id?;
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT role, content_json FROM messages WHERE session_id = ? ORDER BY created_timestamp, id",
-    )
-    .bind(sid)
-    .fetch_all(pool)
-    .await
-    .ok()?;
+    // Lane R62a: insertion order, so "last" means last written.
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT role, content_json FROM messages WHERE session_id = ? ORDER BY id")
+            .bind(sid)
+            .fetch_all(pool)
+            .await
+            .ok()?;
     let mut last_text: Option<String> = None;
     for (role, json) in rows {
         if role != "assistant" {
@@ -26566,6 +26569,61 @@ mod tests {
     #[test]
     fn vacuous_verify_response_is_not_verification_evidence() {
         assert!(!verify_evidence_in_messages(&vacuous_verify_exchange()).is_genuine());
+    }
+
+    /// Lane R62a (A61 bug A): a persisted transcript can hold a verify
+    /// response ahead of its own request. The pass must still pair: genuine
+    /// stays genuine, vacuous stays vacuous.
+    #[test]
+    fn verify_evidence_pairs_a_response_stored_before_its_request() {
+        let mut genuine = verify_exchange(true);
+        genuine.reverse();
+        assert!(verify_evidence_in_messages(&genuine).is_genuine());
+
+        let mut vacuous = vacuous_verify_exchange();
+        vacuous.reverse();
+        assert!(matches!(
+            verify_evidence_in_messages(&vacuous),
+            VerifyEvidence::Vacuous(_)
+        ));
+    }
+
+    /// Lane R62a (A61 bug A, s2 msg 123/124): the assistant `toolRequest` row
+    /// is inserted first (lower `id`) but carries a LATER seconds-resolution
+    /// `created_timestamp` than its `toolResponse`. The session reader must
+    /// still credit the genuine PASS instead of reading "no verify".
+    #[tokio::test]
+    async fn session_verify_evidence_credits_a_pass_whose_request_row_is_timestamped_later() {
+        let pool = test_pool().await;
+        let session_id = format!("verify-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let exchange = verify_exchange(true);
+        for (role, content, created_timestamp) in [
+            ("assistant", &exchange[0], 1_789_606_553_i64),
+            ("user", &exchange[1], 1_789_606_552_i64),
+        ] {
+            sqlx::query(
+                "INSERT INTO messages (message_id, session_id, role, content_json, \
+                 created_timestamp) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(&session_id)
+            .bind(role)
+            .bind(serde_json::to_string(&vec![content]).unwrap())
+            .bind(created_timestamp)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        assert!(
+            session_had_successful_verify(&pool, Some(&session_id)).await,
+            "a genuine PASS stored with an earlier timestamp than its request must be credited"
+        );
     }
 
     #[tokio::test]

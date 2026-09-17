@@ -222,7 +222,7 @@ impl VerifyPositions {
 /// as a mutation would hold turns that only looked at things.
 pub fn scan_verify_positions(messages: &[Message]) -> VerifyPositions {
     use crate::agents::platform_extensions::orchestrator::is_verify_tool_name;
-    use crate::conversation::message::MessageContent;
+    use crate::conversation::message::{tool_requests_by_id, MessageContent};
     use std::collections::HashMap;
 
     #[derive(Clone, Copy, PartialEq)]
@@ -231,7 +231,26 @@ pub fn scan_verify_positions(messages: &[Message]) -> VerifyPositions {
         Verify,
     }
 
-    let mut pending: HashMap<String, Kind> = HashMap::new();
+    // Lane R62a: index every request by tool-call id BEFORE pairing, so a
+    // conversation reloaded from the `messages` table with a response ahead
+    // of its own request still pairs (see `tool_requests_by_id`). Positions
+    // are still the RESPONSE's position, exactly as before.
+    let mut pending: HashMap<&str, Kind> =
+        tool_requests_by_id(messages.iter().flat_map(|msg| &msg.content))
+            .into_iter()
+            .filter_map(|(id, req)| {
+                let name = req.tool_call.as_ref().ok()?.name.as_ref();
+                // Verify wins a name that somehow matches both, so a
+                // "verify" is never miscounted as an edit.
+                if is_verify_tool_name(name) {
+                    Some((id, Kind::Verify))
+                } else if is_mutating_tool_name(name) {
+                    Some((id, Kind::Mutation))
+                } else {
+                    None
+                }
+            })
+            .collect();
     let mut positions = VerifyPositions::default();
     let mut index = 0usize;
 
@@ -239,23 +258,10 @@ pub fn scan_verify_positions(messages: &[Message]) -> VerifyPositions {
         for content in &msg.content {
             index += 1;
             match content {
-                MessageContent::ToolRequest(req) => {
-                    let Ok(call) = req.tool_call.as_ref() else {
-                        continue;
-                    };
-                    let name = call.name.as_ref();
-                    // Verify wins a name that somehow matches both, so a
-                    // "verify" is never miscounted as an edit.
-                    if is_verify_tool_name(name) {
-                        pending.insert(req.id.clone(), Kind::Verify);
-                    } else if is_mutating_tool_name(name) {
-                        pending.insert(req.id.clone(), Kind::Mutation);
-                    }
-                }
                 MessageContent::ToolResponse(resp) => {
                     use crate::agents::platform_extensions::developer::verify;
 
-                    let Some(kind) = pending.remove(&resp.id) else {
+                    let Some(kind) = pending.remove(resp.id.as_str()) else {
                         continue;
                     };
                     match kind {
@@ -3416,6 +3422,33 @@ mod tests {
         // A verify with no edit at all is not an unverified edit.
         let p = scan_verify_positions(&[tool_exchange("developer__verify", "v1", true)]);
         assert!(!p.unverified_edits());
+    }
+
+    /// Lane R62a (A61 bug A): a conversation reloaded from the `messages`
+    /// table can hold a tool response ahead of its own request. The verify
+    /// after the edit must still pair and cover it.
+    #[test]
+    fn scan_positions_pairs_a_response_stored_before_its_request() {
+        let swapped = |exchange: Message| {
+            let mut content = exchange.content.into_iter();
+            let request = content.next().unwrap();
+            let response = content.next().unwrap();
+            [
+                Message::new(Role::User, 0, vec![response]),
+                Message::new(Role::Assistant, 0, vec![request]),
+            ]
+        };
+        let messages: Vec<Message> = swapped(tool_exchange("developer__edit", "e1", true))
+            .into_iter()
+            .chain(swapped(tool_exchange("developer__verify", "v1", true)))
+            .collect();
+        let p = scan_verify_positions(&messages);
+        assert!(p.last_mutation.is_some(), "the swapped edit must pair");
+        assert!(p.last_verify.is_some(), "the swapped verify must pair");
+        assert!(
+            !p.unverified_edits(),
+            "a genuine verify after the edit covers it"
+        );
     }
 
     // ── X-verify-2: vacuous passes ─────────────────────────────────────────

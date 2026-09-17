@@ -8,7 +8,7 @@ use rmcp::model::{
     RawTextContent, Role, TextContent,
 };
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -121,6 +121,31 @@ impl ToolRequest {
 /// Marker key under `ToolRequest.tool_meta` indicating the tool was already
 /// executed externally; the agent loop must skip redispatch.
 pub const TOOL_META_EXTERNAL_DISPATCH_KEY: &str = "goose.external_dispatch";
+
+/// Every tool request in `contents`, keyed by tool-call id, collected BEFORE
+/// any response is paired with one.
+///
+/// Lane R62a (A61 bug A): a transcript read back from the `messages` table is
+/// not guaranteed to hold a request ahead of its own response. The assistant
+/// row's seconds-resolution `created_timestamp` is often a second LATER than
+/// the tool-response row it produced, so an `ORDER BY created_timestamp` read
+/// puts the response first. A one-pass reader that pairs a response only with
+/// a request it has already seen then drops the pair, and a genuine verify
+/// PASS reads as "no verify" (30 of 206 worker sessions with a genuine PASS
+/// across r59/r60). Readers that pair requests with responses index them here
+/// first, so arrival order no longer decides whether a pair exists. When two
+/// requests share an id the later one wins.
+pub fn tool_requests_by_id<'a>(
+    contents: impl IntoIterator<Item = &'a MessageContent>,
+) -> HashMap<&'a str, &'a ToolRequest> {
+    contents
+        .into_iter()
+        .filter_map(|content| match content {
+            MessageContent::ToolRequest(request) => Some((request.id.as_str(), request)),
+            _ => None,
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
