@@ -97,6 +97,19 @@ call. The verify tool no longer counts a vacuous PASS just for returning one,
 so a harness that correctly refuses one no longer fails verification
 integrity.
 
+Lane R63c (semantics only, no key change): `cost_routing.dispatches` counts
+every model-running child the coordinator spawns — goal dispatches AND
+`delegate`/`delegate_many` children (sync, async and fan-out alike, counted
+when the child session is spawned). A delegate child is `cheapest_capable`
+when its effective model is its role's pin, the review role's cheapest
+capable cross-family reviewer, or otherwise no pricier than the session model
+(`routing_matrix::nominal_call_cost`); it is `pack_honored` when no pin
+applies or it ran on the pin (for the review role, the `PERMAGENT_PACK_REVIEW_*`
+/ `PERMAGENT_ROLE_REVIEW_*` pin, or — over the `HARD` pack pin review maps
+through — that cheapest cross-family reviewer). Before this, M47 r63 s5 printed
+`dispatches=1 cheapest_capable=1 pack_honored=1` while a `delegate` reviewer
+child spent $1.97 on `anthropic/claude-fable-5` against DeepSeek-pinned packs.
+
 | Area | Per-record gate |
 |---|---|
 | DAG enforcement | Every receipt has (`roadmap_dispatched >= 1` OR `roadmap_resumed >= 1` OR `escalated >= 1`), `bypass_passes = 0`, `coordinator_mutations = 0`. `bypass_attempts` is informational. recipe.yaml's own protocol requires `decompose_roadmap` as the first execution tool call on every task, even a proportional one-node roadmap for a tiny fix, so there is no per-fixture "this task is allowed to skip the roadmap" exception in the base case (Lane R18c, superseding an earlier draft of this lane that added one — see the A17 analysis in `HARNESS_LOOP_LOG.md`). A fixture whose correct behavior is a small, proportional response still says so through its `selection_check` (e.g. `must_not_call` the coordinator's own mutating tools, so it must dispatch rather than hand-edit), never by exempting the task from this gate. Lane R20a: two held-out fixtures correctly finish with no NEW roadmap — resuming a pre-existing one (`select-existing-roadmap-resumes-not-redecomposes`) or recording an honest `escalate` and stopping (`select-no-repo-facts-escalates-not-invents`) — and now pass via `roadmap_resumed >= 1` or `escalated >= 1` respectively. A legacy v1 line with `roadmap_dispatched = 0` and no trailing pair (`roadmap_resumed`/`escalated` both `None`) still fails: unknown is never read as satisfying the OR. |

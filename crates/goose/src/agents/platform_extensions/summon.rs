@@ -628,6 +628,10 @@ impl SummonClient {
             return Err("Delegated tasks cannot spawn further delegations".to_string());
         }
 
+        if let Some(refusal) = self.live_goal_delegate_refusal(&session).await {
+            return Err(refusal);
+        }
+
         // Resolve every child BEFORE any of them runs: a fan-out that fails on
         // child 7's bad parameters after paying for six children is worse than
         // one that refuses up front.
@@ -745,6 +749,10 @@ impl SummonClient {
                         }
                     };
                     let subagent_id = subagent_session.id.clone();
+                    // Lane R63c: counted per child actually spawned, not per
+                    // child resolved (a later child's bad parameters refuse
+                    // the whole fan-out before any of them runs).
+                    record_delegate_dispatch(&routing_receipt);
 
                     let (notif_tx, notif_rx) =
                         tokio::sync::mpsc::unbounded_channel::<ServerNotification>();
@@ -1371,6 +1379,10 @@ impl SummonClient {
             return Err("Delegated tasks cannot spawn further delegations".to_string());
         }
 
+        if let Some(refusal) = self.live_goal_delegate_refusal(&session).await {
+            return Err(refusal);
+        }
+
         if params.r#async {
             let (content, task_id) = self.handle_async_delegate(session_id, params).await?;
             let mut meta = Meta::new();
@@ -1445,6 +1457,9 @@ impl SummonClient {
             crate::agents::GoosePlatform::GooseCli,
         );
 
+        // Lane R63c: this child is about to run a model — count it on
+        // `receipt cost_routing` with the audit `resolve_provider` computed.
+        record_delegate_dispatch(&routing_receipt);
         let (result, subagent_session_id) = self
             .dispatch_subagent_once(
                 agent_config.clone(),
@@ -1855,6 +1870,63 @@ impl SummonClient {
              `goal_advance` (action: dispatch) instead of editing directly through a \
              delegated worker",
         ))
+    }
+
+    /// Lane R63c: refuse `delegate`/`delegate_many` for a top-level coding
+    /// coordinator while one of its own goals is live (InProgress or Review).
+    ///
+    /// M47 r63 s5: the headless DeepSeek coordinator polled its running goal
+    /// with `goal_status` ×2 and `view_session` ×2, then spent a whole child
+    /// session through `delegate` on the same work (five turns, ~300k input
+    /// tokens). While a goal is live its worker and the goal's own review gate
+    /// own that work; a delegate child only duplicates it. The refusal names
+    /// the goal and the resolution (inspect with `goal_status`/`view_session`,
+    /// or wait for review) and goes out on the ordinary refused-call path (the
+    /// handler's `Err`, surfaced as a tool error). Counted as a
+    /// `dag_enforcement` `bypass_attempts` — the same informational counter
+    /// the coordinator's other denied calls use.
+    ///
+    /// Narrow by construction: interactive sessions, dispatched workers and
+    /// sub-agents are untouched (`is_top_level_coding_harness`), and once the
+    /// goal leaves InProgress/Review (Complete, Failed, Blocked, ...) delegate
+    /// is available again. An unreadable store fails OPEN, like
+    /// `restrict_delegate_for_active_roadmap`: this is a cost/protocol guard,
+    /// not a safety boundary.
+    async fn live_goal_delegate_refusal(
+        &self,
+        session: &crate::session::Session,
+    ) -> Option<String> {
+        if session.session_type == SessionType::SubAgent {
+            return None;
+        }
+        let recipe_title = session.recipe.as_ref().map(|recipe| recipe.title.as_str());
+        if !crate::tool_inspection::is_top_level_coding_harness(
+            recipe_title,
+            session.parent_session_id.as_deref(),
+        ) {
+            return None;
+        }
+        let pool = self.context.session_manager.pool_clone().await.ok()?;
+        let cards = match crate::cards::goal_cards_created_by_session(&pool, &session.id).await {
+            Ok(cards) => cards,
+            Err(error) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    session_id = %session.id,
+                    %error,
+                    "live-goal delegate gate could not read goal cards; not refusing"
+                );
+                return None;
+            }
+        };
+        let refusal = live_goal_refusal(&cards)?;
+        crate::receipts::record("dag_enforcement", "bypass_attempts");
+        tracing::info!(
+            target: "permagentd::brain",
+            session_id = %session.id,
+            "delegate_refused_live_goal"
+        );
+        Some(refusal)
     }
 
     /// Restricts `extensions` (see `restrict_to_non_mutating`) when
@@ -2513,6 +2585,51 @@ impl SummonClient {
         config.workers.get(key).and_then(|w| w.routing_role())
     }
 
+    /// Lane R63c: the `receipt cost_routing` audit for one delegate child, from
+    /// the live pins — the same `PERMAGENT_ROLE_*`/`PERMAGENT_PACK_*` reads
+    /// `delegate_routing_live` makes (cheap config reads), handed to the pure
+    /// [`delegate_audit_targets`] + `cost_router::audit_delegate_dispatch`.
+    fn delegate_cost_audit(
+        role: Option<crate::cost_router::WorkflowRole>,
+        review_inputs: Option<&ReviewAuditInputs>,
+        session: &crate::session::Session,
+        actual: (&str, &str),
+    ) -> crate::cost_router::DelegateCostAudit {
+        let role_pin = role.and_then(crate::cost_router::role_model);
+        let pack_pin = role
+            .and_then(crate::cost_router::pack_role_for_workflow_role)
+            .and_then(crate::cost_router::pack_pin)
+            .map(crate::cost_router::pack_to_role_model);
+        let session_pair = session
+            .provider_name
+            .as_deref()
+            .zip(session.model_config.as_ref().map(|m| m.model_name.as_str()))
+            .filter(|(p, m)| !p.is_empty() && !m.is_empty())
+            .map(|(provider, model)| crate::cost_router::RoleModel {
+                provider: provider.to_string(),
+                model: model.to_string(),
+            });
+        let targets =
+            delegate_audit_targets(role_pin, pack_pin, review_inputs.cloned(), session_pair);
+        let audit = crate::cost_router::audit_delegate_dispatch(
+            actual,
+            targets.pin.as_ref(),
+            targets.pin_exception.as_ref(),
+            targets.reference.as_ref(),
+            &crate::cost_router::routing_matrix::nominal_call_cost,
+        );
+        tracing::info!(
+            target: "permagentd::brain",
+            role = role.map(|r| r.as_str()).unwrap_or("none"),
+            provider = actual.0,
+            model = actual.1,
+            cheapest_capable = audit.cheapest_capable,
+            pack_honored = audit.pack_honored,
+            "delegate cost_routing audit",
+        );
+        audit
+    }
+
     /// The spend band that gates a delegate ESCALATION.
     ///
     /// FAIL-CLOSED, matching [`crate::tool_monitor`]'s budget boundary. This
@@ -2555,15 +2672,20 @@ impl SummonClient {
     /// (`PackPin`/`Escalated`/`Session` — none of them review-aware, since
     /// `PackPin` here means `Role::Hard`'s pin), review's OWN dispatch
     /// precedence takes over: a dedicated `PERMAGENT_PACK_REVIEW_*` pin,
-    /// else cross-family escalation against the derived map's Review
-    /// candidate, else the ordinary chain's answer honestly labeled
-    /// same-family.
+    /// else cross-family escalation to the cheapest capable cross-family
+    /// reviewer (Lane R63c, `cost_router::cheapest_cross_family_reviewer` —
+    /// previously the derived map's strongest REVIEW entry), else the
+    /// ordinary chain's answer honestly labeled same-family.
+    ///
+    /// Lane R63c: returns the dispatch together with the dedicated review pin
+    /// and the cross-family candidate it was decided against, so the
+    /// `receipt cost_routing` audit judges the child by the SAME inputs.
     async fn resolve_review_dispatch(
         &self,
         session: &crate::session::Session,
         routing: &crate::cost_router::DelegateRouting,
         spend: Option<crate::cost_router::BudgetBand>,
-    ) -> crate::cost_router::ReviewerDispatch {
+    ) -> ReviewDispatchResolution {
         let author_provider = session.provider_name.as_deref();
         let author_model = session.model_config.as_ref().map(|m| m.model_name.as_str());
         let routing_is_role_pin = routing.source == crate::cost_router::DelegateSource::RolePin;
@@ -2572,15 +2694,29 @@ impl SummonClient {
         // already resolved correctly and `resolve_actual_review_dispatch`
         // passes it straight through, so a pinned dispatch must not pay for
         // an answer it will not use.
-        let (review_pin, derived_candidate, review_spend) = if routing_is_role_pin {
+        let (review_pin, cross_family_candidate, review_spend) = if routing_is_role_pin {
             (None, None, None)
         } else {
             let review_pin =
                 crate::cost_router::review_pack_pin().map(crate::cost_router::pack_to_role_model);
-            let derived_candidate = crate::cost_router::derived_role_map()
-                .await
-                .get(crate::cost_router::WorkflowRole::Review)
-                .map(|(rm, _)| rm.clone());
+            // Lane R63c (M47 r63 s5): the cross-family escalation target is
+            // the CHEAPEST capable different-family model, not the derived
+            // map's REVIEW entry — the recommender ranks REVIEW by strength
+            // first (`recommend::review_rank`), so that entry was
+            // `claude-fable-5` and a one-line DeepSeek diff bought a $1.97
+            // frontier review. `after_turn::ReviewerMandate::assess` computes
+            // the identical candidate so its prediction cannot drift.
+            let cross_family_candidate = if review_pin.is_none() {
+                let available = crate::cost_router::discover_available_models_async().await;
+                let lines = crate::after_turn::changed_lines(&session.working_dir).await;
+                crate::cost_router::cheapest_cross_family_reviewer(
+                    author_provider.zip(author_model),
+                    &available,
+                    lines,
+                )
+            } else {
+                None
+            };
             // Review's cross-family escalation is not behind the general
             // `PERMAGENT_DELEGATE_ALLOW_ESCALATION` knob (review's whole
             // value IS the cross-family check), so its spend band is read
@@ -2592,14 +2728,14 @@ impl SummonClient {
             } else {
                 self.escalation_spend_band(session).await
             };
-            (review_pin, derived_candidate, review_spend)
+            (review_pin, cross_family_candidate, review_spend)
         };
         let dispatch = crate::cost_router::resolve_actual_review_dispatch(
             routing_is_role_pin,
             routing.role_model.clone(),
             author_provider.zip(author_model),
-            review_pin,
-            derived_candidate,
+            review_pin.clone(),
+            cross_family_candidate.clone(),
             &|p| crate::cost_router::is_provider_configured(p),
             review_spend,
         );
@@ -2619,7 +2755,11 @@ impl SummonClient {
                 .unwrap_or_else(|| author_model.unwrap_or("session")),
             "review dispatch resolved",
         );
-        dispatch
+        ReviewDispatchResolution {
+            dispatch,
+            review_pin,
+            cross_family_candidate,
+        }
     }
 
     async fn resolve_provider(
@@ -2683,8 +2823,17 @@ impl SummonClient {
         // session) straight to the author's own pair, honestly labeled
         // not-independent, rather than dispatching a second doomed call at
         // the same dead account.
+        let mut review_audit_inputs: Option<ReviewAuditInputs> = None;
         let review_dispatch = if role == Some(crate::cost_router::WorkflowRole::Review) {
-            let dispatch = self.resolve_review_dispatch(session, &routing, spend).await;
+            let ReviewDispatchResolution {
+                dispatch,
+                review_pin,
+                cross_family_candidate,
+            } = self.resolve_review_dispatch(session, &routing, spend).await;
+            review_audit_inputs = Some(ReviewAuditInputs {
+                review_pack_pin: review_pin,
+                cross_family: cross_family_candidate,
+            });
             // A clean author pair, not `session_pair` above — that one
             // substitutes the placeholder string "the session model" when
             // `model_config` is unset (fine for `delegate_routing_live`'s
@@ -2872,7 +3021,7 @@ impl SummonClient {
         } else {
             "session"
         };
-        let routing_receipt = resolved_routing_receipt(
+        let mut routing_receipt = resolved_routing_receipt(
             &routing,
             requested_provider,
             requested_model,
@@ -2880,6 +3029,20 @@ impl SummonClient {
             &effective_model,
             effective_source,
         );
+        // Lane R63c: judge THIS child for `receipt cost_routing` against the
+        // same pins/candidates that routed it, on its EFFECTIVE target (so an
+        // explicit per-call model is counted too, never invisible). Recorded
+        // on the process-wide counters only when the child is actually spawned
+        // (`record_delegate_dispatch`), not here.
+        let audit = Self::delegate_cost_audit(
+            role,
+            review_audit_inputs.as_ref(),
+            session,
+            (effective_provider.as_str(), effective_model.as_str()),
+        );
+        if let Some(object) = routing_receipt.as_object_mut() {
+            object.insert("cost_audit".to_string(), serde_json::json!(audit));
+        }
 
         // Live cache guard (#730): a cache-heavy role (orchestrate/edit) routed by
         // the role map to a provider without prompt caching forfeits the
@@ -3054,6 +3217,8 @@ impl SummonClient {
             .map_err(|e| format!("Failed to create subagent session: {}", e))?;
 
         let task_id = subagent_session.id.clone();
+        // Lane R63c: a background delegate child is a dispatch too.
+        record_delegate_dispatch(&routing_receipt);
 
         let turns = Arc::new(AtomicU32::new(0));
         let last_activity = Arc::new(AtomicU64::new(current_epoch_millis()));
@@ -3311,6 +3476,136 @@ fn resolve_subagent_model(
     subagent_env: Option<String>,
 ) -> Option<String> {
     param.or(recipe).or(role).or(subagent_env)
+}
+
+/// Lane R63c: the refusal text for a coordinator `delegate` while one of its
+/// goals is live — `None` when no goal is InProgress or Review. Pure over the
+/// same [`crate::cards::SessionGoalCard`] read the X-dag-1 gate uses.
+fn live_goal_refusal(cards: &[crate::cards::SessionGoalCard]) -> Option<String> {
+    let live = cards
+        .iter()
+        .find(|card| matches!(card.state_binding.as_str(), "in_progress" | "review"))?;
+    Some(format!(
+        "delegate refused: goal {} is running; use goal_status or view_session to inspect \
+         it, or wait for review. Its worker and the goal's own review gate already own \
+         that work, so a delegated child would only duplicate it (and spend a session). \
+         Delegate is available again once the goal leaves InProgress/Review.",
+        live.card_id
+    ))
+}
+
+/// Lane R63c: count one spawned delegate child on `receipt cost_routing`, from
+/// the `cost_audit` [`SummonClient::resolve_provider`] attached to its routing
+/// receipt. A receipt without one (never produced by `resolve_provider`) is
+/// not guessed at — it is traced and left uncounted.
+fn record_delegate_dispatch(routing_receipt: &serde_json::Value) {
+    let audit = routing_receipt.get("cost_audit");
+    let flag = |key: &str| {
+        audit
+            .and_then(|a| a.get(key))
+            .and_then(serde_json::Value::as_bool)
+    };
+    let provider = routing_receipt
+        .get("provider")
+        .and_then(serde_json::Value::as_str);
+    match (flag("cheapest_capable"), flag("pack_honored"), provider) {
+        (Some(cheapest_capable), Some(pack_honored), Some(provider)) => {
+            crate::cost_router::routing_receipt::record_delegate_dispatch(
+                crate::cost_router::DelegateCostAudit {
+                    cheapest_capable,
+                    pack_honored,
+                },
+                provider,
+            );
+        }
+        _ => tracing::warn!(
+            target: "permagentd::brain",
+            "delegate child spawned without a cost_audit on its routing receipt; not counted"
+        ),
+    }
+}
+
+/// Lane R63c: the (pin, pin exception, cheapest-capable reference) a delegate
+/// child is audited against — pure, so the receipt judgement is tested without
+/// a provider or a database.
+///
+/// - REVIEW (`review` is `Some`): a dedicated pin (`PERMAGENT_ROLE_REVIEW_*`, else
+///   `PERMAGENT_PACK_REVIEW_*`) is both the pin and the reference. Otherwise
+///   the pin is the `Role::Hard` pack pin review maps through, with the
+///   cheapest cross-family reviewer as its one permitted exception (X-cost-2:
+///   the review gate requires independence, and on a single-model tier the
+///   HARD pin IS the author's family); the reference is that cheapest
+///   cross-family reviewer, else the HARD pin, else the session pair.
+/// - Every other role (or none): the pin is the role pin, else the pack pin;
+///   the reference is that pin, else the operator's session pair (level 6 —
+///   escalation is opt-in, so anything pricier than it was a choice).
+fn delegate_audit_targets(
+    role_pin: Option<crate::cost_router::RoleModel>,
+    pack_pin: Option<crate::cost_router::RoleModel>,
+    review: Option<ReviewAuditInputs>,
+    session_pair: Option<crate::cost_router::RoleModel>,
+) -> DelegateAuditTargets {
+    match review {
+        Some(ReviewAuditInputs {
+            review_pack_pin,
+            cross_family,
+        }) => {
+            if let Some(dedicated) = role_pin.or(review_pack_pin) {
+                return DelegateAuditTargets {
+                    pin: Some(dedicated.clone()),
+                    pin_exception: None,
+                    reference: Some(dedicated),
+                };
+            }
+            let reference = cross_family
+                .clone()
+                .or_else(|| pack_pin.clone())
+                .or(session_pair);
+            DelegateAuditTargets {
+                pin: pack_pin,
+                pin_exception: cross_family,
+                reference,
+            }
+        }
+        None => {
+            let pin = role_pin.or(pack_pin);
+            let reference = pin.clone().or(session_pair);
+            DelegateAuditTargets {
+                pin,
+                pin_exception: None,
+                reference,
+            }
+        }
+    }
+}
+
+/// Lane R63c: the review role's own routing inputs, carried from
+/// [`SummonClient::resolve_review_dispatch`] to the receipt audit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReviewAuditInputs {
+    /// The dedicated `PERMAGENT_PACK_REVIEW_*` pin, when one was read.
+    review_pack_pin: Option<crate::cost_router::RoleModel>,
+    /// The cheapest capable cross-family reviewer, when one was computed.
+    cross_family: Option<crate::cost_router::RoleModel>,
+}
+
+/// Lane R63c: what a delegate child is audited against (see
+/// [`delegate_audit_targets`] and `cost_router::audit_delegate_dispatch`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DelegateAuditTargets {
+    pin: Option<crate::cost_router::RoleModel>,
+    pin_exception: Option<crate::cost_router::RoleModel>,
+    reference: Option<crate::cost_router::RoleModel>,
+}
+
+/// Lane R63c: what [`SummonClient::resolve_review_dispatch`] decided, plus the
+/// inputs it decided against — reused by the `receipt cost_routing` audit.
+struct ReviewDispatchResolution {
+    dispatch: crate::cost_router::ReviewerDispatch,
+    /// The dedicated `PERMAGENT_PACK_REVIEW_*` pin, when one was read.
+    review_pin: Option<crate::cost_router::RoleModel>,
+    /// The cheapest capable cross-family reviewer, when one was computed.
+    cross_family_candidate: Option<crate::cost_router::RoleModel>,
 }
 
 /// Preserve the existing role-router summary while attaching the final,
@@ -5374,5 +5669,410 @@ You review code."#;
             .lock()
             .await
             .contains_key("20260204_1"));
+    }
+
+    // ── Lane R63c (M47 r63 s5): delegate cost routing, receipts, live goals ──
+
+    const R63_AUTHOR: (&str, &str) = ("custom_deepseek", "deepseek-chat");
+
+    /// The s5 roster: the DeepSeek tier plus the Anthropic line an
+    /// `ANTHROPIC_API_KEY` puts in the pool.
+    fn r63_available() -> Vec<crate::cost_router::AvailableModel> {
+        use crate::cost_router::AvailableModel;
+        vec![
+            AvailableModel::new(R63_AUTHOR.0, R63_AUTHOR.1),
+            AvailableModel::new("anthropic", "claude-fable-5"),
+            AvailableModel::new("anthropic", "claude-sonnet-5"),
+            AvailableModel::new("anthropic", "claude-haiku-4-5-20251001"),
+        ]
+    }
+
+    fn r63_rm(provider: &str, model: &str) -> crate::cost_router::RoleModel {
+        crate::cost_router::RoleModel {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    /// Every routing key this lane reads, set to the `dschat` tier's shape
+    /// (`pack`: every `PERMAGENT_PACK_{EDIT,HARD,MECHANICAL,LOCAL}_*` pinned to
+    /// DeepSeek) or cleared (`None`), with no role pins, no dedicated review
+    /// pack pin (unless `review` sets one) and escalation off. ONE
+    /// `lock_env` call: its mutex is not re-entrant, so a second nested lock
+    /// in the same test would deadlock.
+    fn r63_env(
+        pack: Option<(&'static str, &'static str)>,
+        review: Option<(&'static str, &'static str)>,
+    ) -> env_lock::EnvGuard<'static> {
+        use crate::cost_router::packs::*;
+        let provider = pack.map(|(p, _)| p);
+        let model = pack.map(|(_, m)| m);
+        env_lock::lock_env([
+            (KEY_EDIT_PROVIDER, provider),
+            (KEY_EDIT_MODEL, model),
+            (KEY_HARD_PROVIDER, provider),
+            (KEY_HARD_MODEL, model),
+            (KEY_MECHANICAL_PROVIDER, provider),
+            (KEY_MECHANICAL_MODEL, model),
+            (KEY_LOCAL_PROVIDER, provider),
+            (KEY_LOCAL_MODEL, model),
+            (KEY_REVIEW_PROVIDER, review.map(|(p, _)| p)),
+            (KEY_REVIEW_MODEL, review.map(|(_, m)| m)),
+            ("PERMAGENT_ROLE_REVIEW_PROVIDER", None),
+            ("PERMAGENT_ROLE_REVIEW_MODEL", None),
+            ("PERMAGENT_ROLE_EDIT_PROVIDER", None),
+            ("PERMAGENT_ROLE_EDIT_MODEL", None),
+            (crate::cost_router::KEY_ALLOW_ESCALATION, None),
+        ])
+    }
+
+    /// The reviewer delegate's real resolution chain, minus the provider
+    /// construction: `delegate_routing` (role pin → pack pin → escalation →
+    /// session), then review's own precedence with the SAME cross-family
+    /// candidate `resolve_review_dispatch` now computes.
+    fn r63_review_dispatch(
+        derived: &crate::cost_router::DerivedRoleMap,
+        changed_lines: usize,
+    ) -> (
+        crate::cost_router::DelegateRouting,
+        Option<crate::cost_router::RoleModel>,
+        Option<crate::cost_router::RoleModel>,
+        crate::cost_router::ReviewerDispatch,
+    ) {
+        use crate::cost_router as cr;
+        let routing = cr::delegate_routing(
+            Some(cr::WorkflowRole::Review),
+            derived,
+            Some(cr::BudgetBand::Ok),
+            Some(R63_AUTHOR),
+        );
+        let review_pin = cr::review_pack_pin().map(cr::pack_to_role_model);
+        let candidate = if review_pin.is_none() {
+            cr::cheapest_cross_family_reviewer(Some(R63_AUTHOR), &r63_available(), changed_lines)
+        } else {
+            None
+        };
+        let dispatch = cr::resolve_actual_review_dispatch(
+            routing.source == cr::DelegateSource::RolePin,
+            routing.role_model.clone(),
+            Some(R63_AUTHOR),
+            review_pin.clone(),
+            candidate.clone(),
+            &|_: &str| true,
+            Some(cr::BudgetBand::Ok),
+        );
+        (routing, review_pin, candidate, dispatch)
+    }
+
+    /// Pinned packs: an ordinary role delegate lands on the pin even with the
+    /// derived map offering the frontier row, and the reviewer delegate —
+    /// which keeps its cross-family requirement over the HARD pin — escalates
+    /// to the CHEAPEST capable cross-family model, never `claude-fable-5`.
+    #[test]
+    fn r63c_a_delegate_under_pinned_packs_resolves_to_the_pin_and_a_reviewer_to_the_cheapest_cross_family(
+    ) {
+        use crate::cost_router as cr;
+        let _g = r63_env(Some(R63_AUTHOR), None);
+        let derived = cr::derive_role_map(&r63_available());
+
+        let edit = cr::delegate_routing(
+            Some(cr::WorkflowRole::Edit),
+            &derived,
+            Some(cr::BudgetBand::Ok),
+            Some(R63_AUTHOR),
+        );
+        assert_eq!(edit.source, cr::DelegateSource::PackPin);
+        assert_eq!(edit.role_model, Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1)));
+
+        let (routing, review_pin, candidate, dispatch) = r63_review_dispatch(&derived, 1);
+        assert_eq!(routing.source, cr::DelegateSource::PackPin, "HARD pin read");
+        assert!(review_pin.is_none());
+        let target = dispatch
+            .role_model
+            .clone()
+            .expect("a cross-family reviewer");
+        assert_eq!(Some(target.clone()), candidate);
+        assert_ne!(target.model, "claude-fable-5", "the s5 defect: {target:?}");
+        assert_ne!(cr::family_of(&target.provider, &target.model), "deepseek");
+        if let Some((strongest, _)) = derived.get(cr::WorkflowRole::Review) {
+            let cost = |rm: &cr::RoleModel| {
+                cr::routing_matrix::nominal_call_cost(&rm.provider, &rm.model)
+                    .unwrap_or(f64::INFINITY)
+            };
+            assert!(
+                cost(&target) <= cost(strongest),
+                "the dispatch must never cost more than the derived strongest REVIEW \
+                 entry ({strongest:?}); got {target:?}"
+            );
+        }
+
+        // Receipt audit for that same child: cheapest and pack-honoured.
+        let session_pair = Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1));
+        let targets = delegate_audit_targets(
+            None,
+            routing.role_model.clone(),
+            Some(ReviewAuditInputs {
+                review_pack_pin: review_pin.clone(),
+                cross_family: candidate.clone(),
+            }),
+            session_pair.clone(),
+        );
+        let audit = cr::audit_delegate_dispatch(
+            (target.provider.as_str(), target.model.as_str()),
+            targets.pin.as_ref(),
+            targets.pin_exception.as_ref(),
+            targets.reference.as_ref(),
+            &cr::routing_matrix::nominal_call_cost,
+        );
+        assert!(audit.cheapest_capable && audit.pack_honored, "{audit:?}");
+
+        // The s5 child as it actually ran: neither.
+        let s5 = cr::audit_delegate_dispatch(
+            ("anthropic", "claude-fable-5"),
+            targets.pin.as_ref(),
+            targets.pin_exception.as_ref(),
+            targets.reference.as_ref(),
+            &cr::routing_matrix::nominal_call_cost,
+        );
+        assert!(!s5.cheapest_capable, "{s5:?}");
+        assert!(!s5.pack_honored, "{s5:?}");
+    }
+
+    /// A DEDICATED review pin is operator intent: the reviewer delegate runs
+    /// on it (honestly same-family when it is), and it is the audit's pin and
+    /// reference.
+    #[test]
+    fn r63c_a_dedicated_review_pack_pin_is_honoured_by_the_reviewer_delegate() {
+        use crate::cost_router as cr;
+        let _g = r63_env(Some(R63_AUTHOR), Some(("anthropic", "claude-sonnet-5")));
+        let derived = cr::derive_role_map(&r63_available());
+        let (routing, review_pin, candidate, dispatch) = r63_review_dispatch(&derived, 1);
+        let pinned = r63_rm("anthropic", "claude-sonnet-5");
+        assert_eq!(review_pin, Some(pinned.clone()));
+        assert_eq!(dispatch.role_model, Some(pinned.clone()));
+        let targets = delegate_audit_targets(
+            None,
+            routing.role_model.clone(),
+            Some(ReviewAuditInputs {
+                review_pack_pin: review_pin,
+                cross_family: candidate,
+            }),
+            Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1)),
+        );
+        assert_eq!(
+            targets,
+            DelegateAuditTargets {
+                pin: Some(pinned.clone()),
+                pin_exception: None,
+                reference: Some(pinned),
+            }
+        );
+    }
+
+    /// Nothing pinned: a role delegate stays on the operator's session model
+    /// (escalation is opt-in) — never the planner/frontier row the derived
+    /// map offers — and the reviewer delegate picks the cheapest capable
+    /// cross-family model, not the strongest.
+    #[test]
+    fn r63c_a_delegate_without_pins_picks_the_cheapest_capable_not_the_planner_model() {
+        use crate::cost_router as cr;
+        let _g = r63_env(None, None);
+        let derived = cr::derive_role_map(&r63_available());
+        let planner = derived
+            .get(cr::WorkflowRole::Orchestrate)
+            .map(|(rm, _)| rm.clone());
+
+        for role in [cr::WorkflowRole::Edit, cr::WorkflowRole::Orchestrate] {
+            let routing = cr::delegate_routing(
+                Some(role),
+                &derived,
+                Some(cr::BudgetBand::Ok),
+                Some(R63_AUTHOR),
+            );
+            assert_eq!(routing.source, cr::DelegateSource::Session, "{role:?}");
+            assert_eq!(routing.role_model, None, "inherits the session pair");
+        }
+
+        let (_routing, _pin, candidate, dispatch) = r63_review_dispatch(&derived, 1);
+        let target = dispatch.role_model.expect("a cross-family reviewer");
+        assert_eq!(Some(target.clone()), candidate);
+        assert_ne!(Some(target.clone()), planner, "never the planner model");
+        assert_ne!(target.model, "claude-fable-5");
+    }
+
+    /// The receipt: a delegate child's routing receipt carries its audit, and
+    /// spawning it counts one dispatch — a non-pinned expensive child is
+    /// neither cheapest-capable nor pack-honoured on the printed line.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn r63c_a_spawned_delegate_child_is_counted_on_receipt_cost_routing() {
+        use crate::cost_router::routing_receipt;
+        routing_receipt::reset();
+        let receipt = serde_json::json!({
+            "provider": "anthropic",
+            "model": "claude-fable-5",
+            "cost_audit": {"cheapest_capable": false, "pack_honored": false},
+        });
+        record_delegate_dispatch(&receipt);
+        let after = routing_receipt::snapshot();
+        assert!(after.dispatches >= 1, "{after:?}");
+        assert!(after.cheapest_capable < after.dispatches, "{after:?}");
+        assert!(after.pack_honored < after.dispatches, "{after:?}");
+        assert!(after.routed_cloud >= 1, "{after:?}");
+
+        // No audit ⇒ not guessed at, not counted.
+        let before = routing_receipt::snapshot();
+        record_delegate_dispatch(&serde_json::json!({"provider": "anthropic"}));
+        assert_eq!(routing_receipt::snapshot().dispatches, before.dispatches);
+        routing_receipt::reset();
+    }
+
+    #[test]
+    fn r63c_live_goal_refusal_fires_only_for_in_progress_or_review() {
+        let card = |state: &str| crate::cards::SessionGoalCard {
+            card_id: format!("goal-{state}"),
+            title: "t".to_string(),
+            state_binding: state.to_string(),
+            is_root: true,
+            has_worker_session: true,
+        };
+        for state in [
+            "ready",
+            "complete",
+            "cancelled",
+            "failed",
+            "blocked",
+            "triage",
+        ] {
+            assert_eq!(live_goal_refusal(&[card(state)]), None, "{state}");
+        }
+        for state in ["in_progress", "review"] {
+            let refusal = live_goal_refusal(&[card("complete"), card(state)])
+                .unwrap_or_else(|| panic!("{state} must refuse"));
+            assert!(
+                refusal.contains(&format!("goal goal-{state} is running")),
+                "{refusal}"
+            );
+            assert!(refusal.contains("goal_status or view_session"), "{refusal}");
+            assert!(refusal.contains("wait for review"), "{refusal}");
+        }
+    }
+
+    /// Move the fixture's goal card into the column bound to `state`.
+    async fn r63_move_card(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, state: &str) {
+        sqlx::query(
+            "UPDATE cards SET column_id = (SELECT id FROM board_columns \
+             WHERE project_id = ? AND state_binding = ?) WHERE id = ?",
+        )
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .bind(state)
+        .bind(card_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn r63_coding_recipe() -> Recipe {
+        Recipe::builder()
+            .version("1.0.0")
+            .title(crate::tool_inspection::CODING_HARNESS_RECIPE_TITLE)
+            .description("coding harness")
+            .prompt("plan and dispatch")
+            .build()
+            .unwrap()
+    }
+
+    /// The s5 behaviour, end to end through the real `delegate` handler: a
+    /// headless top-level coding coordinator whose goal is InProgress gets a
+    /// refused call naming the goal and the resolution, before any recipe,
+    /// provider or child session is built. Once the goal completes, the gate
+    /// no longer fires.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn r63c_a_coordinator_delegate_while_its_goal_is_in_progress_is_refused() {
+        let (_tmp, sm, session, card_id) = active_roadmap_fixture(SessionType::User).await;
+        let pool = sm.pool_clone().await.unwrap();
+        r63_move_card(&pool, &card_id, "in_progress").await;
+        sm.update(&session.id)
+            .recipe(Some(r63_coding_recipe()))
+            .apply()
+            .await
+            .unwrap();
+        let client = SummonClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        })
+        .unwrap();
+
+        let args = serde_json::json!({
+            "instructions": "Check how the coupon trim worker is getting on and report back."
+        });
+        let error = client
+            .handle_delegate(
+                &session.id,
+                args.as_object().cloned(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("a live goal must refuse the coordinator's delegate");
+        assert!(
+            error.contains(&format!("goal {card_id} is running")),
+            "{error}"
+        );
+        assert!(error.contains("goal_status or view_session"), "{error}");
+
+        let many = serde_json::json!({"tasks": [{"instructions":
+            "Check how the coupon trim worker is getting on and report back."}]});
+        let error = client
+            .handle_delegate_many(
+                &session.id,
+                many.as_object().cloned(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("delegate_many is gated identically");
+        assert!(error.contains("is running"), "{error}");
+
+        let persisted = sm.get_session(&session.id, false).await.unwrap();
+        r63_move_card(&pool, &card_id, "review").await;
+        assert!(client
+            .live_goal_delegate_refusal(&persisted)
+            .await
+            .is_some());
+        r63_move_card(&pool, &card_id, "complete").await;
+        assert!(
+            client
+                .live_goal_delegate_refusal(&persisted)
+                .await
+                .is_none(),
+            "a completed goal releases the gate"
+        );
+    }
+
+    /// Interactive (non-coding-harness) sessions, and a coding-harness session
+    /// with a parent (a dispatched worker), are untouched even with a live goal.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn r63c_interactive_sessions_and_workers_are_not_gated_by_a_live_goal() {
+        let (_tmp, sm, session, card_id) = active_roadmap_fixture(SessionType::User).await;
+        let pool = sm.pool_clone().await.unwrap();
+        r63_move_card(&pool, &card_id, "in_progress").await;
+        let client = SummonClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        })
+        .unwrap();
+
+        // Interactive: no coding-harness recipe.
+        assert!(session.recipe.is_none());
+        assert!(client.live_goal_delegate_refusal(&session).await.is_none());
+
+        // A coding-harness session WITH a parent is a worker, not the coordinator.
+        let mut worker = session.clone();
+        worker.recipe = Some(r63_coding_recipe());
+        worker.parent_session_id = Some("coordinator-1".to_string());
+        assert!(client.live_goal_delegate_refusal(&worker).await.is_none());
     }
 }
