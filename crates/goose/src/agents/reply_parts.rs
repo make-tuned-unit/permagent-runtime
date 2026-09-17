@@ -1061,7 +1061,23 @@ impl Agent {
         let tour_completed = crate::config::Config::global()
             .get_param::<bool>(crate::agents::self_knowledge::TOUR_COMPLETED_KEY)
             .unwrap_or(false);
-        if !tour_completed {
+        // Lane R62f (A61 miss 5): nobody reads a headless run's replies, so it
+        // never gets the tour offer or a learn-next hint — the coordinator
+        // offered a codebase tour in 12 headless harness logs, a free-text
+        // ending Rule 5 and R58a then have to police. The per-agent headless
+        // flag is checked first; the headless CLI harness does not set it
+        // (only the scheduler does), so the headless dispatch policy that CLI
+        // installs — never installed by a daemon or interactive session —
+        // covers it.
+        let headless = self.is_headless()
+            || crate::agents::platform_extensions::orchestrator::is_headless_dispatch_policy_installed();
+        if headless {
+            tracing::debug!(
+                target: "permagent::agents::reply_parts",
+                session_id,
+                "onboarding offers suppressed for a headless session"
+            );
+        } else if !tour_completed {
             let mut pm = self.prompt_manager.lock().await;
             pm.add_system_prompt_extra(
                 "tour_offer".to_string(),
@@ -4068,6 +4084,77 @@ mod tests {
             "the pre-failover identity survived the switch: {}",
             parts.render()
         );
+        Ok(())
+    }
+
+    /// Lane R62f (A61 miss 5): a headless agent's prompt never carries the
+    /// first-run tour offer; an ordinary one still does while the tour is
+    /// not completed.
+    #[tokio::test]
+    async fn a_headless_session_prompt_never_offers_the_tour() -> anyhow::Result<()> {
+        const TOUR_TEXT: &str = "This user has not been shown around yet.";
+        let tour_completed = crate::config::Config::global()
+            .get_param::<bool>(crate::agents::self_knowledge::TOUR_COMPLETED_KEY)
+            .unwrap_or(false);
+
+        let headless = crate::agents::Agent::new();
+        headless.set_headless(true);
+        let session = headless
+            .config
+            .session_manager
+            .create_session(
+                std::env::current_dir().unwrap(),
+                "test-headless-tour".to_string(),
+                SessionType::Hidden,
+                GooseMode::default(),
+            )
+            .await?;
+        headless
+            .update_provider(
+                std::sync::Arc::new(MockProvider {
+                    model_config: ModelConfig::new("test-model").unwrap(),
+                }),
+                &session.id,
+            )
+            .await?;
+        let (_, _, parts) = headless
+            .prepare_tools_and_prompt(&session.id, session.working_dir.as_path())
+            .await?;
+        assert!(
+            !parts.render().contains(TOUR_TEXT),
+            "a headless session must not be offered the tour"
+        );
+
+        if !tour_completed
+            && !crate::agents::platform_extensions::orchestrator::is_headless_dispatch_policy_installed()
+        {
+            let interactive = crate::agents::Agent::new();
+            let session = interactive
+                .config
+                .session_manager
+                .create_session(
+                    std::env::current_dir().unwrap(),
+                    "test-interactive-tour".to_string(),
+                    SessionType::Hidden,
+                    GooseMode::default(),
+                )
+                .await?;
+            interactive
+                .update_provider(
+                    std::sync::Arc::new(MockProvider {
+                        model_config: ModelConfig::new("test-model").unwrap(),
+                    }),
+                    &session.id,
+                )
+                .await?;
+            let (_, _, parts) = interactive
+                .prepare_tools_and_prompt(&session.id, session.working_dir.as_path())
+                .await?;
+            assert!(
+                parts.render().contains(TOUR_TEXT),
+                "control: a non-headless session still gets the tour offer"
+            );
+        }
         Ok(())
     }
 
