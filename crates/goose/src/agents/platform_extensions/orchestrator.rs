@@ -4306,6 +4306,25 @@ impl OrchestratorClient {
         card_id: &str,
         requested_worker: Option<&str>,
     ) -> Result<String, String> {
+        // Lane R57a: the structural backstop for
+        // [`refuse_dispatch_of_a_paused_roadmap`] — every OrchestratorClient
+        // dispatch entry funnels through here (`goal_advance{dispatch}`,
+        // `goal_status`'s dead-worker auto-retry, and `dispatch_eligible_goals`
+        // itself), so a paused roadmap cannot be dispatched piecemeal through
+        // any of them. `resume_roadmap` removes the tag BEFORE it calls
+        // `dispatch_eligible_goals`, so the resume path is unaffected.
+        // `goal_advance` checks the same rule earlier, before it spends a
+        // worker probe on a dispatch that is not going to happen.
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(card) = cards::get_card(&pool, card_id).await? {
+            refuse_dispatch_of_a_paused_roadmap(&pool, &card).await?;
+        }
+
         let policy = current_headless_dispatch_policy(&self.context.session_manager).await;
         let result = dispatch_goal_fn(
             &self.context,
@@ -9092,6 +9111,14 @@ impl OrchestratorClient {
             // additionally runs the engine, so this arm delegates rather than
             // duplicating the move.
             GoalAction::Dispatch => {
+                // Lane R57a: a goal whose project is tagged `roadmap_paused`
+                // is never dispatched one card at a time — `resume_roadmap` is
+                // the way to continue that roadmap. Checked BEFORE R22a's
+                // enforcement below so a refused dispatch spends no worker
+                // probe and prints no `check_worker` banner into the
+                // transcript for a dispatch that was never going to happen.
+                refuse_dispatch_of_a_paused_roadmap(&pool, &card).await?;
+
                 // Lane R22a: a Ready goal must have a fresh check_worker
                 // result on file for the worker this dispatch will use
                 // before anything else happens — enforced, not merely
@@ -12195,6 +12222,64 @@ async fn eligible_ready_goals(
     goal_transition::promote_eligible_dependents(pool, project_id).await?;
 
     cards::list_cards(pool, project_id, Some("goal"), Some(&ready_col.id)).await
+}
+
+/// The same pause rule [`eligible_ready_goals`] applies to every AUTOMATIC
+/// dispatch trigger, applied to the COORDINATOR's own by-card-id dispatch —
+/// `Ok(())` when the goal's project is not paused, a refusal naming
+/// `resume_roadmap` when it is.
+///
+/// Lane R57a (defect: headless DeepSeek,
+/// `select-existing-roadmap-resumes-not-redecomposes`, 3 of 10 records):
+/// the `roadmap_paused` tag was honoured by the nudge, by the drain's Ready
+/// sweep and by `dispatch_eligible_goals` — all of which ask
+/// `eligible_ready_goals` which goals may run — but by nothing on the path
+/// the coordinator actually uses. `goal_advance{action: dispatch}` addresses
+/// ONE card by id and never asks the project a question, so a coordinator
+/// told "this roadmap is paused, continue executing it" could walk the board
+/// with `goal_list`/`goal_status` and dispatch the paused roadmap's single
+/// Ready goal directly. The goal ran and landed, but the roadmap was never
+/// resumed: the tag stayed on, every other goal of that roadmap stayed
+/// frozen behind it, and the one tool that unfreezes them was never called.
+/// Piecemeal dispatch of a paused roadmap is therefore refused, not merely
+/// discouraged in the recipe.
+///
+/// The refusal has a real resolution path, as every refusal here must:
+/// [`OrchestratorClient::handle_resume_roadmap`] removes the tag and then
+/// dispatches every eligible Ready goal itself (via
+/// [`dispatch_eligible_goals`]) — strictly more than the caller asked for,
+/// not a dead end. It needs no arguments when called from the project's own
+/// directory ([`resolve_resume_project`]).
+///
+/// Returned as a plain `Err` from the tool handler, the same way the R22a
+/// "worker was checked and is not available" and write-scope
+/// ([`super::write_scope::metadata_conflict`]) refusals are, so the harness
+/// log records it as a refused `goal_advance` through the existing path — no
+/// new receipt line.
+async fn refuse_dispatch_of_a_paused_roadmap(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+) -> Result<(), String> {
+    let Some(project) = crate::projects::get_project(pool, &card.project_id).await? else {
+        return Ok(());
+    };
+    if !project.tags.iter().any(|t| t == "roadmap_paused") {
+        return Ok(());
+    }
+    tracing::info!(
+        target: "permagentd::brain",
+        goal_id = %card.id,
+        project_id = %project.id,
+        project_slug = %project.slug,
+        "refused a piecemeal dispatch of a paused roadmap's goal; resume_roadmap is the way in"
+    );
+    Err(format!(
+        "roadmap {} is paused; call resume_roadmap to continue it — goals of a paused \
+         roadmap are not dispatched one by one. resume_roadmap clears the pause and \
+         dispatches every eligible Ready goal itself, including '{}' ({}); called from \
+         this project's own directory it takes no arguments. Goal not dispatched.",
+        project.slug, card.title, card.id
+    ))
 }
 
 /// Find and dispatch goals whose dependencies are all complete.
@@ -41261,6 +41346,183 @@ mod tests {
         crate::projects::remove_tag(&pool, PERSONAL_PROJECT_ID, "roadmap_paused")
             .await
             .unwrap();
+    }
+
+    // ── R57a: a paused roadmap is resumed, never dispatched piecemeal ────
+
+    /// The fixture's own shape: a project tagged `roadmap_paused` with one
+    /// Ready goal, and a coordinator that reaches straight for
+    /// `goal_advance{action: dispatch}` on it. The nudge and the drain
+    /// already refused this through `eligible_ready_goals`; the
+    /// coordinator's by-card-id path did not, so the goal ran and landed
+    /// while the roadmap stayed paused
+    /// (`select-existing-roadmap-resumes-not-redecomposes`, 3 of 10
+    /// headless DeepSeek records).
+    #[tokio::test]
+    async fn goal_advance_dispatch_refuses_a_paused_roadmaps_ready_goal_and_names_resume_roadmap() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 0).await;
+        crate::projects::add_tag(&pool, PERSONAL_PROJECT_ID, "roadmap_paused")
+            .await
+            .unwrap();
+
+        let client = OrchestratorClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        })
+        .unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        args.insert("action".to_string(), serde_json::json!("dispatch"));
+
+        let err = client
+            .handle_goal_advance(Some(args))
+            .await
+            .expect_err("a paused roadmap's Ready goal must not be dispatched one card at a time");
+        assert!(
+            err.contains("is paused"),
+            "the refusal must say the roadmap is paused: {err}"
+        );
+        assert!(
+            err.contains("resume_roadmap"),
+            "every refusal names its resolution path — here, resume_roadmap: {err}"
+        );
+        assert!(
+            err.contains("not dispatched one by one"),
+            "the refusal must say WHY dispatching this goal is wrong, not just that it \
+             was refused: {err}"
+        );
+
+        // Refused before anything moved or was selected.
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "a refused dispatch must leave the card in Ready for resume_roadmap to find"
+        );
+        assert!(
+            updated.metadata_json.get("worker_key").is_none(),
+            "no worker may be selected for a dispatch that was refused: {:?}",
+            updated.metadata_json
+        );
+    }
+
+    /// The other half of the contract: the refusal above is only honest if
+    /// the resolution path it names actually works. `resume_roadmap` clears
+    /// the tag, and the SAME dispatch seam then gets past the pause gate —
+    /// it still cannot start a worker in this fixture (no `root_path`, no
+    /// attached session, see
+    /// `dispatch_goal_fn_refuses_when_no_working_directory_is_known_never_falls_back_to_current_dir`),
+    /// which is exactly the point: the next refusal is a different,
+    /// unrelated one.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn resume_roadmap_clears_the_pause_so_the_same_dispatch_path_proceeds() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 0).await;
+        crate::projects::add_tag(&pool, PERSONAL_PROJECT_ID, "roadmap_paused")
+            .await
+            .unwrap();
+
+        let client = OrchestratorClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        })
+        .unwrap();
+
+        // Pinned to the in-process worker so ranked selection (which probes
+        // external CLIs) never runs — the same technique
+        // `dispatch_goal_to_and_resume_roadmap_consult_the_installed_headless_policy`
+        // uses to stay machine-independent.
+        let err = client
+            .dispatch_goal_to(&card.id, Some("permagent"))
+            .await
+            .expect_err("the client's dispatch seam is the backstop for every entry point");
+        assert!(
+            err.contains("resume_roadmap"),
+            "the backstop must give the same refusal: {err}"
+        );
+
+        let mut args = JsonObject::new();
+        args.insert(
+            "project_id_or_slug".to_string(),
+            serde_json::json!(PERSONAL_PROJECT_ID),
+        );
+        client
+            .handle_resume_roadmap(Some(args))
+            .await
+            .expect("resume_roadmap must succeed — it is the refusal's resolution path");
+
+        let tags = crate::projects::list_tags(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        assert!(
+            !tags.contains(&"roadmap_paused".to_string()),
+            "resume_roadmap must clear the tag, or the refusal loops forever"
+        );
+
+        let err = client
+            .dispatch_goal_to(&card.id, Some("permagent"))
+            .await
+            .expect_err("this fixture can still never resolve a working directory to dispatch in");
+        assert!(
+            !err.contains("is paused") && !err.contains("resume_roadmap"),
+            "once resumed, the pause gate must be out of the way: {err}"
+        );
+        assert!(
+            err.contains("no working directory is known"),
+            "the remaining refusal must be the unrelated pre-existing one: {err}"
+        );
+    }
+
+    /// Applicability: the gate reads the project's own tags, so an ordinary
+    /// unpaused project's dispatch is untouched by R57a — it fails, or
+    /// succeeds, for exactly the reasons it did before.
+    #[tokio::test]
+    async fn dispatch_of_an_unpaused_projects_goal_is_untouched_by_the_pause_gate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 0).await;
+
+        let client = OrchestratorClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        })
+        .unwrap();
+
+        let err = client
+            .dispatch_goal_to(&card.id, Some("permagent"))
+            .await
+            .expect_err("unchanged: no working directory is resolvable in this fixture");
+        assert!(
+            !err.contains("is paused") && !err.contains("resume_roadmap"),
+            "an unpaused project must never see the pause refusal: {err}"
+        );
+        assert!(
+            err.contains("no working directory is known"),
+            "the pre-R57a refusal must still be the one that fires: {err}"
+        );
     }
 
     // ── L3: escalate tool registration ──────────────────────────────────

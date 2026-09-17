@@ -138,5 +138,18 @@ mod tests {
                 && instructions.contains("Coalesce changes that share a file into one card"),
             "coding recipe must prevent overlapping micro-goals from exhausting headless runs"
         );
+        // Lane R57a: the PAUSED half of exception (a). Headless coordinators
+        // read "continue this paused roadmap" as licence to dispatch its one
+        // Ready goal with `goal_advance`, which ran the goal and left the
+        // roadmap paused behind it
+        // (`select-existing-roadmap-resumes-not-redecomposes`). The
+        // orchestrator refuses that dispatch now; the recipe must still say
+        // so, so the model reaches for the right tool rather than learning it
+        // from a refusal.
+        assert!(
+            instructions.contains("When the roadmap is PAUSED")
+                && instructions.contains("never dispatch a paused roadmap's goals one by one"),
+            "coding recipe must send a paused roadmap to resume_roadmap, not to per-goal dispatch"
+        );
     }
 }
