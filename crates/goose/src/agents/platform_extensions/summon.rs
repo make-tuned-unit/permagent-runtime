@@ -6040,13 +6040,17 @@ You review code."#;
             .live_goal_delegate_refusal(&persisted)
             .await
             .is_some());
-        r63_move_card(&pool, &card_id, "complete").await;
+        // A card cannot enter `complete` without an answered approve decision
+        // (trg_goal_complete_guard), and the pure `live_goal_refusal` test
+        // above already covers `complete`; here any non-running state proves
+        // the handler releases the gate once the goal stops running.
+        r63_move_card(&pool, &card_id, "ready").await;
         assert!(
             client
                 .live_goal_delegate_refusal(&persisted)
                 .await
                 .is_none(),
-            "a completed goal releases the gate"
+            "a goal that is no longer running releases the gate"
         );
     }
 
