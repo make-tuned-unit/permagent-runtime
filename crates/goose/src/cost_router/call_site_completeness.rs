@@ -590,6 +590,30 @@ pub fn missing_call_sites(
     missing
 }
 
+/// Lane R66a: the call sites [`enumerate_call_sites`] found that the
+/// reviewer's table has NO line for at all (any status) — format
+/// non-compliance, as opposed to an explicit `Missed` judgement. A subset of
+/// [`missing_call_sites`]: when the two are equal, every unaccounted site is
+/// one the reviewer simply never wrote a line for.
+pub fn absent_call_sites(
+    enumerations: &[CallSiteEnumeration],
+    verdicts: &[CallSiteVerdict],
+) -> Vec<CallSite> {
+    let mut absent = Vec::new();
+    for e in enumerations {
+        for cs in &e.call_sites {
+            let key = format!("{}:{}", cs.file, cs.line);
+            if !verdicts
+                .iter()
+                .any(|v| v.symbol == e.symbol && v.site == key)
+            {
+                absent.push(cs.clone());
+            }
+        }
+    }
+    absent
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

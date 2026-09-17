@@ -24800,6 +24800,14 @@ enum ReviewRound {
     Uncertain {
         reason: String,
     },
+    /// Lane R66a: read as UNCERTAIN — the reviewer wrote no CALLSITE line at
+    /// all for these listed call sites (`file:line`) and gave no other
+    /// concrete finding, so it never completed the required table. An
+    /// explicit MISSED is a REQUEST_CHANGES instead.
+    CallSiteTableIncomplete {
+        reason: String,
+        sites: Vec<String>,
+    },
     /// Any other block (an un-evidenced approval, ungrounded findings).
     Blocked {
         reason: String,
@@ -24811,7 +24819,9 @@ impl ReviewRound {
         match self {
             ReviewRound::Approved { .. } => "approved",
             ReviewRound::RequestChanges { .. } => "request_changes",
-            ReviewRound::Uncertain { .. } => "uncertain",
+            ReviewRound::Uncertain { .. } | ReviewRound::CallSiteTableIncomplete { .. } => {
+                "uncertain"
+            }
             ReviewRound::Blocked { .. } => "blocked",
         }
     }
@@ -24821,6 +24831,7 @@ impl ReviewRound {
             ReviewRound::Approved { checked } => checked,
             ReviewRound::RequestChanges { reason, .. }
             | ReviewRound::Uncertain { reason }
+            | ReviewRound::CallSiteTableIncomplete { reason, .. }
             | ReviewRound::Blocked { reason } => reason,
         }
     }
@@ -24854,6 +24865,9 @@ impl ReviewAttempt {
                 detail_key.to_string(),
                 serde_json::json!(self.round.reason()),
             );
+            if let ReviewRound::CallSiteTableIncomplete { sites, .. } = &self.round {
+                obj.insert("absent_call_sites".to_string(), serde_json::json!(sites));
+            }
         }
         record
     }
@@ -24867,6 +24881,7 @@ impl ReviewAttempt {
             },
             ReviewRound::RequestChanges { reason, .. }
             | ReviewRound::Uncertain { reason }
+            | ReviewRound::CallSiteTableIncomplete { reason, .. }
             | ReviewRound::Blocked { reason } => ReviewerGateOutcome::Refused { reason },
         }
     }
@@ -24898,6 +24913,13 @@ impl GoalReviewRun {
 
 /// The deterministic gate over one reviewer response (Lane R62e's E7 gate
 /// included). An unreadable response is UNCERTAIN (`parse_review` logs it).
+///
+/// Lane R66a: E7 turns every unaccounted call site into a REQUEST_CHANGES,
+/// whether the reviewer judged it MISSED or wrote no CALLSITE line for it at
+/// all. When every unaccounted site is merely absent and the reviewer cited no
+/// other concrete finding, the reviewer did not complete the required table:
+/// that is [`ReviewRound::CallSiteTableIncomplete`], read as UNCERTAIN, so the
+/// one objective escalation applies. An explicit MISSED stays REQUEST_CHANGES.
 fn review_round_from_response(
     response_text: &str,
     changed_lines: usize,
@@ -24905,12 +24927,45 @@ fn review_round_from_response(
 ) -> ReviewRound {
     let outcome = crate::cost_router::parse_review(response_text);
     let diff_substantive = changed_lines > crate::cost_router::review_gate::TRIVIAL_MAX_LINES;
-    match crate::cost_router::gate_decision_with_call_sites(
+    let decision = crate::cost_router::gate_decision_with_call_sites(
         &outcome,
         diff_substantive,
         0,
         call_site_enumerations,
-    ) {
+    );
+    if matches!(
+        decision,
+        crate::cost_router::GateDecision::RequestChanges { .. }
+    ) && outcome.grounded_findings().is_empty()
+    {
+        let absent =
+            crate::cost_router::absent_call_sites(call_site_enumerations, &outcome.call_sites);
+        let unaccounted =
+            crate::cost_router::missing_call_sites(call_site_enumerations, &outcome.call_sites);
+        if !absent.is_empty() && absent.len() == unaccounted.len() {
+            let sites: Vec<String> = absent
+                .iter()
+                .map(|site| format!("{}:{}", site.file, site.line))
+                .collect();
+            tracing::info!(
+                target: "permagentd::brain",
+                absent_call_sites = sites.len(),
+                verdict = outcome.verdict.as_str(),
+                "reviewer wrote no CALLSITE line for listed call sites and no other finding; \
+                 reading the review as UNCERTAIN",
+            );
+            return ReviewRound::CallSiteTableIncomplete {
+                reason: format!(
+                    "the reviewer did not complete the required CALLSITE table: no CALLSITE \
+                     line for {} listed call site(s) ({}) and no other concrete finding",
+                    sites.len(),
+                    sites.join(", ")
+                ),
+                sites,
+            };
+        }
+    }
+    match decision {
         crate::cost_router::GateDecision::Proceed { .. } => ReviewRound::Approved {
             checked: outcome.checked.clone(),
         },
@@ -24947,6 +25002,11 @@ fn review_round_from_response(
 /// none could run) plus its escalation record. Only an APPROVE lands; a second
 /// UNCERTAIN, a REQUEST_CHANGES, or no escalation reviewer parks. Every round
 /// is recorded.
+///
+/// Lane R66a: an incomplete CALLSITE table reads as UNCERTAIN here. When both
+/// the first and the escalated reviewer left it incomplete, the harness's own
+/// call-site list becomes the REQUEST_CHANGES finding ("update or account for
+/// these call sites"), so the goal can be sent back rather than parked.
 async fn finish_goal_review_with_escalation<E, Fut>(
     first: ReviewAttempt,
     escalate_uncertain: bool,
@@ -24957,7 +25017,11 @@ where
     Fut: std::future::Future<Output = (Result<ReviewAttempt, String>, serde_json::Value)>,
 {
     let mut reviews = vec![first.to_json(1)];
-    if !(escalate_uncertain && matches!(first.round, ReviewRound::Uncertain { .. })) {
+    let first_unsure = matches!(
+        first.round,
+        ReviewRound::Uncertain { .. } | ReviewRound::CallSiteTableIncomplete { .. }
+    );
+    if !(escalate_uncertain && first_unsure) {
         let findings = round_findings(&first.round);
         return GoalReviewRun {
             outcome: first.into_outcome(),
@@ -24968,6 +25032,7 @@ where
     }
     let first_reviewer = first.reviewer();
     let first_reason = first.round.reason().to_string();
+    let first_omitted_table = matches!(first.round, ReviewRound::CallSiteTableIncomplete { .. });
     tracing::info!(
         target: "permagentd::brain",
         reviewer = %first_reviewer,
@@ -24985,11 +25050,29 @@ where
         Ok(second) => {
             reviews.push(second.to_json(2));
             let second_uncertain = match &second.round {
-                ReviewRound::Uncertain { reason } => Some(reason.clone()),
+                ReviewRound::Uncertain { reason } => Some((reason.clone(), None)),
+                ReviewRound::CallSiteTableIncomplete { reason, sites } => {
+                    Some((reason.clone(), Some(sites.clone())))
+                }
                 _ => None,
             };
             match second_uncertain {
-                Some(reason) => ReviewerGateOutcome::Refused {
+                Some((_, Some(sites))) if first_omitted_table => {
+                    let listed = sites.join(", ");
+                    findings = vec![format!(
+                        "[CALL_SITE_COMPLETENESS] update or account for these call sites: \
+                         {listed}"
+                    )];
+                    ReviewerGateOutcome::Refused {
+                        reason: format!(
+                            "neither {first_reviewer} nor the escalated reviewer {} completed \
+                             the required CALLSITE table; the listed call sites are requested \
+                             as changes: {listed}",
+                            second.reviewer()
+                        ),
+                    }
+                }
+                Some((reason, _)) => ReviewerGateOutcome::Refused {
                     reason: format!(
                         "both reviewers were UNCERTAIN: {first_reviewer} ({first_reason}); \
                          escalated to {} ({reason})",
