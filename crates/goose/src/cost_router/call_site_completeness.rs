@@ -131,6 +131,94 @@ pub fn definition_in_line(line: &str) -> Option<(String, String)> {
     None
 }
 
+/// The keyword-led shapes of [`definition_patterns`], cut off at the `(` that
+/// OPENS the parameter list: what a definition line looks like once its
+/// parameter list has been reflowed onto the following lines
+/// (`export function quoteShipping(`). [`definition_in_line`] cannot see these
+/// on their own — its `\(([^)]*)\)` needs the closing paren — which is why a
+/// reflowed definition used to be listed as a call site of itself.
+///
+/// Only the keyword-led shapes appear here. The generic `name(params) {`
+/// method shape is deliberately left out: `name(` alone is exactly what an
+/// ordinary multi-line CALL looks like, and mistaking a call for a definition
+/// would DROP a real call site from the list — the one thing E7 must never do.
+fn definition_head_patterns() -> &'static [Regex] {
+    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        vec![
+            // Rust: `pub(crate) async fn name<T>(`
+            Regex::new(
+                r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(",
+            )
+            .expect("static regex is valid"),
+            // Python: `async def name(`
+            Regex::new(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+                .expect("static regex is valid"),
+            // JS/TS: `export default async function* name(`
+            Regex::new(
+                r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\(",
+            )
+            .expect("static regex is valid"),
+        ]
+    })
+}
+
+/// The symbol a definition HEAD line names, when the line's last
+/// non-whitespace character is the `(` that opens the parameter list (i.e. the
+/// parameter list genuinely continues on the next line). Requiring the open
+/// paren to be last is what keeps this from matching a one-line definition
+/// [`definition_in_line`] already handles, or anything else.
+fn definition_head_symbol(line: &str) -> Option<String> {
+    if !line.trim_end().ends_with('(') {
+        return None;
+    }
+    for re in definition_head_patterns() {
+        if let Some(caps) = re.captures(line) {
+            return Some(caps.get(1)?.as_str().to_string());
+        }
+    }
+    None
+}
+
+/// Does `line` bind `symbol` with `const`/`let`/`var` (the shape an arrow
+/// function or a function-valued constant is declared in)? A binding of the
+/// symbol is a DEFINITION of it, whatever the right-hand side looks like, so
+/// it is never a call site of itself.
+fn binding_declares_symbol(line: &str, symbol: &str) -> bool {
+    let trimmed = line.trim_start();
+    let trimmed = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+    ["const ", "let ", "var "].iter().any(|kw| {
+        trimmed
+            .strip_prefix(kw)
+            .and_then(|rest| rest.trim_start().strip_prefix(symbol))
+            .is_some_and(|rest| {
+                let rest = rest.trim_start();
+                rest.starts_with('=') || rest.starts_with(':')
+            })
+    })
+}
+
+/// Does `line` DEFINE `symbol`, rather than call it? The union of the three
+/// recognizers: a complete one-line definition ([`definition_in_line`]), a
+/// reflowed definition's head line ([`definition_head_symbol`]), and a
+/// `const`/`let`/`var` binding ([`binding_declares_symbol`]).
+///
+/// Lane R67a: a symbol's own definition site is NOT a call site of it, and a
+/// file that only defines the symbol is not a caller — listing one asks the
+/// reviewer to account for something that cannot be "updated for the new
+/// signature", which is exactly what sent r67 s1 back with no real finding.
+/// One shared recognizer so the pure enumeration and the live `git grep` seam
+/// (the orchestrator's salvage/review context) agree on what a definition is.
+pub fn line_defines_symbol(line: &str, symbol: &str) -> bool {
+    if definition_in_line(line).is_some_and(|(name, _)| name == symbol) {
+        return true;
+    }
+    if definition_head_symbol(line).is_some_and(|name| name == symbol) {
+        return true;
+    }
+    binding_declares_symbol(line, symbol)
+}
+
 /// Collapse whitespace runs in a parameter list so `(a, b)` and `(a,   b)`
 /// compare equal — only a REAL textual change to the parameter list (added,
 /// removed, renamed, or reordered parameters) should count as a signature
@@ -424,8 +512,10 @@ fn call_regex(symbol: &str) -> Regex {
 /// Enumerate every call site of every changed symbol across `repo_files` (an
 /// iterator of `(path, contents)` — the live seam can pass real file reads or
 /// a code-map's file set; tests pass an in-memory fixture). A line that is
-/// ITSELF a definition of the symbol (the old signature, the new signature,
-/// or an unrelated overload) is never counted as a call site of itself.
+/// ITSELF a definition of the symbol (the old signature, the new signature, a
+/// reflowed definition's head line, a `const` binding, or an unrelated
+/// overload) is never counted as a call site of itself — see
+/// [`line_defines_symbol`].
 pub fn enumerate_call_sites<'a, I>(
     changes: &[SignatureChange],
     repo_files: I,
@@ -441,9 +531,7 @@ where
             let mut call_sites = Vec::new();
             for (path, contents) in &files {
                 for (idx, line) in contents.lines().enumerate() {
-                    let is_definition_of_this_symbol =
-                        definition_in_line(line).is_some_and(|(name, _)| name == change.symbol);
-                    if is_definition_of_this_symbol {
+                    if line_defines_symbol(line, &change.symbol) {
                         continue;
                     }
                     if re.is_match(line) {
@@ -560,7 +648,10 @@ pub fn parse_call_site_line(rest: &str) -> Option<CallSiteVerdict> {
 /// The call sites [`enumerate_call_sites`] found that the reviewer's own
 /// per-site table never accounted for as `Updated` or `Unaffected` — either
 /// it is entirely ABSENT from the table, or the reviewer itself marked it
-/// `Missed`. Either way it is unaccounted, and the non-empty result is what
+/// `Missed`. Matching is LENIENT (Lane R67a, see [`account_site`]): symbol and
+/// FILE, with the line number optional, so one line per file accounts for
+/// every site listed in that file. Either way it is unaccounted, and the
+/// non-empty result is what
 /// [`super::review_gate::gate_decision_with_call_sites`] turns into a HOLD
 /// naming exactly these sites — regardless of the verdict token the reviewer
 /// emitted, the same "the reviewer never decides the gate on its own
@@ -573,16 +664,7 @@ pub fn missing_call_sites(
     let mut missing = Vec::new();
     for e in enumerations {
         for cs in &e.call_sites {
-            let key = format!("{}:{}", cs.file, cs.line);
-            let accounted = verdicts.iter().any(|v| {
-                v.symbol == e.symbol
-                    && v.site == key
-                    && matches!(
-                        v.status,
-                        CallSiteStatus::Updated | CallSiteStatus::Unaffected
-                    )
-            });
-            if !accounted {
+            if account_site(&e.symbol, cs, verdicts) != SiteAccounting::Accounted {
                 missing.push(cs.clone());
             }
         }
@@ -590,9 +672,186 @@ pub fn missing_call_sites(
     missing
 }
 
+/// Lane R67a: a reviewer `CALLSITE` line's site field split into its file and
+/// its OPTIONAL line number — `src/cart/cartSummary.ts:7` and
+/// `src/cart/cartSummary.ts` both name the same file, the first with a line.
+/// Anything after the last `:` that is not a number is part of the path.
+fn parse_site_ref(site: &str) -> (&str, Option<usize>) {
+    match site.rsplit_once(':') {
+        Some((file, tail)) if !file.trim().is_empty() => match tail.trim().parse::<usize>() {
+            Ok(line) => (file.trim(), Some(line)),
+            Err(_) => (site.trim(), None),
+        },
+        _ => (site.trim(), None),
+    }
+}
+
+/// Do a reviewer-written path and an enumerated path name the same file? Equal
+/// after dropping a `./` prefix, or one is a whole-component suffix of the
+/// other (a reviewer commonly shortens `src/admin/manualQuote.ts` to
+/// `admin/manualQuote.ts`). Comparing whole components, never a bare basename,
+/// is what keeps `a/quote.ts` and `b/quote.ts` distinct.
+fn same_file(reviewer: &str, listed: &str) -> bool {
+    let components = |path: &str| -> Vec<String> {
+        path.trim()
+            .trim_start_matches("./")
+            .split('/')
+            .filter(|part| !part.is_empty() && *part != ".")
+            .map(|part| part.to_string())
+            .collect()
+    };
+    let (a, b) = (components(reviewer), components(listed));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let (short, long) = if a.len() <= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    long.iter()
+        .rev()
+        .zip(short.iter().rev())
+        .all(|(l, s)| l == s)
+}
+
+/// Lane R67a: how the reviewer's table accounts for ONE listed call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SiteAccounting {
+    /// A `CALLSITE` line for this symbol in this file said `UPDATED` or
+    /// `UNAFFECTED`, and nothing marked this site `MISSED`.
+    Accounted,
+    /// The reviewer marked this site — or the whole file — `MISSED`.
+    ExplicitlyMissed,
+    /// No `CALLSITE` line names this symbol in this file at all.
+    Absent,
+}
+
+/// Lane R67a: the LENIENT accounting rule. A reviewer line accounts for a
+/// listed site when its symbol matches and its FILE matches, whatever line
+/// number it carries (or none at all): one `UPDATED`/`UNAFFECTED` line for a
+/// file therefore accounts for every site listed in that file. The strict
+/// `file:line` rule it replaces rejected correct reviews that wrote one line
+/// per file (r67 s1) instead of one per line.
+///
+/// The real guarantee is untouched: an explicit `MISSED` — for this exact
+/// line, or for the file with no line number — still marks the site missed
+/// even when another line in the same file was accounted for, and a symbol or
+/// file the reviewer wrote NO line for is still unaccounted.
+fn account_site(symbol: &str, cs: &CallSite, verdicts: &[CallSiteVerdict]) -> SiteAccounting {
+    let relevant: Vec<&CallSiteVerdict> = verdicts
+        .iter()
+        .filter(|v| v.symbol.trim() == symbol.trim())
+        .filter(|v| same_file(parse_site_ref(&v.site).0, &cs.file))
+        .collect();
+    if relevant.is_empty() {
+        return SiteAccounting::Absent;
+    }
+    let explicitly_missed = relevant.iter().any(|v| {
+        v.status == CallSiteStatus::Missed
+            && parse_site_ref(&v.site).1.is_none_or(|line| line == cs.line)
+    });
+    let positive = relevant.iter().any(|v| {
+        matches!(
+            v.status,
+            CallSiteStatus::Updated | CallSiteStatus::Unaffected
+        )
+    });
+    if positive && !explicitly_missed {
+        SiteAccounting::Accounted
+    } else {
+        SiteAccounting::ExplicitlyMissed
+    }
+}
+
+/// Lane R67a: the unaccounted call sites grouped the way the reviewer is asked
+/// to answer them — one entry per (symbol, file) — so the complaint can name a
+/// FILE and its symbol and tell the reviewer that one line per file is enough,
+/// instead of repeating a bare `file:line` per site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnaccountedCallSiteFile {
+    pub symbol: String,
+    pub file: String,
+    /// The listed lines in this file that went unaccounted, in listed order.
+    pub lines: Vec<usize>,
+    /// The reviewer marked this file (or a line in it) `MISSED`, as opposed to
+    /// writing no `CALLSITE` line for it at all.
+    pub explicitly_missed: bool,
+}
+
+impl UnaccountedCallSiteFile {
+    /// The finding's evidence: every unaccounted `file:line` in this group,
+    /// so a single-site group reads exactly as it always did.
+    pub fn evidence(&self) -> String {
+        self.lines
+            .iter()
+            .map(|line| format!("{}:{}", self.file, line))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The finding's summary: names the symbol and the FILE, and — when the
+    /// reviewer simply wrote no line for it — says that one `CALLSITE` line
+    /// per changed symbol per file, with no line number, is enough.
+    pub fn complaint(&self) -> String {
+        if self.explicitly_missed {
+            format!(
+                "E7: the reviewer marked the call site(s) of {} in {} MISSED — the changed \
+                 signature's callers there still need updating",
+                self.symbol, self.file
+            )
+        } else {
+            format!(
+                "E7: no CALLSITE line accounted for {symbol} in {file} — emit one CALLSITE line \
+                 per changed symbol per file (`CALLSITE {symbol} | {file} | UPDATED` or \
+                 `UNAFFECTED`); the line number is optional and one line covers every site \
+                 listed in that file",
+                symbol = self.symbol,
+                file = self.file
+            )
+        }
+    }
+}
+
+/// Lane R67a: [`missing_call_sites`] grouped by (symbol, file), in listed
+/// order — what [`super::review_gate::gate_decision_with_call_sites`] turns
+/// into one finding per file.
+pub fn unaccounted_call_site_files(
+    enumerations: &[CallSiteEnumeration],
+    verdicts: &[CallSiteVerdict],
+) -> Vec<UnaccountedCallSiteFile> {
+    let mut out: Vec<UnaccountedCallSiteFile> = Vec::new();
+    for e in enumerations {
+        for cs in &e.call_sites {
+            let accounting = account_site(&e.symbol, cs, verdicts);
+            if accounting == SiteAccounting::Accounted {
+                continue;
+            }
+            let missed = accounting == SiteAccounting::ExplicitlyMissed;
+            match out
+                .iter_mut()
+                .find(|g| g.symbol == e.symbol && g.file == cs.file)
+            {
+                Some(group) => {
+                    group.lines.push(cs.line);
+                    group.explicitly_missed |= missed;
+                }
+                None => out.push(UnaccountedCallSiteFile {
+                    symbol: e.symbol.clone(),
+                    file: cs.file.clone(),
+                    lines: vec![cs.line],
+                    explicitly_missed: missed,
+                }),
+            }
+        }
+    }
+    out
+}
+
 /// Lane R66a: the call sites [`enumerate_call_sites`] found that the
-/// reviewer's table has NO line for at all (any status) — format
-/// non-compliance, as opposed to an explicit `Missed` judgement. A subset of
+/// reviewer's table has NO line for at all (any status, and — Lane R67a — no
+/// line naming that symbol in that FILE either) — format non-compliance, as
+/// opposed to an explicit `Missed` judgement. A subset of
 /// [`missing_call_sites`]: when the two are equal, every unaccounted site is
 /// one the reviewer simply never wrote a line for.
 pub fn absent_call_sites(
@@ -602,11 +861,7 @@ pub fn absent_call_sites(
     let mut absent = Vec::new();
     for e in enumerations {
         for cs in &e.call_sites {
-            let key = format!("{}:{}", cs.file, cs.line);
-            if !verdicts
-                .iter()
-                .any(|v| v.symbol == e.symbol && v.site == key)
-            {
+            if account_site(&e.symbol, cs, verdicts) == SiteAccounting::Absent {
                 absent.push(cs.clone());
             }
         }
@@ -1072,5 +1327,446 @@ mod tests {
     #[test]
     fn no_enumerations_means_nothing_can_be_missing() {
         assert!(missing_call_sites(&[], &[]).is_empty());
+    }
+
+    // ── Lane R67a: definition sites are not call sites ────────────────────
+
+    /// The r67 s1 repo snapshot (M52 record r67 s1,
+    /// `harness-refactor-shipping-quote-signature`), with both changed
+    /// signatures reflowed across several lines exactly as the worker wrote
+    /// them. The old single-line-only definition check could not see a
+    /// definition HEAD (`export function quoteShipping(`), so both definition
+    /// sites — `src/admin/manualQuote.ts:5` and `src/shipping/quote.ts:16` —
+    /// were listed as call sites of themselves, and the reviewer had nothing
+    /// truthful to say about them.
+    fn r67_s1_repo() -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "src/shipping/quote.ts",
+                "import type { Zone, PackageType } from '../types.ts';\n\
+                 \n\
+                 const BASE_CENTS_PER_KG = 200;\n\
+                 const FRAGILE_SURCHARGE_MULTIPLIER = 1.25;\n\
+                 \n\
+                 export function quoteShipping(\n\
+                 \x20 weightKg: number,\n\
+                 \x20 zone: Zone,\n\
+                 \x20 packageType: PackageType,\n\
+                 ): number {\n\
+                 \x20 return baseCents(weightKg, zone);\n\
+                 }\n",
+            ),
+            (
+                "src/admin/manualQuote.ts",
+                "import { quoteShipping } from '../shipping/quote.ts';\n\
+                 \n\
+                 export function computeManualQuote(\n\
+                 \x20 weightKg: number,\n\
+                 \x20 zone: Zone,\n\
+                 \x20 packageType: PackageType,\n\
+                 ): number {\n\
+                 \x20 return quoteShipping(weightKg, zone, packageType);\n\
+                 }\n",
+            ),
+            (
+                "src/api/quoteHandler.ts",
+                "export function handleQuoteRequest(order) {\n\
+                 \x20 return { shippingCents: quoteShipping(order.weightKg, order.zone, order.packageType) };\n\
+                 }\n",
+            ),
+            (
+                "src/cart/cartSummary.ts",
+                "export function estimateCartShipping(orders) {\n\
+                 \x20 return orders.reduce(\n\
+                 \x20   (sum, o) => sum + quoteShipping(o.weightKg, o.zone, o.packageType),\n\
+                 \x20   0,\n\
+                 \x20 );\n\
+                 }\n",
+            ),
+            (
+                "src/checkout/checkout.ts",
+                "export function buildCheckoutSummary(order) {\n\
+                 \x20 const shippingCents = quoteShipping(\n\
+                 \x20   order.weightKg,\n\
+                 \x20   order.zone,\n\
+                 \x20   order.packageType,\n\
+                 \x20 );\n\
+                 \x20 return { shippingCents };\n\
+                 }\n",
+            ),
+        ]
+    }
+
+    fn r67_s1_changes() -> Vec<SignatureChange> {
+        let diff = "--- a/src/shipping/quote.ts\n\
+                     +++ b/src/shipping/quote.ts\n\
+                     @@ -6,3 +6,7 @@\n\
+                     -export function quoteShipping(weightKg: number, zone: Zone): number {\n\
+                     +export function quoteShipping(\n\
+                     +  weightKg: number,\n\
+                     +  zone: Zone,\n\
+                     +  packageType: PackageType,\n\
+                     +): number {\n\
+                     --- a/src/admin/manualQuote.ts\n\
+                     +++ b/src/admin/manualQuote.ts\n\
+                     @@ -3,3 +3,7 @@\n\
+                     -export function computeManualQuote(weightKg: number, zone: Zone): number {\n\
+                     +export function computeManualQuote(\n\
+                     +  weightKg: number,\n\
+                     +  zone: Zone,\n\
+                     +  packageType: PackageType,\n\
+                     +): number {\n";
+        detect_signature_changes(diff)
+    }
+
+    /// (a) A file that only DEFINES the changed symbol is never listed as a
+    /// call site of it — including when the definition's parameter list is
+    /// reflowed, so the definition line itself ends at the open paren.
+    #[test]
+    fn r67a_a_reflowed_definition_site_is_never_listed_as_a_call_site() {
+        let changes = r67_s1_changes();
+        assert_eq!(changes.len(), 2, "{changes:?}");
+        let enumerations = enumerate_call_sites(&changes, r67_s1_repo());
+
+        let sites = |symbol: &str| -> Vec<String> {
+            enumerations
+                .iter()
+                .find(|e| e.symbol == symbol)
+                .expect("enumerated")
+                .call_sites
+                .iter()
+                .map(|cs| format!("{}:{}", cs.file, cs.line))
+                .collect()
+        };
+        // `computeManualQuote` is only DEFINED (r67 s1 listed its definition
+        // head, src/admin/manualQuote.ts:5, as its own call site).
+        assert!(
+            sites("computeManualQuote").is_empty(),
+            "{:?}",
+            sites("computeManualQuote")
+        );
+        // `quoteShipping`'s four real callers, and NOT its definition head at
+        // src/shipping/quote.ts:6.
+        assert_eq!(
+            sites("quoteShipping"),
+            vec![
+                "src/admin/manualQuote.ts:8",
+                "src/api/quoteHandler.ts:2",
+                "src/cart/cartSummary.ts:3",
+                "src/checkout/checkout.ts:2",
+            ]
+        );
+    }
+
+    /// (e) The relaxation must not swallow a real call site: a multi-line CALL
+    /// (`const x = quoteShipping(` / `return quoteShipping(`) also ends at an
+    /// open paren, and is still listed.
+    #[test]
+    fn r67a_a_multiline_call_is_still_a_call_site() {
+        assert!(!line_defines_symbol(
+            "  const shippingCents = quoteShipping(",
+            "quoteShipping"
+        ));
+        assert!(!line_defines_symbol(
+            "  return quoteShipping(",
+            "quoteShipping"
+        ));
+        assert!(!line_defines_symbol(
+            "  computeManualQuote(",
+            "computeManualQuote"
+        ));
+        assert!(line_defines_symbol(
+            "export function quoteShipping(",
+            "quoteShipping"
+        ));
+        assert!(line_defines_symbol(
+            "pub fn shipping_quote(",
+            "shipping_quote"
+        ));
+        assert!(line_defines_symbol(
+            "async def compute_quote(",
+            "compute_quote"
+        ));
+        assert!(line_defines_symbol(
+            "export const quoteShipping = (w: number) => w;",
+            "quoteShipping"
+        ));
+        // A definition head for a DIFFERENT symbol never excludes this one.
+        assert!(!line_defines_symbol(
+            "export function computeManualQuote(",
+            "quoteShipping"
+        ));
+    }
+
+    // ── Lane R67a: lenient accounting (symbol + file, line optional) ───────
+
+    /// The exact r67 s1 list, definition sites included, as the run recorded
+    /// it: six sites across five files.
+    fn r67_s1_listed_sites() -> Vec<CallSiteEnumeration> {
+        vec![
+            CallSiteEnumeration {
+                symbol: "computeManualQuote".to_string(),
+                file: "src/admin/manualQuote.ts".to_string(),
+                call_sites: vec![cs("src/admin/manualQuote.ts", 5)],
+            },
+            CallSiteEnumeration {
+                symbol: "quoteShipping".to_string(),
+                file: "src/shipping/quote.ts".to_string(),
+                call_sites: vec![
+                    cs("src/admin/manualQuote.ts", 10),
+                    cs("src/api/quoteHandler.ts", 10),
+                    cs("src/cart/cartSummary.ts", 7),
+                    cs("src/checkout/checkout.ts", 12),
+                    cs("src/shipping/quote.ts", 16),
+                ],
+            },
+        ]
+    }
+
+    fn verdict(symbol: &str, site: &str, status: CallSiteStatus) -> CallSiteVerdict {
+        CallSiteVerdict {
+            symbol: symbol.to_string(),
+            site: site.to_string(),
+            status,
+            note: "reviewed".to_string(),
+        }
+    }
+
+    /// (b)+(c) The r67 s1 send-back: the escalated reviewer answered four of
+    /// the six listed sites — one line per file it considered meaningful — and
+    /// the strict `file:line` rule turned the other two into the round's ONLY
+    /// findings. Lenient accounting credits the four files it answered; the
+    /// two files it never named (a different symbol, and the definition file)
+    /// are still unaccounted, and the complaint names those FILES and symbols
+    /// and says one line per file suffices.
+    #[test]
+    fn r67a_one_line_per_file_accounts_for_that_files_sites() {
+        let enumerations = r67_s1_listed_sites();
+        let reviewed = vec![
+            verdict(
+                "quoteShipping",
+                "src/admin/manualQuote.ts:10",
+                CallSiteStatus::Updated,
+            ),
+            verdict(
+                "quoteShipping",
+                "src/api/quoteHandler.ts:10",
+                CallSiteStatus::Updated,
+            ),
+            verdict(
+                "quoteShipping",
+                "src/cart/cartSummary.ts:7",
+                CallSiteStatus::Updated,
+            ),
+            verdict(
+                "quoteShipping",
+                "src/checkout/checkout.ts:12",
+                CallSiteStatus::Updated,
+            ),
+        ];
+        let missing: Vec<String> = missing_call_sites(&enumerations, &reviewed)
+            .iter()
+            .map(|site| format!("{}:{}", site.file, site.line))
+            .collect();
+        assert_eq!(
+            missing,
+            vec!["src/admin/manualQuote.ts:5", "src/shipping/quote.ts:16"],
+            "the four answered files are accounted for"
+        );
+
+        let groups = unaccounted_call_site_files(&enumerations, &reviewed);
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        assert_eq!(groups[0].symbol, "computeManualQuote");
+        assert_eq!(groups[0].file, "src/admin/manualQuote.ts");
+        assert_eq!(groups[1].file, "src/shipping/quote.ts");
+        for group in &groups {
+            assert!(!group.explicitly_missed);
+            let complaint = group.complaint();
+            assert!(complaint.contains(&group.file), "{complaint}");
+            assert!(complaint.contains(&group.symbol), "{complaint}");
+            assert!(
+                complaint.contains("one CALLSITE line per changed symbol per file"),
+                "{complaint}"
+            );
+            assert!(complaint.contains("line number is optional"), "{complaint}");
+        }
+        assert_eq!(groups[1].evidence(), "src/shipping/quote.ts:16");
+    }
+
+    /// (b) One `UPDATED` line for a file accounts for EVERY site listed in it,
+    /// and a line number pointing at a different line in the same file still
+    /// accounts for that file's sites.
+    #[test]
+    fn r67a_one_line_covers_several_sites_in_one_file_whatever_the_line_number() {
+        let enumerations = vec![enumeration(
+            "quoteShipping",
+            vec![
+                cs("src/admin/manualQuote.ts", 5),
+                cs("src/admin/manualQuote.ts", 10),
+            ],
+        )];
+        // No line number at all.
+        let by_file = vec![verdict(
+            "quoteShipping",
+            "src/admin/manualQuote.ts",
+            CallSiteStatus::Updated,
+        )];
+        assert!(missing_call_sites(&enumerations, &by_file).is_empty());
+        // One line number, naming only one of the two sites.
+        let by_one_line = vec![verdict(
+            "quoteShipping",
+            "src/admin/manualQuote.ts:10",
+            CallSiteStatus::Unaffected,
+        )];
+        assert!(missing_call_sites(&enumerations, &by_one_line).is_empty());
+        // A line number that matches no listed site in that file still counts.
+        let by_other_line = vec![verdict(
+            "quoteShipping",
+            "src/admin/manualQuote.ts:42",
+            CallSiteStatus::Updated,
+        )];
+        assert!(missing_call_sites(&enumerations, &by_other_line).is_empty());
+        // A path the reviewer shortened to its trailing components matches.
+        let by_short_path = vec![verdict(
+            "quoteShipping",
+            "admin/manualQuote.ts",
+            CallSiteStatus::Updated,
+        )];
+        assert!(missing_call_sites(&enumerations, &by_short_path).is_empty());
+    }
+
+    /// (e) The guarantee survives leniency: an explicit MISSED for a file
+    /// marks that file's sites missed (not absent — so the gate requests
+    /// changes rather than reading the table as incomplete), and a
+    /// line-numbered MISSED marks exactly that line even when another line in
+    /// the same file was accounted for.
+    #[test]
+    fn r67a_an_explicit_missed_still_marks_a_file_or_a_line() {
+        let enumerations = vec![enumeration(
+            "quoteShipping",
+            vec![
+                cs("src/admin/manualQuote.ts", 5),
+                cs("src/admin/manualQuote.ts", 10),
+            ],
+        )];
+        let file_missed = vec![verdict(
+            "quoteShipping",
+            "src/admin/manualQuote.ts",
+            CallSiteStatus::Missed,
+        )];
+        assert_eq!(missing_call_sites(&enumerations, &file_missed).len(), 2);
+        assert!(absent_call_sites(&enumerations, &file_missed).is_empty());
+        let groups = unaccounted_call_site_files(&enumerations, &file_missed);
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].explicitly_missed);
+        assert_eq!(
+            groups[0].evidence(),
+            "src/admin/manualQuote.ts:5, src/admin/manualQuote.ts:10"
+        );
+        assert!(groups[0].complaint().contains("MISSED"));
+
+        let one_line_missed = vec![
+            verdict(
+                "quoteShipping",
+                "src/admin/manualQuote.ts:5",
+                CallSiteStatus::Missed,
+            ),
+            verdict(
+                "quoteShipping",
+                "src/admin/manualQuote.ts:10",
+                CallSiteStatus::Updated,
+            ),
+        ];
+        let missing = missing_call_sites(&enumerations, &one_line_missed);
+        assert_eq!(missing.len(), 1, "{missing:?}");
+        assert_eq!(missing[0].line, 5);
+    }
+
+    /// (b) The per-symbol requirement is kept: a listed symbol with no
+    /// CALLSITE line at all is unaccounted (and ABSENT, so the R66a
+    /// incomplete-table reading still applies), even when another symbol in
+    /// the SAME file was answered.
+    #[test]
+    fn r67a_a_symbol_with_no_callsite_line_at_all_is_unaccounted() {
+        let enumerations = r67_s1_listed_sites();
+        let other_symbol_only = vec![verdict(
+            "quoteShipping",
+            "src/admin/manualQuote.ts",
+            CallSiteStatus::Updated,
+        )];
+        let absent: Vec<String> = absent_call_sites(&enumerations, &other_symbol_only)
+            .iter()
+            .map(|site| format!("{}:{}", site.file, site.line))
+            .collect();
+        assert!(
+            absent.contains(&"src/admin/manualQuote.ts:5".to_string()),
+            "computeManualQuote was never named: {absent:?}"
+        );
+    }
+
+    /// Two files with the same basename in different directories are never
+    /// confused for each other by the path-suffix match.
+    #[test]
+    fn r67a_a_same_named_file_in_another_directory_does_not_account() {
+        let enumerations = vec![enumeration("quoteShipping", vec![cs("src/a/quote.ts", 3)])];
+        let elsewhere = vec![verdict(
+            "quoteShipping",
+            "src/b/quote.ts",
+            CallSiteStatus::Updated,
+        )];
+        assert_eq!(missing_call_sites(&enumerations, &elsewhere).len(), 1);
+    }
+
+    /// (a)+(b) together, on the real record: with the definition sites gone
+    /// from the list, the SAME reviewer response that was sent back as
+    /// `REQUEST_CHANGES` accounts for every listed site and E7 raises nothing.
+    #[test]
+    fn r67a_the_r67_s1_review_accounts_for_every_site_once_definitions_are_excluded() {
+        let enumerations = enumerate_call_sites(&r67_s1_changes(), r67_s1_repo());
+        let reviewed = vec![
+            verdict(
+                "quoteShipping",
+                "src/admin/manualQuote.ts",
+                CallSiteStatus::Updated,
+            ),
+            verdict(
+                "quoteShipping",
+                "src/api/quoteHandler.ts",
+                CallSiteStatus::Updated,
+            ),
+            verdict(
+                "quoteShipping",
+                "src/cart/cartSummary.ts",
+                CallSiteStatus::Updated,
+            ),
+            verdict(
+                "quoteShipping",
+                "src/checkout/checkout.ts",
+                CallSiteStatus::Updated,
+            ),
+        ];
+        assert!(
+            missing_call_sites(&enumerations, &reviewed).is_empty(),
+            "{:?}",
+            missing_call_sites(&enumerations, &reviewed)
+        );
+        assert!(unaccounted_call_site_files(&enumerations, &reviewed).is_empty());
+    }
+
+    #[test]
+    fn r67a_a_site_ref_with_no_line_number_is_read_as_a_whole_file() {
+        assert_eq!(
+            parse_site_ref("src/shipping/quote.ts:16"),
+            ("src/shipping/quote.ts", Some(16))
+        );
+        assert_eq!(
+            parse_site_ref(" src/shipping/quote.ts "),
+            ("src/shipping/quote.ts", None)
+        );
+        // A trailing non-numeric segment is part of the path, not a line.
+        assert_eq!(
+            parse_site_ref("src/shipping/quote.ts:head"),
+            ("src/shipping/quote.ts:head", None)
+        );
     }
 }
