@@ -25,6 +25,7 @@ pub mod gate_classifier;
 pub mod goal_a2a;
 pub mod goal_context_mcp;
 pub mod goal_engine;
+pub mod harness_watch;
 pub mod inbox_tools;
 pub mod librarian;
 pub mod librarian_adjudicator;
@@ -816,6 +817,26 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(council::CouncilClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            harness_watch::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: harness_watch::EXTENSION_NAME,
+                display_name: "Harness Watch",
+                description:
+                    "Live, read-only view of the coding-harness runs in the user's terminals. harness_runs lists live runs, runs whose terminal stopped heartbeating, and runs that just finished — repo and worktree, phase, age, goals done out of total, how many goals wait on the user, and spend so far including workers. harness_run_status drills into one run, chosen by handle, session or repo fragment (or automatically when exactly one is live): each goal's state, attempt, worker, heartbeat, last tool name, last error, verification verdict, pending gate or review, and landed commit, plus recent activity. harness_attention gathers what those runs are waiting on the user for: open decisions, parked goals, pending gates, and terminals that exited unexpectedly mid-run. Reads this machine's local database only, never message text or file contents",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "When the user asks how the work in their terminals is going, answer from the live record instead of guessing or reading transcripts. These reads never requeue, dispatch or reclaim a goal, so they are safe to call while a terminal is mid-run.",
+                required_secrets: &[],
+                teaching: &[],
+                client_factory: |ctx| {
+                    Box::new(harness_watch::HarnessWatchClient::new(ctx).unwrap())
+                },
             },
         );
 
