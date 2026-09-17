@@ -631,7 +631,7 @@ fn parse_safety_and_trust(line: &str) -> Option<SafetyAndTrustReceipt> {
 
 static COST_ROUTING_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(
-        r"^\s*receipt\s+cost_routing\s+dispatches=([0-9]+)\s+cheapest_capable=([0-9]+)\s+pack_honored=([0-9]+)\s+planner=(\S+/\S+)(?:\s+routed_local=([0-9]+)\s+routed_cloud=([0-9]+)\s+fallbacks=([0-9]+))?\s*$",
+        r"^\s*receipt\s+cost_routing\s+dispatches=([0-9]+)\s+cheapest_capable=([0-9]+)\s+pack_honored=([0-9]+)\s+planner=(\S+/\S+|none)(?:\s+routed_local=([0-9]+)\s+routed_cloud=([0-9]+)\s+fallbacks=([0-9]+))?\s*$",
     )
     .expect("COST_ROUTING_RE is a valid regex")
 });
@@ -658,6 +658,11 @@ const PLANNER_UNSET_SENTINEL: &str = "unknown/unknown";
 /// evidence; at zero dispatches the receipt is kept (with the sentinel
 /// recorded verbatim in `planner`) so `qualification.rs`'s `cost_routing`
 /// gate can see the explicit zero rather than reading a missing receipt.
+///
+/// r64 s5: a current binary prints `planner=none` when no decompose call
+/// answered the run (`routing_receipt::PLANNER_NONE`). That is an explicit
+/// statement, not an unresolved trace, so it is kept at any dispatch count (a
+/// resume-only run dispatches real goals without planning anything).
 fn parse_cost_routing(line: &str) -> Option<CostRoutingReceipt> {
     let caps = COST_ROUTING_RE.captures(line)?;
     let dispatches: usize = caps[1].parse().ok()?;
@@ -1651,6 +1656,39 @@ mod tests {
         assert!(scan(&line.replace("dispatches=0", "dispatches=1"))
             .cost_routing
             .is_none());
+    }
+
+    /// r64 s5: `planner=none` (no decompose call answered this run) is an
+    /// explicit value — it parses, and is kept even when the run dispatched
+    /// goals (a resume-only run), unlike the legacy unset sentinel.
+    #[test]
+    fn routing_receipt_parses_planner_none_at_any_dispatch_count() {
+        for dispatches in [0usize, 3] {
+            let line = format!(
+                "receipt cost_routing dispatches={dispatches} cheapest_capable={dispatches} \
+                 pack_honored={dispatches} planner=none routed_local=0 \
+                 routed_cloud={dispatches} fallbacks=0"
+            );
+            assert_eq!(
+                scan(&line).cost_routing,
+                Some(CostRoutingReceipt {
+                    dispatches,
+                    cheapest_capable: dispatches,
+                    pack_honored: dispatches,
+                    planner: "none".to_string(),
+                    routed_local: Some(0),
+                    routed_cloud: Some(dispatches),
+                    fallbacks: Some(0),
+                }),
+                "{line}"
+            );
+        }
+        // A bare word other than `none` is still not a planner.
+        assert!(scan(
+            "receipt cost_routing dispatches=1 cheapest_capable=1 pack_honored=1 planner=session"
+        )
+        .cost_routing
+        .is_none());
     }
 
     /// R48b (v1.3): the three new trailing fields parse when present, and

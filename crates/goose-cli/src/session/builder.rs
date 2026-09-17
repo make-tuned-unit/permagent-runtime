@@ -1343,32 +1343,13 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let headless_coding_dispatch =
         wants_headless_goal_dispatch(coding_harness, agent.config.goose_mode);
     if headless_coding_dispatch {
-        // Lane R22b-b (M24 `dschat-select-existing-roadmap-resumes-not-
-        // redecomposes` forensics, round 2): the cost_routing receipt line
-        // WAS printed on a resume-only run (`dispatches=3 cheapest_capable=3
-        // pack_honored=3`), but with `planner=unknown/unknown` — the string
-        // `routing_receipt::snapshot()` falls back to when `set_planner` was
-        // never called this run — and `permagent-eval`'s `harness_log.rs`
-        // (~line 581) deliberately reads an unresolved planner as MISSING
-        // evidence for the whole area, per the RECEIPT CONTRACT ("an
-        // unresolved planner must not be recorded as real evidence").
-        // `set_planner` was previously only called from the
-        // decompose→`create_roadmap` path (`orchestrator.rs:6993`/`:6996`,
-        // inside `handle_decompose_roadmap`'s own provider-selection code) —
-        // `resume_roadmap` and `goal_advance(dispatch)` never call it, so a
-        // run that only ever resumes or advances an existing roadmap left
-        // the planner at its zero-value default even though it genuinely
-        // dispatched. Set it once here, at coordinator session start, from
-        // THIS session's own resolved provider/model (`resolved.provider_name`/
-        // `resolved.model_name`, already computed above) — before any tool
-        // call, so every headless coding-harness run has a real planner
-        // regardless of which path it takes. Harmless to call again from the
-        // decompose path later in the same run: `set_planner` just
-        // overwrites with the (here, identical) coordinator provider/model.
-        permagent::cost_router::routing_receipt::set_planner(
-            &resolved.provider_name,
-            &resolved.model_name,
-        );
+        // r64 s5: the `cost_routing planner=` receipt names the planner that
+        // physically ANSWERED a decompose call this run, or `none` when no
+        // decompose call happened (a resume-only run). It is set only by
+        // `decompose_roadmap` (orchestrator.rs); seeding it here with the
+        // coordinator claimed a planner nobody asked, and let a decompose
+        // routed elsewhere hide behind it. `permagent-eval` reads `none` as
+        // an explicit value, not an unresolved planner.
         // R1(b) (harness loop, Lane D1, from Lane F8 forensics): seed the
         // project this coordinator's own `create_roadmap` will resolve onto
         // with a real `root_path` before any goal can dispatch, so
@@ -1620,47 +1601,26 @@ mod tests {
         assert!(!wants_headless_goal_dispatch(true, GooseMode::Chat));
     }
 
-    /// Lane R22b-b (M24 `dschat-select-existing-roadmap-resumes-not-
-    /// redecomposes` forensics, round 2): the cost_routing receipt line WAS
-    /// printed on a resume-only run, but with `planner=unknown/unknown` —
-    /// `set_planner` used to be called only from the decompose→
-    /// `create_roadmap` path, so a run that only ever resumes an existing
-    /// roadmap or calls `goal_advance(dispatch)` never set it, and
-    /// `permagent-eval`'s `harness_log.rs` reads an unresolved planner as
-    /// missing evidence for the whole area even though real dispatches
-    /// happened. A structural, source-text check (like
+    /// r64 s5: the session builder never seeds the `cost_routing planner=`
+    /// receipt with the coordinator. Only `decompose_roadmap` sets it, from the
+    /// planner that answered; a run with no decompose call prints
+    /// `planner=none`. A structural, source-text check (like
     /// `cost_routing_receipt_is_printed_only_after_the_goal_drain` in
-    /// `session/mod.rs`) rather than an actual `build_session` call: this
-    /// function's error paths call `process::exit(1)` on a real
-    /// provider/keychain failure, which would kill the whole test binary —
-    /// not something to risk invoking from a unit test.
+    /// `session/mod.rs`): `build_session`'s error paths call
+    /// `process::exit(1)`, which a unit test must not invoke.
     #[test]
-    fn cost_routing_planner_is_set_at_coordinator_start_for_every_headless_path() {
+    fn cost_routing_planner_is_not_seeded_with_the_coordinator_at_session_start() {
         let src = include_str!("builder.rs");
         let body = src.split("\nmod tests {").next().unwrap();
-        let block_start = body
-            .find("if headless_coding_dispatch {")
-            .expect("the headless coding-harness dispatch gate must still exist");
-        let block = &body[block_start..];
-        let set_planner_pos = block.find("routing_receipt::set_planner(").expect(
-            "set_planner must be called inside the headless_coding_dispatch block, so \
-             every headless coding-harness session gets a real planner before its first \
-             coordinator tool call — regardless of whether that call later resumes, \
-             advances, or decomposes a roadmap",
-        );
-        let dispatch_hook_pos = block
-            .find("install_dispatch_hook_for_headless_session(")
-            .unwrap();
         assert!(
-            set_planner_pos < dispatch_hook_pos,
-            "set_planner must be set at coordinator session start, not deferred until a \
-             specific tool call reveals which roadmap path this run takes"
+            body.contains("if headless_coding_dispatch {"),
+            "the headless coding-harness dispatch gate must still exist"
         );
         assert_eq!(
             body.matches("routing_receipt::set_planner(").count(),
-            1,
-            "exactly one session-start call site in this file — the decompose path's own \
-             call lives in orchestrator.rs and is unaffected"
+            0,
+            "the planner receipt is the decompose call's answering planner, never the \
+             coordinator seeded at session start"
         );
     }
 

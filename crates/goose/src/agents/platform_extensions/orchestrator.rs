@@ -11299,6 +11299,20 @@ impl OrchestratorClient {
             &actual_planner.get_model_config().model_name,
             answered_model.as_deref(),
         );
+        // R36a / r64 s5: the `cost_routing planner=` receipt names the planner
+        // that PHYSICALLY answered this decompose call (`actual_planner`,
+        // tracked through the escalation arm, and the model its response
+        // named), never the intended route. It is set here, as soon as an
+        // answer exists, so an answer that fails to parse or is refused below
+        // still names who answered; a run with no decompose call prints
+        // `planner=none`. `planner_label` below stays the intended route for
+        // the human-facing note and Decision Inbox payload.
+        {
+            let (provider, model) = physical_planner
+                .split_once('/')
+                .unwrap_or((actual_planner.get_name(), ""));
+            crate::cost_router::routing_receipt::set_planner(provider, model);
+        }
 
         let goals = match goals {
             DecompositionOutcome::Goals(g) => g,
@@ -11338,19 +11352,6 @@ impl OrchestratorClient {
             .as_ref()
             .map(|rm| format!("{}/{}", rm.provider, rm.model))
             .unwrap_or_else(|| "session".to_string());
-        // R36a (A32 analysis credits section): `set_planner` records the
-        // PHYSICAL provider that produced this roadmap's decomposition
-        // (`actual_planner`, tracked above through the escalation arm too),
-        // never the merely-intended route — `planner_label` above stays the
-        // intended route for the human-facing "roadmap created" note/
-        // Decision Inbox payload, which is a different, correct concern
-        // (explaining what was ASKED for and why), but the receipt other
-        // tooling reads to know who actually answered must not repeat that
-        // same intent when the intended provider's call failed.
-        crate::cost_router::routing_receipt::set_planner(
-            actual_planner.get_name(),
-            &actual_planner.get_model_config().model_name,
-        );
         let worker_map = crate::cost_router::derived_role_map().await;
         let workers_label = crate::cost_router::WorkflowRole::all()
             .iter()

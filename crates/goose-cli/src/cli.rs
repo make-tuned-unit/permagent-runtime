@@ -1671,7 +1671,9 @@ async fn handle_run_command(
     // itself is shared with the interactive path just below and must not be
     // treated as "receipts active" for it) — see `receipts::begin_run`'s own
     // doc comment for why an eager call is safe (no write happens until the
-    // first counter mutation).
+    // first counter mutation). (r64 s5: `build_session` no longer seeds the
+    // planner; `decompose_roadmap` sets it from the planner that answered, or
+    // it prints `planner=none`. The early reset stays correct either way.)
     if !run_behavior.interactive {
         permagent::receipts::begin_run();
     }

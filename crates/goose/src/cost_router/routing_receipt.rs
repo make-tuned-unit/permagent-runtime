@@ -95,6 +95,13 @@ pub fn record_delegate_dispatch(audit: super::delegate::DelegateCostAudit, provi
     }
 }
 
+/// What the `planner=` field prints when no decompose call answered this run
+/// (r64 s5): an explicit value, not an unresolved planner.
+pub const PLANNER_NONE: &str = "none";
+
+/// Record the planner that physically ANSWERED this run's decompose call —
+/// `provider` and the model its response named — never an intended route or
+/// the coordinator. `decompose_roadmap` is the only caller.
 pub fn set_planner(provider: &str, model: &str) {
     {
         let mut planner = PLANNER.lock().unwrap_or_else(|e| e.into_inner());
@@ -135,7 +142,7 @@ pub fn snapshot() -> Snapshot {
         cheapest_capable: CHEAPEST_CAPABLE.load(Ordering::Relaxed),
         pack_honored: PACK_HONORED.load(Ordering::Relaxed),
         planner: if planner.is_empty() {
-            "unknown/unknown".into()
+            PLANNER_NONE.into()
         } else {
             planner
         },
@@ -204,7 +211,7 @@ mod tests {
             dispatches: 0,
             cheapest_capable: 0,
             pack_honored: 0,
-            planner: "unknown/unknown".into(),
+            planner: PLANNER_NONE.into(),
             routed_local: 0,
             routed_cloud: 0,
             fallbacks: 0,
@@ -212,7 +219,7 @@ mod tests {
         assert_eq!(
             receipt.format_line(),
             "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 \
-             planner=unknown/unknown routed_local=0 routed_cloud=0 fallbacks=0"
+             planner=none routed_local=0 routed_cloud=0 fallbacks=0"
         );
     }
 
@@ -299,7 +306,7 @@ mod tests {
                 dispatches: 0,
                 cheapest_capable: 0,
                 pack_honored: 0,
-                planner: "unknown/unknown".into(),
+                planner: PLANNER_NONE.into(),
                 routed_local: 0,
                 routed_cloud: 0,
                 fallbacks: 0,
@@ -338,7 +345,7 @@ mod tests {
                 dispatches: 0,
                 cheapest_capable: 0,
                 pack_honored: 0,
-                planner: "unknown/unknown".into(),
+                planner: PLANNER_NONE.into(),
                 routed_local: 0,
                 routed_cloud: 0,
                 fallbacks: 0,
@@ -346,6 +353,25 @@ mod tests {
             "reset() must fully clear the planner along with the counters, leaving the \
              binary's shared statics clean for any later test"
         );
+    }
+
+    /// r64 s5: the planner field names exactly what `set_planner` was given
+    /// (the decompose call's answering provider and model), and `none` once
+    /// reset with no decompose call.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn planner_field_names_the_answering_planner_or_none() {
+        reset();
+        assert_eq!(snapshot().planner, PLANNER_NONE);
+        assert!(
+            format_line().contains(" planner=none "),
+            "{}",
+            format_line()
+        );
+        set_planner("anthropic", "claude-haiku-4-5-20251001");
+        assert_eq!(snapshot().planner, "anthropic/claude-haiku-4-5-20251001");
+        reset();
+        assert_eq!(snapshot().planner, PLANNER_NONE);
     }
 
     /// R48b: a plain local dispatch (no fallback) increments `routed_local`
