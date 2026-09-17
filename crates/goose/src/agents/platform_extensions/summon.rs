@@ -4696,7 +4696,8 @@ mod tests {
         // Prove the negative directly: the pack default model is NEVER produced by
         // the precedence when nothing configures the role.
         let pack_default = crate::cost_router::packs::ModelPacks::default().hard.model;
-        assert_eq!(pack_default.as_str(), "claude-opus-4-8"); // the baked pack exists…
+        // Lane N2: the HARD pack default is derived from configured models, not a
+        // vendor constant, so only the negative property is asserted.
         assert_ne!(
             resolve_subagent_model(None, None, None, s("user-env-default")),
             Some(pack_default),
