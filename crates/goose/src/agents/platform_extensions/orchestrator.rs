@@ -1054,6 +1054,213 @@ fn validate_roadmap_goals(goals: &[goal_state::ProposedGoal]) -> Result<(), Stri
     Ok(())
 }
 
+// ── R62g: a blocker is an escalation, never a roadmap card ─────────────────
+//
+// M46 r61 s1 (`select-ambiguous-choice-escalates-decision`): the workspace
+// was empty, the coordinator wrote "BLOCKER TO SURFACE IN THIS PLAN: the
+// workspace is empty…" into its own `decompose_roadmap` objective, and then
+// `create_roadmap` materialized one card titled "BLOCKER: Obtain repo source
+// and project structure", which was dispatched to a worker that could never
+// do it. Recipe exception (b)(3) already says no repo facts is an
+// `escalate`; this is the harness backstop for a model that knows and plans
+// the blocker anyway.
+//
+// Deliberately NOT "refuse whenever the repo is empty": an empty workspace
+// whose task is to create what is missing (the `fizzbuzz` fixture, recipe
+// Lane R40b's "an empty seeded workspace … create what's missing") is real
+// work a worker can do. The empty-facts signal only refuses when the plan
+// itself says it is blocked.
+
+/// Everything after the reason in the refusal text — the resolution path.
+const BLOCKER_ROADMAP_REFUSAL_TAIL: &str = "A missing repo, missing facts, or missing credentials \
+     are escalations: call `escalate` with the specific ask; a roadmap card is for work a worker \
+     can do here.";
+
+/// Lowercase, every non-alphanumeric run collapsed to one space, padded with
+/// a space on both sides — so a whole-word/phrase test is a plain
+/// `contains(" word ")` and never needs byte-index slicing.
+fn blocker_normalized_words(text: &str) -> String {
+    let mut out = String::from(" ");
+    for c in text.chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() {
+            out.push(c);
+        } else if !out.ends_with(' ') {
+            out.push(' ');
+        }
+    }
+    if !out.ends_with(' ') {
+        out.push(' ');
+    }
+    out
+}
+
+fn blocker_has_any_phrase(normalized: &str, phrases: &[&str]) -> bool {
+    phrases
+        .iter()
+        .any(|phrase| normalized.contains(&format!(" {phrase} ")))
+}
+
+/// Whether a goal title is written in the BLOCKER-label form: leading markup
+/// or punctuation trimmed, the first word is "blocker", and it reads as a
+/// label — all-caps `BLOCKER`, or followed by a separator (`Blocker:`,
+/// `[Blocker]`, `**Blocker** —`, `Blocker - …`). "Remove blocker flag from
+/// config" (not the first word) and "Blocker detection in the scheduler"
+/// (no separator) are ordinary work and do not match.
+fn goal_title_is_blocker_label(title: &str) -> bool {
+    let rest = title.trim_start_matches(|c: char| !c.is_alphanumeric());
+    let word: String = rest.chars().take_while(|c| c.is_alphanumeric()).collect();
+    if !word.eq_ignore_ascii_case("blocker") {
+        return false;
+    }
+    if word == "BLOCKER" {
+        return true;
+    }
+    let mut after = rest
+        .chars()
+        .skip(word.chars().count())
+        .skip_while(|c: &char| matches!(*c, '*' | '_' | '`' | '~'))
+        .peekable();
+    let next = after.peek().copied();
+    match next {
+        None => true,
+        Some(c) if c.is_whitespace() => matches!(
+            after.find(|c| !c.is_whitespace()),
+            Some(':' | '—' | '–' | '-' | '|')
+        ),
+        Some(c) => matches!(c, ':' | ']' | ')' | '—' | '–' | '|'),
+    }
+}
+
+/// Whether a goal description says the goal exists only to obtain a missing
+/// repo/source, credential, or facts before any work can start. All three
+/// parts must be present — an acquiring verb, a missing prerequisite, and a
+/// "nothing can proceed until then" gate — so a real goal that merely
+/// obtains a token at runtime ("obtain the access token from the refresh
+/// endpoint") does not match.
+fn goal_description_only_obtains_a_prerequisite(description: &str) -> bool {
+    let words = blocker_normalized_words(description);
+    blocker_has_any_phrase(
+        &words,
+        &[
+            "obtain",
+            "acquire",
+            "get access to",
+            "request access to",
+            "ask the user for",
+        ],
+    ) && blocker_has_any_phrase(
+        &words,
+        &[
+            "source",
+            "source code",
+            "repo",
+            "repository",
+            "codebase",
+            "project structure",
+            "credential",
+            "credentials",
+            "api key",
+            "repo facts",
+        ],
+    ) && blocker_has_any_phrase(
+        &words,
+        &[
+            "prerequisite blocker",
+            "is a blocker",
+            "work can proceed",
+            "work can start",
+            "work can begin",
+            "before any work",
+            "before work can",
+            "must not be dispatched",
+        ],
+    )
+}
+
+/// Whether free text (a decompose objective, or a goal's title/description)
+/// declares the plan blocked on something missing.
+fn text_declares_a_blocker(text: &str) -> bool {
+    blocker_has_any_phrase(
+        &blocker_normalized_words(text),
+        &[
+            "blocker",
+            "blocked on",
+            "no repo facts",
+            "must not be dispatched",
+            "until the repo is",
+            "until the repository is",
+            "until the source is",
+        ],
+    )
+}
+
+/// R62g: the refusal text when a proposed roadmap is really a blocker, or
+/// `None` for a plan a worker can execute. Checked in both
+/// `decompose_roadmap` (objective before the planner call, then the raw
+/// proposal) and `create_roadmap` (the goals about to be materialized),
+/// against the same `RepoFacts::gather` result grounding uses.
+///
+/// Fires when (a) the repo facts show no files at all AND the objective or a
+/// goal says the plan is blocked; or (b) any goal is titled in the BLOCKER
+/// label form, or describes itself as only obtaining missing
+/// source/credentials/facts before work can start.
+fn roadmap_blocker_refusal(
+    objective: Option<&str>,
+    goals: &[goal_state::ProposedGoal],
+    facts: &RepoFacts,
+) -> Option<String> {
+    let reason = goals
+        .iter()
+        .enumerate()
+        .find_map(|(idx, goal)| {
+            if goal_title_is_blocker_label(&goal.title) {
+                Some(format!(
+                    "goal {} is titled as a blocker (\"{}\")",
+                    idx + 1,
+                    goal.title.trim()
+                ))
+            } else if goal_description_only_obtains_a_prerequisite(&goal.description) {
+                Some(format!(
+                    "goal {} (\"{}\") exists only to obtain missing source, credentials, or \
+                     facts before any work can start",
+                    idx + 1,
+                    goal.title.trim()
+                ))
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            let declared = objective.is_some_and(text_declares_a_blocker)
+                || goals.iter().any(|goal| {
+                    text_declares_a_blocker(&goal.title)
+                        || text_declares_a_blocker(&goal.description)
+                });
+            (facts.file_count == 0 && declared).then(|| {
+                "the working directory has no source files (repo facts are empty) and the plan \
+                 itself says it is blocked on that"
+                    .to_string()
+            })
+        })?;
+    Some(format!(
+        "No roadmap for a blocker: {reason}. {BLOCKER_ROADMAP_REFUSAL_TAIL}"
+    ))
+}
+
+/// R62g: log a blocker refusal to tracing (machine diagnostics) and hand the
+/// text back as the tool handler's plain `Err` — the same refused-tool path
+/// `refuse_dispatch_of_a_paused_roadmap` and the write-scope refusals use, so
+/// no new receipt key.
+fn refuse_blocker_roadmap(tool: &str, refusal: String) -> String {
+    tracing::info!(
+        target: "permagentd::orchestrator",
+        tool,
+        refusal = %refusal,
+        "refused a roadmap that is really a blocker; escalate is the way out"
+    );
+    refusal
+}
+
 // ── Roadmap grounding (Z1, harness loop Round C) ─────────────────────────
 //
 // `decompose_roadmap`'s planner model call had no view of the actual repo:
@@ -10108,6 +10315,13 @@ impl OrchestratorClient {
             .or(working_dir);
         let facts = facts_dir.map(RepoFacts::gather).unwrap_or_default();
 
+        // R62g: an objective that already declares the plan blocked, in a
+        // directory with no files at all, is an escalation — refuse before
+        // paying for a planner call.
+        if let Some(refusal) = roadmap_blocker_refusal(Some(objective.as_str()), &[], &facts) {
+            return Err(refuse_blocker_roadmap("decompose_roadmap", refusal));
+        }
+
         // Reuses the same capability set the Council DAG path already
         // validates plan proposals against (`decisions.rs`,
         // `decisions_effects.rs`) rather than re-deriving it: one
@@ -10308,6 +10522,13 @@ impl OrchestratorClient {
                 ))]));
             }
         };
+
+        // R62g: a proposal that is really a blocker (BLOCKER-titled card, a
+        // card that only obtains missing source/credentials/facts) never
+        // reaches grounding, the approval decision, or the proposal proof.
+        if let Some(refusal) = roadmap_blocker_refusal(None, &goals, &facts) {
+            return Err(refuse_blocker_roadmap("decompose_roadmap", refusal));
+        }
 
         // Z1: ground the raw proposal in this repo and the live roster
         // before any validation or approval — see the "Roadmap grounding"
@@ -10569,6 +10790,25 @@ impl OrchestratorClient {
                 }
             }
         }
+
+        let facts_dir = project
+            .root_path
+            .as_deref()
+            .map(std::path::Path::new)
+            .or_else(|| {
+                self.context
+                    .session
+                    .as_ref()
+                    .map(|s| s.working_dir.as_path())
+            });
+        let facts = facts_dir.map(RepoFacts::gather).unwrap_or_default();
+        // R62g: refuse goals that are really a blocker before the proposal
+        // hash/approval is consumed or any card is materialized — a blocker
+        // is an `escalate`, never a card a worker is dispatched to.
+        if let Some(refusal) = roadmap_blocker_refusal(None, &goals, &facts) {
+            return Err(refuse_blocker_roadmap("create_roadmap", refusal));
+        }
+
         let proposal_hash = match self
             .resolve_create_roadmap_proposal_hash(
                 &pool,
@@ -10593,18 +10833,8 @@ impl OrchestratorClient {
         // criteria still name something this repo can actually check.
         // Re-run the same "does this criterion name a check/file we can
         // substantiate" question one more time, right before
-        // materialization.
-        let facts_dir = project
-            .root_path
-            .as_deref()
-            .map(std::path::Path::new)
-            .or_else(|| {
-                self.context
-                    .session
-                    .as_ref()
-                    .map(|s| s.working_dir.as_path())
-            });
-        let facts = facts_dir.map(RepoFacts::gather).unwrap_or_default();
+        // materialization (`facts`/`facts_dir` are gathered above, before
+        // the R62g blocker check).
         let ac_rewrite_notes = validate_roadmap_ac_or_rewrite(
             &pool,
             &project,
@@ -42386,6 +42616,330 @@ mod tests {
         assert_eq!(
             err,
             "Roadmap creation requires an answered Decision Inbox approval by the user"
+        );
+    }
+
+    // ── R62g (M46 r61 s1, select-ambiguous-choice-escalates-decision): a
+    // blocker is an escalation, never a roadmap card ───────────────────────
+
+    fn r62g_goal(title: &str, description: &str) -> goal_state::ProposedGoal {
+        goal_state::ProposedGoal {
+            title: title.to_string(),
+            description: description.to_string(),
+            acceptance_criteria: vec![],
+            tags: vec![],
+            depends_on: vec![],
+        }
+    }
+
+    /// The r61 s1 card, verbatim title and description.
+    fn r62g_r61_blocker_goal() -> goal_state::ProposedGoal {
+        r62g_goal(
+            "BLOCKER: Obtain repo source and project structure",
+            "The workspace is empty with no server code, route definitions, dependency manifest, \
+             or tests. Before any optimization can be implemented, obtain the actual project \
+             source code, identify the tech stack (language, framework, web server, datastore), \
+             locate the /orders endpoint definition, and document the current implementation. \
+             This is a prerequisite blocker — no optimization work can proceed until the repo \
+             structure and /orders handler are visible and analyzable.",
+        )
+    }
+
+    /// The r61 s1 objective's blocker sentence, verbatim.
+    const R62G_R61_OBJECTIVE: &str = "Optimize the /orders endpoint for load: either add a cache \
+         in front of it or add pagination to shrink each response — implement whichever approach \
+         fits the codebase best.\n\nBLOCKER TO SURFACE IN THIS PLAN: the workspace is empty. No \
+         server source, no route definitions, no dependency manifest, and no tests exist under \
+         the working directory, and the project has no indexed code map. The plan below is \
+         therefore a placeholder shape, not an executable decomposition; it must not be \
+         dispatched until the repo is provided.";
+
+    fn r62g_facts_with_files(files: &[&str]) -> RepoFacts {
+        RepoFacts {
+            file_count: files.len(),
+            files: files.iter().map(|f| f.to_string()).collect(),
+            ..RepoFacts::default()
+        }
+    }
+
+    #[test]
+    fn r62g_blocker_title_label_forms_match_and_ordinary_titles_do_not() {
+        for title in [
+            "BLOCKER: Obtain repo source and project structure",
+            "Blocker: obtain the API credentials",
+            "blocker — get access to the repository",
+            "**BLOCKER** Obtain source",
+            "[Blocker] obtain the repo",
+            "## Blocker - request credentials",
+            "BLOCKER",
+        ] {
+            assert!(goal_title_is_blocker_label(title), "{title}");
+        }
+        for title in [
+            "Remove blocker flag from config",
+            "Blocker detection in the scheduler",
+            "Blockers list renders in the sidebar",
+            "Unblock the release pipeline",
+            "Add pagination to /orders",
+        ] {
+            assert!(!goal_title_is_blocker_label(title), "{title}");
+        }
+    }
+
+    #[test]
+    fn r62g_prerequisite_only_description_matches_but_runtime_token_work_does_not() {
+        assert!(goal_description_only_obtains_a_prerequisite(
+            &r62g_r61_blocker_goal().description
+        ));
+        assert!(!goal_description_only_obtains_a_prerequisite(
+            "Obtain the OAuth access token from the refresh endpoint in src/auth.rs; the login \
+             flow cannot proceed until the token is present. `cargo test` passes."
+        ));
+        assert!(!goal_description_only_obtains_a_prerequisite(
+            "Add a report generator under src/report.rs and cover it with a unit test."
+        ));
+    }
+
+    #[test]
+    fn r62g_refusal_names_escalate_for_each_blocker_shape() {
+        let real_repo = r62g_facts_with_files(&["src/lib.rs", "Cargo.toml"]);
+        let empty = RepoFacts::default();
+
+        // (b) a BLOCKER-titled card, even in a real repo.
+        let refusal =
+            roadmap_blocker_refusal(None, &[r62g_r61_blocker_goal()], &real_repo).unwrap();
+        assert!(
+            refusal.starts_with("No roadmap for a blocker: goal 1 is titled as a blocker"),
+            "{refusal}"
+        );
+        assert!(
+            refusal.contains("call `escalate` with the specific ask"),
+            "{refusal}"
+        );
+
+        // (b) a prerequisite-only description under an innocent title.
+        let mut disguised = r62g_r61_blocker_goal();
+        disguised.title = "Discover the project".to_string();
+        let refusal = roadmap_blocker_refusal(None, &[disguised], &real_repo).unwrap();
+        assert!(
+            refusal.contains("exists only to obtain missing source"),
+            "{refusal}"
+        );
+
+        // (a) empty repo facts + an objective that declares the blocker.
+        let refusal = roadmap_blocker_refusal(Some(R62G_R61_OBJECTIVE), &[], &empty).unwrap();
+        assert!(refusal.contains("no source files"), "{refusal}");
+        assert!(refusal.contains("`escalate`"), "{refusal}");
+    }
+
+    #[test]
+    fn r62g_legitimate_plans_are_not_refused() {
+        let empty = RepoFacts::default();
+        let tests_only = r62g_facts_with_files(&["tests/test_orders.py"]);
+        let docs_only = r62g_facts_with_files(&["docs/guide.md"]);
+
+        // Greenfield in an empty directory (the `fizzbuzz` fixture shape).
+        let greenfield = r62g_goal(
+            "Create fizzbuzz.py",
+            "In this directory, create fizzbuzz.py defining fizzbuzz(n) -> str.",
+        );
+        assert_eq!(
+            roadmap_blocker_refusal(
+                Some("In this directory, create a file `fizzbuzz.py`"),
+                &[greenfield],
+                &empty
+            ),
+            None
+        );
+
+        // A repo whose only files are tests or docs: (a) cannot fire even when
+        // the objective uses the word "blocker".
+        let fix = r62g_goal(
+            "Make the orders test pass",
+            "Implement the handler tests/test_orders.py exercises.",
+        );
+        for facts in [&tests_only, &docs_only] {
+            assert_eq!(
+                roadmap_blocker_refusal(
+                    Some("Fix the release blocker in the orders flow"),
+                    std::slice::from_ref(&fix),
+                    facts
+                ),
+                None
+            );
+        }
+
+        // "blocker" as ordinary work, not the label form.
+        let flag = r62g_goal(
+            "Remove blocker flag from config",
+            "Delete the `blocker` flag from config/app.toml and its reader in src/config.rs.",
+        );
+        assert_eq!(
+            roadmap_blocker_refusal(None, &[flag], &r62g_facts_with_files(&["src/config.rs"])),
+            None
+        );
+    }
+
+    /// Point the personal project (the fixture's default) at `root`.
+    async fn r62g_set_personal_root(pool: &sqlx::Pool<sqlx::Sqlite>, root: &std::path::Path) {
+        let root = root.canonicalize().unwrap().to_string_lossy().into_owned();
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(&root)
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    fn r62g_objective_args(objective: &str) -> JsonObject {
+        let mut args = JsonObject::new();
+        args.insert("objective".to_string(), serde_json::json!(objective));
+        args
+    }
+
+    /// r61 s1 end to end at decompose time: empty workspace, the objective
+    /// declares the blocker → refused naming `escalate`, and no proposal
+    /// proof or approval decision is left behind for `create_roadmap`.
+    #[tokio::test]
+    async fn r62g_decompose_in_an_empty_workspace_refuses_a_declared_blocker() {
+        let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        r62g_set_personal_root(&pool, empty.path()).await;
+
+        let err = client
+            .handle_decompose_roadmap(&session.id, Some(r62g_objective_args(R62G_R61_OBJECTIVE)))
+            .await
+            .expect_err("a declared blocker in an empty workspace must be refused");
+        assert!(err.starts_with("No roadmap for a blocker:"), "{err}");
+        assert!(
+            err.contains("call `escalate` with the specific ask"),
+            "{err}"
+        );
+
+        let project = crate::projects::get_project(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            project.metadata_json[ROADMAP_PROPOSAL_METADATA_KEY].is_null(),
+            "a refused decomposition must leave no proposal proof: {}",
+            project.metadata_json
+        );
+    }
+
+    /// The `fizzbuzz` shape: an empty workspace whose task is to create what
+    /// is missing is real work — decompose still proposes a roadmap.
+    #[tokio::test]
+    async fn r62g_decompose_in_an_empty_workspace_keeps_a_greenfield_plan() {
+        let (_tmp, sm, session, _em, client) =
+            roadmap_handler_fixture(GooseMode::Approve, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        r62g_set_personal_root(&pool, empty.path()).await;
+
+        client
+            .handle_decompose_roadmap(
+                &session.id,
+                Some(r62g_objective_args(
+                    "In this directory, create a file `fizzbuzz.py` that defines fizzbuzz(n).",
+                )),
+            )
+            .await
+            .expect("a greenfield plan in an empty workspace must not be refused");
+    }
+
+    /// A BLOCKER-titled card is refused by `create_roadmap` even in a real
+    /// repo and even with the correct hash for those goals — and no card is
+    /// materialized.
+    #[tokio::test]
+    async fn r62g_create_roadmap_refuses_a_blocker_titled_goal_in_a_real_repo() {
+        let (tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/lib.rs"), "pub fn orders() {}\n").unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+
+        let (_decompose_result, approval_decision_id, _goals_json, _proposal_hash) =
+            decompose_then_read_proof(&client, &pool, &session.id).await;
+
+        let goals = vec![r62g_r61_blocker_goal()];
+        let err = client
+            .handle_create_roadmap(Some(create_roadmap_args(
+                &serde_json::to_string(&goals).unwrap(),
+                &roadmap_proposal_hash(&goals),
+                &approval_decision_id,
+            )))
+            .await
+            .expect_err("a BLOCKER-titled card must never be materialized");
+        assert!(
+            err.starts_with("No roadmap for a blocker: goal 1 is titled as a blocker"),
+            "{err}"
+        );
+        assert!(err.contains("`escalate`"), "{err}");
+        assert!(
+            crate::cards::goal_cards_created_by_session(&pool, &session.id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a refused create_roadmap must create no goal cards"
+        );
+    }
+
+    /// A normal proposal in a real repo is unaffected: decompose then create
+    /// succeeds exactly as before.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn r62g_create_roadmap_accepts_a_normal_real_repo_proposal() {
+        let (tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/lib.rs"), "pub fn orders() {}\n").unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+
+        let (_decompose_result, approval_decision_id, goals_json, proposal_hash) =
+            decompose_then_read_proof(&client, &pool, &session.id).await;
+        client
+            .handle_create_roadmap(Some(create_roadmap_args(
+                &goals_json,
+                &proposal_hash,
+                &approval_decision_id,
+            )))
+            .await
+            .expect("a normal real-repo proposal must still be created");
+    }
+
+    /// "Remove blocker flag from config" passes the blocker check and reaches
+    /// the ordinary proposal-hash check (whose error names the expected hash).
+    #[tokio::test]
+    async fn r62g_create_roadmap_lets_a_remove_blocker_flag_goal_through() {
+        let (tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("src/config.rs"),
+            "pub const BLOCKER: bool = true;\n",
+        )
+        .unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+
+        let (_decompose_result, approval_decision_id, _goals_json, _proposal_hash) =
+            decompose_then_read_proof(&client, &pool, &session.id).await;
+
+        let goals = vec![r62g_goal(
+            "Remove blocker flag from config",
+            "Delete the BLOCKER constant from src/config.rs and every reader of it.",
+        )];
+        let expected_hash = roadmap_proposal_hash(&goals);
+        let err = client
+            .handle_create_roadmap(Some(create_roadmap_args(
+                &serde_json::to_string(&goals).unwrap(),
+                &"f".repeat(64),
+                &approval_decision_id,
+            )))
+            .await
+            .expect_err("a wrong hash for goals that differ from the proposal still fails");
+        assert!(!err.contains("No roadmap for a blocker"), "{err}");
+        assert!(
+            err.contains(&expected_hash),
+            "the goal must reach the ordinary hash check: {err}"
         );
     }
 
