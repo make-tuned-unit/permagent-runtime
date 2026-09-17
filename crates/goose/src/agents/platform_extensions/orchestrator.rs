@@ -33335,15 +33335,10 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         session_id: &str,
         evidence: serde_json::Value,
     ) -> cards::Card {
-        let card = setup_goal_in_state(pool, "complete", 1).await;
-        cards::merge_card_metadata(
-            pool,
-            &card.id,
-            serde_json::json!({ "created_by_session_id": session_id }),
-            false,
-        )
-        .await
-        .unwrap();
+        // `created_by_session_id` is a protected goal key: it is set when the
+        // card is created, never merged in afterwards.
+        let card =
+            create_roadmap_goal(pool, "complete", "N3 signature refactor", session_id, &[]).await;
         cards::set_goal_dispatch_evidence(pool, &card.id, evidence)
             .await
             .unwrap();
