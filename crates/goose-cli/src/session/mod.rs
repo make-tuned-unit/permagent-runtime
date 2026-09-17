@@ -5,6 +5,7 @@ mod composer;
 mod editor;
 mod elicitation;
 mod export;
+pub(crate) mod harness_lease;
 mod input;
 mod output;
 pub(crate) mod spend_announce;
@@ -291,6 +292,10 @@ pub struct CliSession {
     /// for this session. Held here and nowhere else, so it ends with the
     /// process.
     memory_scope: brain_sync::MemoryScope,
+    /// This process's `harness_process_leases` row, for a coding-harness
+    /// session only. Lets other processes (the daemon's chat, a second
+    /// terminal) see this run as live, and tell it apart from a dead one.
+    harness_lease: Option<harness_lease::HarnessLease>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -436,6 +441,36 @@ impl CliSession {
             composer: None,
             recall_installed: false,
             memory_scope,
+            harness_lease: None,
+        }
+    }
+
+    /// Write this process's harness lease and start its heartbeat. A no-op
+    /// (no query) for a session that is not a coding harness, and for a
+    /// session that already holds a lease.
+    pub(crate) async fn start_harness_lease(
+        &mut self,
+        interactive: bool,
+        recipe_title: Option<&str>,
+    ) {
+        if self.harness_lease.is_some() {
+            return;
+        }
+        self.harness_lease = harness_lease::HarnessLease::start_for_session(
+            &self.agent.config.session_manager,
+            &self.session_id,
+            self.coding_harness,
+            interactive,
+            recipe_title,
+            harness_lease::LeaseTiming::default(),
+        )
+        .await;
+    }
+
+    /// Mark the harness lease exited. Idempotent, and a no-op without a lease.
+    pub async fn finish_harness_lease(&self, exit_status: &str) {
+        if let Some(lease) = self.harness_lease.as_ref() {
+            lease.finish(exit_status).await;
         }
     }
 
@@ -666,6 +701,11 @@ impl CliSession {
         interactive: bool,
         cancel_token: CancellationToken,
     ) -> Result<()> {
+        if let Some(lease) = self.harness_lease.as_ref() {
+            lease
+                .set_phase(permagent::harness_lease::LeasePhase::Turn)
+                .await;
+        }
         let provider = self.agent.provider().await?;
         let turn_provider = provider.get_name().to_string();
         let turn_model = provider.get_model_config().model_name;
@@ -705,6 +745,11 @@ impl CliSession {
         heartbeat
             .finish_observed((result != "unknown").then_some(result))
             .await;
+        if let Some(lease) = self.harness_lease.as_ref() {
+            lease
+                .set_phase(permagent::harness_lease::LeasePhase::Idle)
+                .await;
+        }
         response
     }
 
@@ -804,6 +849,7 @@ impl CliSession {
         // task would be dropped before it ever reached the daemon — which is
         // precisely when the meter most needs the final number.
         spend_announce::announce_now(&self.session_id, true).await;
+        self.finish_harness_lease("completed").await;
 
         println!(
             "\n  {} {}",
@@ -1684,6 +1730,11 @@ impl CliSession {
         if !wants_headless_goal_drain(self.coding_harness, cap) {
             return;
         }
+        if let Some(lease) = self.harness_lease.as_ref() {
+            lease
+                .set_phase(permagent::harness_lease::LeasePhase::Draining)
+                .await;
+        }
         let Ok(pool) = self.agent.config.session_manager.pool_clone().await else {
             return;
         };
@@ -1972,6 +2023,7 @@ impl CliSession {
         let mut thinking_header_shown = false;
         let mut fatal: Option<anyhow::Error> = None;
         let mut interrupt_kind: Option<bool> = None;
+        let harness_lease = self.harness_lease.clone();
 
         use futures::StreamExt;
         loop {
@@ -1979,6 +2031,15 @@ impl CliSession {
                 result = stream.as_mut().unwrap().next() => {
                     match result {
                         Some(Ok(AgentEvent::Message(message))) => {
+                            if let Some(lease) = harness_lease.as_ref() {
+                                for content in &message.content {
+                                    if let MessageContent::ToolRequest(request) = content {
+                                        if let Ok(call) = request.tool_call.as_ref() {
+                                            lease.note_tool_activity(call.name.as_ref());
+                                        }
+                                    }
+                                }
+                            }
                             if let Some(telemetry) = harness_telemetry.as_ref() {
                                 for content in &message.content {
                                     match content {

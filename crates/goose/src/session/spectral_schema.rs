@@ -816,6 +816,12 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // backing store.
     apply_harness_run_snapshots_schema(pool).await?;
 
+    // Per-process leases for coding-harness CLI runs. Version-independent and
+    // idempotent: each terminal process writes its own row so other processes
+    // (the daemon, a second terminal) can tell a live foreign run from a dead
+    // one.
+    apply_harness_process_leases_schema(pool).await?;
+
     // First-party analytics events (schema v38). Idempotent; shared with
     // migrate_v37_to_v38 so fresh installs get it on first boot.
     apply_analytics_events_schema(pool).await?;
@@ -4133,6 +4139,55 @@ pub async fn apply_harness_run_snapshots_schema(pool: &Pool<Sqlite>) -> Result<(
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_harness_run_snapshots_session
          ON harness_run_snapshots(session_id, updated_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// One row per coding-harness CLI process (`harness_process_leases`).
+///
+/// The row is written by the process that owns it, directly to the shared
+/// database, and heartbeated for the whole process lifetime. Readers classify
+/// it with [`crate::harness_lease::classify`]: live while non-exited and
+/// recently heartbeated, lost when non-exited but stale (a crash or kill),
+/// ended once `exited`. `lifecycle_id` is the owning process's
+/// `daemon_lifecycle_id()`, the same value stamped as `dispatched_lifecycle`
+/// on goal cards it dispatches, which is what joins a run to its goals.
+/// `last_activity` holds a tool name at most, never message text.
+pub async fn apply_harness_process_leases_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS harness_process_leases (
+            lease_id         TEXT PRIMARY KEY,
+            lifecycle_id     TEXT NOT NULL,
+            session_id       TEXT NOT NULL,
+            session_name     TEXT,
+            working_dir      TEXT NOT NULL,
+            repo_root        TEXT,
+            project_id       TEXT,
+            mode             TEXT NOT NULL,
+            recipe           TEXT,
+            pid              INTEGER NOT NULL,
+            phase            TEXT NOT NULL,
+            started_at       TEXT NOT NULL,
+            heartbeat_at     TEXT NOT NULL,
+            last_activity_at TEXT,
+            last_activity    TEXT,
+            ended_at         TEXT,
+            exit_status      TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_harness_leases_phase_hb
+         ON harness_process_leases(phase, heartbeat_at)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_harness_leases_lifecycle
+         ON harness_process_leases(lifecycle_id)",
     )
     .execute(pool)
     .await?;
