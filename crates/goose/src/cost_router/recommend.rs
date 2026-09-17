@@ -1817,6 +1817,141 @@ pub fn assign_reviewer_at_least(
     }
 }
 
+/// The next complexity tier up, or `None` at COMPLEX.
+fn next_review_tier(complexity: ReviewComplexity) -> Option<ReviewComplexity> {
+    match complexity {
+        ReviewComplexity::Routine => Some(ReviewComplexity::Moderate),
+        ReviewComplexity::Moderate => Some(ReviewComplexity::Complex),
+        ReviewComplexity::Complex => None,
+    }
+}
+
+/// The ONE escalation after an UNCERTAIN review (ruling 2026-09-17: a pricier
+/// model only when the cheaper one objectively fell short). `first` is the
+/// assignment that picked the first reviewer; `answered` is the reviewer that
+/// actually returned UNCERTAIN (it can differ from `first`'s pick after a
+/// provider fallback). Only models that rank ABOVE `answered` on the same
+/// knowledge-base strength scale are considered, and neither `answered` nor
+/// `first`'s pick is ever picked again.
+///
+/// - Below COMPLEX: the same proportional rule as [`assign_reviewer`], with the
+///   verdict held to the next floor tier — the cheapest stronger cross-family
+///   model clearing that floor.
+/// - At COMPLEX, or when nothing stronger clears the next floor: the strongest
+///   cross-family model that ranks above `answered` (cost breaks exact ties).
+/// - Nothing ranks above `answered`: no pick, and `why` says so.
+pub fn escalate_reviewer_after_uncertain(
+    first: &ReviewerAssignment,
+    answered: (&str, &str),
+    worker: Option<(&str, &str)>,
+    available: &[AvailableModel],
+) -> ReviewerAssignment {
+    let answered_label = format!("{}/{}", answered.0, answered.1);
+    let answered_strength = lookup(answered.0, answered.1)
+        .map(|k| k.orchestration_strength)
+        .unwrap_or(0.0);
+    let is_excluded = |a: &AvailableModel| {
+        (a.provider == answered.0 && a.model == answered.1)
+            || (first.pick_provider.as_deref() == Some(a.provider.as_str())
+                && first.pick_model.as_deref() == Some(a.model.as_str()))
+    };
+    let stronger: Vec<AvailableModel> = available
+        .iter()
+        .filter(|a| !is_excluded(*a))
+        .filter(|a| {
+            lookup(&a.provider, &a.model)
+                .is_some_and(|k| k.orchestration_strength > answered_strength + BAND_EPSILON)
+        })
+        .cloned()
+        .collect();
+    let escalation_note = format!(
+        "escalated once after {answered_label} (agentic {answered_strength:.2}) returned \
+         UNCERTAIN on a {} review",
+        first.complexity.as_str()
+    );
+
+    if let Some(tier) = next_review_tier(first.complexity) {
+        let mut next = assign_reviewer_at_least(
+            first.facts.clone(),
+            tier,
+            Some(&escalation_note),
+            worker,
+            &stronger,
+        );
+        if next.pick_provider.is_some() {
+            next.why = format!("{escalation_note}: {}", next.why);
+            return next;
+        }
+    }
+
+    // At COMPLEX (or nothing stronger clears the next floor): the strongest
+    // cross-family model above the reviewer that was unsure.
+    let mut top = assign_reviewer_at_least(
+        first.facts.clone(),
+        ReviewComplexity::Complex,
+        Some(&escalation_note),
+        worker,
+        &stronger,
+    );
+    let eligible = |c: &ReviewerCandidate| {
+        matches!(
+            c.status.as_str(),
+            "picked" | "clears_floor" | "near_floor" | "materially_short"
+        )
+    };
+    let strongest = top
+        .candidates
+        .iter()
+        .filter(|c| eligible(*c))
+        .max_by(|a, b| {
+            a.orchestration
+                .total_cmp(&b.orchestration)
+                .then_with(|| b.cost_per_mtok.total_cmp(&a.cost_per_mtok))
+                .then_with(|| b.provider.cmp(&a.provider).then(b.model.cmp(&a.model)))
+        })
+        .map(|c| {
+            (
+                c.provider.clone(),
+                c.model.clone(),
+                c.orchestration,
+                c.cost_per_mtok,
+            )
+        });
+    match strongest {
+        Some((provider, model, strength, cost)) => {
+            for c in top.candidates.iter_mut() {
+                if c.status == "picked" {
+                    c.status = if c.orchestration >= top.floor - BAND_EPSILON {
+                        "clears_floor".to_string()
+                    } else {
+                        "near_floor".to_string()
+                    };
+                }
+                if c.provider == provider && c.model == model {
+                    c.status = "picked".to_string();
+                }
+            }
+            top.pick_clears_floor = strength >= top.floor - BAND_EPSILON;
+            top.why = format!(
+                "{escalation_note}: the strongest cross-family model ranking above it is \
+                 {provider}/{model} (agentic {strength:.2}, ${cost:.2}/Mtok)"
+            );
+            top.pick_provider = Some(provider);
+            top.pick_model = Some(model);
+        }
+        None => {
+            top.pick_provider = None;
+            top.pick_model = None;
+            top.pick_clears_floor = false;
+            top.why = format!(
+                "{escalation_note}, but no cross-family model you have ranks above it, so there \
+                 is no stronger reviewer to escalate to"
+            );
+        }
+    }
+    top
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2898,6 +3033,116 @@ diff --git a/src/api.rs b/src/api.rs\n\
         for c in cands {
             assert!(c["orchestration"].is_number() && c["cost_per_mtok"].is_number());
         }
+    }
+
+    /// Lane R65a (r65 s1): an UNCERTAIN from the cheapest floor-clearing
+    /// reviewer on a MODERATE review escalates to the next floor tier — the
+    /// cheapest STRONGER cross-family model clearing the COMPLEX floor, not the
+    /// frontier row.
+    #[test]
+    fn uncertain_moderate_review_escalates_to_the_cheapest_stronger_reviewer_at_the_next_floor() {
+        let author = Some(("custom_deepseek", "deepseek-chat"));
+        let available = avail(&[
+            ("minimax", "MiniMax-M2.5"),
+            ("zai", "glm-4.5-air"),
+            ("zai", "glm-5.2"),
+            ("google", "gemini-3-pro"),
+            ("xai", "grok-4.5"),
+            ("anthropic", "claude-fable-5"),
+            ("custom_deepseek", "deepseek-chat"),
+        ]);
+        let untested = "--- a/src/a.rs\n+++ b/src/a.rs\n+a\n+b\n+c\n+d\n";
+        let first = assign_reviewer(ReviewFacts::from_diff(untested, 0), author, &available);
+        assert_eq!(first.complexity, ReviewComplexity::Moderate);
+        assert_eq!(first.pick_label().as_deref(), Some("minimax/MiniMax-M2.5"));
+
+        let next = escalate_reviewer_after_uncertain(
+            &first,
+            ("minimax", "MiniMax-M2.5"),
+            author,
+            &available,
+        );
+        assert_eq!(next.complexity, ReviewComplexity::Complex);
+        assert_eq!(
+            next.pick_label().as_deref(),
+            Some("zai/glm-5.2"),
+            "cheapest model above MiniMax's 0.80 that clears the complex floor: {}",
+            next.why
+        );
+        assert!(
+            next.why
+                .contains("escalated once after minimax/MiniMax-M2.5"),
+            "{}",
+            next.why
+        );
+        assert!(
+            next.candidates.iter().all(|c| c.orchestration > 0.80),
+            "only reviewers ranking above the unsure one are considered"
+        );
+        assert!(next
+            .candidates
+            .iter()
+            .all(|c| c.model != "MiniMax-M2.5" && c.family != "deepseek"));
+    }
+
+    /// At COMPLEX there is no higher floor: escalate to the strongest
+    /// cross-family model ranking above the unsure reviewer; with nothing
+    /// above it, there is no escalation pick.
+    #[test]
+    fn uncertain_complex_review_escalates_to_the_strongest_reviewer_above_it_or_none() {
+        let author = Some(("anthropic", "claude-sonnet-5"));
+        let available = avail(&[
+            ("google", "gemini-3-pro"),
+            ("zai", "glm-5.2"),
+            ("xai", "grok-4.5"),
+            ("openai", "gpt-5.6"),
+        ]);
+        let first = assign_reviewer(
+            ReviewFacts::from_diff(SIGNATURE_DIFF, 3),
+            author,
+            &available,
+        );
+        assert_eq!(first.complexity, ReviewComplexity::Complex);
+        assert_eq!(first.pick_label().as_deref(), Some("zai/glm-5.2"));
+
+        let next =
+            escalate_reviewer_after_uncertain(&first, ("zai", "glm-5.2"), author, &available);
+        assert_eq!(
+            next.pick_label().as_deref(),
+            Some("xai/grok-4.5"),
+            "{}",
+            next.why
+        );
+        assert!(
+            next.why.contains("strongest cross-family model"),
+            "{}",
+            next.why
+        );
+        assert_eq!(
+            next.candidates
+                .iter()
+                .filter(|c| c.status == "picked")
+                .count(),
+            1
+        );
+
+        let top = assign_reviewer(
+            ReviewFacts::from_diff(SIGNATURE_DIFF, 3),
+            Some(("openai", "gpt-5.6")),
+            &avail(&[("anthropic", "claude-fable-5"), ("zai", "glm-4.5-air")]),
+        );
+        assert_eq!(
+            top.pick_label().as_deref(),
+            Some("anthropic/claude-fable-5")
+        );
+        let none = escalate_reviewer_after_uncertain(
+            &top,
+            ("anthropic", "claude-fable-5"),
+            Some(("openai", "gpt-5.6")),
+            &avail(&[("anthropic", "claude-fable-5"), ("zai", "glm-4.5-air")]),
+        );
+        assert_eq!(none.pick_label(), None);
+        assert!(none.why.contains("no cross-family model"), "{}", none.why);
     }
 
     #[test]
