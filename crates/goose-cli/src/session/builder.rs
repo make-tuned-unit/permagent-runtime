@@ -789,6 +789,29 @@ async fn resolve_session_id(
                 output::render_error(&format!("Could not create session: {}", e));
                 process::exit(1);
             });
+        // `SessionType::Hidden` is deliberately non-interactive
+        // (`is_interactive()` in session_manager.rs gates approval/UX, not
+        // budget accounting), so `Agent::reply` never mints a budget task for
+        // it the way it does for User/Terminal sessions. A child with an
+        // inherited parent already copied the parent's durable task id at
+        // creation (`create_session` in session_manager.rs); a top-level
+        // `--no-session` run has no parent, so without this it has no budget
+        // task identity at all. ProgressMonitor then reads `spend_snapshot`,
+        // gets `MissingTaskIdentity`, and refuses every tool call — this is
+        // the same gate the scenario runner hit and fixed the same way
+        // (scenario_runner.rs, e03e6d4).
+        if inherited_parent.is_none() {
+            session_manager
+                .begin_budget_task(&session.id)
+                .await
+                .unwrap_or_else(|e| {
+                    output::render_error(&format!(
+                        "Could not start a budget task for this session: {}",
+                        e
+                    ));
+                    process::exit(1);
+                });
+        }
         session.id
     } else if session_config.resume {
         if let Some(ref session_id) = session_config.session_id {
@@ -2140,5 +2163,106 @@ mod tests {
             assert!(without_map.contains("No repo map is in context"));
             assert!(!without_map.contains("starting point"));
         }
+    }
+
+    // ── `--no-session` budget task identity (lane R63a) ────────────────────
+    //
+    // A top-level `permagent run --no-session` creates a `SessionType::Hidden`
+    // session with no parent. `Agent::reply` only mints a budget task for
+    // interactive session types, so before this fix that Hidden session had no
+    // durable task identity at all, and `spend_snapshot` refused with
+    // `MissingTaskIdentity` — which the tool gate (56cee825) reads as "deny
+    // every tool call". These tests exercise `resolve_session_id` directly
+    // against a temp-dir `SessionManager`, without touching the real Agent or
+    // any process-global state.
+
+    // Also serialized on `no_session_parent_env`: `PARENT_SESSION_ID_ENV` is a
+    // process-global var, and without this a concurrently-running inherited-
+    // parent test could set it mid-test, sending this test's session into
+    // `create_session_with_parent` with a parent id from a *different* temp
+    // dir's database — `process::exit(1)`-ing the whole test binary.
+    #[tokio::test]
+    #[serial_test::serial(no_session_parent_env)]
+    async fn top_level_no_session_run_gets_a_durable_budget_task() {
+        std::env::remove_var(permagent::session::PARENT_SESSION_ID_ENV);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session_manager =
+            permagent::session::session_manager::SessionManager::new(temp_dir.path().to_path_buf());
+        let config = SessionBuilderConfig {
+            no_session: true,
+            ..Default::default()
+        };
+
+        let session_id = resolve_session_id(&config, &session_manager, GooseMode::default()).await;
+
+        let pool = session_manager.pool_clone().await.unwrap();
+        let snapshot = permagent::agents::platform_extensions::orchestrator::spend_snapshot(
+            &pool,
+            &session_id,
+        )
+        .await;
+        assert!(
+            !matches!(
+                snapshot,
+                Err(
+                    permagent::agents::platform_extensions::orchestrator::SpendSnapshotError::MissingTaskIdentity(_)
+                )
+            ),
+            "a top-level `--no-session` run must have a durable budget task \
+             identity so tool calls are not refused; spend_snapshot returned \
+             {snapshot:?}"
+        );
+
+        let session = session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        assert!(
+            permagent::session::budget_task_id(&session.extension_data).is_some(),
+            "the Hidden session's extension data must carry a budget_task id"
+        );
+    }
+
+    /// The env var this reads (`PARENT_SESSION_ID_ENV`) is process-global, so
+    /// this test and the one below serialize on the same key to avoid racing
+    /// each other's mutations.
+    #[tokio::test]
+    #[serial_test::serial(no_session_parent_env)]
+    async fn inherited_parent_no_session_run_reuses_the_parents_task() {
+        std::env::remove_var(permagent::session::PARENT_SESSION_ID_ENV);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session_manager =
+            permagent::session::session_manager::SessionManager::new(temp_dir.path().to_path_buf());
+
+        let parent = session_manager
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+        let parent_task = session_manager.begin_budget_task(&parent.id).await.unwrap();
+
+        std::env::set_var(permagent::session::PARENT_SESSION_ID_ENV, &parent.id);
+        let config = SessionBuilderConfig {
+            no_session: true,
+            ..Default::default()
+        };
+        let session_id = resolve_session_id(&config, &session_manager, GooseMode::default()).await;
+        std::env::remove_var(permagent::session::PARENT_SESSION_ID_ENV);
+
+        let child = session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        let child_task = permagent::session::budget_task_id(&child.extension_data);
+        assert_eq!(
+            child_task,
+            Some(parent_task),
+            "a no_session run with an inherited parent must reuse the \
+             parent's budget task, not mint a fresh one"
+        );
     }
 }
