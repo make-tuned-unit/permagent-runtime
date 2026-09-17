@@ -9,7 +9,7 @@ Commits (branch `lane/R65a`):
 
 1. `2bda1064` Read reviewer verdicts robustly, show verified goals' bound verify run, escalate one UNCERTAIN
 2. `e161a4f9` Size the expert planner's reservation and fall back by the planner ranking
-3. (tests and this report; see the final commit on the branch)
+3. `ecff8163` Test the verified-goal review escalation and the planner ranking fallback (plus this report)
 
 ## FAILURE 1: independent review before auto-land returned UNCERTAIN, and all three goals parked
 
