@@ -660,6 +660,134 @@ pub async fn decide_turn_wing_at(
     (Some(hint), verdict)
 }
 
+// ── Harness working directories (Lane R61a) ──────────────────────────────
+
+/// The project a filesystem path belongs to, as its wing slug.
+///
+/// `projects` are `(slug, root_path)` rows. A project owns a path when its root
+/// IS the path or an ancestor of it, compared by whole path components — so a
+/// project rooted at `/dev/perm` does not own `/dev/permagent`. Every path in
+/// `paths` is asked at once and the DEEPEST owning root wins across all of
+/// them: a harness in a linked git worktree asks with both its own directory
+/// and its main checkout, and a broad parent-directory project must not beat
+/// the repo's own project just because the worktree's path was asked first.
+///
+/// The catch-all `personal` project is never a wing ([`PERSONAL_SLUG`]), and a
+/// root of `/` owns nothing: a project that claims the whole disk is not
+/// evidence about which repo a session is in.
+///
+/// `None` is an honest answer — a directory no registered project claims — and
+/// callers that scope memory treat it as "no project memories", never as "all".
+pub fn project_wing_for_paths(
+    projects: &[(String, Option<String>)],
+    paths: &[&str],
+) -> Option<String> {
+    let mut best: Option<(usize, &str)> = None;
+    for (slug, root) in projects {
+        if slug.is_empty() || slug == PERSONAL_SLUG {
+            continue;
+        }
+        let Some(root) = root
+            .as_deref()
+            .map(str::trim)
+            .map(|r| r.trim_end_matches('/'))
+            .filter(|r| !r.is_empty())
+        else {
+            continue;
+        };
+        let root_path = std::path::Path::new(root);
+        let owns = paths
+            .iter()
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .any(|p| std::path::Path::new(p).starts_with(root_path));
+        if !owns {
+            continue;
+        }
+        let depth = root_path.components().count();
+        if best.is_none_or(|(best_depth, _)| depth > best_depth) {
+            best = Some((depth, slug.as_str()));
+        }
+    }
+    best.map(|(_, slug)| slug.to_string())
+}
+
+/// [`project_wing_for_paths`] against the live project registry.
+///
+/// Stored roots are canonicalized when a project is saved
+/// (`projects::resolve_root_path`: symlinks resolved, macOS `/tmp` →
+/// `/private/tmp`), so each path is asked both as given and in canonical form
+/// when it exists on this machine. Every project status counts: the repo a
+/// session is in does not stop being that project's repo when the project is
+/// paused. A registry read failure is logged and yields `None` — fail closed.
+pub async fn resolve_project_wing_for_paths(pool: &Pool<Sqlite>, paths: &[&str]) -> Option<String> {
+    let rows: Vec<(String, Option<String>)> =
+        match sqlx::query_as("SELECT slug, root_path FROM projects ORDER BY slug")
+            .fetch_all(pool)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                warn!(
+                    target: "permagent::session_wing",
+                    error = %e,
+                    "could not read the project registry — no project is resolved for the path"
+                );
+                return None;
+            }
+        };
+    let mut candidates: Vec<String> = Vec::new();
+    for path in paths.iter().map(|p| p.trim()).filter(|p| !p.is_empty()) {
+        candidates.push(path.to_string());
+        if let Ok(canonical) = std::fs::canonicalize(path) {
+            candidates.push(canonical.to_string_lossy().into_owned());
+        }
+    }
+    let refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+    project_wing_for_paths(&rows, &refs)
+}
+
+/// Attribute a Harness session to the project its working directory is in, so
+/// the turns it writes back carry that project's wing.
+///
+/// Chat's hint is a HYPOTHESIS (the room the UI had open), which is why it must
+/// be corroborated per turn and why ten minutes of silence drops it. A harness
+/// turn is different in kind: the process is running inside the repo, and it
+/// re-asserts that directory on every turn it posts. So for a harness session
+/// this:
+///
+/// * records the resolved project as the session's hint — once-only, through
+///   [`set_session_project_hint`], so a session never gets re-scoped;
+/// * stamps the turn clock NOW, at enqueue, so the drain that follows measures
+///   no silence and does not drop a hint the working directory just re-proved.
+///   A coding turn routinely runs longer than [`HINT_GAP_SECONDS`]; without
+///   this almost every harness turn would be written unwinged, and a
+///   repo-scoped recall (Lane R61a) could never find the harness's own work.
+///
+/// The wing is still only WRITTEN when the drain corroborates it: the caller
+/// puts the working directory into the turn's tool text, so the root-path
+/// check ([`CorroborationSource::ToolPath`]) fires on the same evidence.
+///
+/// Returns the resolved slug, or `None` when no project owns the directory —
+/// then nothing is recorded and the turn stays honestly `general`.
+pub async fn assert_harness_session_project(
+    pool: &Pool<Sqlite>,
+    session_id: &str,
+    paths: &[&str],
+) -> Option<String> {
+    let slug = resolve_project_wing_for_paths(pool, paths).await?;
+    if let Err(e) = set_session_project_hint(pool, session_id, &format!("project:{slug}")).await {
+        warn!(
+            target: "permagent::session_wing",
+            session = %session_id,
+            error = %e,
+            "could not record the harness session's project hint"
+        );
+    }
+    touch_session_turn_clock(pool, session_id, Utc::now()).await;
+    Some(slug)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1374,5 +1502,108 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    // ── harness working directories (Lane R61a) ──
+
+    fn rows(pairs: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
+        pairs
+            .iter()
+            .map(|(slug, root)| (slug.to_string(), root.map(str::to_string)))
+            .collect()
+    }
+
+    #[test]
+    fn a_path_belongs_to_the_deepest_project_root_that_contains_it() {
+        let projects = rows(&[
+            ("dev", Some("/Users/j/dev")),
+            ("permagent-runtime", Some("/Users/j/dev/permagent-runtime")),
+            ("perm", Some("/Users/j/dev/perm")),
+            ("personal", Some("/Users")),
+            ("rootless", None),
+            ("whole-disk", Some("/")),
+        ]);
+        assert_eq!(
+            project_wing_for_paths(&projects, &["/Users/j/dev/permagent-runtime/crates/goose"]),
+            Some("permagent-runtime".to_string())
+        );
+        assert_eq!(
+            project_wing_for_paths(&projects, &["/Users/j/dev/permagent-runtime"]),
+            Some("permagent-runtime".to_string()),
+            "the root itself belongs to its project"
+        );
+        assert_eq!(
+            project_wing_for_paths(&projects, &["/Users/j/dev/permagentx"]),
+            Some("dev".to_string()),
+            "a sibling directory sharing a name prefix is not inside the project"
+        );
+        assert_eq!(
+            project_wing_for_paths(&projects, &["/Users/other"]),
+            None,
+            "`personal` is never a wing and `/` owns nothing"
+        );
+    }
+
+    #[test]
+    fn a_linked_worktree_resolves_through_its_main_checkout() {
+        let projects = rows(&[
+            ("dev", Some("/Users/j/dev")),
+            ("permagent-runtime", Some("/Users/j/dev/permagent-runtime")),
+        ]);
+        // The worktree directory alone only reaches the broad parent project;
+        // asked together with its main checkout, the repo's own project wins.
+        assert_eq!(
+            project_wing_for_paths(
+                &projects,
+                &[
+                    "/Users/j/dev/permagent-worktrees/laneR61a",
+                    "/Users/j/dev/permagent-runtime",
+                ]
+            ),
+            Some("permagent-runtime".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_harness_turn_in_a_project_repo_is_winged_even_after_a_long_silence() {
+        let pool = test_pool().await;
+        a_project(&pool, "plekk", "Plekk", Some("/dev/plekk")).await;
+        a_session(&pool, "harness-1").await;
+        // An earlier turn, three hours ago: Chat's gap rule would drop any hint.
+        let long_ago = Utc::now() - chrono::Duration::hours(3);
+        decide_turn_wing_at(&pool, "harness-1", "User: a\nAssistant: b", "", long_ago).await;
+
+        let slug = assert_harness_session_project(&pool, "harness-1", &["/dev/plekk/src"]).await;
+        assert_eq!(slug.as_deref(), Some("plekk"));
+
+        let (hint, verdict) = decide_turn_wing(
+            &pool,
+            "harness-1",
+            "User: fix the failing test\nAssistant: done",
+            "Harness working directory: /dev/plekk/src",
+        )
+        .await;
+        assert_eq!(hint.map(|h| h.slug).as_deref(), Some("plekk"));
+        assert_eq!(
+            verdict,
+            WingVerdict::Corroborated {
+                wing: "plekk".to_string(),
+                source: CorroborationSource::ToolPath,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_harness_outside_every_project_records_nothing() {
+        let pool = test_pool().await;
+        a_project(&pool, "plekk", "Plekk", Some("/dev/plekk")).await;
+        a_session(&pool, "harness-2").await;
+        assert_eq!(
+            assert_harness_session_project(&pool, "harness-2", &["/elsewhere/repo"]).await,
+            None
+        );
+        assert!(load_session_project_hint(&pool, "harness-2")
+            .await
+            .is_none());
     }
 }
