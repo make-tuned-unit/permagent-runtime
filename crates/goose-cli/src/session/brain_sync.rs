@@ -707,6 +707,58 @@ mod tests {
         );
     }
 
+    /// Lane R60a: eval runs were not hermetic. `endpoint()` resolved the daemon
+    /// token and port from `$HOME/.permagent` by hand, ignoring
+    /// `PERMAGENT_PATH_ROOT`, so a harness run under a fresh per-run root still
+    /// reached the operator's live daemon and injected their private Brain
+    /// recall into the eval model's prompt. Here HOME holds a decoy "operator"
+    /// token and port: a rooted process must not see either, and must still
+    /// reach a daemon that belongs to its OWN root.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_path_rooted_process_never_resolves_the_operators_daemon() {
+        let operator_home = tempfile::tempdir().unwrap();
+        let operator_dir = operator_home.path().join(".permagent");
+        std::fs::create_dir_all(operator_dir.join("secrets")).unwrap();
+        std::fs::write(
+            operator_dir.join("secrets").join("daemon_token.json"),
+            r#"{"token":"operator-real-token"}"#,
+        )
+        .unwrap();
+        std::fs::write(operator_dir.join("config.yaml"), "daemon:\n  port: 4999\n").unwrap();
+        let run_root = tempfile::tempdir().unwrap();
+        let home = operator_home.path().to_str().unwrap();
+        let root = run_root.path().to_str().unwrap();
+        let _env = env_lock::lock_env([("HOME", Some(home)), ("PERMAGENT_PATH_ROOT", Some(root))]);
+
+        assert!(
+            endpoint().is_err(),
+            "a fresh path root holds no daemon token, so the bridge must fail closed \
+             instead of borrowing the operator's from HOME"
+        );
+        assert!(
+            recall_context("where does the scanner run?")
+                .await
+                .is_none(),
+            "no recall may be installed for a process whose root has no daemon"
+        );
+
+        std::fs::create_dir_all(run_root.path().join("secrets")).unwrap();
+        std::fs::write(
+            run_root.path().join("secrets").join("daemon_token.json"),
+            r#"{"token":"rooted-token"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            run_root.path().join("config.yaml"),
+            "daemon:\n  port: 4123\n",
+        )
+        .unwrap();
+        let ep = endpoint().expect("a daemon owned by the same root must stay reachable");
+        assert_eq!(ep.token, "rooted-token");
+        assert_eq!(ep.base, "http://127.0.0.1:4123");
+    }
+
     /// An empty half is not a turn. The route rejects it (400); spending a task
     /// on a guaranteed refusal is just noise in the daemon's log.
     #[tokio::test]

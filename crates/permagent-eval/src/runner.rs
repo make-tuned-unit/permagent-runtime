@@ -2591,6 +2591,68 @@ mod tests {
         assert_eq!(result.harness_timeout_secs, Some(900));
     }
 
+    /// Lane R60a: the child's daemon bridge (`brain_sync` recall, turn
+    /// persistence, spend announce) resolves its bearer token and port through
+    /// `PERMAGENT_PATH_ROOT`, and fails closed when the root holds no token.
+    /// That is the whole isolation from the operator's live daemon and private
+    /// Brain — so the root this runner hands the child must be run-scoped and
+    /// must never be seeded with a daemon credential or the operator's config
+    /// (which carries the daemon port). Checked at spawn time, from the env the
+    /// child actually receives.
+    #[test]
+    fn run_task_hands_the_child_a_root_with_no_daemon_credential() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            ..Default::default()
+        };
+        struct InspectRoot(std::sync::Mutex<Option<(PathBuf, bool, bool, bool)>>);
+        impl HarnessRunner for InspectRoot {
+            fn run(&self, inv: &Invocation, _t: Duration, _l: &Path) -> Result<HarnessRun> {
+                let root = PathBuf::from(inv.env("PERMAGENT_PATH_ROOT").expect("root is set"));
+                *self.0.lock().unwrap() = Some((
+                    root.clone(),
+                    root.is_dir(),
+                    root.join("secrets").join("daemon_token.json").exists(),
+                    root.join("config.yaml").exists(),
+                ));
+                Ok(HarnessRun {
+                    exit: Some(0),
+                    timed_out: false,
+                    duration: Duration::from_secs(1),
+                })
+            }
+        }
+        let inspect = InspectRoot(std::sync::Mutex::new(None));
+        let deps = Deps {
+            harness: &inspect,
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
+        let (root, exists, has_token, has_config) = inspect.0.lock().unwrap().clone().unwrap();
+
+        assert!(exists, "the child's root must exist at spawn time");
+        assert!(
+            root.starts_with(&cfg.runs_root),
+            "the child's root must be run-scoped, not the operator's: {}",
+            root.display()
+        );
+        assert!(
+            !has_token,
+            "a daemon token in the run root would reconnect the child to a live daemon's Brain"
+        );
+        assert!(
+            !has_config,
+            "the operator's config (daemon port) must not be seeded into the run root"
+        );
+    }
+
     // --- Lane K6 / K6-b: per-tier harness timeout floor, retained in the
     // record -----------------------------------------------------------
 
