@@ -1537,7 +1537,7 @@ pub(crate) mod test_support {
         )
         .await;
 
-        let long_error = "é".repeat(150) + &"x".repeat(150);
+        let long_error = "é".repeat(150) + "x".repeat(150).as_str();
         insert_goal(
             &pool,
             "g1",

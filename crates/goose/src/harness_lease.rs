@@ -154,10 +154,11 @@ pub async fn leases_for_lifecycle(
     pool: &Pool<Sqlite>,
     lifecycle_id: &str,
 ) -> Result<Vec<Lease>, sqlx::Error> {
-    sqlx::query_as::<_, Lease>(&format!(
+    // Only a compile-time column list is interpolated; the lifecycle id is bound.
+    sqlx::query_as::<_, Lease>(sqlx::AssertSqlSafe(format!(
         "SELECT {LEASE_COLUMNS} FROM harness_process_leases \
          WHERE lifecycle_id = ? ORDER BY heartbeat_at DESC LIMIT 8"
-    ))
+    )))
     .bind(lifecycle_id)
     .fetch_all(pool)
     .await
