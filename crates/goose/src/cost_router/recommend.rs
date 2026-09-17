@@ -12,14 +12,28 @@
 //! ## Roles (token-mass × judgment-density + cost)
 //!
 //! - **ORCHESTRATE** — the judgment-dense main loop; strongest available at
-//!   orchestration / long-horizon (few tokens, high stakes).
+//!   orchestration / long-horizon (few tokens, high stakes), cost deciding only
+//!   inside [`super::capability_directory::PLANNER_STRENGTH_BAND`] — the same
+//!   rule as [`super::capability_directory::CapabilityDirectory::planner`].
 //! - **EDIT** — the highest token-mass role; needs diff-format reliability.
-//!   Highest `edit_format_reliability`, cheaper breaking ties; flagged if the
-//!   best available is below the ~97% diff-format floor.
+//!   The cheapest model within [`EDIT_RELIABILITY_BAND`] of the most reliable
+//!   editor ([`cheapest_within_band`]); flagged if the best available is below
+//!   the ~97% diff-format floor.
 //! - **MECHANICAL** — search/read/summarize; the cheapest model that clears the
 //!   role's capability floor, preferring local at equal cost.
 //! - **REVIEW** — verify; strong, and a *different family* than EDIT for
-//!   diversity when the user has more than one.
+//!   diversity when the user has more than one; cost decides inside
+//!   [`REVIEW_STRENGTH_BAND`].
+//!
+//! ## Proportionality (N1 finding 1, rulings 2026-08-18 / 2026-09-09)
+//!
+//! The strength-ranked roles (ORCHESTRATE, EDIT, REVIEW) never buy a price
+//! multiple for a rounding-sized capability edge: among the floor-clearers,
+//! every candidate within the role's named band of the strongest is treated as
+//! equally fit and the cheapest of them wins ([`cheapest_within_band`], the one
+//! helper the directory's `planner()` also uses). Outside the band strength
+//! still wins, whatever it costs. Before this, EDIT sorted strictly by
+//! diff-format reliability, so a 0.5-point edge bought a 3.3x price.
 //! - **LOCAL** — on-device ($0, private); the best local model, if any.
 //!
 //! ## Capability floors ("best fit", not "cheapest-then-climb")
@@ -66,6 +80,67 @@ pub const EDIT_RELIABILITY_FLOOR: f64 = 0.97;
 /// orchestrator; a materially-weaker different-family model (e.g. a small local)
 /// does NOT displace a much stronger same-family verifier just for diversity (F2).
 pub const REVIEW_DIVERSITY_MAX_STRENGTH_GAP: f64 = 0.10;
+
+/// How much diff-format reliability EDIT may trade away for a cheaper model
+/// (N1 finding 1). Reliability is a success rate, so this band is at most one
+/// extra failed edit per hundred — a retry tax far below any real price gap
+/// between editors. Tighter than [`super::capability_directory::
+/// PLANNER_STRENGTH_BAND`] (0.03) on purpose: the EDIT floor
+/// ([`EDIT_RELIABILITY_FLOOR`]) sits only three points below perfect, so a
+/// 0.03 band would make every floor-clearer "equal" and discard the measured
+/// metric, turning EDIT into plain cheapest-that-clears.
+pub const EDIT_RELIABILITY_BAND: f64 = 0.01;
+
+/// How much orchestration strength REVIEW may trade away for a cheaper
+/// verifier, inside the partition the diversity rule prefers. The same value
+/// as the planner band: reviewing is orchestration-shaped work a notch below
+/// planning, so it tolerates at least the planner's near-tie.
+pub const REVIEW_STRENGTH_BAND: f64 = super::capability_directory::PLANNER_STRENGTH_BAND;
+
+/// Float slack for band comparisons, so `0.985 - 0.01` still admits `0.975`.
+const BAND_EPSILON: f64 = 1e-9;
+
+/// The result of [`cheapest_within_band`]: the chosen candidate and the
+/// strongest one it was measured against (equal when no cheaper candidate sat
+/// inside the band).
+#[derive(Debug, Clone, Copy)]
+pub struct BandedPick<'a, T> {
+    pub pick: &'a T,
+    pub strongest: &'a T,
+}
+
+/// The proportionality rule shared by every strength-ranked pick (EDIT,
+/// ORCHESTRATE and REVIEW here, and
+/// [`super::capability_directory::CapabilityDirectory::planner`]): find the
+/// strongest candidate, then among every candidate whose strength is within
+/// `band` of it pick the CHEAPEST — stronger, then `id_order`, breaking an
+/// exact cost tie. A local $0 model competes like any other once it is in the
+/// candidate list. `None` only for an empty list. Candidates must already have
+/// cleared the role's floor; this rule does not know about floors.
+pub fn cheapest_within_band<'a, T>(
+    candidates: &[&'a T],
+    band: f64,
+    strength: impl Fn(&T) -> f64,
+    cost: impl Fn(&T) -> f64,
+    id_order: impl Fn(&T, &T) -> Ordering,
+) -> Option<BandedPick<'a, T>> {
+    let strongest: &'a T = *candidates.iter().max_by(|a, b| {
+        strength(**a)
+            .total_cmp(&strength(**b))
+            .then_with(|| id_order(**a, **b))
+    })?;
+    let band_floor = strength(strongest) - band - BAND_EPSILON;
+    let pick: &'a T = *candidates
+        .iter()
+        .filter(|c| strength(**c) >= band_floor)
+        .min_by(|a, b| {
+            cost(**a)
+                .total_cmp(&cost(**b))
+                .then_with(|| strength(**b).total_cmp(&strength(**a)))
+                .then_with(|| id_order(**a, **b))
+        })?;
+    Some(BandedPick { pick, strongest })
+}
 
 /// A workflow role in the coding harness. The recommender maps each to a model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -293,7 +368,9 @@ fn id_order(a: &ModelKnowledge, b: &ModelKnowledge) -> Ordering {
     a.provider.cmp(b.provider).then(a.model.cmp(b.model))
 }
 
-/// EDIT: highest diff-format reliability, then lowest cost, then stable id.
+/// EDIT, strict order: highest diff-format reliability, then lowest cost, then
+/// stable id. Used only for the below-floor fallback — among floor-clearers
+/// EDIT is picked by [`cheapest_within_band`] with [`EDIT_RELIABILITY_BAND`].
 fn edit_rank(a: &ModelKnowledge, b: &ModelKnowledge) -> Ordering {
     b.edit_format_reliability
         .total_cmp(&a.edit_format_reliability)
@@ -304,7 +381,9 @@ fn edit_rank(a: &ModelKnowledge, b: &ModelKnowledge) -> Ordering {
         .then(id_order(a, b))
 }
 
-/// ORCHESTRATE: strongest orchestration, then lowest cost, then stable id.
+/// ORCHESTRATE, strict order: strongest orchestration, then lowest cost, then
+/// stable id. Used only for the below-floor fallback — among floor-clearers
+/// ORCHESTRATE is picked by [`cheapest_within_band`] with the planner band.
 fn orchestrate_rank(a: &ModelKnowledge, b: &ModelKnowledge) -> Ordering {
     b.orchestration_strength
         .total_cmp(&a.orchestration_strength)
@@ -351,7 +430,10 @@ fn local_rank(a: &ModelKnowledge, b: &ModelKnowledge) -> Ordering {
 /// genuinely capable verifier (orchestration strength at or above `diversity_floor`,
 /// i.e. within [`REVIEW_DIVERSITY_MAX_STRENGTH_GAP`] of the strongest available).
 /// A materially-weaker different-family model does not earn the preference (F2);
-/// then strongest orchestration, then lowest cost, then stable id.
+/// then strongest orchestration, then lowest cost, then stable id. This strict
+/// order serves the below-floor fallback; among floor-clearers
+/// [`recommend`] applies the same diversity preference and then
+/// [`cheapest_within_band`] with [`REVIEW_STRENGTH_BAND`].
 fn review_rank(
     a: &ModelKnowledge,
     b: &ModelKnowledge,
@@ -450,6 +532,48 @@ fn pick<'a>(
         .map(|m| (m, false))
 }
 
+/// The floor-clearers for `role` among `candidates`.
+fn floor_clearers<'a>(
+    role: WorkflowRole,
+    candidates: &[&'a ModelKnowledge],
+) -> Vec<&'a ModelKnowledge> {
+    let floor = role.capability_floor();
+    candidates
+        .iter()
+        .copied()
+        .filter(|m| floor.clears(m))
+        .collect()
+}
+
+/// A strength-ranked role's pick: [`cheapest_within_band`] among the
+/// floor-clearers; when nothing clears, the strict `fallback_rank` over every
+/// candidate (the weakest options get no cost discount). Returns
+/// `(pick, strongest, floor_met)`.
+fn pick_banded<'a>(
+    role: WorkflowRole,
+    candidates: &[&'a ModelKnowledge],
+    band: f64,
+    strength: impl Fn(&ModelKnowledge) -> f64,
+    fallback_rank: impl FnMut(&ModelKnowledge, &ModelKnowledge) -> Ordering,
+) -> Option<(&'a ModelKnowledge, &'a ModelKnowledge, bool)> {
+    let clears = floor_clearers(role, candidates);
+    if let Some(b) = cheapest_within_band(
+        &clears,
+        band,
+        &strength,
+        ModelKnowledge::blended_cost_per_mtok,
+        id_order,
+    ) {
+        return Some((b.pick, b.strongest, true));
+    }
+    let (m, _) = pick(role, candidates, fallback_rank)?;
+    Some((m, m, false))
+}
+
+fn same_model(a: &ModelKnowledge, b: &ModelKnowledge) -> bool {
+    a.provider == b.provider && a.model == b.model
+}
+
 /// The objective recommendation for each role over the AVAILABLE models. Pure —
 /// no config, no IO, no vendor branch. `available` is the knowledge rows for the
 /// models the user has; empty in → empty out. Per role: rank among the models
@@ -462,31 +586,73 @@ pub fn recommend(available: &[ModelKnowledge]) -> Vec<RoleRecommendation> {
     let all: Vec<&ModelKnowledge> = available.iter().collect();
     let mut out = Vec::with_capacity(5);
 
-    // ORCHESTRATE — strongest orchestration among floor-clearers.
-    let (orch, orch_ok) = pick(WorkflowRole::Orchestrate, &all, orchestrate_rank).unwrap();
+    // ORCHESTRATE — strongest orchestration among floor-clearers, cost deciding
+    // inside the planner band (the directory's `planner()` rule).
+    let (orch, orch_top, orch_ok) = pick_banded(
+        WorkflowRole::Orchestrate,
+        &all,
+        super::capability_directory::PLANNER_STRENGTH_BAND,
+        |m| m.orchestration_strength,
+        orchestrate_rank,
+    )
+    .unwrap();
     out.push(base_rec(
         WorkflowRole::Orchestrate,
         orch,
         orch_ok,
-        format!(
-            "strongest orchestration among your models (agentic score {:.2}, ${:.2}/Mtok blended)",
-            orch.orchestration_strength,
-            orch.blended_cost_per_mtok()
-        ),
+        if same_model(orch, orch_top) {
+            format!(
+                "strongest orchestration among your models (agentic score {:.2}, ${:.2}/Mtok \
+                 blended)",
+                orch.orchestration_strength,
+                orch.blended_cost_per_mtok()
+            )
+        } else {
+            format!(
+                "within {:.2} of the strongest orchestrator ({}) at lower cost (agentic score \
+                 {:.2}, ${:.2}/Mtok blended vs ${:.2})",
+                super::capability_directory::PLANNER_STRENGTH_BAND,
+                orch_top.display_name,
+                orch.orchestration_strength,
+                orch.blended_cost_per_mtok(),
+                orch_top.blended_cost_per_mtok()
+            )
+        },
     ));
 
-    // EDIT — highest diff-format reliability among floor-clearers, cheaper breaks
-    // ties. Below the floor the fallback warning (base_rec) says so.
-    let (edit, edit_ok) = pick(WorkflowRole::Edit, &all, edit_rank).unwrap();
+    // EDIT — the cheapest floor-clearer within EDIT_RELIABILITY_BAND of the most
+    // reliable editor. Below the floor the fallback warning (base_rec) says so.
+    let (edit, edit_top, edit_ok) = pick_banded(
+        WorkflowRole::Edit,
+        &all,
+        EDIT_RELIABILITY_BAND,
+        |m| m.edit_format_reliability,
+        edit_rank,
+    )
+    .unwrap();
     let edit_rec = base_rec(
         WorkflowRole::Edit,
         edit,
         edit_ok,
-        format!(
-            "highest edit-format reliability at lowest cost ({:.1}% diff-format, ${:.2}/Mtok blended)",
-            edit.edit_format_reliability * 100.0,
-            edit.blended_cost_per_mtok()
-        ),
+        if same_model(edit, edit_top) {
+            format!(
+                "highest edit-format reliability at lowest cost ({:.1}% diff-format, \
+                 ${:.2}/Mtok blended)",
+                edit.edit_format_reliability * 100.0,
+                edit.blended_cost_per_mtok()
+            )
+        } else {
+            format!(
+                "within {:.0} point of the most reliable editor ({}, {:.1}%) at lower cost \
+                 ({:.1}% diff-format, ${:.2}/Mtok blended vs ${:.2})",
+                EDIT_RELIABILITY_BAND * 100.0,
+                edit_top.display_name,
+                edit_top.edit_format_reliability * 100.0,
+                edit.edit_format_reliability * 100.0,
+                edit.blended_cost_per_mtok(),
+                edit_top.blended_cost_per_mtok()
+            )
+        },
     );
     let edit_family = edit.family;
     out.push(edit_rec);
@@ -521,10 +687,34 @@ pub fn recommend(available: &[ModelKnowledge]) -> Vec<RoleRecommendation> {
         .map(|m| m.orchestration_strength)
         .fold(f64::NEG_INFINITY, f64::max);
     let diversity_floor = best_orch - REVIEW_DIVERSITY_MAX_STRENGTH_GAP;
-    let (review, review_ok) = pick(WorkflowRole::Review, &all, |a, b| {
-        review_rank(a, b, edit_family, diversity_floor)
-    })
-    .unwrap();
+    // Among floor-clearers: the capable different-family partition when it is
+    // non-empty (the cross-family rule, unchanged), else every floor-clearer;
+    // then the cheapest within REVIEW_STRENGTH_BAND of that partition's
+    // strongest. Nothing clears → the strict `review_rank` fallback.
+    let review_clears = floor_clearers(WorkflowRole::Review, &all);
+    let diverse: Vec<&ModelKnowledge> = review_clears
+        .iter()
+        .copied()
+        .filter(|m| m.family != edit_family && m.orchestration_strength >= diversity_floor)
+        .collect();
+    let review_pool = if diverse.is_empty() {
+        &review_clears
+    } else {
+        &diverse
+    };
+    let (review, review_ok) = match cheapest_within_band(
+        review_pool,
+        REVIEW_STRENGTH_BAND,
+        |m: &ModelKnowledge| m.orchestration_strength,
+        ModelKnowledge::blended_cost_per_mtok,
+        id_order,
+    ) {
+        Some(b) => (b.pick, true),
+        None => pick(WorkflowRole::Review, &all, |a, b| {
+            review_rank(a, b, edit_family, diversity_floor)
+        })
+        .unwrap(),
+    };
     let has_other_family = available.iter().any(|m| m.family != edit_family);
     let mut review_rec = base_rec(
         WorkflowRole::Review,
@@ -1082,6 +1272,193 @@ mod tests {
         ];
         let recs = recommend(&models);
         assert_eq!(rec_for(&recs, WorkflowRole::Edit).model, "cheap");
+    }
+
+    // ── Proportionality bands (N1 finding 1) ─────────────────────────────────
+
+    /// THE N1 finding 1 regression: a 0.5-point diff-format edge (Fable 5 at
+    /// 98.5% vs Sonnet 5 at 98.0%, the knowledge-base numbers) is inside
+    /// EDIT_RELIABILITY_BAND, so it must NOT buy a 3.3x price.
+    #[test]
+    fn edit_band_picks_the_cheaper_model_within_the_band() {
+        let models = [
+            m(
+                "anthropic",
+                "fable",
+                "anthropic",
+                0.985,
+                0.95,
+                10.0,
+                50.0,
+                true,
+                false,
+            ),
+            m(
+                "anthropic",
+                "sonnet",
+                "anthropic",
+                0.980,
+                0.80,
+                3.0,
+                15.0,
+                true,
+                false,
+            ),
+        ];
+        let recs = recommend(&models);
+        let edit = rec_for(&recs, WorkflowRole::Edit);
+        assert_eq!(
+            edit.model, "sonnet",
+            "a 0.5-point reliability edge inside the band must not buy a 3.3x price"
+        );
+        assert!(edit.floor_met);
+        assert!(edit.reason.contains("within"), "{}", edit.reason);
+
+        // The same rule over the real knowledge-base rows.
+        let known = resolve_known(&[
+            AvailableModel::new("anthropic", "claude-fable-5"),
+            AvailableModel::new("anthropic", "claude-sonnet-5"),
+            AvailableModel::new("anthropic", "claude-opus-4-8"),
+        ]);
+        let recs = recommend(&known);
+        assert_eq!(rec_for(&recs, WorkflowRole::Edit).model, "claude-sonnet-5");
+    }
+
+    /// Outside the band strength still wins, whatever it costs — the band is a
+    /// near-tie rule, never "cheapest that clears".
+    #[test]
+    fn edit_band_keeps_the_more_reliable_model_outside_the_band() {
+        let models = [
+            m(
+                "dear", "reliable", "dear", 0.995, 0.80, 10.0, 50.0, true, false,
+            ),
+            m(
+                "cheap", "shaky", "cheap", 0.975, 0.80, 1.0, 4.0, true, false,
+            ),
+        ];
+        let recs = recommend(&models);
+        assert_eq!(
+            rec_for(&recs, WorkflowRole::Edit).model,
+            "reliable",
+            "a 2-point reliability gap is outside the 1-point band — reliability wins"
+        );
+    }
+
+    /// A $0 local model competes inside the band like any other, once it clears
+    /// the EDIT floor.
+    #[test]
+    fn edit_band_admits_a_free_local_model_that_meets_the_band_and_floor() {
+        let models = [
+            m("cloud", "top", "cloud", 0.990, 0.85, 3.0, 15.0, true, false),
+            m(
+                "ollama",
+                "local-editor",
+                "ollama",
+                0.982,
+                0.60,
+                0.0,
+                0.0,
+                false,
+                true,
+            ),
+        ];
+        let recs = recommend(&models);
+        let edit = rec_for(&recs, WorkflowRole::Edit);
+        assert_eq!(edit.provider, "ollama");
+        assert!(edit.blended_cost_per_mtok.abs() < 1e-9);
+    }
+
+    /// REVIEW had the same defect: strength-first inside the preferred
+    /// partition. Two capable different-family verifiers 0.02 apart → the
+    /// cheaper one; 0.06 apart → the stronger one.
+    #[test]
+    fn review_band_picks_the_cheaper_verifier_within_the_band() {
+        let edit_owner = m(
+            "anthropic",
+            "sonnet",
+            "anthropic",
+            0.99,
+            0.80,
+            3.0,
+            15.0,
+            true,
+            false,
+        );
+        let inside = [
+            edit_owner,
+            m(
+                "openai", "dear", "openai", 0.95, 0.83, 5.0, 30.0, true, false,
+            ),
+            m("zai", "cheap", "zai", 0.94, 0.81, 1.4, 4.4, true, false),
+        ];
+        let recs = recommend(&inside);
+        assert_eq!(rec_for(&recs, WorkflowRole::Edit).family, "anthropic");
+        let review = rec_for(&recs, WorkflowRole::Review);
+        assert_eq!(
+            review.model, "cheap",
+            "0.02 apart is inside the review band"
+        );
+        assert!(review.floor_met);
+
+        let outside = [
+            edit_owner,
+            m(
+                "openai", "dear", "openai", 0.95, 0.87, 5.0, 30.0, true, false,
+            ),
+            m("zai", "cheap", "zai", 0.94, 0.81, 1.4, 4.4, true, false),
+        ];
+        let recs = recommend(&outside);
+        assert_eq!(
+            rec_for(&recs, WorkflowRole::Review).model,
+            "dear",
+            "0.06 apart is a real capability gap — the stronger verifier wins"
+        );
+    }
+
+    /// The band never overrides the cross-family rule: a cheaper SAME-family
+    /// model inside the band does not displace a capable different-family one.
+    #[test]
+    fn review_band_keeps_the_cross_family_rule() {
+        let models = [
+            m(
+                "anthropic",
+                "sonnet",
+                "anthropic",
+                0.99,
+                0.82,
+                3.0,
+                15.0,
+                true,
+                false,
+            ),
+            m(
+                "anthropic",
+                "haiku-ish",
+                "anthropic",
+                0.90,
+                0.81,
+                0.5,
+                2.0,
+                true,
+                false,
+            ),
+            m("xai", "grok", "xai", 0.95, 0.80, 2.0, 6.0, false, false),
+        ];
+        let recs = recommend(&models);
+        assert_eq!(rec_for(&recs, WorkflowRole::Edit).family, "anthropic");
+        assert_eq!(rec_for(&recs, WorkflowRole::Review).family, "xai");
+    }
+
+    /// ORCHESTRATE in the recommender follows the directory's planner band, and
+    /// the below-floor fallback stays strict (no cost discount for weak picks).
+    #[test]
+    fn orchestrate_band_matches_the_planner_rule() {
+        let models = [
+            m("dear", "dear", "dear", 0.90, 0.82, 5.0, 20.0, true, false),
+            m("cheap", "cheap", "cheap", 0.90, 0.80, 1.0, 4.0, true, false),
+        ];
+        let recs = recommend(&models);
+        assert_eq!(rec_for(&recs, WorkflowRole::Orchestrate).model, "cheap");
     }
 
     #[test]

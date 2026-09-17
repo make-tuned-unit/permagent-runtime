@@ -543,7 +543,9 @@ impl CapabilityDirectory {
     /// the ORCHESTRATE floor (or carry graduated evidence for it regardless
     /// of the KB heuristic), pick the STRONGEST by orchestration strength —
     /// unless a candidate within [`PLANNER_STRENGTH_BAND`] of the strongest
-    /// is cheaper, in which case cost breaks the near-tie. `None` when no
+    /// is cheaper, in which case cost breaks the near-tie
+    /// ([`super::recommend::cheapest_within_band`], shared with the EDIT /
+    /// ORCHESTRATE / REVIEW recommendations). `None` when no
     /// candidate clears the floor and none is graduated — callers must show
     /// this honestly (a visible reason), never substitute a default.
     ///
@@ -575,23 +577,17 @@ impl CapabilityDirectory {
         if candidates.is_empty() {
             return None;
         }
-        let strongest = *candidates.iter().max_by(|a, b| {
-            a.strengths
-                .orchestration
-                .total_cmp(&b.strengths.orchestration)
-                .then_with(|| a.provider.cmp(&b.provider))
-                .then_with(|| a.model.cmp(&b.model))
-        })?;
-        let band_floor = strongest.strengths.orchestration - PLANNER_STRENGTH_BAND;
-        let pick = *candidates
-            .iter()
-            .filter(|c| c.strengths.orchestration >= band_floor)
-            .min_by(|a, b| {
-                a.blended_cost_per_mtok()
-                    .total_cmp(&b.blended_cost_per_mtok())
-                    .then_with(|| a.provider.cmp(&b.provider))
-                    .then_with(|| a.model.cmp(&b.model))
-            })?;
+        // The one proportionality helper EDIT/ORCHESTRATE/REVIEW recommendations
+        // also use (N1 finding 1), so the directory and the recommender can
+        // never apply different near-tie rules.
+        let banded = super::recommend::cheapest_within_band(
+            &candidates,
+            PLANNER_STRENGTH_BAND,
+            |c: &CapabilityCard| c.strengths.orchestration,
+            CapabilityCard::blended_cost_per_mtok,
+            card_id_order,
+        )?;
+        let (pick, strongest) = (banded.pick, banded.strongest);
         let reason = if candidates.len() == 1 {
             PlannerReason::OnlyCandidate
         } else if pick.provider == strongest.provider && pick.model == strongest.model {
@@ -754,6 +750,14 @@ impl CapabilityDirectory {
         }
         out
     }
+}
+
+/// Stable `(provider, model)` order for cards — the id tiebreak every card
+/// ranking here shares.
+fn card_id_order(a: &CapabilityCard, b: &CapabilityCard) -> std::cmp::Ordering {
+    a.provider
+        .cmp(&b.provider)
+        .then_with(|| a.model.cmp(&b.model))
 }
 
 /// Why the planner chose a route — carried into the roadmap receipt and the
