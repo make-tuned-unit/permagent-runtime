@@ -22449,6 +22449,130 @@ async fn record_synthetic_verify_evidence(
     tx.commit().await.map_err(|e| e.to_string())
 }
 
+/// R62d (A61_R60_MISSES.md Miss 5): gather
+/// [`crate::cost_router::hold_done::BaselineSatisfactionFacts`] live for this
+/// attempt and, when [`crate::cost_router::hold_done::goal_already_satisfied_at_baseline`]
+/// holds, return the receipt to record. The shape: after the pricing root
+/// landed a commit fixing BOTH files, the inventory root's workers
+/// (`_5/_6/_7`) found the fix already on their baseline, got a genuine verify
+/// PASS (msg 139-140) and had nothing to commit — and were held as "verified
+/// but uncommitted" until the drain gave up.
+///
+/// Read-only, never mutating; `None` whenever any fact cannot be established
+/// (no worktree, no trusted trunk, a git failure). The scoped-file check
+/// compares the worktree HEAD against the trunk HEAD over the goal's declared
+/// `write_scope` — or the whole tree when it declares none — so the trunk
+/// really carries exactly what the passing verify ran against.
+async fn already_satisfied_at_baseline_receipt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    worker_session_id: Option<&str>,
+    expects_change: bool,
+) -> Option<serde_json::Value> {
+    let (_baseline, worktree) = resolve_goal_baseline_and_worktree(pool, &card.metadata_json)
+        .await
+        .ok()
+        .flatten()?;
+    let worktree_path = std::path::Path::new(&worktree);
+    let genuine = session_verify_evidence(pool, worker_session_id)
+        .await
+        .is_genuine();
+    let (commits_past_baseline, tracked) = match goal_has_uncommitted_work(pool, card).await {
+        Ok((no_commits, tracked)) => (!no_commits, tracked),
+        Err(_) => return None,
+    };
+    // Untracked files count too: a verify can pass on a new file nobody
+    // committed, which is work, not a satisfied baseline.
+    let all_status = git_in_worktree(worktree_path, &["status", "--porcelain"])
+        .await
+        .ok()?;
+    let worktree_clean =
+        tracked.trim().is_empty() && without_generated_artefact_entries(&all_status).is_empty();
+    let (unlanded, trunk_head) = match commits_unlanded_at_trunk(pool, card, worktree_path).await {
+        Ok((unlanded, trunk_head)) => (Some(unlanded), Some(trunk_head)),
+        Err(_) => (None, None),
+    };
+    let head = worktree_head_commit(worktree_path).await?;
+    let scope = super::write_scope::declared_write_scope(&card.metadata_json)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let scoped_files_match_trunk = match &trunk_head {
+        Some(trunk_head) => {
+            let mut args: Vec<&str> =
+                vec!["diff", "--name-only", trunk_head.as_str(), "HEAD", "--"];
+            args.extend(scope.iter().map(String::as_str));
+            git_in_worktree(worktree_path, &args)
+                .await
+                .is_ok_and(|diff| diff.trim().is_empty())
+        }
+        None => false,
+    };
+    let facts = crate::cost_router::hold_done::BaselineSatisfactionFacts {
+        expects_change,
+        genuine_verify_this_attempt: genuine,
+        commits_past_baseline,
+        worktree_clean,
+        unlanded_at_trunk: unlanded,
+        scoped_files_match_trunk,
+        worker_live: goal_worker_is_live(&card.id),
+    };
+    if !crate::cost_router::hold_done::goal_already_satisfied_at_baseline(&facts) {
+        return None;
+    }
+    let trunk_head = trunk_head?;
+    let scope_label = if scope.is_empty() {
+        "the whole tree".to_string()
+    } else {
+        scope.join(", ")
+    };
+    Some(serde_json::json!({
+        "note": format!(
+            "already satisfied at baseline: this attempt's own verify genuinely passed with \
+             no change to commit, and the trunk already carries {scope_label} exactly as \
+             verified — nothing was landed for this goal"
+        ),
+        "trunk_head": trunk_head,
+        "head": head,
+        "worker_session_id": worker_session_id,
+        "scope": scope,
+        "recorded_at": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+/// R62d: the landing-side half of the already-satisfied rule. `Some(note)`
+/// when the card carries an [`crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY`]
+/// receipt recorded for its CURRENT worker session at the worktree's CURRENT
+/// head (nothing moved since the hold allowed it) — the approval then
+/// completes the goal with that note and no landing outcome. `None`
+/// otherwise, and the landing path refuses exactly as before.
+pub(crate) async fn already_satisfied_receipt_still_holds(
+    card: &cards::Card,
+    worktree_path: &std::path::Path,
+) -> Option<String> {
+    let receipt = card
+        .metadata_json
+        .get(crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY)?;
+    let current_session = card
+        .metadata_json
+        .get("worker_session_id")
+        .and_then(|v| v.as_str());
+    if receipt.get("worker_session_id").and_then(|v| v.as_str()) != current_session
+        || current_session.is_none()
+    {
+        return None;
+    }
+    let recorded_head = receipt.get("head").and_then(|v| v.as_str())?;
+    let current_head = worktree_head_commit(worktree_path).await?;
+    if !sha_matches(recorded_head, &current_head) {
+        return None;
+    }
+    receipt
+        .get("note")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
 /// Hold a premature InProgress → Review. `None` means allow the transition.
 /// R47 (A44): `dispatch_evidence.head_commit` is a full 40-char sha today, but
 /// records written before R47 hold a `--short` abbreviation. Treat the two as the
@@ -22657,12 +22781,41 @@ async fn maybe_hold_review(
             }
         }
     }
+    // R62d (A61 Miss 5): the one narrow Allow for a goal whose acceptance
+    // already passes at its baseline — see
+    // `already_satisfied_at_baseline_receipt`. Only consulted in exactly the
+    // shape that would otherwise hold as "verified but uncommitted" (a
+    // genuine pass, no commits, nothing dirty, the R42a override above found
+    // nothing); the receipt is persisted only if the outcome below Allows.
+    let mut already_satisfied: Option<serde_json::Value> = None;
+    if uncommitted_work
+        && verify_ran
+        && expects_change
+        && inspection_error.is_none()
+        && tracked_status.trim().is_empty()
+        && unlanded_checkpoint_note.is_none()
+    {
+        already_satisfied =
+            already_satisfied_at_baseline_receipt(pool, card, session_id, expects_change).await;
+        if let Some(receipt) = &already_satisfied {
+            tracing::info!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                trunk_head = receipt.get("trunk_head").and_then(|v| v.as_str()).unwrap_or(""),
+                "goal already satisfied at baseline: genuine verify, nothing to commit, trunk \
+                 carries the goal's files as verified"
+            );
+            uncommitted_work = false;
+        }
+    }
     // A read-only goal is only still read-only when the worktree is
     // genuinely clean: zero commits past baseline (`uncommitted_work` here
     // really means "no commits exist" — see `goal_has_uncommitted_work`'s doc
     // comment) AND no tracked modifications sitting dirty either. Any commit
     // or any tracked change means the worker mutated something, so the
     // ordinary commit-required rule takes back over.
+    // R62d: an already-satisfied Allow only ever applies to a mutating goal
+    // (`expects_change`), so it never reaches the read-only rule below.
     let worktree_mutated = !uncommitted_work || !tracked_status.trim().is_empty();
     // Only worth the query when the goal is actually a read-only candidate —
     // an ordinary mutating goal never consults its worker's report text.
@@ -22709,6 +22862,26 @@ async fn maybe_hold_review(
 
     match outcome {
         crate::cost_router::HoldOutcome::Allow => {
+            // R62d: record the already-satisfied receipt the landing path
+            // reads (`already_satisfied_receipt_still_holds`). A failure to
+            // write it only means the approval later refuses to land
+            // "nothing" and parks, exactly as before this lane.
+            if let Some(receipt) = already_satisfied.take() {
+                if let Err(e) = persist_card_meta(pool, &card.id, |m| {
+                    m.insert(
+                        crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY.to_string(),
+                        receipt.clone(),
+                    );
+                })
+                .await
+                {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        goal_id = %card.id,
+                        "could not record the already-satisfied receipt: {e}"
+                    );
+                }
+            }
             // Lane R21a: this Allow was reached via the read-only rule (no
             // code change expected, worktree genuinely clean, a real review
             // report on file) rather than a verified commit. Record the
@@ -30900,6 +31073,161 @@ mod tests {
             plan.contains("tracked.txt"),
             "the dirty tracked change must be named: {plan}"
         );
+    }
+
+    /// R62d (A61 Miss 5, inventory root `_5/_6/_7`): a sibling already landed
+    /// this goal's fix, so the worker's verify genuinely passes with nothing
+    /// to commit. Pre-fix this held forever as "verified but uncommitted".
+    /// Now it Allows and records an `already_satisfied` receipt bound to this
+    /// worker session and head — and still Holds when the verify is vacuous,
+    /// when the worker left an untracked file behind, or when the trunk's copy
+    /// of the goal's files differs from what was verified.
+    #[tokio::test]
+    async fn hold_allows_a_goal_satisfied_at_baseline() {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Shape {
+            Satisfied,
+            VacuousVerify,
+            UntrackedFile,
+            TrunkMovedTheFile,
+        }
+        async fn run(
+            shape: Shape,
+        ) -> (
+            Option<String>,
+            cards::Card,
+            tempfile::TempDir,
+            tempfile::TempDir,
+        ) {
+            let pool = test_pool().await;
+            let trunk = tempfile::tempdir().unwrap();
+            let troot = trunk.path();
+            r20b_git(troot, &["init", "-q", "-b", "main"]);
+            r20b_git(troot, &["config", "user.email", "test@example.com"]);
+            r20b_git(troot, &["config", "user.name", "Test"]);
+            r20b_git(troot, &["config", "commit.gpgsign", "false"]);
+            std::fs::write(
+                troot.join("inventory.py"),
+                "def decrement_stock(n, k):\n    return n - k\n",
+            )
+            .unwrap();
+            r20b_git(troot, &["add", "-A"]);
+            r20b_git(troot, &["commit", "-q", "-m", "sibling landed both fixes"]);
+            let base_sha = r20b_git(troot, &["rev-parse", "HEAD"]);
+
+            let goal_dir = tempfile::tempdir().unwrap();
+            let clone_out = std::process::Command::new("git")
+                .args(["clone", "-q"])
+                .arg(troot)
+                .arg(goal_dir.path())
+                .output()
+                .expect("git clone must succeed for this test");
+            assert!(clone_out.status.success());
+            let gpath = goal_dir.path();
+            r20b_git(gpath, &["checkout", "-q", "-b", "goal/r62d-satisfied"]);
+            match shape {
+                Shape::UntrackedFile => {
+                    std::fs::write(gpath.join("new_fix.py"), "x = 1\n").unwrap();
+                }
+                Shape::TrunkMovedTheFile => {
+                    std::fs::write(
+                        troot.join("inventory.py"),
+                        "def decrement_stock(n, k):\n    return max(n - k, 0)\n",
+                    )
+                    .unwrap();
+                    r20b_git(troot, &["commit", "-q", "-am", "trunk changed it again"]);
+                    r20b_git(gpath, &["fetch", "-q", "origin", "main"]);
+                }
+                _ => {}
+            }
+            // Regenerated bytecode never blocks the rule.
+            std::fs::create_dir_all(gpath.join("__pycache__")).unwrap();
+            std::fs::write(gpath.join("__pycache__/inventory.cpython-314.pyc"), "bc").unwrap();
+            std::fs::write(gpath.join(".git/info/exclude"), "__pycache__/\n").unwrap();
+
+            sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+                .bind(troot.to_string_lossy().as_ref())
+                .bind(crate::projects::PERSONAL_PROJECT_ID)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+            cards::set_goal_dispatch_evidence(
+                &pool,
+                &card.id,
+                serde_json::json!({
+                    "worktree_path": gpath.to_string_lossy(),
+                    "head_commit": base_sha,
+                    "commits": [],
+                    "baseline_commit": base_sha,
+                    "files_changed": 0,
+                    "insertions": 0,
+                    "deletions": 0,
+                }),
+            )
+            .await
+            .unwrap();
+            if shape == Shape::VacuousVerify {
+                stamp_vacuous_verify_exchange(&pool, &card.id).await;
+            } else {
+                stamp_successful_verify(&pool, &card.id).await;
+            }
+            let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+            let held = maybe_hold_review(&pool, &card, false, None).await.unwrap();
+            let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+            (held, card, trunk, goal_dir)
+        }
+
+        let (held, card, _trunk, goal_dir) = run(Shape::Satisfied).await;
+        assert!(
+            held.is_none(),
+            "already satisfied at baseline must Allow: {held:?}"
+        );
+        let receipt = card
+            .metadata_json
+            .get(crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY)
+            .expect("the Allow records an already_satisfied receipt");
+        assert_eq!(
+            receipt.get("worker_session_id").and_then(|v| v.as_str()),
+            card.metadata_json
+                .get("worker_session_id")
+                .and_then(|v| v.as_str()),
+            "bound to this attempt's worker session"
+        );
+        assert!(receipt
+            .get("note")
+            .and_then(|v| v.as_str())
+            .is_some_and(|n| n.contains("nothing was landed")));
+        assert!(
+            already_satisfied_receipt_still_holds(&card, goal_dir.path())
+                .await
+                .is_some(),
+            "the landing path accepts the receipt while nothing has moved"
+        );
+
+        for (shape, why) in [
+            (
+                Shape::VacuousVerify,
+                "a vacuous verify never earns the Allow",
+            ),
+            (
+                Shape::UntrackedFile,
+                "an untracked file left behind is work, not a satisfied baseline",
+            ),
+            (
+                Shape::TrunkMovedTheFile,
+                "the trunk's copy of the file differs from what was verified",
+            ),
+        ] {
+            let (held, card, _trunk, _goal_dir) = run(shape).await;
+            assert!(held.is_some(), "{why}");
+            assert!(
+                card.metadata_json
+                    .get(crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY)
+                    .is_none(),
+                "{why}: no receipt"
+            );
+        }
     }
 
     /// (c) The goal branch carries a real, unlanded commit AND the worktree

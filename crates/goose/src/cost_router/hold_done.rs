@@ -450,9 +450,138 @@ pub fn decide_goal_done_hold(
     decide_goal_hold(role, verify_ran, uncommitted_work, signals, prior_holds)
 }
 
+/// R62d (A61_R60_MISSES.md Miss 5): card metadata key for the receipt a goal
+/// leaves when it completes as "already satisfied at its baseline" — its
+/// acceptance already passes on a trunk a sibling goal landed, so there is
+/// nothing for this worker to commit. Written only by the harness
+/// (`orchestrator::maybe_hold_review`), read by the landing path so the
+/// approval completes the goal with an honest note instead of parking it for
+/// "no commits past the baseline", and never as a landing receipt. Listed in
+/// `goal_transition::PROTECTED_GOAL_METADATA_KEYS`.
+pub const ALREADY_SATISFIED_METADATA_KEY: &str = "already_satisfied";
+
+/// R62d: the facts [`goal_already_satisfied_at_baseline`] decides on, each
+/// read live by the caller for THIS attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BaselineSatisfactionFacts {
+    /// The goal expects a code change (a read-only goal has its own rule).
+    pub expects_change: bool,
+    /// A GENUINE verify PASS (never absent, failed or vacuous) recorded in
+    /// this attempt's own worker session.
+    pub genuine_verify_this_attempt: bool,
+    /// Commits past this attempt's baseline.
+    pub commits_past_baseline: bool,
+    /// No tracked modification and no untracked non-ignored file, after
+    /// regenerated artefacts are set aside.
+    pub worktree_clean: bool,
+    /// Commits on the goal branch the trunk has not seen; `None` when no
+    /// trusted trunk resolved (the rule never fires without one).
+    pub unlanded_at_trunk: Option<u32>,
+    /// The goal's scoped files (its `write_scope`, or the whole tree when it
+    /// declares none) are identical between the worktree HEAD and the
+    /// trunk HEAD.
+    pub scoped_files_match_trunk: bool,
+    /// The goal's worker is still running in the worktree.
+    pub worker_live: bool,
+}
+
+/// R62d (A61 Miss 5, inventory root sessions `_5/_6/_7`): a goal whose
+/// acceptance already passes at its dispatch baseline — a sibling landed the
+/// fix first — has nothing to commit, and `decide_goal_hold` held it forever
+/// as "verified but uncommitted". This is the one narrow Allow for that
+/// shape: every fact must hold, and the verify must be genuine and bound to
+/// this attempt, so it never fires on an absent or vacuous verify, on a
+/// worker that left any change behind (committed, tracked or untracked), on
+/// a live worker, without a trusted trunk, or when the trunk's copy of the
+/// goal's files differs from what the passing verify actually ran against.
+pub fn goal_already_satisfied_at_baseline(facts: &BaselineSatisfactionFacts) -> bool {
+    facts.expects_change
+        && facts.genuine_verify_this_attempt
+        && !facts.commits_past_baseline
+        && facts.worktree_clean
+        && facts.unlanded_at_trunk == Some(0)
+        && facts.scoped_files_match_trunk
+        && !facts.worker_live
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn goal_already_satisfied_at_baseline_requires_every_fact() {
+        let satisfied = BaselineSatisfactionFacts {
+            expects_change: true,
+            genuine_verify_this_attempt: true,
+            commits_past_baseline: false,
+            worktree_clean: true,
+            unlanded_at_trunk: Some(0),
+            scoped_files_match_trunk: true,
+            worker_live: false,
+        };
+        assert!(goal_already_satisfied_at_baseline(&satisfied));
+        let breaks: [(&str, BaselineSatisfactionFacts); 8] = [
+            (
+                "read-only goal",
+                BaselineSatisfactionFacts {
+                    expects_change: false,
+                    ..satisfied
+                },
+            ),
+            (
+                "no genuine verify (absent or vacuous)",
+                BaselineSatisfactionFacts {
+                    genuine_verify_this_attempt: false,
+                    ..satisfied
+                },
+            ),
+            (
+                "the worker committed",
+                BaselineSatisfactionFacts {
+                    commits_past_baseline: true,
+                    ..satisfied
+                },
+            ),
+            (
+                "dirty worktree",
+                BaselineSatisfactionFacts {
+                    worktree_clean: false,
+                    ..satisfied
+                },
+            ),
+            (
+                "no trusted trunk",
+                BaselineSatisfactionFacts {
+                    unlanded_at_trunk: None,
+                    ..satisfied
+                },
+            ),
+            (
+                "unlanded work on the branch",
+                BaselineSatisfactionFacts {
+                    unlanded_at_trunk: Some(1),
+                    ..satisfied
+                },
+            ),
+            (
+                "trunk differs on the goal's files",
+                BaselineSatisfactionFacts {
+                    scoped_files_match_trunk: false,
+                    ..satisfied
+                },
+            ),
+            (
+                "worker still live",
+                BaselineSatisfactionFacts {
+                    worker_live: true,
+                    ..satisfied
+                },
+            ),
+        ];
+        for (why, facts) in breaks {
+            assert!(!goal_already_satisfied_at_baseline(&facts), "{why}");
+        }
+    }
 
     fn quiet() -> ToolTranscriptSignals {
         ToolTranscriptSignals::default()

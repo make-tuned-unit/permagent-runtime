@@ -114,6 +114,12 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     // cannot forge or clear its own priority/attribution stamp via the
     // agent-facing metadata PATCH tool.
     "resumed_by_headless_unblock_at",
+    // Lane R62d (A61 Miss 5): the "already satisfied at baseline" receipt
+    // `maybe_hold_review` leaves when a goal's acceptance already passes on a
+    // trunk a sibling landed. Its presence lets the landing path complete
+    // the goal with nothing to land instead of parking it. Protected so a
+    // worker cannot forge one and complete a goal it never verified.
+    crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY,
 ];
 
 /// Lane R22c-e (G26 MED-1): see [`PROTECTED_GOAL_METADATA_KEYS`]'s own
