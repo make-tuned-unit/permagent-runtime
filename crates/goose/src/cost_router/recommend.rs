@@ -116,7 +116,9 @@ pub struct BandedPick<'a, T> {
 /// `band` of it pick the CHEAPEST — stronger, then `id_order`, breaking an
 /// exact cost tie. A local $0 model competes like any other once it is in the
 /// candidate list. `None` only for an empty list. Candidates must already have
-/// cleared the role's floor; this rule does not know about floors.
+/// cleared the role's floor. This is [`cheapest_clearing_floor`] with the floor
+/// anchored at `strongest - band` and no near-floor zone — ONE selection rule
+/// for the bands and the review assignment.
 pub fn cheapest_within_band<'a, T>(
     candidates: &[&'a T],
     band: f64,
@@ -129,17 +131,126 @@ pub fn cheapest_within_band<'a, T>(
             .total_cmp(&strength(**b))
             .then_with(|| id_order(**a, **b))
     })?;
-    let band_floor = strength(strongest) - band - BAND_EPSILON;
-    let pick: &'a T = *candidates
+    let floor = strength(strongest) - band;
+    let chosen = cheapest_clearing_floor(candidates, floor, 0.0, strength, cost, id_order)?;
+    Some(BandedPick {
+        pick: chosen.pick,
+        strongest,
+    })
+}
+
+// ── Proportional floor selection (ruling 2026-09-17, reviewer selection) ─────
+//
+// Jesse, 2026-09-17: "it is fine to use it if it is objectively true that its
+// review will be magnitudes better than a cheaper model, but that has to be
+// proven at the time of selection by assessing the complexity of the review and
+// doing an objective assignment to the right model. Being better than half a
+// percent is not enough to warrant a 3x cost."
+
+/// How far below a capability floor a candidate may sit and still compete as
+/// "at the floor". Smaller than [`super::capability_directory::
+/// PLANNER_STRENGTH_BAND`] (0.03, the scale's near-tie): a gap this small is
+/// inside the noise of the benchmark-normalized scores the floors are drawn
+/// on, so it is not evidence the cheaper model is less able. A candidate MORE
+/// than this below the floor falls MATERIALLY short and is not eligible.
+pub const MATERIAL_FLOOR_SHORTFALL: f64 = 0.02;
+
+/// `k` in the proportionality rule: a pricier candidate's strength gain over a
+/// cheaper one must be at least `k * ln(price_ratio)`
+/// ([`upgrade_is_proportionate`]). Logarithmic because each doubling of price
+/// should demand the same further gain, not an ever-larger one (a linear rule
+/// would forbid the frontier outright, a flat one would let any edge buy any
+/// price). `0.05` sets a 2x price at a gain of 0.035 — just past the 0.03
+/// near-tie band, so doubling the price needs a real difference — 3x at 0.055,
+/// 10x at 0.115, 30x at 0.17 (roughly the whole spread between the ORCHESTRATE
+/// floor and today's strongest model). A 0.005 edge at 3x fails by 11x.
+pub const PROPORTIONALITY_K: f64 = 0.05;
+
+/// The $/Mtok a price ratio treats as its minimum, so a $0 local model yields a
+/// finite (very large) ratio instead of dividing by zero.
+pub const PRICE_RATIO_MIN_COST_PER_MTOK: f64 = 0.10;
+
+/// Whether a `strength_gain` justifies paying `pricier_cost` over
+/// `cheaper_cost` ($/Mtok): `gain >= PROPORTIONALITY_K * ln(price_ratio)`. A
+/// candidate that is not actually pricier needs only a non-negative gain.
+pub fn upgrade_is_proportionate(strength_gain: f64, cheaper_cost: f64, pricier_cost: f64) -> bool {
+    strength_gain + BAND_EPSILON >= required_gain_for_price(cheaper_cost, pricier_cost)
+}
+
+/// The strength gain [`upgrade_is_proportionate`] requires for this price step.
+pub fn required_gain_for_price(cheaper_cost: f64, pricier_cost: f64) -> f64 {
+    let ratio = pricier_cost.max(PRICE_RATIO_MIN_COST_PER_MTOK)
+        / cheaper_cost.max(PRICE_RATIO_MIN_COST_PER_MTOK);
+    if ratio <= 1.0 {
+        0.0
+    } else {
+        PROPORTIONALITY_K * ratio.ln()
+    }
+}
+
+/// The result of [`cheapest_clearing_floor`].
+#[derive(Debug, Clone, Copy)]
+pub struct FloorPick<'a, T> {
+    pub pick: &'a T,
+    /// Whether `pick` clears the floor outright (false = within
+    /// [`MATERIAL_FLOOR_SHORTFALL`] below it and no pricier candidate's
+    /// advantage was proportionate).
+    pub clears_floor: bool,
+    /// The cheaper near-floor candidate `pick` displaced on a proportionate
+    /// advantage, if any.
+    pub displaced: Option<&'a T>,
+}
+
+/// THE selection rule (bands, planner, review): among candidates within
+/// `material_shortfall` of `floor`, walk cheapest first (ties: stronger, then
+/// `id_order`) and take the first that CLEARS the floor. A pricier candidate
+/// wins only when every cheaper one falls short: one that falls materially short
+/// is not eligible at all, and one that falls short only within the margin is
+/// displaced by a pricier floor-clearer only when that candidate's advantage is
+/// proportionate to its price ([`upgrade_is_proportionate`]). `None` when no
+/// candidate is eligible.
+pub fn cheapest_clearing_floor<'a, T>(
+    candidates: &[&'a T],
+    floor: f64,
+    material_shortfall: f64,
+    strength: impl Fn(&T) -> f64,
+    cost: impl Fn(&T) -> f64,
+    id_order: impl Fn(&T, &T) -> Ordering,
+) -> Option<FloorPick<'a, T>> {
+    let clears = |c: &T| strength(c) >= floor - BAND_EPSILON;
+    let mut eligible: Vec<&'a T> = candidates
         .iter()
-        .filter(|c| strength(**c) >= band_floor)
-        .min_by(|a, b| {
-            cost(**a)
-                .total_cmp(&cost(**b))
-                .then_with(|| strength(**b).total_cmp(&strength(**a)))
-                .then_with(|| id_order(**a, **b))
-        })?;
-    Some(BandedPick { pick, strongest })
+        .copied()
+        .filter(|c| strength(*c) >= floor - material_shortfall - BAND_EPSILON)
+        .collect();
+    eligible.sort_by(|a, b| {
+        cost(*a)
+            .total_cmp(&cost(*b))
+            .then_with(|| strength(*b).total_cmp(&strength(*a)))
+            .then_with(|| id_order(*a, *b))
+    });
+    let mut pick: &'a T = *eligible.first()?;
+    let mut displaced = None;
+    for candidate in eligible.iter().copied().skip(1) {
+        if clears(pick) {
+            break;
+        }
+        if clears(candidate)
+            && upgrade_is_proportionate(
+                strength(candidate) - strength(pick),
+                cost(pick),
+                cost(candidate),
+            )
+        {
+            displaced = Some(pick);
+            pick = candidate;
+        }
+    }
+    Some(FloorPick {
+        pick,
+        clears_floor: clears(pick),
+        displaced,
+    })
 }
 
 /// A workflow role in the coding harness. The recommender maps each to a model.
@@ -560,7 +671,7 @@ fn pick_banded<'a>(
     if let Some(b) = cheapest_within_band(
         &clears,
         band,
-        &strength,
+        strength,
         ModelKnowledge::blended_cost_per_mtok,
         id_order,
     ) {
@@ -1168,6 +1279,516 @@ pub fn recommend_from_available(available: &[AvailableModel]) -> Recommendation 
         considered,
         unknown_models,
         estimated_models,
+    }
+}
+
+// ── Review complexity and reviewer assignment (ruling 2026-09-17) ────────────
+//
+// The complexity of a REVIEW is assessed from the diff at selection time —
+// facts only, never a model's claim — and sets the capability floor; the
+// reviewer is then assigned by the one selection rule
+// ([`cheapest_clearing_floor`]) among cross-family candidates. The decision
+// ([`ReviewerAssignment`]) carries every candidate with its strength and price,
+// so "why this reviewer" is auditable after the fact.
+
+/// The review verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewComplexity {
+    Routine,
+    Moderate,
+    Complex,
+}
+
+impl ReviewComplexity {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReviewComplexity::Routine => "routine",
+            ReviewComplexity::Moderate => "moderate",
+            ReviewComplexity::Complex => "complex",
+        }
+    }
+
+    /// The orchestration-strength floor a reviewer must clear for this
+    /// complexity. ROUTINE and MODERATE are exactly the small/large floors
+    /// [`super::reviewer_pick::select_reviewer`] already applies, so both
+    /// review paths agree; COMPLEX is the ORCHESTRATE floor (the band where
+    /// long-horizon agentic models sit), because a cross-language or
+    /// signature-with-callers diff needs a reviewer that can hold the whole
+    /// change.
+    pub fn floor(&self) -> f64 {
+        match self {
+            ReviewComplexity::Routine => REVIEW_FLOOR_ROUTINE,
+            ReviewComplexity::Moderate => REVIEW_FLOOR_MODERATE,
+            ReviewComplexity::Complex => REVIEW_FLOOR_COMPLEX,
+        }
+    }
+}
+
+/// ROUTINE review floor — `reviewer_pick`'s small-change floor.
+pub const REVIEW_FLOOR_ROUTINE: f64 = super::reviewer_pick::REVIEWER_MIN_ORCHESTRATION;
+/// MODERATE review floor — `reviewer_pick`'s large-change floor.
+pub const REVIEW_FLOOR_MODERATE: f64 = super::reviewer_pick::REVIEWER_STRONG_ORCHESTRATION;
+/// COMPLEX review floor — the ORCHESTRATE role's agentic floor
+/// ([`WorkflowRole::capability_floor`]).
+pub const REVIEW_FLOOR_COMPLEX: f64 = 0.80;
+
+/// Changed lines above which a review is COMPLEX on size alone (three times the
+/// small/large line `reviewer_pick::SMALL_DIFF_LINES` draws).
+pub const REVIEW_COMPLEX_CHANGED_LINES: usize = 600;
+/// Non-test code files at or above which a review is MODERATE.
+pub const REVIEW_MODERATE_CODE_FILES: usize = 3;
+/// Non-test code files at or above which a review is COMPLEX — the same
+/// breadth line `assess::MANY_FILES` draws for a goal.
+pub const REVIEW_COMPLEX_CODE_FILES: usize = super::assess::MANY_FILES;
+
+/// The facts a review assessment reads, measured on the diff the reviewer will
+/// see — the goal's trunk-relative (fork-point) diff, not `HEAD`, so work that
+/// already auto-landed still measures.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ReviewFacts {
+    /// `+`/`-` lines, excluding the `+++`/`---` headers.
+    pub changed_lines: usize,
+    /// Every file the diff touches.
+    pub changed_files: Vec<String>,
+    /// Changed files in a programming language that are not test files.
+    pub code_files: usize,
+    /// Changed files `tool_monitor::is_test_path` classifies as tests.
+    pub test_files: usize,
+    /// Distinct programming languages among the code files.
+    pub languages: Vec<String>,
+    /// Distinct parent directories of the code files.
+    pub modules: Vec<String>,
+    /// Symbols whose signature the diff changes
+    /// (`call_site_completeness::detect_signature_changes`).
+    pub signature_changes: Vec<String>,
+    /// Call sites of those symbols the harness enumerated (Lane R62e), when the
+    /// caller gathered them; 0 otherwise.
+    pub call_sites: usize,
+}
+
+impl ReviewFacts {
+    /// Measure a unified diff. `call_sites` is the enumerated call-site count
+    /// for the diff's signature changes (IO the caller owns).
+    pub fn from_diff(diff: &str, call_sites: usize) -> Self {
+        let mut changed_lines = 0usize;
+        let mut changed_files: Vec<String> = Vec::new();
+        let mut last_old_path: Option<String> = None;
+        for line in diff.lines() {
+            if let Some(rest) = line.strip_prefix("--- ") {
+                let path = rest.trim();
+                last_old_path = (path != "/dev/null")
+                    .then(|| path.strip_prefix("a/").unwrap_or(path).to_string());
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("+++ ") {
+                let path = rest.trim();
+                let file = if path == "/dev/null" {
+                    last_old_path.take()
+                } else {
+                    Some(path.strip_prefix("b/").unwrap_or(path).to_string())
+                };
+                if let Some(file) = file {
+                    if !changed_files.contains(&file) {
+                        changed_files.push(file);
+                    }
+                }
+                continue;
+            }
+            if line.starts_with('+') || line.starts_with('-') {
+                changed_lines += 1;
+            }
+        }
+
+        let mut code_files = 0usize;
+        let mut test_files = 0usize;
+        let mut languages: Vec<String> = Vec::new();
+        let mut modules: Vec<String> = Vec::new();
+        for file in &changed_files {
+            if crate::tool_monitor::is_test_path(file) {
+                test_files += 1;
+                continue;
+            }
+            let ext = file
+                .rsplit_once('.')
+                .map(|(_, e)| e.to_ascii_lowercase())
+                .unwrap_or_default();
+            let Some(Some(lang)) = super::planner_complexity::language_of_extension(&ext) else {
+                continue;
+            };
+            code_files += 1;
+            if !languages.iter().any(|l| l == lang) {
+                languages.push(lang.to_string());
+            }
+            let module = file
+                .rsplit_once('/')
+                .map(|(dir, _)| dir.to_string())
+                .unwrap_or_else(|| ".".to_string());
+            if !modules.contains(&module) {
+                modules.push(module);
+            }
+        }
+
+        let mut signature_changes: Vec<String> = Vec::new();
+        for change in super::call_site_completeness::detect_signature_changes(diff) {
+            if !signature_changes.contains(&change.symbol) {
+                signature_changes.push(change.symbol);
+            }
+        }
+
+        ReviewFacts {
+            changed_lines,
+            changed_files,
+            code_files,
+            test_files,
+            languages,
+            modules,
+            signature_changes,
+            call_sites,
+        }
+    }
+}
+
+/// The review-complexity verdict and the floor it implies.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReviewComplexityVerdict {
+    pub complexity: ReviewComplexity,
+    pub floor: f64,
+    pub reasons: Vec<String>,
+}
+
+/// THE review assessment. Deterministic, facts only (same no-prose rule as
+/// [`super::assess`]):
+///
+/// - COMPLEX when the diff spans >= 2 languages, changes a signature that has
+///   enumerated call sites, changes more than [`REVIEW_COMPLEX_CHANGED_LINES`]
+///   lines, or touches >= [`REVIEW_COMPLEX_CODE_FILES`] code files;
+/// - MODERATE when it changes more than `reviewer_pick::SMALL_DIFF_LINES` lines,
+///   touches >= [`REVIEW_MODERATE_CODE_FILES`] code files or >= 2 modules,
+///   changes a signature (no call sites found), or changes code with no test
+///   file alongside beyond `review_gate::TRIVIAL_MAX_LINES` lines;
+/// - ROUTINE otherwise.
+///
+/// No risk-area vocabulary (security, money, …) is read: the repo has no
+/// objective classifier for those, and a keyword list would be prose.
+pub fn assess_review_complexity(facts: &ReviewFacts) -> ReviewComplexityVerdict {
+    let mut complex: Vec<String> = Vec::new();
+    if facts.languages.len() >= 2 {
+        complex.push(format!(
+            "touches {} languages ({})",
+            facts.languages.len(),
+            facts.languages.join(", ")
+        ));
+    }
+    if !facts.signature_changes.is_empty() && facts.call_sites > 0 {
+        complex.push(format!(
+            "changes the signature of {} with {} enumerated call site(s)",
+            facts.signature_changes.join(", "),
+            facts.call_sites
+        ));
+    }
+    if facts.changed_lines > REVIEW_COMPLEX_CHANGED_LINES {
+        complex.push(format!(
+            "{} changed lines (> {REVIEW_COMPLEX_CHANGED_LINES})",
+            facts.changed_lines
+        ));
+    }
+    if facts.code_files >= REVIEW_COMPLEX_CODE_FILES {
+        complex.push(format!(
+            "{} code files (>= {REVIEW_COMPLEX_CODE_FILES})",
+            facts.code_files
+        ));
+    }
+    if !complex.is_empty() {
+        return ReviewComplexityVerdict {
+            complexity: ReviewComplexity::Complex,
+            floor: ReviewComplexity::Complex.floor(),
+            reasons: complex,
+        };
+    }
+
+    let mut moderate: Vec<String> = Vec::new();
+    if facts.changed_lines > super::reviewer_pick::SMALL_DIFF_LINES {
+        moderate.push(format!(
+            "{} changed lines (> {})",
+            facts.changed_lines,
+            super::reviewer_pick::SMALL_DIFF_LINES
+        ));
+    }
+    if facts.code_files >= REVIEW_MODERATE_CODE_FILES {
+        moderate.push(format!(
+            "{} code files (>= {REVIEW_MODERATE_CODE_FILES})",
+            facts.code_files
+        ));
+    }
+    if facts.modules.len() >= 2 {
+        moderate.push(format!("touches {} modules", facts.modules.len()));
+    }
+    if !facts.signature_changes.is_empty() {
+        moderate.push(format!(
+            "changes the signature of {} (no call sites enumerated)",
+            facts.signature_changes.join(", ")
+        ));
+    }
+    if facts.code_files > 0
+        && facts.test_files == 0
+        && facts.changed_lines > super::review_gate::TRIVIAL_MAX_LINES
+    {
+        moderate.push("changes code with no test file changed alongside".to_string());
+    }
+    if !moderate.is_empty() {
+        return ReviewComplexityVerdict {
+            complexity: ReviewComplexity::Moderate,
+            floor: ReviewComplexity::Moderate.floor(),
+            reasons: moderate,
+        };
+    }
+
+    ReviewComplexityVerdict {
+        complexity: ReviewComplexity::Routine,
+        floor: ReviewComplexity::Routine.floor(),
+        reasons: vec![format!(
+            "{} changed line(s) in {} code file(s) ({} test file(s)), {} language(s), no \
+             signature change",
+            facts.changed_lines,
+            facts.code_files,
+            facts.test_files,
+            facts.languages.len()
+        )],
+    }
+}
+
+/// One model considered for a review, as recorded on the decision.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReviewerCandidate {
+    pub provider: String,
+    pub model: String,
+    pub family: String,
+    /// Knowledge-base orchestration strength (the review floors' scale).
+    pub orchestration: f64,
+    /// Blended $/Mtok (0 for local).
+    pub cost_per_mtok: f64,
+    /// `picked`, `clears_floor`, `near_floor`, `materially_short`,
+    /// `same_family`, `family_unproven` or `retired`.
+    pub status: String,
+}
+
+/// The auditable reviewer assignment: verdict, floor, every candidate with its
+/// strength and price, the pick, and why.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReviewerAssignment {
+    pub complexity: ReviewComplexity,
+    pub floor: f64,
+    pub complexity_reasons: Vec<String>,
+    pub facts: ReviewFacts,
+    /// The author's family, when the author is known.
+    pub worker_family: Option<String>,
+    pub candidates: Vec<ReviewerCandidate>,
+    pub pick_provider: Option<String>,
+    pub pick_model: Option<String>,
+    /// Whether the pick clears the floor outright (false = within
+    /// [`MATERIAL_FLOOR_SHORTFALL`] below it).
+    pub pick_clears_floor: bool,
+    pub why: String,
+}
+
+impl ReviewerAssignment {
+    /// `provider/model` of the pick.
+    pub fn pick_label(&self) -> Option<String> {
+        match (&self.pick_provider, &self.pick_model) {
+            (Some(p), Some(m)) => Some(format!("{p}/{m}")),
+            _ => None,
+        }
+    }
+
+    /// The pick as a [`super::role_map::RoleModel`].
+    pub fn pick_role_model(&self) -> Option<super::role_map::RoleModel> {
+        match (&self.pick_provider, &self.pick_model) {
+            (Some(p), Some(m)) => Some(super::role_map::RoleModel {
+                provider: p.clone(),
+                model: m.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// The JSON recorded on the goal card.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+/// Assess the review from `facts` and assign the reviewer among the models the
+/// user has (ruling 2026-09-17): candidates are the knowledge-base-rated,
+/// non-retired models from a DIFFERENT family than the author (`worker`);
+/// among them [`cheapest_clearing_floor`] with the verdict's floor and
+/// [`MATERIAL_FLOOR_SHORTFALL`] — the cheapest that clears wins, and a pricier
+/// one only when every cheaper one falls short and its advantage is
+/// proportionate to its price. No pick when the author is unknown (no family
+/// can be proven different) or nothing cross-family is eligible. Pure over the
+/// knowledge base.
+pub fn assign_reviewer(
+    facts: ReviewFacts,
+    worker: Option<(&str, &str)>,
+    available: &[AvailableModel],
+) -> ReviewerAssignment {
+    let verdict = assess_review_complexity(&facts);
+    let floor = verdict.floor;
+    let worker_family = worker.map(|(p, m)| super::reviewer_pick::family_of(p, m));
+
+    struct Rated {
+        provider: String,
+        model: String,
+        family: String,
+        k: &'static ModelKnowledge,
+    }
+    let mut rated: Vec<Rated> = Vec::new();
+    for a in available {
+        let Some(k) = lookup(&a.provider, &a.model) else {
+            continue;
+        };
+        if rated
+            .iter()
+            .any(|r| r.provider == a.provider && r.model == a.model)
+        {
+            continue;
+        }
+        rated.push(Rated {
+            provider: a.provider.clone(),
+            model: a.model.clone(),
+            family: super::reviewer_pick::family_of(&a.provider, &a.model),
+            k,
+        });
+    }
+    let is_eligible_family = |r: &Rated| match &worker_family {
+        Some(wf) => &r.family != wf,
+        None => false,
+    };
+    let is_retired = |r: &Rated| super::reviewer_pick::model_is_retired(&r.provider, &r.model);
+    let pool: Vec<&Rated> = rated
+        .iter()
+        .filter(|r| is_eligible_family(*r) && !is_retired(*r))
+        .collect();
+    let chosen = cheapest_clearing_floor(
+        &pool,
+        floor,
+        MATERIAL_FLOOR_SHORTFALL,
+        |r: &Rated| r.k.orchestration_strength,
+        |r: &Rated| r.k.blended_cost_per_mtok(),
+        |a: &Rated, b: &Rated| a.provider.cmp(&b.provider).then(a.model.cmp(&b.model)),
+    );
+
+    let candidates: Vec<ReviewerCandidate> = rated
+        .iter()
+        .map(|r| {
+            let s = r.k.orchestration_strength;
+            let picked = chosen
+                .as_ref()
+                .is_some_and(|c| c.pick.provider == r.provider && c.pick.model == r.model);
+            let status = if picked {
+                "picked"
+            } else if worker_family.is_none() {
+                "family_unproven"
+            } else if !is_eligible_family(r) {
+                "same_family"
+            } else if is_retired(r) {
+                "retired"
+            } else if s >= floor - BAND_EPSILON {
+                "clears_floor"
+            } else if s >= floor - MATERIAL_FLOOR_SHORTFALL - BAND_EPSILON {
+                "near_floor"
+            } else {
+                "materially_short"
+            };
+            ReviewerCandidate {
+                provider: r.provider.clone(),
+                model: r.model.clone(),
+                family: r.family.clone(),
+                orchestration: s,
+                cost_per_mtok: r.k.blended_cost_per_mtok(),
+                status: status.to_string(),
+            }
+        })
+        .collect();
+
+    let complexity = verdict.complexity.as_str();
+    let (pick_provider, pick_model, pick_clears_floor, why) = match (&chosen, &worker_family) {
+        (_, None) => (
+            None,
+            None,
+            false,
+            "the author's model was not recorded, so no reviewer can be proven to come from a \
+             different family"
+                .to_string(),
+        ),
+        (None, Some(_)) => (
+            None,
+            None,
+            false,
+            format!(
+                "no cross-family model you have reaches within {MATERIAL_FLOOR_SHORTFALL:.2} of \
+                 the {complexity} review floor ({floor:.2})"
+            ),
+        ),
+        (Some(c), Some(_)) => {
+            let p = c.pick;
+            let s = p.k.orchestration_strength;
+            let cost = p.k.blended_cost_per_mtok();
+            let why =
+                if let Some(d) = c.displaced {
+                    let need = required_gain_for_price(d.k.blended_cost_per_mtok(), cost);
+                    format!(
+                    "{}/{} clears the {complexity} review floor ({floor:.2}) at agentic {s:.2}, \
+                     ${cost:.2}/Mtok; the cheaper {}/{} is {:.3} below the floor and this \
+                     model's +{:.3} advantage is proportionate to the {:.1}x price (needs >= \
+                     {need:.3})",
+                    p.provider,
+                    p.model,
+                    d.provider,
+                    d.model,
+                    floor - d.k.orchestration_strength,
+                    s - d.k.orchestration_strength,
+                    cost.max(PRICE_RATIO_MIN_COST_PER_MTOK)
+                        / d.k.blended_cost_per_mtok().max(PRICE_RATIO_MIN_COST_PER_MTOK),
+                )
+                } else if c.clears_floor {
+                    format!(
+                        "cheapest cross-family model clearing the {complexity} review floor \
+                     ({floor:.2}): {}/{} at agentic {s:.2}, ${cost:.2}/Mtok — a pricier model \
+                     is used only when every cheaper one falls short of the floor",
+                        p.provider, p.model
+                    )
+                } else {
+                    format!(
+                    "cheapest cross-family candidate {}/{} is {:.3} below the {complexity} review \
+                     floor ({floor:.2}), within the {MATERIAL_FLOOR_SHORTFALL:.2} margin, and no \
+                     pricier floor-clearing model's advantage is proportionate to its price \
+                     (agentic {s:.2}, ${cost:.2}/Mtok)",
+                    p.provider,
+                    p.model,
+                    floor - s
+                )
+                };
+            (
+                Some(p.provider.clone()),
+                Some(p.model.clone()),
+                c.clears_floor,
+                why,
+            )
+        }
+    };
+
+    ReviewerAssignment {
+        complexity: verdict.complexity,
+        floor,
+        complexity_reasons: verdict.reasons,
+        facts,
+        worker_family,
+        candidates,
+        pick_provider,
+        pick_model,
+        pick_clears_floor,
+        why,
     }
 }
 
@@ -1974,6 +2595,310 @@ mod tests {
         let recs = recommend(&models);
         let roles: Vec<WorkflowRole> = recs.iter().map(|r| r.role).collect();
         assert_eq!(roles, WorkflowRole::all().to_vec());
+    }
+
+    // ── Proportional floor selection + reviewer assignment (ruling 2026-09-17) ──
+
+    #[derive(Debug)]
+    struct Cand {
+        id: &'static str,
+        strength: f64,
+        cost: f64,
+    }
+
+    fn floor_pick(cands: &[Cand], floor: f64) -> Option<(&'static str, bool)> {
+        let refs: Vec<&Cand> = cands.iter().collect();
+        cheapest_clearing_floor(
+            &refs,
+            floor,
+            MATERIAL_FLOOR_SHORTFALL,
+            |c: &Cand| c.strength,
+            |c: &Cand| c.cost,
+            |a: &Cand, b: &Cand| a.id.cmp(b.id),
+        )
+        .map(|p| (p.pick.id, p.clears_floor))
+    }
+
+    /// THE ruling case: "Being better than half a percent is not enough to
+    /// warrant a 3x cost." A 0.005 edge at 3x never wins — whether the cheaper
+    /// model clears the floor or sits just under it.
+    #[test]
+    fn half_a_percent_edge_at_three_times_the_price_never_wins() {
+        assert!(!upgrade_is_proportionate(0.005, 5.0, 15.0));
+        let both_clear = [
+            Cand {
+                id: "cheap",
+                strength: 0.800,
+                cost: 5.0,
+            },
+            Cand {
+                id: "dear",
+                strength: 0.805,
+                cost: 15.0,
+            },
+        ];
+        assert_eq!(floor_pick(&both_clear, 0.80), Some(("cheap", true)));
+        let cheap_just_under = [
+            Cand {
+                id: "cheap",
+                strength: 0.795,
+                cost: 5.0,
+            },
+            Cand {
+                id: "dear",
+                strength: 0.800,
+                cost: 15.0,
+            },
+        ];
+        assert_eq!(
+            floor_pick(&cheap_just_under, 0.80),
+            Some(("cheap", false)),
+            "0.005 short of the floor is not material, and +0.005 at 3x is not proportionate"
+        );
+        // Also the EDIT row that started it: Fable 5 over Sonnet 5 on the
+        // diff-format axis, 0.5 points at 3.3x.
+        assert!(!upgrade_is_proportionate(0.005, 18.0, 60.0));
+    }
+
+    /// A pricier model wins only when every cheaper one falls short: materially
+    /// (not eligible), or within the margin but with a proportionate upgrade.
+    #[test]
+    fn a_pricier_model_wins_only_when_cheaper_ones_fall_short_proportionately() {
+        let materially_short = [
+            Cand {
+                id: "cheap",
+                strength: 0.70,
+                cost: 1.0,
+            },
+            Cand {
+                id: "dear",
+                strength: 0.81,
+                cost: 30.0,
+            },
+        ];
+        assert_eq!(floor_pick(&materially_short, 0.80), Some(("dear", true)));
+
+        let near_but_far_weaker = [
+            Cand {
+                id: "cheap",
+                strength: 0.785,
+                cost: 5.0,
+            },
+            Cand {
+                id: "dear",
+                strength: 0.90,
+                cost: 15.0,
+            },
+        ];
+        // +0.115 at 3x clears the 0.055 bar.
+        assert_eq!(floor_pick(&near_but_far_weaker, 0.80), Some(("dear", true)));
+
+        assert_eq!(
+            floor_pick(
+                &[Cand {
+                    id: "weak",
+                    strength: 0.50,
+                    cost: 0.0,
+                }],
+                0.80
+            ),
+            None,
+            "nothing within the margin → no pick"
+        );
+        // The proportionality curve itself.
+        assert!((required_gain_for_price(5.0, 10.0) - 0.05 * 2f64.ln()).abs() < 1e-12);
+        assert_eq!(required_gain_for_price(10.0, 5.0), 0.0);
+        assert!(required_gain_for_price(0.0, 60.0).is_finite());
+    }
+
+    const ROUTINE_DIFF: &str = "diff --git a/src/pager.rs b/src/pager.rs\n\
+--- a/src/pager.rs\n\
++++ b/src/pager.rs\n\
+@@ -10,3 +10,3 @@\n\
+-    let last = total / per_page;\n\
++    let last = (total + per_page - 1) / per_page;\n\
+diff --git a/tests/pager_test.rs b/tests/pager_test.rs\n\
+--- a/tests/pager_test.rs\n\
++++ b/tests/pager_test.rs\n\
+@@ -1,1 +1,2 @@\n\
++    assert_eq!(last_page(11, 10), 2);\n";
+
+    const SIGNATURE_DIFF: &str = "diff --git a/src/quote.rs b/src/quote.rs\n\
+--- a/src/quote.rs\n\
++++ b/src/quote.rs\n\
+@@ -1,3 +1,3 @@\n\
+-pub fn shipping_quote(order: &Order) -> Quote {\n\
++pub fn shipping_quote(order: &Order, opts: &QuoteOpts) -> Quote {\n\
+diff --git a/src/api.rs b/src/api.rs\n\
+--- a/src/api.rs\n\
++++ b/src/api.rs\n\
+@@ -5,1 +5,1 @@\n\
+-    let q = shipping_quote(&order);\n\
++    let q = shipping_quote(&order, &opts);\n";
+
+    fn avail(pairs: &[(&str, &str)]) -> Vec<AvailableModel> {
+        pairs
+            .iter()
+            .map(|(p, m)| AvailableModel::new(p, m))
+            .collect()
+    }
+
+    #[test]
+    fn review_facts_measure_the_diff() {
+        let f = ReviewFacts::from_diff(ROUTINE_DIFF, 0);
+        assert_eq!(f.changed_lines, 3);
+        assert_eq!(
+            f.changed_files,
+            vec![
+                "src/pager.rs".to_string(),
+                "tests/pager_test.rs".to_string()
+            ]
+        );
+        assert_eq!((f.code_files, f.test_files), (1, 1));
+        assert_eq!(f.languages, vec!["rust".to_string()]);
+        assert!(f.signature_changes.is_empty());
+
+        let f = ReviewFacts::from_diff(SIGNATURE_DIFF, 4);
+        assert_eq!(f.signature_changes, vec!["shipping_quote".to_string()]);
+        assert_eq!(f.call_sites, 4);
+
+        let deleted = "diff --git a/old.py b/old.py\n--- a/old.py\n+++ /dev/null\n-print(1)\n";
+        let f = ReviewFacts::from_diff(deleted, 0);
+        assert_eq!(f.changed_files, vec!["old.py".to_string()]);
+        assert_eq!(f.languages, vec!["python".to_string()]);
+    }
+
+    /// Routine small diff → the cheapest cross-family model clearing the routine
+    /// floor, never the frontier row.
+    #[test]
+    fn routine_small_diff_gets_the_cheapest_clearing_reviewer() {
+        let available = avail(&[
+            ("anthropic", "claude-fable-5"),
+            ("anthropic", "claude-sonnet-5"),
+            ("openai", "gpt-5.6-mini"),
+            ("zai", "glm-4.5-air"),
+            ("custom_deepseek", "deepseek-chat"),
+            ("google", "gemini-3-pro"),
+        ]);
+        let a = assign_reviewer(
+            ReviewFacts::from_diff(ROUTINE_DIFF, 0),
+            Some(("anthropic", "claude-sonnet-5")),
+            &available,
+        );
+        assert_eq!(
+            a.complexity,
+            ReviewComplexity::Routine,
+            "{:?}",
+            a.complexity_reasons
+        );
+        assert_eq!(a.floor, REVIEW_FLOOR_ROUTINE);
+        assert_eq!(a.pick_label().as_deref(), Some("zai/glm-4.5-air"));
+        assert!(a.pick_clears_floor);
+    }
+
+    /// Complex (signature change with call sites) → a stronger model, but only
+    /// because the cheaper ones miss the raised floor; a cheaper model that
+    /// clears it still wins.
+    #[test]
+    fn complex_signature_change_uses_a_stronger_model_only_when_cheaper_ones_miss_the_floor() {
+        let author = Some(("anthropic", "claude-sonnet-5"));
+        let without_mid = avail(&[
+            ("anthropic", "claude-fable-5"),
+            ("zai", "glm-4.5-air"),
+            ("custom_deepseek", "deepseek-chat"),
+            ("google", "gemini-3-pro"),
+            ("openai", "gpt-5.6"),
+        ]);
+        let a = assign_reviewer(
+            ReviewFacts::from_diff(SIGNATURE_DIFF, 3),
+            author,
+            &without_mid,
+        );
+        assert_eq!(
+            a.complexity,
+            ReviewComplexity::Complex,
+            "{:?}",
+            a.complexity_reasons
+        );
+        assert_eq!(a.floor, REVIEW_FLOOR_COMPLEX);
+        assert_eq!(
+            a.pick_label().as_deref(),
+            Some("google/gemini-3-pro"),
+            "the cheap models are materially short of 0.80; gemini is the cheapest that clears"
+        );
+
+        let mut with_mid = without_mid.clone();
+        with_mid.push(AvailableModel::new("zai", "glm-5.2"));
+        let a = assign_reviewer(ReviewFacts::from_diff(SIGNATURE_DIFF, 3), author, &with_mid);
+        assert_eq!(a.pick_label().as_deref(), Some("zai/glm-5.2"));
+    }
+
+    /// The decision carries its evidence: verdict, floor, reasons, the facts,
+    /// every candidate with strength and price and status, the pick and why.
+    #[test]
+    fn the_recorded_reviewer_decision_contains_the_evidence() {
+        let available = avail(&[
+            ("anthropic", "claude-fable-5"),
+            ("zai", "glm-4.5-air"),
+            ("google", "gemini-3-pro"),
+        ]);
+        let a = assign_reviewer(
+            ReviewFacts::from_diff(SIGNATURE_DIFF, 3),
+            Some(("anthropic", "claude-sonnet-5")),
+            &available,
+        );
+        let json = a.to_json();
+        assert_eq!(json["complexity"], "complex");
+        assert_eq!(json["floor"], REVIEW_FLOOR_COMPLEX);
+        assert!(json["complexity_reasons"][0]
+            .as_str()
+            .unwrap()
+            .contains("shipping_quote"));
+        assert_eq!(json["facts"]["call_sites"], 3);
+        assert_eq!(json["pick_provider"], "google");
+        assert_eq!(json["pick_model"], "gemini-3-pro");
+        assert!(!json["why"].as_str().unwrap().is_empty());
+        let cands = json["candidates"].as_array().unwrap();
+        assert_eq!(cands.len(), 3);
+        let status_of = |model: &str| {
+            cands
+                .iter()
+                .find(|c| c["model"] == model)
+                .map(|c| c["status"].as_str().unwrap().to_string())
+                .unwrap()
+        };
+        assert_eq!(status_of("claude-fable-5"), "same_family");
+        assert_eq!(status_of("glm-4.5-air"), "materially_short");
+        assert_eq!(status_of("gemini-3-pro"), "picked");
+        for c in cands {
+            assert!(c["orchestration"].is_number() && c["cost_per_mtok"].is_number());
+        }
+    }
+
+    #[test]
+    fn unknown_author_gets_no_reviewer_pick() {
+        let a = assign_reviewer(
+            ReviewFacts::from_diff(ROUTINE_DIFF, 0),
+            None,
+            &avail(&[("google", "gemini-3-pro")]),
+        );
+        assert_eq!(a.pick_label(), None);
+        assert!(a.why.contains("not recorded"));
+    }
+
+    /// Cross-language and many-file diffs are complex; multi-module or untested
+    /// code is moderate — structure only.
+    #[test]
+    fn review_complexity_ladder() {
+        let cross = "--- a/src/a.rs\n+++ b/src/a.rs\n+x\n--- a/ui/b.ts\n+++ b/ui/b.ts\n+y\n";
+        let v = assess_review_complexity(&ReviewFacts::from_diff(cross, 0));
+        assert_eq!(v.complexity, ReviewComplexity::Complex);
+
+        let untested = "--- a/src/a.rs\n+++ b/src/a.rs\n+a\n+b\n+c\n+d\n";
+        let v = assess_review_complexity(&ReviewFacts::from_diff(untested, 0));
+        assert_eq!(v.complexity, ReviewComplexity::Moderate, "{:?}", v.reasons);
+        assert!(v.reasons.iter().any(|r| r.contains("no test file")));
+        assert_eq!(v.floor, REVIEW_FLOOR_MODERATE);
     }
 
     // ── Discovery ────────────────────────────────────────────────────────────

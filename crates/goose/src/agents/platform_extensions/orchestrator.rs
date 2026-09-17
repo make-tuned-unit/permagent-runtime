@@ -22841,25 +22841,55 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         _ => None,
     };
 
-    let configured = crate::cost_router::role_model(crate::cost_router::WorkflowRole::Review);
-    let derived_map = crate::cost_router::derived_role_map().await;
-    let derived = derived_map
-        .get(crate::cost_router::WorkflowRole::Review)
-        .map(|(rm, _)| rm.clone());
+    // Ruling 2026-09-17 (reviewer selection): "it is fine to use it if it is
+    // objectively true that its review will be magnitudes better than a cheaper
+    // model, but that has to be proven at the time of selection". Assess the
+    // review's complexity from the trunk-relative diff above (signature changes
+    // and their enumerated call sites included — Lane R62e's context, gathered
+    // here once and reused for the prompt) and assign the reviewer with the one
+    // proportional selection rule, instead of the derived REVIEW entry (which
+    // ranks the strongest cross-family verifier first).
+    let review_context = gather_salvage_review_context(worktree_path, &diff_for_prompt).await;
+    let enumerated_call_sites: usize = review_context
+        .call_site_enumerations
+        .iter()
+        .map(|e| e.call_sites.len())
+        .sum();
     let available = crate::cost_router::discover_available_models_async().await;
+    let assignment = crate::cost_router::recommend::assign_reviewer(
+        crate::cost_router::recommend::ReviewFacts::from_diff(
+            &diff_for_prompt,
+            enumerated_call_sites,
+        ),
+        worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
+        &available,
+    );
+    let assigned = assignment.pick_role_model();
+
+    // The operator's explicit REVIEW mapping still wins (`select_reviewer`'s
+    // step 1); otherwise the assignment's pick rides the derived slot. With no
+    // assignment, the pool is emptied so `select_reviewer` cannot reach a
+    // model the complexity floor already ruled out.
+    let configured = crate::cost_router::role_model(crate::cost_router::WorkflowRole::Review);
+    let reviewer_pool: &[crate::cost_router::AvailableModel] =
+        if assigned.is_some() { &available } else { &[] };
     let selection = crate::cost_router::select_reviewer(
         worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
         configured.as_ref(),
-        derived.as_ref(),
-        &available,
+        assigned.as_ref(),
+        reviewer_pool,
         changed_lines,
     );
-    let pick = match selection {
+    record_reviewer_assignment(pool, &card.id, &assignment, selection.pick()).await;
+    let mut pick = match selection {
         crate::cost_router::ReviewerSelection::Unavailable { reason } => {
             return ReviewerGateOutcome::Refused { reason };
         }
         crate::cost_router::ReviewerSelection::Reviewer(pick) => pick,
     };
+    if pick.source == crate::cost_router::ReviewerSource::Derived {
+        pick.why = assignment.why.clone();
+    }
 
     // No live cost tracker for a completed, abandoned worker session at this
     // point — 0.0 is the same "nothing spent in this scope yet" a fresh
@@ -22880,8 +22910,8 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         collect_acceptance_criteria(&card.metadata_json, &card.description).join("\n")
     );
     // Lane R62e (A61 miss 1): give the reviewer the callee definitions and
-    // E7 call sites the diff alone does not show.
-    let review_context = gather_salvage_review_context(worktree_path, &diff_for_prompt).await;
+    // E7 call sites the diff alone does not show (gathered above, before the
+    // reviewer assignment that also reads them).
     let prompt =
         build_salvage_review_prompt(&task_spec, &diff_for_prompt, verify_note, &review_context);
 
@@ -22983,6 +23013,61 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         | crate::cost_router::GateDecision::ReviewUnavailable { reason } => {
             ReviewerGateOutcome::Refused { reason }
         }
+    }
+}
+
+/// Ruling 2026-09-17: record the reviewer assignment on the goal card
+/// (`reviewer_assignment`: complexity verdict, floor, reasons, the diff facts,
+/// every candidate with strength and price, the objective pick and why) plus
+/// the reviewer actually selected and its source (a configured REVIEW pin can
+/// override the objective pick), and trace it. Best-effort: a write failure is
+/// logged, never a refused review.
+async fn record_reviewer_assignment(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    assignment: &crate::cost_router::recommend::ReviewerAssignment,
+    selected: Option<&crate::cost_router::ReviewerPick>,
+) {
+    tracing::info!(
+        target: "permagentd::orchestrator",
+        goal_id = %card_id,
+        review_complexity = %assignment.complexity.as_str(),
+        floor = assignment.floor,
+        assigned = %assignment.pick_label().unwrap_or_else(|| "none".to_string()),
+        selected = %selected.map(|p| p.label()).unwrap_or_else(|| "none".to_string()),
+        source = %selected.map(|p| p.source.as_str()).unwrap_or("none"),
+        candidates = assignment.candidates.len(),
+        why = %assignment.why,
+        "reviewer assignment",
+    );
+    let mut record = assignment.to_json();
+    if let Some(obj) = record.as_object_mut() {
+        obj.insert(
+            "selected".to_string(),
+            serde_json::json!(selected.map(|p| p.label())),
+        );
+        obj.insert(
+            "selected_source".to_string(),
+            serde_json::json!(selected.map(|p| p.source.as_str())),
+        );
+        obj.insert(
+            "recorded_at".to_string(),
+            serde_json::json!(chrono::Utc::now().to_rfc3339()),
+        );
+    }
+    if let Err(e) = cards::merge_card_metadata(
+        pool,
+        card_id,
+        serde_json::json!({ "reviewer_assignment": record }),
+        false,
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::orchestrator",
+            goal_id = %card_id,
+            "could not record the reviewer assignment: {e}"
+        );
     }
 }
 
@@ -31990,6 +32075,46 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         // No eligible planner route in this test env: the breaker has
         // nothing to narrow, and the function already returns `None` — the
         // property above is vacuously satisfied.
+    }
+
+    /// Ruling 2026-09-17: the goal-level review gate records its reviewer
+    /// assignment — verdict, floor, candidates with strength and price, the
+    /// objective pick, why, and the reviewer actually selected — on the card.
+    #[tokio::test]
+    async fn reviewer_assignment_is_recorded_on_the_goal_card() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        let diff = "--- a/src/quote.rs\n+++ b/src/quote.rs\n\
+                    -pub fn shipping_quote(order: &Order) -> Quote {\n\
+                    +pub fn shipping_quote(order: &Order, opts: &QuoteOpts) -> Quote {\n";
+        let available = vec![
+            crate::cost_router::AvailableModel::new("anthropic", "claude-fable-5"),
+            crate::cost_router::AvailableModel::new("zai", "glm-4.5-air"),
+            crate::cost_router::AvailableModel::new("google", "gemini-3-pro"),
+        ];
+        let assignment = crate::cost_router::recommend::assign_reviewer(
+            crate::cost_router::recommend::ReviewFacts::from_diff(diff, 2),
+            Some(("anthropic", "claude-sonnet-5")),
+            &available,
+        );
+        let selection = crate::cost_router::select_reviewer(
+            Some(("anthropic", "claude-sonnet-5")),
+            None,
+            assignment.pick_role_model().as_ref(),
+            &available,
+            4,
+        );
+        record_reviewer_assignment(&pool, &card.id, &assignment, selection.pick()).await;
+
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let recorded = &card.metadata_json["reviewer_assignment"];
+        assert_eq!(recorded["complexity"], "complex", "{recorded}");
+        assert_eq!(recorded["pick_model"], "gemini-3-pro");
+        assert_eq!(recorded["selected"], "google/gemini-3-pro");
+        assert_eq!(recorded["selected_source"], "derived");
+        assert!(recorded["why"].as_str().is_some_and(|w| !w.is_empty()));
+        assert_eq!(recorded["candidates"].as_array().map(Vec::len), Some(3));
+        assert!(recorded["recorded_at"].is_string());
     }
 
     /// Lane R22c-e (G26 MED-2): a diff over the reviewer's prompt window

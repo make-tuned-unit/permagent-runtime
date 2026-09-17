@@ -89,7 +89,7 @@ pub(crate) const MECHANICAL_SIGNALS: &[&str] = &[
 /// Acceptance criteria above this count read as a multi-part goal.
 pub(crate) const MANY_CRITERIA: usize = 5;
 /// Files above this count read as a broad change.
-const MANY_FILES: usize = 8;
+pub(crate) const MANY_FILES: usize = 8;
 
 /// Assess a goal's starting tier from its title, body and metadata.
 ///

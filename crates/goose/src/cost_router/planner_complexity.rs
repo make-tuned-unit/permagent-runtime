@@ -126,7 +126,9 @@ impl PlanningComplexityVerdict {
 
 /// Extensions that make a token a file path. Programming languages map to a
 /// language; docs/config files count as named files but not as a language.
-fn language_of_extension(ext: &str) -> Option<Option<&'static str>> {
+/// `None` for an extension that is neither. Shared with the review-complexity
+/// assessment ([`super::recommend::ReviewFacts::from_diff`]).
+pub(crate) fn language_of_extension(ext: &str) -> Option<Option<&'static str>> {
     let lang = match ext {
         "rs" => Some("rust"),
         "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "vue" | "svelte" => {
