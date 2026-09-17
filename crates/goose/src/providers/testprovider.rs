@@ -165,6 +165,23 @@ impl Provider for TestProvider {
         &self.name
     }
 
+    /// Record mode forwards the wrapped provider's real billing tier, like
+    /// every other decorator (`SovereignGuardProvider::cost_tier`). Replay
+    /// mode answers from a JSON file and never reaches a provider, so it is
+    /// free. Without this it inherited the trait's fail-closed `PaidApi`,
+    /// and the accounted-completion path refused every replayed scenario
+    /// before the recording was read ("cannot authorize provider call:
+    /// context limit is required for a paid reservation"). Replaying spend
+    /// mechanics faithfully is `CassetteProvider`'s job, which records the
+    /// tier. These recordings carry no tier, and the scenario suite tests
+    /// the CLI turn, not the budget.
+    fn cost_tier(&self) -> crate::session::CostTier {
+        match &self.inner {
+            Some(inner) => inner.cost_tier(),
+            None => crate::session::CostTier::LocalFree,
+        }
+    }
+
     async fn stream(
         &self,
         model_config: &ModelConfig,
@@ -360,5 +377,30 @@ mod tests {
             .contains("No recorded response found"));
 
         let _ = fs::remove_file(temp_file);
+    }
+
+    /// Recording is a real call through the wrapped provider and bills as
+    /// that provider does (the mock keeps the trait's `PaidApi` default).
+    /// Replay reads a file and is free, so it needs no paid reservation.
+    #[test]
+    fn replay_is_free_and_recording_bills_as_the_wrapped_provider() {
+        let mock = Arc::new(MockProvider {
+            model_config: ModelConfig::new_or_fail("mock-model"),
+            response: String::new(),
+        });
+        let recording = TestProvider::new_recording(mock, "unused.json");
+        assert_eq!(
+            recording.cost_tier(),
+            crate::session::CostTier::PaidApi,
+            "recording must not hide the wrapped provider's spend"
+        );
+
+        let replaying = TestProvider::new_replaying(format!(
+            "{}/test_cost_tier_missing_{}.json",
+            env::temp_dir().display(),
+            std::process::id()
+        ))
+        .unwrap();
+        assert_eq!(replaying.cost_tier(), crate::session::CostTier::LocalFree);
     }
 }
