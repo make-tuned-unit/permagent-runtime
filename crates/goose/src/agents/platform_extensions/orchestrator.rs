@@ -37943,7 +37943,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// fails exactly like the original S1 defect, on a path S1/T1 never
     /// touched.
     #[tokio::test]
-    #[serial_test::serial(receipts_global_registry, routing_env)]
+    #[serial_test::serial(receipts_global_registry, routing_env, headless_dispatch_policy)]
     async fn dispatch_goal_to_and_resume_roadmap_consult_the_installed_headless_policy() {
         // Lane T1: force a clean slot for the whole test, regardless of
         // whatever another test in this binary already installed — the
@@ -37954,6 +37954,19 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         // so `Drop` restores the prior state once this test is done, rather
         // than leaking this test's own hook into whatever runs next.
         let _hook_guard = take_goal_dispatch_hook_for_test();
+        // Lane T7: the SAME treatment for the other half of what that
+        // installer writes. `install_dispatch_hook_for_headless_session`
+        // also installs the headless dispatch policy, which is likewise
+        // first-install-wins, so this test needs an empty slot to be the
+        // installer that actually lands — and, far more importantly, must
+        // not leave "this process is headless" set for every test that runs
+        // after it. Before this guard existed the leak was permanent and
+        // claimed a different victim each run (an R41a dispatch receipt test
+        // resolving its in-memory mock provider by name, a quiet-boot report
+        // line, a hold-exhaustion park, the R62g `create_roadmap` blocker
+        // tests). The `headless_dispatch_policy` serial key above keeps any
+        // future installer-calling test from interleaving with this one.
+        let _policy_guard = take_headless_dispatch_policy_for_test();
 
         std::env::set_var("PERMAGENT_ROLE_EDIT_PROVIDER", "ollama");
         std::env::set_var("PERMAGENT_ROLE_EDIT_MODEL", "qwen3");
