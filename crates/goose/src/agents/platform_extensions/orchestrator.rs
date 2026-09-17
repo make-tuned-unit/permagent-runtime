@@ -27122,6 +27122,32 @@ mod tests {
     async fn repeated_premature_done_parks_after_max_holds() {
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        // This test assumes headless is OFF, and cannot guarantee it: the
+        // headless policy lives in `HEADLESS_DISPATCH_POLICY_CONFIG`, a
+        // process-global `OnceLock` that `install_dispatch_hook_for_headless_
+        // session` fills and NOTHING can empty for the life of the binary.
+        // `dispatch_goal_to_and_resume_roadmap_consult_the_installed_headless_
+        // policy` calls that real installer; it restores the dispatch hook it
+        // takes, but a `OnceLock` cannot be restored, so once it has run every
+        // later test reads headless as true. `maybe_hold_review`'s
+        // `HoldOutcome::Park` arm then tries R18g's headless unblock FIRST and
+        // returns early on success, and this card is resumed instead of parked
+        // -- `needs_human_attention` reads `Null`, which is precisely the M24
+        // gate failure Lane R20b-e diagnosed (see the note above
+        // `hold_exhaustion_park_with_uncommitted_work_parks`) recurring from a
+        // different test.
+        //
+        // Spend R18g's once-per-goal budget up front so it refuses on
+        // `once_per_goal_spent` whichever way the global landed. Inert when
+        // headless is off, and the same technique the R20b-e tests already use.
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
 
         for expected_count in 1..=crate::cost_router::MAX_HOLDS {
             handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
