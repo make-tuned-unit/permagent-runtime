@@ -156,6 +156,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(provider_wait_status)]
     fn publish_then_clear_round_trips() {
         publish(wait_of(5));
         assert!(current().is_some());

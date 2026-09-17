@@ -6907,6 +6907,7 @@ mod tests {
     /// envelope. Pre-dispatch failures release their distinct reservations;
     /// the terminal post-dispatch attempt remains unknown.
     #[tokio::test]
+    #[serial_test::serial(provider_wait_status)]
     async fn b6_bounded_retry_storm_has_distinct_attempts_and_terminal_unknown() {
         use crate::providers::errors::ProviderError;
         use crate::providers::{retry_operation, RetryConfig};

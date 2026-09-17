@@ -519,7 +519,16 @@ mod tests {
     /// A retry loop that sleeps in silence is the bug the status slot exists to
     /// fix. Drives `retry_operation` against a fake 429 and checks that the
     /// wait is visible *while it happens* and gone afterwards.
+    // `wait_status` is ONE process-global slot. This test polls it for an
+    // announcement that lives 400 ms, and every other test that drives a
+    // retry or a contended provider slot publishes and then CLEARS that same
+    // slot -- a zero-delay retry does both within microseconds. Unserialized,
+    // a neighbour's `clear()` inside the window can erase the announcement
+    // before the first poll sees it: the test passes alone and failed once in
+    // the full suite with "the wait was never announced". Every slot mutator
+    // in the lib binary shares the `provider_wait_status` key.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(provider_wait_status)]
     async fn a_fake_429_is_announced_while_we_wait_and_cleared_after() {
         wait_status::clear();
 
@@ -944,6 +953,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(provider_wait_status)]
     async fn retry_extensions_grant_one_attempt_or_report_the_ceiling() {
         use crate::config::GooseMode;
         use crate::cost_router::authorized_attempts::{
@@ -1030,6 +1040,7 @@ mod tests {
     /// and the caller must be told that is why, in the error itself, not only
     /// in a log line.
     #[tokio::test]
+    #[serial_test::serial(provider_wait_status)]
     async fn a_retry_beyond_the_reserved_attempts_is_refused_with_an_honest_error() {
         let (attempts, error) = attempts_under_reservation(Some(1)).await;
         assert_eq!(
@@ -1055,6 +1066,7 @@ mod tests {
 
     /// The reserved count — not the retry policy's budget — is the ceiling.
     #[tokio::test]
+    #[serial_test::serial(provider_wait_status)]
     async fn the_reserved_count_bounds_the_retry_budget() {
         let (attempts, _) = attempts_under_reservation(Some(3)).await;
         assert_eq!(attempts, 3);
@@ -1064,6 +1076,7 @@ mod tests {
     /// auxiliary request): the retry policy keeps its whole budget, exactly as
     /// before Y7.
     #[tokio::test]
+    #[serial_test::serial(provider_wait_status)]
     async fn an_unreserved_call_keeps_the_full_retry_budget() {
         let (attempts, error) = attempts_under_reservation(None).await;
         assert_eq!(attempts, 4, "1 initial attempt + 3 configured retries");

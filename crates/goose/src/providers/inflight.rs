@@ -171,6 +171,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(provider_wait_status)]
     async fn cap_two_never_has_more_than_two_fake_requests_in_flight() {
         let slots = Arc::new(ProviderSlots::new(2));
         let active = Arc::new(AtomicUsize::new(0));
@@ -195,6 +196,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(provider_wait_status)]
     async fn provider_ids_have_independent_pools() {
         let mut registry = HashMap::new();
         let first = slots_for(&mut registry, "first", || 1);
@@ -211,6 +213,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(provider_wait_status)]
     async fn foreground_uses_the_reserved_permit_before_waiting_background() {
         let slots = Arc::new(ProviderSlots::new(2));
         let release = Arc::new(Notify::new());
