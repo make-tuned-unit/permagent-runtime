@@ -16546,6 +16546,31 @@ async fn auto_land_headless_goal(
         }
     }
 
+    // r64 s5: a verifier pass is not an independent review. A non-trivial
+    // change lands only after a cross-family reviewer approves it.
+    match independent_review_before_auto_land(pool, card, calling_session_id).await {
+        AutoLandReview::NotRequired { reason } => {
+            tracing::debug!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "headless Auto: no independent review needed before auto-land: {reason}"
+            );
+        }
+        AutoLandReview::Approved => {}
+        AutoLandReview::Refused { reason } => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                decision_id = %decision_id,
+                "headless_approve_refused reason=independent_review: goal '{}': {}",
+                card.title,
+                reason
+            );
+            park_refused_auto_land(pool, decision_id, card, auto_land_allowed, &reason).await;
+            return;
+        }
+    }
+
     if let Err(e) = cards::set_goal_verdict_and_program_receipts(
         pool,
         &card.id,
@@ -16651,6 +16676,203 @@ async fn finish_headless_auto_land(
         }
     }
 }
+
+/// Whether a verified goal's change needs an independent review before
+/// headless auto-land (r64 s5), and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AutoLandReviewRequirement {
+    /// Non-trivial: a cross-family reviewer must approve before it lands.
+    Required { reason: String },
+    /// Trivial by the reviewer mandate's own rule: lands on the verifier pass.
+    Skip { reason: String },
+}
+
+/// THE auto-land review rule (r64 s5), pure. The reviewer mandate
+/// (`after_turn::ReviewerMandate`, E1) skips an independent review only for a
+/// change `review_gate::review_required` calls trivial: no product source
+/// touched (tests, docs, formatting only), or at most
+/// `review_gate::TRIVIAL_MAX_LINES` changed lines. Headless auto-land applies
+/// that same rule — it used to land every verified goal with no review at all —
+/// and additionally requires a review whenever the diff's objective review
+/// complexity (`recommend::assess_review_complexity`, Lane N2) is MODERATE or
+/// above, so a small signature change with callers is never waved through as
+/// "tiny". The mandate's `PERMAGENT_REVIEWER_MANDATE_SKIP_TRIVIAL` A/B knob is
+/// for the after-turn hook and is not read here: auto-land always applies the
+/// mandate's default (skip trivial).
+pub(crate) fn auto_land_review_requirement(
+    facts: &crate::cost_router::recommend::ReviewFacts,
+) -> AutoLandReviewRequirement {
+    let verdict = crate::cost_router::recommend::assess_review_complexity(facts);
+    if verdict.complexity >= crate::cost_router::recommend::ReviewComplexity::Moderate {
+        return AutoLandReviewRequirement::Required {
+            reason: format!(
+                "review complexity is {} ({})",
+                verdict.complexity.as_str(),
+                verdict.reasons.join("; ")
+            ),
+        };
+    }
+    match crate::cost_router::review_required(&facts.changed_files, facts.changed_lines) {
+        crate::cost_router::review_gate::ReviewTrigger::Review => {
+            AutoLandReviewRequirement::Required {
+                reason: format!(
+                    "a non-trivial product-source change ({} changed line(s) in {} file(s))",
+                    facts.changed_lines,
+                    facts.changed_files.len()
+                ),
+            }
+        }
+        crate::cost_router::review_gate::ReviewTrigger::Skip { reason } => {
+            AutoLandReviewRequirement::Skip { reason }
+        }
+    }
+}
+
+/// What [`independent_review_before_auto_land`] decided.
+#[derive(Debug)]
+enum AutoLandReview {
+    /// No review is needed (trivial, or nothing measurable to review).
+    NotRequired { reason: String },
+    /// A cross-family reviewer approved the diff.
+    Approved,
+    /// A review was required and did not approve (or could not run).
+    Refused { reason: String },
+}
+
+/// r64 s5: a five-file signature refactor auto-landed "on a verifier pass"
+/// with no independent reviewer, and the oracle failed on a surface the plan
+/// missed. Before headless auto-land lands a verified goal, measure the goal's
+/// trunk-relative diff (the same range the reviewer delegate measures,
+/// [`goal_trunk_relative_diff`]) and apply [`auto_land_review_requirement`]:
+/// a trivial change lands as before; any other change is reviewed by the
+/// objective cross-family reviewer assignment
+/// ([`review_goal_diff_with_cross_family_reviewer`] → `assign_reviewer`), and
+/// only an approval lets it land. A goal whose diff cannot be measured (no
+/// recorded head, no trunk, or an empty range) has nothing for a reviewer to
+/// read; the landing step itself refuses a goal with nothing to land. The
+/// outcome is recorded on the card as `auto_land_review`.
+async fn independent_review_before_auto_land(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    calling_session_id: Option<&str>,
+) -> AutoLandReview {
+    let session_dir = card
+        .metadata_json
+        .pointer("/dispatch_evidence/worktree_path")
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let measured = goal_trunk_relative_diff(pool, card, &session_dir, false).await;
+    let (outcome, mut record) = match measured {
+        None => {
+            let reason = "no change against trunk could be measured, so there is nothing for a \
+                          reviewer to read"
+                .to_string();
+            (
+                AutoLandReview::NotRequired {
+                    reason: reason.clone(),
+                },
+                serde_json::json!({ "required": false, "reason": reason }),
+            )
+        }
+        Some((diff, dir, source)) => {
+            let changes = crate::cost_router::detect_signature_changes(&diff);
+            let call_sites: usize = enumerate_signature_call_sites(&dir, &changes)
+                .await
+                .iter()
+                .map(|e| e.call_sites.len())
+                .sum();
+            let facts = crate::cost_router::recommend::ReviewFacts::from_diff(&diff, call_sites);
+            match auto_land_review_requirement(&facts) {
+                AutoLandReviewRequirement::Skip { reason } => (
+                    AutoLandReview::NotRequired {
+                        reason: reason.clone(),
+                    },
+                    serde_json::json!({
+                        "required": false,
+                        "reason": reason,
+                        "diff_source": source.as_str(),
+                    }),
+                ),
+                AutoLandReviewRequirement::Required { reason } => {
+                    match review_goal_diff_with_cross_family_reviewer(
+                        pool,
+                        card,
+                        &dir,
+                        diff,
+                        VERIFIED_GOAL_VERIFY_OUTPUT_LEAD,
+                        calling_session_id,
+                    )
+                    .await
+                    {
+                        ReviewerGateOutcome::Approved {
+                            checked,
+                            reviewer_provider,
+                            reviewer_model,
+                        } => (
+                            AutoLandReview::Approved,
+                            serde_json::json!({
+                                "required": true,
+                                "reason": reason,
+                                "diff_source": source.as_str(),
+                                "outcome": "approved",
+                                "reviewer": format!("{reviewer_provider}/{reviewer_model}"),
+                                "checked": checked,
+                            }),
+                        ),
+                        ReviewerGateOutcome::Refused { reason: refusal }
+                        | ReviewerGateOutcome::Unreachable { reason: refusal }
+                        | ReviewerGateOutcome::DiffTooLarge { reason: refusal } => (
+                            AutoLandReview::Refused {
+                                reason: format!(
+                                    "an independent review is required ({reason}) and did not \
+                                     approve: {refusal}"
+                                ),
+                            },
+                            serde_json::json!({
+                                "required": true,
+                                "reason": reason,
+                                "diff_source": source.as_str(),
+                                "outcome": "refused",
+                                "refusal": refusal,
+                            }),
+                        ),
+                    }
+                }
+            }
+        }
+    };
+    if let Some(obj) = record.as_object_mut() {
+        obj.insert(
+            "recorded_at".to_string(),
+            serde_json::json!(chrono::Utc::now().to_rfc3339()),
+        );
+    }
+    tracing::info!(
+        target: "permagentd::brain",
+        goal_id = %card.id,
+        auto_land_review = %record,
+        "headless Auto: independent review before auto-land",
+    );
+    if let Err(e) = cards::merge_card_metadata(
+        pool,
+        &card.id,
+        serde_json::json!({ AUTO_LAND_REVIEW_METADATA_KEY: record }),
+        false,
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "could not record the auto-land review outcome: {e}"
+        );
+    }
+    outcome
+}
+
+/// Card metadata key for [`independent_review_before_auto_land`]'s outcome.
+pub(crate) const AUTO_LAND_REVIEW_METADATA_KEY: &str = "auto_land_review";
 
 /// Harness loop, Lane Y10b: park a goal whose auto-land was REFUSED, naming
 /// the refusal.
@@ -23155,14 +23377,47 @@ async fn enumerate_signature_call_sites(
 /// definitions appended to the verify slot (which salvage already uses for
 /// its "no automated checks ran" note) and, when the diff changes a
 /// signature, the E7 `BEGIN_CALL_SITES` section the main review path sends.
+/// The salvage gate now builds it through [`build_goal_review_prompt`] with
+/// [`salvage_verify_output_lead`]; this wrapper keeps that composition pinned
+/// by its tests.
+#[cfg(test)]
 fn build_salvage_review_prompt(
     task_spec: &str,
     diff: &str,
     verify_note: &str,
     context: &SalvageReviewContext,
 ) -> String {
-    let mut verify_output =
-        format!("no automated checks ran; review the diff on its merits ({verify_note})");
+    build_goal_review_prompt(
+        task_spec,
+        diff,
+        &salvage_verify_output_lead(verify_note),
+        context,
+    )
+}
+
+/// The verify slot's lead for a salvage review: nothing automated ran.
+fn salvage_verify_output_lead(verify_note: &str) -> String {
+    format!("no automated checks ran; review the diff on its merits ({verify_note})")
+}
+
+/// The verify slot's lead for a verified goal's review before headless
+/// auto-land (r64 s5): a verifier pass exists, and the reviewer still judges
+/// the diff against the task and its criteria.
+const VERIFIED_GOAL_VERIFY_OUTPUT_LEAD: &str =
+    "the goal's worker session recorded a durable, non-vacuous verify pass (its output is not \
+     shown here); that pass only proves the checks the worker chose to run — review the diff \
+     against the task and every acceptance criterion on its merits, including every surface \
+     the task names";
+
+/// The goal reviewer's prompt: [`build_salvage_review_prompt`]'s shape with the
+/// verify slot's lead supplied by the caller.
+fn build_goal_review_prompt(
+    task_spec: &str,
+    diff: &str,
+    verify_output_lead: &str,
+    context: &SalvageReviewContext,
+) -> String {
+    let mut verify_output = verify_output_lead.to_string();
     if !context.callee_definitions.is_empty() {
         verify_output.push_str(
             "\n\nRepository context gathered by the harness (read-only, not part of the diff) \
@@ -23239,6 +23494,31 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     )
     .await
     .unwrap_or_default();
+    review_goal_diff_with_cross_family_reviewer(
+        pool,
+        card,
+        worktree_path,
+        diff,
+        &salvage_verify_output_lead(verify_note),
+        calling_session_id,
+    )
+    .await
+}
+
+/// The cross-family reviewer gate on a goal's diff, shared by the salvage path
+/// ([`dispatch_cross_family_reviewer_for_salvage`]) and the review a non-trivial
+/// verified goal gets before headless auto-land
+/// ([`independent_review_before_auto_land`], r64 s5). `context_dir` is the
+/// checkout the harness reads callee definitions and call sites from;
+/// `verify_output_lead` opens the prompt's verify slot.
+async fn review_goal_diff_with_cross_family_reviewer(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    context_dir: &std::path::Path,
+    diff: String,
+    verify_output_lead: &str,
+    calling_session_id: Option<&str>,
+) -> ReviewerGateOutcome {
     let changed_lines = count_diff_changed_lines(&diff);
     // Lane R22c-e (G26 MED-2): character count, not `diff.len()` (bytes) —
     // `git diff` output is arbitrary UTF-8, so a byte-length comparison
@@ -23298,7 +23578,7 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     // here once and reused for the prompt) and assign the reviewer with the one
     // proportional selection rule, instead of the derived REVIEW entry (which
     // ranks the strongest cross-family verifier first).
-    let review_context = gather_salvage_review_context(worktree_path, &diff_for_prompt).await;
+    let review_context = gather_salvage_review_context(context_dir, &diff_for_prompt).await;
     let enumerated_call_sites: usize = review_context
         .call_site_enumerations
         .iter()
@@ -23361,8 +23641,12 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     // Lane R62e (A61 miss 1): give the reviewer the callee definitions and
     // E7 call sites the diff alone does not show (gathered above, before the
     // reviewer assignment that also reads them).
-    let prompt =
-        build_salvage_review_prompt(&task_spec, &diff_for_prompt, verify_note, &review_context);
+    let prompt = build_goal_review_prompt(
+        &task_spec,
+        &diff_for_prompt,
+        verify_output_lead,
+        &review_context,
+    );
 
     // Lane R28b (A27 Miss 3): the first attempt is always the selected
     // `pick`. On a provider-unavailable/billing/auth-class failure (the
@@ -39813,6 +40097,248 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         assert!(
             d.is_none(),
             "the approve_review decision must be resolved (answered), not left open"
+        );
+    }
+
+    /// r64 s5 fixture repo on `main` plus a `goal/<run_id>` branch one commit
+    /// ahead that applies `edit` to the checkout. Returns (repo, head).
+    fn n4_repo_with_goal_branch(
+        run_id: &str,
+        edit: impl FnOnce(&std::path::Path),
+    ) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_v1(root, &["init", "-b", "main"]);
+        git_v1(root, &["config", "user.email", "test@example.com"]);
+        git_v1(root, &["config", "user.name", "Test"]);
+        git_v1(root, &["config", "commit.gpgsign", "false"]);
+        for (path, content) in crate::cost_router::planner_complexity::R64_S5_FIXTURE_FILES {
+            let full = root.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, content).unwrap();
+        }
+        git_v1(root, &["add", "-A"]);
+        git_v1(root, &["commit", "-m", "base"]);
+        git_v1(root, &["checkout", "-b", &format!("goal/{run_id}")]);
+        edit(root);
+        git_v1(root, &["add", "-A"]);
+        git_v1(root, &["commit", "-m", "the work"]);
+        let head = git_v1(root, &["rev-parse", "HEAD"]);
+        git_v1(root, &["checkout", "main"]);
+        (dir, head)
+    }
+
+    fn n4_replace_in(root: &std::path::Path, path: &str, from: &str, to: &str) {
+        let full = root.join(path);
+        let text = std::fs::read_to_string(&full).unwrap();
+        assert!(text.contains(from), "{path} must contain {from}");
+        std::fs::write(full, text.replace(from, to)).unwrap();
+    }
+
+    /// r64 s5: a verified five-file signature refactor used to auto-land with
+    /// no independent review. It now needs a cross-family reviewer's approval;
+    /// with none obtainable here (the worker session is not readable) it is
+    /// parked with the reason, never landed.
+    #[tokio::test]
+    async fn n4_a_complex_verified_change_cannot_headless_auto_land_without_an_independent_review()
+    {
+        let (repo, head) = n4_repo_with_goal_branch("n4-complex-run", |root| {
+            n4_replace_in(
+                root,
+                "src/shipping/quote.ts",
+                "import type { Zone } from \"../types.ts\";",
+                "import type { PackageType, Zone } from \"../types.ts\";",
+            );
+            n4_replace_in(
+                root,
+                "src/shipping/quote.ts",
+                "export function quoteShipping(weightKg: number, zone: Zone): number {\n  return Math.round(weightKg * BASE_RATE_CENTS_PER_KG[zone]);",
+                "export function quoteShipping(weightKg: number, zone: Zone, packageType: PackageType): number {\n  const base = weightKg * BASE_RATE_CENTS_PER_KG[zone];\n  return Math.round(packageType === \"fragile\" ? base * 1.25 : base);",
+            );
+            for (path, from, to) in [
+                (
+                    "src/admin/manualQuote.ts",
+                    "quoteShipping(weightKg, zone)",
+                    "quoteShipping(weightKg, zone, \"standard\")",
+                ),
+                (
+                    "src/api/quoteHandler.ts",
+                    "quoteShipping(order.weightKg, order.zone)",
+                    "quoteShipping(order.weightKg, order.zone, order.packageType)",
+                ),
+                (
+                    "src/cart/cartSummary.ts",
+                    "quoteShipping(o.weightKg, o.zone)",
+                    "quoteShipping(o.weightKg, o.zone, o.packageType)",
+                ),
+                (
+                    "src/checkout/checkout.ts",
+                    "quoteShipping(order.weightKg, order.zone)",
+                    "quoteShipping(order.weightKg, order.zone, order.packageType)",
+                ),
+            ] {
+                n4_replace_in(root, path, from, to);
+            }
+        });
+        let root = repo.path().to_string_lossy().into_owned();
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(&root)
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "n4-complex-run", &head).await;
+        stamp_successful_verify(&pool, &card.id).await;
+        let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        auto_land_headless_goal(&pool, &decision.id, &card, true, Some("coord-session-1")).await;
+
+        assert_ne!(
+            git_v1(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "a non-trivial change must not land on a verifier pass alone"
+        );
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let review = updated
+            .metadata_json
+            .get(AUTO_LAND_REVIEW_METADATA_KEY)
+            .expect("the auto-land review outcome is recorded on the card");
+        assert_eq!(
+            review.get("required"),
+            Some(&serde_json::json!(true)),
+            "{review}"
+        );
+        assert_eq!(
+            review.get("outcome"),
+            Some(&serde_json::json!("refused")),
+            "{review}"
+        );
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "a refused review parks the goal with its reason (Y10b), never lands it"
+        );
+        assert!(
+            updated
+                .metadata_json
+                .pointer("/dispatch_evidence/verdict/status")
+                .is_none(),
+            "no pass receipt is recorded for a change that was not reviewed"
+        );
+    }
+
+    /// r64 s5, the mandate's own trivial rule: a two-line product-source change
+    /// (at most `review_gate::TRIVIAL_MAX_LINES`) with no signature change
+    /// still lands on its verifier pass, and the skip is recorded.
+    #[tokio::test]
+    async fn n4_a_trivial_verified_change_still_headless_auto_lands_per_the_mandate() {
+        let (repo, head) = n4_repo_with_goal_branch("n4-trivial-run", |root| {
+            n4_replace_in(
+                root,
+                "src/shipping/quote.ts",
+                "domestic: 200,",
+                "domestic: 210,",
+            );
+        });
+        let root = repo.path().to_string_lossy().into_owned();
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(&root)
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "n4-trivial-run", &head).await;
+        stamp_successful_verify(&pool, &card.id).await;
+        let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        auto_land_headless_goal(&pool, &decision.id, &card, true, Some("coord-session-1")).await;
+
+        assert_eq!(git_v1(repo.path(), &["rev-parse", "HEAD"]), head);
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let review = updated
+            .metadata_json
+            .get(AUTO_LAND_REVIEW_METADATA_KEY)
+            .expect("the skip is recorded too");
+        assert_eq!(
+            review.get("required"),
+            Some(&serde_json::json!(false)),
+            "{review}"
+        );
+    }
+
+    #[test]
+    fn n4_auto_land_review_requirement_follows_the_mandate_and_review_complexity() {
+        use crate::cost_router::recommend::ReviewFacts;
+        let file_diff = |path: &str, removed: &[&str], added: &[&str]| {
+            let mut d =
+                format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n");
+            for l in removed {
+                d.push_str(&format!("-{l}\n"));
+            }
+            for l in added {
+                d.push_str(&format!("+{l}\n"));
+            }
+            d
+        };
+        // Docs only: the mandate skips.
+        let docs =
+            ReviewFacts::from_diff(&file_diff("README.md", &["a"], &["b", "c", "d", "e"]), 0);
+        assert!(matches!(
+            auto_land_review_requirement(&docs),
+            AutoLandReviewRequirement::Skip { .. }
+        ));
+        // A two-line source tweak: trivial, skips.
+        let tiny = ReviewFacts::from_diff(
+            &file_diff("src/rates.ts", &["const R = 200;"], &["const R = 210;"]),
+            0,
+        );
+        assert!(
+            matches!(
+                auto_land_review_requirement(&tiny),
+                AutoLandReviewRequirement::Skip { .. }
+            ),
+            "{tiny:?}"
+        );
+        // A small signature change with enumerated callers: never "tiny".
+        let signature = ReviewFacts::from_diff(
+            &file_diff(
+                "src/shipping/quote.ts",
+                &["export function quoteShipping(weightKg: number, zone: Zone): number {"],
+                &["export function quoteShipping(weightKg: number, zone: Zone, packageType: PackageType): number {"],
+            ),
+            4,
+        );
+        assert!(
+            matches!(
+                auto_land_review_requirement(&signature),
+                AutoLandReviewRequirement::Required { .. }
+            ),
+            "{signature:?}"
+        );
+        // A ten-line source change with its test: non-trivial by the mandate.
+        let mut ten = file_diff("src/a.rs", &[], &["1", "2", "3", "4", "5"]);
+        ten.push_str(&file_diff(
+            "src/a_test.rs",
+            &[],
+            &["t1", "t2", "t3", "t4", "t5"],
+        ));
+        let ten = ReviewFacts::from_diff(&ten, 0);
+        assert!(
+            matches!(
+                auto_land_review_requirement(&ten),
+                AutoLandReviewRequirement::Required { .. }
+            ),
+            "{ten:?}"
         );
     }
 
