@@ -1667,7 +1667,7 @@ pub fn assign_reviewer(
     let is_retired = |r: &Rated| super::reviewer_pick::model_is_retired(&r.provider, &r.model);
     let pool: Vec<&Rated> = rated
         .iter()
-        .filter(|r| is_eligible_family(*r) && !is_retired(*r))
+        .filter(|r| is_eligible_family(r) && !is_retired(r))
         .collect();
     let chosen = cheapest_clearing_floor(
         &pool,
