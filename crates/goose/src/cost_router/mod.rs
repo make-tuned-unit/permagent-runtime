@@ -107,9 +107,9 @@ pub use cheap::{
     reference_cost_for, CheapCandidate, CheapLadder, PricedCandidate,
 };
 pub use delegate::{
-    decide_delegate_model, delegate_routing, delegate_routing_live,
-    escalation_allowed as delegate_escalation_allowed, pack_to_role_model, DelegateRouting,
-    DelegateSource, EscalationRefusal, KEY_ALLOW_ESCALATION,
+    audit_delegate_dispatch, decide_delegate_model, delegate_routing, delegate_routing_live,
+    escalation_allowed as delegate_escalation_allowed, pack_to_role_model, DelegateCostAudit,
+    DelegateRouting, DelegateSource, EscalationRefusal, KEY_ALLOW_ESCALATION,
 };
 pub use derived::{
     cached_capability_directory, config_key_affects_derived_map, derive_role_map,
@@ -156,9 +156,10 @@ pub use review_gate::{
 };
 pub use review_gate::{build_rubric_prompt, REVIEW_RUBRIC_SYSTEM_PROMPT};
 pub use reviewer_pick::{
-    family_of, model_is_retired, reviewer_spend_gate, select_reviewer, ReviewerPick,
-    ReviewerSelection, ReviewerSource, SpendDecision, NO_REVIEWER_AVAILABLE,
-    REVIEWER_MIN_ORCHESTRATION, REVIEWER_STRONG_ORCHESTRATION, SMALL_DIFF_LINES,
+    cheapest_cross_family_reviewer, family_of, model_is_retired, reviewer_spend_gate,
+    select_reviewer, ReviewerPick, ReviewerSelection, ReviewerSource, SpendDecision,
+    NO_REVIEWER_AVAILABLE, REVIEWER_MIN_ORCHESTRATION, REVIEWER_STRONG_ORCHESTRATION,
+    SMALL_DIFF_LINES,
 };
 pub use role_map::{
     cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,

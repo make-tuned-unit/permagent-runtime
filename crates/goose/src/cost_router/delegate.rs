@@ -400,6 +400,59 @@ pub fn pack_to_role_model(p: ModelPack) -> RoleModel {
     }
 }
 
+/// Lane R63c: the `receipt cost_routing` judgement for ONE delegate child —
+/// the same two booleans `orchestrator::audit_cost_routing` computes for a
+/// goal dispatch, so a delegate spawn can be counted rather than invisible.
+/// M47 r63 s5 printed `dispatches=1 cheapest_capable=1 pack_honored=1` while
+/// a `delegate` child spent $1.97 on `anthropic/claude-fable-5` — 85% of the
+/// record — because only goal dispatches were ever counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DelegateCostAudit {
+    pub cheapest_capable: bool,
+    pub pack_honored: bool,
+}
+
+/// Pure: audit a delegate child's EFFECTIVE `(provider, model)` (after the
+/// explicit-param / recipe / role / pack / session reconciliation), mirroring
+/// the goal-dispatch audit's rules:
+///
+/// - `pack_honored`: no pin applies to this delegate's role, or it ran on the
+///   pin — or on `pin_exception`, the one documented alternative a pin
+///   permits (the review role's cheapest cross-family escalation over a
+///   `Role::Hard` pin, X-cost-2; see `summon::resolve_provider`). An explicit
+///   per-call model that leaves the pin is still dispatched, but it is not
+///   pack-honoured.
+/// - `cheapest_capable`: it ran on `reference` — the cheapest capable target
+///   for its role (the pin when one applies; the review role's cheapest
+///   cross-family reviewer; otherwise the operator's session pair, the
+///   level-6 fallback) — or on something no pricier by the SAME
+///   `routing_matrix::nominal_call_cost` yardstick goal dispatches use. An
+///   unpriced actual model is never proven cheapest (it compares as
+///   infinitely expensive, exactly like an unpriced goal candidate) unless it
+///   IS the reference.
+pub fn audit_delegate_dispatch(
+    actual: (&str, &str),
+    pin: Option<&RoleModel>,
+    pin_exception: Option<&RoleModel>,
+    reference: Option<&RoleModel>,
+    nominal_cost: &impl Fn(&str, &str) -> Option<f64>,
+) -> DelegateCostAudit {
+    let is = |rm: &RoleModel| {
+        rm.provider.eq_ignore_ascii_case(actual.0) && rm.model.eq_ignore_ascii_case(actual.1)
+    };
+    let pack_honored = pin.is_none_or(|p| is(p) || pin_exception.is_some_and(is));
+    let cheapest_capable = reference.is_none_or(|r| {
+        is(r)
+            || nominal_cost(actual.0, actual.1).is_some_and(|actual_cost| {
+                actual_cost <= nominal_cost(&r.provider, &r.model).unwrap_or(f64::INFINITY)
+            })
+    });
+    DelegateCostAudit {
+        cheapest_capable,
+        pack_honored,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,6 +694,107 @@ mod tests {
         assert_eq!(json["escalation_refused"]["model"], "claude-fable-5");
         assert_eq!(json["escalation_refused"]["reason"], "escalation_disabled");
         assert_eq!(json["role"], "edit");
+    }
+
+    // ── Lane R63c: delegate spawns are counted in `receipt cost_routing` ──
+
+    fn kb_cost(provider: &str, model: &str) -> Option<f64> {
+        match (provider, model) {
+            ("custom_deepseek", "deepseek-chat") => Some(0.005),
+            ("anthropic", "claude-haiku-4-5") => Some(0.013),
+            ("anthropic", "claude-fable-5") => Some(0.13),
+            _ => None,
+        }
+    }
+
+    /// M47 r63 s5 as a receipt: every pack pinned to DeepSeek (so the review
+    /// role's pin is `Role::Hard` = DeepSeek), the cheapest capable
+    /// cross-family reviewer is haiku, and the child actually ran on
+    /// `claude-fable-5`. It must count as neither cheapest-capable nor
+    /// pack-honoured.
+    #[test]
+    fn a_fable_reviewer_under_pinned_packs_is_neither_cheapest_nor_pack_honoured() {
+        let hard_pin = rm("custom_deepseek", "deepseek-chat");
+        let cheapest_reviewer = rm("anthropic", "claude-haiku-4-5");
+        let audit = audit_delegate_dispatch(
+            ("anthropic", "claude-fable-5"),
+            Some(&hard_pin),
+            Some(&cheapest_reviewer),
+            Some(&cheapest_reviewer),
+            &kb_cost,
+        );
+        assert_eq!(
+            audit,
+            DelegateCostAudit {
+                cheapest_capable: false,
+                pack_honored: false,
+            }
+        );
+
+        // The fixed dispatch (the cheapest cross-family reviewer) is both.
+        let fixed = audit_delegate_dispatch(
+            ("anthropic", "claude-haiku-4-5"),
+            Some(&hard_pin),
+            Some(&cheapest_reviewer),
+            Some(&cheapest_reviewer),
+            &kb_cost,
+        );
+        assert!(fixed.cheapest_capable && fixed.pack_honored, "{fixed:?}");
+    }
+
+    /// No pin anywhere: pack-honoured trivially, but a pricier child than the
+    /// cheapest capable target is still not cheapest-capable.
+    #[test]
+    fn an_unpinned_expensive_child_is_pack_honoured_but_not_cheapest() {
+        let reference = rm("custom_deepseek", "deepseek-chat");
+        let audit = audit_delegate_dispatch(
+            ("anthropic", "claude-fable-5"),
+            None,
+            None,
+            Some(&reference),
+            &kb_cost,
+        );
+        assert!(audit.pack_honored);
+        assert!(!audit.cheapest_capable);
+    }
+
+    /// A pinned child on its pin, and an explicit per-call choice that leaves
+    /// the pin: the latter still counts, honestly, as not pack-honoured.
+    #[test]
+    fn a_pinned_child_is_honoured_and_an_explicit_departure_is_not() {
+        let pin = rm("custom_deepseek", "deepseek-chat");
+        let on_pin = audit_delegate_dispatch(
+            ("custom_deepseek", "deepseek-chat"),
+            Some(&pin),
+            None,
+            Some(&pin),
+            &kb_cost,
+        );
+        assert!(on_pin.cheapest_capable && on_pin.pack_honored);
+
+        let explicit = audit_delegate_dispatch(
+            ("anthropic", "claude-haiku-4-5"),
+            Some(&pin),
+            None,
+            Some(&pin),
+            &kb_cost,
+        );
+        assert!(!explicit.pack_honored);
+        assert!(!explicit.cheapest_capable);
+
+        // An unpriced child is never proven cheapest unless it IS the reference.
+        let unpriced =
+            audit_delegate_dispatch(("acme", "mystery"), None, None, Some(&pin), &kb_cost);
+        assert!(!unpriced.cheapest_capable);
+        let unpriced_ref = rm("acme", "mystery");
+        let same = audit_delegate_dispatch(
+            ("acme", "mystery"),
+            None,
+            None,
+            Some(&unpriced_ref),
+            &kb_cost,
+        );
+        assert!(same.cheapest_capable);
     }
 
     /// Every workflow role reads a pack, so "I pinned all four packs" leaves no

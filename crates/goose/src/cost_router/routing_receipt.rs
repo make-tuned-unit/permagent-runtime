@@ -72,6 +72,29 @@ pub fn record(area: &str, key: &str) {
     crate::receipts::write_sidecar();
 }
 
+/// Lane R63c: count ONE delegate child dispatch on the same counters a goal
+/// dispatch increments (`orchestrator::dispatch_goal_fn`): `dispatches`, then
+/// `cheapest_capable`/`pack_honored` per the audit, then `routed_local`/
+/// `routed_cloud` by the same `is_local_provider` classification. The line's
+/// keys are unchanged — a delegate child that runs a model is a dispatch, so
+/// the existing `cheapest_capable == dispatches && pack_honored ==
+/// dispatches` gate now sees it. `fallbacks` is goal-redispatch-only and is
+/// not touched here.
+pub fn record_delegate_dispatch(audit: super::delegate::DelegateCostAudit, provider: &str) {
+    record("cost_routing", "dispatches");
+    if audit.cheapest_capable {
+        record("cost_routing", "cheapest_capable");
+    }
+    if audit.pack_honored {
+        record("cost_routing", "pack_honored");
+    }
+    if super::is_local_provider(provider) {
+        record("cost_routing", "routed_local");
+    } else {
+        record("cost_routing", "routed_cloud");
+    }
+}
+
 pub fn set_planner(provider: &str, model: &str) {
     {
         let mut planner = PLANNER.lock().unwrap_or_else(|e| e.into_inner());
@@ -191,6 +214,60 @@ mod tests {
             "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 \
              planner=unknown/unknown routed_local=0 routed_cloud=0 fallbacks=0"
         );
+    }
+
+    /// Lane R63c (M47 r63 s5): a delegate child is a dispatch. The s5 shape —
+    /// one goal dispatch that was cheapest/pack-honoured, plus a reviewer
+    /// delegate that ran on `claude-fable-5` against DeepSeek-pinned packs —
+    /// must read `dispatches=2 cheapest_capable=1 pack_honored=1`, which the
+    /// qualification gate (`cheapest_capable == dispatches`) now fails,
+    /// instead of the `1/1/1` the record actually printed.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn a_delegate_child_is_counted_as_a_dispatch_with_its_own_audit() {
+        reset();
+        // The goal dispatch, exactly as `orchestrator::dispatch_goal_fn` records it.
+        record("cost_routing", "dispatches");
+        record("cost_routing", "cheapest_capable");
+        record("cost_routing", "pack_honored");
+        record("cost_routing", "routed_cloud");
+
+        record_delegate_dispatch(
+            super::super::delegate::DelegateCostAudit {
+                cheapest_capable: false,
+                pack_honored: false,
+            },
+            "anthropic",
+        );
+        let after = snapshot();
+        assert!(after.dispatches >= 2, "{after:?}");
+        assert!(
+            after.cheapest_capable < after.dispatches,
+            "an expensive delegate must not read as cheapest-capable: {after:?}"
+        );
+        assert!(
+            after.pack_honored < after.dispatches,
+            "a pin-leaving delegate must not read as pack-honoured: {after:?}"
+        );
+        assert!(after.routed_cloud >= 2, "{after:?}");
+
+        // A cheapest, pack-honoured local delegate increments all three and
+        // `routed_local`, never `fallbacks`.
+        let before = snapshot();
+        record_delegate_dispatch(
+            super::super::delegate::DelegateCostAudit {
+                cheapest_capable: true,
+                pack_honored: true,
+            },
+            "ollama",
+        );
+        let local = snapshot();
+        assert!(local.dispatches > before.dispatches);
+        assert!(local.cheapest_capable > before.cheapest_capable);
+        assert!(local.pack_honored > before.pack_honored);
+        assert!(local.routed_local > before.routed_local);
+        assert_eq!(local.fallbacks, before.fallbacks);
+        reset();
     }
 
     /// Lane R22b (M24 `dschat-select-existing-roadmap-resumes-not-
