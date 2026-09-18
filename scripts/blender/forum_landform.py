@@ -191,12 +191,40 @@ def _build_timber_quay(name, start, end):
     bpy.data.objects.remove(template, do_unlink=True)
 
 
+LAGOON_INNER_BANK = 62.0
+LAGOON_OUTER_BANK = 118.0
+LAGOON_SURFACE_Z = -2.05
+LAGOON_MAX_DEPTH = 8.0   # metres at mid-channel
+
+
+def lagoon_bed_z(radius):
+    """The bed under the lagoon: a basin, not a tray.
+
+    This used to be one flat plane at -2.2 under a water surface at -2.05 —
+    fifteen centimetres of water across a fifty-six metre ring. No shader can
+    make that read as a lagoon, and the app proved it: Beer-Lambert absorption
+    over 15cm is no absorption at all, and the depth-driven surf term treats
+    every texel as a shoal, so the whole ring came out as foam. That flat pale
+    sheet is what the Harbor — "the coastal arrival" — was framing.
+
+    Water needs somewhere to be deep. Depth follows a sine shoal: nothing at
+    either bank, deepest mid-channel, with the exponent holding the deep part
+    broad and the banks steep, which is how a scoured lagoon sits between two
+    shores. Eight metres at the middle is enough for the absorption curve to
+    take the red out and leave it blue-green, while the last metre at each
+    bank stays inside the foam band, where surf belongs.
+    """
+    span = LAGOON_OUTER_BANK - LAGOON_INNER_BANK
+    t = min(1.0, max(0.0, (radius - LAGOON_INNER_BANK) / span))
+    return LAGOON_SURFACE_Z - LAGOON_MAX_DEPTH * math.sin(math.pi * t) ** 0.7
+
+
 def _shape_lagoon(meadow):
     mesh = meadow.data
     for vertex in mesh.vertices:
         radius = math.hypot(vertex.co.x, vertex.co.y)
-        if 62.0 <= radius <= 118.0 and not _in_island(vertex.co.x, vertex.co.y):
-            vertex.co.z = -2.2
+        if LAGOON_INNER_BANK <= radius <= LAGOON_OUTER_BANK and not _in_island(vertex.co.x, vertex.co.y):
+            vertex.co.z = lagoon_bed_z(radius)
 
 
 def _add_lagoon_water():
@@ -219,11 +247,14 @@ def _add_lagoon_water():
     lagoon_mesh.from_pydata(verts, [], faces); lagoon_mesh.update()
     lagoon = bpy.data.objects.new('P2 filled inner lagoon water', lagoon_mesh)
     scene.collection.objects.link(lagoon); finish(lagoon, lagoon.name, water)
-    shallow = mat('Forum Lagoon Shallow Teal', (.10, .42, .39), metal=.03, rough=.20)
-    arc_band('P2 lagoon shallow shore band', 61.2, 66.0, -2.08, .045, shallow,
-             start=0.0, end=math.tau, segments=192)
-    arc_band('P2 lagoon clear teal inner band', 114.5, 118.4, -2.12, .045, shallow,
-             start=0.0, end=math.tau, segments=192)
+    # The two painted-on "shallow teal" bands that used to ring the banks are
+    # gone. They were opaque plates three centimetres under the surface, from
+    # before the water had any depth of its own — a stand-in for shallows,
+    # drawn rather than modelled. They now do active harm twice over: they hide
+    # the basin exactly where it shoals, and because their material is not
+    # named `Water`, the depth bake's first ray hit them and skipped those
+    # texels, so the banks were the one place with no water data at all.
+    # The shoaling bed and the absorption curve draw this now.
     # Small reed shelves break the perfect annulus at the sheltered coves.
     for index, angle in enumerate((.42, 1.52, 2.48, 3.68, 4.72, 5.56)):
         radius = 72.0 + (index % 3) * 8.0

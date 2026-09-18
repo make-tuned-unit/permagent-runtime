@@ -30,10 +30,53 @@ Env:    FORUM_WATER_RES  texels across the island (default 1024)
 import json
 import math
 import os
+import struct
+import zlib
 from pathlib import Path
 
 import bpy
 from mathutils import Vector
+
+
+def decode_png(blob):
+    """Decode an 8-bit RGBA PNG to a flat bytearray. Used to verify our own output."""
+    pos, idat, width, height = 8, b'', 0, 0
+    while pos < len(blob):
+        length = struct.unpack('>I', blob[pos:pos + 4])[0]
+        kind = blob[pos + 4:pos + 8]
+        data = blob[pos + 8:pos + 8 + length]
+        if kind == b'IHDR':
+            width, height = struct.unpack('>II', data[:8])
+        elif kind == b'IDAT':
+            idat += data
+        pos += 12 + length
+    raw = zlib.decompress(idat)
+    stride = width * 4
+    out = bytearray()
+    prev = bytearray(stride)
+    at = 0
+    for _ in range(height):
+        f = raw[at]
+        at += 1
+        line = bytearray(raw[at:at + stride])
+        at += stride
+        for x in range(stride):
+            a = line[x - 4] if x >= 4 else 0
+            b = prev[x]
+            c = prev[x - 4] if x >= 4 else 0
+            if f == 1:
+                line[x] = (line[x] + a) & 255
+            elif f == 2:
+                line[x] = (line[x] + b) & 255
+            elif f == 3:
+                line[x] = (line[x] + (a + b) // 2) & 255
+            elif f == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[x] = (line[x] + (a if pa <= pb and pa <= pc else (b if pb <= pc else c))) & 255
+        out += line
+        prev = line
+    return out
 
 ROOT = Path(__file__).resolve().parents[2]
 BLEND = ROOT / 'assets/world/forum/solar-forum.blend'
@@ -80,24 +123,54 @@ min_y, max_y = centre.y - half, centre.y + half
 top = hi.z + 50.0
 print(f'island footprint {2*half:.1f}m, {2*half/RES*100:.1f}cm per texel')
 
+# The rays, cached against the blend that produced them.
+#
+# Tracing 512x512 texels takes about twenty minutes, and the first two bakes
+# were lost to a WRITE bug with rays that had been correct all along. Paying
+# the trace again to fix an encoder is the kind of cost that stops you from
+# checking your work. The cache is keyed on the blend's mtime and the
+# resolution, so it is reused only when it describes this exact island.
+CACHE = ROOT / 'assets/world/forum/.water-rays.bin'
+CACHE_KEY = (int(BLEND.stat().st_mtime), RES)
 surface = [[None] * RES for _ in range(RES)]
 bed = [[None] * RES for _ in range(RES)]
+cached = False
+if CACHE.exists() and os.environ.get('FORUM_WATER_RETRACE') != '1':
+    try:
+        blob = zlib.decompress(CACHE.read_bytes())
+        key_mtime, key_res, count = struct.unpack('<qii', blob[:16])
+        if (key_mtime, key_res) == CACHE_KEY:
+            at = 16
+            for _ in range(count):
+                j, i, s, b = struct.unpack('<iiff', blob[at:at + 16])
+                surface[j][i], bed[j][i] = s, b
+                at += 16
+            cached = True
+            print(f'reusing {count} traced water texels from {CACHE.name}')
+    except Exception as exc:  # a corrupt cache is not a reason to fail
+        print(f'ignoring unreadable ray cache ({exc})')
 
-for j in range(RES):
-    y = min_y + (j + 0.5) / RES * (max_y - min_y)
-    for i in range(RES):
-        x = min_x + (i + 0.5) / RES * (max_x - min_x)
-        origin = Vector((x, y, top))
-        down = Vector((0, 0, -1))
-        # First hit: is the top surface here water?
-        hit, location, _, face, obj, _ = scene.ray_cast(depsgraph, origin, down)
-        if not hit or not is_water(obj, face):
-            continue
-        surface[j][i] = location.z
-        # Next hit below the water surface is the bed.
-        below = Vector((x, y, location.z - 0.05))
-        hit2, location2, _, face2, obj2, _ = scene.ray_cast(depsgraph, below, down)
-        bed[j][i] = location2.z if hit2 else location.z - 12.0
+if not cached:
+    for j in range(RES):
+        y = min_y + (j + 0.5) / RES * (max_y - min_y)
+        for i in range(RES):
+            x = min_x + (i + 0.5) / RES * (max_x - min_x)
+            origin = Vector((x, y, top))
+            down = Vector((0, 0, -1))
+            # First hit: is the top surface here water?
+            hit, location, _, face, obj, _ = scene.ray_cast(depsgraph, origin, down)
+            if not hit or not is_water(obj, face):
+                continue
+            surface[j][i] = location.z
+            # Next hit below the water surface is the bed.
+            below = Vector((x, y, location.z - 0.05))
+            hit2, location2, _, face2, obj2, _ = scene.ray_cast(depsgraph, below, down)
+            bed[j][i] = location2.z if hit2 else location.z - 12.0
+    hits = [(j, i) for j in range(RES) for i in range(RES) if surface[j][i] is not None]
+    packed = struct.pack('<qii', CACHE_KEY[0], CACHE_KEY[1], len(hits))
+    packed += b''.join(struct.pack('<iiff', j, i, surface[j][i], bed[j][i]) for j, i in hits)
+    CACHE.write_bytes(zlib.compress(packed, 6))
+    print(f'traced and cached {len(hits)} water texels')
 
 # Distance to shore, in texels, by a two-pass chamfer over the water mask. A
 # real Euclidean transform is not worth the runtime here: foam is a soft band a
@@ -129,65 +202,86 @@ metres_per_texel = (max_x - min_x) / RES
 DEPTH_RANGE = 14.0   # metres; beyond this the water is fully absorbed anyway
 SHORE_RANGE = 12.0   # metres; the widest foam band worth encoding
 
-pixels = [0.0] * (RES * RES * 4)
-for j in range(RES):
-    for i in range(RES):
-        at = (j * RES + i) * 4
-        if surface[j][i] is None:
-            pixels[at + 3] = 0.0
-            continue
-        depth = max(0.0, surface[j][i] - bed[j][i])
-        shore = min(1.0, dist[j][i] * metres_per_texel / SHORE_RANGE)
-        pixels[at] = min(1.0, depth / DEPTH_RANGE)
-        pixels[at + 1] = shore
-        pixels[at + 2] = max(0.0, min(1.0, (bed[j][i] - lo.z) / max(1e-6, hi.z - lo.z)))
-        pixels[at + 3] = 1.0
-
 water_texels = sum(1 for j in range(RES) for i in range(RES) if surface[j][i] is not None)
 
-# Writing the buffer, and then PROVING it was written.
+# The rows, as the browser will read them.
 #
-# The first bake shipped a texture that was black with alpha 1 in every texel —
-# which is exactly the buffer `images.new` generates before anything is put in
-# it. The rays had worked (the manifest counted 5.4% water from the same data),
-# so nothing looked wrong at the console, and the lagoon rendered as a flat
-# pale sheet in the app: depth 0 everywhere means no absorption, and mask 1
-# everywhere means the shore foam term ran across the entire world.
-#
-# `foreach_set` + `update()` is the buffer write that actually reaches the
-# saved file; `alpha_mode` stops the writer premultiplying a channel that is a
-# number, not opacity. The read-back below is the part that matters most: a
-# bake that silently produces a blank texture must fail the build, not ship.
-image = bpy.data.images.new('forum_water_info', width=RES, height=RES, alpha=True, float_buffer=False)
-image.alpha_mode = 'CHANNEL_PACKED'
-image.pixels.foreach_set(pixels)
-image.update()
-image.file_format = 'PNG'
-# Data, not colour: the shader reads these as numbers, so no sRGB transform.
-image.colorspace_settings.name = 'Non-Color'
+# Row order is the one part of this that is easy to get silently backwards.
+# The manifest maps three.z = -blender.y, so v = 0 is blender y = max_y, which
+# is `j = RES - 1`; the loader sets `flipY = false`, so v = 0 is the FIRST row
+# in the file. Hence rows are written from the top of the world down. This is
+# the same order Blender's own writer produced (its pixel buffer is bottom-up
+# and it saves bottom-last), so the shader's sampling is unchanged.
+rows = []
+for j in range(RES - 1, -1, -1):
+    row = bytearray(RES * 4)
+    for i in range(RES):
+        if surface[j][i] is None:
+            continue  # land: all four channels stay zero, mask included
+        depth = max(0.0, surface[j][i] - bed[j][i])
+        shore = min(1.0, dist[j][i] * metres_per_texel / SHORE_RANGE)
+        floor = max(0.0, min(1.0, (bed[j][i] - lo.z) / max(1e-6, hi.z - lo.z)))
+        at = i * 4
+        row[at] = int(min(1.0, depth / DEPTH_RANGE) * 255 + 0.5)
+        row[at + 1] = int(shore * 255 + 0.5)
+        row[at + 2] = int(floor * 255 + 0.5)
+        row[at + 3] = 255
+    rows.append(bytes(row))
+
+
+def encode_png(rows_, width, height):
+    """A minimal 8-bit RGBA PNG, written here rather than by Blender.
+
+    Blender's image API is not used for this file any more, and that is the
+    fix. `images.new` makes a GENERATED image; assigning `.pixels`, and then
+    `foreach_set` + `update()`, both left `save()` writing the buffer that
+    image was generated with — black with alpha 1 in every texel. The rays had
+    always been right, so it failed silently and the lagoon rendered as a flat
+    pale sheet: zero depth is no absorption, and a full mask ran the shore foam
+    across the whole world.
+
+    These channels are numbers, not colour. Going straight to zlib means no
+    colour management, no alpha premultiplication and no generated-image
+    semantics can touch them between here and the shader.
+    """
+    raw = b''.join(b'\x00' + r for r in rows_)  # filter type 0 per row
+
+    def chunk(kind, payload):
+        return (struct.pack('>I', len(payload)) + kind + payload
+                + struct.pack('>I', zlib.crc32(kind + payload) & 0xFFFFFFFF))
+
+    return (b'\x89PNG\r\n\x1a\n'
+            + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(raw, 9))
+            + chunk(b'IEND', b''))
+
+
 WEB.mkdir(parents=True, exist_ok=True)
 target = WEB / 'water-info.png'
-image.filepath_raw = str(target)
-image.save()
+target.write_bytes(encode_png(rows, RES, RES))
 
-# Read the file back as the browser will and check it against what we meant to
-# write. Comparing the saved mask to the ray count catches the blank-buffer
-# failure, a premultiplied alpha channel, and a flipped or half-written image.
-verify = bpy.data.images.load(str(target), check_existing=False)
-readback = [0.0] * (RES * RES * 4)
-verify.pixels.foreach_get(readback)
-saved_water = sum(1 for k in range(RES * RES) if readback[k * 4 + 3] > 0.5)
-saved_depth = sum(1 for k in range(RES * RES) if readback[k * 4] > 0.004)
-bpy.data.images.remove(verify)
-if water_texels and abs(saved_water - water_texels) > max(64, water_texels * 0.02):
+# Read the file back and check it against the rays. This is what caught the
+# blank texture, and it stays: a bake that silently produces one must fail the
+# build rather than ship.
+saved_water = 0
+saved_depth = 0
+for row in rows:
+    for i in range(RES):
+        if row[i * 4 + 3] > 127:
+            saved_water += 1
+        if row[i * 4] > 0:
+            saved_depth += 1
+decoded = decode_png(target.read_bytes())
+file_water = sum(1 for k in range(RES * RES) if decoded[k * 4 + 3] > 127)
+if file_water != saved_water or saved_water != water_texels:
     raise SystemExit(
-        f'water-info.png mask does not match the bake: {saved_water} texels saved, '
-        f'{water_texels} traced. The buffer did not reach the file.')
+        f'water-info.png mask does not match the bake: {file_water} in the file, '
+        f'{saved_water} encoded, {water_texels} traced.')
 if water_texels and saved_depth == 0:
     raise SystemExit(
         'water-info.png carries no depth at all. Every texel would render as '
         'zero-depth water: no absorption, and foam across the whole lagoon.')
-print(f'verified: {saved_water} masked texels, {saved_depth} with depth')
+print(f'verified: {file_water} masked texels, {saved_depth} with depth')
 manifest = {
     'schema': 'permagent.forum.water.v1',
     'resolution': RES,

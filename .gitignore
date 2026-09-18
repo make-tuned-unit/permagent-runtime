@@ -112,3 +112,7 @@ ios/PermagentMobile/build/
 
 # insta pending snapshots — artifacts of a failed snapshot test, never committed
 *.snap.new
+
+# Cached raycast for the water-info bake — derived from solar-forum.blend,
+# 20 minutes to regenerate, and reproducible from the blend it is keyed to.
+assets/world/forum/.water-rays.bin
