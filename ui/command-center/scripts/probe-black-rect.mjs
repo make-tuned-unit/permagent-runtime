@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /*
- * Does a change make the ANGLE/Metal black rectangle go away?
+ * Does a change make the ANGLE/Metal blown-out rectangle go away? (Either
+ * polarity — it has been seen black AND white.)
  *
  * Job 19 and 20 recorded a solid block of exact RGB 0,0,0 in the rendered
  * frame, root-caused it to the ANGLE **Metal** backend (67,447 identical black
@@ -68,20 +69,65 @@ function decodePng(buffer) {
   return { width, height, channels, stride, pixels };
 }
 
-/** Pure-black pixels, and the bounding box they occupy — the rectangle's fingerprint. */
-function blackReport(img) {
-  let count = 0, minX = img.width, minY = img.height, maxX = -1, maxY = -1;
-  for (let y = 0; y < img.height; y++) {
-    for (let x = 0; x < img.width; x++) {
-      const at = y * img.stride + x * img.channels;
-      if (img.pixels[at] === 0 && img.pixels[at + 1] === 0 && img.pixels[at + 2] === 0) {
-        count++;
-        if (x < minX) minX = x; if (x > maxX) maxX = x;
-        if (y < minY) minY = y; if (y > maxY) maxY = y;
+/**
+ * Blown-out pixels of EITHER polarity, with the bounding box they occupy.
+ *
+ * This counted pure black only, and that was a hole in the instrument rather
+ * than in the theory. On 2026-09-18 Jesse photographed a solid WHITE rectangle
+ * over the night world — the same hard-edged, axis-aligned block as the black
+ * one — and this probe had reported zero black pixels minutes earlier, which
+ * read as "clean" when it only ever meant "not black". A driver that hands
+ * back an uninitialised or wrongly-cleared render target can do it in either
+ * colour, so the fingerprint is a large run of IDENTICAL extreme pixels, not
+ * a particular value.
+ *
+ * Both polarities are counted separately so a regression says which one it is,
+ * and each keeps its own box: reporting one merged box across both would
+ * describe a rectangle that does not exist.
+ */
+function extremeReport(img) {
+  const track = () => ({ count: 0, minX: img.width, minY: img.height, maxX: -1, maxY: -1 });
+  const black = track();
+  const white = track();
+  const note = (t, x, y) => {
+    t.count++;
+    if (x < t.minX) t.minX = x; if (x > t.maxX) t.maxX = x;
+    if (y < t.minY) t.minY = y; if (y > t.maxY) t.maxY = y;
+  };
+  // Only count pixels inside a LONG UNBROKEN HORIZONTAL RUN.
+  //
+  // Counting every extreme pixel made this useless on a real frame: white card
+  // text, button fills and the day world's pale stone put 28,333 white pixels
+  // on screen with no defect present at all, and a bounding box spanning the
+  // window. The artifact is a solid block, so the thing that distinguishes it
+  // from legitimate UI is contiguity — a rectangle produces runs hundreds of
+  // pixels wide, and glyphs and gradients do not.
+  const MIN_RUN = 200;
+  const scan = (isHit, track) => {
+    for (let y = 0; y < img.height; y++) {
+      let runStart = -1;
+      for (let x = 0; x <= img.width; x++) {
+        const hit = x < img.width && isHit(y * img.stride + x * img.channels);
+        if (hit && runStart < 0) runStart = x;
+        if (!hit && runStart >= 0) {
+          if (x - runStart >= MIN_RUN) {
+            for (let k = runStart; k < x; k++) note(track, k, y);
+          }
+          runStart = -1;
+        }
       }
     }
-  }
-  return { count, box: maxX < 0 ? null : [minX, minY, maxX, maxY] };
+  };
+  const px = img.pixels;
+  scan((at) => px[at] === 0 && px[at + 1] === 0 && px[at + 2] === 0, black);
+  scan((at) => px[at] === 255 && px[at + 1] === 255 && px[at + 2] === 255, white);
+  const box = (t) => (t.maxX < 0 ? null : [t.minX, t.minY, t.maxX, t.maxY]);
+  return {
+    count: black.count + white.count,
+    black: { count: black.count, box: box(black) },
+    white: { count: white.count, box: box(white) },
+    box: black.count >= white.count ? box(black) : box(white),
+  };
 }
 
 const browser = await chromium.launch({
@@ -104,7 +150,7 @@ for (let i = 0; i < shots; i++) {
   await page.mouse.up();
   await page.waitForTimeout(700);
   const buffer = await page.screenshot({ type: 'png' });
-  const report = blackReport(decodePng(buffer));
+  const report = extremeReport(decodePng(buffer));
   results.push(report);
   if (report.count > 0) await writeFile(path.join(outDir, `${label}-${backend}-${i}.png`), buffer);
 }
@@ -117,7 +163,9 @@ console.log(JSON.stringify({
   label,
   backend,
   frames: results.length,
-  framesWithBlack: results.filter(r => r.count > 0).length,
-  totalBlackPixels: total,
+  framesWithArtifact: results.filter(r => r.count > 0).length,
+  totalExtremePixels: total,
+  blackPixels: results.reduce((sum, r) => sum + r.black.count, 0),
+  whitePixels: results.reduce((sum, r) => sum + r.white.count, 0),
   worstFrame: worst,
 }, null, 2));
