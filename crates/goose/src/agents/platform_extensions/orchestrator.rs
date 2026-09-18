@@ -16953,7 +16953,14 @@ async fn auto_land_headless_goal(
             calling_session_id,
             AutoLandReview::ChangesRequested {
                 reason: write_scope_violation_reason(&violations),
-                findings: vec![write_scope_violation_finding(card, &violations)],
+                findings: vec![write_scope_violation_finding(
+                    &super::write_scope::declared_write_scope(&card.metadata_json)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default(),
+                    &violations,
+                )],
+                cause: SendBackCause::WriteScope,
             },
             headless_max_redispatch_from_env(),
         )
@@ -17001,10 +17008,17 @@ async fn settle_verified_goal_review(
             );
         }
         AutoLandReview::Approved => {}
-        AutoLandReview::ChangesRequested { reason, findings } => {
+        AutoLandReview::ChangesRequested {
+            reason,
+            findings,
+            cause,
+        } => {
             // Lane R66a: concrete findings on a verified goal go back to its
             // worker once (headless only; a human reads the review otherwise),
-            // within the goal's attempt, re-dispatch and wall budgets.
+            // within the goal's attempt, re-dispatch and wall budgets. Lane
+            // R71a routes its deterministic write-scope refusal through the
+            // same path, carrying its own `cause` so nothing here claims a
+            // reviewer ran.
             let park_reason = if auto_land_allowed {
                 match send_goal_back_with_review_findings(
                     pool,
@@ -17012,6 +17026,7 @@ async fn settle_verified_goal_review(
                     &card.id,
                     &findings,
                     max_redispatch,
+                    cause,
                 )
                 .await
                 {
@@ -17022,9 +17037,10 @@ async fn settle_verified_goal_review(
                             decision_id = %decision_id,
                             round,
                             findings = findings.len(),
-                            "headless Auto: independent review requested changes on goal '{}'; \
-                             sent back to its worker with the findings",
-                            card.title
+                            cause = cause.log_reason(),
+                            "headless Auto: goal '{}' sent back to its worker ({})",
+                            card.title,
+                            cause.log_reason()
                         );
                         return;
                     }
@@ -17037,7 +17053,8 @@ async fn settle_verified_goal_review(
                 target: "permagentd::brain",
                 goal_id = %card.id,
                 decision_id = %decision_id,
-                "headless_approve_refused reason=independent_review: goal '{}': {}",
+                "headless_approve_refused reason={}: goal '{}': {}",
+                cause.log_reason(),
                 card.title,
                 park_reason
             );
@@ -17227,6 +17244,10 @@ enum AutoLandReview {
     ChangesRequested {
         reason: String,
         findings: Vec<String>,
+        /// Lane R71a: what refused. Kept on the variant so the send-back's
+        /// note, the supersede reason and the log line all say the same true
+        /// thing — a deterministic scope check is not a review.
+        cause: SendBackCause,
     },
     /// A review was required and did not approve (or could not run).
     Refused { reason: String },
@@ -17313,11 +17334,7 @@ fn write_scope_violation_reason(violations: &[String]) -> String {
 /// why the boundary exists (a sibling goal owns them right now) and asks for
 /// the out-of-scope edits to be reverted rather than for the work to be
 /// redone, because the in-scope part of the diff is usually correct.
-fn write_scope_violation_finding(card: &cards::Card, violations: &[String]) -> String {
-    let declared = super::write_scope::declared_write_scope(&card.metadata_json)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+fn write_scope_violation_finding(declared: &[String], violations: &[String]) -> String {
     format!(
         "This goal may only change {}. Its branch also changes {}. \
          Those paths belong to a sibling goal running in parallel right now, so editing them \
@@ -17439,7 +17456,11 @@ async fn independent_review_before_auto_land(
                                 if findings.is_empty() {
                                     AutoLandReview::Refused { reason }
                                 } else {
-                                    AutoLandReview::ChangesRequested { reason, findings }
+                                    AutoLandReview::ChangesRequested {
+                                        reason,
+                                        findings,
+                                        cause: SendBackCause::ReviewFindings,
+                                    }
                                 }
                             },
                             serde_json::json!({
@@ -17705,12 +17726,66 @@ fn auto_land_review_carrying_sent_back_rounds(
 /// started by the drain's sweep ([`next_drain_dispatches`]), and its completion
 /// goes through the same verify gates and [`independent_review_before_auto_land`]
 /// again. Returns the send-back round, or why the goal parks instead.
+/// Why a verified goal is going back to its worker. The two causes are not
+/// interchangeable in the record: only [`SendBackCause::ReviewFindings`] means
+/// a reviewer actually read the diff, and the goal's transition note must not
+/// claim one ran when Lane R71a's deterministic scope check is what refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SendBackCause {
+    /// An independent reviewer requested changes (Lane R66a).
+    ReviewFindings,
+    /// Lane R71a: the diff left the goal's declared write scope. No reviewer
+    /// ran; the check is deterministic and reads only git.
+    WriteScope,
+}
+
+impl SendBackCause {
+    /// The goal's transition note — what the worker and a human both read.
+    fn transition_note(self) -> &'static str {
+        match self {
+            SendBackCause::ReviewFindings => {
+                "the independent review requested changes: sent back once to address its \
+                 findings (listed in this brief as review findings), then verify and declare \
+                 done again"
+            }
+            SendBackCause::WriteScope => {
+                "the diff changed paths outside this goal's declared write scope: sent back \
+                 once to revert them (the paths are listed in this brief), then verify and \
+                 declare done again. No reviewer ran — this is a deterministic scope check"
+            }
+        }
+    }
+
+    /// Why the open `approve_review` decision is superseded.
+    fn supersede_reason(self) -> &'static str {
+        match self {
+            SendBackCause::ReviewFindings => {
+                "the independent review requested changes; the goal was sent back to its worker \
+                 once"
+            }
+            SendBackCause::WriteScope => {
+                "the diff left the goal's declared write scope; the goal was sent back to its \
+                 worker once"
+            }
+        }
+    }
+
+    /// The stable machine key used in the refusal log line.
+    fn log_reason(self) -> &'static str {
+        match self {
+            SendBackCause::ReviewFindings => "independent_review",
+            SendBackCause::WriteScope => "write_scope_violation",
+        }
+    }
+}
+
 async fn send_goal_back_with_review_findings(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     decision_id: &str,
     card_id: &str,
     findings: &[String],
     max_redispatch: u32,
+    cause: SendBackCause,
 ) -> Result<u64, String> {
     // Fresh: the review record was written after the caller's snapshot.
     let card = cards::get_card(pool, card_id)
@@ -17758,19 +17833,13 @@ async fn send_goal_back_with_review_findings(
         pool,
         card_id,
         decisions::ACTOR_HEADLESS_POLICY,
-        "the independent review requested changes: sent back once to address its findings \
-         (listed in this brief as review findings), then verify and declare done again",
+        cause.transition_note(),
         None,
         patch,
     )
     .await
     .map_err(String::from)?;
-    if let Err(e) = decisions::supersede_decision(
-        pool,
-        decision_id,
-        "the independent review requested changes; the goal was sent back to its worker once",
-    )
-    .await
+    if let Err(e) = decisions::supersede_decision(pool, decision_id, cause.supersede_reason()).await
     {
         tracing::warn!(
             target: "permagentd::brain",
@@ -42677,6 +42746,45 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     const R66A_HELP_FINDING: &str = "[CORRECTNESS] Help flag (-h/--help) broken due to \
                                      add_help=False (logfilter/cli.py:7-8, 11)";
 
+    /// Lane R71a: a write-scope send-back must never tell the worker, or a
+    /// human reading the card, that a reviewer looked at the diff — no
+    /// reviewer ran. The two causes must differ in every string they drive.
+    #[test]
+    fn a_write_scope_send_back_never_claims_a_review_happened() {
+        let scope = SendBackCause::WriteScope;
+        let review = SendBackCause::ReviewFindings;
+
+        assert!(scope.transition_note().contains("No reviewer ran"));
+        assert!(!scope.transition_note().contains("independent review"));
+        assert!(!scope.supersede_reason().contains("review requested"));
+        assert_eq!(scope.log_reason(), "write_scope_violation");
+
+        assert!(review.transition_note().contains("independent review"));
+        assert_eq!(review.log_reason(), "independent_review");
+        assert_ne!(scope.transition_note(), review.transition_note());
+        assert_ne!(scope.supersede_reason(), review.supersede_reason());
+    }
+
+    /// Lane R71a: the finding names the offending paths, the declared scope,
+    /// and asks for a revert rather than a redo — the in-scope half of the
+    /// diff is usually correct and re-doing it wastes the attempt budget.
+    #[test]
+    fn the_write_scope_finding_names_the_paths_and_asks_for_a_revert() {
+        let finding =
+            write_scope_violation_finding(&["a.py".to_string()], &["b.py".to_string()]);
+        assert!(finding.contains("a.py"), "{finding}");
+        assert!(finding.contains("b.py"), "{finding}");
+        assert!(finding.contains("Revert"), "{finding}");
+        assert!(
+            !finding.to_lowercase().contains("redo"),
+            "the worker is asked to revert, not redo: {finding}"
+        );
+
+        let reason = write_scope_violation_reason(&["b.py".to_string()]);
+        assert!(reason.contains("write scope violated"), "{reason}");
+        assert!(reason.contains("b.py"), "{reason}");
+    }
+
     fn r66a_changes_requested() -> AutoLandReview {
         AutoLandReview::ChangesRequested {
             reason: format!(
@@ -42684,6 +42792,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                  approve: the independent reviewer requested changes: {R66A_HELP_FINDING}"
             ),
             findings: vec![R66A_HELP_FINDING.to_string()],
+            cause: SendBackCause::ReviewFindings,
         }
     }
 
@@ -43031,6 +43140,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             AutoLandReview::ChangesRequested {
                 reason: format!("the independent reviewer requested changes: {still_broken}"),
                 findings: vec![still_broken.to_string()],
+                cause: SendBackCause::ReviewFindings,
             },
             DEFAULT_HEADLESS_MAX_REDISPATCH,
         )
