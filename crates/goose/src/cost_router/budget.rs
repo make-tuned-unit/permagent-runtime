@@ -72,7 +72,7 @@ pub struct BudgetConfig {
 }
 
 impl Default for BudgetConfig {
-    /// Task $0.50/$1/$2, session $2/$5/$10 (soft/gate/hard).
+    /// Task $1/$3/$6, session $5/$12/$25 (soft/gate/hard).
     ///
     /// These were task $2/$5/$10 and session $10/$25/$50. Jesse, on seeing a
     /// status line offering to spend $47.91 more on one session: "It would be
@@ -91,17 +91,34 @@ impl Default for BudgetConfig {
     /// long deliberate run raises them explicitly, which is the point — paying
     /// more should be a thing you chose, through
     /// `PERMAGENT_BUDGET_TASK_*_USD` / `PERMAGENT_BUDGET_SESSION_*_USD`.
+    ///
+    /// A first cut at $0.50/$1/$2 and $2/$5/$10 deadlocked the harness
+    /// immediately: "task budget gate required before provider call (spent
+    /// $0.12, authorization holds $0.00, requested bound $1.56, ceiling
+    /// $1.00)". The gate is compared against a RESERVATION BOUND, and
+    /// `calculate_bound` prices the model's whole context window
+    /// (`input_tokens = context - output`) no matter how small the actual
+    /// prompt is — that call sent 30k tokens, 7% of context, and cost $0.12,
+    /// while reserving $1.56. So any ceiling under a single call's worst case
+    /// blocks every call, and the tighter the cap the more certainly nothing
+    /// runs at all.
+    ///
+    /// These numbers clear one conservative bound with room for a second, and
+    /// remain far below where this started (session hard $50 → $25, task hard
+    /// $10 → $6). The right long-term fix is to reserve against the actual
+    /// prompt size rather than the full window, which would let the ceilings
+    /// come down again without deadlocking.
     fn default() -> Self {
         Self {
             task: BudgetCeilings {
-                soft: 0.50,
-                gate: 1.0,
-                hard: 2.0,
+                soft: 1.0,
+                gate: 3.0,
+                hard: 6.0,
             },
             session: BudgetCeilings {
-                soft: 2.0,
-                gate: 5.0,
-                hard: 10.0,
+                soft: 5.0,
+                gate: 12.0,
+                hard: 25.0,
             },
         }
     }
@@ -504,12 +521,12 @@ mod tests {
     #[test]
     fn defaults_match_the_spec() {
         let d = BudgetConfig::default();
-        approx(d.task.soft, 0.50);
-        approx(d.task.gate, 1.0);
-        approx(d.task.hard, 2.0);
-        approx(d.session.soft, 2.0);
-        approx(d.session.gate, 5.0);
-        approx(d.session.hard, 10.0);
+        approx(d.task.soft, 1.0);
+        approx(d.task.gate, 3.0);
+        approx(d.task.hard, 6.0);
+        approx(d.session.soft, 5.0);
+        approx(d.session.gate, 12.0);
+        approx(d.session.hard, 25.0);
     }
 
     #[test]
