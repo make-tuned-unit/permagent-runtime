@@ -5193,6 +5193,7 @@ mod tests {
         let guard = RoadmapDispatchGuard::new();
         match guard
             .after_turn(&AfterTurnContext {
+                delegate_tool_available: true,
                 session_id: &session_id,
                 messages: &claim,
                 prior_holds: 0,
@@ -5226,6 +5227,7 @@ mod tests {
         let empty: Vec<Message> = vec![];
         match guard
             .after_turn(&AfterTurnContext {
+                delegate_tool_available: true,
                 session_id: &session_id,
                 messages: &empty,
                 prior_holds: crate::cost_router::MAX_HOLDS,
@@ -5265,6 +5267,7 @@ mod tests {
         assert_eq!(
             guard
                 .after_turn(&AfterTurnContext {
+                    delegate_tool_available: true,
                     session_id: &session_id,
                     messages: &empty,
                     prior_holds: 0,
@@ -5288,6 +5291,7 @@ mod tests {
         assert_eq!(
             guard
                 .after_turn(&AfterTurnContext {
+                    delegate_tool_available: true,
                     session_id: &session_id,
                     messages: &empty,
                     prior_holds: 0,
@@ -5365,6 +5369,7 @@ mod tests {
         let empty: Vec<Message> = vec![];
         match guard
             .after_turn(&AfterTurnContext {
+                delegate_tool_available: true,
                 session_id: &session_id,
                 messages: &empty,
                 prior_holds: 0,
@@ -5392,6 +5397,7 @@ mod tests {
         let empty: Vec<Message> = vec![];
         match guard
             .after_turn(&AfterTurnContext {
+                delegate_tool_available: true,
                 session_id: &session_id,
                 messages: &empty,
                 prior_holds: crate::cost_router::MAX_HOLDS,
@@ -5428,6 +5434,7 @@ mod tests {
         assert_eq!(
             guard
                 .after_turn(&AfterTurnContext {
+                    delegate_tool_available: true,
                     session_id: &session_id,
                     messages: &empty,
                     prior_holds: 0,
@@ -5450,6 +5457,7 @@ mod tests {
         assert_eq!(
             guard
                 .after_turn(&AfterTurnContext {
+                    delegate_tool_available: true,
                     session_id: &session_id,
                     messages: &escalated,
                     prior_holds: 0,
@@ -5761,6 +5769,7 @@ mod tests {
         assert_eq!(
             guard
                 .after_turn(&AfterTurnContext {
+                    delegate_tool_available: true,
                     session_id: &session_id,
                     messages: &prose,
                     prior_holds: 0,
@@ -6272,6 +6281,7 @@ mod tests {
         assert_eq!(
             guard
                 .after_turn(&AfterTurnContext {
+                    delegate_tool_available: true,
                     session_id: "rule5-escalated",
                     messages: &escalated,
                     prior_holds: 0,
@@ -6292,6 +6302,7 @@ mod tests {
         assert_eq!(
             guard
                 .after_turn(&AfterTurnContext {
+                    delegate_tool_available: true,
                     session_id: "rule5-other-tool",
                     messages: &messages,
                     prior_holds: 0,
@@ -6317,6 +6328,7 @@ mod tests {
         assert_eq!(
             guard
                 .after_turn(&AfterTurnContext {
+                    delegate_tool_available: true,
                     session_id: &session_id,
                     messages: &free_text,
                     prior_holds: 0,
@@ -6639,6 +6651,7 @@ mod tests {
         assert_eq!(
             guard
                 .after_turn(&AfterTurnContext {
+                    delegate_tool_available: true,
                     session_id: "rule5-midsession-escalated",
                     messages: &escalated_question,
                     prior_holds: 0,
@@ -6816,6 +6829,7 @@ mod tests {
         ];
         let action = guard
             .after_turn(&AfterTurnContext {
+                delegate_tool_available: true,
                 session_id: "rule5-no-double-mint",
                 messages: &escalated_question,
                 prior_holds: 0,

@@ -144,9 +144,9 @@ pub use recommend::{
     WorkflowRole, EDIT_RELIABILITY_FLOOR,
 };
 pub use reservation::{
-    describe_pricing_source, plan_reservation_bound, reserved_physical_attempts,
-    reserved_physical_attempts_with, PricingProvenance, ReservationBound, ReservationBoundError,
-    DEFAULT_RESERVED_ATTEMPTS, RESERVE_ATTEMPTS_ENV,
+    describe_pricing_source, effective_cost_tier, is_free_local_pair, plan_reservation_bound,
+    reserved_physical_attempts, reserved_physical_attempts_with, PricingProvenance,
+    ReservationBound, ReservationBoundError, DEFAULT_RESERVED_ATTEMPTS, RESERVE_ATTEMPTS_ENV,
 };
 pub use review_gate::{
     apply_breaker_to_review_dispatch, build_review_prompt, build_review_prompt_with_call_sites,

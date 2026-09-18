@@ -165,6 +165,66 @@ pub enum ReservationBoundError {
     ArithmeticOverflow,
 }
 
+/// Whether this exact `provider`/`model` pair runs on local hardware at no
+/// marginal cost, according to the one curated, cited source of that fact in
+/// the runtime: [`crate::cost_router::knowledge`]'s `is_local` rows.
+///
+/// A provider object states its own billing class through
+/// [`Provider::cost_tier`](crate::providers::base::Provider::cost_tier), and
+/// that default is deliberately fail-closed
+/// ([`CostTier::PaidApi`], `providers/base.rs`). A *declarative* provider
+/// (`providers/declarative/*.json`) is built on a shared engine — the local
+/// split `qwen38_split` is served over an OpenAI-compatible socket and is
+/// therefore an `OpenAiProvider`, which never overrides `cost_tier` — so a
+/// local runtime inherits the paid default and the spend gate then demands a
+/// dollar bound for a call that costs nothing.
+///
+/// 2026-09-18, `permagent run --recipe permagent-coding`: OpenAI's stream
+/// dropped pre-commit, `agents::agent`'s failover switched the session to
+/// `qwen38_split`/`qwen3.8-27b`, and the very next turn died with "provider
+/// budget is unknown; refusing call: cannot authorize provider call: maximum
+/// output tokens are required for a paid reservation" — a *local* model
+/// refused for want of a *paid* reservation. That call could never have been
+/// authorized on the paid path at all: the fallback's `ModelConfig` carries no
+/// `max_tokens` (a declarative local model has no canonical row for
+/// `ModelConfig::with_canonical_limits` to read one from), and even with one,
+/// this pair's published rate is $0.00/$0.00, which `positive_rate` rejects as
+/// an invalid rate. Every branch of the paid path fails closed on a free
+/// model, which is exactly why the free model must not enter it.
+///
+/// Deliberately pair-scoped and exact, NOT a provider-name rule: the sibling
+/// helper `cost_router::is_local_provider` matches `"ollama"` as a substring,
+/// which also matches the metered `ollama_cloud` declarative provider. Reusing
+/// that here would hand a real paid endpoint a free pass; a curated row states
+/// a price for one named pair and cannot.
+pub fn is_free_local_pair(provider: &str, model: &str) -> bool {
+    crate::cost_router::knowledge::lookup(provider, model).is_some_and(|row| {
+        row.is_local && row.input_usd_per_mtok == 0.0 && row.output_usd_per_mtok == 0.0
+    })
+}
+
+/// The billing class a call is actually authorized and settled under: the tier
+/// the provider object declared, downgraded to [`CostTier::LocalFree`] when
+/// [`is_free_local_pair`] knows the pair costs nothing.
+///
+/// Only ever downgrades. A pair the knowledge base does not vouch for keeps
+/// whatever the provider declared, so an unknown or genuinely metered endpoint
+/// still reserves money and is still refused when the budget is unknown.
+///
+/// Callers must use the SAME answer for authorization and for settlement. The
+/// reservation seam (`agents::reply_parts::reserve_provider_invocation_for_model`)
+/// records this tier on the invocation context, because settlement refuses a
+/// chargeable invocation that carries no reservation id ("paid provider
+/// invocation has no reservation; refusing to settle silently") — so a call
+/// authorized as free but remembered as paid would simply fail one step later.
+pub fn effective_cost_tier(provider: &str, model: &str, declared: CostTier) -> CostTier {
+    if declared.is_chargeable() && is_free_local_pair(provider, model) {
+        CostTier::LocalFree
+    } else {
+        declared
+    }
+}
+
 /// Resolve pricing and calculate a conservative reservation bound.
 ///
 /// `ModelConfig::context_limit` and `ModelConfig::max_tokens` are deliberately
@@ -183,7 +243,11 @@ pub fn plan_reservation_bound(
 ) -> Result<Option<ReservationBound>, ReservationBoundError> {
     validate_attempts(max_physical_attempts)?;
 
-    if !cost_tier.is_chargeable() {
+    // A free local pair holds no dollars, so it never needs a priced bound —
+    // see [`is_free_local_pair`] for the failure this guard is the fix for.
+    // The declared tier is still honoured on its own: this only ever turns a
+    // chargeable claim into a free one, never the reverse.
+    if !effective_cost_tier(provider, model, cost_tier).is_chargeable() {
         return Ok(None);
     }
 
@@ -640,6 +704,88 @@ mod tests {
         assert_eq!(
             plan_reservation_bound("missing", "missing", CostTier::Subscription, &cfg, 1).unwrap(),
             None
+        );
+    }
+
+    /// 2026-09-18 user-reported blocker, `permagent run --recipe
+    /// permagent-coding`: OpenAI's stream dropped before any reply started,
+    /// the pre-commit failover switched the session to the LOCAL split
+    /// `qwen38_split`/`qwen3.8-27b`, and the next call died with "provider
+    /// budget is unknown; refusing call: cannot authorize provider call:
+    /// maximum output tokens are required for a paid reservation".
+    ///
+    /// The shape below is the exact shape of that fallback: the declarative
+    /// provider is an `OpenAiProvider`, so it reports `Provider::cost_tier`'s
+    /// fail-closed `PaidApi` default, and
+    /// `Agent::switch_to_permanent_failure_fallback` builds its `ModelConfig`
+    /// with `ModelConfig::with_canonical_limits`, which finds no canonical row
+    /// for a declarative local model and therefore leaves `max_tokens` unset.
+    /// Nothing about a free model can satisfy the paid path — the $0.00/$0.00
+    /// published rate would be rejected by `positive_rate` even with a
+    /// `max_tokens` present — so it must not enter it.
+    #[test]
+    fn a_local_split_fallback_is_authorized_without_a_paid_reservation() {
+        let cfg = config(Some(4_096), None);
+        assert_eq!(
+            plan_reservation_bound(
+                "qwen38_split",
+                "qwen3.8-27b",
+                CostTier::PaidApi,
+                &cfg,
+                DEFAULT_RESERVED_ATTEMPTS
+            )
+            .unwrap(),
+            None,
+            "a local model costs nothing and must never need a paid reservation"
+        );
+        assert_eq!(
+            effective_cost_tier("qwen38_split", "qwen3.8-27b", CostTier::PaidApi),
+            CostTier::LocalFree,
+            "settlement must agree with authorization, or the call fails one step later \
+             on \"paid provider invocation has no reservation\""
+        );
+    }
+
+    /// The safety property the fix must not spend: a genuinely metered call
+    /// whose budget cannot be established is still refused before any bytes
+    /// leave. `openai`/`gpt-5.4` is priced and not local, so the missing
+    /// `max_tokens` still fails closed exactly as it did before.
+    #[test]
+    fn a_paid_provider_with_an_unknowable_bound_is_still_refused() {
+        let cfg = config(Some(400_000), None);
+        assert_eq!(
+            plan_reservation_bound(
+                "openai",
+                "gpt-5.4",
+                CostTier::PaidApi,
+                &cfg,
+                DEFAULT_RESERVED_ATTEMPTS
+            ),
+            Err(ReservationBoundError::MissingMaxOutput)
+        );
+        assert_eq!(
+            effective_cost_tier("openai", "gpt-5.4", CostTier::PaidApi),
+            CostTier::PaidApi
+        );
+    }
+
+    /// The reason this gate reads a curated per-pair row instead of the
+    /// sibling `cost_router::is_local_provider` name rule: that rule matches
+    /// `"ollama"` as a SUBSTRING, so `ollama_cloud` — a metered hosted API
+    /// declared in `providers/declarative/ollama_cloud.json` — would have been
+    /// handed a free pass by it. A curated row prices one named pair and
+    /// cannot leak across to a lookalike id.
+    #[test]
+    fn a_cloud_provider_with_a_local_sounding_name_is_not_freed() {
+        assert!(crate::cost_router::is_local_provider("ollama_cloud"));
+        assert!(
+            !is_free_local_pair("ollama_cloud", "qwen3-coder"),
+            "a hosted, metered endpoint must not inherit a local row's $0 price"
+        );
+        let cfg = config(Some(256_000), None);
+        assert_eq!(
+            plan_reservation_bound("ollama_cloud", "qwen3-coder", CostTier::PaidApi, &cfg, 1),
+            Err(ReservationBoundError::MissingMaxOutput)
         );
     }
 

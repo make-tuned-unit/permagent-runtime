@@ -1813,6 +1813,18 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     // `cost_router::reservation::RESERVE_ATTEMPTS_ENV` for the measured
     // reason (holds of $1.66 against settled calls of $0.005).
     let attempts_reserved = crate::cost_router::reserved_physical_attempts(max_physical_attempts);
+    // A declarative local runtime is built on a shared engine (the
+    // `qwen38_split` two-machine split speaks OpenAI over a socket, so it IS
+    // an `OpenAiProvider`) and therefore inherits `Provider::cost_tier`'s
+    // fail-closed `PaidApi` default. Resolving the effective tier here — once,
+    // from the curated knowledge row for this exact provider/model pair — is
+    // what stops a free fallback being refused as an unauthorized paid call
+    // (see `cost_router::reservation::is_free_local_pair` for the 2026-09-18
+    // failure). It is recorded on the context as well as used for the bound,
+    // because settlement below refuses a chargeable invocation carrying no
+    // reservation id; authorization and settlement must agree on one answer.
+    let cost_tier =
+        crate::cost_router::effective_cost_tier(provider, &model_config.model_name, cost_tier);
     let bound = crate::cost_router::plan_reservation_bound(
         provider,
         &model_config.model_name,
