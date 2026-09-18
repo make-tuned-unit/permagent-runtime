@@ -264,9 +264,21 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           height: 40,
           gap: 12,
           justifyContent: open ? 'flex-start' : 'center',
-          margin: open ? '0 8px' : '0 auto',
+          // `0 auto` cannot be interpolated against `0 8px`: CSS treats
+          // auto↔length as a discrete step, so `transition: all` flipped it at
+          // the halfway mark and the whole button jumped sideways mid-slide —
+          // the jiggle when the sidebar opens or closes. The rail is 64px
+          // closed and the button 40px, so the centred margin is exactly 12px;
+          // writing it as a length keeps it interpolable. `justifyContent` is
+          // not animatable either, which is the second half of the same jump.
+          margin: open ? '0 8px' : '0 12px',
           cursor: state === 'finishing' ? 'default' : 'pointer',
-          transition: `all 200ms ${ease.out}`,
+          // No `transition: all` here. The nav rows above deliberately declare
+          // none: their geometry snaps in the same frame the flag flips and
+          // then tracks the rail's own 220ms width animation frame for frame.
+          // A second, shorter timeline on a percentage width whose reference is
+          // still moving is what made this row lag and overshoot the rail edge.
+          // `.pa-btn` still transitions colour, shadow and transform.
           fontFamily: font.body, fontSize: textSize.small,
           textAlign: 'left',
         } as CSSProperties}

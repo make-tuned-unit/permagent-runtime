@@ -28,6 +28,8 @@ import { FORUM_ASSET_REVISION } from './assetRevision';
 import { registerForumCollision } from './walkCollision';
 import { MeshAgora } from './MeshAgora';
 import { ForumPostProcessing } from './ForumPostProcessing';
+import { ForumPassport } from './ForumPassport';
+import { useHudPresence } from './useHudPresence';
 import { gateApproachPoint } from './meshPortal';
 import { extendForumLoader } from './forumGltf';
 import { FORUM_VISTA } from './vistaCamera';
@@ -175,8 +177,20 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
     const a = document.createElement('a'); a.href = url; a.download = `forum-${agent.id}-brief.md`; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000); setSaved(true);
   }
+  // The HUD rests when you are not using it and returns the moment you are.
+  const hud = useHudPresence({ walking, enabled: !agoraOpen });
   return <main className="forum-shell" style={style} data-appearance={appearance}>
-    <section ref={worldRef} className="forum-world" aria-label="Interactive solarpunk forum">
+    <section
+      ref={worldRef}
+      className="forum-world"
+      aria-label="Interactive solarpunk forum"
+      data-hud={hud.awake ? 'awake' : 'resting'}
+      onPointerMove={hud.wake}
+      onPointerDown={hud.wake}
+      onWheel={hud.wake}
+      onKeyDown={hud.wake}
+      onTouchStart={hud.wake}
+    >
       {/* Explicit shadow-map type. A bare `shadows` makes r3f set
           `PCFSoftShadowMap`, which three 0.184 deprecated: it warns and
           silently downgrades to `PCFShadowMap` on every shadow render — 39
@@ -200,9 +214,9 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         <PerfSampler />
       </Canvas>
       <header className="forum-brand"><div><div className="eyebrow">WORLD / SOLAR FORUM</div><h1 style={typeRamp.display}>The Solar Forum</h1><p>Living forum · <span data-testid="forum-appearance">{appearance === 'night' ? 'Night' : 'Day'} / follows system appearance</span></p></div></header>
-      <nav className="forum-districts" aria-label="World places">{DISTRICTS.map(d=><Button colors={colors} variant={d.id===districtId?'ghostOn':'ghost'} key={d.id} aria-pressed={d.id===districtId} onClick={()=>selectDistrict(d.id)} flashSuccess={false}>{d.name}</Button>)}</nav>
+      <nav className="forum-districts" aria-label="World places" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)} onFocusCapture={()=>hud.hold(true)} onBlurCapture={()=>hud.hold(false)}>{DISTRICTS.map(d=><Button colors={colors} variant={d.id===districtId?'ghostOn':'ghost'} key={d.id} aria-pressed={d.id===districtId} onClick={()=>selectDistrict(d.id)} flashSuccess={false}>{d.name}</Button>)}</nav>
       <div className="forum-location"><span>{agoraOpen ? 'MESH AGORA' : district.name.toUpperCase()}</span><p>{agoraOpen ? 'The antechamber beyond the gate' : district.subtitle}</p></div>
-      <div className="forum-controls">{agoraOpen ? (walking ? 'WASD walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : walking ? 'WASD walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>
+      <div className="forum-controls">{agoraOpen ? (walking ? 'Arrow keys walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : walking ? 'Arrow keys walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>
       {agoraOpen && <div className="forum-agora-return"><Button colors={colors} variant="primary" flashSuccess={false} onClick={leaveMesh}>Return to the Forum</Button></div>}
       {meshPrompt && walking && !agoraOpen && <div className="forum-gate-prompt" role="status">E · Enter the MESH</div>}
       <div className="forum-play"><Button colors={colors} variant={walking?'ghost':'primary'} flashSuccess={false} onClick={()=>{
@@ -216,6 +230,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       }}>{walking?'Return to overview':'Walk the world'}</Button></div>
       {walking && <div className="forum-crosshair" aria-hidden="true">+</div>}
       <div className="forum-live">{loaded ? `${goals.length} active jobs reported` : 'Job feed unavailable / connecting'}<small>Architecture preview · existing World agent feeds</small></div>
+      <div className="forum-passport-slot" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}><ForumPassport /></div>
     </section>
     <aside className="forum-panel" aria-label="Agent learning and task desk">
       <div className="eyebrow">AGENT DESK</div><h2 style={typeRamp.title}>Meet your collaborators.</h2>

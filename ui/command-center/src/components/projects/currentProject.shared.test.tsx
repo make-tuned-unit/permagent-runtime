@@ -103,10 +103,26 @@ describe('one current project across the tabs', () => {
     expect(opened('p1')).toBe(false);
   });
 
-  it('Grow adopts the first project only when nothing is selected anywhere', async () => {
+  it('Grow shows the first project when nothing is selected, without claiming the shared selection', async () => {
     await mount(<GrowView />);
-    expect(useCommandCenter.getState().currentProjectId).toBe('p1');
+    // Grow renders a project so the tab is never blank...
     expect(opened('p1')).toBe(true);
+    // ...but the app-wide selection stays empty. Every workspace is mounted at
+    // once, so a hidden Grow writing here is what used to undo "All Projects"
+    // in the Projects tab the moment it was pressed.
+    expect(useCommandCenter.getState().currentProjectId).toBe(null);
+  });
+
+  it('clearing the selection stays cleared while Grow is mounted', async () => {
+    useCommandCenter.getState().setCurrentProject('p42');
+    await mount(<GrowView />);
+    expect(useCommandCenter.getState().currentProjectId).toBe('p42');
+
+    // This is "All Projects" in the Projects tab, with Grow mounted-but-hidden
+    // alongside it. The homepage can only stay on screen if it stays null.
+    await act(async () => { useCommandCenter.getState().setCurrentProject(null); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 250)); });
+    expect(useCommandCenter.getState().currentProjectId).toBe(null);
   });
 
   it('the selection is remembered across launches', async () => {

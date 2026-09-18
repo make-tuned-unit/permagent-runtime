@@ -393,8 +393,18 @@ export function GrowView() {
   // Shared with Projects and Build (J7): opening a project in one of them
   // points this one at the same project, and vice versa. Grow used to forget
   // its project on every mount; now it remembers the app's.
-  const activeId = useCommandCenter((st) => st.currentProjectId);
+  const sharedProjectId = useCommandCenter((st) => st.currentProjectId);
   const setActiveId = useCommandCenter((st) => st.setCurrentProject);
+  // Grow needs *a* project to render, but it must not OWN the app-wide
+  // selection. Every workspace is mounted at once (App.tsx renders them all and
+  // hides the inactive ones with display:none), so this view's effects run even
+  // while it is invisible. When it adopted the first project by writing to the
+  // shared store, pressing "All Projects" over in the Projects tab — which
+  // clears that same store slice — was undone in the very next commit, and the
+  // All Projects homepage could never stay on screen. The fallback is local
+  // state now: Grow still shows something, and a cleared selection stays clear.
+  const [fallbackProjectId, setFallbackProjectId] = useState<string | null>(null);
+  const activeId = sharedProjectId ?? fallbackProjectId;
   const [posts, setPosts] = useState<SocialCard[]>([]);
   const [postsState, setPostsState] = useState<LoadState>('loading');
   const [postsMutationError, setPostsMutationError] = useState<string | null>(null);
@@ -533,9 +543,11 @@ export function GrowView() {
   // projects; silently re-pointing the shared selection because of that would
   // yank the Projects tab off the board the user deliberately opened.
   useEffect(() => {
-    if (activeId || projects.length === 0) return;
-    setActiveId(projects[0].id);
-  }, [activeId, projects, setActiveId]);
+    if (sharedProjectId || projects.length === 0) return;
+    setFallbackProjectId((previous) =>
+      previous && projects.some((p) => p.id === previous) ? previous : projects[0].id,
+    );
+  }, [sharedProjectId, projects]);
 
   /** Every project change goes through here — the dropdown and the cross-tab
    *  deep link alike, so one of them can never feel different from the other. */

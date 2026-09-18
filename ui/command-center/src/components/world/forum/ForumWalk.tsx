@@ -61,7 +61,11 @@ export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, o
     const keyDown = (e:KeyboardEvent) => {
       if (focusedElsewhere()) { keys.current.clear(); return; }
       if (editable(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (['KeyW','KeyA','KeyS','KeyD','ArrowLeft','ArrowRight','ShiftLeft','ShiftRight'].includes(e.code)) { e.preventDefault();keys.current.add(e.code); }
+      // Arrow keys are the walking controls Jesse asked for: Up/Down drive the
+      // avatar forward and back, Left/Right turn. WASD stays bound for anyone
+      // already used to it. Preventing default on the arrows also stops the
+      // page scrolling underneath the canvas while you walk.
+      if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','ShiftLeft','ShiftRight'].includes(e.code)) { e.preventDefault();keys.current.add(e.code); }
       if (e.code==='Escape') { e.preventDefault(); if (inMesh) onExitMesh?.(); else onExit(); }
       if (e.code==='KeyE' && !e.repeat) {
         // Standing in the exedra (round the side of the ring rather than
@@ -113,7 +117,7 @@ export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, o
     if(k.has('ArrowLeft'))angles.current.y+=dt*1.6;
     if(k.has('ArrowRight'))angles.current.y-=dt*1.6;
     camera.quaternion.setFromEuler(angles.current);
-    const forward=Number(k.has('KeyW'))-Number(k.has('KeyS'));
+    const forward=Number(k.has('KeyW')||k.has('ArrowUp'))-Number(k.has('KeyS')||k.has('ArrowDown'));
     const right=Number(k.has('KeyD'))-Number(k.has('KeyA'));
     const n=Math.hypot(forward,right);
     if(n){

@@ -360,3 +360,116 @@
 .forum-play { position:absolute; right:28px; bottom:72px; }
 .forum-crosshair { pointer-events:none; position:absolute; top:50%; left:50%; color:var(--forum-accent); font:20px var(--forum-mono); transform:translate(-50%,-50%); text-shadow:0 0 4px #000; }
 @media(max-width:800px) { .forum-play { right:16px; bottom:192px; } .forum-agora-return { right:16px; bottom:246px; } .forum-controls { font-size:8px; line-height:1.6; } .forum-districts { max-width:calc(100% - 32px); max-height:calc(100% - 300px); } }
+
+/* ── HUD presence ─────────────────────────────────────────────────────
+   The HUD rests when the world is not being driven, so the view is the
+   thing you look at rather than the chrome on top of it. Everything fades
+   together and comes back on the first pointer move, key or wheel tick
+   (see useHudPresence.ts). `visibility` follows the fade so a rested HUD
+   cannot swallow a click aimed at the world behind it, and the title card
+   keeps a little presence so the place never looks unlabelled. */
+.forum-world .forum-brand,
+.forum-world .forum-districts,
+.forum-world .forum-location,
+.forum-world .forum-controls,
+.forum-world .forum-live,
+.forum-world .forum-passport-slot,
+.forum-world .forum-play {
+  transition: opacity 620ms ease, transform 620ms ease, visibility 0s linear 0s;
+}
+.forum-world[data-hud='resting'] .forum-districts,
+.forum-world[data-hud='resting'] .forum-location,
+.forum-world[data-hud='resting'] .forum-controls,
+.forum-world[data-hud='resting'] .forum-live,
+.forum-world[data-hud='resting'] .forum-passport-slot {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(6px);
+  transition: opacity 620ms ease, transform 620ms ease, visibility 0s linear 620ms;
+}
+.forum-world[data-hud='resting'] .forum-brand { opacity: 0.32; }
+.forum-world[data-hud='resting'] .forum-play { opacity: 0.5; }
+@media (prefers-reduced-motion: reduce) {
+  .forum-world .forum-brand,
+  .forum-world .forum-districts,
+  .forum-world .forum-location,
+  .forum-world .forum-controls,
+  .forum-world .forum-live,
+  .forum-world .forum-passport-slot,
+  .forum-world .forum-play { transition: none; }
+}
+
+/* ── Sovereign passport ───────────────────────────────────────────────
+   The agent's digital passport: Chitin ID, passport token and whether the
+   identity is currently verified. Bottom right, opposite the place card,
+   clear of the sky bodies at the top of the frame. */
+.forum-passport-slot {
+  position: absolute;
+  right: 28px;
+  bottom: 132px;
+  max-width: 300px;
+}
+.forum-passport {
+  border: 1px solid var(--forum-border);
+  border-left: 2px solid var(--forum-bronze);
+  border-radius: 12px;
+  padding: 10px 14px 12px;
+  background: color-mix(in srgb, var(--forum-panel) 88%, transparent);
+  backdrop-filter: blur(9px);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.22);
+  color: var(--forum-text);
+}
+.forum-passport-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.forum-passport-status {
+  font-family: var(--forum-mono);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  color: var(--forum-muted);
+  white-space: nowrap;
+}
+.forum-passport[data-tone='ok'] .forum-passport-status { color: #35B37E; }
+.forum-passport[data-tone='warn'] .forum-passport-status { color: #C9821F; }
+.forum-passport[data-tone='stale'] .forum-passport-status,
+.forum-passport[data-tone='pending'] .forum-passport-status { color: var(--forum-muted); }
+.forum-passport-name {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 2px 0 8px;
+}
+.forum-passport-rows { display: grid; gap: 4px; margin: 0; }
+.forum-passport-rows > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+.forum-passport-rows dt {
+  font-size: 11px;
+  color: var(--forum-muted);
+  letter-spacing: 0.02em;
+}
+.forum-passport-rows dd {
+  margin: 0;
+  font-family: var(--forum-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 190px;
+}
+.forum-passport-more {
+  margin-top: 9px;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--forum-accent);
+  cursor: pointer;
+}

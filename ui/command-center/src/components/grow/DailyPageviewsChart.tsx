@@ -1,14 +1,51 @@
+import { useEffect, useRef, useState } from 'react';
 import type { ThemeColors } from '../../styles/tokens';
 import { font, radius, textSize } from '../../styles/tokens';
 import type { DailyAnalyticsPoint } from './analyticsFormat';
 import { linearTrendline } from './analyticsFormat';
 
-const VIEW_W = 720;
-const VIEW_H = 190;
-const PLOT_LEFT = 38;
-const PLOT_RIGHT = 12;
+/**
+ * The drawing is laid out in CSS pixels, not in an arbitrary viewBox that is
+ * then stretched to fit. The chart used to declare a fixed 720x190 viewBox,
+ * render it at `width="100%"` (~1950px on a wide window) and 160px tall with
+ * `preserveAspectRatio="none"`: that scales x by ~2.7 and y by ~0.84, so every
+ * glyph inside the SVG came out wide, squat and soft — the "stretched and low
+ * res" the axis labels showed. Measuring the container and drawing at that
+ * width keeps the mapping 1:1, so text renders at its true size and the bars
+ * keep their proportions at any window width.
+ */
+const FALLBACK_W = 720;
+const VIEW_H = 172;
+const PLOT_LEFT = 44;
+const PLOT_RIGHT = 14;
 const PLOT_TOP = 14;
 const PLOT_BOTTOM = 34;
+
+/** The element's content width in CSS pixels, tracked across resizes. */
+function useMeasuredWidth<T extends HTMLElement>(fallback: number) {
+  const ref = useRef<T | null>(null);
+  const [width, setWidth] = useState(fallback);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    // jsdom and older browsers have no ResizeObserver; the fallback width keeps
+    // the chart renderable (and the tests deterministic) without it.
+    if (typeof ResizeObserver === 'undefined') {
+      const measured = node.clientWidth;
+      if (measured > 0) setWidth(measured);
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      const measured = entries[0]?.contentRect.width ?? 0;
+      // Round to whole pixels: a fractional viewBox width reintroduces the
+      // sub-pixel blur this change exists to remove.
+      if (measured > 0) setWidth(Math.round(measured));
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  return { ref, width };
+}
 
 function shortDay(day: string): string {
   const [, month, date] = day.split('-');
@@ -23,6 +60,7 @@ export function DailyPageviewsChart({
   days: readonly DailyAnalyticsPoint[];
   colors: ThemeColors;
 }) {
+  const { ref: frameRef, width: viewW } = useMeasuredWidth<HTMLDivElement>(FALLBACK_W);
   if (days.length === 0) {
     return (
       <section
@@ -43,7 +81,7 @@ export function DailyPageviewsChart({
 
   const values = days.map((day) => Math.max(0, day.pageviews));
   const max = Math.max(1, ...values);
-  const plotW = VIEW_W - PLOT_LEFT - PLOT_RIGHT;
+  const plotW = Math.max(120, viewW - PLOT_LEFT - PLOT_RIGHT);
   const plotH = VIEW_H - PLOT_TOP - PLOT_BOTTOM;
   const step = plotW / days.length;
   const barWidth = Math.max(2, step * 0.72);
@@ -77,20 +115,21 @@ export function DailyPageviewsChart({
           </span>
         </div>
       </div>
+      <div ref={frameRef} style={{ width: '100%', minWidth: 0 }}>
       <svg
-        viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
-        width="100%"
-        height={160}
+        viewBox={`0 0 ${viewW} ${VIEW_H}`}
+        width={viewW}
+        height={VIEW_H}
         role="img"
         aria-label={`Daily pageviews over ${days.length} days, ${values.reduce((sum, value) => sum + value, 0).toLocaleString()} total`}
-        preserveAspectRatio="none"
+        style={{ display: 'block', maxWidth: '100%' }}
       >
         {[0, 0.5, 1].map((fraction) => {
           const y = PLOT_TOP + plotH * fraction;
           const value = Math.round(max * (1 - fraction));
           return (
             <g key={fraction}>
-              <line x1={PLOT_LEFT} x2={VIEW_W - PLOT_RIGHT} y1={y} y2={y} stroke={colors.border} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+              <line x1={PLOT_LEFT} x2={viewW - PLOT_RIGHT} y1={y} y2={y} stroke={colors.border} strokeWidth={1} vectorEffect="non-scaling-stroke" />
               <text x={PLOT_LEFT - 6} y={y + 3} textAnchor="end" fontSize={textSize.micro} fill={colors.textDim}>{value}</text>
             </g>
           );
@@ -105,7 +144,7 @@ export function DailyPageviewsChart({
                 <title>{`${day.day}: ${values[index].toLocaleString()} pageviews · ${day.visitors.toLocaleString()} devices`}</title>
               </rect>
               {(index % labelEvery === 0 || index === days.length - 1) && (
-                <text x={x + barWidth / 2} y={VIEW_H - 12} textAnchor="middle" fontSize={textSize.micro} fill={colors.textDim}>{shortDay(day.day)}</text>
+                <text x={x + barWidth / 2} y={VIEW_H - 10} textAnchor="middle" fontSize={textSize.micro} fill={colors.textDim}>{shortDay(day.day)}</text>
               )}
             </g>
           );
@@ -124,6 +163,7 @@ export function DailyPageviewsChart({
           />
         )}
       </svg>
+      </div>
       <div style={{ color: colors.textDim, fontSize: textSize.micro, lineHeight: 1.4 }}>
         Trendline shows the overall direction; hover a bar for the exact day.
       </div>
