@@ -264,8 +264,22 @@ function addSurfaceVariation(fragmentShader: string, profile: SurfaceProfile): s
 \t\tvec4 forumWater = texture2D( uWaterInfo, forumWaterUv );
 \t\tif ( forumWater.a > 0.02 ) {
 \t\t\tfloat forumDepthM = forumWater.r * uWaterRanges.x;
-\t\t\tvec3 forumAbsorb = vec3( 0.52, 0.16, 0.09 );
-\t\t\tvec3 forumDeep = vec3( 0.015, 0.085, 0.10 );
+\t\t\t// Absorption, tuned for a lagoon that now HAS depth.
+\t\t\t//
+\t\t\t// These constants were set when the bed was a flat tray fifteen
+\t\t\t// centimetres under the surface, where no curve could tell them apart.
+\t\t\t// Against a real eight-metre basin the old pair took the lagoon to
+\t\t\t// near black: pure Beer-Lambert absorbs and never scatters, so depth
+\t\t\t// only ever subtracts light, while a real lagoon stays bright because
+\t\t\t// its pale bed scatters light back up through the column.
+\t\t\t//
+\t\t\t// So the coefficients are gentler and the deep colour is a colour
+\t\t\t// rather than an absence — the cheap stand-in for that scattering.
+\t\t\t// Over sand this now runs pale aqua in the shallows, through turquoise,
+\t\t\t// to a deep blue-green at the middle, which is the gradient that makes
+\t\t\t// water read as water.
+\t\t\tvec3 forumAbsorb = vec3( 0.30, 0.09, 0.05 );
+\t\t\tvec3 forumDeep = vec3( 0.02, 0.16, 0.22 );
 \t\t\tvec3 forumTransmit = exp( -forumAbsorb * forumDepthM );
 \t\t\tdiffuseColor.rgb = mix( forumDeep, diffuseColor.rgb, forumTransmit );
 \t\t\t// Foam follows DEPTH, not the distance field.
