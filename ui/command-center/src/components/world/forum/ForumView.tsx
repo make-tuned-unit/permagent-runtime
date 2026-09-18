@@ -82,7 +82,8 @@ const FORUM_RAIL_KEY = 'permagent.forum.rail';
 import { ForumEnvironment } from './ForumEnvironment';
 import { ForumFlight } from './ForumFlight';
 import { ForumShips } from './ForumShips';
-import { advanceForumSurfaceClock, releaseForumSurfaceClock } from './ForumSurfaceMaterials';
+import { advanceForumSurfaceClock, releaseForumSurfaceClock, setForumWaterInfo } from './ForumSurfaceMaterials';
+import { boundsVector, loadWaterInfo } from './waterInfo';
 import { useHudPresence } from './useHudPresence';
 import { gateApproachPoint } from './meshPortal';
 import { extendForumLoader } from './forumGltf';
@@ -163,6 +164,21 @@ function DismissCard({ label, onDismiss }: { label: string; onDismiss: () => voi
 function ForumWater() {
   useFrame((_, delta) => advanceForumSurfaceClock(delta));
   useEffect(() => releaseForumSurfaceClock, []);
+  // The baked depth and shoreline, handed to the shared water uniforms. It can
+  // arrive after the materials have compiled; they hold the uniform objects by
+  // reference, so it reaches them without a recompile, and a build without a
+  // bake simply never turns it on.
+  useEffect(() => {
+    let cancelled = false;
+    void loadWaterInfo(import.meta.env.BASE_URL).then((info) => {
+      if (cancelled || !info) return;
+      setForumWaterInfo(info.texture, boundsVector(info.manifest), info.manifest.depthRange, info.manifest.shoreRange);
+    });
+    return () => {
+      cancelled = true;
+      setForumWaterInfo(null, boundsVector({ bounds: { minX: 0, maxX: 1, minZ: 0, maxZ: 1 } } as never), 14, 12);
+    };
+  }, []);
   return null;
 }
 

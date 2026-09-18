@@ -92,6 +92,34 @@ const appliedRoots = new WeakMap<THREE.Object3D, AppliedSurfaceState>();
  * alive — so `releaseForumSurfaceClock` clears it when the scene unmounts.
  */
 let forumSurfaceClock = 0;
+
+/**
+ * The baked water data, shared by every water material.
+ *
+ * Held as uniform objects by reference, the same way the clock is, so the bake
+ * can arrive after the materials have compiled and still reach them without a
+ * recompile. Until it does, `uWaterInfoOn` is 0 and the shader takes the plain
+ * path — a build with no bake looks exactly as it did before.
+ */
+const waterInfoUniforms = {
+  uWaterInfo: { value: null as THREE.Texture | null },
+  uWaterBounds: { value: new THREE.Vector4(0, 0, 1, 1) },
+  uWaterRanges: { value: new THREE.Vector2(14, 12) },
+  uWaterInfoOn: { value: 0 },
+};
+
+/** Hand the water shader its baked depth and shoreline. */
+export function setForumWaterInfo(
+  texture: THREE.Texture | null,
+  bounds: THREE.Vector4,
+  depthRange: number,
+  shoreRange: number,
+): void {
+  waterInfoUniforms.uWaterInfo.value = texture;
+  waterInfoUniforms.uWaterBounds.value = bounds;
+  waterInfoUniforms.uWaterRanges.value = new THREE.Vector2(depthRange, shoreRange);
+  waterInfoUniforms.uWaterInfoOn.value = texture ? 1 : 0;
+}
 const animatedUniforms = new Set<{ value: number }>();
 
 /** Advance the water by `deltaSeconds`; call once per frame from the scene. */
@@ -199,7 +227,10 @@ function addWorldPositionVarying(vertexShader: string): string {
 function addSurfaceVariation(fragmentShader: string, profile: SurfaceProfile): string {
   const animated = (profile.waveSpeed ?? 0) > 0;
   if (fragmentShader.includes(FRAGMENT_MARKER)) return fragmentShader;
-  const marker = `${FRAGMENT_MARKER}\n${animated ? 'uniform float forumTime;\n' : ''}${FORUM_SURFACE_HELPERS}`;
+  const waterDeclarations = animated
+    ? 'uniform float forumTime;\nuniform sampler2D uWaterInfo;\nuniform vec4 uWaterBounds;\nuniform vec2 uWaterRanges;\nuniform float uWaterInfoOn;\n'
+    : '';
+  const marker = `${FRAGMENT_MARKER}\n${waterDeclarations}${FORUM_SURFACE_HELPERS}`;
   const withHelpers = fragmentShader.replace('varying vec3 vViewPosition;', `varying vec3 vViewPosition;\nvarying vec3 forumSurfaceWorldPosition;\n${marker}`);
   // A still surface emits exactly the shader it always did — no drift
   // declarations, no extra parentheses. Stone, timber and glass make up most of
@@ -215,8 +246,47 @@ function addSurfaceVariation(fragmentShader: string, profile: SurfaceProfile): s
   const roughnessValue = `float forumSurfaceRoughnessValue = forumSurfaceValueNoise( ${sampleB} * ${profile.broadFrequency.toFixed(3)} ) * 0.35 + forumSurfaceValueNoise( ${sampleA} * ${profile.fineFrequency.toFixed(3)} ) * 0.65;`;
   const colour = `\n\t${colourValue}\n\tdiffuseColor.rgb = clamp( diffuseColor.rgb * ( 1.0 + ( forumSurfaceColorValue - 0.5 ) * ${profile.colorVariation.toFixed(4)} ), 0.0, 1.0 );`;
   const roughness = `\n\t${roughnessValue}\n\troughnessFactor = clamp( roughnessFactor + ( forumSurfaceRoughnessValue - 0.5 ) * ${profile.roughnessVariation.toFixed(4)}, 0.0, 1.0 );`;
+  // Depth absorption and shoreline foam, from the baked water texture.
+  //
+  // Beer-Lambert: light loses more of its red end the further it travels
+  // through water, which is why a lagoon is pale sand-green at the edge and
+  // deep blue-green out in the middle. Doing it from a BAKED depth costs one
+  // texture read instead of a depth prepass, and the depth never changes
+  // because the bed does not move.
+  //
+  // Foam is the second half of the same story: water that meets land makes a
+  // bright, moving band there, and its absence is one of the strongest tells
+  // that a surface is a plane rather than a liquid.
+  const waterBody = animated
+    ? `
+\tif ( uWaterInfoOn > 0.5 ) {
+\t\tvec2 forumWaterUv = ( forumSurfaceWorldPosition.xz - uWaterBounds.xy ) * uWaterBounds.zw;
+\t\tvec4 forumWater = texture2D( uWaterInfo, forumWaterUv );
+\t\tif ( forumWater.a > 0.02 ) {
+\t\t\tfloat forumDepthM = forumWater.r * uWaterRanges.x;
+\t\t\tvec3 forumAbsorb = vec3( 0.52, 0.16, 0.09 );
+\t\t\tvec3 forumDeep = vec3( 0.015, 0.085, 0.10 );
+\t\t\tvec3 forumTransmit = exp( -forumAbsorb * forumDepthM );
+\t\t\tdiffuseColor.rgb = mix( forumDeep, diffuseColor.rgb, forumTransmit );
+\t\t\t// Foam follows DEPTH, not the distance field.
+\t\t\t//
+\t\t\t// Two reasons, one physical and one practical. Physically, surf is
+\t\t\t// where water shoals: it breaks over the shallows, not at an arbitrary
+\t\t\t// radius from the bank. Practically, the distance-to-shore channel is
+\t\t\t// a chamfer over a 1.1m-per-texel mask, and this lagoon is a ring only
+\t\t\t// a few texels wide — so nearly every water texel reads as "near
+\t\t\t// shore" and the first two tunings foamed the whole lagoon. Depth is
+\t\t\t// smooth, is measured in metres, and does not care about texel size.
+\t\t\tfloat forumSurf = smoothstep( 0.5, 0.08, forumDepthM );
+\t\t\tfloat forumSurfNoise = forumSurfaceValueNoise( ( forumSurfaceWorldPosition + forumDriftA * 2.0 ) * 3.5 );
+\t\t\tfloat forumFoam = forumSurf * smoothstep( 0.40, 0.90, forumSurfNoise );
+\t\t\tdiffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.92, 0.96, 0.97 ), forumFoam * 0.45 );
+\t\t\troughnessFactor = mix( roughnessFactor, 0.85, forumFoam );
+\t\t}
+\t}`
+    : '';
   const withColour = withHelpers.replace('#include <color_fragment>', `#include <color_fragment>${colour}`);
-  const withRoughness = withColour.replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>${roughness}`);
+  const withRoughness = withColour.replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>${roughness}${waterBody}`);
   if (!animated) return withRoughness;
   const scale = (profile.waveScale ?? 1).toFixed(3);
   const ripple = `\n\tfloat forumWaveA = forumSurfaceValueNoise( ( forumSurfaceWorldPosition + forumDriftA ) * ${scale} );\n\tfloat forumWaveB = forumSurfaceValueNoise( ( forumSurfaceWorldPosition.zyx + forumDriftB ) * ${(Number(scale) * 1.7).toFixed(3)} );\n\tnormal = normalize( normal + vec3( ( forumWaveA - 0.5 ) * 0.22, 0.0, ( forumWaveB - 0.5 ) * 0.22 ) );`;
@@ -262,6 +332,10 @@ function cloneForProfile(source: StandardMaterial, profile: SurfaceProfile): Sta
       shader.vertexShader = addWorldPositionVarying(shader.vertexShader);
       shader.fragmentShader = addSurfaceVariation(shader.fragmentShader, profile);
       if ((profile.waveSpeed ?? 0) > 0) {
+        shader.uniforms.uWaterInfo = waterInfoUniforms.uWaterInfo;
+        shader.uniforms.uWaterBounds = waterInfoUniforms.uWaterBounds;
+        shader.uniforms.uWaterRanges = waterInfoUniforms.uWaterRanges;
+        shader.uniforms.uWaterInfoOn = waterInfoUniforms.uWaterInfoOn;
         // The uniform object is created here and held by reference, so
         // advancing it later reaches the compiled program without recompiling.
         shader.uniforms.forumTime = { value: forumSurfaceClock };

@@ -1,0 +1,21 @@
+{
+  "schema": "permagent.forum.water.v1",
+  "resolution": 512,
+  "metresPerTexel": 1.137,
+  "bounds": {
+    "minX": -291.14283752441406,
+    "maxX": 291.14283752441406,
+    "minZ": -400.2437438964844,
+    "maxZ": 182.04193115234375
+  },
+  "depthRange": 14.0,
+  "shoreRange": 12.0,
+  "waterCoverage": 0.0542,
+  "channels": {
+    "r": "depth / depthRange",
+    "g": "distance to shore / shoreRange",
+    "b": "bed height, normalised to the island z range",
+    "a": "water mask"
+  },
+  "axes": "three.x = blender.x, three.z = -blender.y"
+}
