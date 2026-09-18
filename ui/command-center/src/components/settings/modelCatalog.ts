@@ -60,7 +60,11 @@ const FAMILY_WORDS = ['opus', 'sonnet', 'haiku', 'fable'] as const;
 
 /** Capitalise a token for display: "haiku" → "Haiku", "gpt" → "GPT". */
 function titleCase(word: string): string {
-  if (/^(gpt|llm|ai|xl|vl)$/i.test(word)) return word.toUpperCase();
+  if (/^(gpt|llm|ai|xl|vl|moe|rag)$/i.test(word)) return word.toUpperCase();
+  // Trailing size suffixes are units, not words: 27b → 27B, 4o stays 4o.
+  if (/^\d+(\.\d+)?b$/i.test(word)) return word.toUpperCase();
+  // A vendor that writes its own name in camelCase keeps it (MiniMax).
+  if (/[a-z][A-Z]/.test(word)) return word;
   return word.charAt(0).toUpperCase() + word.slice(1);
 }
 
@@ -76,15 +80,20 @@ function titleCase(word: string): string {
 export function describeModel(id: string): ModelEntry {
   const lower = id.toLowerCase();
 
-  // A trailing 8-digit date is a pinned release: claude-haiku-4-5-20251001.
-  const dateMatch = lower.match(/[-@](\d{8})$/);
-  const released = dateMatch ? dateMatch[1] : null;
+  // A trailing release date pins a version. Both forms occur in the wild:
+  // Anthropic writes `claude-haiku-4-5-20251001`, OpenAI writes
+  // `gpt-5.4-nano-2026-03-17`. Either way it is a date, not part of the name.
+  const dateMatch = lower.match(/[-@](\d{8}|\d{4}-\d{2}-\d{2})$/);
+  const released = dateMatch ? dateMatch[1].replace(/-/g, '') : null;
   const base = released ? lower.slice(0, dateMatch!.index) : lower;
+  // Keep the vendor's own casing for the NAME (MiniMax, not Minimax);
+  // `base` stays lowercased because the matching below is case-insensitive.
+  const baseAsWritten = released ? id.slice(0, dateMatch!.index) : id;
 
   const family = FAMILY_WORDS.find(word => base.includes(word)) ?? null;
 
   // Version digits: "claude-haiku-4-5" → 4.5, "claude-sonnet-5" → 5,
-  // "gpt-4o" → 4. Hyphenated pairs are a decimal, which is the Anthropic form.
+  // "gpt-5.4-nano" → 5.4. Hyphenated pairs are a decimal, the Anthropic form.
   let version: number | null = null;
   const pair = base.match(/(\d+)-(\d+)(?!\d)/);
   if (pair) {
@@ -94,13 +103,34 @@ export function describeModel(id: string): ModelEntry {
     if (single) version = Number(single[1]);
   }
 
+  // Build the name from the id's own words rather than a lookup table.
+  //
+  // The first version of this only knew the Claude families, so every OpenAI
+  // model fell through to its raw id and the menu read as a column of serial
+  // numbers — `gpt-5.4-nano-2026-03-17` — which is the thing Jesse called out.
+  // Splitting on the separator the ids already use gets a real name out of any
+  // vendor: "GPT 5.4 Nano", "MiniMax M2.7", "Qwen3.8 27B".
+  //
+  // An id with no version number anywhere is left exactly as it is. There is
+  // nothing to name there, and inventing a title for an unrecognised string is
+  // how a menu starts lying about what it will send.
   let label: string;
-  if (family && version !== null) {
-    const vendor = base.startsWith('claude') ? 'Claude' : titleCase(base.split(/[-/]/)[0]);
-    label = `${vendor} ${titleCase(family)} ${version}`;
-  } else {
-    // Unknown shape: show the id, tidied, rather than inventing a name.
+  if (version === null) {
     label = id;
+  } else {
+    const words: string[] = [];
+    const parts = baseAsWritten.split('-').filter(Boolean);
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i];
+      // A bare number followed by another bare number is one decimal version.
+      if (/^\d+$/.test(part) && /^\d+$/.test(parts[i + 1] ?? '')) {
+        words.push(`${part}.${parts[i + 1]}`);
+        i += 1;
+        continue;
+      }
+      words.push(/^[\d.]+$/.test(part) ? part : titleCase(part));
+    }
+    label = words.join(' ');
   }
 
   // Rank: version dominates, family breaks ties so the capable line sorts

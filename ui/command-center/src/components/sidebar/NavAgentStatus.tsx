@@ -146,3 +146,35 @@ export function NavStatusBadge({
     </span>
   );
 }
+
+/**
+ * The agent's status on a view's title line — "Henry · thinking" beside the H1.
+ *
+ * Jesse, twice: the dot does not belong in the rail. Expanded it was a second
+ * line of chrome under Home; collapsed it was a green dot floating next to an
+ * icon, marking a row rather than saying anything, and reading as decoration
+ * you cannot act on. The agreed home for this is the Home heading, where it
+ * sits next to the name of the thing it is the status OF and has room for the
+ * word as well as the colour.
+ */
+export function HeaderAgentStatus() {
+  const { colors } = useTheme();
+  const { name, state, word } = useNavAgentStatus();
+  return (
+    <span
+      data-testid="header-agent-status"
+      role="status"
+      aria-label={`${name} is ${word}`}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: space.sm,
+        fontFamily: font.body, whiteSpace: 'nowrap',
+      }}
+    >
+      <NavStatusDot state={state} size={7} />
+      <span style={{ fontSize: textSize.small, color: colors.textMuted, fontWeight: 500 }}>
+        {name}
+      </span>
+      <span style={{ fontSize: textSize.micro, color: colors.textDim }}>{word}</span>
+    </span>
+  );
+}

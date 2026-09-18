@@ -15,6 +15,7 @@ import { MissingCard } from './MissingCard';
 import { Echo } from './Echo';
 import { LearnNext } from './LearnNext';
 import { ViewHeader } from '../common/ViewHeader';
+import { HeaderAgentStatus } from '../sidebar/NavAgentStatus';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { Button } from '../common/Button';
 import { AsOf } from '../common/AsOf';
@@ -237,6 +238,12 @@ export function Dashboard() {
           match every other view. */}
       <ViewHeader
         title="Home"
+        // The agent's status, beside the name of the view it belongs to. It
+        // used to live in the rail: a second line under the Home row when the
+        // sidebar was open, and a loose green dot beside the icon when it was
+        // closed — which marked a row without saying anything. Here it has
+        // room for the name and the word, not just the colour.
+        afterTitle={<HeaderAgentStatus />}
         // A failed poll keeps the last good payload, which is right — and
         // silent, which is not. Once the figures below stop being refreshed the
         // header says how old they are and offers the way back. Said in the

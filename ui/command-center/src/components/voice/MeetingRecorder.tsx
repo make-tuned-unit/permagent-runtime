@@ -31,7 +31,7 @@ import { createPortal } from 'react-dom';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
 import { toast } from '../../lib/notifications';
-import { duration, ease, font, radius, shell, space, textSize } from '../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useMeetingDictation, formatElapsed } from '../../hooks/useMeetingDictation';
 import { FiChevronDown, FiMic } from 'react-icons/fi';
@@ -290,17 +290,23 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             height: 40,
             gap: space.xl,
             justifyContent: open ? 'flex-start' : 'center',
-            // `0 auto` cannot be interpolated against `0 8px`: CSS treats
-            // auto↔length as a discrete step, so any `transition: all` on this
-            // row flipped it at the halfway mark and the whole button jumped
-            // sideways mid-slide — the jiggle when the sidebar opens or closes.
-            // Writing the collapsed margin as a LENGTH keeps it interpolable,
-            // and deriving it from `shell.rail.collapsed` keeps it centred: the
-            // rail is 76px and the button 40px, so the centred margin is 18px
-            // and it follows the rail if the rail ever moves again.
-            // `justifyContent` is not animatable either, which is the second
-            // half of the same jump.
-            margin: open ? `0 ${space.md}px` : `0 ${(shell.rail.collapsed - 40) / 2}px`,
+            // EXACTLY the rule `SidebarRow` uses, and that is the point.
+            //
+            // This row previously wrote the collapsed margin as a length
+            // (`rail.collapsed - 40) / 2`, i.e. 18px) on the theory that a
+            // length interpolates where `auto` does not. Nothing here
+            // transitions margin, so there was nothing to interpolate — and
+            // the length centres the button against a rail that is ALREADY
+            // 76px wide, while its neighbours' `auto` re-centres against the
+            // rail's true width on every frame of the slide. So the button
+            // tracked the rail differently from the three rows under it, which
+            // is the wobble: not a jump of its own, but drift against History,
+            // Notifications and Settings.
+            //
+            // Sharing one rule is the only thing that can keep four rows in
+            // step. If the rail geometry ever changes, it changes for all of
+            // them at once.
+            margin: open ? `0 ${space.md}px` : '0 auto',
             cursor: state === 'finishing' ? 'default' : 'pointer',
             // No `transition: all` here, and that is the fix rather than a
             // retune of it. The nav rows above deliberately declare none: their

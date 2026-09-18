@@ -385,7 +385,7 @@ function toneFor(n: number | null | undefined, colors: ThemeColors): string {
 }
 
 export function FinanceView() {
-  const { colors } = useTheme();
+  const { colors, gradient } = useTheme();
   const [board, setBoard] = useState<FinanceBoard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -525,7 +525,11 @@ export function FinanceView() {
 
   return (
     <MoneyContext.Provider value={money}>
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: font.body, color: colors.text }}>
+    // Finance was the one workspace that painted no background of its own,
+    // so it showed whatever the shell happened to be and read as a different
+    // colour from every other tab. `gradient.workspace` is what Projects,
+    // Grow and Brain all use.
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: gradient.workspace, fontFamily: font.body, color: colors.text }}>
       <ViewHeader
         title="Finance"
         subtitle="Holdings, household, and research. Optional desks stay off until you turn them on."

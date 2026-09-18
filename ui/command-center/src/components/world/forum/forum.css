@@ -541,6 +541,14 @@
 .forum-rail[data-open='closed'] .forum-rail-list {
   transform: translateX(-102%);
   opacity: 0;
+  /* Without this the rail could not be opened at all.
+     The list is laid out after the 32px handle and slid 102% to the left, so
+     its RIGHT edge comes to rest exactly over the handle. `transform` moves
+     what you see and what you can click, but `opacity: 0` does not stop hit
+     testing — so an invisible panel sat on the handle and swallowed every
+     press on it. The menu looked dead because the thing you were clicking was
+     the closed menu. */
+  pointer-events: none;
 }
 .forum-rail-place {
   --pa-btn-bg: transparent;

@@ -27,10 +27,10 @@ describe('ProviderModelPicker', () => {
     const onChange = vi.fn();
     await act(async () => { root.render(<ProviderModelPicker value={{ provider: null, model: null }} onChange={onChange} />); });
     await act(async () => { (host.querySelector('button[aria-haspopup]') as HTMLButtonElement).click(); });
-    expect(host.textContent).toContain('Anthropic'); expect(host.textContent).not.toContain('known-model');
-    await act(async () => { (Array.from(host.querySelectorAll('button')).find(b => b.textContent?.includes('Anthropic')) as HTMLButtonElement).click(); });
-    expect(getProviderModels).toHaveBeenCalledWith('anthropic'); expect(host.textContent).toContain('fetched-model');
-    await act(async () => { (Array.from(host.querySelectorAll('button')).find(b => b.textContent?.includes('fetched-model')) as HTMLButtonElement).click(); });
+    expect(document.body.textContent).toContain('Anthropic'); expect(document.body.textContent).not.toContain('known-model');
+    await act(async () => { (Array.from(document.body.querySelectorAll('button')).find(b => b.textContent?.includes('Anthropic')) as HTMLButtonElement).click(); });
+    expect(getProviderModels).toHaveBeenCalledWith('anthropic'); expect(document.body.textContent).toContain('fetched-model');
+    await act(async () => { (Array.from(document.body.querySelectorAll('button')).find(b => b.textContent?.includes('fetched-model')) as HTMLButtonElement).click(); });
     expect(onChange).toHaveBeenCalledWith({ provider: 'anthropic', model: 'fetched-model' });
   });
 
@@ -38,10 +38,10 @@ describe('ProviderModelPicker', () => {
     const onUseSession = vi.fn(); getProviderModels.mockRejectedValueOnce(new Error('offline'));
     await act(async () => { root.render(<ProviderModelPicker value={{ provider: null, model: null }} onChange={vi.fn()} onUseSession={onUseSession} />); });
     await act(async () => { (host.querySelector('button[aria-haspopup]') as HTMLButtonElement).click(); });
-    await act(async () => { (Array.from(host.querySelectorAll('button')).find(b => b.textContent?.includes('Anthropic')) as HTMLButtonElement).click(); });
-    expect(host.textContent).toContain('known-model');
-    expect(host.textContent).toContain('Live models unavailable');
-    await act(async () => { (Array.from(host.querySelectorAll('button')).find(b => b.textContent?.includes('Use session model')) as HTMLButtonElement).click(); });
+    await act(async () => { (Array.from(document.body.querySelectorAll('button')).find(b => b.textContent?.includes('Anthropic')) as HTMLButtonElement).click(); });
+    expect(document.body.textContent).toContain('known-model');
+    expect(document.body.textContent).toContain('Live models unavailable');
+    await act(async () => { (Array.from(document.body.querySelectorAll('button')).find(b => b.textContent?.includes('Use session model')) as HTMLButtonElement).click(); });
     expect(onUseSession).toHaveBeenCalled();
   });
 
@@ -57,10 +57,10 @@ describe('ProviderModelPicker', () => {
     // A sole configured provider opens expanded — there is nothing else the
     // menu could be about, so making you click it first is pure friction.
     await act(async () => { (host.querySelector('button[aria-haspopup]') as HTMLButtonElement).click(); });
-    expect(host.textContent).toContain('claude-haiku-4-5-20251001');
+    expect(document.body.textContent).toContain('claude-haiku-4-5-20251001');
     // And it reads as a name, not a serial number.
-    expect(host.textContent).toContain('Claude Haiku 4.5');
-    const row = Array.from(host.querySelectorAll('button')).find(b => b.textContent?.includes('claude-haiku-4-5-20251001')) as HTMLButtonElement;
+    expect(document.body.textContent).toContain('Claude Haiku 4.5');
+    const row = Array.from(document.body.querySelectorAll('button')).find(b => b.textContent?.includes('claude-haiku-4-5-20251001')) as HTMLButtonElement;
     await act(async () => { row.click(); });
     expect(onChange).toHaveBeenCalledWith({ provider: 'anthropic', model: 'claude-haiku-4-5-20251001' });
   });
@@ -69,6 +69,6 @@ describe('ProviderModelPicker', () => {
     state.providers = [provider('anthropic', ['claude-sonnet-5']), provider('openai', ['gpt-5'])];
     await act(async () => { root.render(<ProviderModelPicker value={{ provider: 'anthropic', model: 'claude-sonnet-5' }} onChange={vi.fn()} />); });
     await act(async () => { (host.querySelector('button[aria-haspopup]') as HTMLButtonElement).click(); });
-    expect(host.textContent).toContain('claude-sonnet-5');
+    expect(document.body.textContent).toContain('claude-sonnet-5');
   });
 });

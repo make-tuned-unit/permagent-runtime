@@ -103,3 +103,24 @@ describe('searching for a model the way a person types it', () => {
     expect(matchesQuery(haiku, '   ')).toBe(true);
   });
 });
+
+describe('naming models from every vendor, not just Anthropic', () => {
+  it('names an OpenAI model instead of printing its serial number', () => {
+    // This is what Jesse saw in the menu: a column of these, verbatim.
+    expect(describeModel('gpt-5.4-nano-2026-03-17').label).toBe('GPT 5.4 Nano');
+    expect(describeModel('gpt-5.4-nano-2026-03-17').released).toBe('20260317');
+    expect(describeModel('gpt-5-mini').label).toBe('GPT 5 Mini');
+  });
+
+  it('keeps a vendor own casing', () => {
+    expect(describeModel('MiniMax-M2.7').label).toBe('MiniMax M2.7');
+  });
+
+  it('reads a size suffix as a unit', () => {
+    expect(describeModel('qwen3.8-27b').label).toBe('Qwen3.8 27B');
+  });
+
+  it('still leaves an id with no version completely alone', () => {
+    expect(describeModel('some-internal-build').label).toBe('some-internal-build');
+  });
+});

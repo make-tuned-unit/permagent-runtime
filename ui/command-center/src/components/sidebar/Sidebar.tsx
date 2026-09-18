@@ -12,7 +12,6 @@ import { markAllRead, toggleTray, useNotifications, useTrayOpen } from '../../li
 import { resolveIconPath } from '../common/icons';
 import { SidebarTooltip, useSidebarTooltip } from './SidebarTooltip';
 import { MeetingRecorder } from '../voice/MeetingRecorder';
-import { NavStatusBadge, NavStatusLine, useNavAgentStatus } from './NavAgentStatus';
 
 /** The workspace whose layout is a single `dashboard` panel — "Home". Walks
  *  split layouts too, though Home in practice is never split. Identifying it
@@ -227,7 +226,6 @@ export function Sidebar() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   const { target: tooltipTarget, show: showTooltip, hide: hideTooltip } = useSidebarTooltip();
-  const navStatus = useNavAgentStatus();
 
   const isSettingsOpen = activePanel === 'settings';
   const isHistoryOpen = activePanel === 'history';
@@ -329,30 +327,24 @@ export function Sidebar() {
             />
           );
         }
+        // The agent's status used to hang off this row — a second line under
+        // Home when expanded, a loose green dot beside the icon when
+        // collapsed. Jesse asked for it on the Home heading instead, where it
+        // sits beside the name of the thing it is the status of. It lives on
+        // that H1 now (Dashboard's `afterTitle`), so Home is an ordinary row
+        // like every other one.
         return (
-          <div key={ws.id} style={{ position: 'relative' }}>
-            <SidebarRow
-              icon={iconPath}
-              label={ws.name}
-              active={isActive}
-              open={open}
-              onClick={() => goToWorkspace(ws.id)}
-              shortcut={shortcut}
-              onHover={showTooltip}
-              onLeave={hideTooltip}
-            />
-            {open ? (
-              <NavStatusLine name={navStatus.name} state={navStatus.state} word={navStatus.word} />
-            ) : (
-              <NavStatusBadge
-                name={navStatus.name}
-                state={navStatus.state}
-                word={navStatus.word}
-                onHover={showTooltip}
-                onLeave={hideTooltip}
-              />
-            )}
-          </div>
+          <SidebarRow
+            key={ws.id}
+            icon={iconPath}
+            label={ws.name}
+            active={isActive}
+            open={open}
+            onClick={() => goToWorkspace(ws.id)}
+            shortcut={shortcut}
+            onHover={showTooltip}
+            onLeave={hideTooltip}
+          />
         );
       })}
 

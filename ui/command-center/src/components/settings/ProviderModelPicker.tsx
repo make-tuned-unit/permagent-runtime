@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { FiCheck, FiChevronDown, FiLoader, FiSearch } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter, type ProviderInfo } from '../../lib/store';
 import { font, radius, space, type as typeScale } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { useGlass } from '../common/Glass';
 import { catalogue, describeModel, matchesQuery, mergeModelLists, type ModelEntry } from './modelCatalog';
 
 export type ProviderModelValue = { provider: string | null; model: string | null };
@@ -31,6 +33,7 @@ type Props = {
  */
 export function ProviderModelPicker({ value, onChange, onUseSession, sessionActive, compact, 'aria-label': ariaLabel }: Props) {
   const { colors } = useTheme();
+  const glass = useGlass('glass');
   const providers = useCommandCenter(s => s.providers);
   const loadProviders = useCommandCenter(s => s.loadProviders);
   const [open, setOpen] = useState(false);
@@ -40,6 +43,44 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
   const [loading, setLoading] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Where to put the menu, in viewport coordinates.
+  //
+  // It used to be `position: absolute` inside the trigger's own box, which
+  // works only when no ancestor clips or re-parents it. In the Build tab the
+  // trigger sits in the terminal's glass tab strip — a rounded, backdrop
+  // filtered bar — and the menu simply never appeared: the button toggled, and
+  // the panel was painted somewhere you could not see. Jesse: "The select
+  // provider and model dropdown doesnt open in the Build tab."
+  //
+  // A portal to `document.body` with fixed coordinates cannot be clipped by
+  // anything, so the same menu behaves identically in the chat header, the
+  // Settings rows and a terminal toolbar.
+  const [anchor, setAnchor] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  const placePanel = useCallback(() => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const width = Math.max(r.width, 300);
+    // Keep it on screen: prefer left-aligned with the trigger, but never let
+    // it hang off the right edge of a narrow pane.
+    const left = Math.min(Math.max(8, r.left), window.innerWidth - width - 8);
+    setAnchor({ top: r.bottom + 6, left, width });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    placePanel();
+    window.addEventListener('resize', placePanel);
+    // `true` so a scroll in ANY ancestor repositions it, not just the window.
+    window.addEventListener('scroll', placePanel, true);
+    return () => {
+      window.removeEventListener('resize', placePanel);
+      window.removeEventListener('scroll', placePanel, true);
+    };
+  }, [open, placePanel]);
 
   useEffect(() => { if (providers.length === 0) void loadProviders(); }, [providers.length, loadProviders]);
   const configured = useMemo(() => providers.filter(p => p.isConfigured), [providers]);
@@ -83,7 +124,10 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      // The panel is portalled, so it is NOT inside rootRef any more.
+      if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
     document.addEventListener('pointerdown', onPointerDown);
@@ -130,6 +174,7 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
 
   return <div ref={rootRef} className="relative" data-testid="provider-model-picker">
     <button
+      ref={triggerRef}
       type="button"
       aria-haspopup="dialog"
       aria-expanded={open}
@@ -158,18 +203,42 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
       <FiChevronDown size={13} className={open ? 'rotate-180' : ''} style={{ color: colors.textDim, transition: 'transform 160ms' }} />
     </button>
 
-    {open && <div
+    {open && anchor && createPortal(<div
+      ref={panelRef}
       role="dialog"
       aria-label="Choose provider and model"
-      className="absolute left-0 top-full mt-1.5 z-50 w-full min-w-[300px] overflow-hidden"
+      className="overflow-hidden"
+      // A popover is exactly what the glass material is for — the token doc
+      // lists "popovers, menu chrome" as the default `glass` surface — and
+      // this menu was painting a flat opaque panel instead. Reduce
+      // Transparency is handled inside `useGlass`.
       style={{
-        backgroundColor: colors.surface,
+        ...glass,
+        position: 'fixed',
+        top: anchor.top,
+        left: anchor.left,
+        width: anchor.width,
+        zIndex: 1000,
         border: `1px solid ${colors.border}`,
         borderRadius: radius.lg,
-        boxShadow: colors.cardShadow,
       }}
     >
-      <div className="flex items-center gap-2 px-3" style={{ borderBottom: `1px solid ${colors.border}` }}>
+      {/* The search field is INSET, and that is a fix rather than a flourish.
+          The app's focus ring is `outline: 2px` at `outline-offset: 2px`. On a
+          field that ran the full width of the panel the ring had nowhere to
+          go: it drew over the panel's own rounded edge and out past it, which
+          is the cyan line Jesse photographed cutting across the menu. Given a
+          margin and its own radius, the same ring lands inside the panel. */}
+      <div
+        className="flex items-center gap-2"
+        style={{
+          margin: space.md,
+          padding: `0 ${space.lg}px`,
+          borderRadius: radius.md,
+          background: colors.inputBg,
+          border: `1px solid ${colors.border}`,
+        }}
+      >
         <FiSearch size={12} style={{ color: colors.textDim, flexShrink: 0 }} />
         <input
           autoFocus
@@ -178,8 +247,15 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
           onChange={e => setQuery(e.target.value)}
           placeholder="Search models…"
           aria-label="Search providers or models"
-          className="w-full py-2.5 outline-none bg-transparent"
-          style={{ ...typeScale.caption, fontFamily: font.body, color: colors.text }}
+          className="w-full bg-transparent"
+          style={{
+            ...typeScale.caption,
+            fontFamily: font.body,
+            color: colors.text,
+            padding: `${space.md}px 0`,
+            outline: 'none',
+            border: 'none',
+          }}
         />
       </div>
 
@@ -286,6 +362,6 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
           style={{ ...typeScale.caption, fontFamily: font.body, color: colors.textMuted }}
         >No configured providers or matching models</div>}
       </div>
-    </div>}
+    </div>, document.body)}
   </div>;
 }
