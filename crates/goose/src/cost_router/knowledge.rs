@@ -284,6 +284,30 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         context_window: 128_000,
         is_local: false,
     },
+    ModelKnowledge {
+        provider: "custom_deepseek",
+        model: "deepseek-flash",
+        display_name: "DeepSeek Flash",
+        family: "deepseek",
+        // The third spelling the live API answers to for the SAME billed model
+        // as `deepseek-chat` / `deepseek-v4-flash`, and the one it actually
+        // returned on 2026-09-18. It had no row, so every reply on it fell to
+        // the no-published-price path and was costed at the provider's most
+        // expensive known rate: a three-word spoken reply was estimated at
+        // $11.11, which would have tripped the spend cap within a handful of
+        // turns. Same peak rate as the two rows above, from the same source —
+        // this adds a spelling, not a price.
+        //
+        // The date-suffix alias fallback cannot reach it: `deepseek-flash` and
+        // `deepseek-v4-flash` differ by a version segment, not a date.
+        edit_format_reliability: 0.905,
+        orchestration_strength: 0.62,
+        input_usd_per_mtok: 0.44,
+        output_usd_per_mtok: 1.32,
+        cache_support: true,
+        context_window: 128_000,
+        is_local: false,
+    },
     // ── xAI — approximate ────────────────────────────────────────────────────
     ModelKnowledge {
         provider: "xai",
@@ -711,6 +735,22 @@ mod tests {
         assert!(lookup("ANTHROPIC", "Claude-Sonnet-5").is_some());
         // Unknown → None (reported, never silently priced).
         assert!(lookup("acme", "no-such-model").is_none());
+    }
+
+    #[test]
+    fn every_deepseek_spelling_has_a_price_so_none_is_costed_at_worst_case() {
+        // 2026-09-18: `deepseek-flash` had no row, so a three-word spoken reply
+        // was costed at the provider's most expensive known rate — an
+        // estimate of $11.11 that would have tripped the spend cap in a few
+        // turns. All three spellings bill as the same model, so all three must
+        // resolve, and to the same published rate.
+        for spelling in ["deepseek-chat", "deepseek-v4-flash", "deepseek-flash"] {
+            let row = lookup("custom_deepseek", spelling)
+                .unwrap_or_else(|| panic!("{spelling} must resolve or it is costed at worst case"));
+            assert_eq!(row.input_usd_per_mtok, 0.44, "{spelling} input rate");
+            assert_eq!(row.output_usd_per_mtok, 1.32, "{spelling} output rate");
+            assert!(!row.is_local, "{spelling} is a hosted API, not local");
+        }
     }
 
     #[test]
