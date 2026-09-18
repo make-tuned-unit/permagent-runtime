@@ -22,7 +22,6 @@
  *    is never "Henry" — `henry` is a load-bearing id elsewhere, not a display
  *    string.
  */
-import type { CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import type { DashboardData } from '../dashboard/useDashboard';
 import { useOrchestratorName } from '../world/shared/useOrchestratorName';

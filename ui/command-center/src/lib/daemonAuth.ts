@@ -43,6 +43,30 @@ export function setDaemonTokenError(message: string | null): void {
 /** Test seam: forget the published state. */
 export function resetDaemonTokenError(): void {
   currentError = null;
+  lastAuthOkAt = 0;
+}
+
+/**
+ * When an authenticated request last succeeded.
+ *
+ * A 401 means two different things and only one of them is "your agent is
+ * dead". If the credential is bad, EVERY authenticated request fails. If one
+ * route refuses it — an older daemon answered 401 on /api/agent/identity
+ * alone while /api/projects, /api/runs and /api/dashboard kept returning 200 —
+ * the agent is fine and the chat banner "The agent cannot answer" is false.
+ * Before this, that pattern flashed the banner on at every identity poll and
+ * cleared it at the next 2xx, over and over.
+ */
+let lastAuthOkAt = 0;
+
+/** Record that an authenticated request just succeeded. */
+export function noteAuthenticatedSuccess(now: number = Date.now()): void {
+  lastAuthOkAt = now;
+}
+
+/** True when an authenticated request succeeded within `windowMs`. */
+export function recentlyAuthenticated(windowMs: number, now: number = Date.now()): boolean {
+  return lastAuthOkAt > 0 && now - lastAuthOkAt <= windowMs;
 }
 
 export const BROWSER_UNPAIRED =

@@ -6,7 +6,11 @@
 import type { ProjectDocument, ProjectNote, ProjectMemory } from '../components/projects/types';
 import type { ActivityEventName } from './emitActivity';
 import { getStreamToken } from './streamToken';
-import { BROWSER_UNPAIRED, setDaemonTokenError } from './daemonAuth';
+import { BROWSER_UNPAIRED, noteAuthenticatedSuccess, recentlyAuthenticated, setDaemonTokenError } from './daemonAuth';
+
+/** How recently an authenticated success must have happened for a lone 401 to
+ *  count as one route refusing, rather than the credential being dead. */
+const AUTH_HEALTHY_WINDOW_MS = 30_000;
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const API_BASE_URL = (
@@ -536,7 +540,10 @@ async function apiFetchOnce<T>(
   // honest: an older daemon answers 401 for routes it simply does not have
   // (see ForumView on /api/agent/identity), and one such route must not leave a
   // permanent "you are not connected" sign up while everything else works.
-  if (response.ok && _daemonToken) setDaemonTokenError(null);
+  if (response.ok && _daemonToken) {
+    noteAuthenticatedSuccess();
+    setDaemonTokenError(null);
+  }
 
   // A 401 is the daemon saying "I don't know you". Left unhandled it is exactly
   // the failure this module used to hide: the UI keeps rendering while nothing
@@ -550,12 +557,19 @@ async function apiFetchOnce<T>(
       const refreshed = await loadDaemonToken();
       if (refreshed) return apiFetchOnce<T>(endpoint, options, false);
     }
-    setDaemonTokenError(
-      isTauri
-        ? `The daemon rejected this app's credentials (401 on ${endpoint}). ` +
-          'The agent cannot answer until this is fixed.'
-        : BROWSER_UNPAIRED,
-    );
+    // A credential that worked seconds ago on another route is not a dead
+    // credential: this route is refusing it on its own account. Say so in the
+    // log, but do not tell the user their agent cannot answer.
+    if (isTauri && recentlyAuthenticated(AUTH_HEALTHY_WINDOW_MS)) {
+      console.warn(`[api] ${endpoint} returned 401 while other authenticated requests succeed — route-specific, not a credential failure`);
+    } else {
+      setDaemonTokenError(
+        isTauri
+          ? `The daemon rejected this app's credentials (401 on ${endpoint}). ` +
+            'The agent cannot answer until this is fixed.'
+          : BROWSER_UNPAIRED,
+      );
+    }
   }
 
   if (!response.ok) {

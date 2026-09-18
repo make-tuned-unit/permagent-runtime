@@ -114,3 +114,15 @@ describe('eventsWsUrl', () => {
     await expect(api.eventsWsUrl()).resolves.toContain('/events?token=tok-ws');
   });
 });
+
+describe('a lone 401 beside working routes is not a dead credential', () => {
+  it('knows whether an authenticated request succeeded recently', async () => {
+    const { noteAuthenticatedSuccess, recentlyAuthenticated, resetDaemonTokenError } = await import('./daemonAuth');
+    resetDaemonTokenError();
+    expect(recentlyAuthenticated(30_000, 1_000_000)).toBe(false);
+    noteAuthenticatedSuccess(1_000_000);
+    expect(recentlyAuthenticated(30_000, 1_020_000)).toBe(true);
+    // Older than the window: a 401 now could be the credential dying.
+    expect(recentlyAuthenticated(30_000, 1_031_000)).toBe(false);
+  });
+});
