@@ -1,7 +1,7 @@
 import { create } from 'zustand';
-import { api, apiFetch, extractText, extractThinking, fileToBase64, hasToolActivity, readerIngest } from './api';
+import { api, apiFetch, extractSystemNotice, extractText, extractThinking, fileToBase64, hasToolActivity, readerIngest } from './api';
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
-import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState, HarnessRunView } from './api';
+import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState, HarnessRunView, SystemNotice } from './api';
 import { costFromFrame, parseBudgetProjection, type CodingSpend } from './costMeter';
 import { maybeSpeakReply, replyDedupeKey } from './speakReplies';
 import { readLiveConversation } from './voiceHandoff';
@@ -63,6 +63,8 @@ export interface ChatMessage {
   images?: ChatMessageImage[];
   /** The model's reasoning, if it thought before answering (disclosure UI). */
   thinking?: string;
+  /** Something the daemon said about itself — out of credit, provider down. */
+  notice?: SystemNotice;
   context_attached?: {
     probed_memories: ProbedMemoryRef[];
     recalled_memories: RecalledMemoryRef[];
@@ -765,6 +767,7 @@ function daemonMsgToChat(
     tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
     images: images.length > 0 ? images : undefined,
     thinking: thinking || undefined,
+    notice: extractSystemNotice(msg) ?? undefined,
   };
 }
 
@@ -1925,6 +1928,36 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           const delta = extractText(msg);
           const thinkingDelta = extractThinking(msg);
           const streamMsgId = get()._streamingMessageId;
+          // A notice-only frame carries no text and no thinking, so the append
+          // below never ran and the daemon's explanation ("out of credit")
+          // vanished — the turn just ended in silence. Surface it on the
+          // message being streamed, or as a standalone notice when the frame
+          // arrives with no placeholder to hang it on (reconnect mid-turn).
+          const notice = extractSystemNotice(msg);
+          if (notice) {
+            set(s => {
+              const onStream = streamMsgId && s.chatMessages.some(m => m.id === streamMsgId);
+              if (onStream) {
+                return {
+                  chatMessages: s.chatMessages.map(m =>
+                    m.id === streamMsgId ? { ...m, notice } : m),
+                };
+              }
+              // Replay sends the whole session again; a notice already shown
+              // must not stack up one copy per reconnect.
+              const last = s.chatMessages[s.chatMessages.length - 1];
+              if (last?.notice?.text === notice.text) return {};
+              return {
+                chatMessages: [...s.chatMessages, {
+                  id: `msg-${Date.now()}-notice`,
+                  role: 'system' as const,
+                  content: '',
+                  timestamp: new Date().toISOString(),
+                  notice,
+                }],
+              };
+            });
+          }
           if (streamMsgId && (delta || thinkingDelta)) {
             const pending = get()._pendingContext;
             const textBrk = get()._textBreakPending && !!delta;

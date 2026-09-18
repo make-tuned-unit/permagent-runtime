@@ -23,7 +23,11 @@ export function isRenderableChatMessage(msg: ChatMessage): boolean {
     || !!msg.thinking?.trim()
     || (msg.images?.length ?? 0) > 0
     || (msg.tool_calls?.length ?? 0) > 0
-    || !!msg.context_attached;
+    || !!msg.context_attached
+    // A turn that produced only a notice ("out of credit") has no text and no
+    // tools, and was dropped here — which is how a daemon that explained
+    // itself on every turn still read as an agent saying nothing at all.
+    || !!msg.notice;
 }
 
 /** Slack, in pixels, that still counts as "reading the live end" — someone a

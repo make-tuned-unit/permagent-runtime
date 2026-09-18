@@ -40,6 +40,27 @@ export function MessageRenderer({ message }: MessageRendererProps) {
         <ReasoningBlock thinking={message.thinking} hasAnswer={!!message.content} />
       )}
 
+      {/* The daemon speaking about itself, not the model answering. It is
+          styled apart from the reply on purpose: "you are out of credit" is
+          not something the agent said, and dressing it as prose would put
+          words in the agent's mouth. */}
+      {message.notice && (
+        <div
+          role="status"
+          data-notice={message.notice.kind}
+          className="text-[13px] leading-relaxed rounded-lg px-3 py-2 border"
+          style={{
+            fontFamily: font.body,
+            color: colors.text,
+            borderColor: message.notice.kind === 'creditsExhausted' ? colors.warning : colors.border,
+            background: colors.surfaceHi,
+            marginTop: message.content ? 8 : 0,
+          }}
+        >
+          {message.notice.text}
+        </div>
+      )}
+
       {message.content && (
         isUser ? (
           <div

@@ -685,6 +685,34 @@ export function extractText(msg: DaemonMessage): string {
 }
 
 /**
+ * A message the daemon wrote about itself rather than an answer from the model.
+ *
+ * These ride as `systemNotification` blocks on an assistant frame and carry no
+ * text block, so `extractText` returned "" and the whole frame rendered as
+ * nothing. That is the silence Jesse hit: both cloud providers were out of
+ * credit, the daemon said so on every turn, and the UI threw the explanation
+ * away — the agent looked broken when it was actually reporting a billing
+ * problem. A notice the user cannot see is the same as no notice at all.
+ *
+ * `thinkingMessage` is deliberately excluded: it is transient status the
+ * streaming indicator already covers, and pinning it into the transcript would
+ * leave "Thinking…" sitting under a finished answer forever.
+ */
+export type SystemNotice = { kind: 'inline' | 'creditsExhausted'; text: string };
+
+export function extractSystemNotice(msg: DaemonMessage): SystemNotice | null {
+  for (const c of msg.content) {
+    if (c.type !== 'systemNotification') continue;
+    const block = c as { notificationType?: unknown; msg?: unknown };
+    const text = typeof block.msg === 'string' ? block.msg.trim() : '';
+    if (!text) continue;
+    if (block.notificationType === 'creditsExhausted') return { kind: 'creditsExhausted', text };
+    if (block.notificationType === 'inlineMessage') return { kind: 'inline', text };
+  }
+  return null;
+}
+
+/**
  * Extract the model's reasoning ("thinking") content. Extended-thinking models
  * stream `{ type: 'thinking', thinking: '…' }` blocks before the answer; the
  * daemon passes them through (message.rs MessageContent::Thinking). This is what
