@@ -574,9 +574,13 @@ mod tests {
 
     #[test]
     fn spend_gate_parks_instead_of_escalating() {
-        // Session spend at the gate ceiling ($25 default) → the verdict needs a
-        // gate → escalation parks rather than adding more spend.
-        let at_gate = budget_verdict(0.0, 25.0, &BudgetConfig::default());
+        // Session spend exactly AT the gate ceiling → the verdict needs a gate
+        // → escalation parks rather than adding more spend. Read off the config
+        // rather than written as a literal: this test is about what the gate
+        // band does, not about what the ceiling currently is, and it broke once
+        // already when the defaults were lowered.
+        let cfg = BudgetConfig::default();
+        let at_gate = budget_verdict(0.0, cfg.session.gate, &cfg);
         assert!(at_gate.needs_gate());
         let out = decide_escalation(
             Some(Tier::LocalFree),
@@ -606,8 +610,10 @@ mod tests {
 
     #[test]
     fn soft_band_still_escalates_only_gate_and_hard_park() {
-        // A SOFT alert (under the gate) is non-blocking — escalation proceeds.
-        let soft = budget_verdict(0.0, 10.0, &BudgetConfig::default());
+        // A SOFT alert (at the soft ceiling, under the gate) is non-blocking —
+        // escalation proceeds. Off the config, for the reason above.
+        let cfg = BudgetConfig::default();
+        let soft = budget_verdict(0.0, cfg.session.soft, &cfg);
         assert!(!soft.needs_gate() && !soft.must_stop());
         let out = decide_escalation(
             Some(Tier::LocalFree),

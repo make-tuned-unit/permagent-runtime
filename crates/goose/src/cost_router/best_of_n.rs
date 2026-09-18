@@ -403,9 +403,10 @@ mod tests {
         budget_verdict(0.0, 0.0, &BudgetConfig::default())
     }
 
-    /// A verdict sitting exactly at the session spend gate ($25 default).
+    /// A verdict sitting exactly at the session spend gate, whatever it is.
     fn budget_at_gate() -> BudgetVerdict {
-        let v = budget_verdict(0.0, 25.0, &BudgetConfig::default());
+        let cfg = BudgetConfig::default();
+        let v = budget_verdict(0.0, cfg.session.gate, &cfg);
         assert!(v.needs_gate(), "test fixture must be at the gate");
         v
     }
