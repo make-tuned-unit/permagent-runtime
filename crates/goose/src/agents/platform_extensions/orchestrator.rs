@@ -17375,7 +17375,9 @@ async fn sibling_owned_paths(
             continue;
         };
         for path in paths {
-            if !super::write_scope::out_of_scope_paths(&sibling_scope, &[path.clone()]).is_empty() {
+            if !super::write_scope::out_of_scope_paths(&sibling_scope, std::slice::from_ref(path))
+                .is_empty()
+            {
                 continue;
             }
             owned.insert(path.clone());
