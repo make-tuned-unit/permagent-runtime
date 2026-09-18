@@ -143,16 +143,51 @@ for j in range(RES):
         pixels[at + 2] = max(0.0, min(1.0, (bed[j][i] - lo.z) / max(1e-6, hi.z - lo.z)))
         pixels[at + 3] = 1.0
 
+water_texels = sum(1 for j in range(RES) for i in range(RES) if surface[j][i] is not None)
+
+# Writing the buffer, and then PROVING it was written.
+#
+# The first bake shipped a texture that was black with alpha 1 in every texel —
+# which is exactly the buffer `images.new` generates before anything is put in
+# it. The rays had worked (the manifest counted 5.4% water from the same data),
+# so nothing looked wrong at the console, and the lagoon rendered as a flat
+# pale sheet in the app: depth 0 everywhere means no absorption, and mask 1
+# everywhere means the shore foam term ran across the entire world.
+#
+# `foreach_set` + `update()` is the buffer write that actually reaches the
+# saved file; `alpha_mode` stops the writer premultiplying a channel that is a
+# number, not opacity. The read-back below is the part that matters most: a
+# bake that silently produces a blank texture must fail the build, not ship.
 image = bpy.data.images.new('forum_water_info', width=RES, height=RES, alpha=True, float_buffer=False)
-image.pixels = pixels
+image.alpha_mode = 'CHANNEL_PACKED'
+image.pixels.foreach_set(pixels)
+image.update()
 image.file_format = 'PNG'
 # Data, not colour: the shader reads these as numbers, so no sRGB transform.
 image.colorspace_settings.name = 'Non-Color'
 WEB.mkdir(parents=True, exist_ok=True)
-image.filepath_raw = str(WEB / 'water-info.png')
+target = WEB / 'water-info.png'
+image.filepath_raw = str(target)
 image.save()
 
-water_texels = sum(1 for j in range(RES) for i in range(RES) if surface[j][i] is not None)
+# Read the file back as the browser will and check it against what we meant to
+# write. Comparing the saved mask to the ray count catches the blank-buffer
+# failure, a premultiplied alpha channel, and a flipped or half-written image.
+verify = bpy.data.images.load(str(target), check_existing=False)
+readback = [0.0] * (RES * RES * 4)
+verify.pixels.foreach_get(readback)
+saved_water = sum(1 for k in range(RES * RES) if readback[k * 4 + 3] > 0.5)
+saved_depth = sum(1 for k in range(RES * RES) if readback[k * 4] > 0.004)
+bpy.data.images.remove(verify)
+if water_texels and abs(saved_water - water_texels) > max(64, water_texels * 0.02):
+    raise SystemExit(
+        f'water-info.png mask does not match the bake: {saved_water} texels saved, '
+        f'{water_texels} traced. The buffer did not reach the file.')
+if water_texels and saved_depth == 0:
+    raise SystemExit(
+        'water-info.png carries no depth at all. Every texel would render as '
+        'zero-depth water: no absorption, and foam across the whole lagoon.')
+print(f'verified: {saved_water} masked texels, {saved_depth} with depth')
 manifest = {
     'schema': 'permagent.forum.water.v1',
     'resolution': RES,

@@ -41,12 +41,53 @@
 // calls at 93 fps with this mounted against 203 at 91 without it, and no
 // visible change to the daylight scene beyond the intended emissive glow.
 
-import { Bloom, EffectComposer } from '@react-three/postprocessing';
+import { Bloom, BrightnessContrast, EffectComposer, HueSaturation } from '@react-three/postprocessing';
+
+/**
+ * The grade that gives AgX its colour back.
+ *
+ * AgX is the right view transform for this scene — it is what Blender renders
+ * the source images with, and it holds a sunrise sky together instead of
+ * clipping it to white paper. It also desaturates hard by design, which is why
+ * Blender ships "AgX — Punchy" and why nobody uses base AgX as a final look.
+ * three.js has no Punchy, so the scene arrived washed out.
+ *
+ * Measured against `docs/design/solar-forum/north-star.png` with
+ * `scratchpad/imgstats.py`, over the world area of the frame only (the Agent
+ * Desk is flat dark UI and drags every figure toward itself):
+ *
+ *                       luma    contrast  saturation
+ *   north-star           0.340     0.237       0.482
+ *   forum, before        0.498     0.202       0.191
+ *   forum, after         0.441     0.221       0.372
+ *
+ * Saturation was the gap: two and a half times under the thing it is meant to
+ * look like, while luma ran bright and flat. These two effects are the Punchy
+ * step, applied after bloom so the glow blooms scene colour and the grade lands
+ * on the finished frame, which is the order a film chain uses.
+ *
+ * It stops short of the reference on purpose. north-star is a NIGHT render, and
+ * night is saturated in a way a sunrise is not — deep blues and neon against
+ * black, where this scene is pale stone under a warm low sun. Grading a daylit
+ * campus all the way to 0.48 turns the planting to poster paint. 0.372 is where
+ * the greens read as leaves and the lanterns read as fire.
+ *
+ * Both are display-referred and cheap — two full-screen multiplies folded into
+ * the pass the composer already runs — and neither reintroduces a multisampled
+ * target, so the ANGLE/Metal black rectangle documented above stays fixed.
+ * `scripts/probe-black-rect.mjs` is the check for that and must be re-run after
+ * any change to this chain.
+ */
+const SATURATION = 0.4;
+const CONTRAST = 0.075;
+const BRIGHTNESS = -0.035;
 
 export function ForumPostProcessing() {
   return (
     <EffectComposer multisampling={0}>
       <Bloom mipmapBlur intensity={0.55} radius={0.6} levels={5} luminanceThreshold={0.72} luminanceSmoothing={0.3} />
+      <HueSaturation saturation={SATURATION} />
+      <BrightnessContrast brightness={BRIGHTNESS} contrast={CONTRAST} />
     </EffectComposer>
   );
 }
