@@ -62,3 +62,29 @@ export function attemptWalk(feet: Vector3, dx: number, dz: number, surfaces: Mes
   feet.set(feet.x+dx,ground.point.y,feet.z+dz);
   return true;
 }
+
+/**
+ * Where the water surface is at a world position, or `null` if that spot is
+ * not water.
+ *
+ * The ships needed this because guessing was wrong: the first version sailed
+ * them along ellipses sized from a constant, and a good part of the plaza is
+ * inside that radius, so boats crossed the ground. The world already knows
+ * where its water is — the GLB names that material `Water`, which is the same
+ * fact `attemptWalk` uses to refuse to walk on it — so the honest fix is to ask
+ * it rather than to encode a radius.
+ *
+ * Rays start well above the island and take the FIRST hit, so a boat cannot be
+ * placed on water that runs under a bridge or a terrace.
+ */
+export function waterSurfaceAt(x: number, z: number, surfaces: Mesh[] = colliders): number | null {
+  if (!surfaces.length) return null;
+  origin.set(x, 400, z);
+  ray.set(origin, down);
+  ray.far = 800;
+  const hit = ray.intersectObjects(surfaces, false)[0];
+  if (!hit) return null;
+  const mesh = hit.object as Mesh;
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  return materials.some(m => m.name === 'Water') ? hit.point.y : null;
+}

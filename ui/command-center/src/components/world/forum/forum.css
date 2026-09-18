@@ -473,3 +473,24 @@
   color: var(--forum-accent);
   cursor: pointer;
 }
+
+/* ── Putting the Agent Desk away ──────────────────────────────────────
+   The world is the point; the desk is a panel beside it. Closing it gives
+   the canvas the whole window rather than shrinking the desk to a sliver,
+   so the grid drops to a single column and the aside is taken out of
+   layout entirely — `display:none` rather than zero width, so nothing in
+   it can keep focus or be read by a screen reader while it is away. */
+.forum-shell[data-desk='closed'] { grid-template-columns: minmax(0, 1fr); }
+.forum-shell[data-desk='closed'] .forum-panel { display: none; }
+
+/* Top right, clear of the sky bodies and of the Walk button below it. The
+   toggle stays visible while the rest of the HUD rests: it is how you get
+   the desk back, and a control you cannot find is worse than a busy frame. */
+.forum-desk-toggle {
+  position: absolute;
+  top: 28px;
+  right: 28px;
+  z-index: 3;
+}
+.forum-world[data-hud='resting'] .forum-desk-toggle { opacity: 0.5; }
+.forum-desk-toggle { transition: opacity 620ms ease; }

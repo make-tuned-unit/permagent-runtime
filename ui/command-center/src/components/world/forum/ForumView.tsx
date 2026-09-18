@@ -28,7 +28,33 @@ import { FORUM_ASSET_REVISION } from './assetRevision';
 import { registerForumCollision } from './walkCollision';
 import { MeshAgora } from './MeshAgora';
 import { ForumPostProcessing } from './ForumPostProcessing';
+import { useCommandCenter } from '../../../lib/store';
 import { ForumPassport } from './ForumPassport';
+
+/**
+ * Depth range, and why these two numbers matter more than they look.
+ *
+ * The camera used to run from the default near of 0.1 out to a far of 10000: a
+ * 100,000:1 ratio across a 24-bit depth buffer. Depth precision is spent
+ * logarithmically near the camera, so at that ratio two nearly-coplanar
+ * surfaces — a path laid on a terrace, an inlay in the plaza — land on the same
+ * depth value and the renderer picks a winner per frame per pixel. That is the
+ * flashing on the ground: not a material bug, not shadow acne, but z-fighting.
+ *
+ * The far plane only has to contain the sky: the dome is radius 4800 and the
+ * celestial bodies sit at 1080, so 6000 keeps every one of them and throws away
+ * 4000 units of empty space. The near plane is bounded by walking: the walker's
+ * body radius is 0.28m, so anything closer than that to the eye is already
+ * inside a wall, and 0.25 stays just under it.
+ *
+ * Together that is 24,000:1 instead of 100,000:1 — four times the precision,
+ * for nothing.
+ */
+const FORUM_CAMERA_NEAR = 0.25;
+const FORUM_CAMERA_FAR = 6000;
+
+/** Remembers whether the Agent Desk is put away. */
+const FORUM_DESK_KEY = 'permagent.forum.desk';
 import { ForumEnvironment } from './ForumEnvironment';
 import { ForumShips } from './ForumShips';
 import { advanceForumSurfaceClock, releaseForumSurfaceClock } from './ForumSurfaceMaterials';
@@ -108,7 +134,16 @@ function ForumWater() {
 export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgent }: { visible?: boolean; onNavigate?: (tool: ToolType) => void; onOpenGoal?: (projectId:string,id:string)=>void; onManageAgent?: (id:string)=>void }) {
   const { colors } = useTheme();
   const appearance = useSystemAppearance();
-  const configuredName = useOrchestratorName();
+  // The agent wears the name its user gave it, everywhere. `useOrchestratorName`
+  // reads that from the daemon; the store's `agentName` is the same name kept
+  // live by `refreshIdentity`, and it is the one that survives when the identity
+  // request itself fails — which is exactly when the desk was falling back to
+  // the literal words "Your agent" and to the roster's placeholder "Agent".
+  // 'Agent' is the store's own unset default, so it is treated as "not named
+  // yet" rather than as a name.
+  const storeAgentName = useCommandCenter((s) => s.agentName);
+  const namedByUser = storeAgentName && storeAgentName !== 'Agent' ? storeAgentName : null;
+  const configuredName = useOrchestratorName() ?? namedByUser;
   const [pageVisible, setPageVisible] = useState(!document.hidden);
   useEffect(() => { const change = () => setPageVisible(!document.hidden); document.addEventListener('visibilitychange', change); return () => document.removeEventListener('visibilitychange', change); }, []);
   const worldRef = useRef<HTMLElement>(null);
@@ -189,7 +224,30 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   }
   // The HUD rests when you are not using it and returns the moment you are.
   const hud = useHudPresence({ walking, enabled: !agoraOpen });
-  return <main className="forum-shell" style={style} data-appearance={appearance}>
+  // The Agent Desk can be put away, so the world gets the whole window. The
+  // choice is remembered: someone who explores with the desk closed should not
+  // have to close it again on every visit. Walking opens the world up too, but
+  // only as a default for a session that has not expressed a preference —
+  // overriding a deliberate choice is worse than a slightly busy screen.
+  const [deskOpen, setDeskOpen] = useState(() => {
+    try {
+      return localStorage.getItem(FORUM_DESK_KEY) !== 'closed';
+    } catch {
+      return true;
+    }
+  });
+  const toggleDesk = useCallback(() => {
+    setDeskOpen((open) => {
+      const next = !open;
+      try {
+        localStorage.setItem(FORUM_DESK_KEY, next ? 'open' : 'closed');
+      } catch {
+        /* a private window still gets the toggle, just not the memory */
+      }
+      return next;
+    });
+  }, []);
+  return <main className="forum-shell" style={style} data-appearance={appearance} data-desk={deskOpen ? 'open' : 'closed'}>
     <section
       ref={worldRef}
       className="forum-world"
@@ -207,7 +265,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           warnings per load in job 18. Asking for `PCFShadowMap` outright is
           the same shadows the scene has actually been getting, without the
           deprecation path. */}
-      <Canvas frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...FORUM_VISTA.position] as [number,number,number], fov: FORUM_VISTA.fov, far: 10000 }} gl={{ antialias: true }}>
+      <Canvas frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...FORUM_VISTA.position] as [number,number,number], fov: FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true }}>
         {agoraOpen ? <MeshAgora walking={walking} /> : <ForumLighting appearance={appearance} />}
         {/* The forum is hidden rather than unmounted while the Agora is open:
             an invisible group costs no draw calls, and keeping it mounted means
@@ -232,6 +290,18 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       <div className="forum-controls">{agoraOpen ? (walking ? 'Arrow keys walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : walking ? 'Arrow keys walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>
       {agoraOpen && <div className="forum-agora-return"><Button colors={colors} variant="primary" flashSuccess={false} onClick={leaveMesh}>Return to the Forum</Button></div>}
       {meshPrompt && walking && !agoraOpen && <div className="forum-gate-prompt" role="status">E · Enter the MESH</div>}
+      <div className="forum-desk-toggle">
+        <Button
+          colors={colors}
+          variant="ghost"
+          flashSuccess={false}
+          aria-expanded={deskOpen}
+          aria-controls="forum-agent-desk"
+          onClick={toggleDesk}
+        >
+          {deskOpen ? 'Hide the desk' : 'Show the desk'}
+        </Button>
+      </div>
       <div className="forum-play"><Button colors={colors} variant={walking?'ghost':'primary'} flashSuccess={false} onClick={()=>{
         if(walking){setWalking(false);return;}
         setWalking(true);
@@ -245,7 +315,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       <div className="forum-live">{loaded ? `${goals.length} active jobs reported` : 'Job feed unavailable / connecting'}<small>Architecture preview · existing World agent feeds</small></div>
       <div className="forum-passport-slot" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}><ForumPassport /></div>
     </section>
-    <aside className="forum-panel" aria-label="Agent learning and task desk">
+    <aside className="forum-panel" id="forum-agent-desk" aria-label="Agent learning and task desk" aria-hidden={!deskOpen}>
       <div className="eyebrow">AGENT DESK</div><h2 style={typeRamp.title}>Meet your collaborators.</h2>
       <p className="intro">{district.description}</p>
       {onNavigate && district.tool && district.id !== 'commons' && <Button colors={colors} variant="ghost" onClick={()=>onNavigate(district.tool!)} flashSuccess={false}>Open {district.name} ↗</Button>}

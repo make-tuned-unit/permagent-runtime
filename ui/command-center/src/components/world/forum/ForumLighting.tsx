@@ -43,7 +43,7 @@ export function ForumLighting({ appearance }: { appearance: 'day' | 'night' }) {
     <directionalLight position={day?DAY_KEY_POSITION:NIGHT_KEY_POSITION} intensity={light.strength} color={light.key}
       castShadow shadow-mapSize={[2048,2048]} shadow-camera-left={-72} shadow-camera-right={72}
       shadow-camera-top={72} shadow-camera-bottom={-72} shadow-bias={-.0005}
-      shadow-normalBias={day?.03:0} />
+      shadow-normalBias={day ? .03 : .02} />
     <directionalLight position={day?DAY_FILL_POSITION:NIGHT_FILL_POSITION} color={light.fill} intensity={light.fillStrength} />
     {appearance === 'night' && <>
       {([[55,4,0],[-55,4,0],[0,4,55],[0,4,-55]] as [number,number,number][]).map((position,i)=><pointLight key={i} position={position} color={ENV.neonAmber} intensity={40} distance={17} decay={2} />)}

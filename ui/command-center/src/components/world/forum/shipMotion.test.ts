@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LAGOON_RADIUS, SHIP_COUNT, shipCourse, WATERLINE_Y } from './shipMotion';
+import { LAGOON_RADIUS, SHIP_COUNT, WATERLINE_Y, courseIsAfloat, fitCourse, shipCourse } from './shipMotion';
 
 describe('ships sailing the lagoon', () => {
   it('keeps every ship on the water, inside the lagoon', () => {
@@ -54,5 +54,49 @@ describe('ships sailing the lagoon', () => {
 
   it('is deterministic — the same second always gives the same pose', () => {
     expect(shipCourse(83.25, 3)).toEqual(shipCourse(83.25, 3));
+  });
+});
+
+describe('ships only sail where the world says there is water', () => {
+  // The island as the builder reports it: a plaza and terraces out to 62m, a
+  // lagoon from 62m to 118m, open sea beyond. This is the shape that broke the
+  // first version, which sized courses from a single radius and sailed most of
+  // the fleet across the plaza.
+  const realisticWater = (x: number, z: number) => {
+    const r = Math.hypot(x, z);
+    return r > 62 && r < 118;
+  };
+
+  it('fits every ship onto the lagoon', () => {
+    for (let index = 0; index < SHIP_COUNT; index += 1) {
+      const course = fitCourse(index, realisticWater);
+      expect(course, `ship ${index} found no water`).not.toBeNull();
+      expect(courseIsAfloat(course!, realisticWater)).toBe(true);
+    }
+  });
+
+  it('never puts a fitted course over the plaza', () => {
+    for (let index = 0; index < SHIP_COUNT; index += 1) {
+      const course = fitCourse(index, realisticWater)!;
+      for (let seconds = 0; seconds < 600; seconds += 3) {
+        const pose = shipCourse(seconds, index, course);
+        expect(Math.hypot(pose.x, pose.z)).toBeGreaterThan(62);
+      }
+    }
+  });
+
+  it('rejects a course that crosses land, rather than sailing it', () => {
+    // A lagoon with a jetty across it: any loop enclosing the centre must cross
+    // the jetty, so there is no course to fit and the honest answer is none.
+    const jetty = (x: number, z: number) => realisticWater(x, z) && Math.abs(z) > 4;
+    expect(fitCourse(0, jetty)).toBeNull();
+  });
+
+  it('reports no course at all when there is no water', () => {
+    expect(fitCourse(2, () => false)).toBeNull();
+  });
+
+  it('is deterministic, so the fleet is identical on every load', () => {
+    expect(fitCourse(3, realisticWater)).toEqual(fitCourse(3, realisticWater));
   });
 });
