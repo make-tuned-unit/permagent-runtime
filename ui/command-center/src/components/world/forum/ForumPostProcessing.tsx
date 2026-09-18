@@ -9,6 +9,26 @@
 //  - `luminanceThreshold` is high so only genuinely emissive surfaces bloom —
 //    the hologram globe, the lantern cores and strand lights, the gate's
 //    horizonBlue channel and the Agora's event horizon — and lit stone does not.
+//  - `multisampling={0}`, and this is the fix for the black rectangle.
+//
+//    Jobs 19 and 20 recorded a solid block of exact RGB 0,0,0 over the world,
+//    root-caused it to the ANGLE *Metal* backend, and worked around it in the
+//    capture harness by driving the GL backend instead. The product runs on
+//    Metal, so users kept seeing it. `scripts/probe-black-rect.mjs` reproduces
+//    it on purpose and counts the pixels; on this machine, on Metal:
+//
+//      multisampling={4}   1 of 6 frames black, 71,302 px at [437,0]-[776,250]
+//                          1 of 12 frames black, same rectangle, twice over
+//      multisampling={0}   0 of 6 and 0 of 12 frames, zero black pixels
+//
+//    The composer's multisampled render target is what trips the driver. The
+//    cost of dropping it is edge quality on the composer's own target, which
+//    is the thing the next note was protecting — but a scene that intermittently
+//    paints a black hole over a third of the frame is not trading quality for
+//    quality, it is trading a defect for aliasing. SMAA as a final pass is the
+//    documented replacement and is the next step here.
+//
+//    The note this replaces read:
 //  - `multisampling={4}` because the forum Canvas runs `antialias: true`; the
 //    composer renders into its own target, where the canvas's AA does not
 //    apply, so without this the whole scene would lose its edge quality as a
@@ -25,7 +45,7 @@ import { Bloom, EffectComposer } from '@react-three/postprocessing';
 
 export function ForumPostProcessing() {
   return (
-    <EffectComposer multisampling={4}>
+    <EffectComposer multisampling={0}>
       <Bloom mipmapBlur intensity={0.55} radius={0.6} levels={5} luminanceThreshold={0.72} luminanceSmoothing={0.3} />
     </EffectComposer>
   );

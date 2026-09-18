@@ -1,6 +1,7 @@
 import { applyForumSurfaceMaterials } from './ForumSurfaceMaterials';
 import { Suspense, useEffect, useMemo, useState, useCallback, useRef, type CSSProperties, type RefObject } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
+import { AgXToneMapping } from 'three';
 import { useGLTF } from '@react-three/drei';
 import { Mesh, PCFShadowMap } from 'three';
 import { ROSTER } from '../agents';
@@ -50,6 +51,25 @@ import { ForumPassport } from './ForumPassport';
  * Together that is 24,000:1 instead of 100,000:1 — four times the precision,
  * for nothing.
  */
+/**
+ * Exposure for the AgX view transform.
+ *
+ * The scene had no tone mapping set at all, which meant r3f's default of ACES
+ * Filmic. ACES imparts a strong film response that reshapes saturated colours,
+ * and the lagoon's teal is exactly the kind of colour it pushes toward
+ * cyan-white — the island's most recognisable feature, altered by a default
+ * nobody chose.
+ *
+ * AgX is the same view transform Blender has used by default since 4.0, and
+ * Blender is now the lighting authority for this world (Unreal cannot bake
+ * lighting on an Apple GPU — no DirectX, no DXR, and its light-build farm is
+ * Windows-only). Matching it means what the Cycles bake looks like in Blender
+ * is what the browser shows, which is worth more than any single look choice.
+ * Grade back toward a warmer or punchier look with a LUT, not by picking a more
+ * opinionated tone mapper.
+ */
+const FORUM_EXPOSURE = 1.0;
+
 const FORUM_CAMERA_NEAR = 0.25;
 const FORUM_CAMERA_FAR = 6000;
 
@@ -273,7 +293,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           warnings per load in job 18. Asking for `PCFShadowMap` outright is
           the same shadows the scene has actually been getting, without the
           deprecation path. */}
-      <Canvas frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...FORUM_VISTA.position] as [number,number,number], fov: FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true }}>
+      <Canvas frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...FORUM_VISTA.position] as [number,number,number], fov: FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
         {agoraOpen ? <MeshAgora walking={walking} /> : <ForumLighting appearance={appearance} />}
         {/* The forum is hidden rather than unmounted while the Agora is open:
             an invisible group costs no draw calls, and keeping it mounted means
