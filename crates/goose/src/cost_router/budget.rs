@@ -72,18 +72,36 @@ pub struct BudgetConfig {
 }
 
 impl Default for BudgetConfig {
-    /// Spec defaults: task $2/$5/$10, session $10/$25/$50 (soft/gate/hard).
+    /// Task $0.50/$1/$2, session $2/$5/$10 (soft/gate/hard).
+    ///
+    /// These were task $2/$5/$10 and session $10/$25/$50. Jesse, on seeing a
+    /// status line offering to spend $47.91 more on one session: "It would be
+    /// completely unacceptable to spend $50 on a task. that is absurd."
+    ///
+    /// He is right, and the old numbers were indefensible for this product
+    /// specifically. The harness exists to be cost-optimized — it routes to
+    /// local models, prices every call, and reports spend per turn. A default
+    /// that silently permits fifty dollars before it hard-stops is not a cap,
+    /// it is a formality: the gate at $25 arrives long after the money is
+    /// gone. A default should be the number that would not upset someone who
+    /// never opened the setting.
+    ///
+    /// The ladder keeps its shape (soft alerts, gate pauses for a decision,
+    /// hard stops) so nothing downstream changes; only the ceilings move. A
+    /// long deliberate run raises them explicitly, which is the point — paying
+    /// more should be a thing you chose, through
+    /// `PERMAGENT_BUDGET_TASK_*_USD` / `PERMAGENT_BUDGET_SESSION_*_USD`.
     fn default() -> Self {
         Self {
             task: BudgetCeilings {
+                soft: 0.50,
+                gate: 1.0,
+                hard: 2.0,
+            },
+            session: BudgetCeilings {
                 soft: 2.0,
                 gate: 5.0,
                 hard: 10.0,
-            },
-            session: BudgetCeilings {
-                soft: 10.0,
-                gate: 25.0,
-                hard: 50.0,
             },
         }
     }
@@ -486,12 +504,12 @@ mod tests {
     #[test]
     fn defaults_match_the_spec() {
         let d = BudgetConfig::default();
-        approx(d.task.soft, 2.0);
-        approx(d.task.gate, 5.0);
-        approx(d.task.hard, 10.0);
-        approx(d.session.soft, 10.0);
-        approx(d.session.gate, 25.0);
-        approx(d.session.hard, 50.0);
+        approx(d.task.soft, 0.50);
+        approx(d.task.gate, 1.0);
+        approx(d.task.hard, 2.0);
+        approx(d.session.soft, 2.0);
+        approx(d.session.gate, 5.0);
+        approx(d.session.hard, 10.0);
     }
 
     #[test]
@@ -524,11 +542,26 @@ mod tests {
         assert!(!d.detail.as_deref().unwrap().contains("$3.75 spent"));
     }
 
+    /// An explicit ladder for the band tests.
+    ///
+    /// These tests are about where the bands fire, not about what the product
+    /// ships as a default — they only ever used `default()` because the two
+    /// happened to coincide. When the defaults were lowered (task $2/$5/$10 →
+    /// $0.50/$1/$2) six of them failed despite the band logic being untouched,
+    /// which is a test telling you about the wrong thing. `defaults_match_the_spec`
+    /// is the one place that pins the shipped numbers.
+    fn ladder() -> BudgetConfig {
+        BudgetConfig {
+            task: BudgetCeilings { soft: 2.0, gate: 5.0, hard: 10.0 },
+            session: BudgetCeilings { soft: 10.0, gate: 25.0, hard: 50.0 },
+        }
+    }
+
     // ── Soft / gate / hard fire at the thresholds ──────────────────────────
 
     #[test]
     fn task_bands_at_the_thresholds() {
-        let c = BudgetConfig::default();
+        let c = ladder();
         assert_eq!(budget_verdict(0.0, 0.0, &c).band, BudgetBand::Ok);
         assert_eq!(budget_verdict(1.99, 0.0, &c).band, BudgetBand::Ok);
         assert_eq!(budget_verdict(2.0, 0.0, &c).band, BudgetBand::Soft);
@@ -542,7 +575,7 @@ mod tests {
 
     #[test]
     fn gate_verdict_reports_scope_spend_and_threshold() {
-        let c = BudgetConfig::default();
+        let c = ladder();
         let v = budget_verdict(5.0, 0.0, &c);
         assert!(v.needs_gate());
         assert!(!v.must_stop());
@@ -553,7 +586,7 @@ mod tests {
 
     #[test]
     fn hard_verdict_says_stop() {
-        let c = BudgetConfig::default();
+        let c = ladder();
         let v = budget_verdict(0.0, 50.0, &c);
         assert!(v.must_stop());
         assert_eq!(v.band, BudgetBand::Hard);
@@ -564,7 +597,7 @@ mod tests {
 
     #[test]
     fn session_can_gate_while_task_is_fine() {
-        let c = BudgetConfig::default();
+        let c = ladder();
         // Task ok ($1), session at its gate ($25) → Gate on the session.
         let v = budget_verdict(1.0, 25.0, &c);
         assert_eq!(v.band, BudgetBand::Gate);
@@ -573,7 +606,7 @@ mod tests {
 
     #[test]
     fn stricter_scope_wins_and_ties_break_to_task() {
-        let c = BudgetConfig::default();
+        let c = ladder();
         // Task hard ($10) beats session soft ($10) → Hard/Task.
         let v = budget_verdict(10.0, 10.0, &c);
         assert_eq!(v.band, BudgetBand::Hard);
@@ -593,7 +626,7 @@ mod tests {
         approx(c.task.gate, 3.0);
         approx(c.task.hard, 7.0);
         // Session untouched → spec defaults.
-        approx(c.session.gate, 25.0);
+        approx(c.session.gate, BudgetConfig::default().session.gate);
     }
 
     #[test]
@@ -639,7 +672,7 @@ mod tests {
 
     #[test]
     fn gate_request_is_a_valid_choice_with_a_short_headline() {
-        let c = BudgetConfig::default();
+        let c = ladder();
         let v = budget_verdict(0.0, 25.0, &c); // session gate
         let req = gate_decision_request(v, 10.0, Some("goal-1".into()), None);
         assert_eq!(req.kind, "choice");
@@ -660,7 +693,7 @@ mod tests {
 
     #[test]
     fn unpriced_calls_lift_ok_to_soft_and_never_past_it() {
-        let c = BudgetConfig::default();
+        let c = ladder();
         // Zero spend + unpriced → Soft alert (visible floor), not Ok.
         let v = budget_verdict_with_unpriced(0.0, 0.0, 3, &c);
         assert_eq!(v.band, BudgetBand::Soft);
@@ -679,7 +712,7 @@ mod tests {
 
     #[test]
     fn gate_detail_names_unpriced_calls_only_when_present() {
-        let c = BudgetConfig::default();
+        let c = ladder();
         let priced = budget_verdict(0.0, 25.0, &c);
         let req = gate_decision_request(priced, 10.0, None, None);
         let detail = req.detail.as_deref().unwrap();
