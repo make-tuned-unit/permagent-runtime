@@ -72,3 +72,47 @@ describe('ProviderModelPicker', () => {
     expect(document.body.textContent).toContain('claude-sonnet-5');
   });
 });
+
+describe('the menu stays on screen', () => {
+  const rectFor = (top: number) => ({
+    x: 100, y: top, width: 220, height: 32,
+    top, bottom: top + 32, left: 100, right: 320,
+    toJSON: () => ({}),
+  }) as DOMRect;
+
+  async function openAt(top: number) {
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
+    Object.defineProperty(window, 'innerWidth', { value: 1200, configurable: true });
+    const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.matches('button[aria-haspopup]') ? rectFor(top) : rectFor(0);
+      });
+    await act(async () => { root.render(<ProviderModelPicker value={{ provider: null, model: null }} onChange={vi.fn()} />); });
+    await act(async () => { (host.querySelector('button[aria-haspopup]') as HTMLButtonElement).click(); });
+    const panel = document.querySelector('[role="dialog"]') as HTMLElement;
+    spy.mockRestore();
+    return panel;
+  }
+
+  it('opens downward when there is room', async () => {
+    const panel = await openAt(100);
+    expect(panel.style.top).toBe('138px');
+    expect(panel.style.bottom).toBe('');
+  });
+
+  it('flips above the trigger when the fold would cut it off', async () => {
+    // The Harness row is the lowest of the three in Settings, and this is
+    // where Jesse could not see its models: the menu opened past the bottom
+    // of the window. Anchored from the bottom, it opens upward instead.
+    const panel = await openAt(760);
+    expect(panel.style.bottom).toBe('46px');
+    expect(panel.style.top).toBe('');
+  });
+
+  it('never asks for more height than the screen has', async () => {
+    const panel = await openAt(700);
+    const maxHeight = Number.parseInt(panel.style.maxHeight, 10);
+    expect(maxHeight).toBeGreaterThan(0);
+    expect(maxHeight).toBeLessThanOrEqual(800);
+  });
+});

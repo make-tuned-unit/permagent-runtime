@@ -37,13 +37,21 @@ vi.mock('../../lib/api', () => ({
 // tests exercise the pair persistence contract without depending on the
 // picker's search/expansion DOM.
 vi.mock('./ProviderModelPicker', () => ({
-  ProviderModelPicker: ({ onChange, onUseSession, 'aria-label': label }: {
+  ProviderModelPicker: ({ value, onChange, onUseSession, 'aria-label': label }: {
+    value: { provider: string | null; model: string | null };
     onChange: (value: { provider: string; model: string }) => void;
     onUseSession?: () => void;
     'aria-label'?: string;
   }) => {
     const voice = label?.startsWith('Voice');
-    return <div>
+    // `data-picker` marks the element the row actually mounts, so a test can
+    // assert WHERE in the row it sits; the value attributes record what the row
+    // handed it, which is what decides whether its menu can open on a provider.
+    return <div
+      data-picker={voice ? 'voice' : label?.toLowerCase().split(' ')[0]}
+      data-value-provider={value.provider ?? ''}
+      data-value-model={value.model ?? ''}
+    >
       <button
         type="button"
         data-testid={`choose-${voice ? 'voice' : label?.toLowerCase().split(' ')[0]}`}
@@ -188,6 +196,68 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
     mockRoleConfig({ harness_model: 'session' });
     await mount(vi.fn());
     expect(container.textContent).toContain('session model (explicit)');
+  });
+
+  // ── Layout ────────────────────────────────────────────────────────────
+  //
+  // Jesse: "the alignment is all off." Chat's and Harness's pickers ran the
+  // full width of the row while Voice's hugged its own label, because Voice —
+  // and only Voice — wrapped the picker in a `display: flex` box, which turns a
+  // block child into a shrink-to-fit flex item. The picker renders a full-width
+  // trigger and is not ours to change, so the row is what has to be right: all
+  // three mount it as a direct child of a plain block body. These assertions
+  // are about structure, not pixels, because jsdom has no layout.
+  it('mounts all three pickers the same way, directly in a block row body', async () => {
+    await mount(vi.fn());
+    for (const role of ['chat', 'voice', 'harness'] as const) {
+      const body = roleRow(role);
+      const picker = body.querySelector(`[data-picker="${role}"]`);
+      expect(picker, `no picker in the ${role} row`).not.toBeNull();
+      // A wrapper between the two is exactly what made Voice shrink.
+      expect(picker!.parentElement, `${role}'s picker is not a direct child of its row body`).toBe(body);
+      expect(body.style.display, `${role}'s row body is not a block`).toBe('');
+    }
+  });
+
+  it('puts the current-value line first in every row, at one offset', async () => {
+    await mount(vi.fn());
+    const offsets = (['chat', 'voice', 'harness'] as const).map(role => {
+      const line = roleRow(role).firstElementChild as HTMLElement;
+      return line.style.marginBottom;
+    });
+    expect(offsets[0]).not.toBe('');
+    expect(new Set(offsets).size).toBe(1);
+  });
+
+  // ── What the picker is given to open on ───────────────────────────────
+  //
+  // Jesse: "I cant see the harness models available in the dropdown." With no
+  // harness_* keys set the row printed the session model and handed the picker
+  // a null provider, and the picker opens on `value.provider` — so the menu
+  // listed provider headings and not one model. The row names a provider it
+  // already displayed; it must not name a MODEL, because none is chosen for
+  // this role and the trigger would then claim one was.
+  it('hands each picker the provider its row just named, without claiming a model', async () => {
+    mockSessionModel('anthropic', 'claude-haiku-4-5');
+    await mount(vi.fn());
+    for (const role of ['chat', 'harness'] as const) {
+      const picker = roleRow(role).querySelector(`[data-picker="${role}"]`) as HTMLElement;
+      expect(picker.getAttribute('data-value-provider'), `${role} has no provider to expand`).toBe('anthropic');
+      expect(picker.getAttribute('data-value-model')).toBe('');
+    }
+    // Voice resolves above GOOSE_MODEL, so its provider is its own default.
+    const voice = roleRow('voice').querySelector('[data-picker="voice"]') as HTMLElement;
+    expect(voice.getAttribute('data-value-provider')).toBe('custom_deepseek');
+    expect(voice.getAttribute('data-value-model')).toBe('');
+  });
+
+  it('keeps an explicitly configured role pointed at its own provider', async () => {
+    mockSessionModel('zai', 'glm-5.3');
+    mockRoleConfig({ harness_provider: 'anthropic', harness_model: 'claude-sonnet-5' });
+    await mount(vi.fn());
+    const picker = roleRow('harness').querySelector('[data-picker="harness"]') as HTMLElement;
+    expect(picker.getAttribute('data-value-provider')).toBe('anthropic');
+    expect(picker.getAttribute('data-value-model')).toBe('claude-sonnet-5');
   });
 });
 

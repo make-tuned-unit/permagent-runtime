@@ -713,7 +713,20 @@ const trimmedOrNull = (v: string | null | undefined): string | null => {
 /** `api.readConfig` answers the bare JSON value or `null` — narrow to string. */
 const asConfigString = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 
-type RoleEffective = { display: string; suffix: string | null };
+type RoleEffective = {
+  display: string;
+  suffix: string | null;
+  /** The provider the row just NAMED, whether or not the role's own keys hold
+   *  it. The picker opens on `value.provider`, and with nothing but the raw
+   *  keys to go on it had nothing to open: with `harness_provider` unset the
+   *  row printed `anthropic / claude-haiku-4-5 · from GOOSE_MODEL` and then
+   *  handed the picker a null provider, so the menu listed provider headings
+   *  and not one model. Jesse: "I cant see the harness models available in the
+   *  dropdown." The model stays raw, so the trigger still says "Select a
+   *  provider and model" — nothing has been chosen for this role, and saying
+   *  otherwise would be the opposite lie. */
+  provider: string | null;
+};
 
 /** Effective model for one role + where it came from. Pure and read-only —
  *  the whole point (per the bug this replaces) is that a user can look at
@@ -732,20 +745,55 @@ function computeRoleEffective(
   // resolve_role_model checks each key independently for this, on purpose:
   // "back to one model for everything" should not depend on tidying up the
   // partner key too.
+  const sp = trimmedOrNull(sessionProvider);
+  const sm = trimmedOrNull(sessionModel);
   if ((p !== null && isRoleDisableValue(p)) || (m !== null && isRoleDisableValue(m))) {
-    return { display: 'session model (explicit)', suffix: null };
+    return { display: 'session model (explicit)', suffix: null, provider: sp };
   }
   if (p !== null && m !== null) {
-    return { display: `${p} / ${m}`, suffix: `from ${modelKeyLabel}` };
+    return { display: `${p} / ${m}`, suffix: `from ${modelKeyLabel}`, provider: p };
   }
   // Zero or exactly one role key set: resolves as if neither were — a half
   // pair is a typo, not an intention (RoleModelSource::HalfConfigured).
-  const sp = trimmedOrNull(sessionProvider);
-  const sm = trimmedOrNull(sessionModel);
   if (sp !== null && sm !== null) {
-    return { display: `${sp} / ${sm}`, suffix: 'from GOOSE_MODEL' };
+    return { display: `${sp} / ${sm}`, suffix: 'from GOOSE_MODEL', provider: sp };
   }
-  return { display: '(default)', suffix: 'built-in default' };
+  return { display: '(default)', suffix: 'built-in default', provider: null };
+}
+
+/**
+ * The body of one role row: the current value, a save error if the last write
+ * failed, and the control — in that order, at one width.
+ *
+ * It exists because the three rows had drifted. Chat and Harness put the picker
+ * straight into the row's content column, which is a block box, so the picker's
+ * full-width trigger filled the row. Voice wrapped the same picker in a
+ * one-child `display: flex` box, which made it a shrink-to-fit flex item, so
+ * its trigger hugged the words "Select a provider and model" and sat at maybe a
+ * third of the width of the two rows around it. Jesse: "the alignment is all
+ * off." Nothing about Voice wanted a flex row — it had one child and the gap it
+ * declared could never apply. One body, three rows, so the fourth cannot drift
+ * either.
+ */
+function RoleRowBody({ testId, display, suffix, error, children }: {
+  testId: string; display: string; suffix?: string | null; error?: string | null;
+  children: React.ReactNode;
+}) {
+  const { colors } = useThemeHook();
+  return (
+    <div data-testid={testId}>
+      <div style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, marginBottom: space.lg }}>
+        {display}
+        {suffix && (
+          <span style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginLeft: space.md }}>
+            · {suffix}
+          </span>
+        )}
+      </div>
+      {error && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{error}</div>}
+      {children}
+    </div>
+  );
 }
 
 /** One editable role row — Chat or Harness. Voice is rendered by hand in
@@ -760,7 +808,6 @@ function RoleModelRow({
   sessionProvider: string | null; sessionModel: string | null;
   onSaved: (provider: string | null, model: string | null) => void;
 }) {
-  const { colors } = useThemeHook();
   const [error, setError] = useState<string | null>(null);
   const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const latestSave = useRef(0);
@@ -788,18 +835,9 @@ function RoleModelRow({
 
   return (
     <Row label={label} hint={hint}>
-      <div data-testid={testId}>
-      <div style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, marginBottom: space.lg }}>
-        {effective.display}
-        {effective.suffix && (
-          <span style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginLeft: space.md }}>
-            · {effective.suffix}
-          </span>
-        )}
-      </div>
-      {error && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{error}</div>}
-      <ProviderModelPicker value={{ provider, model }} sessionActive={isRoleDisableValue(model ?? '') || isRoleDisableValue(provider ?? '')} onChange={v => savePair(v.provider, v.model)} onUseSession={useSession} aria-label={`${label} provider and model`} />
-      </div>
+      <RoleRowBody testId={testId} display={effective.display} suffix={effective.suffix} error={error}>
+        <ProviderModelPicker value={{ provider: provider ?? effective.provider, model }} sessionActive={isRoleDisableValue(model ?? '') || isRoleDisableValue(provider ?? '')} onChange={v => savePair(v.provider, v.model)} onUseSession={useSession} aria-label={`${label} provider and model`} />
+      </RoleRowBody>
     </Row>
   );
 }
@@ -949,15 +987,13 @@ export function ModelsPanel({ goto }: PanelProps) {
             before speaking. `describeVoiceRoute` mirrors that, and mirroring
             the wrong resolver here would tell the operator the wrong thing. */}
         <Row label="Voice" hint="spoken turns">
-          <div data-testid="role-row-voice">
-            <div style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, marginBottom: space.lg }}>
-              {describeVoiceRoute(voiceProvider, voiceModel)}
-            </div>
-            {voiceError && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{voiceError}</div>}
-            <div style={{ display: 'flex', gap: space.md, alignItems: 'center' }}>
-              <ProviderModelPicker value={{ provider: voiceProvider, model: voiceModel }} sessionActive={VOICE_DISABLE_VALUES.has((voiceModel ?? '').toLowerCase()) || VOICE_DISABLE_VALUES.has((voiceProvider ?? '').toLowerCase())} onChange={v => saveVoiceRoute(v.provider, v.model)} onUseSession={useSessionVoiceModel} aria-label="Voice provider and model" />
-            </div>
-          </div>
+          {/* Voice's value line has no "from …" suffix: `describeVoiceRoute`
+              already words its own source inline ("(default)"), because the
+              resolver it mirrors is not the role table's. The row shares the
+              LAYOUT with Chat and Harness, not the wording. */}
+          <RoleRowBody testId="role-row-voice" display={describeVoiceRoute(voiceProvider, voiceModel)} error={voiceError}>
+            <ProviderModelPicker value={{ provider: voiceProvider ?? DEFAULT_VOICE_PROVIDER_ID, model: voiceModel }} sessionActive={VOICE_DISABLE_VALUES.has((voiceModel ?? '').toLowerCase()) || VOICE_DISABLE_VALUES.has((voiceProvider ?? '').toLowerCase())} onChange={v => saveVoiceRoute(v.provider, v.model)} onUseSession={useSessionVoiceModel} aria-label="Voice provider and model" />
+          </RoleRowBody>
         </Row>
         <RoleModelRow
           label="Harness"

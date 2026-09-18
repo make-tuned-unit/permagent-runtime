@@ -10,6 +10,9 @@ import { catalogue, describeModel, matchesQuery, mergeModelLists, type ModelEntr
 
 export type ProviderModelValue = { provider: string | null; model: string | null };
 
+/** Below this the menu is not worth opening downward — flip it instead. */
+const PANEL_MIN_HEIGHT = 220;
+
 type Props = {
   value: ProviderModelValue;
   onChange: (value: { provider: string; model: string }) => void;
@@ -57,7 +60,9 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
   // A portal to `document.body` with fixed coordinates cannot be clipped by
   // anything, so the same menu behaves identically in the chat header, the
   // Settings rows and a terminal toolbar.
-  const [anchor, setAnchor] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [anchor, setAnchor] = useState<
+    { left: number; width: number; maxHeight: number; top?: number; bottom?: number } | null
+  >(null);
 
   const placePanel = useCallback(() => {
     const el = triggerRef.current;
@@ -67,7 +72,24 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
     // Keep it on screen: prefer left-aligned with the trigger, but never let
     // it hang off the right edge of a narrow pane.
     const left = Math.min(Math.max(8, r.left), window.innerWidth - width - 8);
-    setAnchor({ top: r.bottom + 6, left, width });
+
+    // Flip up when there is no room below, and never exceed the room there is.
+    //
+    // The first version of this clamped `left` and ignored `top` entirely, so
+    // a trigger near the bottom of the window opened its menu past the bottom
+    // of the screen. In Settings the Harness row is the lowest of the three,
+    // which is exactly where Jesse reported he "cant see the harness models
+    // available in the dropdown" — the menu was open, just off the fold.
+    const GAP = 6;
+    const EDGE = 8;
+    const below = window.innerHeight - r.bottom - GAP - EDGE;
+    const above = r.top - GAP - EDGE;
+    // Only flip when it genuinely helps; a menu that jumps above the trigger
+    // when both sides are cramped is more disorienting than a short one.
+    const flip = below < Math.min(PANEL_MIN_HEIGHT, above) && above > below;
+    setAnchor(flip
+      ? { bottom: window.innerHeight - r.top + GAP, left, width, maxHeight: above }
+      : { top: r.bottom + GAP, left, width, maxHeight: below });
   }, []);
 
   useLayoutEffect(() => {
@@ -216,8 +238,15 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
         ...glass,
         position: 'fixed',
         top: anchor.top,
+        bottom: anchor.bottom,
         left: anchor.left,
         width: anchor.width,
+        // The panel is a column: search, then a scrolling list. Capping the
+        // whole thing to the space that exists is what keeps the list's own
+        // scroll meaningful instead of pushing it off the screen.
+        maxHeight: anchor.maxHeight,
+        display: 'flex',
+        flexDirection: 'column',
         zIndex: 1000,
         border: `1px solid ${colors.border}`,
         borderRadius: radius.lg,
@@ -259,7 +288,7 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
         />
       </div>
 
-      <div role="menu" className="max-h-[320px] overflow-y-auto py-1">
+      <div role="menu" className="overflow-y-auto py-1" style={{ flex: 1, minHeight: 0 }}>
         {onUseSession && <button
           type="button"
           role="menuitem"
