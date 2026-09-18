@@ -110,3 +110,52 @@ describe('flying the skiff', () => {
     expect(justAbove.landed).toBe(true);
   });
 });
+
+describe('the landing a player actually performs', () => {
+  const terraceAt = (height: number) => (): GroundSample => ({ height, landable: true });
+
+  it('lands when the descend key is simply held down', () => {
+    // This is the bug Jesse hit: descent runs at LIFT_SPEED while the key is
+    // held, touchdown requires arriving slower than TOUCHDOWN_SPEED, and
+    // releasing the key stops the descent entirely because nothing pulls the
+    // skiff down. Without a flare there is no key sequence that lands.
+    let state = aloft({ y: 120 });
+    const held = { ...idleInput, lift: -1 };
+    for (let t = 0; t < 30 && !state.landed; t += 1 / 60) {
+      state = flightStep(state, held, 1 / 60, terraceAt(40));
+    }
+    expect(state.landed).toBe(true);
+    expect(state.y).toBeCloseTo(40, 5);
+  });
+
+  it('lands on a high floating island as readily as on a low one', () => {
+    for (const height of [12, 40, 130, 320]) {
+      let state = aloft({ y: height + 80 });
+      for (let t = 0; t < 40 && !state.landed; t += 1 / 60) {
+        state = flightStep(state, { ...idleInput, lift: -1 }, 1 / 60, terraceAt(height));
+      }
+      expect(state.landed, `never landed on the deck at ${height}m`).toBe(true);
+    }
+  });
+
+  it('still refuses water however long you hold the key', () => {
+    let state = aloft({ y: 40 });
+    for (let t = 0; t < 30; t += 1 / 60) {
+      state = flightStep(state, { ...idleInput, lift: -1 }, 1 / 60, () => ({ height: 0, landable: false }));
+    }
+    expect(state.landed).toBe(false);
+    expect(state.y).toBeGreaterThan(1.5);
+  });
+
+  it('does not flare over ground it cannot land on', () => {
+    // A steep roof is not landable, so the skiff should hold its clearance
+    // rather than politely braking onto it.
+    const steep = (): GroundSample => ({ height: 30, landable: false });
+    let state = aloft({ y: 36 });
+    for (let t = 0; t < 10; t += 1 / 60) {
+      state = flightStep(state, { ...idleInput, lift: -1 }, 1 / 60, steep);
+    }
+    expect(state.landed).toBe(false);
+    expect(state.y).toBeGreaterThanOrEqual(32);
+  });
+});

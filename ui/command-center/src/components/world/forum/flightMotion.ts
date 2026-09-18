@@ -23,6 +23,8 @@ export const YAW_RATE = 1.15;
 export const RESPONSE = 2.6;
 /** Below this height above a landable surface the legs come out. */
 export const GEAR_HEIGHT = 12;
+/** Within this height of a landable deck, the skiff brakes itself for touchdown. */
+export const FLARE_HEIGHT = 9;
 /** Touchdown happens under this height and this descent rate. */
 export const TOUCHDOWN_HEIGHT = 1.4;
 export const TOUCHDOWN_SPEED = 9;
@@ -89,7 +91,7 @@ export function flightStep(
   const wantVy = input.lift * LIFT_SPEED;
 
   const vx = approach(state.vx, wantVx, RESPONSE, step);
-  const vy = approach(state.vy, wantVy, RESPONSE, step);
+  let vy = approach(state.vy, wantVy, RESPONSE, step);
   const vz = approach(state.vz, wantVz, RESPONSE, step);
 
   let x = state.x + vx * step;
@@ -103,7 +105,31 @@ export function flightStep(
   let landed = false;
   if (ground) {
     const deck = ground.height;
-    const descending = -vy;
+    let descending = -vy;
+    // THE FLARE, and without it landing was impossible.
+    //
+    // Descent runs at LIFT_SPEED (14 m/s) while the key is held, but touchdown
+    // requires arriving under TOUCHDOWN_SPEED (9 m/s). Hold the key and you are
+    // always too fast; release it and the skiff simply stops descending,
+    // because there is no gravity to carry you the last few metres. So the only
+    // way down was a keypress of exactly the right length, which is not a
+    // landing, it is a trick.
+    //
+    // Close to a deck it can settle on, the skiff now brakes itself to a
+    // touchdown-legal speed, the way any lander does on final approach. Holding
+    // descend over a floating island now simply lands you.
+    if (ground.landable) {
+      const height = y - deck;
+      if (height < FLARE_HEIGHT && vy < 0) {
+        const eased = Math.max(0.12, height / FLARE_HEIGHT);
+        const capped = TOUCHDOWN_SPEED * 0.75 * eased;
+        if (descending > capped) {
+          vy = -capped;
+          descending = capped;
+          y = state.y + vy * step;
+        }
+      }
+    }
     if (ground.landable && y - deck <= TOUCHDOWN_HEIGHT && descending <= TOUCHDOWN_SPEED) {
       // Settled. Zero the velocity so a landed skiff does not creep.
       return { x, y: deck, z, yaw, vx: 0, vy: 0, vz: 0, landed: true };

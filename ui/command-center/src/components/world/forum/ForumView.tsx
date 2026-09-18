@@ -30,6 +30,7 @@ import { registerForumCollision } from './walkCollision';
 import { MeshAgora } from './MeshAgora';
 import { ForumPostProcessing } from './ForumPostProcessing';
 import { useCommandCenter } from '../../../lib/store';
+import { useIdentityStore } from '../../../stores/identityStore';
 import { ForumPassport } from './ForumPassport';
 import { ForumPlaceRail } from './ForumPlaceRail';
 import { useDismissible } from './useDismissible';
@@ -194,7 +195,14 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   // yet" rather than as a name.
   const storeAgentName = useCommandCenter((s) => s.agentName);
   const namedByUser = storeAgentName && storeAgentName !== 'Agent' ? storeAgentName : null;
-  const configuredName = useOrchestratorName() ?? namedByUser;
+  // Third source, and the one that actually answers when the daemon does not.
+  // Both of the above read `/api/agent/identity`, which returns 401 against an
+  // older daemon — which is exactly the state that left the desk saying "Your
+  // agent". The identity store holds the name from the sovereign's own record
+  // (the same one the passport shows) and persists it locally, so it survives a
+  // daemon that cannot be reached.
+  const passportName = useIdentityStore((s) => s.data?.name)?.trim() || null;
+  const configuredName = useOrchestratorName() ?? namedByUser ?? passportName;
   const [pageVisible, setPageVisible] = useState(!document.hidden);
   useEffect(() => { const change = () => setPageVisible(!document.hidden); document.addEventListener('visibilitychange', change); return () => document.removeEventListener('visibilitychange', change); }, []);
   const worldRef = useRef<HTMLElement>(null);
@@ -287,6 +295,9 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
     try { return localStorage.getItem(FORUM_RAIL_KEY) !== 'closed'; } catch { return true; }
   });
   const cards = useDismissible();
+  // "Sovereign agent view": walking the world as the agent, or with the
+  // sovereign selected at the desk.
+  const sovereignInView = walking || flying || selected === 'henry';
   const [walkStartOverride, setWalkStartOverride] = useState<[number, number, number] | null>(null);
   const [deskOpen, setDeskOpen] = useState(() => {
     try {
@@ -411,7 +422,11 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       }}>{walking?'Return to overview':'Walk the world'}</Button></div>
       {walking && <div className="forum-crosshair" aria-hidden="true">+</div>}
       {!cards.isDismissed('feed') && <div className="forum-live"><DismissCard label="the job feed" onDismiss={()=>cards.dismiss('feed')} />{loaded ? `${goals.length} active jobs reported` : 'Job feed unavailable / connecting'}<small>Architecture preview · existing World agent feeds</small></div>}
-      {!cards.isDismissed('passport') && <div className="forum-passport-slot" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}><DismissCard label="the passport" onDismiss={()=>cards.dismiss('passport')} /><ForumPassport /></div>}
+      {/* The passport belongs to the agent, so it appears where the agent does:
+          while you are embodied in the world as your sovereign, or while the
+          sovereign is the one selected at the desk. Everywhere else it is just
+          a card sitting on the view. */}
+      {sovereignInView && !cards.isDismissed('passport') && <div className="forum-passport-slot" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}><DismissCard label="the passport" onDismiss={()=>cards.dismiss('passport')} /><ForumPassport /></div>}
     </section>
     <aside className="forum-panel" id="forum-agent-desk" aria-label="Agent learning and task desk" aria-hidden={!deskOpen}>
       <div className="eyebrow">AGENT DESK</div><h2 style={typeRamp.title}>Meet your collaborators.</h2>

@@ -282,6 +282,18 @@ function addSurfaceVariation(fragmentShader: string, profile: SurfaceProfile): s
 \t\t\tfloat forumFoam = forumSurf * smoothstep( 0.40, 0.90, forumSurfNoise );
 \t\t\tdiffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.92, 0.96, 0.97 ), forumFoam * 0.45 );
 \t\t\troughnessFactor = mix( roughnessFactor, 0.85, forumFoam );
+\t\t\t// Fresnel. Water seen from above is mostly the bed; water seen at a
+\t\t\t// grazing angle is mostly the sky, which is why a lagoon has a bright
+\t\t\t// horizon band and a dark near edge. Without this the surface reads as
+\t\t\t// coloured glass at every angle. The environment map — Unreal's baked
+\t\t\t// sky — is what it reflects, so the two stay consistent by construction.
+\t\t\tvec3 forumViewDir = normalize( vViewPosition );
+\t\t\tfloat forumFacing = clamp( dot( normalize( normal ), forumViewDir ), 0.0, 1.0 );
+\t\t\tfloat forumFresnel = pow( 1.0 - forumFacing, 5.0 );
+\t\t\t// Schlick with water's own reflectance at normal incidence (0.02).
+\t\t\tfloat forumReflect = 0.02 + 0.98 * forumFresnel;
+\t\t\troughnessFactor = mix( roughnessFactor, 0.02, forumReflect * 0.8 );
+\t\t\tdiffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * 0.35, forumReflect * 0.6 );
 \t\t}
 \t}`
     : '';
