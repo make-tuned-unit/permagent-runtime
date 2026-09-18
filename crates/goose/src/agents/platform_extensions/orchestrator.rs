@@ -16940,6 +16940,34 @@ async fn auto_land_headless_goal(
         }
     }
 
+    // Lane R71a (M55 r70 s2): the diff must stay inside the write scope the
+    // dispatcher parallelized this goal on. Checked BEFORE the review so an
+    // out-of-scope diff never costs a reviewer round, and reported through the
+    // same R66a send-back the reviewer's findings use.
+    if let Some(violations) = write_scope_violation(pool, card).await {
+        settle_verified_goal_review(
+            pool,
+            decision_id,
+            card,
+            auto_land_allowed,
+            calling_session_id,
+            AutoLandReview::ChangesRequested {
+                reason: write_scope_violation_reason(&violations),
+                findings: vec![write_scope_violation_finding(
+                    &super::write_scope::declared_write_scope(&card.metadata_json)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default(),
+                    &violations,
+                )],
+                cause: SendBackCause::WriteScope,
+            },
+            headless_max_redispatch_from_env(),
+        )
+        .await;
+        return;
+    }
+
     // r64 s5: a verifier pass is not an independent review. A non-trivial
     // change lands only after a cross-family reviewer approves it.
     let review = independent_review_before_auto_land(pool, card, calling_session_id).await;
@@ -16980,10 +17008,17 @@ async fn settle_verified_goal_review(
             );
         }
         AutoLandReview::Approved => {}
-        AutoLandReview::ChangesRequested { reason, findings } => {
+        AutoLandReview::ChangesRequested {
+            reason,
+            findings,
+            cause,
+        } => {
             // Lane R66a: concrete findings on a verified goal go back to its
             // worker once (headless only; a human reads the review otherwise),
-            // within the goal's attempt, re-dispatch and wall budgets.
+            // within the goal's attempt, re-dispatch and wall budgets. Lane
+            // R71a routes its deterministic write-scope refusal through the
+            // same path, carrying its own `cause` so nothing here claims a
+            // reviewer ran.
             let park_reason = if auto_land_allowed {
                 match send_goal_back_with_review_findings(
                     pool,
@@ -16991,6 +17026,7 @@ async fn settle_verified_goal_review(
                     &card.id,
                     &findings,
                     max_redispatch,
+                    cause,
                 )
                 .await
                 {
@@ -17001,9 +17037,10 @@ async fn settle_verified_goal_review(
                             decision_id = %decision_id,
                             round,
                             findings = findings.len(),
-                            "headless Auto: independent review requested changes on goal '{}'; \
-                             sent back to its worker with the findings",
-                            card.title
+                            cause = cause.log_reason(),
+                            "headless Auto: goal '{}' sent back to its worker ({})",
+                            card.title,
+                            cause.log_reason()
                         );
                         return;
                     }
@@ -17016,7 +17053,8 @@ async fn settle_verified_goal_review(
                 target: "permagentd::brain",
                 goal_id = %card.id,
                 decision_id = %decision_id,
-                "headless_approve_refused reason=independent_review: goal '{}': {}",
+                "headless_approve_refused reason={}: goal '{}': {}",
+                cause.log_reason(),
                 card.title,
                 park_reason
             );
@@ -17206,9 +17244,175 @@ enum AutoLandReview {
     ChangesRequested {
         reason: String,
         findings: Vec<String>,
+        /// Lane R71a: what refused. Kept on the variant so the send-back's
+        /// note, the supersede reason and the log line all say the same true
+        /// thing — a deterministic scope check is not a review.
+        cause: SendBackCause,
     },
     /// A review was required and did not approve (or could not run).
     Refused { reason: String },
+}
+
+/// Lane R71a: the repo-relative paths this goal's branch actually changed that
+/// its DECLARED `write_scope` does not cover, or `None` when there is nothing
+/// to enforce.
+///
+/// The declared scope is the only reason [`super::write_scope::metadata_conflict`]
+/// let this goal run in PARALLEL with a sibling, and until now nothing checked
+/// that the worker honoured it. When it does not, the harm is not hypothetical:
+/// the sibling that finishes first lands, and this goal's branch can no longer
+/// rebase onto the moved trunk (its own diff now overlaps what the trunk
+/// changed), so `rebase_goal_branch_for_headless_land` refuses
+/// `rebase_trunk_overlap`, correct work is stranded and trunk keeps half a
+/// change. That is r70 s2 `select-mechanical-rename-skips-roadmap`: scope
+/// `["a.py"]`, diff `a.py` + `b.py`, `old_name` left defined on trunk.
+///
+/// `None` (nothing to enforce) when: no scope was declared or it is empty (an
+/// undeclared scope was never a promise, and those goals are serialized), the
+/// scope does not parse, the goal is explicitly read-only, the dispatch
+/// evidence has no worktree/baseline/head to diff, or git cannot answer. A
+/// scope check that cannot run must never invent a violation.
+async fn write_scope_violation(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+) -> Option<Vec<String>> {
+    let meta = &card.metadata_json;
+    if super::write_scope::explicitly_read_only(meta) {
+        return None;
+    }
+    let scope = match super::write_scope::declared_write_scope(meta) {
+        Ok(Some(scope)) if !scope.is_empty() => scope,
+        Ok(_) => return None,
+        Err(why) => {
+            tracing::debug!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "write-scope check skipped: the declared scope does not parse ({why})"
+            );
+            return None;
+        }
+    };
+    let evidence = meta.get("dispatch_evidence")?;
+    let worktree = evidence.get("worktree_path").and_then(|v| v.as_str())?;
+    let baseline = evidence.get("baseline_commit").and_then(|v| v.as_str())?;
+    let head = evidence.get("head_commit").and_then(|v| v.as_str())?;
+    let changed = match paths_changed_since(std::path::Path::new(worktree), baseline, head).await {
+        Ok(changed) => changed,
+        Err(why) => {
+            tracing::debug!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "write-scope check skipped: git could not diff {baseline}..{head} ({why})"
+            );
+            return None;
+        }
+    };
+    let violations = super::write_scope::out_of_scope_paths(&scope, &changed);
+    if violations.is_empty() {
+        return None;
+    }
+    // Only the paths a SIBLING goal declared are enforced. An out-of-scope
+    // path nobody else owns cannot strand anything: the branch still
+    // fast-forwards, and refusing it would cost a re-dispatch round for no
+    // landing benefit — r70 s1's `select-failing-test-decompose-before-create`
+    // is exactly that shape (scope `pricing.py`, diff also `inventory.py`, no
+    // sibling owning it) and it PASSED. Enforcing it blindly would have turned
+    // a passing task into a send-back.
+    let violations = sibling_owned_paths(pool, card, &violations).await;
+    if violations.is_empty() {
+        None
+    } else {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            out_of_scope = violations.len(),
+            "write_scope_violation: goal '{}' changed {} path(s) outside its declared scope",
+            card.title,
+            violations.len()
+        );
+        Some(violations)
+    }
+}
+
+/// Lane R71a: of `paths`, the ones some OTHER goal of this roadmap declared as
+/// its own write scope — the only ones whose collision can strand work.
+///
+/// Every goal the coordinator's session created is considered, in any state,
+/// because the sibling that already landed is exactly the one that moved trunk
+/// and caused the refusal. A goal with no `created_by_session_id`, an
+/// unreadable card or an unparseable sibling scope simply contributes nothing:
+/// the check fails open.
+async fn sibling_owned_paths(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    paths: &[String],
+) -> Vec<String> {
+    let Some(session_id) = card
+        .metadata_json
+        .get("created_by_session_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
+        return Vec::new();
+    };
+    let Ok(siblings) = cards::goal_cards_created_by_session(pool, session_id).await else {
+        return Vec::new();
+    };
+    let mut owned: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for sc in siblings {
+        if sc.card_id == card.id {
+            continue;
+        }
+        let Ok(Some(sibling)) = cards::get_card(pool, &sc.card_id).await else {
+            continue;
+        };
+        if sibling.project_id != card.project_id {
+            continue;
+        }
+        let Ok(Some(sibling_scope)) =
+            super::write_scope::declared_write_scope(&sibling.metadata_json)
+        else {
+            continue;
+        };
+        for path in paths {
+            if !super::write_scope::out_of_scope_paths(&sibling_scope, std::slice::from_ref(path))
+                .is_empty()
+            {
+                continue;
+            }
+            owned.insert(path.clone());
+        }
+    }
+    owned.into_iter().collect()
+}
+
+/// Lane R71a: the short machine-readable reason recorded when a goal's diff
+/// leaves its declared write scope.
+fn write_scope_violation_reason(violations: &[String]) -> String {
+    format!(
+        "write scope violated: the diff changes {} path(s) the goal did not declare ({})",
+        violations.len(),
+        violations.join(", ")
+    )
+}
+
+/// Lane R71a: the finding sent back to the worker. It names the paths, says
+/// why the boundary exists (a sibling goal owns them right now) and asks for
+/// the out-of-scope edits to be reverted rather than for the work to be
+/// redone, because the in-scope part of the diff is usually correct.
+fn write_scope_violation_finding(declared: &[String], violations: &[String]) -> String {
+    format!(
+        "This goal may only change {}. Its branch also changes {}. \
+         Those paths belong to a sibling goal running in parallel right now, so editing them \
+         here does not help: the sibling lands first and this branch can then no longer be \
+         rebased onto trunk, which strands ALL of this work, including the part that is \
+         correct. Revert the changes to {} and keep only the edits inside the declared scope. \
+         If the goal genuinely cannot be completed without touching those paths, say so \
+         instead of editing them, so the plan can be fixed.",
+        declared.join(", "),
+        violations.join(", "),
+        violations.join(", "),
+    )
 }
 
 /// r64 s5: a five-file signature refactor auto-landed "on a verifier pass"
@@ -17318,7 +17522,11 @@ async fn independent_review_before_auto_land(
                                 if findings.is_empty() {
                                     AutoLandReview::Refused { reason }
                                 } else {
-                                    AutoLandReview::ChangesRequested { reason, findings }
+                                    AutoLandReview::ChangesRequested {
+                                        reason,
+                                        findings,
+                                        cause: SendBackCause::ReviewFindings,
+                                    }
                                 }
                             },
                             serde_json::json!({
@@ -17584,12 +17792,66 @@ fn auto_land_review_carrying_sent_back_rounds(
 /// started by the drain's sweep ([`next_drain_dispatches`]), and its completion
 /// goes through the same verify gates and [`independent_review_before_auto_land`]
 /// again. Returns the send-back round, or why the goal parks instead.
+/// Why a verified goal is going back to its worker. The two causes are not
+/// interchangeable in the record: only [`SendBackCause::ReviewFindings`] means
+/// a reviewer actually read the diff, and the goal's transition note must not
+/// claim one ran when Lane R71a's deterministic scope check is what refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SendBackCause {
+    /// An independent reviewer requested changes (Lane R66a).
+    ReviewFindings,
+    /// Lane R71a: the diff left the goal's declared write scope. No reviewer
+    /// ran; the check is deterministic and reads only git.
+    WriteScope,
+}
+
+impl SendBackCause {
+    /// The goal's transition note — what the worker and a human both read.
+    fn transition_note(self) -> &'static str {
+        match self {
+            SendBackCause::ReviewFindings => {
+                "the independent review requested changes: sent back once to address its \
+                 findings (listed in this brief as review findings), then verify and declare \
+                 done again"
+            }
+            SendBackCause::WriteScope => {
+                "the diff changed paths outside this goal's declared write scope: sent back \
+                 once to revert them (the paths are listed in this brief), then verify and \
+                 declare done again. No reviewer ran — this is a deterministic scope check"
+            }
+        }
+    }
+
+    /// Why the open `approve_review` decision is superseded.
+    fn supersede_reason(self) -> &'static str {
+        match self {
+            SendBackCause::ReviewFindings => {
+                "the independent review requested changes; the goal was sent back to its worker \
+                 once"
+            }
+            SendBackCause::WriteScope => {
+                "the diff left the goal's declared write scope; the goal was sent back to its \
+                 worker once"
+            }
+        }
+    }
+
+    /// The stable machine key used in the refusal log line.
+    fn log_reason(self) -> &'static str {
+        match self {
+            SendBackCause::ReviewFindings => "independent_review",
+            SendBackCause::WriteScope => "write_scope_violation",
+        }
+    }
+}
+
 async fn send_goal_back_with_review_findings(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     decision_id: &str,
     card_id: &str,
     findings: &[String],
     max_redispatch: u32,
+    cause: SendBackCause,
 ) -> Result<u64, String> {
     // Fresh: the review record was written after the caller's snapshot.
     let card = cards::get_card(pool, card_id)
@@ -17637,19 +17899,13 @@ async fn send_goal_back_with_review_findings(
         pool,
         card_id,
         decisions::ACTOR_HEADLESS_POLICY,
-        "the independent review requested changes: sent back once to address its findings \
-         (listed in this brief as review findings), then verify and declare done again",
+        cause.transition_note(),
         None,
         patch,
     )
     .await
     .map_err(String::from)?;
-    if let Err(e) = decisions::supersede_decision(
-        pool,
-        decision_id,
-        "the independent review requested changes; the goal was sent back to its worker once",
-    )
-    .await
+    if let Err(e) = decisions::supersede_decision(pool, decision_id, cause.supersede_reason()).await
     {
         tracing::warn!(
             target: "permagentd::brain",
@@ -23875,13 +24131,70 @@ fn reviewer_gate_total_budget(
             std::time::Duration::from_secs(REVIEWER_GATE_SALVAGE_TIMEOUT_SECS).saturating_mul(2)
         }
         GoalReviewKind::Verified { .. } => {
-            let configured = reviewer_gate_total_budget_from_env();
-            let capped = match remaining_wall_budget_secs(metadata) {
-                WallBudgetCeiling::Unbounded => configured,
-                WallBudgetCeiling::Remaining(remaining) => configured.min(remaining),
-            };
-            std::time::Duration::from_secs(capped)
+            std::time::Duration::from_secs(reviewer_gate_total_budget_secs(
+                reviewer_gate_total_budget_from_env(),
+                remaining_wall_budget_secs(metadata),
+                remaining_headless_drain_secs(),
+            ))
         }
+    }
+}
+
+/// Lane R71b (M55 r70 s2): how much of the headless drain is left, or `None`
+/// when this process is not running under one (interactive, tests, or a build
+/// that predates [`PERMAGENT_HEADLESS_STARTED_AT_ENV`]).
+///
+/// Same two env vars, same clock and same saturating arithmetic
+/// [`headless_wallclock_cap_patch`] uses at dispatch — read fresh here because
+/// a review happens much later in the run than the dispatch that sized the
+/// goal's wall budget.
+fn remaining_headless_drain_secs() -> Option<u64> {
+    let drain_secs: u64 = std::env::var("PERMAGENT_HEADLESS_DRAIN_SECS")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    let started_at_unix: i64 = std::env::var(PERMAGENT_HEADLESS_STARTED_AT_ENV)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    Some(headless_wallclock_cap_from_process_start(
+        drain_secs,
+        chrono::Utc::now().timestamp() - started_at_unix,
+    ))
+}
+
+/// Lane R71b: the pure budget arithmetic, so the inversion below is testable
+/// without env vars, clocks or a running drain.
+///
+/// r70 s2 `harness-testfix-inventory-suite-green` lost a correct, committed,
+/// verified fix to a budget inversion. The review gate was bounded by the
+/// configured total (300 s) and by the GOAL's remaining wall budget (~267 s),
+/// but never by the RUN's remaining drain time. The drain's own default is
+/// 240 s measured from process start, and a goal's wall budget is measured
+/// from its own (later) dispatch — so a single reviewer call was allowed to
+/// outlive the process by construction. The reviewer never returned, the
+/// process hit the drain cap ~182 s later, and the goal exited still in
+/// Review with `ready_unconsumed(commit=…)`: the fix was stranded on its
+/// branch and trunk kept the seed.
+///
+/// Clamping by the drain's remaining time means the gate always times out
+/// INSIDE the run, which reaches the honest park (and the R68a retry) instead
+/// of being cut off mid-flight. A missing drain reading (interactive, tests)
+/// changes nothing.
+fn reviewer_gate_total_budget_secs(
+    configured: u64,
+    wall: WallBudgetCeiling,
+    drain_remaining: Option<u64>,
+) -> u64 {
+    let capped = match wall {
+        WallBudgetCeiling::Unbounded => configured,
+        WallBudgetCeiling::Remaining(remaining) => configured.min(remaining),
+    };
+    match drain_remaining {
+        Some(drain) => capped.min(drain),
+        None => capped,
     }
 }
 
@@ -23929,11 +24242,39 @@ fn reviewer_gate_attempt_timeout(
     call_timeout: std::time::Duration,
     budget: &ReviewTimeBudget,
 ) -> Option<std::time::Duration> {
-    let remaining = budget.remaining();
-    if remaining < std::time::Duration::from_secs(REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS) {
+    reviewer_gate_attempt_timeout_from(call_timeout, budget.remaining())
+}
+
+/// Lane R71b: the pure rule behind [`reviewer_gate_attempt_timeout`], split
+/// out so the share arithmetic is testable without a running clock.
+///
+/// One attempt may spend at most HALF of what is left, so an unresponsive
+/// reviewer cannot consume the whole budget on its first call and leave
+/// nothing for the retry or for the escalation to a DIFFERENT model. r70 s2
+/// `harness-testfix-inventory-suite-green` is the case: the single reviewer
+/// call never returned, and with the whole budget behind it there was no
+/// second chance — the run exited with a verified fix stranded on its branch.
+/// The two records that passed that same task both landed after a reviewer
+/// answered in 11 s and 58 s, so half a budget is ample for a working
+/// reviewer while making a hang recoverable.
+///
+/// The halving stops at [`REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS`]: once that
+/// little is left, splitting it further only guarantees two useless calls, so
+/// the last attempt gets everything that remains.
+fn reviewer_gate_attempt_timeout_from(
+    call_timeout: std::time::Duration,
+    remaining: std::time::Duration,
+) -> Option<std::time::Duration> {
+    let min_useful = std::time::Duration::from_secs(REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS);
+    if remaining < min_useful {
         return None;
     }
-    Some(call_timeout.min(remaining))
+    let share = if remaining >= min_useful.saturating_mul(2) {
+        remaining / 2
+    } else {
+        remaining
+    };
+    Some(call_timeout.min(share))
 }
 
 /// Lane R22c-e (G26 MED-2): the reviewer's prompt window, in characters
@@ -42556,6 +42897,44 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     const R66A_HELP_FINDING: &str = "[CORRECTNESS] Help flag (-h/--help) broken due to \
                                      add_help=False (logfilter/cli.py:7-8, 11)";
 
+    /// Lane R71a: a write-scope send-back must never tell the worker, or a
+    /// human reading the card, that a reviewer looked at the diff — no
+    /// reviewer ran. The two causes must differ in every string they drive.
+    #[test]
+    fn a_write_scope_send_back_never_claims_a_review_happened() {
+        let scope = SendBackCause::WriteScope;
+        let review = SendBackCause::ReviewFindings;
+
+        assert!(scope.transition_note().contains("No reviewer ran"));
+        assert!(!scope.transition_note().contains("independent review"));
+        assert!(!scope.supersede_reason().contains("review requested"));
+        assert_eq!(scope.log_reason(), "write_scope_violation");
+
+        assert!(review.transition_note().contains("independent review"));
+        assert_eq!(review.log_reason(), "independent_review");
+        assert_ne!(scope.transition_note(), review.transition_note());
+        assert_ne!(scope.supersede_reason(), review.supersede_reason());
+    }
+
+    /// Lane R71a: the finding names the offending paths, the declared scope,
+    /// and asks for a revert rather than a redo — the in-scope half of the
+    /// diff is usually correct and re-doing it wastes the attempt budget.
+    #[test]
+    fn the_write_scope_finding_names_the_paths_and_asks_for_a_revert() {
+        let finding = write_scope_violation_finding(&["a.py".to_string()], &["b.py".to_string()]);
+        assert!(finding.contains("a.py"), "{finding}");
+        assert!(finding.contains("b.py"), "{finding}");
+        assert!(finding.contains("Revert"), "{finding}");
+        assert!(
+            !finding.to_lowercase().contains("redo"),
+            "the worker is asked to revert, not redo: {finding}"
+        );
+
+        let reason = write_scope_violation_reason(&["b.py".to_string()]);
+        assert!(reason.contains("write scope violated"), "{reason}");
+        assert!(reason.contains("b.py"), "{reason}");
+    }
+
     fn r66a_changes_requested() -> AutoLandReview {
         AutoLandReview::ChangesRequested {
             reason: format!(
@@ -42563,6 +42942,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                  approve: the independent reviewer requested changes: {R66A_HELP_FINDING}"
             ),
             findings: vec![R66A_HELP_FINDING.to_string()],
+            cause: SendBackCause::ReviewFindings,
         }
     }
 
@@ -42910,6 +43290,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             AutoLandReview::ChangesRequested {
                 reason: format!("the independent reviewer requested changes: {still_broken}"),
                 findings: vec![still_broken.to_string()],
+                cause: SendBackCause::ReviewFindings,
             },
             DEFAULT_HEADLESS_MAX_REDISPATCH,
         )
@@ -57158,5 +57539,99 @@ mod r68a_tests {
             salvage,
             std::time::Duration::from_secs(REVIEWER_GATE_SALVAGE_TIMEOUT_SECS * 2)
         );
+    }
+
+    /// Lane R71b: the r70 s2 inversion, exactly. Configured 300 s, the goal's
+    /// own wall budget says 267 s, but only 120 s of the process's drain is
+    /// left — the review must be bounded by the drain, or it outlives the run
+    /// and strands a verified commit on its branch.
+    #[test]
+    fn the_review_budget_never_outlives_the_remaining_drain() {
+        assert_eq!(
+            reviewer_gate_total_budget_secs(300, WallBudgetCeiling::Remaining(267), Some(120)),
+            120
+        );
+    }
+
+    /// The goal's own wall budget still wins when it is the smaller of the
+    /// three: a review must never spend more of a run than its goal has left.
+    #[test]
+    fn the_goal_wall_budget_still_caps_the_review() {
+        assert_eq!(
+            reviewer_gate_total_budget_secs(300, WallBudgetCeiling::Remaining(90), Some(240)),
+            90
+        );
+    }
+
+    /// No drain reading (interactive, tests, or a build predating the started-at
+    /// stamp) leaves the pre-R71b behaviour exactly as it was.
+    #[test]
+    fn a_missing_drain_reading_changes_nothing() {
+        assert_eq!(
+            reviewer_gate_total_budget_secs(300, WallBudgetCeiling::Remaining(267), None),
+            267
+        );
+        assert_eq!(
+            reviewer_gate_total_budget_secs(300, WallBudgetCeiling::Unbounded, None),
+            300
+        );
+    }
+
+    /// Lane R71b: one attempt may spend at most half of what is left, so a
+    /// reviewer that never answers still leaves a second chance behind it.
+    #[test]
+    fn one_attempt_cannot_consume_the_whole_review_budget() {
+        let call_timeout = std::time::Duration::from_secs(300);
+        let first =
+            reviewer_gate_attempt_timeout_from(call_timeout, std::time::Duration::from_secs(120))
+                .expect("120s is a useful budget");
+        assert_eq!(first, std::time::Duration::from_secs(60));
+
+        // After that attempt hangs and burns its 60s, the retry still gets a
+        // real call rather than an immediate park.
+        let retry =
+            reviewer_gate_attempt_timeout_from(call_timeout, std::time::Duration::from_secs(60))
+                .expect("60s is still useful");
+        assert_eq!(retry, std::time::Duration::from_secs(30));
+    }
+
+    /// The per-kind call timeout still wins when it is the smaller bound.
+    #[test]
+    fn the_call_timeout_still_bounds_a_generous_budget() {
+        assert_eq!(
+            reviewer_gate_attempt_timeout_from(
+                std::time::Duration::from_secs(45),
+                std::time::Duration::from_secs(600),
+            ),
+            Some(std::time::Duration::from_secs(45))
+        );
+    }
+
+    /// Halving stops at the useful floor: the last attempt gets everything
+    /// left rather than two calls too short to answer.
+    #[test]
+    fn the_last_attempt_gets_the_whole_remainder() {
+        let remaining = std::time::Duration::from_secs(REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS + 5);
+        assert_eq!(
+            reviewer_gate_attempt_timeout_from(std::time::Duration::from_secs(300), remaining),
+            Some(remaining)
+        );
+        assert_eq!(
+            reviewer_gate_attempt_timeout_from(
+                std::time::Duration::from_secs(300),
+                std::time::Duration::from_secs(REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS - 1),
+            ),
+            None
+        );
+    }
+
+    /// An exhausted drain yields 0, which is below
+    /// [`REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS`], so the gate parks honestly
+    /// instead of starting a call that cannot finish.
+    #[test]
+    fn an_exhausted_drain_leaves_no_useful_review_budget() {
+        let budget = reviewer_gate_total_budget_secs(300, WallBudgetCeiling::Unbounded, Some(0));
+        assert_eq!(budget, 0);
+        assert!(budget < REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS);
     }
 }
