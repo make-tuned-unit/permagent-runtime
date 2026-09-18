@@ -494,3 +494,11 @@
 }
 .forum-world[data-hud='resting'] .forum-desk-toggle { opacity: 0.5; }
 .forum-desk-toggle { transition: opacity 620ms ease; }
+
+/* The skiff control sits above Walk, so the two travel modes read as a pair
+   rather than as a button hidden somewhere else on the frame. */
+.forum-fly {
+  position: absolute;
+  right: 28px;
+  bottom: 118px;
+}

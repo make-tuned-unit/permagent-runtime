@@ -56,6 +56,7 @@ const FORUM_CAMERA_FAR = 6000;
 /** Remembers whether the Agent Desk is put away. */
 const FORUM_DESK_KEY = 'permagent.forum.desk';
 import { ForumEnvironment } from './ForumEnvironment';
+import { ForumFlight } from './ForumFlight';
 import { ForumShips } from './ForumShips';
 import { advanceForumSurfaceClock, releaseForumSurfaceClock } from './ForumSurfaceMaterials';
 import { useHudPresence } from './useHudPresence';
@@ -223,12 +224,16 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
     setTimeout(() => URL.revokeObjectURL(url), 1000); setSaved(true);
   }
   // The HUD rests when you are not using it and returns the moment you are.
-  const hud = useHudPresence({ walking, enabled: !agoraOpen });
   // The Agent Desk can be put away, so the world gets the whole window. The
   // choice is remembered: someone who explores with the desk closed should not
   // have to close it again on every visit. Walking opens the world up too, but
   // only as a default for a session that has not expressed a preference —
   // overriding a deliberate choice is worse than a slightly busy screen.
+  // Flying is a third mode beside orbiting and walking. It is not a camera
+  // trick: you board a craft, you fly it, and where you set it down is where
+  // you continue on foot.
+  const [flying, setFlying] = useState(false);
+  const [walkStartOverride, setWalkStartOverride] = useState<[number, number, number] | null>(null);
   const [deskOpen, setDeskOpen] = useState(() => {
     try {
       return localStorage.getItem(FORUM_DESK_KEY) !== 'closed';
@@ -247,6 +252,9 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       return next;
     });
   }, []);
+
+  // The HUD rests when you are not driving; flying counts as driving.
+  const hud = useHudPresence({ walking: walking || flying, enabled: !agoraOpen });
   return <main className="forum-shell" style={style} data-appearance={appearance} data-desk={deskOpen ? 'open' : 'closed'}>
     <section
       ref={worldRef}
@@ -278,8 +286,19 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           <Suspense fallback={null}><ForumShips /></Suspense>
           <Suspense fallback={null}><ForumAgents hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => { setSelected(id); setTab('meet'); setSaved(false); }} /></Suspense>
         </group>
-        {walking
-          ? <ForumWalk start={walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} />
+        {flying
+          ? <Suspense fallback={null}><ForumFlight
+              onExit={() => setFlying(false)}
+              onDisembark={(at) => {
+                // Step out onto the deck the skiff is standing on, a little
+                // ahead of the hull so you are beside the craft, not inside it.
+                setWalkStartOverride([at[0], at[1], at[2] + 4]);
+                setFlying(false);
+                setWalking(true);
+              }}
+            /></Suspense>
+          : walking
+          ? <ForumWalk start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} />
           : !agoraOpen && <ForumNavigation district={district} onDistrict={selectDistrict} focusAgent={focusAgent} />}
         <ForumPostProcessing />
         <PerfSampler />
@@ -287,7 +306,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       <header className="forum-brand"><div><div className="eyebrow">WORLD / SOLAR FORUM</div><h1 style={typeRamp.display}>The Solar Forum</h1><p>Living forum · <span data-testid="forum-appearance">{appearance === 'night' ? 'Night' : 'Day'} / follows system appearance</span></p></div></header>
       <nav className="forum-districts" aria-label="World places" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)} onFocusCapture={()=>hud.hold(true)} onBlurCapture={()=>hud.hold(false)}>{DISTRICTS.map(d=><Button colors={colors} variant={d.id===districtId?'ghostOn':'ghost'} key={d.id} aria-pressed={d.id===districtId} onClick={()=>selectDistrict(d.id)} flashSuccess={false}>{d.name}</Button>)}</nav>
       <div className="forum-location"><span>{agoraOpen ? 'MESH AGORA' : district.name.toUpperCase()}</span><p>{agoraOpen ? 'The antechamber beyond the gate' : district.subtitle}</p></div>
-      <div className="forum-controls">{agoraOpen ? (walking ? 'Arrow keys walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : walking ? 'Arrow keys walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>
+      <div className="forum-controls">{agoraOpen ? (walking ? 'Arrow keys walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : flying ? 'Arrow keys fly · Space climb · C descend · Shift boost · land on a terrace, then E to step out · Esc overview' : walking ? 'Arrow keys walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>
       {agoraOpen && <div className="forum-agora-return"><Button colors={colors} variant="primary" flashSuccess={false} onClick={leaveMesh}>Return to the Forum</Button></div>}
       {meshPrompt && walking && !agoraOpen && <div className="forum-gate-prompt" role="status">E · Enter the MESH</div>}
       <div className="forum-desk-toggle">
@@ -302,6 +321,13 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           {deskOpen ? 'Hide the desk' : 'Show the desk'}
         </Button>
       </div>
+      <div className="forum-fly"><Button colors={colors} variant={flying?'ghostOn':'ghost'} flashSuccess={false} onClick={()=>{
+        if (flying) { setFlying(false); return; }
+        setWalking(false);
+        setFlying(true);
+        const canvas=worldRef.current?.querySelector('canvas');
+        if(canvas){canvas.tabIndex=0;canvas.focus({preventScroll:true});}
+      }}>{flying?'Leave the skiff':'Fly the skiff'}</Button></div>
       <div className="forum-play"><Button colors={colors} variant={walking?'ghost':'primary'} flashSuccess={false} onClick={()=>{
         if(walking){setWalking(false);return;}
         setWalking(true);

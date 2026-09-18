@@ -88,3 +88,34 @@ export function waterSurfaceAt(x: number, z: number, surfaces: Mesh[] = collider
   const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
   return materials.some(m => m.name === 'Water') ? hit.point.y : null;
 }
+
+/**
+ * What the skiff would be landing on at a world position.
+ *
+ * Returns the surface height and whether it can be set down on. The rules are
+ * the walker's own, because a place you can land is a place you can then walk:
+ * water is out (same `Water` material the walker refuses), and so is anything
+ * steeper than the walker's slope limit — a skiff parked on a 60-degree roof
+ * would strand you.
+ *
+ * `null` means there is nothing below at all, which over open sea or off the
+ * edge of the world is the honest answer, and the flight model treats it as
+ * clear air rather than as ground at zero.
+ */
+export function landingSampleAt(
+  x: number,
+  z: number,
+  surfaces: Mesh[] = colliders,
+): { height: number; landable: boolean } | null {
+  if (!surfaces.length) return null;
+  origin.set(x, 1200, z);
+  ray.set(origin, down);
+  ray.far = 2400;
+  const hit = ray.intersectObjects(surfaces, false)[0];
+  if (!hit || !hit.face) return null;
+  const mesh = hit.object as Mesh;
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  if (materials.some(m => m.name === 'Water')) return { height: hit.point.y, landable: false };
+  normal.copy(hit.face.normal).applyMatrix3(normalMatrix.getNormalMatrix(hit.object.matrixWorld)).normalize();
+  return { height: hit.point.y, landable: normal.y > .65 };
+}
