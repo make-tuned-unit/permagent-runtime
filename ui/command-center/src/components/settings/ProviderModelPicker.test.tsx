@@ -44,4 +44,31 @@ describe('ProviderModelPicker', () => {
     await act(async () => { (Array.from(host.querySelectorAll('button')).find(b => b.textContent?.includes('Use session model')) as HTMLButtonElement).click(); });
     expect(onUseSession).toHaveBeenCalled();
   });
+
+  it('still offers a known model the live list dropped', async () => {
+    // Jesse: "I also cant seem to find the latest Haiku model." The live list
+    // comes back filtered through the canonical registry, and the picker used
+    // to replace the provider's known models with it — so a model the app
+    // fully supports became unselectable. The menu is now the union.
+    state.providers = [provider('anthropic', ['claude-sonnet-5', 'claude-haiku-4-5-20251001'])];
+    getProviderModels.mockResolvedValue(['claude-sonnet-5']);
+    const onChange = vi.fn();
+    await act(async () => { root.render(<ProviderModelPicker value={{ provider: null, model: null }} onChange={onChange} />); });
+    // A sole configured provider opens expanded — there is nothing else the
+    // menu could be about, so making you click it first is pure friction.
+    await act(async () => { (host.querySelector('button[aria-haspopup]') as HTMLButtonElement).click(); });
+    expect(host.textContent).toContain('claude-haiku-4-5-20251001');
+    // And it reads as a name, not a serial number.
+    expect(host.textContent).toContain('Claude Haiku 4.5');
+    const row = Array.from(host.querySelectorAll('button')).find(b => b.textContent?.includes('claude-haiku-4-5-20251001')) as HTMLButtonElement;
+    await act(async () => { row.click(); });
+    expect(onChange).toHaveBeenCalledWith({ provider: 'anthropic', model: 'claude-haiku-4-5-20251001' });
+  });
+
+  it('opens on the provider already in use, so the current model is in view', async () => {
+    state.providers = [provider('anthropic', ['claude-sonnet-5']), provider('openai', ['gpt-5'])];
+    await act(async () => { root.render(<ProviderModelPicker value={{ provider: 'anthropic', model: 'claude-sonnet-5' }} onChange={vi.fn()} />); });
+    await act(async () => { (host.querySelector('button[aria-haspopup]') as HTMLButtonElement).click(); });
+    expect(host.textContent).toContain('claude-sonnet-5');
+  });
 });
