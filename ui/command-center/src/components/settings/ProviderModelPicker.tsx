@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { FiCheck, FiChevronDown, FiLoader, FiSearch } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter, type ProviderInfo } from '../../lib/store';
-import { font, radius, type as typeScale } from '../../styles/tokens';
+import { font, radius, space, type as typeScale } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { catalogue, describeModel, matchesQuery, mergeModelLists, type ModelEntry } from './modelCatalog';
 
@@ -144,7 +144,7 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
         '--pa-btn-pad': compact ? '6px 10px' : '8px 12px',
         '--pa-btn-radius': `${radius.md}px`,
         justifyContent: 'space-between',
-        gap: 8,
+        gap: space.md,
       } as CSSProperties}
     >
       <span className="truncate text-left flex items-baseline gap-2 min-w-0">
@@ -251,10 +251,10 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
                 style={{
                   '--pa-btn-fg': active ? colors.cyan : colors.text,
                   '--pa-btn-bg-hover': colors.surfaceHi,
-                  '--pa-btn-pad': '6px 12px 6px 22px',
+                  '--pa-btn-pad': `${space.sm}px ${space.xl}px ${space.sm}px ${space.huge}px`,
                   '--pa-btn-radius': '0',
                   justifyContent: 'space-between',
-                  gap: 10,
+                  gap: space.lg,
                   textAlign: 'left',
                 } as CSSProperties}
               >
@@ -276,7 +276,7 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
 
             {isExpanded && entries.length === 0 && loading !== provider.name && <div
               className="px-3 py-2"
-              style={{ paddingLeft: 22, ...typeScale.micro, fontFamily: font.body, color: colors.textMuted }}
+              style={{ paddingLeft: space.huge, ...typeScale.micro, fontFamily: font.body, color: colors.textMuted }}
             >No models match.</div>}
           </div>;
         })}

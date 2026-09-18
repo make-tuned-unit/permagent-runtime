@@ -154,10 +154,17 @@ function useOnScreen(ref: RefObject<HTMLElement | null>): boolean {
 /** The corner control that puts a card away. Small, quiet, always in the same
  *  place, and labelled for a screen reader with the card it closes. */
 function DismissCard({ label, onDismiss }: { label: string; onDismiss: () => void }) {
+  const { colors } = useTheme();
   return (
-    <button type="button" className="pa-btn forum-card-dismiss" aria-label={`Hide ${label}`} onClick={onDismiss}>
+    <Button
+      colors={colors}
+      variant="bare"
+      className="forum-card-dismiss"
+      aria-label={`Hide ${label}`}
+      onClick={onDismiss}
+    >
       <span aria-hidden="true">×</span>
-    </button>
+    </Button>
   );
 }
 

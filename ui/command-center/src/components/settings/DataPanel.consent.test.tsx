@@ -33,6 +33,7 @@ vi.mock('../../lib/api', () => ({
   },
   apiFetch: vi.fn(),
   extractText: vi.fn(() => ''),
+  extractSystemNotice: vi.fn(() => null),
   extractThinking: vi.fn(() => ''),
   fileToBase64: vi.fn(),
   readerIngest: vi.fn(),

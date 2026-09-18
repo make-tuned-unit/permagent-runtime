@@ -49,7 +49,15 @@ it('uses existing product names and routes Brain to the memory tool only when a 
 });
 it('exposes all districts as keyboard-accessible controls without a canvas', () => {
   const nav = host.querySelector('[aria-label="World places"]')!;
-  expect([...nav.querySelectorAll('button')].map(b=>b.textContent)).toEqual(['Commons','Gallery','Build','Brain','Automate','Mesh gate','Reading grove','Maker court','Council garden','Arrival gardens','Conservatory','Maker hall','Debating theatre','Harbor']);
+  const buttons = [...nav.querySelectorAll('button')];
+  // The rail gives each place its name AND what it is — the whole reason it
+  // replaced the row of chips across the sky, which had room for names only.
+  expect(buttons.map(b => b.querySelector('.forum-rail-place-name')?.textContent)).toEqual(
+    ['Commons','Gallery','Build','Brain','Automate','Mesh gate','Reading grove','Maker court','Council garden','Arrival gardens','Conservatory','Maker hall','Debating theatre','Harbor']);
+  expect(buttons.every(b => b.querySelector('.forum-rail-place-sub')?.textContent)).toBe(true);
+  // One place at a time: radios in a radiogroup, not fourteen loose toggles.
+  expect(nav.getAttribute('role')).toBe('radiogroup');
+  expect(buttons.filter(b => b.getAttribute('aria-checked') === 'true')).toHaveLength(1);
 });
 
 it('reaches the Mesh Agora without walking, and returns on Escape', () => {

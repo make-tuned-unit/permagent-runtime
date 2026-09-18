@@ -23,6 +23,7 @@ vi.mock('./api', () => ({
   },
   apiFetch: vi.fn(),
   extractText: vi.fn(() => ''),
+  extractSystemNotice: vi.fn(() => null),
   extractThinking: vi.fn(() => ''),
   hasToolActivity: vi.fn(() => false),
   readerIngest: mocks.readerIngest,

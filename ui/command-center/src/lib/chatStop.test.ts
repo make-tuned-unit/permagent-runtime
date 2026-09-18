@@ -26,6 +26,7 @@ vi.mock('./api', () => ({
   api: { cancelReply, sendReply: vi.fn() },
   apiFetch: vi.fn(),
   extractText: vi.fn(() => ''),
+  extractSystemNotice: vi.fn(() => null),
   extractThinking: vi.fn(() => ''),
   hasToolActivity: vi.fn(() => false),
   fileToBase64: vi.fn(),

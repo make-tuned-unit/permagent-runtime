@@ -13,6 +13,7 @@ vi.mock('../../lib/api', () => ({
   api: { fetchGrowMediaBlob: vi.fn(() => Promise.reject(new Error('no still'))) },
   apiFetch: vi.fn(),
   extractText: vi.fn(() => ''),
+  extractSystemNotice: vi.fn(() => null),
   extractThinking: vi.fn(() => ''),
   fileToBase64: vi.fn(),
   readerIngest: vi.fn(),

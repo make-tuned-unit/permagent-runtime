@@ -27,6 +27,7 @@ vi.mock('../../lib/api', () => ({
   api: { readConfig: vi.fn(() => new Promise(() => {})) },
   apiFetch: vi.fn(),
   extractText: vi.fn(() => ''),
+  extractSystemNotice: vi.fn(() => null),
   extractThinking: vi.fn(() => ''),
   fileToBase64: vi.fn(),
   readerIngest: vi.fn(),

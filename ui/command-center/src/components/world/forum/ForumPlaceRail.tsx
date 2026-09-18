@@ -81,7 +81,7 @@ export function ForumPlaceRail({
         className="forum-rail-list"
         id="forum-place-rail"
         ref={listRef}
-        role="group"
+        role="radiogroup"
         aria-label="World places"
         aria-hidden={!open}
       >
@@ -93,7 +93,11 @@ export function ForumPlaceRail({
               type="button"
               className="pa-btn forum-rail-place"
               data-active={active ? 'yes' : 'no'}
-              aria-pressed={active}
+              // One place at a time, so these are radios rather than toggles:
+              // a screen reader should say "Harbor, 14 of 14, selected", not
+              // announce fourteen independent pressed/unpressed buttons.
+              role="radio"
+              aria-checked={active}
               tabIndex={open ? 0 : -1}
               onClick={() => onSelect(place.id)}
             >
