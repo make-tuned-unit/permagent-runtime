@@ -29,6 +29,7 @@ import { registerForumCollision } from './walkCollision';
 import { MeshAgora } from './MeshAgora';
 import { ForumPostProcessing } from './ForumPostProcessing';
 import { ForumPassport } from './ForumPassport';
+import { ForumEnvironment } from './ForumEnvironment';
 import { ForumShips } from './ForumShips';
 import { advanceForumSurfaceClock, releaseForumSurfaceClock } from './ForumSurfaceMaterials';
 import { useHudPresence } from './useHudPresence';
@@ -214,6 +215,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
             walker is still standing on out at the gate — is never rebuilt. */}
         <group visible={!agoraOpen}>
           <VaultBoundary fallback={<Fallback />}><Suspense fallback={<Fallback />}><ForumAsset /></Suspense></VaultBoundary>
+          <ForumEnvironment appearance={appearance} />
           <ForumWater />
           <Suspense fallback={null}><ForumShips /></Suspense>
           <Suspense fallback={null}><ForumAgents hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => { setSelected(id); setTab('meet'); setSaved(false); }} /></Suspense>

@@ -5,5 +5,9 @@
   "lanterns": 25,
   "stars": false,
   "sunLux": 85000.0,
-  "exposureEV100": 13.0
+  "skyIntensity": 2.3,
+  "exposureEV100": 13.0,
+  "exposureMode": "locked_auto",
+  "fogDensity": 0.005,
+  "lanternEmissionStrength": 0.15
 }

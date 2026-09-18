@@ -3,7 +3,7 @@
   "engine": "5.8.2-56702186+++UE5+Release-5.8",
   "mesh": "/Game/SolarForum/Architecture/solar-forum.solar-forum",
   "diameterCm": 58228.568359375,
-  "materialSlots": 51,
+  "materialSlots": 56,
   "collision": "complex-as-simple, static architecture",
   "map": "/Game/SolarForum/Maps/Forum",
   "gameMode": "/Game/FirstPerson/Blueprints/BP_FirstPersonGameMode.BP_FirstPersonGameMode_C",
