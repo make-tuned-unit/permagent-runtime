@@ -31,6 +31,8 @@ import { MeshAgora } from './MeshAgora';
 import { ForumPostProcessing } from './ForumPostProcessing';
 import { useCommandCenter } from '../../../lib/store';
 import { ForumPassport } from './ForumPassport';
+import { ForumPlaceRail } from './ForumPlaceRail';
+import { useDismissible } from './useDismissible';
 
 /**
  * Depth range, and why these two numbers matter more than they look.
@@ -75,6 +77,8 @@ const FORUM_CAMERA_FAR = 6000;
 
 /** Remembers whether the Agent Desk is put away. */
 const FORUM_DESK_KEY = 'permagent.forum.desk';
+/** Remembers whether the place rail is open. */
+const FORUM_RAIL_KEY = 'permagent.forum.rail';
 import { ForumEnvironment } from './ForumEnvironment';
 import { ForumFlight } from './ForumFlight';
 import { ForumShips } from './ForumShips';
@@ -145,6 +149,16 @@ function useOnScreen(ref: RefObject<HTMLElement | null>): boolean {
   }, [ref]);
   return onScreen;
 }
+/** The corner control that puts a card away. Small, quiet, always in the same
+ *  place, and labelled for a screen reader with the card it closes. */
+function DismissCard({ label, onDismiss }: { label: string; onDismiss: () => void }) {
+  return (
+    <button type="button" className="pa-btn forum-card-dismiss" aria-label={`Hide ${label}`} onClick={onDismiss}>
+      <span aria-hidden="true">×</span>
+    </button>
+  );
+}
+
 /** Drives the shared water clock so the lagoon moves. One number per frame. */
 function ForumWater() {
   useFrame((_, delta) => advanceForumSurfaceClock(delta));
@@ -253,6 +267,10 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   // trick: you board a craft, you fly it, and where you set it down is where
   // you continue on foot.
   const [flying, setFlying] = useState(false);
+  const [railOpen, setRailOpen] = useState(() => {
+    try { return localStorage.getItem(FORUM_RAIL_KEY) !== 'closed'; } catch { return true; }
+  });
+  const cards = useDismissible();
   const [walkStartOverride, setWalkStartOverride] = useState<[number, number, number] | null>(null);
   const [deskOpen, setDeskOpen] = useState(() => {
     try {
@@ -323,12 +341,30 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         <ForumPostProcessing />
         <PerfSampler />
       </Canvas>
-      <header className="forum-brand"><div><div className="eyebrow">WORLD / SOLAR FORUM</div><h1 style={typeRamp.display}>The Solar Forum</h1><p>Living forum · <span data-testid="forum-appearance">{appearance === 'night' ? 'Night' : 'Day'} / follows system appearance</span></p></div></header>
-      <nav className="forum-districts" aria-label="World places" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)} onFocusCapture={()=>hud.hold(true)} onBlurCapture={()=>hud.hold(false)}>{DISTRICTS.map(d=><Button colors={colors} variant={d.id===districtId?'ghostOn':'ghost'} key={d.id} aria-pressed={d.id===districtId} onClick={()=>selectDistrict(d.id)} flashSuccess={false}>{d.name}</Button>)}</nav>
-      <div className="forum-location"><span>{agoraOpen ? 'MESH AGORA' : district.name.toUpperCase()}</span><p>{agoraOpen ? 'The antechamber beyond the gate' : district.subtitle}</p></div>
-      <div className="forum-controls">{agoraOpen ? (walking ? 'Arrow keys walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : flying ? 'Arrow keys fly · Space climb · C descend · Shift boost · land on a terrace, then E to step out · Esc overview' : walking ? 'Arrow keys walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>
+      {!cards.isDismissed('brand') && <header className="forum-brand"><DismissCard label="the world title" onDismiss={()=>cards.dismiss('brand')} /><div><div className="eyebrow">WORLD / SOLAR FORUM</div><h1 style={typeRamp.display}>The Solar Forum</h1><p>Living forum · <span data-testid="forum-appearance">{appearance === 'night' ? 'Night' : 'Day'} / follows system appearance</span></p></div></header>}
+      <ForumPlaceRail
+        places={DISTRICTS.map(d => ({ id: d.id, name: d.name, subtitle: d.subtitle }))}
+        activeId={districtId}
+        open={railOpen}
+        colors={colors}
+        onSelect={selectDistrict}
+        onToggle={(next) => {
+          setRailOpen(next);
+          try { localStorage.setItem(FORUM_RAIL_KEY, next ? 'open' : 'closed'); } catch { /* private window */ }
+        }}
+        onHold={hud.hold}
+      />
+      {!cards.isDismissed('place') && <div className="forum-location"><DismissCard label="the place card" onDismiss={()=>cards.dismiss('place')} /><span>{agoraOpen ? 'MESH AGORA' : district.name.toUpperCase()}</span><p>{agoraOpen ? 'The antechamber beyond the gate' : district.subtitle}</p></div>}
+      {!cards.isDismissed('hints') && <div className="forum-controls"><DismissCard label="the control hints" onDismiss={()=>cards.dismiss('hints')} />{agoraOpen ? (walking ? 'Arrow keys walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : flying ? 'Arrow keys fly · Space climb · C descend · Shift boost · land on a terrace, then E to step out · Esc overview' : walking ? 'Arrow keys walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>}
       {agoraOpen && <div className="forum-agora-return"><Button colors={colors} variant="primary" flashSuccess={false} onClick={leaveMesh}>Return to the Forum</Button></div>}
       {meshPrompt && walking && !agoraOpen && <div className="forum-gate-prompt" role="status">E · Enter the MESH</div>}
+      {cards.hiddenCount > 0 && (
+        <div className="forum-restore" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}>
+          <Button colors={colors} variant="ghost" flashSuccess={false} onClick={cards.restoreAll}>
+            {`Show ${cards.hiddenCount} hidden card${cards.hiddenCount === 1 ? '' : 's'}`}
+          </Button>
+        </div>
+      )}
       <div className="forum-desk-toggle">
         <Button
           colors={colors}
@@ -358,8 +394,8 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         try { const result=canvas?.requestPointerLock?.(); if(result && typeof result.catch==='function')void result.catch(()=>{}); } catch { /* drag look remains available */ }
       }}>{walking?'Return to overview':'Walk the world'}</Button></div>
       {walking && <div className="forum-crosshair" aria-hidden="true">+</div>}
-      <div className="forum-live">{loaded ? `${goals.length} active jobs reported` : 'Job feed unavailable / connecting'}<small>Architecture preview · existing World agent feeds</small></div>
-      <div className="forum-passport-slot" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}><ForumPassport /></div>
+      {!cards.isDismissed('feed') && <div className="forum-live"><DismissCard label="the job feed" onDismiss={()=>cards.dismiss('feed')} />{loaded ? `${goals.length} active jobs reported` : 'Job feed unavailable / connecting'}<small>Architecture preview · existing World agent feeds</small></div>}
+      {!cards.isDismissed('passport') && <div className="forum-passport-slot" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}><DismissCard label="the passport" onDismiss={()=>cards.dismiss('passport')} /><ForumPassport /></div>}
     </section>
     <aside className="forum-panel" id="forum-agent-desk" aria-label="Agent learning and task desk" aria-hidden={!deskOpen}>
       <div className="eyebrow">AGENT DESK</div><h2 style={typeRamp.title}>Meet your collaborators.</h2>

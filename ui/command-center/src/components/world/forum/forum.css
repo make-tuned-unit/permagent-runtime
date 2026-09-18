@@ -502,3 +502,127 @@
   right: 28px;
   bottom: 118px;
 }
+
+/* ── The place rail ───────────────────────────────────────────────────
+   Places read down the left edge instead of across the sky. The old chip
+   cloud covered the horizon — by the project's own measurement, about a
+   third of the gas giant — and gave every place the same one-word voice.
+   A rail has room for each place to say what it is, and it slides away
+   entirely when you want the world to itself. */
+.forum-rail {
+  position: absolute;
+  left: 0;
+  top: 96px;
+  bottom: 96px;
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+.forum-rail-list {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: color-mix(in srgb, var(--forum-panel) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--forum-border);
+  border-left: 0;
+  border-radius: 0 14px 14px 0;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+  transform: translateX(0);
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1), opacity 320ms ease;
+}
+.forum-rail[data-open='closed'] .forum-rail-list {
+  transform: translateX(-102%);
+  opacity: 0;
+}
+.forum-rail-place {
+  --pa-btn-bg: transparent;
+  --pa-btn-fg: var(--forum-text);
+  --pa-btn-pad: 8px 14px;
+  --pa-btn-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 190px;
+  text-align: left;
+}
+.forum-rail-place[data-active='yes'] {
+  --pa-btn-bg: var(--forum-accent-soft);
+  --pa-btn-fg: var(--forum-accent);
+}
+.forum-rail-place-name { font-size: 13px; font-weight: 600; }
+.forum-rail-place-sub {
+  font-size: 11px;
+  color: var(--forum-muted);
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The handle stays put whether the rail is in or out: it is how you get the
+   rail back, so it must never travel with the thing it reopens. */
+.forum-rail-handle {
+  pointer-events: auto;
+  --pa-btn-bg: color-mix(in srgb, var(--forum-panel) 88%, transparent);
+  --pa-btn-pad: 10px 8px;
+  --pa-btn-radius: 0 12px 12px 0;
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-left: 0;
+  border: 1px solid var(--forum-border);
+  border-left: 0;
+  backdrop-filter: blur(10px);
+}
+.forum-rail[data-open='open'] .forum-rail-handle { order: 2; border-radius: 0 12px 12px 0; }
+.forum-rail-handle-label {
+  writing-mode: vertical-rl;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--forum-muted);
+}
+
+/* ── Dismissable cards ────────────────────────────────────────────────
+   Every panel over the world can be put away and stays away. The control
+   is the same size and place on each card, and it only appears on hover
+   or focus so it is not five crosses sitting on the view. */
+.forum-brand, .forum-location, .forum-live, .forum-passport-slot, .forum-controls { position: absolute; }
+.forum-card-dismiss {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  --pa-btn-bg: transparent;
+  --pa-btn-fg: var(--forum-muted);
+  --pa-btn-pad: 2px 6px;
+  --pa-btn-radius: 8px;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 180ms ease;
+  z-index: 2;
+}
+.forum-brand:hover .forum-card-dismiss,
+.forum-location:hover .forum-card-dismiss,
+.forum-live:hover .forum-card-dismiss,
+.forum-controls:hover .forum-card-dismiss,
+.forum-passport-slot:hover .forum-card-dismiss,
+.forum-card-dismiss:focus-visible { opacity: 1; }
+
+.forum-restore {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  z-index: 4;
+}
