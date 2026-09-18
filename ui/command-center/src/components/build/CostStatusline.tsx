@@ -7,6 +7,7 @@ import { GLOSSARY } from '../../lib/vocabulary';
 import { useLiveGoals } from '../../lib/useLiveGoals';
 import { api } from '../../lib/api';
 import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
+import { ProviderModelPicker } from '../settings/ProviderModelPicker';
 
 import { Tooltip } from '../common/Tooltip';
 function budgetTitle(codingSpend: ReturnType<typeof useCommandCenter.getState>['codingSpend']): string {
@@ -31,6 +32,85 @@ function budgetTitle(codingSpend: ReturnType<typeof useCommandCenter.getState>['
     `sources ${budget.provenance.sources.join(', ') || 'unavailable'}`,
     `as of ${budget.provenance.asOf}`,
   ].join(' · ');
+}
+
+/**
+ * The model you are spending on, at the end of the line that says what you are
+ * spending. Jesse: "The model picker dropdown disappeared. It would make sense
+ * for it to be on the bottom bar with the costs and I could switch between
+ * models."
+ *
+ * It had not disappeared — it was in the terminal's tab strip, which renders it
+ * only for a `permagent run --interactive` tab, and he had two plain shells
+ * open. That gate is right about WHEN a switch is possible and wrong about
+ * WHERE the control belongs: the model and the money are one glance.
+ *
+ * Degradation is explicit rather than hidden. With no harness session this
+ * renders a non-interactive note saying so, because hiding the control is the
+ * exact behaviour that was reported as a bug — a control that vanishes teaches
+ * nothing, while "no harness session" answers the question the absence raised.
+ * It is not a disabled *button*: there is no dead trigger to click.
+ *
+ * Selection state lives in the store (`harnessModelSessionId` /
+ * `harnessModelSelections`), published by TerminalManager, so this picker and
+ * the detached terminal's picker are two views of one value.
+ */
+function HarnessModelControl() {
+  const { colors } = useTheme();
+  const sessionId = useCommandCenter((s) => s.harnessModelSessionId);
+  const selections = useCommandCenter((s) => s.harnessModelSelections);
+  const request = useCommandCenter((s) => s.harnessModelRequest);
+  const requestHarnessModel = useCommandCenter((s) => s.requestHarnessModel);
+
+  // `marginLeft: auto` pins this to the right end and `flexShrink: 0` keeps it
+  // whole: the bar clips from the right, so anything that shrinks must be the
+  // supporting segments, never the authoritative spend figure on the left.
+  const anchored = {
+    marginLeft: 'auto',
+    flexShrink: 0,
+    paddingLeft: space.xl,
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: space.sm,
+  } as const;
+
+  if (!sessionId) {
+    return (
+      <Tooltip content="No Permagent harness session in the Build terminal. Start one — or focus its tab — to switch the model it runs on.">
+        <span
+          tabIndex={0}
+          data-testid="statusline-model-idle"
+          aria-disabled="true"
+          style={{ ...anchored, color: colors.textDim, outline: 'none' }}
+        >
+          no harness — model fixed
+        </span>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <div style={anchored} data-testid="statusline-model-control">
+      {request?.sessionId === sessionId && (
+        <span aria-live="polite" style={{ color: colors.textDim, whiteSpace: 'nowrap' }}>
+          requested {request.provider}/{request.model}
+        </span>
+      )}
+      {/* Fixed, narrow and capped: the trigger is one line of text plus a
+          chevron, and it must not grow with the model name it is showing. The
+          menu itself is portalled to the body and flips upward on its own when
+          there is no room below, which is what a control pinned to the bottom
+          of the window needs — do not re-anchor it here. */}
+      <div style={{ width: 190, maxWidth: '26vw' }}>
+        <ProviderModelPicker
+          value={selections[sessionId] ?? { provider: null, model: null }}
+          onChange={(value) => { void requestHarnessModel(value); }}
+          compact
+          aria-label="Choose harness provider and model"
+        />
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -102,79 +182,94 @@ export function CostStatusline() {
   const note = routeNote?.hold_note || routeNote?.routing_note;
 
   return (
-    // The line compresses four ideas into about forty characters — "37% ctx",
-    // "cache saved $0.12", "incl. 2 subagents". The audience is technical and
-    // the severity is low, but a term the interface invents still gets defined
-    // somewhere, and the tip is the cheapest somewhere on a status bar with no
-    // room for prose. `budgetTitle` spends that room on the live projection
-    // when there is one and falls back to the glossary entry when there isn't.
-    <Tooltip content={budgetTitle(codingSpend)}>
-      <span tabIndex={0} style={{ outline: 'none' }}>
-        <div
-          role="status"
-          aria-label={meter.ariaLabel}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: space.xxs,
-            padding: `${space.sm}px 18px`,
-            borderTop: `1px solid ${colors.border}`,
-            fontFamily: font.mono,
-            fontSize: textSize.micro,
-            color: colors.textMuted,
-            flexShrink: 0,
-            overflow: 'hidden',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {/* THE authoritative number: running session spend. */}
-          <span
+    // The bar owns the chrome (border, padding, mono micro type, one clipped
+    // line); the cost group and the model picker are its two children. The
+    // budget tooltip covers the FIGURES only — hovering the picker to change
+    // models should not raise a wall of ledger text over the menu.
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        padding: `${space.sm}px 18px`,
+        borderTop: `1px solid ${colors.border}`,
+        fontFamily: font.mono,
+        fontSize: textSize.micro,
+        color: colors.textMuted,
+        flexShrink: 0,
+        overflow: 'hidden',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {/* The line compresses four ideas into about forty characters — "37% ctx",
+          "cache saved $0.12", "incl. 2 subagents". The audience is technical and
+          the severity is low, but a term the interface invents still gets defined
+          somewhere, and the tip is the cheapest somewhere on a status bar with no
+          room for prose. `budgetTitle` spends that room on the live projection
+          when there is one and falls back to the glossary entry when there isn't. */}
+      <Tooltip content={budgetTitle(codingSpend)}>
+        <span tabIndex={0} style={{ outline: 'none', minWidth: 0, overflow: 'hidden' }}>
+          <div
+            role="status"
+            aria-label={meter.ariaLabel}
             style={{
-              fontWeight: 700,
-              color: colors.text,
-              fontVariantNumeric: 'tabular-nums',
+              display: 'flex',
+              alignItems: 'center',
+              gap: space.xxs,
+              minWidth: 0,
+              overflow: 'hidden',
+              whiteSpace: 'nowrap',
             }}
           >
-            {meter.cost}
-          </span>
-          {meter.segments.map((seg, i) => {
-            const isSaving = seg.startsWith('cache saved');
-            // The fail-closed estimate disclosure needs to read as a caution, not
-            // as ordinary supporting context — colors.warning exists on the theme,
-            // so use it; a theme without one would fall back to textMuted rather
-            // than inventing a color that isn't part of the design system.
-            const isEstimated = seg === 'estimated — no published price';
-            return (
-              <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>
+            {/* THE authoritative number: running session spend. */}
+            <span
+              style={{
+                fontWeight: 700,
+                color: colors.text,
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              {meter.cost}
+            </span>
+            {meter.segments.map((seg, i) => {
+              const isSaving = seg.startsWith('cache saved');
+              // The fail-closed estimate disclosure needs to read as a caution, not
+              // as ordinary supporting context — colors.warning exists on the theme,
+              // so use it; a theme without one would fall back to textMuted rather
+              // than inventing a color that isn't part of the design system.
+              const isEstimated = seg === 'estimated — no published price';
+              return (
+                <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                  <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
+                    ·
+                  </span>
+                  <span
+                    style={{
+                      color: isSaving
+                        ? colors.success
+                        : isEstimated
+                          ? (colors.warning ?? colors.textMuted)
+                          : colors.textMuted,
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
+                    {seg}
+                  </span>
+                </span>
+              );
+            })}
+            {note && (
+              <span style={{ display: 'inline-flex', alignItems: 'center' }}>
                 <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
                   ·
                 </span>
-                <span
-                  style={{
-                    color: isSaving
-                      ? colors.success
-                      : isEstimated
-                        ? (colors.warning ?? colors.textMuted)
-                        : colors.textMuted,
-                    fontVariantNumeric: 'tabular-nums',
-                  }}
-                >
-                  {seg}
-                </span>
+                <span style={{ color: colors.textMuted }}>{note}</span>
               </span>
-            );
-          })}
-          {note && (
-            <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-              <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
-                ·
-              </span>
-              <span style={{ color: colors.textMuted }}>{note}</span>
-            </span>
-          )}
-          <RoleRoutingPrompt variant="compact" />
-        </div>
-      </span>
-    </Tooltip>
+            )}
+            <RoleRoutingPrompt variant="compact" />
+          </div>
+        </span>
+      </Tooltip>
+      <HarnessModelControl />
+    </div>
   );
 }

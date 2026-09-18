@@ -18,6 +18,7 @@ import {
   type PtySessionInfo,
 } from './terminalReattach';
 import { createClaimSet } from '../../lib/claimSet';
+import { useCommandCenter } from '../../lib/store';
 import { ProviderModelPicker } from '../settings/ProviderModelPicker';
 import {
   CHROME_GEOM,
@@ -217,11 +218,14 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
   // Drop-to-CC-terminal (#557): visual state while a file is dragged over the pane.
   const [dropActive, setDropActive] = useState(false);
-  const [modelSwitchRequest, setModelSwitchRequest] = useState<{ sessionId: string; provider: string; model: string } | null>(null);
-  const [terminalModelSelections, setTerminalModelSelections] = useState<Record<string, { provider: string; model: string }>>({});
-  const modelSwitchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const modelSwitchRequestRef = useRef(modelSwitchRequest);
-  modelSwitchRequestRef.current = modelSwitchRequest;
+  // The model selection itself now lives in the store (Jesse 2026-09-18: put
+  // the picker "on the bottom bar with the costs"). What stays here is the
+  // part only the terminal can do: knowing WHICH tab is a switchable harness,
+  // and reading the CLI's confirmation out of the PTY stream.
+  const harnessModelRequest = useCommandCenter(s => s.harnessModelRequest);
+  const harnessModelSelections = useCommandCenter(s => s.harnessModelSelections);
+  const setHarnessModelSession = useCommandCenter(s => s.setHarnessModelSession);
+  const requestHarnessModel = useCommandCenter(s => s.requestHarnessModel);
   const modelOutputTail = useRef<Record<string, string>>({});
   const rootRef = useRef<HTMLDivElement>(null);
   const killPtyRef = useRef<(sessionId: string) => Promise<void>>();
@@ -243,39 +247,33 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
   tabsRef.current = tabs;
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0] ?? null;
   const canSwitchTerminalModel = isPermagentInteractiveHarness(activeTab);
+  const harnessModelSessionId = canSwitchTerminalModel ? activeTab?.sessionId ?? null : null;
 
-  useEffect(() => () => {
-    if (modelSwitchTimer.current) clearTimeout(modelSwitchTimer.current);
-  }, []);
+  // Publish the switchable session so a picker anywhere in this window — the
+  // Build statusline, or this strip when detached — can target it, and so it
+  // can honestly report that there is nothing to switch when it is null.
+  useEffect(() => {
+    setHarnessModelSession(harnessModelSessionId);
+    return () => {
+      // Clear only what THIS instance published. A pane toggle remounts the
+      // manager, and the new instance can register before the old one's
+      // cleanup runs (same commit-order hazard as the tab persistence below),
+      // so a blind clear would erase a live registration.
+      if (useCommandCenter.getState().harnessModelSessionId === harnessModelSessionId) {
+        setHarnessModelSession(null);
+      }
+    };
+  }, [harnessModelSessionId, setHarnessModelSession]);
 
-  const sendTerminalModel = useCallback(async ({ provider, model }: { provider: string; model: string }) => {
-    const target = tabsRef.current.find(tab => tab.id === activeTabIdRef.current);
-    if (!isPermagentInteractiveHarness(target) || !target?.sessionId) return;
-    const sessionId = target.sessionId;
-    const request = { sessionId, provider, model };
-    setModelSwitchRequest(request);
-    modelSwitchRequestRef.current = request;
-    modelOutputTail.current[sessionId] = '';
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('write_to_pty', { sessionId, data: `/model ${provider}/${model}\r` });
-      // Writing to the PTY only proves delivery. The CLI validates the route
-      // and prints the authoritative result, so this status remains a request
-      // and the picker does not falsely mark the model active.
-      if (modelSwitchTimer.current) clearTimeout(modelSwitchTimer.current);
-      modelSwitchTimer.current = setTimeout(() => {
-        if (modelSwitchRequestRef.current?.sessionId === sessionId) setModelSwitchRequest(null);
-      }, 3000);
-    } catch (err) {
-      // The CLI owns success/error rendering. A failed write is intentionally
-      // silent here so the UI never claims that the model changed.
-      if (modelSwitchRequestRef.current?.sessionId === sessionId) setModelSwitchRequest(null);
-      console.error('[terminal] model switch injection failed:', err);
-    }
-  }, []);
+  // Each request opens a fresh listening window on the PTY. Without this the
+  // 800-char tail could still hold the PREVIOUS switch's confirmation and
+  // match it again, confirming a switch that never happened.
+  useEffect(() => {
+    if (harnessModelRequest) modelOutputTail.current[harnessModelRequest.sessionId] = '';
+  }, [harnessModelRequest]);
 
   const handleTerminalModelOutput = useCallback((sessionId: string, data: string) => {
-    const request = modelSwitchRequestRef.current;
+    const request = useCommandCenter.getState().harnessModelRequest;
     if (!request || request.sessionId !== sessionId) return;
     const previous = modelOutputTail.current[sessionId] ?? '';
     const plain = `${previous}${data}`
@@ -284,9 +282,10 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
     modelOutputTail.current[sessionId] = plain;
     const confirmation = `Harness model switched for this session only: ${request.provider}/${request.model}.`;
     if (!plain.includes(confirmation)) return;
-    setTerminalModelSelections(prev => ({ ...prev, [sessionId]: { provider: request.provider, model: request.model } }));
-    setModelSwitchRequest(null);
-    if (modelSwitchTimer.current) clearTimeout(modelSwitchTimer.current);
+    useCommandCenter.getState().confirmHarnessModel(sessionId, {
+      provider: request.provider,
+      model: request.model,
+    });
   }, []);
 
   const cycleTabs = useCallback((backwards = false) => {
@@ -667,21 +666,27 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
           })}
         </div>
         <CycleTabsButton pane="terminal" onCycle={() => cycleTabs()} />
-        {canSwitchTerminalModel && (
+        {/* Jesse 2026-09-18: "It would make sense for it to be on the bottom
+            bar with the costs." In the docked Build tab the picker now lives
+            on CostStatusline, beside the money it spends, so this strip does
+            not render a second one — one concept, one place. A DETACHED pane
+            window is its own realm with no statusline in it, so it keeps the
+            picker here rather than losing model switching entirely. The two
+            are never on screen at once, and both read and write the same
+            store selection, so they cannot disagree. */}
+        {detached && canSwitchTerminalModel && harnessModelSessionId && (
           <div className="flex items-center gap-1 px-1" data-testid="terminal-model-control">
             <div style={{ width: 220, maxWidth: '35vw' }}>
               <ProviderModelPicker
-                value={activeTab?.sessionId
-                  ? terminalModelSelections[activeTab.sessionId] ?? { provider: null, model: null }
-                  : { provider: null, model: null }}
-                onChange={(value) => { void sendTerminalModel(value); }}
+                value={harnessModelSelections[harnessModelSessionId] ?? { provider: null, model: null }}
+                onChange={(value) => { void requestHarnessModel(value); }}
                 compact
                 aria-label="Choose terminal provider and model"
               />
             </div>
-            {modelSwitchRequest?.sessionId === activeTab?.sessionId && (
+            {harnessModelRequest?.sessionId === harnessModelSessionId && (
               <span aria-live="polite" style={{ color: colors.textDim, fontFamily: font.mono, fontSize: textSize.micro, whiteSpace: 'nowrap' }}>
-                requested {modelSwitchRequest.provider}/{modelSwitchRequest.model}
+                requested {harnessModelRequest.provider}/{harnessModelRequest.model}
               </span>
             )}
           </div>

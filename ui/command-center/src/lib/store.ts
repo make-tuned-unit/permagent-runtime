@@ -142,6 +142,12 @@ export type PendingTerminalLaunchInput = Omit<PendingTerminalLaunch, 'id'> & { i
 
 let launchSeq = 0;
 
+/** How long a `/model` request stays on screen unconfirmed. The CLI prints the
+ *  authoritative result; silence past this is not a success, so the request is
+ *  dropped rather than promoted to a selection. */
+const HARNESS_MODEL_REQUEST_TIMEOUT_MS = 3000;
+let harnessModelTimer: ReturnType<typeof setTimeout> | null = null;
+
 export interface LayoutSplit {
   type: 'split';
   direction: 'horizontal' | 'vertical';
@@ -529,6 +535,37 @@ interface CommandCenterStore {
   // --- Project terminal launch (from agent: project_launch event) ---
   pendingTerminalLaunch: PendingTerminalLaunch | null;
   setPendingTerminalLaunch: (launch: PendingTerminalLaunchInput | null) => void;
+
+  // --- Harness model switching (Jesse 2026-09-18: "The model picker dropdown
+  // disappeared. It would make sense for it to be on the bottom bar with the
+  // costs and I could switch between models.") ---
+  //
+  // It had not been removed: it lived in TerminalManager's tab strip and only
+  // rendered for a `permagent run --interactive` tab, so two plain shell tabs
+  // made it vanish. The control belongs next to the money it spends, and the
+  // money is rendered by CostStatusline — a SIBLING of the terminal under
+  // BuildView, not a child. So the state moved up here rather than being
+  // copied sideways: one selection, read and written by whichever surface is
+  // on screen, which is what makes it impossible for two pickers to disagree.
+  // It sits beside `codingSpend`/`codingHarnessRunId` because "which harness
+  // is live, and what is it costing" is already a store-level concept.
+  /** PTY session id of the active Permagent interactive harness — the only
+   *  terminal that accepts `/model`. Null when there is nothing to switch, and
+   *  the statusline says so rather than offering a control that does nothing. */
+  harnessModelSessionId: string | null;
+  /** Confirmed selection per harness session. Written only when the CLI has
+   *  printed its own confirmation — never optimistically on the PTY write. */
+  harnessModelSelections: Record<string, { provider: string; model: string }>;
+  /** The in-flight switch, so the surface can say "requested x/y" without
+   *  claiming it happened. Cleared on confirmation, on a failed write, or when
+   *  the CLI stays silent past the timeout. */
+  harnessModelRequest: { sessionId: string; provider: string; model: string } | null;
+  /** TerminalManager publishes the switchable session (null when the active
+   *  tab is a plain shell, or when there is no terminal at all). */
+  setHarnessModelSession: (sessionId: string | null) => void;
+  requestHarnessModel: (value: { provider: string; model: string }) => Promise<void>;
+  /** Called with the CLI's own confirmation line as evidence. */
+  confirmHarnessModel: (sessionId: string, value: { provider: string; model: string }) => void;
   /** One-shot Grow lens (Home growth card → Results). Consumed then cleared. */
   openGrowLens: 'results' | null;
   setOpenGrowLens: (lens: 'results' | null) => void;
@@ -2146,6 +2183,50 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       ? { ...launch, id: launch.id ?? `launch-${Date.now()}-${++launchSeq}` }
       : null,
   }),
+
+  // Harness model switching, moved out of TerminalManager so the statusline
+  // picker and the (detached-only) terminal picker share one selection.
+  harnessModelSessionId: null,
+  harnessModelSelections: {},
+  harnessModelRequest: null,
+  setHarnessModelSession: (sessionId) => {
+    if (get().harnessModelSessionId === sessionId) return;
+    // A request belongs to the session it was written to. Switching tabs must
+    // not leave "requested x/y" hanging over a terminal that never got it.
+    set({ harnessModelSessionId: sessionId, harnessModelRequest: null });
+  },
+  requestHarnessModel: async ({ provider, model }) => {
+    const sessionId = get().harnessModelSessionId;
+    // No live harness means no PTY to write to. The surfaces already refuse to
+    // offer the control in that state; this is the second lock on the door.
+    if (!sessionId) return;
+    if (harnessModelTimer) { clearTimeout(harnessModelTimer); harnessModelTimer = null; }
+    set({ harnessModelRequest: { sessionId, provider, model } });
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('write_to_pty', { sessionId, data: `/model ${provider}/${model}\r` });
+      // Writing to the PTY only proves delivery. The CLI validates the route
+      // and prints the authoritative result, so this stays a request and the
+      // picker does not falsely mark the model active.
+      harnessModelTimer = setTimeout(() => {
+        harnessModelTimer = null;
+        if (get().harnessModelRequest?.sessionId === sessionId) set({ harnessModelRequest: null });
+      }, HARNESS_MODEL_REQUEST_TIMEOUT_MS);
+    } catch (err) {
+      // The CLI owns success/error rendering. A failed write is intentionally
+      // quiet here so the UI never claims that the model changed.
+      if (get().harnessModelRequest?.sessionId === sessionId) set({ harnessModelRequest: null });
+      console.error('[terminal] model switch injection failed:', err);
+    }
+  },
+  confirmHarnessModel: (sessionId, value) => {
+    if (harnessModelTimer) { clearTimeout(harnessModelTimer); harnessModelTimer = null; }
+    set(s => ({
+      harnessModelSelections: { ...s.harnessModelSelections, [sessionId]: value },
+      harnessModelRequest: s.harnessModelRequest?.sessionId === sessionId
+        ? null : s.harnessModelRequest,
+    }));
+  },
   openGrowLens: null,
   setOpenGrowLens: (lens) => set({ openGrowLens: lens }),
 
