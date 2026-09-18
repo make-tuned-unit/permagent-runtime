@@ -271,6 +271,16 @@ mod tests {
         assert!(out_of_scope_paths(&[], &["anything.rs".to_string()]).is_empty());
     }
 
+    /// Lane R71a: the containment direction matters. A path is inside a
+    /// declared directory, but a declared FILE does not claim a directory that
+    /// merely shares its name — this is what `sibling_owned_paths` relies on
+    /// when it asks "does this sibling own that path?".
+    #[test]
+    fn containment_is_directional() {
+        assert!(out_of_scope_paths(&["src/a.rs".to_string()], &["src".to_string()]).len() == 1);
+        assert!(out_of_scope_paths(&["src".to_string()], &["src/a.rs".to_string()]).is_empty());
+    }
+
     /// Deterministic, deduplicated output — the finding text must not vary
     /// between runs over the same diff.
     #[test]

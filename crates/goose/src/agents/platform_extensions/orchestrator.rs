@@ -16944,7 +16944,7 @@ async fn auto_land_headless_goal(
     // dispatcher parallelized this goal on. Checked BEFORE the review so an
     // out-of-scope diff never costs a reviewer round, and reported through the
     // same R66a send-back the reviewer's findings use.
-    if let Some(violations) = write_scope_violation(card).await {
+    if let Some(violations) = write_scope_violation(pool, card).await {
         settle_verified_goal_review(
             pool,
             decision_id,
@@ -17272,7 +17272,10 @@ enum AutoLandReview {
 /// scope does not parse, the goal is explicitly read-only, the dispatch
 /// evidence has no worktree/baseline/head to diff, or git cannot answer. A
 /// scope check that cannot run must never invent a violation.
-async fn write_scope_violation(card: &cards::Card) -> Option<Vec<String>> {
+async fn write_scope_violation(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+) -> Option<Vec<String>> {
     let meta = &card.metadata_json;
     if super::write_scope::explicitly_read_only(meta) {
         return None;
@@ -17306,6 +17309,17 @@ async fn write_scope_violation(card: &cards::Card) -> Option<Vec<String>> {
     };
     let violations = super::write_scope::out_of_scope_paths(&scope, &changed);
     if violations.is_empty() {
+        return None;
+    }
+    // Only the paths a SIBLING goal declared are enforced. An out-of-scope
+    // path nobody else owns cannot strand anything: the branch still
+    // fast-forwards, and refusing it would cost a re-dispatch round for no
+    // landing benefit — r70 s1's `select-failing-test-decompose-before-create`
+    // is exactly that shape (scope `pricing.py`, diff also `inventory.py`, no
+    // sibling owning it) and it PASSED. Enforcing it blindly would have turned
+    // a passing task into a send-back.
+    let violations = sibling_owned_paths(pool, card, &violations).await;
+    if violations.is_empty() {
         None
     } else {
         tracing::warn!(
@@ -17318,6 +17332,56 @@ async fn write_scope_violation(card: &cards::Card) -> Option<Vec<String>> {
         );
         Some(violations)
     }
+}
+
+/// Lane R71a: of `paths`, the ones some OTHER goal of this roadmap declared as
+/// its own write scope — the only ones whose collision can strand work.
+///
+/// Every goal the coordinator's session created is considered, in any state,
+/// because the sibling that already landed is exactly the one that moved trunk
+/// and caused the refusal. A goal with no `created_by_session_id`, an
+/// unreadable card or an unparseable sibling scope simply contributes nothing:
+/// the check fails open.
+async fn sibling_owned_paths(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    paths: &[String],
+) -> Vec<String> {
+    let Some(session_id) = card
+        .metadata_json
+        .get("created_by_session_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
+        return Vec::new();
+    };
+    let Ok(siblings) = cards::goal_cards_created_by_session(pool, session_id).await else {
+        return Vec::new();
+    };
+    let mut owned: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for sc in siblings {
+        if sc.card_id == card.id {
+            continue;
+        }
+        let Ok(Some(sibling)) = cards::get_card(pool, &sc.card_id).await else {
+            continue;
+        };
+        if sibling.project_id != card.project_id {
+            continue;
+        }
+        let Ok(Some(sibling_scope)) =
+            super::write_scope::declared_write_scope(&sibling.metadata_json)
+        else {
+            continue;
+        };
+        for path in paths {
+            if !super::write_scope::out_of_scope_paths(&sibling_scope, &[path.clone()]).is_empty() {
+                continue;
+            }
+            owned.insert(path.clone());
+        }
+    }
+    owned.into_iter().collect()
 }
 
 /// Lane R71a: the short machine-readable reason recorded when a goal's diff
