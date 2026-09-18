@@ -75,12 +75,65 @@ component.set_editor_property('capture_source', u.SceneCaptureSource.SCS_FINAL_C
 component.set_editor_property('fov_angle', 90.0)
 component.set_editor_property('capture_every_frame', False)
 component.set_editor_property('capture_on_movement', False)
-show = component.get_editor_property('show_flags')
-for flag in ('static_meshes', 'skeletal_meshes', 'instanced_static_meshes', 'landscape'):
-    try:
-        show.set_editor_property(flag, False)
-    except Exception:  # noqa: BLE001 — a flag that this engine build does not expose
-        pass
+# Hiding the island is best-effort, and deliberately so.
+#
+# Which knob exists here varies by engine build: 5.8's Python exposes neither
+# `show_flags` nor a `USE_SHOW_ONLY_LIST` enum member, and discovering that cost
+# two failed bakes. So each candidate is tried in turn and the one that worked
+# is RECORDED in the manifest, rather than assuming an API and producing a
+# silently wrong map.
+#
+# If none works the bake still runs, and that is an acceptable outcome rather
+# than a broken one: the island then appears in the downward face only, which
+# reads as ground bounce — real light, slightly overstated — instead of as the
+# missing sky the earlier failures produced.
+hidden_via = 'none (island visible as ground bounce)'
+try:
+    mode = getattr(u.SceneCapturePrimitiveRenderMode, 'USE_SHOW_ONLY_LIST', None)
+    if mode is None:
+        # Some builds spell it without the USE_ prefix.
+        mode = getattr(u.SceneCapturePrimitiveRenderMode, 'SHOW_ONLY_LIST', None)
+    if mode is not None:
+        component.set_editor_property('primitive_render_mode', mode)
+        component.set_editor_property('show_only_actors', [])
+        hidden_via = 'primitive_render_mode=show-only, empty list'
+    else:
+        island = [
+            a for a in actors.get_all_level_actors()
+            if isinstance(a, u.StaticMeshActor)
+        ]
+        component.set_editor_property('hidden_actors', island)
+        hidden_via = f'hidden_actors ({len(island)} static meshes)'
+except Exception as error:  # noqa: BLE001 — engine-version differences only
+    hidden_via = f'none ({type(error).__name__})'
+
+# Exposure, copied from the proven path in `render_forum.py`.
+#
+# A scene capture does NOT inherit the level's locked exposure: it runs its own
+# auto-exposure, and pointed at a bright sky with no geometry to average against
+# it saturates to pure white — which is exactly what the first successful bake
+# produced, six blank faces that would have lit the world with flat nothing.
+# Pinning min and max brightness to the same value is how this project locks
+# exposure elsewhere, and Lumen has to be re-stated because a capture does not
+# inherit the level's renderer settings either.
+EXPOSURE = 1.5 if MODE == 'night' else 13.0
+component.set_editor_property('always_persist_rendering_state', True)
+settings = component.get_editor_property('post_process_settings')
+capture_exposure = {
+    'dynamic_global_illumination_method': u.DynamicGlobalIlluminationMethod.LUMEN,
+    'reflection_method': u.ReflectionMethod.LUMEN,
+    'auto_exposure_min_brightness': EXPOSURE,
+    'auto_exposure_max_brightness': EXPOSURE,
+}
+if MODE == 'night':
+    capture_exposure.update({
+        'auto_exposure_method': u.AutoExposureMethod.AEM_HISTOGRAM,
+        'auto_exposure_bias': 0.0,  # pinned by the min/max brightness above
+    })
+for key, value in capture_exposure.items():
+    settings.set_editor_property('override_' + key, True)
+    settings.set_editor_property(key, value)
+component.set_editor_property('post_process_settings', settings)
 
 render_target = u.RenderingLibrary.create_render_target2d(
     world, FACE_SIZE, FACE_SIZE, u.TextureRenderTargetFormat.RTF_RGBA8
@@ -105,7 +158,9 @@ manifest = {
         'engine': 'Unreal Engine 5.8',
         'level': level_name,
         'captureHeightCm': CAPTURE_HEIGHT,
-        'note': 'Sky only — island geometry excluded so the map is light arriving, not light bounced.',
+        'exposureEV100': EXPOSURE,
+        'note': 'Sky capture; how the island was excluded is recorded below.',
+        'islandHiddenVia': hidden_via,
     },
     'axes': 'three.x = unreal.y, three.y = unreal.z, three.z = -unreal.x',
 }

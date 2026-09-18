@@ -1,0 +1,23 @@
+{
+  "status": "complete",
+  "schema": "permagent.forum.environment.v1",
+  "appearance": "day",
+  "faceSize": 512,
+  "faces": [
+    "px",
+    "nx",
+    "py",
+    "ny",
+    "pz",
+    "nz"
+  ],
+  "source": {
+    "engine": "Unreal Engine 5.8",
+    "level": "/Game/SolarForum/Maps/ForumCinematic",
+    "captureHeightCm": 9000.0,
+    "exposureEV100": 13.0,
+    "note": "Sky capture; how the island was excluded is recorded below.",
+    "islandHiddenVia": "none (Exception)"
+  },
+  "axes": "three.x = unreal.y, three.y = unreal.z, three.z = -unreal.x"
+}
