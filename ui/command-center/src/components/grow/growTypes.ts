@@ -98,6 +98,16 @@ export interface FirstPartyStats {
   pageviews: number;
   /** Distinct device signatures — NOT people. See the label in the UI. */
   deviceSignatures: number;
+  /**
+   * Distinct PEOPLE, counted from a `user_id` the site attaches to its own
+   * events. `null` means the site never sends identity, so there is nothing to
+   * count — an honest gap, not a zero; `0` means it does send identity and
+   * nobody signed up in this window, which is a real zero and must read as
+   * one. Never derived from devices or sessions: those count browsers.
+   */
+  signedUpUsers?: number | null;
+  /** The event the count came from, so the tile can name its own source. */
+  signupEventName?: string | null;
   eventsLast5m: number;
   botsExcluded: number;
   includingBots: boolean;

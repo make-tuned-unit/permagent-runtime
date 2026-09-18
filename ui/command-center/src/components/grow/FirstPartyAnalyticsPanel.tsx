@@ -430,6 +430,16 @@ export function FirstPartyAnalyticsPanel({
               // NOT "visitors": the hash merges people sharing a browser build,
               // OS and language, so it undercounts — badly on mobile.
               ['Devices', stats.deviceSignatures.toLocaleString(), 'distinct signatures, undercounts'],
+              // Jesse: "i also want to see User counts because a few of my
+              // projects are starting to get signed up users." This is the one
+              // figure here that is actually people — it comes from a user_id
+              // the site itself sends. `null` is a missing signal, not zero,
+              // and says so rather than showing a confident 0.
+              ['Users',
+                stats.signedUpUsers != null ? stats.signedUpUsers.toLocaleString() : '—',
+                stats.signedUpUsers != null
+                  ? `signed up · from ${stats.signupEventName ?? 'your events'}`
+                  : 'your site sends no user id'],
               ['Sessions', stats.sessions > 0 ? stats.sessions.toLocaleString() : '—',
                 stats.sessions > 0 ? 'first-party, no cookie' : 'relay predates sessions'],
               ['Bounce', stats.bounceRate != null ? `${Math.round(stats.bounceRate * 100)}%` : '—',
@@ -449,6 +459,7 @@ export function FirstPartyAnalyticsPanel({
           </div>
           <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>
             {stats.pageviews.toLocaleString()} pageviews · {stats.deviceSignatures.toLocaleString()} devices
+            {stats.signedUpUsers != null && <> · {stats.signedUpUsers.toLocaleString()} users</>}
             {stats.sessions > 0 && <> · {stats.sessions.toLocaleString()} sessions</>}
             {stats.bounceRate != null && <> · {Math.round(stats.bounceRate * 100)}% bounce</>}
             {' '}· last {stats.periodDays}d
