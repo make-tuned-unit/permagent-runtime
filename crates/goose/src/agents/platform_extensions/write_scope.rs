@@ -95,6 +95,54 @@ pub fn first_conflict(left: &[String], right: &[String]) -> Option<(String, Stri
     pairs.into_iter().next()
 }
 
+/// Whether `path` is inside `scope`, with the same directory semantics
+/// [`scopes_overlap`] uses: a declared directory claims every descendant, and
+/// `src2/x` is NOT inside `src`.
+fn path_within(scope: &[String], path: &str) -> bool {
+    scope.iter().any(|allowed| {
+        allowed == path
+            || path
+                .strip_prefix(allowed.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+/// Lane R71a (M55 r70 s2): the paths a goal actually changed that its declared
+/// write scope does not cover, normalized and deduplicated, in deterministic
+/// order.
+///
+/// The declared scope is what the dispatcher trusts when it runs siblings in
+/// PARALLEL ([`metadata_conflict`]), but nothing used to compare it against the
+/// diff the worker produced. A worker that renames a symbol in its own file and
+/// then "helpfully" fixes the call site in a sibling's file breaks that promise
+/// after the fact: the first sibling to finish lands, and the second can no
+/// longer rebase (its own diff now overlaps the moved trunk), so correct work
+/// is stranded and trunk keeps half the change. r70 s2
+/// `select-mechanical-rename-skips-roadmap` failed exactly this way — scope
+/// `["a.py"]`, diff `a.py` + `b.py`, landing refused `rebase_trunk_overlap`.
+///
+/// An empty or absent scope returns no violations: an undeclared scope was
+/// never a promise, and those goals are serialized rather than parallelized.
+pub fn out_of_scope_paths(scope: &[String], changed: &[String]) -> Vec<String> {
+    if scope.is_empty() {
+        return Vec::new();
+    }
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    for path in changed {
+        let Some(normalized) = normalize_path(path) else {
+            // A path git reports that does not normalize (absolute, traversal)
+            // is reported verbatim: it is certainly not inside a declared
+            // repo-relative scope, and swallowing it would hide a real escape.
+            out.insert(path.clone());
+            continue;
+        };
+        if !path_within(scope, &normalized) {
+            out.insert(normalized);
+        }
+    }
+    out.into_iter().collect()
+}
+
 /// Explain why two in-flight nodes cannot safely run together. `None` means
 /// they are proven independent: either side is explicitly read-only, or both
 /// sides declared non-overlapping non-empty scopes. Unknown/empty scopes are
@@ -182,5 +230,61 @@ mod tests {
 
         let overlapping = serde_json::json!({ WRITE_SCOPE_KEY: ["src"] });
         assert!(metadata_conflict(&left, &overlapping).unwrap().is_some());
+    }
+
+    /// Lane R71a: the r70 s2 shape — scope `a.py`, diff touches `b.py` too.
+    #[test]
+    fn a_diff_outside_the_declared_scope_is_reported() {
+        let scope = vec!["a.py".to_string()];
+        let changed = vec!["a.py".to_string(), "b.py".to_string()];
+        assert_eq!(out_of_scope_paths(&scope, &changed), vec!["b.py"]);
+    }
+
+    #[test]
+    fn a_diff_inside_the_declared_scope_is_clean() {
+        let scope = vec!["src".to_string(), "docs/readme.md".to_string()];
+        let changed = vec![
+            "src/lib.rs".to_string(),
+            "src/nested/deep.rs".to_string(),
+            "docs/readme.md".to_string(),
+            "./src/normalized.rs".to_string(),
+        ];
+        assert!(out_of_scope_paths(&scope, &changed).is_empty());
+    }
+
+    /// A declared directory claims its descendants, but a sibling whose name
+    /// merely starts with it does not — the same rule [`scopes_overlap`] uses.
+    #[test]
+    fn a_prefix_sibling_directory_is_out_of_scope() {
+        let scope = vec!["src".to_string()];
+        let changed = vec!["src2/lib.rs".to_string(), "srcfile.rs".to_string()];
+        assert_eq!(
+            out_of_scope_paths(&scope, &changed),
+            vec!["src2/lib.rs".to_string(), "srcfile.rs".to_string()]
+        );
+    }
+
+    /// An undeclared scope was never a promise: those goals are serialized,
+    /// not parallelized, so there is nothing to enforce.
+    #[test]
+    fn an_empty_scope_enforces_nothing() {
+        assert!(out_of_scope_paths(&[], &["anything.rs".to_string()]).is_empty());
+    }
+
+    /// Deterministic, deduplicated output — the finding text must not vary
+    /// between runs over the same diff.
+    #[test]
+    fn violations_are_sorted_and_deduplicated() {
+        let scope = vec!["a".to_string()];
+        let changed = vec![
+            "z.rs".to_string(),
+            "b.rs".to_string(),
+            "z.rs".to_string(),
+            "./b.rs".to_string(),
+        ];
+        assert_eq!(
+            out_of_scope_paths(&scope, &changed),
+            vec!["b.rs".to_string(), "z.rs".to_string()]
+        );
     }
 }

@@ -16940,6 +16940,27 @@ async fn auto_land_headless_goal(
         }
     }
 
+    // Lane R71a (M55 r70 s2): the diff must stay inside the write scope the
+    // dispatcher parallelized this goal on. Checked BEFORE the review so an
+    // out-of-scope diff never costs a reviewer round, and reported through the
+    // same R66a send-back the reviewer's findings use.
+    if let Some(violations) = write_scope_violation(card).await {
+        settle_verified_goal_review(
+            pool,
+            decision_id,
+            card,
+            auto_land_allowed,
+            calling_session_id,
+            AutoLandReview::ChangesRequested {
+                reason: write_scope_violation_reason(&violations),
+                findings: vec![write_scope_violation_finding(card, &violations)],
+            },
+            headless_max_redispatch_from_env(),
+        )
+        .await;
+        return;
+    }
+
     // r64 s5: a verifier pass is not an independent review. A non-trivial
     // change lands only after a cross-family reviewer approves it.
     let review = independent_review_before_auto_land(pool, card, calling_session_id).await;
@@ -17209,6 +17230,106 @@ enum AutoLandReview {
     },
     /// A review was required and did not approve (or could not run).
     Refused { reason: String },
+}
+
+/// Lane R71a: the repo-relative paths this goal's branch actually changed that
+/// its DECLARED `write_scope` does not cover, or `None` when there is nothing
+/// to enforce.
+///
+/// The declared scope is the only reason [`super::write_scope::metadata_conflict`]
+/// let this goal run in PARALLEL with a sibling, and until now nothing checked
+/// that the worker honoured it. When it does not, the harm is not hypothetical:
+/// the sibling that finishes first lands, and this goal's branch can no longer
+/// rebase onto the moved trunk (its own diff now overlaps what the trunk
+/// changed), so `rebase_goal_branch_for_headless_land` refuses
+/// `rebase_trunk_overlap`, correct work is stranded and trunk keeps half a
+/// change. That is r70 s2 `select-mechanical-rename-skips-roadmap`: scope
+/// `["a.py"]`, diff `a.py` + `b.py`, `old_name` left defined on trunk.
+///
+/// `None` (nothing to enforce) when: no scope was declared or it is empty (an
+/// undeclared scope was never a promise, and those goals are serialized), the
+/// scope does not parse, the goal is explicitly read-only, the dispatch
+/// evidence has no worktree/baseline/head to diff, or git cannot answer. A
+/// scope check that cannot run must never invent a violation.
+async fn write_scope_violation(card: &cards::Card) -> Option<Vec<String>> {
+    let meta = &card.metadata_json;
+    if super::write_scope::explicitly_read_only(meta) {
+        return None;
+    }
+    let scope = match super::write_scope::declared_write_scope(meta) {
+        Ok(Some(scope)) if !scope.is_empty() => scope,
+        Ok(_) => return None,
+        Err(why) => {
+            tracing::debug!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "write-scope check skipped: the declared scope does not parse ({why})"
+            );
+            return None;
+        }
+    };
+    let evidence = meta.get("dispatch_evidence")?;
+    let worktree = evidence.get("worktree_path").and_then(|v| v.as_str())?;
+    let baseline = evidence.get("baseline_commit").and_then(|v| v.as_str())?;
+    let head = evidence.get("head_commit").and_then(|v| v.as_str())?;
+    let changed = match paths_changed_since(std::path::Path::new(worktree), baseline, head).await {
+        Ok(changed) => changed,
+        Err(why) => {
+            tracing::debug!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "write-scope check skipped: git could not diff {baseline}..{head} ({why})"
+            );
+            return None;
+        }
+    };
+    let violations = super::write_scope::out_of_scope_paths(&scope, &changed);
+    if violations.is_empty() {
+        None
+    } else {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            out_of_scope = violations.len(),
+            "write_scope_violation: goal '{}' changed {} path(s) outside its declared scope",
+            card.title,
+            violations.len()
+        );
+        Some(violations)
+    }
+}
+
+/// Lane R71a: the short machine-readable reason recorded when a goal's diff
+/// leaves its declared write scope.
+fn write_scope_violation_reason(violations: &[String]) -> String {
+    format!(
+        "write scope violated: the diff changes {} path(s) the goal did not declare ({})",
+        violations.len(),
+        violations.join(", ")
+    )
+}
+
+/// Lane R71a: the finding sent back to the worker. It names the paths, says
+/// why the boundary exists (a sibling goal owns them right now) and asks for
+/// the out-of-scope edits to be reverted rather than for the work to be
+/// redone, because the in-scope part of the diff is usually correct.
+fn write_scope_violation_finding(card: &cards::Card, violations: &[String]) -> String {
+    let declared = super::write_scope::declared_write_scope(&card.metadata_json)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    format!(
+        "This goal may only change {}. Its branch also changes {}. \
+         Those paths belong to a sibling goal running in parallel right now, so editing them \
+         here does not help: the sibling lands first and this branch can then no longer be \
+         rebased onto trunk, which strands ALL of this work, including the part that is \
+         correct. Revert the changes to {} and keep only the edits inside the declared scope. \
+         If the goal genuinely cannot be completed without touching those paths, say so \
+         instead of editing them, so the plan can be fixed.",
+        declared.join(", "),
+        violations.join(", "),
+        violations.join(", "),
+    )
 }
 
 /// r64 s5: a five-file signature refactor auto-landed "on a verifier pass"
