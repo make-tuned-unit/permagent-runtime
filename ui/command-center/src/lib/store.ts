@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { api, apiFetch, extractSystemNotice, extractText, extractThinking, fileToBase64, hasToolActivity, readerIngest } from './api';
+import { getDaemonTokenError, onDaemonTokenError } from './daemonAuth';
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState, HarnessRunView, SystemNotice } from './api';
 import { costFromFrame, parseBudgetProjection, type CodingSpend } from './costMeter';
@@ -259,6 +260,12 @@ interface CommandCenterStore {
    *  with a Retry instead of the old silent catch that disowned the session.
    *  Null while loading and after a successful load. */
   sessionLoadError: string | null;
+  /** Non-null when the client has no working daemon credential: the token read
+   *  failed, or the daemon answered 401. Every request — including the `/events`
+   *  stream the agent's replies ride — is then rejected, so the agent goes
+   *  silent. Mirrored from `onDaemonTokenError` and rendered by MessageList:
+   *  a dead agent must not look like a quiet one. */
+  daemonAuthError: string | null;
   /** False while loadSessionMessages is in flight. The greeting (bubble +
    *  auto-speak) must not render off a momentarily-empty list: on pop-out the
    *  history fetch races the identity fetch and the greeting fired over an
@@ -1097,6 +1104,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     try { return localStorage.getItem('permagent-chat-session-id'); } catch { return null; }
   })(),
   sessionLoadError: null,
+  daemonAuthError: getDaemonTokenError(),
   chatHistoryLoaded: true,
   pendingChatFiles: null,
   queueChatFiles: (files) => set({ pendingChatFiles: files }),
@@ -2431,3 +2439,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     });
   },
 }));
+
+// Mirror the api layer's auth state into the store so the UI can show it. The
+// token load starts at api-module import, which is before this store exists,
+// so the initial value is read above and only changes arrive here.
+onDaemonTokenError(message => {
+  useCommandCenter.setState({ daemonAuthError: message });
+});

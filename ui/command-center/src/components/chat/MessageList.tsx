@@ -58,6 +58,10 @@ export function MessageList() {
   // C8 / #568 lesson: a transient history-load failure surfaces inline with a
   // retry — never a silent catch that leaves an inexplicably empty chat.
   const sessionLoadError = useCommandCenter(s => s.sessionLoadError);
+  // Same lesson, one layer lower: with no daemon credential every request 401s,
+  // including the /events stream replies arrive on, so the agent simply never
+  // answers. Said out loud here rather than left as an unexplained silence.
+  const daemonAuthError = useCommandCenter(s => s.daemonAuthError);
   const chatSessionId = useCommandCenter(s => s.chatSessionId);
   const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
   // W3a: in-character opening greeting shown at conversation start. Display-only
@@ -172,6 +176,19 @@ export function MessageList() {
         // tables) scrolls inside its own block instead.
         className="h-full overflow-y-auto overflow-x-hidden p-4 space-y-3"
       >
+        {daemonAuthError && (
+          <div
+            data-testid="daemon-auth-error"
+            role="alert"
+            className="flex items-start gap-2.5 rounded-lg px-3 py-2"
+            style={{ border: `1px solid ${colors.danger}44`, backgroundColor: colors.surface }}
+          >
+            <span className="text-[12px]" style={{ color: colors.danger, fontFamily: font.body }}>
+              Not connected to your agent: {daemonAuthError}
+            </span>
+          </div>
+        )}
+
         {sessionLoadError && chatSessionId && (
           <div
             className="flex items-center gap-2.5 rounded-lg px-3 py-2"

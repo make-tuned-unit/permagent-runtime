@@ -6,6 +6,7 @@
 import type { ProjectDocument, ProjectNote, ProjectMemory } from '../components/projects/types';
 import type { ActivityEventName } from './emitActivity';
 import { getStreamToken } from './streamToken';
+import { BROWSER_UNPAIRED, setDaemonTokenError } from './daemonAuth';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const API_BASE_URL = (
@@ -21,6 +22,10 @@ let _daemonToken: string | null = null;
 let _daemonTokenPromise: Promise<string | null> | null = null;
 
 const BROWSER_TOKEN_KEY = 'permagent-daemon-token';
+
+// Auth failure surface: `daemonAuth.ts` holds the published state, this module
+// is what detects the failure. A dead agent must not look like a quiet agent,
+// so every token failure is logged, retried, and published — never swallowed.
 
 /** UUID v4 that also works on insecure origins (a plain-HTTP tailnet page is
  *  not a secure context, so `crypto.randomUUID` may be absent there —
@@ -153,20 +158,50 @@ export function loadDaemonToken(): Promise<string | null> {
     if (claim) {
       _daemonTokenPromise = exchangeClaim(claim).then(token => {
         _daemonToken = token;
+        // A failed exchange must not be cached as "no token, forever": drop the
+        // memo so the next caller can retry (or pick up a later pairing).
+        if (!token) _daemonTokenPromise = null;
+        setDaemonTokenError(token ? null : BROWSER_UNPAIRED);
         return token;
       });
       return _daemonTokenPromise;
     }
     _daemonToken = browserToken();
+    setDaemonTokenError(_daemonToken ? null : BROWSER_UNPAIRED);
     return Promise.resolve(_daemonToken);
   }
   if (!_daemonTokenPromise) {
     _daemonTokenPromise = import('@tauri-apps/api/core')
       .then(({ invoke }) => invoke<string>('get_daemon_token'))
-      .then(token => { _daemonToken = token; return token; })
-      .catch(() => null);
+      .then(token => {
+        // An empty string is not a credential; treat it like a failure rather
+        // than sending `Authorization: Bearer ` on every request.
+        if (!token) throw new Error('get_daemon_token returned an empty token');
+        _daemonToken = token;
+        setDaemonTokenError(null);
+        return token;
+      })
+      .catch((e: unknown) => {
+        // NOT `.catch(() => null)`: clearing the memo is the whole point. A
+        // resolved-null promise left in `_daemonTokenPromise` is an indefinite
+        // unauthenticated state that no reconnect, poll or retry can escape.
+        _daemonTokenPromise = null;
+        setDaemonTokenError(
+          `Could not read the daemon token — requests are unauthenticated (${
+            e instanceof Error ? e.message : String(e)
+          })`,
+        );
+        return null;
+      });
   }
   return _daemonTokenPromise;
+}
+
+/** Forget the cached token so the next `loadDaemonToken` re-reads it. Used when
+ *  the daemon rejects it (rotation, or a token read before the secret existed). */
+function invalidateDaemonToken(): void {
+  _daemonToken = null;
+  _daemonTokenPromise = null;
 }
 
 // Kick off token loading immediately so it's ready when needed.
@@ -463,6 +498,14 @@ function authHeaders(): Record<string, string> {
 }
 
 export async function apiFetch<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  return apiFetchOnce<T>(endpoint, options, true);
+}
+
+async function apiFetchOnce<T>(
+  endpoint: string,
+  options: RequestInit | undefined,
+  mayRetryAuth: boolean,
+): Promise<T> {
   // Ensure the daemon token is loaded before making any authenticated request.
   if (!_daemonToken) await loadDaemonToken();
   const url = `${API_BASE_URL}${endpoint}`;
@@ -487,6 +530,32 @@ export async function apiFetch<T>(endpoint: string, options?: RequestInit): Prom
   // access log, so this console line is the only request-level trace.
   if (method !== 'GET') {
     console.info(`[api] ${method} ${endpoint} → ${response.status}`);
+  }
+
+  // Any authenticated success clears the alarm. This is what keeps the banner
+  // honest: an older daemon answers 401 for routes it simply does not have
+  // (see ForumView on /api/agent/identity), and one such route must not leave a
+  // permanent "you are not connected" sign up while everything else works.
+  if (response.ok && _daemonToken) setDaemonTokenError(null);
+
+  // A 401 is the daemon saying "I don't know you". Left unhandled it is exactly
+  // the failure this module used to hide: the UI keeps rendering while nothing
+  // it asks for is ever answered. Re-read the token once (it may have rotated,
+  // or been read before the secrets file existed) and retry; if it still fails,
+  // say so out loud instead of turning it into a per-caller "Unauthorized".
+  if (response.status === 401) {
+    const hadToken = _daemonToken !== null;
+    invalidateDaemonToken();
+    if (mayRetryAuth && hadToken) {
+      const refreshed = await loadDaemonToken();
+      if (refreshed) return apiFetchOnce<T>(endpoint, options, false);
+    }
+    setDaemonTokenError(
+      isTauri
+        ? `The daemon rejected this app's credentials (401 on ${endpoint}). ` +
+          'The agent cannot answer until this is fixed.'
+        : BROWSER_UNPAIRED,
+    );
   }
 
   if (!response.ok) {
