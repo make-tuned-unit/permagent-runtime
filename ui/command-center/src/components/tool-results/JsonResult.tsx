@@ -2,7 +2,7 @@ import { useState, useCallback, type CSSProperties } from 'react';
 import { JsonView, darkStyles, defaultStyles } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 import { FiCopy, FiCheck } from 'react-icons/fi';
-import { font } from '../../styles/tokens';
+import { font, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -37,7 +37,7 @@ export function JsonResult({ data }: JsonResultProps) {
           '--pa-btn-pad': '0',
           fontFamily: font.mono,
           fontSize: 10,
-          gap: 4,
+          gap: space.xs,
         } as CSSProperties}
       >
         {copied ? <><FiCheck size={10} style={{ color: colors.success }} /> Copied</> : <><FiCopy size={10} /> Copy JSON</>}

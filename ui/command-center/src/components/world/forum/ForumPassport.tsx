@@ -1,5 +1,8 @@
 import { useEffect } from 'react';
 import type { IdentityState } from '../../../services/identity';
+import { Button } from '../../common/Button';
+import { Tooltip } from '../../common/Tooltip';
+import { useTheme } from '../../../styles/useTheme';
 import { useIdentityStore } from '../../../stores/identityStore';
 
 /**
@@ -21,6 +24,7 @@ import { useIdentityStore } from '../../../stores/identityStore';
  * lies about its own status is worse than one that admits it is offline.
  */
 export function ForumPassport({ onOpen }: { onOpen?: () => void }) {
+  const { colors } = useTheme();
   // `data` is null until the first successful fetch (and stays null when the
   // machine has never been online), so every read below goes through an empty
   // object rather than optional-chaining each field at the point of use.
@@ -75,9 +79,11 @@ export function ForumPassport({ onOpen }: { onOpen?: () => void }) {
       <dl className="forum-passport-rows">
         <div>
           <dt>Chitin ID</dt>
-          <dd title={did || undefined} data-testid="forum-passport-chitin">
-            {chitinId || (everFetched ? 'none on record' : '—')}
-          </dd>
+          <Tooltip content={did || 'no decentralised identifier on record'}>
+            <dd data-testid="forum-passport-chitin">
+              {chitinId || (everFetched ? 'none on record' : '—')}
+            </dd>
+          </Tooltip>
         </div>
         <div>
           <dt>Passport</dt>
@@ -90,14 +96,20 @@ export function ForumPassport({ onOpen }: { onOpen?: () => void }) {
         {recordStatus && (
           <div>
             <dt>On record</dt>
-            <dd title={recordStatus}>{recordStatus}</dd>
+            <dd>{recordStatus}</dd>
           </div>
         )}
       </dl>
       {onOpen && (
-        <button type="button" className="forum-passport-more" onClick={onOpen}>
+        <Button
+          colors={colors}
+          variant="bare"
+          className="forum-passport-more"
+          flashSuccess={false}
+          onClick={onOpen}
+        >
           Full passport
-        </button>
+        </Button>
       )}
     </div>
   );

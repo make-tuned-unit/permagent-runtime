@@ -17,6 +17,14 @@ export const color = {
   border: 'rgba(255,255,255,0.07)',
   borderHi: 'rgba(0,213,255,0.18)',
   cyan: NEON_ACCENT,
+  /** The step BELOW cyanSoft: an accent presence you read as atmosphere
+   *  rather than as a fill. For the backgrounds of empty, loading and error
+   *  states — a panel that is waiting or has nothing to show, tinted enough to
+   *  belong to the app and not enough to look like a control. Added
+   *  2026-09-02 at the Brain lane's request, on the evidence that six sites
+   *  had already written it by hand (Splash, WizardShell, ErrorBoundary,
+   *  BrainView x3) at 0.04-0.06, because 0.14 reads as a filled surface. */
+  cyanWash: 'rgba(0,213,255,0.04)',
   cyanSoft: 'rgba(0,213,255,0.14)',
   cyanGlow: 'rgba(0,213,255,0.45)',
   purple: '#8D44AE',
@@ -88,10 +96,50 @@ export const textSize = {
  *  so digits don't reflow as values change. Spread onto any numeric display. */
 export const tabularNums = { fontVariantNumeric: 'tabular-nums' } as const;
 
+/**
+ * Spring easings, sampled as CSS `linear()`.
+ *
+ * Apple's motion primitive is a spring, not a bezier — SwiftUI ships `.smooth`
+ * (bounce 0), `.snappy` (bounce ~0.15) and `.bouncy` (bounce ~0.3), and every
+ * bezier is an approximation of one. `linear()` lets us sample the real step
+ * response of a damped second-order system, which for UI-scale motion is
+ * indistinguishable from the spring itself.
+ *
+ * These three strings are the unit step response of `zeta = 1 - bounce`,
+ * sampled at 25 points and solved so the response is settled (within 0.2% and
+ * staying there) exactly at the paired `duration.*` below. That last part is
+ * the bit people get wrong: a spring's *perceptual* duration is shorter than
+ * its settle time, and putting the perceptual number in CSS clips the tail.
+ * Each curve's perceptual duration is noted beside it; the CSS duration is
+ * the settle time, and all three are under Apple's 500ms ceiling (HIG:
+ * "keep animation duration under 0.5s", "prefer quick, precise animations").
+ *
+ * They are referenced through `var()` rather than inlined because `linear()`
+ * needs Safari 17.2+ and our floor is macOS 11. `index.css` defines the custom
+ * properties as beziers and upgrades them to these springs behind
+ * `@supports`, so an old WKWebView degrades to a curve we chose instead of to
+ * the browser's `ease`. The literal spring strings live here, next to the
+ * physics that produced them; `index.css` holds the same values as CSS.
+ */
+export const SPRING_LINEAR = {
+  /** bounce 0, zeta 1.00 — critically damped, no overshoot. The default. */
+  smooth: 'linear(0, 0.0493, 0.1576, 0.2855, 0.4117, 0.526, 0.6243, 0.7061, 0.7724, 0.8253, 0.8668, 0.8991, 0.9239, 0.9429, 0.9574, 0.9683, 0.9764, 0.9826, 0.9871, 0.9905, 0.993, 0.9949, 0.9963, 0.9973, 1)',
+  /** bounce 0.15, zeta 0.85 — 0.6% overshoot at 180ms. Control state changes. */
+  snappy: 'linear(0, 0.0466, 0.1541, 0.2869, 0.4226, 0.5485, 0.658, 0.749, 0.8218, 0.8781, 0.9203, 0.9509, 0.9724, 0.9869, 0.9962, 1.0018, 1.0048, 1.0061, 1.0063, 1.0059, 1.0051, 1.0043, 1.0034, 1.0027, 1)',
+  /** bounce 0.30, zeta 0.70 — 4.5% overshoot at 220ms. One or two moments only. */
+  bouncy: 'linear(0, 0.0607, 0.2009, 0.3722, 0.5425, 0.6933, 0.8159, 0.9083, 0.9726, 1.0134, 1.0358, 1.045, 1.0453, 1.0405, 1.0331, 1.0251, 1.0176, 1.0113, 1.0063, 1.0027, 1.0003, 0.9988, 0.9981, 0.9979, 1)',
+} as const;
+
 export const ease = {
   out: 'cubic-bezier(0.22, 1, 0.36, 1)',
   inOut: 'cubic-bezier(0.65, 0, 0.35, 1)',
   spring: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
+  /** Spring, no overshoot. Pair with `duration.smooth` (320ms). */
+  smooth: 'var(--pa-ease-smooth, cubic-bezier(0.22, 1, 0.36, 1))',
+  /** Spring, slight overshoot. Pair with `duration.snappy` (240ms). */
+  snappy: 'var(--pa-ease-snappy, cubic-bezier(0.34, 1.4, 0.64, 1))',
+  /** Spring, visible overshoot. Pair with `duration.bouncy` (440ms). */
+  bouncy: 'var(--pa-ease-bouncy, cubic-bezier(0.34, 1.56, 0.64, 1))',
 } as const;
 
 /**
@@ -99,8 +147,43 @@ export const ease = {
  * hand-roll a grab-bag of 160/200/320 timings (wizard audit #603). `fast` =
  * hover/focus feedback, `base` = element state changes, `slow` = view/crossfade.
  * Pair with an `ease` token: `transition: \`all ${duration.fast}ms ${ease.out}\``.
+ *
+ * `smooth` / `snappy` / `bouncy` are the settle times of the matching spring in
+ * `ease`, and are only correct with that spring — a spring sampled over the
+ * wrong duration is a different spring. Use them as a pair:
+ * `transition: \`transform ${duration.snappy}ms ${ease.snappy}\``.
  */
-export const duration = { fast: 160, base: 200, slow: 320 } as const;
+export const duration = {
+  fast: 160, base: 200, slow: 320,
+  smooth: 320, snappy: 240, bouncy: 440,
+} as const;
+
+/**
+ * Spacing scale, in px — the one the code already writes, written down.
+ *
+ * There was no scale, and 650 hand-written gaps and paddings in its absence.
+ * Measuring them turned up a de-facto ramp the app converged on without ever
+ * agreeing to it: 4 / 6 / 8 / 10 / 12 / 16, with 20 and 24 for panel-scale
+ * padding. That is a 4pt subdivision of the 8pt grid Apple's own layouts use,
+ * which is why it felt right to everyone writing it by hand.
+ *
+ * Codified here, and frozen by `glassTokens.test.ts`, so screen lanes have
+ * something to migrate *to*. The 650 raw values are deliberately NOT migrated
+ * in this change — a token nobody consumes yet is still the prerequisite for
+ * migrating them, and doing both at once would bury the scale in a diff.
+ *
+ * `xxs: 2` was added 2026-09-02 on the same evidence and by the same rule, at
+ * lane R14's request (browser chrome, chip padding). It is not a preference:
+ * counting the tree first, `2` appears in 74 hand-written paddings and gaps
+ * (49 single-property, 25 as the vertical half of a `'2px Npx'` shorthand)
+ * against 40 for `4` by the same grep. Dense chrome — chips, badges, inline
+ * pills — genuinely needs a step below 4, and a scale whose floor is above
+ * what the code reaches for is a scale people step outside of. It keeps the
+ * 2pt grid the bottom of the scale already runs on (4/6/8/10/12).
+ */
+export const space = {
+  xxs: 2, xs: 4, sm: 6, md: 8, lg: 10, xl: 12, xxl: 16, xxxl: 20, huge: 24,
+} as const;
 
 /**
  * Corner radii, rebased to what this codebase actually reaches for.
@@ -118,8 +201,192 @@ export const duration = { fast: 160, base: 200, slow: 320 } as const;
  *
  * `pill` is for chips. Not for buttons: a pill-shaped CTA is a different
  * product's voice.
+ *
+ * `glass` is the outermost floating surface, and it is derived rather than
+ * chosen. macOS gives our window its corner for free (we keep
+ * `decorations: true`), so the topmost glass plane should sit concentrically
+ * inside that corner: `radius.glass = concentric(window corner, inset)`.
+ *
+ * MEASURED 2026-09-01 against the running app — `screencapture -o -l` of the
+ * live Permagent window (1202x885 pt, captured at 2x), then a least-squares
+ * fit of the alpha edge over the first 40 rows of the top-left corner:
+ *
+ *   superellipse  R = 18.07pt, n = 2.42   (rms 0.05pt)  ← the real shape
+ *   best circle   R = 15.63pt             (rms 0.14pt)  ← what CSS can draw
+ *
+ * The superellipse fit is 3x tighter, which confirms Apple draws a continuous
+ * -curvature corner and not an arc; n = 2.42 sits inside the 2.3-2.6 the A1a
+ * spike measured on Tahoe titlebar-only windows, and R = 18.07 inside its
+ * 17.4 +/- 2.5. We have no `corner-shape: squircle` in WebKit, so we draw the
+ * arc and accept it — sub-perceptual at these radii (research doc, grade 22).
+ *
+ * That gives two defensible derivations at our 8px inset:
+ *   concentric(18.07, 8) = 10   (Apple's arithmetic, on the nominal radius)
+ *   concentric(15.63, 8) =  8   (the arithmetic on the arc we actually draw)
+ *
+ * 9 is between them and within the measurement error of both, so the spike's
+ * provisional 9 stands unchanged. Recorded, not adjusted.
  */
-export const radius = { xs: 4, sm: 6, md: 8, lg: 12, xl: 16, pill: 999 } as const;
+export const radius = { xs: 4, sm: 6, md: 8, lg: 12, xl: 16, glass: 9, pill: 999 } as const;
+
+/**
+ * Concentric corner radius: `r_inner = max(0, r_outer - padding)`.
+ *
+ * Apple's rule, verbatim from the SwiftUI reference for
+ * `Edge.Corner.Style.concentric`: "the system calculates the corner radius to
+ * equal the container shape's corner radius minus the distance between
+ * corners", and if the result would be negative "the corner is square".
+ *
+ * So a 16px-radius panel with 12px padding holds 4px-radius children, and the
+ * same panel with 20px padding holds square-cornered ones. The square corner
+ * is the correct answer, not a bug to clamp away from — a child rounded more
+ * than its container's remaining curvature is the "pinched or flared" failure
+ * WWDC25/356 names.
+ *
+ * Rounded to whole px: a fractional border-radius antialiases into a soft
+ * corner, and the whole point of concentricity is that the curves line up.
+ */
+export function concentric(outer: number, padding: number): number {
+  return Math.max(0, Math.round(outer - padding));
+}
+
+/**
+ * Window-shell geometry — the numbers the CSS shares with AppKit.
+ *
+ * The macOS window runs `titleBarStyle: "Overlay"` + `hiddenTitle` with
+ * `decorations: true`, so the system titlebar is transparent, our HTML runs
+ * edge-to-edge underneath it, and macOS still draws the window's corner and
+ * shadow for free. That makes the top-left corner of the page a shared space:
+ * the traffic lights are native and always composite above everything the
+ * webview draws, so the shell has to leave room for them rather than negotiate.
+ *
+ * These four numbers are that room, and they are load-bearing in both
+ * directions — `ui/desktop/src-tauri/src/chrome.rs` holds the same values as
+ * Rust constants, `tauri.conf.json` holds them again as the only path that
+ * actually applies them (A1a's binding verdict), and `shell.test.ts` fails if
+ * the three copies ever disagree.
+ *
+ * `trafficLights.y` is NOT the distance from the top of the window. AppKit
+ * sizes the titlebar container `buttonSize + y` tall and pins it to the top
+ * edge, while the button keeps its own 9pt origin inside it — so the visible
+ * inset is `y - 9`. y = 22 puts a 14pt button 13pt down, centred in the 40pt
+ * `titlebar` band.
+ *
+ * `rail.collapsed` is 76 rather than the 64 it was before the rail went
+ * full-height: the three window buttons span `x + 60 = 72pt` and now sit
+ * INSIDE the rail, so anything narrower hangs the zoom button over the rail's
+ * edge onto the content pane. That constraint is what fixed x at 12.
+ */
+export const shell = {
+  /** Height of the titlebar band, in the sidebar and over the content alike. */
+  titlebar: 40,
+  /** Native window-control geometry. Mirrors `chrome.rs` / `tauri.conf.json`. */
+  trafficLights: { x: 12, y: 22, buttonSize: 14, spacing: 23 },
+  /** Sidebar rail width, open and collapsed. */
+  rail: { open: 208, collapsed: 76 },
+} as const;
+
+/** Window-left edge to the right edge of the zoom button, in px. */
+export function trafficLightSpan(x: number = shell.trafficLights.x): number {
+  const { spacing, buttonSize } = shell.trafficLights;
+  return x + 2 * spacing + buttonSize;
+}
+
+/**
+ * The ink to print on a fixed IDENTITY-TRIM fill — `AGENT_TRIM` in
+ * `components/world/shared/palette.ts`.
+ *
+ * A function, not a token, and that is the whole point. The trim palette is
+ * frozen and theme-independent (an agent's colour is its identity, never
+ * repainted by state or theme), and it is neither one hue nor one lightness:
+ * `henry` is a near-white gold at 91% lightness, `strix` a dark oxblood at
+ * 42%. So there is no single ink that is legible on all of them, and the
+ * Finance lane was right to hand-pick `#3d2e0a` for the Financier's gold
+ * rather than reach for `textOnCyan`'s blue-black — but hand-picking is a
+ * per-agent decision that has to be made again for every future agent, and
+ * `world/**` alone carries twelve.
+ *
+ * The RULE is what generalises: ink on identity trim is that trim, taken to
+ * ink. Same hue, saturation pushed up, lightness driven away from the trim's
+ * until the pair clears AA — dark first, and toward light for the trims no
+ * dark ink can clear.
+ *
+ * The derivation is checked against the value Finance chose by eye:
+ * `inkOnTrim(AGENT_TRIM.financier)` returns `#3d2e0a`, which is that value.
+ * That agreement is the argument for the formula; `identityInk.test.ts`
+ * pins it, along with >= 4.5:1 for every entry in the frozen palette.
+ *
+ * Added 2026-09-02 at lane R11's request (a generic "ink on a bright identity
+ * -trim fill"), and it retires `FinanceView.tsx`'s local `FINANCIER_BADGE_INK`
+ * and its `financeColors.test.ts` allowlist entry.
+ */
+export function inkOnTrim(trim: string): string {
+  const { h, s: sat } = hexToHsl(trim);
+  // Dark first, from the 14% the Financier's ink sits at and downward; then,
+  // for the trims no dark ink can clear, the same construction upward. The
+  // ladder matters: a MID-lightness trim (librarian, polybot) clears AA with
+  // neither a 14% ink nor a 96% one, and simply picking a polarity would ship
+  // a 3.6:1 label. Walking to the first rung that clears it keeps the ink as
+  // close to the trim as legibility allows, instead of jumping to flat black.
+  const candidates: string[] = [];
+  for (let l = 0.14; l >= -0.001; l -= 0.02) {
+    candidates.push(hslToHex(h, Math.min(0.75, sat * 1.5), Math.max(0, l)));
+  }
+  for (let l = 0.96; l <= 1.001; l += 0.02) {
+    candidates.push(hslToHex(h, Math.min(0.35, sat), Math.min(1, l)));
+  }
+  const passing = candidates.find(c => contrastRatio(c, trim) >= 4.5);
+  if (passing) return passing;
+  // Unreachable for the current palette, and a sane floor if a future trim is
+  // pathological: the most legible thing we can draw.
+  return candidates.reduce((best, c) =>
+    contrastRatio(c, trim) > contrastRatio(best, trim) ? c : best);
+}
+
+/** #rgb / #rrggbb -> {h in [0,360), s and l in [0,1]}. */
+function hexToHsl(hex: string): { h: number; s: number; l: number } {
+  const [r, g, b] = hexToRgb(hex).map(v => v / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h: number;
+  if (max === r) h = 60 * (((g - b) / d) % 6);
+  else if (max === g) h = 60 * ((b - r) / d + 2);
+  else h = 60 * ((r - g) / d + 4);
+  return { h: (h + 360) % 360, s, l };
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  const seg = Math.floor(h / 60) % 6;
+  const rgb = [
+    [c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x],
+  ][seg].map(v => Math.round((v + m) * 255));
+  return `#${rgb.map(v => v.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+  return [0, 2, 4].map(i => parseInt(full.slice(i, i + 2), 16)) as [number, number, number];
+}
+
+/** WCAG 2.x contrast ratio. Exported so gates can assert legibility. */
+export function contrastRatio(a: string, b: string): number {
+  const lum = (hex: string) => {
+    const [r, g, b2] = hexToRgb(hex).map(v => {
+      const c = v / 255;
+      return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b2;
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
 
 export const shadow = {
   glow: '0 0 40px rgba(0,213,255,0.25)',
@@ -127,7 +394,7 @@ export const shadow = {
   card: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
 } as const;
 
-export const tokens = { color, font, type, textSize, tabularNums, ease, duration, radius, shadow } as const;
+export const tokens = { color, font, type, textSize, tabularNums, ease, duration, space, radius, shadow, shell } as const;
 export type DesignTokens = typeof tokens;
 
 // ── Theme gradients + colors ────────────────────────────────────────
@@ -137,7 +404,7 @@ export type ThemeId = 'dark' | 'aurora' | 'silver';
 export interface ThemeColors {
   bg: string; bgDeeper: string; surface: string; surfaceHi: string;
   border: string; borderHi: string;
-  cyan: string; cyanSoft: string; cyanGlow: string;
+  cyan: string; cyanWash: string; cyanSoft: string; cyanGlow: string;
   purple: string; purpleBright: string; purpleSoft: string; purpleGlow: string;
   text: string; textMuted: string; textDim: string;
   danger: string; dangerStrong: string;
@@ -183,12 +450,79 @@ export interface ThemeColors {
   codeBg: string;
   /** Inline code text */
   codeText: string;
+  /**
+   * Neutral interaction fills — the theme-safe replacement for the
+   * `rgba(255,255,255,0.06)` idiom, which is written 202 times across the app
+   * and is *invisible* on silver: white at 6% over a white surface is white.
+   * These carry the theme's own ink, so the same token reads as a lift on the
+   * void and as a shade on the pearl.
+   *
+   * `fillSubtle` = resting tint (a zebra row, an inactive chip).
+   * `fillHover` / `fillActive` = the pointer ladder every interactive element
+   * owes a Mac user (D10). Use them for the *fill*; brightness/scale carry the
+   * rest of the press feedback.
+   */
+  fillSubtle: string;
+  fillHover: string;
+  fillActive: string;
+  /**
+   * Scrim behind a modal or a dismissable overlay — the layer that takes the
+   * content behind it out of contention. Not a glass surface and never
+   * blurred: it is the thing glass would sit *on*.
+   */
+  veil: string;
 }
+
+/**
+ * One glass material, as the four properties a surface needs to wear it.
+ *
+ * `background` is translucent and `backdropFilter` is real only because these
+ * two always travel together — the app's standing bug was a `backdropFilter`
+ * paired with an OPAQUE `colors.surface`, which blurs nothing at a full
+ * compositing pass's cost. Spread the whole token or none of it.
+ *
+ * `opaque` is the same surface with the translucency taken out, for Reduce
+ * Transparency. It is the theme's flat surface colour, deliberately: under
+ * that setting `glass` and `glassHi` collapse to the same fill, which is what
+ * the setting means.
+ */
+export interface GlassSurface {
+  background: string;
+  backdropFilter: string;
+  /** Specular top edge, shaded bottom edge, hairline, ambient depth. */
+  boxShadow: string;
+  /** Reduce-Transparency fallback fill (see `getReduceTransparency`). */
+  opaque: string;
+}
+
+/**
+ * The glass token set — two surfaces, and that is the whole vocabulary.
+ *
+ * `glass` is the default floating-control material: toolbars, popovers,
+ * toasts, floating buttons, menu chrome. `glassHi` is for LARGE floating
+ * surfaces — sidebars, inspectors — and is MORE opaque, which is the rule
+ * people find backwards. It is Apple's: large glass "uses increased opacity to
+ * preserve legibility over complex backgrounds" and refuses the polarity flip
+ * because at that size the flip is distracting (WWDC25/219). Bigger surface,
+ * more opaque.
+ *
+ * Both sit at Tinted-appearance opacity, not at the June-2025 launch
+ * transparency. Apple spent 26.1, 26.2 and 26.4 walking that transparency back
+ * and shipped a user-facing switch to turn it down; starting where they
+ * started would be starting a year behind.
+ *
+ * There is no `clear` variant here. Apple's Clear is for controls over
+ * media-rich content, and the one place we could justify it — HUD chrome over
+ * the 3D world view — is a screen this change deliberately does not touch. A
+ * third glass token with no caller is a third thing to keep honest; the world
+ * lane can add it against a real backdrop.
+ */
+export interface ThemeGlass { glass: GlassSurface; glassHi: GlassSurface; }
 
 const DARK_COLORS: ThemeColors = {
   bg: color.bg, bgDeeper: color.bgDeeper, surface: color.surface, surfaceHi: color.surfaceHi,
   border: color.border, borderHi: color.borderHi,
-  cyan: color.cyan, cyanSoft: color.cyanSoft, cyanGlow: color.cyanGlow,
+  cyan: color.cyan, cyanWash: color.cyanWash, cyanSoft: color.cyanSoft, cyanGlow: color.cyanGlow,
   purple: color.purple, purpleBright: color.purpleBright, purpleSoft: color.purpleSoft, purpleGlow: color.purpleGlow,
   text: color.text, textMuted: color.textMuted, textDim: color.textDim,
   danger: color.danger,
@@ -211,6 +545,14 @@ const DARK_COLORS: ThemeColors = {
   staleSoft: 'rgba(208,164,92,0.16)',
   codeBg: 'rgba(0,0,0,0.30)',
   codeText: '#00D5FF',
+  // White ink on the void. The ladder is 4/7/11 — 7 is `color.border`'s alpha
+  // on purpose, so a hovered fill and a hairline are the same weight of light.
+  fillSubtle: 'rgba(255,255,255,0.04)',
+  fillHover: 'rgba(255,255,255,0.07)',
+  fillActive: 'rgba(255,255,255,0.11)',
+  // bgDeeper (#070B14) at 62% — deep enough that a card behind a modal stops
+  // competing, short of the flat blackout that loses all sense of place.
+  veil: 'rgba(7,11,20,0.62)',
 };
 const AURORA_COLORS: ThemeColors = {
   ...DARK_COLORS,
@@ -227,6 +569,9 @@ const SILVER_COLORS: ThemeColors = {
   borderHi: 'rgba(0,191,239,0.40)',  // Cyan focus
   // Accents — brand cyan/violet
   cyan: '#00BFEF',           // Cyan Intelligence
+  // Same step below Soft as the dark theme takes (0.04 x 0.10/0.14), because
+  // silver dials the whole cyan family down by that ratio already.
+  cyanWash: 'rgba(0,191,239,0.03)',
   cyanSoft: 'rgba(0,191,239,0.10)',
   cyanGlow: 'rgba(0,191,239,0.25)',
   purple: '#8B5CFF',         // Violet Memory
@@ -261,7 +606,80 @@ const SILVER_COLORS: ThemeColors = {
   staleSoft: 'rgba(161,98,7,0.10)',
   codeBg: '#EEF2F7',          // Chrome Mist — 1.1:1 vs white (subtle tint)
   codeText: '#0369A1',        // Sky-700 — 5.5:1 on Chrome Mist (AA)
+  // Graphite ink (30,37,48 = `text`) at the same 4/7/11 ladder. This is the
+  // half that was missing: white-alpha fills are literally invisible here, so
+  // every hover written that way simply did not exist on the light theme.
+  fillSubtle: 'rgba(30,37,48,0.04)',
+  fillHover: 'rgba(30,37,48,0.07)',
+  fillActive: 'rgba(30,37,48,0.11)',
+  // Lighter than the dark theme's veil, and correctly so — on a pearl ground a
+  // 62% graphite scrim reads as a blackout, not as a recede.
+  veil: 'rgba(30,37,48,0.40)',
 };
+
+// ── Glass ────────────────────────────────────────────────────────────
+
+/** `#RRGGBB` -> `rgba(r,g,b,a)`. Solid hex only; the theme surfaces all are. */
+function _rgba(hex: string, alpha: number): string {
+  const s = hex.replace('#', '');
+  const r = parseInt(s.substring(0, 2), 16);
+  const g = parseInt(s.substring(2, 4), 16);
+  const b = parseInt(s.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+/**
+ * Build a theme's two glass surfaces from its own opaque surface colour.
+ *
+ * Derived, not hand-written, for one reason: glass must read as the same
+ * material family as the flat surfaces beside it. If a theme ever retunes
+ * `surface`, its glass follows in the same commit instead of drifting a shade
+ * off and needing to be noticed. (Aurora currently shares dark's surface, so
+ * it currently shares dark's glass — and will stop the moment it stops.)
+ *
+ * `light` inverts the rim polarity rather than the whole recipe: the specular
+ * highlight stays on TOP in both — light comes from above in both themes —
+ * but on a pearl ground the bottom edge softens instead of darkening, and the
+ * ambient shadow is cool graphite, because black is invisible on white.
+ */
+function _glass(surface: string, border: string, light: boolean): ThemeGlass {
+  const rim = light
+    ? ['inset 0 1px 0 rgba(255,255,255,0.90)', 'inset 0 -1px 0 rgba(30,37,48,0.06)']
+    : ['inset 0 1px 0 rgba(255,255,255,0.14)', 'inset 0 -1px 0 rgba(0,0,0,0.22)'];
+  const ambient = (spread: string) => (light ? `0 ${spread} rgba(30,37,48,0.12)` : `0 ${spread} rgba(0,0,0,0.28)`);
+  const shell = (spread: string) => [...rim, `inset 0 0 0 1px ${border}`, ambient(spread)].join(', ');
+  return {
+    // Default floating control layer — toolbars, popovers, toasts, launchers.
+    glass: {
+      background: _rgba(surface, 0.82),
+      backdropFilter: 'blur(20px) saturate(180%)',
+      boxShadow: shell('8px 32px'),
+      opaque: surface,
+    },
+    // Large floating surfaces — sidebars, inspectors. More opaque (D6), and a
+    // wider blur and deeper ambient because it floats further off the content.
+    glassHi: {
+      background: _rgba(surface, 0.90),
+      backdropFilter: 'blur(24px) saturate(170%)',
+      boxShadow: shell('16px 48px'),
+      opaque: surface,
+    },
+  };
+}
+
+/**
+ * `saturate()` is doing real work in both filters and is not decoration:
+ * `blur()` alone averages the backdrop toward grey haze, and it is the
+ * saturation boost that makes the result read as glass rather than as fog.
+ * Dropping it is the single most common way a web recreation looks wrong.
+ */
+export const THEME_GLASS: Record<ThemeId, ThemeGlass> = {
+  dark: _glass(DARK_COLORS.surface, DARK_COLORS.border, false),
+  aurora: _glass(AURORA_COLORS.surface, AURORA_COLORS.border, false),
+  silver: _glass(SILVER_COLORS.surface, SILVER_COLORS.border, true),
+};
+
+export function getThemedGlass(): ThemeGlass { return THEME_GLASS[_activeTheme]; }
 
 export interface ThemeGradients {
   workspace: string; card: string; label: string;
@@ -443,10 +861,6 @@ export type IdleAnim = 'still' | 'breathing' | 'drifting';
 export function getIdleAnim(): IdleAnim { return _get('permagent-idle-anim', 'breathing') as IdleAnim; }
 export function setIdleAnim(v: IdleAnim) { _set('permagent-idle-anim', v); }
 
-// Show Möbius in dashboard hero
-export function getShowHeroMobius(): boolean { return _get('permagent-show-hero-mobius', 'true') === 'true'; }
-export function setShowHeroMobius(v: boolean) { _set('permagent-show-hero-mobius', String(v)); }
-
 // UI density: 'comfortable' | 'default' | 'compact'
 export type UIDensity = 'comfortable' | 'default' | 'compact';
 export function getDensity(): UIDensity { return _get('permagent-density', 'default') as UIDensity; }
@@ -470,5 +884,37 @@ export function getReduceMotion(): boolean {
   );
 }
 export function setReduceMotion(v: boolean) { _set('permagent-reduce-motion', String(v)); }
+
+// Reduce transparency
+//
+// The same three states as Reduce Motion — explicit choice wins, otherwise
+// follow the OS — but the OS half cannot be read the same way. WebKit does not
+// implement `prefers-reduced-transparency` (it was objected to on
+// fingerprinting grounds), so inside our webview the setting is invisible to
+// CSS and to matchMedia alike. There is no media query to fall through to.
+//
+// So the OS answer is pushed IN: `styles/reduceTransparency.ts` reads
+// `NSWorkspace.accessibilityDisplayShouldReduceTransparency` over Tauri IPC and
+// calls `setNativeReduceTransparency` here, once at startup and again on every
+// accessibility-options change. Until that lands (a browser, a test, the split
+// second before the first IPC returns) the answer is `false` — glass on. That
+// is the right default to be wrong in: a user who has the setting ON gets one
+// frame of glass, not a permanently flat app for everyone else.
+let _nativeReduceTransparency = false;
+
+/** Called by the native bridge. Notifies theme listeners so glass re-renders. */
+export function setNativeReduceTransparency(v: boolean) {
+  if (_nativeReduceTransparency === v) return;
+  _nativeReduceTransparency = v;
+  _notify();
+}
+
+export function getReduceTransparency(): boolean {
+  const stored = _get('permagent-reduce-transparency', '');
+  if (stored === 'true') return true;
+  if (stored === 'false') return false;
+  return _nativeReduceTransparency;
+}
+export function setReduceTransparency(v: boolean) { _set('permagent-reduce-transparency', String(v)); }
 
 export function onThemeChange(fn: () => void) { _listeners.add(fn); return () => { _listeners.delete(fn); }; }

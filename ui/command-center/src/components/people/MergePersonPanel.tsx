@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import type { DirectoryPerson, DuplicateSuggestion, MergePreview, MergeReport, Person } from '../projects/types';
@@ -169,7 +169,7 @@ export function MergePersonPanel({
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.xl }}>
       {step === 'pick' && (
         <PickStep
           colors={colors}
@@ -267,7 +267,7 @@ function PickStep({
         <Small colors={colors}>No matches.</Small>
       )}
       {directoryStatus === 'ready' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 200, overflowY: 'auto' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxs, maxHeight: 200, overflowY: 'auto' }}>
           {candidates.map(p => (
             <Button
               key={p.entity_uuid}
@@ -315,7 +315,7 @@ function PreviewStep({
       <div style={{ fontSize: textSize.caption, color: colors.text }}>
         Keep <strong>{survivor.display_name}</strong>, absorb <strong>{duplicate.display_name}</strong>.
       </div>
-      <div style={{ display: 'flex', gap: 6 }}>
+      <div style={{ display: 'flex', gap: space.sm }}>
         <Button colors={colors} onClick={onBack} style={miniBtn(colors)}>Back</Button>
         <Button colors={colors} onClick={onSwap} style={miniBtn(colors)}>Swap: keep {duplicate.display_name} instead</Button>
       </div>
@@ -329,7 +329,7 @@ function PreviewStep({
       )}
 
       {status === 'ready' && preview && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xl }}>
           <div style={{ fontSize: textSize.caption, color: colors.text }}>
             {preview.meetings} meeting{preview.meetings === 1 ? '' : 's'} move
             {preview.open_follow_ups > 0 ? `, ${preview.open_follow_ups} with an open follow-up` : ''}.
@@ -360,7 +360,7 @@ function PreviewStep({
               </div>
             ))}
             {preview.fields_kept_from_survivor.length > 0 && (
-              <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4 }}>
+              <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs }}>
                 Kept from {survivor.display_name}: {preview.fields_kept_from_survivor.join(', ')}
               </div>
             )}
@@ -380,9 +380,9 @@ function PreviewStep({
           {preview.retained.length > 0 && (
             <div style={{
               fontSize: textSize.micro, color: colors.textMuted, borderRadius: radius.md,
-              border: `1px solid ${colors.border}`, padding: '8px 10px',
+              border: `1px solid ${colors.border}`, padding: `${space.md}px ${space.lg}px`,
             }}>
-              <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 4 }}>
+              <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: space.xs }}>
                 What stays put
               </div>
               {preview.retained.map((line, i) => <div key={i}>{line}</div>)}
@@ -395,7 +395,7 @@ function PreviewStep({
         <div style={{ fontSize: textSize.caption, color: colors.danger }}>{confirmError}</div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: space.md }}>
         <Button colors={colors} onClick={onCancel} disabled={confirming} style={ghostBtn(colors)}>Cancel</Button>
         <Button colors={colors} onClick={onConfirm} disabled={disabled} style={dangerBtn(colors)}>
           {confirming ? 'Merging…' : `Merge and delete ${duplicate.display_name}`}
@@ -411,12 +411,12 @@ function SectionLabel({ colors, children }: { colors: ReturnType<typeof useTheme
   return <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>{children}</div>;
 }
 function Small({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: React.ReactNode }) {
-  return <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4 }}>{children}</div>;
+  return <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs }}>{children}</div>;
 }
 
 function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
   return {
-    fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
+    fontSize: textSize.caption, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md,
     background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none', width: '100%', boxSizing: 'border-box',
   };
@@ -443,7 +443,7 @@ function rowBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
     // reads from the left edge; `.pa-btn` centres by default.
     alignItems: 'baseline',
     justifyContent: 'flex-start',
-    gap: 8,
+    gap: space.md,
     textAlign: 'left',
     width: '100%',
     fontFamily: font.body,
@@ -462,7 +462,7 @@ function miniBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
     '--pa-btn-pad': '4px 7px',
     '--pa-btn-radius': `${radius.md}px`,
     '--pa-btn-weight': 400,
-    gap: 3,
+    gap: space.xxs,
     fontFamily: font.body,
     fontSize: textSize.micro,
   } as CSSProperties;

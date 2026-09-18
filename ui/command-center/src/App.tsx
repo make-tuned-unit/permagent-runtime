@@ -3,12 +3,14 @@ import { useCommandCenter, navigateToTool } from './lib/store';
 import { useTheme } from './styles/useTheme';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsView } from './components/settings/SettingsView';
+import { HistoryView, isHistoryTab, type HistoryTabKey } from './components/history/HistoryView';
 import { SkillsPanel } from './components/skills/SkillsPanel';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { WorkspaceSaveErrorChip } from './components/workspaces/WorkspaceSaveErrorChip';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { WizardShell } from './components/wizard/WizardShell';
 import { Splash } from './components/splash/Splash';
+import { BootScreen } from './components/splash/BootScreen';
 import { ChatLauncher } from './components/chat/ChatLauncher';
 import { ChatDock } from './components/chat/ChatDock';
 import { VoiceHost } from './components/voice/VoiceHost';
@@ -26,6 +28,7 @@ import { useAppNavigate } from './hooks/useAppNavigate';
 import { getOpenOnLaunch } from './lib/openOnLaunch';
 import { useVersionSkew } from './hooks/useVersionSkew';
 import { onRepaintRegain, forceCompositorRepaint } from './lib/repaintOnRegain';
+import { NATIVE_WINDOW_IS_OPAQUE, TITLEBAR_HEIGHT } from './lib/windowChrome';
 
 type StartupConfigResult = 'app' | 'wizard' | 'malformed';
 
@@ -55,11 +58,32 @@ export function MainContent() {
   // Skills Library renders as a labeled overlay so accepting a skill proposal
   // — which sets activePanel:'skills' — lands on a real surface instead of a
   // blank/unchanged screen. Also the target of navigate_app("Skills").
-  // The old Console overlay (Sessions/Inbox/Trace/Governance) is gone: those
-  // pages live inside Settings now (2026-08 ruling) and deep links route
-  // through pendingSettingsSection.
   const showSkills = activePanel === 'skills';
+  // History — Sessions, Downloads, Activity, Spend. The old Console overlay
+  // was retired into Settings by the 2026-08 ruling because there was nowhere
+  // else to put it; #1177 made the four one component, and this is the half
+  // that finishes the move: a record of what your agent did is not a setting,
+  // and it should not cost a trip through a configuration screen to read one.
+  // The segment comes from the deep link's own section key (`pendingSettings
+  // Section`), so "Settings → Spend" still opens Spend and not Sessions.
+  const showHistory = activePanel === 'history';
+  const pendingSection = useCommandCenter(s => s.pendingSettingsSection);
+  const setPendingSection = useCommandCenter(s => s.setPendingSettingsSection);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
+
+  // The deep link's segment, consumed ONCE — the same contract SettingsView
+  // has always had with `pendingSettingsSection`. Consuming it matters here
+  // for a reason that only shows up on the second visit: nothing else clears
+  // the key now that History is not a Settings pane, so a stale "spend" would
+  // make every later trip to History open on Spend. Holding the segment in
+  // state after that is deliberate — coming back to History where you left it
+  // is what the Settings pane did, and what a destination should do.
+  const [historyTab, setHistoryTab] = useState<HistoryTabKey>('sessions');
+  useEffect(() => {
+    if (!showHistory || !isHistoryTab(pendingSection)) return;
+    setHistoryTab(pendingSection);
+    setPendingSection(null);
+  }, [showHistory, pendingSection, setPendingSection]);
 
   if (!workspacesLoaded) {
     return (
@@ -69,7 +93,7 @@ export function MainContent() {
     );
   }
 
-  if (!activeWorkspaceId && !showSettings && !showSkills) {
+  if (!activeWorkspaceId && !showSettings && !showSkills && !showHistory) {
     if (workspacesError) {
       return (
         <StateBlock
@@ -98,11 +122,18 @@ export function MainContent() {
           <SkillsPanel onClose={() => setActivePanel('chat')} />
         </div>
       )}
+      {showHistory && (
+        <div className="absolute inset-0 z-10">
+          <ErrorBoundary surface="History">
+            <HistoryView initialTab={isHistoryTab(pendingSection) ? pendingSection : historyTab} />
+          </ErrorBoundary>
+        </div>
+      )}
       {workspaces.map(ws => (
         <div
           key={ws.id}
           className="absolute inset-0"
-          style={{ display: (!showSettings && !showSkills && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
+          style={{ display: (!showSettings && !showSkills && !showHistory && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
         >
           <ErrorBoundary surface="the workspace">
             <WorkspaceRenderer workspaceId={ws.id} />
@@ -121,20 +152,22 @@ function App() {
   const activeWorkspace = useCommandCenter(s => s.workspaces.find(w => w.id === s.activeWorkspaceId));
   const { gradient, density, theme, themePref } = useTheme();
 
-  // One-time native window setup. Deliberately NOT in the theme effect below:
-  // both of these are heavyweight and unrelated to colour, and re-running them
-  // on every appearance change tore the window down and rebuilt it hard enough
-  // to look like the app had restarted. setTitleBarStyle mutates the NSWindow's
-  // style mask (a frame-view rebuild), and enable_media_capture_cmd reaches
-  // into the live WKWebView's configuration through a private API.
+  // One-time native window setup.
+  //
+  // The `setTitleBarStyle('overlay')` call that used to live here is GONE, and
+  // its absence is the fix, not an omission. `titleBarStyle` is now declared in
+  // tauri.conf.json alongside `hiddenTitle` and `trafficLightPosition` — the
+  // only path that applies a traffic-light position at all while the `unstable`
+  // cargo feature is on (A1a spike, see src-tauri/src/chrome.rs). Setting the
+  // style from JS mutates the NSWindow's style mask, which rebuilds the frame
+  // view and snaps the window controls back to AppKit's (9, 9): the app was
+  // asking, once per launch, for exactly the reset the re-inset exists to undo.
+  //
+  // enable_media_capture_cmd stays: it reaches into the live WKWebView's
+  // configuration through a private API and has to happen after mount.
   useEffect(() => {
     if (!('__TAURI_INTERNALS__' in window)) return;
     (async () => {
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        await getCurrentWindow().setTitleBarStyle('overlay');
-      } catch { /* older Tauri or permission not available */ }
-      // Enable media capture (getUserMedia) on this window's WKWebView.
       try {
         const { invoke } = await import('@tauri-apps/api/core');
         await invoke('enable_media_capture_cmd');
@@ -154,7 +187,17 @@ function App() {
         // under a "System" preference would fight the OS on every light/dark
         // flip instead of following it.
         await win.setTheme(themePref === 'system' ? null : theme === 'silver' ? 'light' : 'dark');
-        await win.setBackgroundColor(gradient.shell);
+        // The NSWindow's own fill, which shows only in the frames between a
+        // resize and the webview repainting it. It is kept — and it is kept
+        // CONDITIONAL on the window being opaque, which it is and will stay:
+        // this paint is what blocks a vibrancy/`NSVisualEffectView` layer from
+        // being visible underneath, and A1a measured the transparent window
+        // that vibrancy requires at ~+6 points of whole-GPU utilisation at idle
+        // on a static page (0.12% -> 6.1%), on an always-on desktop agent. So
+        // the opaque fill is the correct choice, not a leftover. If the
+        // transparent path is ever taken, this call is the first thing that has
+        // to go — hence the named flag rather than a bare call.
+        if (NATIVE_WINDOW_IS_OPAQUE) await win.setBackgroundColor(gradient.shell);
       } catch { /* older Tauri or permission not available */ }
     })();
   }, [theme, themePref, gradient.shell]);
@@ -328,12 +371,12 @@ function App() {
   }
 
   if (phase === 'loading') {
-    return <div style={{ background: gradient.shell, width: '100vw', height: '100vh', paddingTop: 28 }} />;
+    return <BootScreen onReady={(wizardDone) => setPhase(wizardDone ? 'app' : 'wizard')} />;
   }
 
   if (phase === 'unavailable') {
     return (
-      <div style={{ background: gradient.shell, width: '100vw', height: '100vh', paddingTop: 28 }}>
+      <div style={{ background: gradient.shell, width: '100vw', height: '100vh', paddingTop: TITLEBAR_HEIGHT }}>
         <StateBlock
           tone="error"
           title={startupFailure === 'malformed' ? 'The daemon returned an invalid configuration.' : 'Permagent is unavailable.'}
@@ -351,20 +394,40 @@ function App() {
   }
 
   return (
-    <div ref={shellRef} className={`flex flex-col h-screen density-${density}`} style={{ background: gradient.shell }}>
-      {/* Title-bar strip — overlay mode makes native bar transparent; this fills
-          the area behind the traffic lights with the sidebar color across full width */}
-      <div data-tauri-drag-region style={{ height: 28, flexShrink: 0, background: gradient.sidebar }} />
-      <VersionSkewBanner skew={versionSkew} />
-      <div className="flex flex-1 min-h-0">
-        <Sidebar />
-        <main className="flex-1 min-w-0 overflow-hidden relative">
-          <DropZone zoneId="workspace-chat-fallback" onDrop={handleDrop} disabled={!!(activeWorkspace && (hasToolType(activeWorkspace.layoutJson, 'world') || hasToolType(activeWorkspace.layoutJson, 'memory')))}>
-            <MainContent />
-          </DropZone>
-        </main>
-        <ChatLauncher />
-        <ChatDock />
+    <div ref={shellRef} className={`flex h-screen density-${density}`} style={{ background: gradient.shell }}>
+      {/* THE SILHOUETTE. The rail is the outer flex child and runs the FULL
+          height of the window — from under the traffic lights to the bottom
+          edge — which is what makes the window read as a Tahoe app rather than
+          as a web page with a coloured strip on top. It replaced a 28px band
+          that spanned the whole width: that band put a horizontal seam across
+          the window at the one place macOS expects a continuous vertical one,
+          and it left the rail starting 28px down from a corner the OS had
+          already rounded.
+
+          The rail owns the traffic lights' band (Sidebar draws its own drag
+          region at the top); the content column below owns the rest of the
+          band as a drag region of its own, so the whole titlebar is draggable
+          without either side reaching into the other.
+
+          The native browser/terminal webviews need NOTHING here. Their bounds
+          come from `getBoundingClientRect()` on their container
+          (`Browser.tsx` `syncBounds`), so moving <main> right by the rail's
+          width and down by the titlebar's height is subtraction they already
+          do — the rect they publish simply arrives correct. That is why this
+          change does not touch the bounds pump, which lane R14 is restyling. */}
+      <Sidebar />
+      <div className="flex flex-col flex-1 min-w-0">
+        <div data-tauri-drag-region style={{ height: TITLEBAR_HEIGHT, flexShrink: 0 }} />
+        <VersionSkewBanner skew={versionSkew} />
+        <div className="flex flex-1 min-h-0">
+          <main className="flex-1 min-w-0 overflow-hidden relative">
+            <DropZone zoneId="workspace-chat-fallback" onDrop={handleDrop} disabled={!!(activeWorkspace && (hasToolType(activeWorkspace.layoutJson, 'world') || hasToolType(activeWorkspace.layoutJson, 'memory')))}>
+              <MainContent />
+            </DropZone>
+          </main>
+          <ChatLauncher />
+          <ChatDock />
+        </div>
       </div>
       <GoalDetailModalHost />
       <NotificationHost />

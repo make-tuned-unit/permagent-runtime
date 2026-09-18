@@ -51,6 +51,11 @@ const EXEMPT: Record<string, { count: number; why: string }> = {
     why: 'the launch splash: an app state, not a dialog. It has no owner to '
       + 'return focus to, because nothing has been opened yet',
   },
+  'components/splash/BootScreen.tsx': {
+    count: 1,
+    why: 'the daemon-connecting boot state — a boot-phase surface rendered '
+      + 'before the shell exists, not a modal',
+  },
   'components/wizard/WizardShell.tsx': {
     count: 1,
     why: 'first-run setup takes the whole window on purpose — there is no '

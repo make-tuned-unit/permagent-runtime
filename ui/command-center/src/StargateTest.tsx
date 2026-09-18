@@ -3,7 +3,7 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { StargatePortal } from './components/world/areas/antechamber/Stargate';
-import { textSize } from './styles/tokens';
+import { space, textSize } from './styles/tokens';
 
 export default function StargateTest() {
   return (
@@ -36,7 +36,7 @@ export default function StargateTest() {
       </Canvas>
 
       <div style={{
-        position: 'absolute', bottom: 16, left: 16,
+        position: 'absolute', bottom: space.xxl, left: space.xxl,
         color: '#666', fontFamily: 'monospace', fontSize: textSize.caption,
       }}>
         Stargate Portal Test — orbit with mouse

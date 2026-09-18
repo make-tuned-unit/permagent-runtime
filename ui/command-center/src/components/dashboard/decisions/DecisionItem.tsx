@@ -27,7 +27,7 @@
 
 import { useEffect, useId, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { font, radius, textSize } from '../../../styles/tokens';
+import { font, radius, space, textSize } from '../../../styles/tokens';
 import { Button } from '../../common/Button';
 import { useTheme } from '../../../styles/useTheme';
 import type { AnswerBody, Decision } from './types';
@@ -41,12 +41,13 @@ import {
 import type { AnswerResult } from './useDecisions';
 import { EvidenceDigest } from './EvidenceDigest';
 import { decisionsClient } from './client';
-import { formatAge } from './format';
+import { formatAge, withAlpha } from './format';
 import { usePersona } from '../../settings/useSettings';
 import { useCommandCenter } from '../../../lib/store';
 import { toast } from '../../../lib/notifications';
 import { isSafeHttpUrl } from '../../../lib/url';
 
+import { Tooltip } from '../../common/Tooltip';
 interface Props {
   decision: Decision;
   onAnswer: (id: string, body: AnswerBody) => Promise<AnswerResult>;
@@ -327,10 +328,10 @@ export function DecisionItem({
       fontFamily: font.body,
     }}>
       {/* Row 1: badge + plain-language headline + age */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
         <span style={{
           fontFamily: font.mono, fontSize: 10, letterSpacing: '0.06em',
-          textTransform: 'uppercase', borderRadius: radius.xs, padding: '2px 6px',
+          textTransform: 'uppercase', borderRadius: radius.xs, padding: `${space.xxs}px ${space.sm}px`,
           flexShrink: 0, color: badge.color, background: badge.bg,
         }}>
           {badge.label}
@@ -350,29 +351,30 @@ export function DecisionItem({
           shared goal-detail modal (#503) when the decision is goal-bound. */}
       {d.goal_title && (
         d.goal_id && d.project_id ? (
-          <Button
-            colors={colors}
-            variant="bare"
-            type="button"
-            className="hover:underline"
-            onClick={() => openGoalDetail(d.project_id!, d.goal_id!)}
-            title="View goal detail"
-            style={{
-              '--pa-btn-fg': colors.cyan,
-              '--pa-btn-fg-hover': colors.cyan,
-              '--pa-btn-bg-hover': 'transparent',
-              '--pa-btn-bg-active': 'transparent',
-              '--pa-btn-pad': '0',
-              '--pa-btn-radius': '0',
-              '--pa-btn-weight': 400,
-              display: 'flex', justifyContent: 'flex-start', marginTop: 4,
-              fontSize: textSize.micro, fontFamily: font.body,
-            } as CSSProperties}
-          >
-            Goal: {d.goal_title}
-          </Button>
+          <Tooltip content="View goal detail">
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              className="hover:underline"
+              onClick={() => openGoalDetail(d.project_id!, d.goal_id!)}
+              style={{
+                '--pa-btn-fg': colors.cyan,
+                '--pa-btn-fg-hover': colors.cyan,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-bg-active': 'transparent',
+                '--pa-btn-pad': '0',
+                '--pa-btn-radius': '0',
+                '--pa-btn-weight': 400,
+                display: 'flex', justifyContent: 'flex-start', marginTop: space.xs,
+                fontSize: textSize.micro, fontFamily: font.body,
+              } as CSSProperties}
+            >
+              Goal: {d.goal_title}
+            </Button>
+          </Tooltip>
         ) : (
-          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs }}>
             Goal: {d.goal_title}
           </div>
         )
@@ -381,7 +383,7 @@ export function DecisionItem({
       {/* Detail: technical why/attribution, verbatim (S2) */}
       {d.detail && (
         <div style={{
-          fontSize: textSize.caption, color: colors.textMuted, marginTop: 4,
+          fontSize: textSize.caption, color: colors.textMuted, marginTop: space.xs,
           whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
           maxHeight: 96, overflow: 'auto',
         }}>
@@ -394,25 +396,25 @@ export function DecisionItem({
           text only (S2, never dangerouslySetInnerHTML) — no truncation, CSS
           wraps/scrolls instead so the full command stays inspectable. */}
       {checkApproval && (
-        <div style={{ marginTop: 8 }}>
-          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 4 }}>
+        <div style={{ marginTop: space.md }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.xs }}>
             Command
           </div>
           <pre style={{
             margin: 0, borderRadius: radius.sm, background: colors.codeBg,
-            padding: '10px 12px', fontFamily: font.mono, fontSize: textSize.caption,
+            padding: `${space.lg}px ${space.xl}px`, fontFamily: font.mono, fontSize: textSize.caption,
             lineHeight: 1.6, color: colors.text, maxHeight: 240,
             overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             userSelect: 'text',
           }}>
             {checkApproval.command}
           </pre>
-          <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 6 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.sm }}>
             <span style={{ color: colors.textDim }}>in </span>
             <span style={{ fontFamily: font.mono, overflowWrap: 'anywhere' }}>{checkApproval.cwd}</span>
           </div>
           {checkApproval.reason && (
-            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 4 }}>
+            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.xs }}>
               {checkApproval.reason}
             </div>
           )}
@@ -420,14 +422,14 @@ export function DecisionItem({
       )}
 
       {intelItems.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, marginTop: space.md }}>
           {intelItems.map((item, index) => {
             const kind = typeof item.kind === 'string' ? item.kind : 'item';
             const name = typeof item.name === 'string' ? item.name : 'Unnamed';
             const note = typeof item.note === 'string' ? item.note : null;
             const source = typeof item.source_url === 'string' ? item.source_url : null;
             return (
-              <div key={`${kind}-${name}-${index}`} style={{ borderLeft: `2px solid ${colors.purpleBright}`, paddingLeft: 9 }}>
+              <div key={`${kind}-${name}-${index}`} style={{ borderLeft: `2px solid ${colors.purpleBright}`, paddingLeft: space.md }}>
                 <div style={{ color: colors.text, fontSize: textSize.caption, fontWeight: 600 }}>{kind}: {name}</div>
                 {note && <div style={{ color: colors.textMuted, fontSize: textSize.micro }}>{note}</div>}
                 {source && isSafeHttpUrl(source) ? (
@@ -468,7 +470,7 @@ export function DecisionItem({
               '--pa-btn-pad': '0',
               '--pa-btn-radius': '0',
               '--pa-btn-weight': 400,
-              marginTop: 6,
+              marginTop: space.sm,
               fontSize: textSize.micro, fontFamily: font.body,
             } as CSSProperties}
           >
@@ -477,7 +479,7 @@ export function DecisionItem({
           {argsOpen && (
             <pre id={argsId} style={{
               margin: '6px 0 0', borderRadius: radius.sm,
-              background: colors.codeBg, padding: '10px 12px',
+              background: colors.codeBg, padding: `${space.lg}px ${space.xl}px`,
               fontFamily: font.mono, fontSize: textSize.micro, lineHeight: 1.6,
               color: colors.textMuted, maxHeight: 240, overflow: 'auto',
               whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
@@ -490,11 +492,11 @@ export function DecisionItem({
 
       {/* Recommendation chip — only when the daemon marked a default option */}
       {recommended && (
-        <div style={{ marginTop: 8 }}>
+        <div style={{ marginTop: space.md }}>
           <span style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
+            display: 'inline-flex', alignItems: 'center', gap: space.sm,
             borderRadius: radius.pill, background: colors.cyanSoft,
-            color: colors.cyan, fontSize: textSize.micro, fontWeight: 500, padding: '3px 10px',
+            color: colors.cyan, fontSize: textSize.micro, fontWeight: 500, padding: `${space.xxs}px ${space.lg}px`,
           }}>
             {agentName} recommends · {recommended.label}
           </span>
@@ -509,14 +511,14 @@ export function DecisionItem({
         <div
           data-testid={`staged-${d.id}`}
           style={{
-            marginTop: 10, borderRadius: radius.md,
+            marginTop: space.lg, borderRadius: radius.md,
             border: `1px solid ${colors.purpleBright}`,
-            background: colors.purpleSoft, padding: '10px 12px',
-            display: 'flex', flexDirection: 'column', gap: 8,
+            background: colors.purpleSoft, padding: `${space.lg}px ${space.xl}px`,
+            display: 'flex', flexDirection: 'column', gap: space.md,
           }}
         >
           <div style={{
-            display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
+            display: 'flex', alignItems: 'baseline', gap: space.md, flexWrap: 'wrap',
             fontSize: textSize.caption, fontWeight: 600, color: colors.text,
           }}>
             <span aria-hidden="true">🎙</span>
@@ -542,13 +544,13 @@ export function DecisionItem({
           {stagedVerdict === 'reject' && pushedRejectWarning(d.kind, pushTarget) && (
             <span role="alert" style={{
               fontSize: textSize.caption, fontWeight: 600, color: colors.warning,
-              display: 'flex', gap: 6, alignItems: 'baseline',
+              display: 'flex', gap: space.sm, alignItems: 'baseline',
             }}>
               <span aria-hidden="true">⚠</span>
               {pushedRejectWarning(d.kind, pushTarget)}
             </span>
           )}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
             {/* One tap, and it travels the ordinary answer route: same actor,
                 same tier gate, attributed to this device — never to "voice". */}
             <Btn
@@ -606,9 +608,9 @@ export function DecisionItem({
       {/* Conflict: already answered elsewhere */}
       {conflict ? (
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 8, marginTop: 10,
+          display: 'flex', alignItems: 'center', gap: space.md, marginTop: space.lg,
           borderRadius: radius.md, border: `1px solid ${colors.warning}`,
-          background: colors.warning + '14', padding: '8px 12px',
+          background: withAlpha(colors.warning, 0.08), padding: `${space.md}px ${space.xl}px`,
           fontSize: textSize.caption, color: colors.text,
         }}>
           Someone already answered this — refreshing…
@@ -616,9 +618,9 @@ export function DecisionItem({
       ) : pending ? (
         /* Inline confirm step — one item at a time, never batch */
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap',
+          display: 'flex', alignItems: 'center', gap: space.md, marginTop: space.lg, flexWrap: 'wrap',
           borderRadius: radius.md, border: `1px solid ${colors.borderHi}`,
-          background: colors.cyanSoft, padding: '8px 12px',
+          background: colors.cyanSoft, padding: `${space.md}px ${space.xl}px`,
         }}>
           <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1, minWidth: 180 }}>
             {pending.effectText}
@@ -628,7 +630,7 @@ export function DecisionItem({
           {pending.body.answer === 'reject' && pushedRejectWarning(d.kind, pushTarget) && (
             <span role="alert" style={{
               flexBasis: '100%', order: -1, fontSize: textSize.caption, fontWeight: 600,
-              color: colors.warning, display: 'flex', gap: 6, alignItems: 'baseline',
+              color: colors.warning, display: 'flex', gap: space.sm, alignItems: 'baseline',
             }}>
               <span aria-hidden="true">⚠</span>
               {pushedRejectWarning(d.kind, pushTarget)}
@@ -644,7 +646,7 @@ export function DecisionItem({
                 flexBasis: '100%', width: '100%', boxSizing: 'border-box', resize: 'vertical',
                 borderRadius: radius.md, border: `1px solid ${colors.border}`,
                 background: colors.inputBg, color: colors.text,
-                fontFamily: font.body, fontSize: textSize.caption, padding: '8px 10px', outline: 'none',
+                fontFamily: font.body, fontSize: textSize.caption, padding: `${space.md}px ${space.lg}px`, outline: 'none',
               }}
             />
           )}
@@ -660,7 +662,7 @@ export function DecisionItem({
         </div>
       ) : inputOpen ? (
         /* Freeform answer (unblock) — travels as answer='input' */
-        <div style={{ marginTop: 10 }}>
+        <div style={{ marginTop: space.lg }}>
           <textarea
             value={inputText}
             onChange={e => setInputText(e.target.value)}
@@ -670,10 +672,10 @@ export function DecisionItem({
               width: '100%', boxSizing: 'border-box', resize: 'vertical',
               borderRadius: radius.md, border: `1px solid ${colors.border}`,
               background: colors.inputBg, color: colors.text,
-              fontFamily: font.body, fontSize: textSize.caption, padding: '8px 10px', outline: 'none',
+              fontFamily: font.body, fontSize: textSize.caption, padding: `${space.md}px ${space.lg}px`, outline: 'none',
             }}
           />
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <div style={{ display: 'flex', gap: space.md, marginTop: space.md }}>
             <Btn
               variant="primary"
               disabled={!inputText.trim()}
@@ -695,8 +697,8 @@ export function DecisionItem({
         /* Approve-with-edits — revise the agent's draft, then accept. Travels as
            answer='edit': the daemon keeps the revision AND learns the
            draft→revision delta (edit-as-training, decision_inbox/learn.rs). */
-        <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 6 }}>
+        <div style={{ marginTop: space.lg }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.sm }}>
             Revise the draft, then accept — your version becomes the answer and {agentName} learns the change.
           </div>
           <textarea
@@ -707,10 +709,10 @@ export function DecisionItem({
               width: '100%', boxSizing: 'border-box', resize: 'vertical',
               borderRadius: radius.md, border: `1px solid ${colors.border}`,
               background: colors.inputBg, color: colors.text,
-              fontFamily: font.body, fontSize: textSize.caption, padding: '8px 10px', outline: 'none',
+              fontFamily: font.body, fontSize: textSize.caption, padding: `${space.md}px ${space.lg}px`, outline: 'none',
             }}
           />
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <div style={{ display: 'flex', gap: space.md, marginTop: space.md }}>
             <Btn
               variant="primary"
               disabled={!editText.trim()}
@@ -731,7 +733,7 @@ export function DecisionItem({
       ) : (
         /* Action row per kind (A4): binary approvals get Approve/Reject/Add note
            only; option chips appear only on choice-kind decisions. */
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginTop: space.lg, flexWrap: 'wrap' }}>
           {(isApprovalLike || isUnblock) && (
             <>
               <Btn
@@ -818,8 +820,8 @@ export function DecisionItem({
               style={{
                 '--pa-btn-fg': colors.warning,
                 '--pa-btn-fg-hover': colors.warning,
-                '--pa-btn-bg-hover': colors.warning + '1F',
-                '--pa-btn-bg-active': colors.warning + '2E',
+                '--pa-btn-bg-hover': withAlpha(colors.warning, 0.12),
+                '--pa-btn-bg-active': withAlpha(colors.warning, 0.18),
                 '--pa-btn-pad': '4px',
                 '--pa-btn-radius': `${radius.xs}px`,
                 '--pa-btn-weight': 400,
@@ -862,9 +864,9 @@ export function DecisionItem({
       {/* Cancel failure surfaced inline — never silently swallowed (#503) */}
       {cancelErr && (
         <div style={{
-          marginTop: 8, fontSize: textSize.caption, color: colors.danger,
+          marginTop: space.md, fontSize: textSize.caption, color: colors.danger,
           borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-          background: colors.danger + '14', padding: '6px 10px',
+          background: withAlpha(colors.danger, 0.08), padding: `${space.sm}px ${space.lg}px`,
         }}>
           {cancelErr}
         </div>
@@ -878,10 +880,10 @@ export function DecisionItem({
           placeholder="Add a note — it travels with your answer"
           rows={2}
           style={{
-            width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: 8,
+            width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: space.md,
             borderRadius: radius.md, border: `1px solid ${colors.border}`,
             background: colors.inputBg, color: colors.text,
-            fontFamily: font.body, fontSize: textSize.caption, padding: '8px 10px', outline: 'none',
+            fontFamily: font.body, fontSize: textSize.caption, padding: `${space.md}px ${space.lg}px`, outline: 'none',
           }}
         />
       )}
@@ -896,18 +898,18 @@ export function DecisionItem({
 
 function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
   switch (d.kind) {
-    case 'unblock': return { label: 'unblock', color: colors.warning, bg: colors.warning + '24' };
+    case 'unblock': return { label: 'unblock', color: colors.warning, bg: withAlpha(colors.warning, 0.14) };
     case 'choice':
       return checkApprovalOf(d)
-        ? { label: 'command approval', color: colors.danger, bg: colors.danger + '24' }
+        ? { label: 'command approval', color: colors.danger, bg: withAlpha(colors.danger, 0.14) }
         : { label: 'choice', color: colors.purpleBright, bg: colors.purpleSoft };
-    case 'risk_gate': return { label: 'permission', color: colors.danger, bg: colors.danger + '24' };
-    case 'session_gate': return { label: 'terminal gate', color: colors.danger, bg: colors.danger + '24' };
+    case 'risk_gate': return { label: 'permission', color: colors.danger, bg: withAlpha(colors.danger, 0.14) };
+    case 'session_gate': return { label: 'terminal gate', color: colors.danger, bg: withAlpha(colors.danger, 0.14) };
     case 'enrichment_proposal': return { label: 'enrichment', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'project_intel_proposal': return { label: 'project intel', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'file_to_project': return { label: 'file note', color: colors.cyan, bg: colors.cyanSoft };
     case 'council_action': return { label: 'council', color: colors.purpleBright, bg: colors.purpleSoft };
-    case 'malformed': return { label: 'review', color: colors.warning, bg: colors.warning + '24' };
+    case 'malformed': return { label: 'review', color: colors.warning, bg: withAlpha(colors.warning, 0.14) };
     default: return { label: 'approval', color: colors.cyan, bg: colors.cyanSoft };
   }
 }
@@ -923,6 +925,18 @@ function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
  * `--pa-btn-*` custom properties so the shared `:hover`/`:active`/disabled
  * rules can reach it, and an `onClick` that returns a promise gets the pending
  * and success contract for free.
+ *
+ * R7 (D10): the ghost/danger hover and press states used to repeat the resting
+ * `colors.surface` fill verbatim — a color swap on the border and label, but
+ * no fill at all, on a button that sits on that exact same surface (this row
+ * lives inside `DetailModal`, whose panel background IS `colors.surface`), so
+ * hovering or pressing one produced no visible lift whatsoever. `fillHover` /
+ * `fillActive` are the tokens built for precisely this (dashboard cards'
+ * `InFlightCard`/`GrowthResultsCard` use the identical
+ * `pressed ? fillActive : hover ? fillHover : colors.surface` ladder over the
+ * same surface). Primary is unaffected — its lift is `.pa-btn--primary`'s
+ * global `filter: brightness()`, already applied through CSS regardless of
+ * this token.
  */
 function Btn({ variant = 'ghost', danger = false, disabled = false, onClick, children }: {
   variant?: 'primary' | 'ghost';
@@ -948,13 +962,13 @@ function Btn({ variant = 'ghost', danger = false, disabled = false, onClick, chi
           ? colors.textOnAccent
           : danger ? colors.danger : colors.textMuted,
         '--pa-btn-border': primary ? 'transparent' : colors.border,
-        '--pa-btn-bg-hover': primary ? colors.ribbonGradient : colors.surface,
+        '--pa-btn-bg-hover': primary ? colors.ribbonGradient : colors.fillHover,
         // Danger keeps its colour through hover, exactly as it did before.
         '--pa-btn-fg-hover': primary
           ? colors.textOnAccent
           : danger ? colors.danger : colors.text,
         '--pa-btn-border-hover': primary ? 'transparent' : colors.borderHi,
-        '--pa-btn-bg-active': primary ? colors.ribbonGradient : colors.surface,
+        '--pa-btn-bg-active': primary ? colors.ribbonGradient : colors.fillActive,
         '--pa-btn-pad': '5px 14px',
         '--pa-btn-radius': `${radius.md}px`,
         '--pa-btn-weight': primary ? 600 : 500,

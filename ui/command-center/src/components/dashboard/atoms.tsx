@@ -1,4 +1,4 @@
-import { font, tabularNums, textSize } from '../../styles/tokens';
+import { font, space, tabularNums, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 export function SectionTitle({ title, right }: { title: string; right?: string }) {
@@ -7,7 +7,7 @@ export function SectionTitle({ title, right }: { title: string; right?: string }
   // dashboard the CONTENT is the subject and every card repeating a large title
   // is chrome competing with data. Sized down to a quiet label.
   return (
-    <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 10 }}>
+    <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: space.lg }}>
       <h3 style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, letterSpacing: '-0.005em', color: colors.text, margin: 0 }}>{title}</h3>
       {right && <span style={{ fontFamily: font.body, fontSize: 10.5, color: colors.textDim, marginLeft: 'auto' }}>{right}</span>}
     </div>
@@ -27,12 +27,12 @@ export function SectionTitle({ title, right }: { title: string; right?: string }
 export function EmptyNote({ children, hint }: { children: React.ReactNode; hint?: string }) {
   const { colors } = useTheme();
   return (
-    <div style={{ paddingTop: 2 }}>
+    <div style={{ paddingTop: space.xxs }}>
       <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.4 }}>
         {children}
       </div>
       {hint && (
-        <div style={{ fontFamily: font.body, fontSize: 10.5, color: colors.textDim, marginTop: 3, lineHeight: 1.4 }}>
+        <div style={{ fontFamily: font.body, fontSize: 10.5, color: colors.textDim, marginTop: space.xxs, lineHeight: 1.4 }}>
           {hint}
         </div>
       )}
@@ -53,10 +53,10 @@ export function StatCompact({ label, value, cyan, delta }: {
     <div style={{ minWidth: 0 }}>
       <div style={{
         fontFamily: font.body, fontSize: 9.5, fontWeight: 600, letterSpacing: '0.08em',
-        textTransform: 'uppercase', color: colors.textDim, marginBottom: 1,
+        textTransform: 'uppercase', color: colors.textDim, marginBottom: space.xxs,
         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
       }}>{label}</div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: space.xs }}>
         <span style={{
           fontFamily: font.display, fontSize: 19, fontWeight: 600, lineHeight: 1.15,
           letterSpacing: '-0.015em', ...tabularNums,
@@ -75,12 +75,12 @@ export function Stat({ label, value, suffix, delta, cyan }: {
   return (
     <div>
       <div style={{ fontSize: textSize.micro, fontWeight: 600, letterSpacing: '0.10em',
-        textTransform: 'uppercase', color: colors.textDim, marginBottom: 6 }}>{label}</div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        textTransform: 'uppercase', color: colors.textDim, marginBottom: space.sm }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md }}>
         <div style={{ fontFamily: font.display, fontSize: textSize.display, fontWeight: 600,
           letterSpacing: '-0.02em', ...tabularNums,
           color: cyan ? colors.cyan : colors.text }}>
-          {value}<span style={{ fontSize: 18, color: colors.textMuted, marginLeft: 2 }}>{suffix || ''}</span>
+          {value}<span style={{ fontSize: 18, color: colors.textMuted, marginLeft: space.xxs }}>{suffix || ''}</span>
         </div>
         {delta && (
           <div style={{ fontSize: textSize.micro, fontWeight: 600, color: colors.success }}>{delta}</div>

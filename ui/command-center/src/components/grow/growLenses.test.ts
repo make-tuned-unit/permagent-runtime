@@ -5,11 +5,9 @@
 // to undo by accident when adding a lens, so the order and the default are
 // pinned here rather than left to whoever edits the array next.
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const SOURCE = readFileSync(join(__dirname, 'GrowView.tsx'), 'utf8');
+import { GROW_SOURCE as SOURCE } from './growSource';
 
 describe('Grow lenses', () => {
   it('lists Actions first', () => {

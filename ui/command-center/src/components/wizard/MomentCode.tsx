@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
@@ -147,7 +147,7 @@ export function MomentCode({ active = true, personaName, onAdvance, onBack }: Pr
   const selected = candidates.filter(c => chosen.has(c));
 
   return (
-    <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, overflowY: 'auto' }}>
+    <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: space.huge, overflowY: 'auto' }}>
       <Particles density={20} />
       <Mobius size={72} state="idle" glow={0.9} />
       <WizardHeading style={{ marginTop: 18 }}>Where do you keep your code?</WizardHeading>
@@ -158,7 +158,7 @@ export function MomentCode({ active = true, personaName, onAdvance, onBack }: Pr
         fail loudly, it just quietly finds nothing.
       </WizardSubhead>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 22, width: '100%', maxWidth: 480 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg, marginTop: 22, width: '100%', maxWidth: 480 }}>
         {loading && (
           <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, textAlign: 'center' }}>
             Looking for repositories…
@@ -170,10 +170,10 @@ export function MomentCode({ active = true, personaName, onAdvance, onBack }: Pr
             <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.danger }}>
               I couldn't scan for repositories{scanError ? ` (${scanError})` : ''}.
             </div>
-            <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: 4 }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xs }}>
               You can retry, add a folder manually, or skip and set this up later in Settings.
             </div>
-            <GhostLink onClick={retryScan} style={{ marginTop: 8 }}>Retry scan</GhostLink>
+            <GhostLink onClick={retryScan} style={{ marginTop: space.md }}>Retry scan</GhostLink>
           </Glass>
         )}
 
@@ -183,7 +183,7 @@ export function MomentCode({ active = true, personaName, onAdvance, onBack }: Pr
               I looked under {home || 'your home folder'} and didn't find any git
               repositories.
             </div>
-            <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: 4 }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xs }}>
               That's fine — type the folder below, or skip and tell me later in
               Settings.
             </div>
@@ -194,7 +194,7 @@ export function MomentCode({ active = true, personaName, onAdvance, onBack }: Pr
           const on = chosen.has(p);
           return (
             <Glass key={p} padding={12}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: space.lg, cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={on}
@@ -210,8 +210,8 @@ export function MomentCode({ active = true, personaName, onAdvance, onBack }: Pr
         })}
 
         {!loading && (
-          <div style={{ marginTop: 4 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ marginTop: space.xs }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
               <Input
                 value={manual}
                 onChange={(v) => { setManual(v); setCheck(null); }}
@@ -240,13 +240,13 @@ export function MomentCode({ active = true, personaName, onAdvance, onBack }: Pr
             </div>
 
             {check && !check.exists && (
-              <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.danger, marginTop: 8 }}>
+              <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.danger, marginTop: space.md }}>
                 There's no folder at {check.resolved}. Check the spelling — I'd
                 rather tell you now than accept it and find nothing later.
               </div>
             )}
             {check?.exists && !check.has_repositories && (
-              <div role="status" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.warning, marginTop: 8 }}>
+              <div role="status" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.warning, marginTop: space.md }}>
                 Added {check.resolved} — though I don't see any git repositories
                 in there yet.
               </div>
@@ -256,13 +256,13 @@ export function MomentCode({ active = true, personaName, onAdvance, onBack }: Pr
       </div>
 
       {saveError && (
-        <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.danger, marginTop: 12, maxWidth: 470, textAlign: 'center' }}>
+        <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.danger, marginTop: space.xl, maxWidth: 470, textAlign: 'center' }}>
           Couldn't save that ({saveError}). Try again, or skip and set it in
           Settings.
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.xxl, marginTop: space.huge }}>
         <GhostLink onClick={onBack}>Back</GhostLink>
         {selected.length > 0
           ? (

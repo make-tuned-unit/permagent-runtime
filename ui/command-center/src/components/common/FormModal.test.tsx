@@ -172,12 +172,17 @@ it('clears a stale failure when the user tries again', async () => {
   expect(container.querySelector('[role="alert"]')).toBeNull();
 });
 
-it('says why the submit is disabled with readable explanatory contrast', () => {
+it('says why the submit is disabled instead of just dimming it', () => {
   render({ submitDisabled: true, disabledReason: 'Give the automation a name first.' });
-  const submit = buttonLabelled('Create');
-  expect(submit.disabled).toBe(true);
-  expect(submit.getAttribute('title')).toBe('Give the automation a name first.');
+  expect(buttonLabelled('Create').disabled).toBe(true);
+  const wrap = container.querySelector('span[tabindex="0"]') as HTMLElement;
+  act(() => { wrap.focus(); });
+  expect(document.querySelector('[role="tooltip"]')?.textContent)
+    .toBe('Give the automation a name first.');
   expect(container.textContent).toContain('Give the automation a name first.');
+  // …and the inline copy of the reason has to be readable, not a dimmed hint.
+  // `space.xl` is 12px, so the sweep onto the space scale left this selector
+  // measuring exactly what it measured before.
   const reason = Array.from(container.querySelectorAll('div')).find(
     el => el.textContent === 'Give the automation a name first.' && el.style.marginTop === '12px',
   ) as HTMLDivElement | undefined;

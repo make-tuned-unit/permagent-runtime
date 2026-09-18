@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { concentric, duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
+import { useGlass } from '../common/Glass';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { insertRoadmapGoal } from '../../lib/roadmapClient';
@@ -14,6 +15,7 @@ import { ViewHeader } from '../common/ViewHeader';
 import { StateBlock } from '../common/StateBlock';
 
 
+import { Tooltip } from '../common/Tooltip';
 function isProject(value: unknown): value is Project {
   if (!value || typeof value !== 'object') return false;
   const project = value as Record<string, unknown>;
@@ -246,12 +248,17 @@ projects, onOpenProject, onStatusChange }: {
   onOpenProject: (id: string) => void;
   onStatusChange: (id: string, status: string) => void;
 }) {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   const { gradient } = useTheme();
   // White veils vanish on silver's white surfaces — flip to a faint graphite
-  // tint there (same approach as BrainList's theme-conditional rows).
-  const stripVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
-  const chipVeil = theme === 'silver' ? 'rgba(30,37,48,0.06)' : 'rgba(255,255,255,0.06)';
+  // tint there — which is exactly what `fillSubtle`/`fillHover` now are.
+  const stripVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
+  const chipVeil = colors.fillHover;
+  // The chip tint, one rung up the same neutral ladder (4/7/11).
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -294,7 +301,7 @@ projects, onOpenProject, onStatusChange }: {
         subtitle={`${active.length} active — drag a card onto Paused or Archived below to shelve it`}
       />
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '18px 24px' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: `18px ${space.huge}px` }}>
         {/* ACTIVE — the page. Responsive grid, drop target for reactivation. */}
         <div
           onDragOver={(e) => handleDragOver(e, 'active')}
@@ -303,9 +310,9 @@ projects, onOpenProject, onStatusChange }: {
           style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-            gap: 12,
+            gap: space.xl,
             borderRadius: radius.lg,
-            padding: 4,
+            padding: space.xs,
             border: dragOverCol === 'active' ? `1px solid ${colors.borderHi}` : '1px solid transparent',
             background: dragOverCol === 'active' ? colors.cyanSoft : 'transparent',
             transition: 'all 150ms',
@@ -345,7 +352,7 @@ projects, onOpenProject, onStatusChange }: {
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, col.key)}
               style={{
-                marginTop: 14, borderRadius: 10,
+                marginTop: 14, borderRadius: radius.lg,
                 border: isOver ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
                 background: isOver ? colors.cyanSoft : stripVeil,
                 transition: 'all 150ms',
@@ -365,7 +372,7 @@ projects, onOpenProject, onStatusChange }: {
                   '--pa-btn-fg-hover': colors.text,
                   '--pa-btn-bg-hover': 'transparent',
                   '--pa-btn-pad': '9px 14px',
-                  width: '100%', gap: 8, justifyContent: 'flex-start',
+                  width: '100%', gap: space.md, justifyContent: 'flex-start',
                   fontFamily: font.body,
                 } as CSSProperties}
               >
@@ -376,7 +383,7 @@ projects, onOpenProject, onStatusChange }: {
                 <span style={{ fontSize: textSize.micro, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                   {col.label}
                 </span>
-                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: radius.md }}>
+                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.md }}>
                   {colProjects.length}
                 </span>
                 {!isOpen && colProjects.length > 0 && (
@@ -390,7 +397,7 @@ projects, onOpenProject, onStatusChange }: {
                 <div id={shelfId} style={{
                   display: 'grid',
                   gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-                  gap: 10, padding: '4px 12px 12px',
+                  gap: space.lg, padding: `${space.xs}px ${space.xl}px ${space.xl}px`,
                 }}>
                   {colProjects.map(project => (
                     <ProjectCard
@@ -403,7 +410,7 @@ projects, onOpenProject, onStatusChange }: {
                 </div>
               )}
               {isOpen && colProjects.length === 0 && (
-                <div id={shelfId} style={{ padding: '4px 14px 12px', fontSize: textSize.micro, color: colors.textDim }}>Empty.</div>
+                <div id={shelfId} style={{ padding: `${space.xs}px 14px ${space.xl}px`, fontSize: textSize.micro, color: colors.textDim }}>Empty.</div>
               )}
             </div>
           );
@@ -419,8 +426,9 @@ project, onOpen, onDragStart }: {
   onOpen: () => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
-  const { colors, theme, reduceMotion } = useTheme();
-  const tagVeil = theme === 'silver' ? 'rgba(30,37,48,0.06)' : 'rgba(255,255,255,0.06)';
+  const { colors, reduceMotion } = useTheme();
+  const tagVeil = colors.fillHover;
+  // The chip tint, one rung up the same neutral ladder (4/7/11).
   const isPersonal = project.id === PERSONAL_ID;
 
   return (
@@ -433,7 +441,7 @@ project, onOpen, onDragStart }: {
       onClick={onOpen}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
       style={{
-        padding: '10px 12px', borderRadius: radius.md,
+        padding: `${space.lg}px ${space.xl}px`, borderRadius: radius.md,
         background: colors.surface,
         border: `1px solid ${colors.border}`,
         cursor: 'pointer',
@@ -444,9 +452,9 @@ project, onOpen, onDragStart }: {
       onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
       onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
         {isPersonal && (
-          <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, background: colors.cyanSoft, color: colors.cyan, fontWeight: 600 }}>
+          <span style={{ fontSize: 10, padding: `${space.xxs}px ${space.xs}px`, borderRadius: radius.xs, background: colors.cyanSoft, color: colors.cyan, fontWeight: 600 }}>
             DEFAULT
           </span>
         )}
@@ -455,14 +463,14 @@ project, onOpen, onDragStart }: {
         </span>
       </div>
       {project.description && (
-        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xs, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.description}
         </div>
       )}
       {project.tags.length > 0 && (
-        <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: space.xs, marginTop: space.sm, flexWrap: 'wrap' }}>
           {project.tags.slice(0, 3).map((tag, ti) => (
-            <span key={`${tag}-${ti}`} style={{ fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, background: tagVeil, color: colors.textDim }}>
+            <span key={`${tag}-${ti}`} style={{ fontSize: 10, padding: `${space.xxs}px ${space.xs}px`, borderRadius: radius.xs, background: tagVeil, color: colors.textDim }}>
               {tag}
             </span>
           ))}
@@ -478,12 +486,35 @@ project, onOpen, onDragStart }: {
 // (back · project switcher · view toggle) lives in ProjectWorkspace, so this
 // renders only the columns — no header of its own.
 
+/**
+ * The board's corner ladder, derived once (D4).
+ *
+ * Apple's rule, verbatim from `concentric()` in tokens.ts: a child's radius is
+ * its container's minus the distance between their corners. Written out for
+ * this board:
+ *
+ *   column  `radius.xl` (16), inset `space.xs` (4)
+ *   card    concentric(16, 4)  = 12   — the cards sit at the column's inset
+ *   chip    concentric(12, 8)  = 4    — the chips sit at the card's padding
+ *
+ * Every number here is that arithmetic. None of them is a taste call, and the
+ * only two chosen values are the outer radius and the two insets — which is
+ * the point: "a single radius token applied at every level is the flattest
+ * possible tell" (anti-slop #5).
+ */
+const COLUMN_RADIUS = radius.xl;
+const COLUMN_INSET = space.xs;
+const CARD_RADIUS = concentric(COLUMN_RADIUS, COLUMN_INSET);
+const CARD_PAD = space.md;
+const CARD_CHIP_RADIUS = concentric(CARD_RADIUS, CARD_PAD);
+
 export function ProjectKanban({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const { gradient } = useTheme();
-  // Theme-safe veils — white washes are invisible on silver's white surfaces.
-  const colVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
-  const chipVeil = theme === 'silver' ? 'rgba(30,37,48,0.06)' : 'rgba(255,255,255,0.06)';
+  // The drag ghost is the one thing on this board that floats over everything
+  // else, so it is the one thing allowed to be glass (D1). Columns and cards
+  // are content and stay opaque.
+  const ghostGlass = useGlass('glass');
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [cards, setCards] = useState<Card[]>([]);
   const [loading, setLoading] = useState(true);
@@ -492,6 +523,20 @@ export function ProjectKanban({ project }: { project: Project }) {
   const [newCardTitle, setNewCardTitle] = useState('');
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Hard scroll edges (D11): the column header is pinned above a scroller, so
+  // its boundary appears the moment there is content behind it and not before
+  // — "it is not decoration; do not use it where nothing is floating". macOS
+  // uses `hard`, not the iOS `soft` fade, so this is a line, not a gradient.
+  const [scrolledCols, setScrolledCols] = useState<ReadonlySet<string>>(() => new Set());
+  const noteColumnScroll = useCallback((colId: string, el: HTMLDivElement) => {
+    const scrolled = el.scrollTop > 0;
+    setScrolledCols(prev => {
+      if (prev.has(colId) === scrolled) return prev;
+      const next = new Set(prev);
+      if (scrolled) next.add(colId); else next.delete(colId);
+      return next;
+    });
+  }, []);
 
   // Pointer-based card drag (bypasses HTML5 DnD which Tauri's native layer consumes)
   const [draggingCard, setDraggingCard] = useState<string | null>(null);
@@ -741,10 +786,11 @@ export function ProjectKanban({ project }: { project: Project }) {
   return (
     <div style={{ width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
       {/* Kanban columns */}
-      <div style={{ flex: 1, display: 'flex', gap: 1, padding: '16px 16px', overflow: 'auto' }}>
+      <div style={{ flex: 1, display: 'flex', gap: space.lg, padding: space.xxl, overflow: 'auto' }}>
         {columns.map(col => {
           const colCards = cards.filter(c => c.columnId === col.id).sort((a, b) => a.position - b.position);
           const isOver = dragOverCol === col.id;
+          const isScrolled = scrolledCols.has(col.id);
 
           return (
             <div
@@ -752,24 +798,50 @@ export function ProjectKanban({ project }: { project: Project }) {
               ref={(el) => { if (el) colRefs.current.set(col.id, el); else colRefs.current.delete(col.id); }}
               style={{
                 flex: 1, minWidth: 200, display: 'flex', flexDirection: 'column',
-                background: isOver ? colors.cyanSoft : colVeil,
-                borderRadius: 10, padding: '12px 10px',
-                border: isOver ? `1px solid ${colors.borderHi}` : '1px solid transparent',
-                transition: 'all 150ms',
+                // A column is CONTENT (D1), so it stays opaque in every state —
+                // it was a translucent white wash, which is both the glass rule
+                // broken and invisible on silver. `bgDeeper` is the theme's own
+                // recessed fill, so the cards' `surface` reads as sitting IN a
+                // well rather than as a lighter shade of the same thing.
+                background: colors.bgDeeper,
+                borderRadius: COLUMN_RADIUS, padding: COLUMN_INSET,
+                // The drop target changes its RING, not its transparency: an
+                // opaque surface that lights up at the edge, tinted with the
+                // one accent this view is allowed (D8).
+                border: `1px solid ${isOver ? colors.cyan : 'transparent'}`,
+                boxShadow: isOver ? `inset 0 0 0 3px ${colors.cyanSoft}` : 'none',
+                transition: reduceMotion ? 'none'
+                  : `border-color ${duration.snappy}ms ${ease.snappy}, box-shadow ${duration.snappy}ms ${ease.snappy}`,
               }}
             >
-              {/* Column header */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px 10px', borderBottom: `1px solid ${colors.border}` }}>
+              {/* Column header — pinned above the scroller, so it owns the hard
+                  scroll edge (D11): a line that exists only while content is
+                  actually passing under it. */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: space.md,
+                padding: `${space.md}px ${space.md}px ${space.lg}px`,
+                borderBottom: `1px solid ${isScrolled ? colors.border : 'transparent'}`,
+                transition: reduceMotion ? 'none' : `border-color ${duration.fast}ms ${ease.out}`,
+              }}>
                 <span style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', flex: 1 }}>
                   {col.name}
                 </span>
-                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: radius.md }}>
+                <span style={{
+                  fontSize: textSize.micro, color: colors.textDim, background: colors.fillHover,
+                  padding: `1px ${space.sm}px`, borderRadius: radius.pill,
+                }}>
                   {colCards.length}
                 </span>
               </div>
 
               {/* Cards */}
-              <div style={{ flex: 1, paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6, overflow: 'auto' }}>
+              <div
+                onScroll={e => noteColumnScroll(col.id, e.currentTarget)}
+                style={{
+                  flex: 1, paddingTop: space.md, display: 'flex', flexDirection: 'column',
+                  gap: space.sm, overflow: 'auto', overscrollBehavior: 'contain',
+                }}
+              >
                 {colCards.map(card => (
                   <CardItem
                     key={card.id}
@@ -802,7 +874,7 @@ export function ProjectKanban({ project }: { project: Project }) {
 
               {/* Add card */}
               {addingCardCol === col.id ? (
-                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ marginTop: space.md, display: 'flex', flexDirection: 'column', gap: space.xs }}>
                   <input
                     ref={inputRef}
                     value={newCardTitle}
@@ -813,14 +885,16 @@ export function ProjectKanban({ project }: { project: Project }) {
                     }}
                     placeholder="Card title..."
                     style={{
-                      padding: '6px 8px', borderRadius: radius.sm,
+                      // The draft card is a card: same corner as the ones above
+                      // it, so it lands in the stack instead of beside it.
+                      padding: `${space.sm}px ${space.md}px`, borderRadius: CARD_RADIUS,
                       background: colors.inputBg,
                       border: `1px solid ${colors.border}`,
                       color: colors.text, fontFamily: font.body, fontSize: textSize.caption,
                       outline: 'none',
                     }}
                   />
-                  <div style={{ display: 'flex', gap: 4 }}>
+                  <div style={{ display: 'flex', gap: space.xs }}>
                     <Button
                       colors={colors}
                       variant="ghostOn"
@@ -830,8 +904,8 @@ export function ProjectKanban({ project }: { project: Project }) {
                         '--pa-btn-bg-hover': colors.cyanSoft,
                         '--pa-btn-border': colors.borderHi,
                         '--pa-btn-border-hover': colors.cyan,
-                        '--pa-btn-pad': '4px 0',
-                        '--pa-btn-radius': '5px',
+                        '--pa-btn-pad': `${space.xs}px 0`,
+                        '--pa-btn-radius': `${CARD_CHIP_RADIUS}px`,
                         '--pa-btn-weight': 600,
                         flex: 1, fontSize: textSize.micro, fontFamily: font.body,
                       } as CSSProperties}
@@ -846,8 +920,8 @@ export function ProjectKanban({ project }: { project: Project }) {
                         '--pa-btn-fg-hover': colors.text,
                         '--pa-btn-border': colors.border,
                         '--pa-btn-border-hover': colors.borderHi,
-                        '--pa-btn-pad': '4px 8px',
-                        '--pa-btn-radius': '5px',
+                        '--pa-btn-pad': `${space.xs}px ${space.md}px`,
+                        '--pa-btn-radius': `${CARD_CHIP_RADIUS}px`,
                         fontSize: textSize.micro, fontFamily: font.body,
                       } as CSSProperties}
                     >
@@ -865,13 +939,15 @@ export function ProjectKanban({ project }: { project: Project }) {
                     '--pa-btn-border': colors.border,
                     '--pa-btn-border-hover': colors.borderHi,
                     '--pa-btn-bg-hover': 'transparent',
-                    '--pa-btn-pad': '6px 0',
-                    '--pa-btn-radius': `${radius.sm}px`,
+                    '--pa-btn-pad': `${space.sm}px 0`,
+                    // A card-shaped hole in the card stack, so it reads as the
+                    // slot the next card goes in.
+                    '--pa-btn-radius': `${CARD_RADIUS}px`,
                     // The dashed rule is what says "not a card yet". `.pa-btn`
                     // owns the 1px width and the (hoverable) color, so only the
                     // style is overridden here.
                     borderStyle: 'dashed',
-                    marginTop: 8, fontSize: textSize.micro, fontFamily: font.body,
+                    marginTop: space.md, fontSize: textSize.micro, fontFamily: font.body,
                   } as CSSProperties}
                 >
                   + Add card
@@ -893,13 +969,19 @@ export function ProjectKanban({ project }: { project: Project }) {
         />
       )}
 
-      {/* Drag ghost — follows pointer during card drag */}
+      {/* Drag ghost — follows pointer during card drag.
+          The board's only floating element, so the board's only glass (D1). It
+          carries the top of the elevation ladder because it is genuinely the
+          furthest thing off the page, and `glassSurface` already supplies the
+          rim; `elevationFloating` is appended for the drop shadow that says
+          "lifted", and collapses with the rest under Reduce Transparency. */}
       {draggingCard && ghostPos && (
         <div style={{
-          position: 'fixed', left: ghostPos.x + 8, top: ghostPos.y - 12,
-          padding: '6px 10px', borderRadius: radius.sm,
-          background: colors.surface, border: `1px solid ${colors.cyan}`,
-          boxShadow: colors.elevationRaised,
+          position: 'fixed', left: ghostPos.x + space.md, top: ghostPos.y - space.xl,
+          padding: `${space.sm}px ${space.lg}px`, borderRadius: CARD_RADIUS,
+          ...ghostGlass,
+          border: `1px solid ${colors.cyan}`,
+          boxShadow: [ghostGlass.boxShadow, colors.elevationFloating].filter(Boolean).join(', '),
           fontSize: textSize.caption, fontWeight: 500, color: colors.text,
           pointerEvents: 'none', zIndex: 9999, maxWidth: 200,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -931,11 +1013,48 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
   highlighted?: boolean;
   cardRef?: (el: HTMLDivElement | null) => void;
 }) {
-  const { colors, gradient, reduceMotion } = useTheme();
+  const { colors, reduceMotion } = useTheme();
+  // The card's own menu is the one floating control ON a card, so it — and
+  // nothing else in this component — wears the glass (D1/D2: one glass plane,
+  // never glass on glass; the card underneath stays an opaque content fill).
+  const menuGlass = useGlass('glass');
   const [showMenu, setShowMenu] = useState(false);
   const [editingDue, setEditingDue] = useState(false);
   const isGoal = card.cardType === 'goal';
   const dueDate = typeof card.metadataJson?.dueDate === 'string' ? card.metadataJson.dueDate : null;
+
+  /**
+   * The card's elevation ladder (#1163's pattern, plus the press-to-drag step
+   * this surface needs and the dashboard cards do not).
+   *
+   * Rest is border-first and flat — "static content stays border-first"
+   * (ThemeColors) and "hierarchy comes from layout, not decoration" (D13).
+   * Hover LIFTS: `elevationRaised` + the `surfaceHi` fill, which is the Mac
+   * pointer affordance D10 asks for and this card had nothing of (it only
+   * changed its border colour). Press SETTLES: the shadow collapses back to
+   * flat and the card scales to 0.98 under the finger, which is the physical
+   * feedback that this thing is now attached to the pointer — the affordance
+   * that says press-to-drag before the drag has travelled a pixel.
+   *
+   * `highlighted` (the dashboard's deep link) keeps its cyan ring at every
+   * step, because it is a state of the card and not a state of the pointer.
+   */
+  const ring = highlighted ? `0 0 0 3px ${colors.cyanSoft}` : '';
+  const restShadow = [ring, colors.cardHighlight].filter(Boolean).join(', ') || 'none';
+  const hoverShadow = [ring, colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', ');
+  const restBorder = highlighted ? colors.cyan : colors.border;
+  const settle = (el: HTMLElement) => {
+    el.style.background = colors.surface;
+    el.style.boxShadow = restShadow;
+    el.style.borderColor = restBorder;
+    el.style.transform = 'none';
+  };
+  const lift = (el: HTMLElement) => {
+    el.style.background = colors.surfaceHi;
+    el.style.boxShadow = hoverShadow;
+    el.style.borderColor = highlighted ? colors.cyan : colors.borderHi;
+    el.style.transform = 'none';
+  };
 
   return (
     <div
@@ -943,27 +1062,49 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
       role="button"
       tabIndex={0}
       aria-label={onOpen ? `Open card ${card.title}` : card.title}
-      onPointerDown={onPointerDown}
+      onPointerDown={e => {
+        // Press feedback first, then the parent's drag bookkeeping — a press
+        // that never travels is a click, and it still gets its press state.
+        const el = e.currentTarget as HTMLElement;
+        el.style.transform = 'scale(0.98)';
+        el.style.boxShadow = restShadow;
+        el.style.cursor = 'grabbing';
+        onPointerDown(e);
+      }}
+      onPointerUp={e => { (e.currentTarget as HTMLElement).style.cursor = 'grab'; lift(e.currentTarget as HTMLElement); }}
       onKeyDown={e => {
         if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); }
         if (e.key === 'Escape') setShowMenu(false);
       }}
       onContextMenu={e => { e.preventDefault(); setShowMenu(m => !m); }}
       style={{
-        padding: '8px 10px', borderRadius: 7,
+        padding: CARD_PAD, borderRadius: CARD_RADIUS,
         background: colors.surface,
-        border: `1px solid ${highlighted ? colors.cyan : colors.border}`,
-        boxShadow: highlighted ? `0 0 0 3px ${colors.cyanSoft}` : undefined,
+        border: `1px solid ${restBorder}`,
+        boxShadow: restShadow,
         cursor: 'grab', position: 'relative',
         opacity: isDragging ? 0.4 : 1,
-        transition: reduceMotion ? 'none' : 'opacity 150ms, box-shadow 300ms, border-color 300ms',
+        // Spring motion, all of it well inside Apple's 500ms ceiling: the
+        // transform rides `snappy` (240ms, the control-state spring) and the
+        // colour/shadow fades ride `fast`. Reduce Motion makes every one of
+        // them instant rather than merely shorter.
+        transition: reduceMotion ? 'none' : [
+          `transform ${duration.snappy}ms ${ease.snappy}`,
+          `box-shadow ${duration.fast}ms ${ease.out}`,
+          `background ${duration.fast}ms ${ease.out}`,
+          `border-color ${duration.fast}ms ${ease.out}`,
+          `opacity ${duration.fast}ms ${ease.out}`,
+        ].join(', '),
       }}
-      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = highlighted ? colors.cyan : colors.border; setShowMenu(false); }}
-      onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
-      onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = highlighted ? colors.cyan : colors.border; }}
+      onMouseEnter={e => lift(e.currentTarget as HTMLElement)}
+      onMouseLeave={e => { settle(e.currentTarget as HTMLElement); (e.currentTarget as HTMLElement).style.cursor = 'grab'; setShowMenu(false); }}
+      onFocus={e => {
+        lift(e.currentTarget as HTMLElement);
+        (e.currentTarget as HTMLElement).style.boxShadow = [hoverShadow, `0 0 0 2px ${colors.cyanGlow}`].join(', ');
+      }}
+      onBlur={e => settle(e.currentTarget as HTMLElement)}
     >
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: space.sm }}>
         <div style={{ fontSize: textSize.caption, fontWeight: 500, flex: 1, minWidth: 0 }}>{card.title}</div>
         {/* Visible, keyboard-reachable menu trigger — right-click still works too.
             stopPropagation on pointer-down so opening the menu never starts a drag.
@@ -975,35 +1116,38 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
             expected to drag, so a near-miss starts a drag instead of opening a
             menu. It is now a 28px target with resting chrome and a `title`, so
             it is both hittable and identifiable before it is hovered. */}
-        <button
-          className="pa-btn"
-          data-testid={`card-menu-${card.id}`}
-          aria-label={`Card actions for ${card.title}`}
-          aria-haspopup="menu"
-          aria-expanded={showMenu}
-          title="Card actions"
-          onPointerDown={e => e.stopPropagation()}
-          onClick={e => { e.stopPropagation(); setShowMenu(m => !m); }}
-          style={{
-            '--pa-btn-bg': showMenu ? colors.surfaceHi : 'transparent',
-            '--pa-btn-fg': showMenu ? colors.text : colors.textDim,
-            '--pa-btn-border': showMenu ? colors.borderHi : colors.border,
-            '--pa-btn-bg-hover': colors.surfaceHi,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-border-hover': colors.borderHi,
-            '--pa-btn-pad': '0',
-            '--pa-btn-radius': `${radius.sm}px`,
-            flexShrink: 0,
-            width: 28, height: 28, marginTop: -4, marginRight: -6,
-            lineHeight: 1, fontSize: textSize.body,
-            transition: reduceMotion ? 'none' : undefined,
-          } as CSSProperties}
-        >
-          ⋯
-        </button>
+        <Tooltip content="Card actions">
+          <button
+            className="pa-btn"
+            data-testid={`card-menu-${card.id}`}
+            aria-label={`Card actions for ${card.title}`}
+            aria-haspopup="menu"
+            aria-expanded={showMenu}
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); setShowMenu(m => !m); }}
+            style={{
+              '--pa-btn-bg': showMenu ? colors.surfaceHi : 'transparent',
+              '--pa-btn-fg': showMenu ? colors.text : colors.textDim,
+              '--pa-btn-border': showMenu ? colors.borderHi : colors.border,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-pad': '0',
+              // A floating control sitting at the card's inner corner, so its own
+              // corner is concentric with the card's (D4).
+              '--pa-btn-radius': `${CARD_CHIP_RADIUS}px`,
+              flexShrink: 0,
+              width: 28, height: 28, marginTop: -space.xs, marginRight: -space.sm,
+              lineHeight: 1, fontSize: textSize.body,
+              transition: reduceMotion ? 'none' : undefined,
+            } as CSSProperties}
+          >
+            ⋯
+          </button>
+        </Tooltip>
       </div>
       {card.description && (
-        <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {card.description}
         </div>
       )}
@@ -1021,38 +1165,40 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
             if (e.key === 'Escape') setEditingDue(false);
           }}
           style={{
-            marginTop: 5, fontSize: 10, padding: '2px 4px', width: '100%', boxSizing: 'border-box',
-            borderRadius: radius.xs, border: `1px solid ${colors.border}`,
+            marginTop: space.xs, fontSize: textSize.micro, padding: `${space.xxs}px ${space.xs}px`, width: '100%', boxSizing: 'border-box',
+            borderRadius: CARD_CHIP_RADIUS, border: `1px solid ${colors.border}`,
             background: colors.surface, color: colors.text,
           }}
         />
       ) : dueDate ? (
-        <Button
-          colors={colors}
-          variant="bare"
-          onPointerDown={e => e.stopPropagation()}
-          onClick={e => { e.stopPropagation(); if (onSetDueDate) setEditingDue(true); }}
-          title={onSetDueDate ? 'Change the due date' : undefined}
-          style={{
-            '--pa-btn-bg': colors.cyanSoft,
-            '--pa-btn-fg': colors.cyan,
-            // Without a handler this chip is a label, not an affordance: it must
-            // not light up under the mouse as if it did something.
-            '--pa-btn-bg-hover': colors.cyanSoft,
-            '--pa-btn-bg-active': colors.cyanSoft,
-            '--pa-btn-border-hover': onSetDueDate ? colors.cyan : 'transparent',
-            '--pa-btn-pad': '1px 5px',
-            '--pa-btn-radius': `${radius.xs}px`,
-            fontSize: 10, marginTop: 4, fontFamily: font.body,
-            cursor: onSetDueDate ? 'pointer' : 'default',
-          } as CSSProperties}
-        >
-          Due {dueDate}
-        </Button>
+        <Tooltip content={onSetDueDate ? 'Change the due date' : undefined}>
+          <Button
+            colors={colors}
+            variant="bare"
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); if (onSetDueDate) setEditingDue(true); }}
+            style={{
+              '--pa-btn-bg': colors.cyanSoft,
+              '--pa-btn-fg': colors.cyan,
+              // Without a handler this chip is a label, not an affordance: it must
+              // not light up under the mouse as if it did something.
+              '--pa-btn-bg-hover': colors.cyanSoft,
+              '--pa-btn-bg-active': colors.cyanSoft,
+              '--pa-btn-border-hover': onSetDueDate ? colors.cyan : 'transparent',
+              '--pa-btn-pad': `1px ${space.sm}px`,
+              '--pa-btn-radius': `${CARD_CHIP_RADIUS}px`,
+              fontSize: textSize.micro, marginTop: space.xs, fontFamily: font.body,
+              cursor: onSetDueDate ? 'pointer' : 'default',
+            } as CSSProperties}
+          >
+            Due {dueDate}
+          </Button>
+        </Tooltip>
       ) : null}
       {card.cardType !== 'standard' && (
         <span style={{
-          fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, marginTop: 4, display: 'inline-block',
+          fontSize: textSize.micro, padding: `1px ${space.sm}px`, borderRadius: CARD_CHIP_RADIUS,
+          marginTop: space.xs, display: 'inline-block',
           background: isGoal ? colors.purpleSoft : colors.cyanSoft,
           color: isGoal ? colors.purpleBright : colors.cyan,
         }}>
@@ -1064,9 +1210,15 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
           role="menu"
           onPointerDown={e => e.stopPropagation()}
           style={{
-            position: 'absolute', top: '100%', right: 0, marginTop: 2, zIndex: 10,
-            background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: radius.sm,
-            boxShadow: colors.elevationRaised, padding: 2, minWidth: 100,
+            position: 'absolute', top: '100%', right: 0, marginTop: space.xxs, zIndex: 10,
+            // Menu chrome is the floating control layer — the one place on this
+            // board glass belongs. `useGlass` carries its own rim and hairline,
+            // so only the elevation step is added on top; it collapses to an
+            // opaque fill under Reduce Transparency (D14).
+            ...menuGlass,
+            border: `1px solid ${colors.border}`, borderRadius: radius.glass,
+            boxShadow: [menuGlass.boxShadow, colors.elevationOverlay].filter(Boolean).join(', '),
+            padding: space.xs, minWidth: 100,
           }}>
           {/* The menu rows keep their own elements: `role="menuitem"` is what
               makes this a menu, and `Button` would flatten it. They take the
@@ -1080,8 +1232,8 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
                 '--pa-btn-fg': colors.warning,
                 '--pa-btn-bg-hover': colors.warning + '1A',
                 '--pa-btn-bg-active': colors.warning + '2E',
-                '--pa-btn-pad': '5px 8px',
-                '--pa-btn-radius': `${radius.xs}px`,
+                '--pa-btn-pad': `${space.sm}px ${space.md}px`,
+                '--pa-btn-radius': `${concentric(radius.glass, space.xs)}px`,
                 width: '100%', justifyContent: 'flex-start', textAlign: 'left',
                 fontSize: textSize.micro, fontFamily: font.body,
               } as CSSProperties}
@@ -1099,8 +1251,8 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
                 '--pa-btn-fg-hover': colors.text,
                 '--pa-btn-bg-hover': colors.borderHi,
                 '--pa-btn-bg-active': colors.cyanSoft,
-                '--pa-btn-pad': '5px 8px',
-                '--pa-btn-radius': `${radius.xs}px`,
+                '--pa-btn-pad': `${space.sm}px ${space.md}px`,
+                '--pa-btn-radius': `${concentric(radius.glass, space.xs)}px`,
                 width: '100%', justifyContent: 'flex-start', textAlign: 'left',
                 fontSize: textSize.micro, fontFamily: font.body,
               } as CSSProperties}
@@ -1118,8 +1270,8 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
                 '--pa-btn-fg-hover': colors.text,
                 '--pa-btn-bg-hover': colors.borderHi,
                 '--pa-btn-bg-active': colors.cyanSoft,
-                '--pa-btn-pad': '5px 8px',
-                '--pa-btn-radius': `${radius.xs}px`,
+                '--pa-btn-pad': `${space.sm}px ${space.md}px`,
+                '--pa-btn-radius': `${concentric(radius.glass, space.xs)}px`,
                 width: '100%', justifyContent: 'flex-start', textAlign: 'left',
                 fontSize: textSize.micro, fontFamily: font.body,
               } as CSSProperties}
@@ -1135,8 +1287,8 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
               '--pa-btn-fg': colors.danger,
               '--pa-btn-bg-hover': colors.danger + '1A',
               '--pa-btn-bg-active': colors.danger + '2E',
-              '--pa-btn-pad': '5px 8px',
-              '--pa-btn-radius': `${radius.xs}px`,
+              '--pa-btn-pad': `${space.sm}px ${space.md}px`,
+              '--pa-btn-radius': `${concentric(radius.glass, space.xs)}px`,
               width: '100%', justifyContent: 'flex-start', textAlign: 'left',
               fontSize: textSize.micro, fontFamily: font.body,
             } as CSSProperties}

@@ -25,7 +25,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { contactLabel, isFollowUpDue, isQuiet } from './contactAge';
 import type { DirectoryPerson } from '../projects/types';
@@ -209,8 +209,8 @@ export function PeopleDirectory() {
   };
 
   return (
-    <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+    <div style={{ padding: `${space.xxxl}px ${space.huge}px`, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.xl }}>
         <input
           value={query}
           onChange={e => setQuery(e.target.value)}
@@ -220,7 +220,7 @@ export function PeopleDirectory() {
             maxWidth: 320,
             fontSize: textSize.caption,
             fontFamily: font.body,
-            padding: '6px 10px',
+            padding: `${space.sm}px ${space.lg}px`,
             borderRadius: radius.sm,
             border: `1px solid ${colors.border}`,
             background: 'transparent',
@@ -244,7 +244,7 @@ export function PeopleDirectory() {
       </div>
 
       {adding && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: space.md, alignItems: 'center' }}>
           <input
             autoFocus
             value={newName}
@@ -256,7 +256,7 @@ export function PeopleDirectory() {
             style={{
               fontSize: textSize.caption,
               fontFamily: font.body,
-              padding: '6px 10px',
+              padding: `${space.sm}px ${space.lg}px`,
               borderRadius: radius.sm,
               border: `1px solid ${colors.border}`,
               background: 'transparent',
@@ -289,7 +289,7 @@ export function PeopleDirectory() {
       {status === 'loading' ? (
         <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading people…</div>
       ) : status === 'error' ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load people.</span>
           <Button
             colors={colors}
@@ -307,7 +307,7 @@ export function PeopleDirectory() {
         </div>
       ) : (
         <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap' }}>
             <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>
               {visible.length} {visible.length === 1 ? 'person' : 'people'}
               {unassignedCount > 0 && ` · ${unassignedCount} in no project`}
@@ -333,7 +333,7 @@ export function PeopleDirectory() {
               </Chip>
             ))}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
             {visible.map(p => (
               // The row IS the button, and it distributes its own children
               // against a `flex: 1` spacer — so the primitive's label wrapper
@@ -355,7 +355,7 @@ export function PeopleDirectory() {
                   '--pa-btn-pad': '8px 10px',
                   '--pa-btn-radius': `${radius.sm}px`,
                   '--pa-btn-weight': 400,
-                  gap: 10,
+                  gap: space.lg,
                   textAlign: 'left',
                   fontFamily: font.body,
                 } as CSSProperties}
@@ -392,7 +392,7 @@ export function PeopleDirectory() {
                     no project
                   </span>
                 ) : (
-                  <span style={{ display: 'flex', gap: 4 }}>
+                  <span style={{ display: 'flex', gap: space.xs }}>
                     {p.projects.map(pr => (
                       // A label on a row that is itself the button — the chip
                       // does not navigate, the row does.

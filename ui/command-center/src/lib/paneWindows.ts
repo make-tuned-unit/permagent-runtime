@@ -1,3 +1,4 @@
+import { OVERLAY_TITLEBAR, reinsetTrafficLights } from './windowChrome';
 import type { BrowserTab } from '../components/browser/BrowserTabs';
 import type { TerminalTab } from '../components/terminal/TerminalManager';
 
@@ -34,7 +35,11 @@ export async function createPaneWindow(kind: PaneKind, tab: PaneTab): Promise<st
     minWidth: 420,
     minHeight: 300,
     center: true,
+    // `decorations: true` keeps the free macOS window corner radius and the
+    // native drop shadow; the overlay titlebar is what lets the pane's own
+    // chrome run edge-to-edge under it. See lib/windowChrome.ts.
     decorations: true,
+    ...OVERLAY_TITLEBAR,
     resizable: true,
     focus: true,
   });
@@ -42,6 +47,10 @@ export async function createPaneWindow(kind: PaneKind, tab: PaneTab): Promise<st
     void win.once('tauri://created', () => resolve());
     void win.once('tauri://error', e => reject(e.payload));
   });
+  // The builder path drops `trafficLightPosition`; PaneWindowApp asks for the
+  // inset on mount too, but doing it here as well means a pane whose webview is
+  // slow to boot does not sit with its buttons in the wrong place meanwhile.
+  await reinsetTrafficLights(label);
   return label;
 }
 

@@ -25,16 +25,21 @@ import { FiTrash2, FiMic, FiSquare, FiLoader, FiExternalLink, FiCopy, FiCheck, F
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { useDictation } from '../../hooks/useDictation';
-import { font, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Project, ProjectNote } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 export function NotesPanel({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   // White veils vanish on silver — flip to a faint graphite tint there.
-  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const rowVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
   const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
   const [notes, setNotes] = useState<ProjectNote[]>([]);
   const [title, setTitle] = useState('');
@@ -179,13 +184,13 @@ export function NotesPanel({ project }: { project: Project }) {
       action={<span style={{ fontSize: 10, color: colors.textDim }}>{notes.length} note{notes.length !== 1 ? 's' : ''}</span>}
     >
       {/* Composer */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: notes.length ? 10 : 0 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, marginBottom: notes.length ? 10 : 0 }}>
         <input
           value={title}
           onChange={e => setTitle(e.target.value)}
           placeholder="Title (optional)"
           style={{
-            fontSize: textSize.caption, padding: '6px 9px', borderRadius: 7,
+            fontSize: textSize.caption, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md,
             background: colors.inputBg, border: `1px solid ${colors.border}`,
             color: colors.text, fontFamily: font.body, outline: 'none',
           }}
@@ -200,12 +205,12 @@ export function NotesPanel({ project }: { project: Project }) {
           placeholder="Write a note… it lands in your project's Brain."
           rows={3}
           style={{
-            fontSize: textSize.caption, padding: '7px 9px', borderRadius: 7, resize: 'vertical', minHeight: 56,
+            fontSize: textSize.caption, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md, resize: 'vertical', minHeight: 56,
             background: colors.inputBg, border: `1px solid ${colors.border}`,
             color: colors.text, fontFamily: font.body, lineHeight: 1.5, outline: 'none',
           }}
         />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
           <Button
             colors={colors}
             variant="ghostOn"
@@ -215,7 +220,7 @@ export function NotesPanel({ project }: { project: Project }) {
               '--pa-btn-bg': colors.cyanSoft,
               '--pa-btn-border': colors.borderHi,
               '--pa-btn-pad': '6px 14px',
-              '--pa-btn-radius': '7px',
+              '--pa-btn-radius': `${radius.md}px`,
               '--pa-btn-weight': 600,
               fontFamily: font.body,
               fontSize: textSize.caption,
@@ -223,36 +228,37 @@ export function NotesPanel({ project }: { project: Project }) {
           >
             {saving ? 'Saving…' : 'Save note'}
           </Button>
-          <Button
-            colors={colors}
-            variant="ghost"
-            onClick={toggleDictation}
-            disabled={dictation === 'transcribing'}
-            title={
-              dictation === 'recording' ? 'Stop and transcribe'
+          <Tooltip content={dictation === 'recording' ? 'Stop and transcribe'
                 : dictation === 'transcribing' ? 'Transcribing…'
-                : 'Dictate a note'
-            }
-            aria-label="Dictate a note"
-            style={{
-              '--pa-btn-bg': dictation === 'recording' ? colors.danger : rowVeil,
-              '--pa-btn-fg': dictation === 'recording' ? colors.textOnAccent : colors.textDim,
-              '--pa-btn-border': dictation === 'recording' ? colors.danger : colors.border,
-              '--pa-btn-bg-hover': dictation === 'recording' ? colors.danger : colors.surfaceHi,
-              '--pa-btn-fg-hover': dictation === 'recording' ? colors.textOnAccent : colors.text,
-              '--pa-btn-border-hover': dictation === 'recording' ? colors.danger : colors.borderHi,
-              '--pa-btn-pad': '0',
-              '--pa-btn-radius': '7px',
-              width: 30,
-              height: 30,
-            } as CSSProperties}
-          >
-            {dictation === 'transcribing'
-              ? <FiLoader size={13} className="pa-spin" />
-              : dictation === 'recording'
-                ? <FiSquare size={12} />
-                : <FiMic size={13} />}
-          </Button>
+                : 'Dictate a note'}>
+            <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+              <Button
+                colors={colors}
+                variant="ghost"
+                onClick={toggleDictation}
+                disabled={dictation === 'transcribing'}
+                aria-label="Dictate a note"
+                style={{
+                  '--pa-btn-bg': dictation === 'recording' ? colors.danger : rowVeil,
+                  '--pa-btn-fg': dictation === 'recording' ? colors.textOnAccent : colors.textDim,
+                  '--pa-btn-border': dictation === 'recording' ? colors.danger : colors.border,
+                  '--pa-btn-bg-hover': dictation === 'recording' ? colors.danger : colors.surfaceHi,
+                  '--pa-btn-fg-hover': dictation === 'recording' ? colors.textOnAccent : colors.text,
+                  '--pa-btn-border-hover': dictation === 'recording' ? colors.danger : colors.borderHi,
+                  '--pa-btn-pad': '0',
+                  '--pa-btn-radius': `${radius.md}px`,
+                  width: 30,
+                  height: 30,
+                } as CSSProperties}
+              >
+                {dictation === 'transcribing'
+                  ? <FiLoader size={13} className="pa-spin" />
+                  : dictation === 'recording'
+                    ? <FiSquare size={12} />
+                    : <FiMic size={13} />}
+              </Button>
+            </span>
+          </Tooltip>
           <span style={{ fontSize: 10, color: colors.textDim }}>
             {dictation === 'recording' ? 'Recording — tap to stop'
               : dictation === 'transcribing' ? 'Transcribing…'
@@ -262,7 +268,7 @@ export function NotesPanel({ project }: { project: Project }) {
       </div>
 
       {(error || dictationError) && (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error || dictationError}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{error || dictationError}</div>
       )}
 
       {status === 'loading' && (
@@ -270,7 +276,7 @@ export function NotesPanel({ project }: { project: Project }) {
       )}
 
       {status === 'error' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load notes.</span>
           <Button
             colors={colors}
@@ -292,7 +298,7 @@ export function NotesPanel({ project }: { project: Project }) {
       )}
 
       {status === 'ready' && notes.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
           {notes.map(note => {
             const isOpen = expanded.has(note.id);
             return (
@@ -303,7 +309,7 @@ export function NotesPanel({ project }: { project: Project }) {
                   else rowEls.current.delete(note.id);
                 }}
                 style={{
-                  borderRadius: 7, background: rowVeil,
+                  borderRadius: radius.md, background: rowVeil,
                   border: `1px solid ${highlightId === note.id ? colors.cyan : colors.border}`,
                   transition: 'border-color 600ms',
                 }}
@@ -318,7 +324,7 @@ export function NotesPanel({ project }: { project: Project }) {
                   onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpanded(note.id); } }}
                   tabIndex={0}
                   style={{
-                    display: 'flex', alignItems: 'center', gap: 7, padding: '8px 10px',
+                    display: 'flex', alignItems: 'center', gap: space.sm, padding: `${space.md}px ${space.lg}px`,
                     cursor: 'pointer', userSelect: 'none',
                   }}
                 >
@@ -336,41 +342,43 @@ export function NotesPanel({ project }: { project: Project }) {
                     {note.title || firstLine(note.body)}
                   </div>
                   <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0 }}>{relativeTime(note.created_at)}</span>
-                  <Button
-                    colors={colors}
-                    variant="bare"
-                    // Deliberately does not hand the promise back: this button
-                    // already answers with its own ✓/copy icon swap, so a
-                    // spinner and a tick over the top would say it twice.
-                    onClick={e => { e.stopPropagation(); copyNote(note); }}
-                    title="Copy note"
-                    aria-label="Copy note"
-                    style={{
-                      '--pa-btn-fg': copiedId === note.id ? colors.cyan : colors.textDim,
-                      '--pa-btn-fg-hover': colors.cyan,
-                      '--pa-btn-bg-hover': 'transparent',
-                      '--pa-btn-pad': '2px',
-                      flexShrink: 0,
-                    } as CSSProperties}
-                  >
-                    {copiedId === note.id ? <FiCheck size={13} /> : <FiCopy size={13} />}
-                  </Button>
-                  <Button
-                    colors={colors}
-                    variant="bare"
-                    onClick={e => { e.stopPropagation(); return remove(note); }}
-                    title="Delete note"
-                    aria-label="Delete note"
-                    style={{
-                      '--pa-btn-fg': colors.textDim,
-                      '--pa-btn-fg-hover': colors.danger,
-                      '--pa-btn-bg-hover': 'transparent',
-                      '--pa-btn-pad': '2px',
-                      flexShrink: 0,
-                    } as CSSProperties}
-                  >
-                    <FiTrash2 size={13} />
-                  </Button>
+                  <Tooltip content="Copy note">
+                    <Button
+                      colors={colors}
+                      variant="bare"
+                      // Deliberately does not hand the promise back: this button
+                      // already answers with its own ✓/copy icon swap, so a
+                      // spinner and a tick over the top would say it twice.
+                      onClick={e => { e.stopPropagation(); copyNote(note); }}
+                      aria-label="Copy note"
+                      style={{
+                        '--pa-btn-fg': copiedId === note.id ? colors.cyan : colors.textDim,
+                        '--pa-btn-fg-hover': colors.cyan,
+                        '--pa-btn-bg-hover': 'transparent',
+                        '--pa-btn-pad': '2px',
+                        flexShrink: 0,
+                      } as CSSProperties}
+                    >
+                      {copiedId === note.id ? <FiCheck size={13} /> : <FiCopy size={13} />}
+                    </Button>
+                  </Tooltip>
+                  <Tooltip content="Delete note">
+                    <Button
+                      colors={colors}
+                      variant="bare"
+                      onClick={e => { e.stopPropagation(); return remove(note); }}
+                      aria-label="Delete note"
+                      style={{
+                        '--pa-btn-fg': colors.textDim,
+                        '--pa-btn-fg-hover': colors.danger,
+                        '--pa-btn-bg-hover': 'transparent',
+                        '--pa-btn-pad': '2px',
+                        flexShrink: 0,
+                      } as CSSProperties}
+                    >
+                      <FiTrash2 size={13} />
+                    </Button>
+                  </Tooltip>
                 </div>
                 {isOpen && (
                   <div style={{ padding: '0 10px 8px 29px' }}>
@@ -381,28 +389,29 @@ export function NotesPanel({ project }: { project: Project }) {
                       {note.body}
                     </div>
                     {note.memory_key && (
-                      <div style={{ marginTop: 4 }}>
-                        <Button
-                          colors={colors}
-                          variant="bare"
-                          // `contents` dissolves Button's `.pa-btn__label`
-                          // wrapper so the label and its icon stay the
-                          // button's own centred flex row, gap and all.
-                          className="hover:underline"
-                          onClick={() => viewInBrain(note)}
-                          title="View this note in your Brain"
-                          style={{
-                            '--pa-btn-fg': colors.cyan,
-                            '--pa-btn-bg-hover': 'transparent',
-                            '--pa-btn-pad': '0',
-                            '--pa-btn-weight': 600,
-                            gap: 4,
-                            fontFamily: font.body,
-                            fontSize: 10,
-                          } as CSSProperties}
-                        >
-                          View in Brain <FiExternalLink size={9} />
-                        </Button>
+                      <div style={{ marginTop: space.xs }}>
+                        <Tooltip content="View this note in your Brain">
+                          <Button
+                            colors={colors}
+                            variant="bare"
+                            // `contents` dissolves Button's `.pa-btn__label`
+                            // wrapper so the label and its icon stay the
+                            // button's own centred flex row, gap and all.
+                            className="hover:underline"
+                            onClick={() => viewInBrain(note)}
+                            style={{
+                              '--pa-btn-fg': colors.cyan,
+                              '--pa-btn-bg-hover': 'transparent',
+                              '--pa-btn-pad': '0',
+                              '--pa-btn-weight': 600,
+                              gap: space.xs,
+                              fontFamily: font.body,
+                              fontSize: 10,
+                            } as CSSProperties}
+                          >
+                            View in Brain <FiExternalLink size={9} />
+                          </Button>
+                        </Tooltip>
                       </div>
                     )}
                   </div>

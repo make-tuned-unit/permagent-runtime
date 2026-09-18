@@ -17,7 +17,7 @@ import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { ENV, AGENT_TRIM } from '../shared/palette';
-import { getReduceMotion, radius } from '../../../styles/tokens';
+import { getReduceMotion, radius, space } from '../../../styles/tokens';
 import {
   NUDGE_PRESENT_MS,
   getNudge,
@@ -82,7 +82,7 @@ function NudgePlaque() {
     <Html position={[0, TOWER_H + 1.5, 0]} center distanceFactor={16} style={{ pointerEvents: 'none' }}>
       <div
         style={{
-          padding: '5px 12px',
+          padding: `${space.xs}px ${space.xl}px`,
           borderRadius: radius.xs,
           background: 'rgba(10, 14, 26, 0.85)',
           border: `1px solid ${AGENT_TRIM.watcher}66`,
@@ -96,11 +96,11 @@ function NudgePlaque() {
         }}
       >
         <div style={{ color: AGENT_TRIM.watcher, fontWeight: 700 }}>THE WATCHER STIRS</div>
-        <div style={{ marginTop: 2, opacity: 0.85 }}>{nudge.subject}</div>
+        <div style={{ marginTop: space.xxs, opacity: 0.85 }}>{nudge.subject}</div>
         {nudge.message && (
           <div
             style={{
-              marginTop: 2,
+              marginTop: space.xxs,
               opacity: 0.6,
               whiteSpace: 'nowrap',
               overflow: 'hidden',

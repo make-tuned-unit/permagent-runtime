@@ -12,7 +12,7 @@ import { Canvas } from '@react-three/fiber';
 import { Html, Line, OrbitControls } from '@react-three/drei';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { DirectoryPerson } from '../projects/types';
 import { CanvasLegend } from '../common/CanvasLegend';
@@ -86,13 +86,13 @@ export function PeopleGraph() {
         aria-label="Filter people"
         style={{
           position: 'absolute',
-          top: 12,
-          left: 24,
+          top: space.xl,
+          left: space.huge,
           zIndex: 2,
           width: 240,
           fontSize: textSize.caption,
           fontFamily: font.body,
-          padding: '6px 10px',
+          padding: `${space.sm}px ${space.lg}px`,
           borderRadius: radius.sm,
           border: `1px solid ${colors.border}`,
           background: colors.inputBg,
@@ -112,7 +112,7 @@ export function PeopleGraph() {
       )}
       {status === 'ready' && filtered.length === 0 && query.trim() !== '' && (
         <div style={{
-          position: 'absolute', top: 48, left: 24, zIndex: 2,
+          position: 'absolute', top: 48, left: space.huge, zIndex: 2,
           color: colors.textDim, fontFamily: font.body, fontSize: textSize.caption,
         }}>
           No people match that search.
@@ -247,7 +247,7 @@ function PersonNode({
             color: '#fff',
             background: 'rgba(8,10,16,0.78)',
             borderRadius: radius.xs,
-            padding: '2px 6px',
+            padding: `${space.xxs}px ${space.sm}px`,
             whiteSpace: 'nowrap',
           }}>
             {node.name}
@@ -287,7 +287,7 @@ function PersonNode({
             color: '#fff',
             background: 'rgba(8,10,16,0.78)',
             borderRadius: radius.xs,
-            padding: '2px 6px',
+            padding: `${space.xxs}px ${space.sm}px`,
             whiteSpace: 'nowrap',
             pointerEvents: 'none',
             opacity: pillVisible ? 1 : 0,

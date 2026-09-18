@@ -28,11 +28,15 @@
  * first visit, dismissed for good on request, per canvas. It is a caption, not
  * a dialog — it never traps focus, never covers the scene's controls, and can
  * be dismissed from the keyboard by anyone who has tabbed into it.
+ *
+ * Material: floating control over canvas content → shared glass tokens (D1).
+ * One glass plane per open/closed state; children use fillHover (D2/D10).
  */
 
 import { useCallback, useId, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { concentric, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { useGlass } from './Glass';
 import { Button } from './Button';
 import { readLegendOpen, rememberLegendOpen } from './legendMemory';
 
@@ -66,14 +70,35 @@ export interface CanvasLegendProps {
 }
 
 function Rows({ rows, palette }: { rows: LegendRow[]; palette: LegendPalette }) {
+  // A true grid, not one flex row per entry: flex sized each row's term
+  // column off that row's own content, so "Drag" and "Right-drag or arrow
+  // keys" landed their descriptions at two different x positions and a
+  // wrapped second line had nothing to hang under. Grid tracks are shared
+  // across every row, so the marker/term/description columns line up top to
+  // bottom and a wrapped description stays under its own first line.
+  const hasMarkers = rows.some(row => row.marker != null);
   return (
-    <dl style={{ margin: 0, display: 'grid', gap: 4 }}>
+    <dl
+      style={{
+        margin: 0,
+        display: 'grid',
+        gridTemplateColumns: hasMarkers ? 'auto auto 1fr' : 'auto 1fr',
+        columnGap: space.sm,
+        rowGap: space.xs,
+        alignItems: 'baseline',
+      }}
+    >
       {rows.map(row => (
-        <div key={row.term} style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
-          {row.marker != null && (
-            <span aria-hidden="true" style={{ flexShrink: 0, lineHeight: 1.4 }}>{row.marker}</span>
+        // `display: contents` lets this wrapper carry the row's `key` without
+        // introducing a box of its own — its children join the parent grid
+        // directly, as if they were its siblings.
+        <div key={row.term} style={{ display: 'contents' }}>
+          {hasMarkers && (
+            <span aria-hidden="true" style={{ lineHeight: 1.4, alignSelf: 'center' }}>
+              {row.marker}
+            </span>
           )}
-          <dt style={{ color: palette.text, fontWeight: 600, flexShrink: 0 }}>{row.term}</dt>
+          <dt style={{ margin: 0, color: palette.text, fontWeight: 600 }}>{row.term}</dt>
           <dd style={{ margin: 0, color: palette.dim, lineHeight: 1.45 }}>{row.meaning}</dd>
         </div>
       ))}
@@ -92,6 +117,7 @@ export function CanvasLegend({
   style,
 }: CanvasLegendProps) {
   const { colors } = useTheme();
+  const glass = useGlass('glass');
   const [open, setOpen] = useState(() => readLegendOpen(canvasId));
   const panelId = useId();
 
@@ -100,18 +126,25 @@ export function CanvasLegend({
     rememberLegendOpen(canvasId, next);
   }, [canvasId]);
 
+  // Ink/accent may still come from a canvas-local palette (World scene colours);
+  // the glass plane itself always comes from the shared tokens.
   const pal: LegendPalette = {
-    bg: palette?.bg ?? colors.surface,
+    bg: palette?.bg ?? (glass.background as string) ?? colors.surface,
     border: palette?.border ?? colors.border,
     text: palette?.text ?? colors.text,
     dim: palette?.dim ?? colors.textMuted,
     accent: palette?.accent ?? colors.cyan,
   };
 
+  const panelPadX = space.xl;
+  const panelPadY = space.lg;
+  const panelRadius = radius.glass;
+  const chipRadius = concentric(panelRadius, panelPadY);
+
   const anchor: CSSProperties = {
     position: 'absolute',
-    bottom: 16,
-    left: 16,
+    bottom: space.xxl,
+    left: space.xxl,
     zIndex: 12,
     fontFamily: font.body,
     fontSize: textSize.micro,
@@ -123,10 +156,11 @@ export function CanvasLegend({
     '--pa-btn-fg': pal.dim,
     '--pa-btn-fg-hover': pal.accent,
     '--pa-btn-border': 'transparent',
-    '--pa-btn-bg-hover': `${pal.accent}1f`,
+    '--pa-btn-bg-hover': colors.fillHover,
+    '--pa-btn-bg-active': colors.fillActive,
     '--pa-btn-border-hover': 'transparent',
-    '--pa-btn-pad': '2px 6px',
-    '--pa-btn-radius': `${radius.xs}px`,
+    '--pa-btn-pad': `${2}px ${space.sm}px`,
+    '--pa-btn-radius': `${chipRadius > 0 ? chipRadius : radius.xs}px`,
     fontFamily: font.mono,
     fontSize: textSize.micro,
     letterSpacing: '0.08em',
@@ -146,10 +180,14 @@ export function CanvasLegend({
           onClick={() => set(true)}
           style={{
             ...controlVars,
-            '--pa-btn-bg': pal.bg,
+            ...glass,
+            // Button paints via --pa-btn-bg; feed it the glass fill so the
+            // filter and translucent background travel together.
+            '--pa-btn-bg': (glass.background as string) ?? colors.surface,
             '--pa-btn-border': pal.border,
-            '--pa-btn-pad': '4px 10px',
-            backdropFilter: 'blur(8px)',
+            '--pa-btn-pad': `${space.xs}px ${space.lg}px`,
+            '--pa-btn-radius': `${panelRadius}px`,
+            boxShadow: glass.boxShadow,
           } as CSSProperties}
         >
           {title}
@@ -179,15 +217,17 @@ export function CanvasLegend({
         ...anchor,
         maxWidth: 330,
         display: 'grid',
-        gap: 8,
-        padding: '10px 12px',
-        background: pal.bg,
+        gap: space.md,
+        padding: `${panelPadY}px ${panelPadX}px`,
+        ...glass,
+        // Prefer theme glass fill over a caller palette bg that may be opaque
+        // (would kill the blur). Callers that need scene ink pass text/dim/accent.
+        background: (glass.background as string) ?? pal.bg,
         border: `1px solid ${pal.border}`,
-        borderRadius: radius.md,
-        backdropFilter: 'blur(10px)',
+        borderRadius: panelRadius,
       }}
     >
-      <header style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <header style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
         <span style={{
           fontFamily: font.mono,
           fontSize: textSize.micro,
@@ -218,7 +258,7 @@ export function CanvasLegend({
 
 function Section({ label, palette, children }: { label: string; palette: LegendPalette; children: ReactNode }) {
   return (
-    <div style={{ display: 'grid', gap: 3 }}>
+    <div style={{ display: 'grid', gap: space.xxs }}>
       <span style={{
         fontFamily: font.mono,
         fontSize: textSize.micro,

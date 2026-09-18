@@ -19,6 +19,7 @@ import { useBannerSlot } from './bannerSlot';
 import { useCommandCenter } from '../../lib/store';
 import { setSpeakReplies } from '../../lib/speakReplies';
 
+import { Tooltip } from '../common/Tooltip';
 const LS_KEY = 'permagent-learn-next-state';
 const DAY = 86_400_000;
 const DISMISS_COOLDOWN = 3 * DAY;
@@ -162,16 +163,17 @@ export function LearnNext() {
       actions={
         <>
           {items.length > 1 && (
-            <Button
-              colors={colors}
-              type="button"
-              onClick={nextTip}
-              aria-label="Show a different capability"
-              title="Next tip"
-              style={{ ...bannerGhostBtn(colors), '--pa-btn-pad': '7px 10px', '--pa-btn-weight': 400 } as CSSProperties}
-            >
-              ›
-            </Button>
+            <Tooltip content="Next tip">
+              <Button
+                colors={colors}
+                type="button"
+                onClick={nextTip}
+                aria-label="Show a different capability"
+                style={{ ...bannerGhostBtn(colors), '--pa-btn-pad': '7px 10px', '--pa-btn-weight': 400 } as CSSProperties}
+              >
+                ›
+              </Button>
+            </Tooltip>
           )}
           <Button colors={colors} type="button" onClick={showMe} style={bannerPrimaryBtn(colors)}>
             Show me

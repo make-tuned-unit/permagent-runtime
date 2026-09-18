@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { FiChevronRight, FiX } from 'react-icons/fi';
-import { ease, font, radius, textSize } from '../../styles/tokens';
+import { ease, font, radius, space, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { api } from '../../lib/api';
 import { wireEventType } from '../../lib/wireEvent';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
+import { useGlass } from '../common/Glass';
 
 interface ActivityMemory {
   id: string;
@@ -54,6 +55,12 @@ interface Props {
 
 export function InspectionPanel({ onClose }: Props) {
   const { colors } = useTheme();
+  // `glassHi`, not `glass`: this is a full-height 400px fixed rail — an
+  // inspector, Apple's largest glass shape after the sidebar — and large glass
+  // takes MORE opacity, not less, to hold legibility over whatever screen it
+  // is covering. It floats over everything at z-index 10000, so unlike the
+  // chat dock it genuinely has a backdrop to sample.
+  const glass = useGlass('glassHi');
   const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
   const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
   useEffect(() => { pushOverlay(); return () => { popOverlay(); }; }, [pushOverlay, popOverlay]);
@@ -163,16 +170,16 @@ export function InspectionPanel({ onClose }: Props) {
     <div style={{
       position: 'fixed', top: 0, right: 0, bottom: 0,
       width: 400, zIndex: 10000,
-      background: colors.surface, backdropFilter: 'blur(24px)',
+      ...glass,
       borderLeft: `1px solid ${colors.borderHi}`,
       display: 'flex', flexDirection: 'column',
       fontFamily: font.body, fontSize: textSize.caption,
-      boxShadow: colors.cardShadow,
+      boxShadow: `${glass.boxShadow}, ${colors.cardShadow}`,
     }}>
       {/* Header */}
       <div style={{
-        padding: '12px 16px', borderBottom: `1px solid ${colors.border}`,
-        display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+        padding: `${space.xl}px ${space.xxl}px`, borderBottom: `1px solid ${colors.border}`,
+        display: 'flex', alignItems: 'center', gap: space.md, flexShrink: 0,
       }}>
         <span style={{ flex: 1, fontWeight: 600, fontSize: textSize.small, color: colors.text }}>
           What your agent sees
@@ -231,13 +238,13 @@ export function InspectionPanel({ onClose }: Props) {
       </div>
 
       {/* Active project */}
-      <div style={{ padding: '8px 16px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
+      <div style={{ padding: `${space.md}px ${space.xxl}px`, borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
         {status?.active_project ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
             <span style={{ color: colors.textMuted }}>Project:</span>
             <span style={{ color: colors.text, fontWeight: 500 }}>{status.active_project.project_name}</span>
             <span style={{
-              padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
+              padding: `${space.xxs}px ${space.sm}px`, borderRadius: 3, fontSize: 10, fontWeight: 600,
               background: colors.cyanSoft, color: colors.cyan,
             }}>
               {status.active_project.wing}
@@ -249,7 +256,7 @@ export function InspectionPanel({ onClose }: Props) {
       </div>
 
       {/* Source filter pills */}
-      <div style={{ padding: '8px 16px', display: 'flex', gap: 4, flexWrap: 'wrap', flexShrink: 0 }}>
+      <div style={{ padding: `${space.md}px ${space.xxl}px`, display: 'flex', gap: space.xs, flexWrap: 'wrap', flexShrink: 0 }}>
         {Object.entries(sourceFilters).map(([key, active]) => (
           <Button
             key={key}
@@ -288,7 +295,7 @@ export function InspectionPanel({ onClose }: Props) {
               padding: '4px 0', borderBottom: `1px solid ${colors.border}`,
               cursor: 'pointer',
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
                 <span style={{ color: colors.textDim, fontFamily: font.mono, fontSize: 10, width: 56, flexShrink: 0 }}>{ts}</span>
                 <span style={{
                   padding: '0 4px', borderRadius: 2, fontSize: 10, fontWeight: 600,
@@ -330,7 +337,7 @@ export function InspectionPanel({ onClose }: Props) {
             '--pa-btn-pad': '8px 16px',
             '--pa-btn-radius': '0',
             '--pa-btn-weight': 600,
-            display: 'flex', width: '100%', justifyContent: 'flex-start', gap: 6,
+            display: 'flex', width: '100%', justifyContent: 'flex-start', gap: space.sm,
             borderWidth: 0, fontSize: textSize.micro,
           } as CSSProperties}
         >
@@ -344,7 +351,7 @@ export function InspectionPanel({ onClose }: Props) {
               <div key={m.id} onClick={() => setExpandedMemory(expandedMemory === m.id ? null : m.id)} style={{
                 padding: '4px 0', borderBottom: `1px solid ${colors.border}`, cursor: 'pointer',
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
                   {m.wing && (
                     <span style={{ padding: '0 4px', borderRadius: 2, fontSize: 10, background: colors.cyanSoft, color: colors.cyan }}>
                       {m.wing}
@@ -382,7 +389,7 @@ export function InspectionPanel({ onClose }: Props) {
             '--pa-btn-pad': '8px 16px',
             '--pa-btn-radius': '0',
             '--pa-btn-weight': 600,
-            display: 'flex', width: '100%', justifyContent: 'flex-start', gap: 6,
+            display: 'flex', width: '100%', justifyContent: 'flex-start', gap: space.sm,
             borderWidth: 0, fontSize: textSize.micro,
           } as CSSProperties}
         >
@@ -392,17 +399,17 @@ export function InspectionPanel({ onClose }: Props) {
         </button>
         {digestOpen && digest && (
           <div id="inspection-digest" style={{ maxHeight: 200, overflow: 'auto', padding: '0 16px 8px', fontSize: 10, color: colors.textDim }}>
-            <div style={{ marginBottom: 4 }}>
+            <div style={{ marginBottom: space.xs }}>
               <strong style={{ color: colors.textMuted }}>Live State:</strong>
               <pre style={{ fontFamily: font.mono, whiteSpace: 'pre-wrap', margin: '2px 0' }}>
                 {JSON.stringify(digest.live_state, null, 2)}
               </pre>
             </div>
-            <div style={{ marginBottom: 4 }}>
+            <div style={{ marginBottom: space.xs }}>
               <strong style={{ color: colors.textMuted }}>Recent Events:</strong> {digest.recent_events.length}
             </div>
             {digest.probed_memories.length > 0 && (
-              <div style={{ marginBottom: 4 }}>
+              <div style={{ marginBottom: space.xs }}>
                 <strong style={{ color: colors.textMuted }}>Probed Memories ({digest.probed_memories.length}):</strong>
                 {digest.probed_memories.map((m, i) => (
                   <div key={i} style={{ padding: '2px 0', borderBottom: `1px solid ${colors.border}` }}>

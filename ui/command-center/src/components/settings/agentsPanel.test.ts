@@ -208,11 +208,19 @@ describe('readAgentGate', () => {
 });
 
 describe('gateRowHint', () => {
-  it('names the key and the pane that shares it', () => {
+  it('names the key and says this is the only place it is written', () => {
     const hint = gateRowHint({ config_key: 'strix_enabled', enabled: false });
     expect(hint).toContain('strix_enabled');
-    expect(hint).toContain('Features');
+    expect(hint).toContain('only place');
     expect(hint).toContain('no restart');
+  });
+
+  // It used to point at "Settings → Features", the board that wrote these same
+  // six keys a second time. That board is gone, and a hint naming a pane that
+  // does not exist is worse than one that names none.
+  it('does not send the reader to the retired Features board', () => {
+    expect(gateRowHint({ config_key: 'council_enabled', enabled: true }))
+      .not.toContain('Features');
   });
 });
 

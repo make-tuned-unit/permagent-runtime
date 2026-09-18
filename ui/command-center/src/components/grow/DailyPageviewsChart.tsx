@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ThemeColors } from '../../styles/tokens';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import type { DailyAnalyticsPoint } from './analyticsFormat';
 import { linearTrendline } from './analyticsFormat';
 
@@ -69,7 +69,7 @@ export function DailyPageviewsChart({
         style={{
           border: `1px solid ${colors.border}`,
           borderRadius: radius.md,
-          padding: '12px 14px',
+          padding: `${space.xl}px ${space.xxl}px`,
           color: colors.textDim,
           fontSize: textSize.micro,
         }}
@@ -96,20 +96,23 @@ export function DailyPageviewsChart({
       style={{
         border: `1px solid ${colors.border}`,
         borderRadius: radius.md,
-        padding: '10px 12px 8px',
+        padding: `${space.lg}px ${space.xl}px ${space.md}px`,
         minWidth: 0,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', marginBottom: 2 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.md, flexWrap: 'wrap', marginBottom: space.xxs }}>
         <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
           Pageviews by day
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: textSize.micro, color: colors.textDim }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <span aria-hidden="true" style={{ width: 10, height: 3, borderRadius: 2, background: colors.cyan, display: 'inline-block' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap', fontSize: textSize.micro, color: colors.textDim }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: space.xs }}>
+            {/* A 10x3 legend dash: `pill` clamps to the half-height, which is
+                the fully-rounded cap this wants. A scale step would be bigger
+                than the swatch is tall. */}
+            <span aria-hidden="true" style={{ width: 10, height: 3, borderRadius: radius.pill, background: colors.cyan, display: 'inline-block' }} />
             Daily pageviews
           </span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: space.xs }}>
             <span aria-hidden="true" style={{ width: 10, borderTop: `2px dashed ${colors.warning}`, display: 'inline-block' }} />
             Trendline
           </span>

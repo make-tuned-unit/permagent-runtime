@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -113,7 +113,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
   // The look these controls had at rest, re-expressed as the primitive's custom
   // properties so `:hover` / `:active` / `:disabled` can finally reach them.
   const btn = (primary: boolean): CSSProperties => ({
-    '--pa-btn-bg': primary ? colors.cyanSoft : 'rgba(255,255,255,0.03)',
+    '--pa-btn-bg': primary ? colors.cyanSoft : colors.fillSubtle,
     '--pa-btn-fg': primary ? colors.cyan : colors.textMuted,
     '--pa-btn-border': primary ? colors.borderHi : colors.border,
     '--pa-btn-bg-hover': primary ? colors.cyanSoft : colors.surfaceHi,
@@ -126,16 +126,19 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
     fontSize: textSize.micro,
   } as CSSProperties);
   const tinyBtn: CSSProperties = {
-    '--pa-btn-bg': 'rgba(255,255,255,0.03)',
+    '--pa-btn-bg': colors.fillSubtle,
     '--pa-btn-fg': colors.textMuted,
     '--pa-btn-border': colors.border,
     '--pa-btn-bg-hover': colors.surfaceHi,
     '--pa-btn-fg-hover': colors.text,
     '--pa-btn-border-hover': colors.borderHi,
     '--pa-btn-pad': '2px 6px',
-    // 5px, not a radius token: these three sit inside a 24px row and the
-    // resting shape must not change under the migration.
-    '--pa-btn-radius': '5px',
+    // These three sit inside a 24px row, so the corner has to stay the
+    // smallest one on the ladder. It was a hand-written 5px held there
+    // deliberately through the `.pa-btn` migration; `radius.xs` (4) is the
+    // token that now says the same thing, and the 1px it gives up is the
+    // price of the shape being named rather than guessed.
+    '--pa-btn-radius': `${radius.xs}px`,
     fontFamily: font.body,
     fontSize: textSize.micro,
     lineHeight: 1,
@@ -151,14 +154,14 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
       ) : undefined}
     >
       {editing ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
           <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
             Ordered steps run after commit + push before the change is live.
             Commands may source secrets from the project's .env.local — never
             paste secret values here.
           </div>
           {draft.map((row, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
               <span style={{ fontSize: textSize.micro, color: colors.textDim, width: 14, flexShrink: 0, textAlign: 'right' }}>
                 {i + 1}.
               </span>
@@ -169,8 +172,8 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
                 disabled={saving}
                 aria-label={`Step ${i + 1} command`}
                 style={{
-                  flex: 1, minWidth: 0, padding: '6px 8px', borderRadius: radius.sm,
-                  background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
+                  flex: 1, minWidth: 0, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.sm,
+                  background: colors.fillSubtle, border: `1px solid ${colors.border}`,
                   color: colors.text, fontFamily: font.mono, fontSize: textSize.micro, outline: 'none',
                 }}
               />
@@ -181,8 +184,8 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
                 disabled={saving}
                 aria-label={`Step ${i + 1} timeout in seconds`}
                 style={{
-                  width: 62, flexShrink: 0, padding: '6px 8px', borderRadius: radius.sm,
-                  background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
+                  width: 62, flexShrink: 0, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.sm,
+                  background: colors.fillSubtle, border: `1px solid ${colors.border}`,
                   color: colors.text, fontFamily: font.mono, fontSize: textSize.micro, outline: 'none',
                 }}
               />
@@ -191,7 +194,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
               <Button colors={colors} onClick={() => removeRow(i)} disabled={saving} aria-label={`Remove step ${i + 1}`} style={{ ...tinyBtn, '--pa-btn-fg': colors.warning, '--pa-btn-fg-hover': colors.warning } as CSSProperties}>✕</Button>
             </div>
           ))}
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
             <Button
               colors={colors}
               onClick={() => setDraft(d => [...d, { command: '', timeout: '' }])}
@@ -217,12 +220,12 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
           stop reporting "pushed" as "live".
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
           <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
             After push, these run in order before the change is live:
           </div>
           {steps.map((s, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: space.md }}>
               <span style={{ fontSize: textSize.micro, color: colors.textDim, flexShrink: 0 }}>{i + 1}.</span>
               <span style={{
                 fontFamily: font.mono, fontSize: textSize.micro, color: colors.text, minWidth: 0,
@@ -233,7 +236,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
               {s.timeoutSecs !== undefined && (
                 <span style={{
                   fontSize: 10, color: colors.textDim, flexShrink: 0,
-                  padding: '1px 6px', borderRadius: radius.xs, background: 'rgba(255,255,255,0.06)',
+                  padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.xs, background: colors.fillHover,
                 }}>
                   {s.timeoutSecs}s
                 </span>

@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   compactLayoutPass,
+  DEFAULT_LAYOUT,
   ensureCalendarCard,
   ensureGrowthCardTallEnough,
   ensureGrowthResultsCard,
   reflow,
+  stripRetiredCards,
   type DashboardLayoutData,
 } from './useLayout';
 
@@ -135,6 +137,34 @@ describe('ensureGrowthResultsCard', () => {
     const { layout: out, changed } = ensureGrowthResultsCard(layout);
     expect(changed).toBe(false);
     expect(out).toBe(layout);
+  });
+});
+
+describe('stripRetiredCards', () => {
+  it('removes a persisted hero card instead of leaving a MissingCard ghost tile', () => {
+    const layout: DashboardLayoutData = { cards: [card('hero', 7, 4), card('stats', 5, 4)] };
+    const { layout: out, changed } = stripRetiredCards(layout);
+    expect(changed).toBe(true);
+    expect(out.cards.some(c => c.type === 'hero')).toBe(false);
+    expect(out.cards.some(c => c.type === 'stats')).toBe(true);
+  });
+
+  it('loads a hero-only persisted layout down to nothing without crashing', () => {
+    const layout: DashboardLayoutData = { cards: [card('hero', 7, 4)] };
+    const { layout: out, changed } = stripRetiredCards(layout);
+    expect(changed).toBe(true);
+    expect(out.cards).toEqual([]);
+  });
+
+  it('is a no-op, same-object passthrough for a layout with no retired cards', () => {
+    const layout: DashboardLayoutData = { cards: [card('stats', 5, 4)] };
+    const { layout: out, changed } = stripRetiredCards(layout);
+    expect(changed).toBe(false);
+    expect(out).toBe(layout);
+  });
+
+  it('the shipped default layout no longer names the retired hero card', () => {
+    expect(DEFAULT_LAYOUT.cards.some(c => c.type === 'hero')).toBe(false);
   });
 });
 

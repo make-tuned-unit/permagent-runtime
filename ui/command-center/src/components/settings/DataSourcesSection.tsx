@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
-import { font, radius, type, textSize } from '../../styles/tokens';
+import { font, radius, space, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Toggle } from '../common/Toggle';
@@ -121,7 +121,7 @@ export function DataSourcesSection() {
   const visible = entries.slice(0, 24);
 
   return (
-    <div data-testid="data-sources" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div data-testid="data-sources" style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
       <p style={{ ...type.small, color: colors.textMuted, margin: 0, lineHeight: 1.5 }}>
         From the public-apis catalog. Off until you turn a source on. Then it
         flows immediately to the suggested agents below — and the Orchestrator
@@ -131,7 +131,7 @@ export function DataSourcesSection() {
       {error && (
         <div style={{ ...type.caption, color: colors.danger }}>{error}</div>
       )}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }} role="tablist" aria-label="API categories">
+      <div style={{ display: 'flex', gap: space.md, flexWrap: 'wrap' }} role="tablist" aria-label="API categories">
         {categories.map((c) => {
           const on = c.name === category;
           return (
@@ -170,7 +170,7 @@ export function DataSourcesSection() {
           Suggested agents: {current.suggestedAgents.map(labelAgent).join(', ')}
         </div>
       )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
         {visible.map((e) => (
           <article
             key={e.slug}
@@ -179,18 +179,18 @@ export function DataSourcesSection() {
             style={{
               border: `1px solid ${colors.border}`,
               borderRadius: radius.md,
-              padding: '12px 14px',
+              padding: `${space.xl}px 14px`,
               background: colors.bgDeeper,
               display: 'flex',
               flexDirection: 'column',
-              gap: 8,
+              gap: space.md,
             }}
           >
-            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+            <div style={{ display: 'flex', gap: space.xl, alignItems: 'flex-start' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{e.name}</div>
-                <div style={{ ...type.caption, color: colors.textMuted, marginTop: 2 }}>{e.description}</div>
-                <div style={{ ...type.caption, color: colors.textDim, marginTop: 4 }}>
+                <div style={{ ...type.caption, color: colors.textMuted, marginTop: space.xxs }}>{e.description}</div>
+                <div style={{ ...type.caption, color: colors.textDim, marginTop: space.xs }}>
                   Auth {e.auth || 'No'}
                   {e.https ? ' · HTTPS' : ''}
                   {' · '}
@@ -205,7 +205,7 @@ export function DataSourcesSection() {
               />
             </div>
             {e.enabled && e.auth.toLowerCase() === 'apikey' && (
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
                 <input
                   type="password"
                   autoComplete="off"
@@ -215,7 +215,7 @@ export function DataSourcesSection() {
                   style={{
                     flex: 1, fontFamily: font.mono, fontSize: textSize.micro, color: colors.text,
                     background: colors.inputBg, border: `1px solid ${colors.border}`,
-                    borderRadius: radius.sm, padding: '6px 8px', outline: 'none', minWidth: 0,
+                    borderRadius: radius.sm, padding: `${space.sm}px ${space.md}px`, outline: 'none', minWidth: 0,
                   }}
                 />
                 <Button

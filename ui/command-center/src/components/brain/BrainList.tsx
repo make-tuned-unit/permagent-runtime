@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
-import { ease, font, radius, textSize } from '../../styles/tokens';
+import { concentric, duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { Button } from '../common/Button';
 import type { GraphMemory, GraphEntity } from './useBrainData';
@@ -11,6 +11,7 @@ import { deriveMemoryTitle, MEMORY_STALE_AFTER_DAYS } from './brainMemoryFocus';
 import { AsOf } from '../common/AsOf';
 import { MEMORY_STRENGTH } from '../../lib/vocabulary';
 
+import { Tooltip } from '../common/Tooltip';
 // ── Date formatting ──────────────────────────────────────────────────
 
 function formatDate(ts: string): string {
@@ -61,7 +62,11 @@ export function BrainList({
   onSelect, selectedId, timeValue, searchQuery, searchResults, searchLoading, searchError,
   entities = [], filters,
 }: BrainListProps) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
+  // Hard scroll edge (D11/§1.8): the stats bar is pinned above the scrolling
+  // rows. An opaque hairline appears under it only once something has
+  // actually scrolled beneath — never decorative, off at rest.
+  const [listScrolled, setListScrolled] = useState(false);
 
   // Filter entities by type
   const filteredEntities = entities.filter(ent => {
@@ -146,8 +151,9 @@ export function BrainList({
 
   // Infinite scroll
   const handleScroll = useCallback(() => {
-    if (isSearch) return;
     const el = scrollRef.current;
+    setListScrolled(!!el && el.scrollTop > 2);
+    if (isSearch) return;
     if (!el || !state.hasMore || state.loading) return;
     const threshold = 200;
     if (el.scrollHeight - el.scrollTop - el.clientHeight < threshold) {
@@ -165,10 +171,12 @@ export function BrainList({
       position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
       background: 'transparent',
     }}>
-      {/* Stats bar */}
+      {/* Stats bar — pinned above the scrolling rows; see `listScrolled`. */}
       <div style={{
-        padding: '8px 16px', display: 'flex', justifyContent: 'space-between',
+        padding: `${space.md}px ${space.xxl}px`, display: 'flex', justifyContent: 'space-between',
         fontFamily: font.mono, fontSize: 10, color: colors.textDim,
+        borderBottom: `1px solid ${listScrolled ? colors.borderHi : 'transparent'}`,
+        transition: reduceMotion ? 'none' : `border-color ${duration.fast}ms ${ease.out}`,
       }}>
         <span>
           {!isSearch && filteredEntities.length > 0 && `${filteredEntities.length} entities`}
@@ -191,7 +199,7 @@ export function BrainList({
         {showEntities && !isSearch && filteredEntities.length > 0 && (
           <>
             <div style={{
-              padding: '6px 14px 4px', fontFamily: font.mono, fontSize: 10,
+              padding: `${space.sm}px 14px ${space.xs}px`, fontFamily: font.mono, fontSize: 10,
               color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em',
             }}>
               Entities ({filteredEntities.length})
@@ -212,7 +220,7 @@ export function BrainList({
             ))}
             {showMemories && (
               <div style={{
-                padding: '10px 14px 4px', fontFamily: font.mono, fontSize: 10,
+                padding: `${space.lg}px 14px ${space.xs}px`, fontFamily: font.mono, fontSize: 10,
                 color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em',
               }}>
                 Memories
@@ -238,14 +246,14 @@ export function BrainList({
         ))}
 
         {showMemories && displayLoading && (
-          <div style={{ padding: 20, textAlign: 'center', fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim }}>
+          <div style={{ padding: space.xxxl, textAlign: 'center', fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim }}>
             Loading...
           </div>
         )}
 
         {showMemories && !displayLoading && displayError && displayMemories.length === 0 && (
           <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: textSize.small }}>
-            <div style={{ color: colors.textMuted, marginBottom: 10 }}>
+            <div style={{ color: colors.textMuted, marginBottom: space.lg }}>
               {isSearch ? `Could not search your Brain: ${displayError}` : "Couldn't load memories."}
             </div>
             {!isSearch && (
@@ -279,7 +287,7 @@ export function BrainList({
         )}
 
         {showMemories && !isSearch && state.hasMore && !state.loading && (
-          <div style={{ padding: 12, textAlign: 'center', fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>
+          <div style={{ padding: space.xl, textAlign: 'center', fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>
             Scroll for more...
           </div>
         )}
@@ -298,7 +306,7 @@ function highlightText(text: string, terms: string[], colors: { text: string; cy
   const parts = text.split(regex);
   return parts.map((part, i) =>
     regex.test(part)
-      ? <mark key={i} style={{ background: colors.cyanGlow, color: colors.text, borderRadius: 2, padding: '0 1px' }}>{part}</mark>
+      ? <mark key={i} style={{ background: colors.cyanGlow, color: colors.text, borderRadius: concentric(radius.xs, 2), padding: '0 1px' }}>{part}</mark>
       : part
   );
 }
@@ -311,11 +319,14 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
   highlightTerms: string[];
   onClick: () => void;
 }) {
-  const { colors, theme } = useTheme();
-  const rowBg = selected
-    ? colors.cyanSoft
-    : theme === 'silver' ? 'rgba(255,255,255,0.7)' : 'rgba(20,28,48,0.4)';
-  const rowHoverBg = theme === 'silver' ? 'rgba(255,255,255,0.9)' : 'rgba(20,28,48,0.65)';
+  const { colors, reduceMotion } = useTheme();
+  // Rows are content (D1): a solid theme fill, never a translucent wash
+  // pretending to be elevation. Resting/hover are both fully opaque —
+  // `surface` then `surfaceHi`, the app's own "one step up" pair — and
+  // selection is the same accent tint every chip in this app uses.
+  const rowBg = selected ? colors.cyanSoft : colors.surface;
+  const rowHoverBg = colors.surfaceHi;
+  const rowTransition = reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}, border-color ${duration.fast}ms ${ease.out}, transform ${duration.fast}ms ${ease.out}, filter ${duration.fast}ms ${ease.out}`;
   const title = deriveMemoryTitle(memory);
   const preview = memory.text.slice(0, 100) + (memory.text.length > 100 ? '...' : '');
   const descPreview = memory.description
@@ -330,28 +341,33 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       onClick={onClick}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
-        padding: '10px 14px', marginBottom: 2, cursor: 'pointer',
+        padding: `${space.lg}px 14px`, marginBottom: space.xxs, cursor: 'pointer',
         borderRadius: radius.md,
         background: rowBg,
-        border: selected ? `1px solid ${colors.cyan}40` : '1px solid transparent',
+        border: selected ? `1px solid ${colors.borderHi}` : '1px solid transparent',
         outline: 'none',
-        transition: `all 160ms ${ease.out}`,
+        transition: rowTransition,
       }}
       onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowHoverBg; }}
-      onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowBg; }}
+      onMouseLeave={e => {
+        const el = e.currentTarget as HTMLDivElement;
+        el.style.background = rowBg; el.style.filter = 'none'; el.style.transform = 'none';
+      }}
+      onPointerDown={e => { (e.currentTarget as HTMLDivElement).style.filter = 'brightness(0.95)'; (e.currentTarget as HTMLDivElement).style.transform = 'scale(0.995)'; }}
+      onPointerUp={e => { (e.currentTarget as HTMLDivElement).style.filter = 'none'; (e.currentTarget as HTMLDivElement).style.transform = 'none'; }}
       onFocus={e => { (e.currentTarget as HTMLDivElement).style.outline = `2px solid ${colors.cyan}`; }}
       onBlur={e => { (e.currentTarget as HTMLDivElement).style.outline = 'none'; }}
     >
       {/* Title row */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: space.xs }}>
         <div style={{
           fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 12,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: space.xl,
         }}>
           {highlightText(title, highlightTerms, colors)}
           {memory.layer && (
             <span style={{
-              marginLeft: 8, fontFamily: font.mono, fontSize: 10, fontWeight: 500,
+              marginLeft: space.md, fontFamily: font.mono, fontSize: 10, fontWeight: 500,
               color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.06em',
             }}>{memory.layer}</span>
           )}
@@ -365,7 +381,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       {descPreview && (
         <div style={{
           fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5,
-          marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis',
+          marginBottom: space.xs, overflow: 'hidden', textOverflow: 'ellipsis',
           display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
         }}>
           {highlightText(descPreview, highlightTerms, colors)}
@@ -382,14 +398,18 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
 
       {/* Metadata footer */}
       <div style={{
-        display: 'flex', gap: 16, marginTop: 6,
+        display: 'flex', gap: space.xxl, marginTop: space.sm,
         fontFamily: font.mono, fontSize: 10, color: colors.textDim,
       }}>
         {/* The same field the graph panel shows. It used to say "signal" here
             and "reinforcement" there — one number, one tab, two words. */}
-        <span title={MEMORY_STRENGTH.gloss} style={{ cursor: 'help' }}>
-          {MEMORY_STRENGTH.one} {Math.round(memory.weight * 100)}%
-        </span>
+        <Tooltip content={MEMORY_STRENGTH.gloss}>
+          <span tabIndex={0} style={{ outline: 'none' }}>
+            <span style={{ cursor: 'help' }}>
+              {MEMORY_STRENGTH.one} {Math.round(memory.weight * 100)}%
+            </span>
+          </span>
+        </Tooltip>
         {/* Read from the memory's own timestamp, never from `age`: that is a
             0..1 scene coordinate, clamped at 90 days, so every memory past the
             window shared one bucket and a three-year-old note read as merely
@@ -426,11 +446,12 @@ function EntityRow({ entity, selected, onClick }: {
   selected: boolean;
   onClick: () => void;
 }) {
-  const { colors, theme } = useTheme();
-  const rowBg = selected
-    ? colors.cyanSoft
-    : theme === 'silver' ? 'rgba(255,255,255,0.7)' : 'rgba(20,28,48,0.4)';
-  const rowHoverBg = theme === 'silver' ? 'rgba(255,255,255,0.9)' : 'rgba(20,28,48,0.65)';
+  const { colors, reduceMotion } = useTheme();
+  // Same opaque-content pair as `MemoryRow` (D1): `surface` resting, the
+  // theme's own "one step up" for hover, the shared accent tint for selected.
+  const rowBg = selected ? colors.cyanSoft : colors.surface;
+  const rowHoverBg = colors.surfaceHi;
+  const rowTransition = reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}, border-color ${duration.fast}ms ${ease.out}, transform ${duration.fast}ms ${ease.out}, filter ${duration.fast}ms ${ease.out}`;
   const typeColor = typeAccent(entity.type, colors);
 
   return (
@@ -441,21 +462,32 @@ function EntityRow({ entity, selected, onClick }: {
       onClick={onClick}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
-        padding: '8px 14px', marginBottom: 2, cursor: 'pointer',
+        padding: `${space.md}px 14px`, marginBottom: space.xxs, cursor: 'pointer',
         borderRadius: radius.md, background: rowBg,
-        border: selected ? `1px solid ${colors.cyan}40` : '1px solid transparent',
+        border: selected ? `1px solid ${colors.borderHi}` : '1px solid transparent',
         outline: 'none',
-        transition: `all 160ms ${ease.out}`,
-        display: 'flex', alignItems: 'center', gap: 10,
+        transition: rowTransition,
+        display: 'flex', alignItems: 'center', gap: space.lg,
       }}
       onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowHoverBg; }}
-      onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowBg; }}
+      onMouseLeave={e => {
+        const el = e.currentTarget as HTMLDivElement;
+        el.style.background = rowBg; el.style.filter = 'none'; el.style.transform = 'none';
+      }}
+      onPointerDown={e => { (e.currentTarget as HTMLDivElement).style.filter = 'brightness(0.95)'; (e.currentTarget as HTMLDivElement).style.transform = 'scale(0.995)'; }}
+      onPointerUp={e => { (e.currentTarget as HTMLDivElement).style.filter = 'none'; (e.currentTarget as HTMLDivElement).style.transform = 'none'; }}
       onFocus={e => { (e.currentTarget as HTMLDivElement).style.outline = `2px solid ${colors.cyan}`; }}
       onBlur={e => { (e.currentTarget as HTMLDivElement).style.outline = 'none'; }}
     >
+      {/* `minWidth`, not `width` (#1171 silver screenshot): a fixed width let
+          a long type name ("ORGANIZATION") overflow the box, and since the
+          box is anchored `flex-end`, the overflow ran past its own left
+          edge — pushing the leading dot off the row. `minWidth` keeps every
+          short type name aligned at the same column while letting a longer
+          one grow the box instead of spilling out of it. */}
       <span style={{
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        flexShrink: 0, width: 62, justifyContent: 'flex-end',
+        display: 'inline-flex', alignItems: 'center', gap: space.sm,
+        flexShrink: 0, minWidth: 62, justifyContent: 'flex-end',
       }}>
         <span aria-hidden style={{
           width: 6, height: 6, borderRadius: radius.pill, background: typeColor, flexShrink: 0,

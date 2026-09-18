@@ -4,7 +4,8 @@ import { HudShell, Section, StatRow } from './HudShell';
 import { Chip } from '../common/Chip';
 import { useFinanceDesk } from './financeDesk';
 import { pickerStatus } from './deskStatus';
-import { textSize } from '../../styles/tokens';
+import { space, textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 // The Picker — the close-scan desk that ranks tomorrow's candidates
 // (`picker_close_scan.rs`, judged at the 15:30 ET close).
@@ -27,6 +28,7 @@ interface PickerHUDProps {
 }
 
 export function PickerHUD({ visible, onClose }: PickerHUDProps) {
+  const { colors } = useTheme();
   const reading = useFinanceDesk(visible);
   if (!visible) return null;
 
@@ -45,8 +47,8 @@ export function PickerHUD({ visible, onClose }: PickerHUDProps) {
           : <Chip kind="static" color={pillColor}>{status.label}</Chip>
       }
     >
-      <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
+      <div style={{ padding: `${space.xs}px 14px ${space.md}px` }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           Ranks tomorrow's candidates off the closing scan. It reports
           numbers and never sizes a position.
         </span>
@@ -54,7 +56,7 @@ export function PickerHUD({ visible, onClose }: PickerHUDProps) {
 
       {status.unreachable && (
         <Section title="SCANNER" trimColor={COLORS.neonAmber}>
-          <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5 }}>
             {reading.error
               ? `Couldn't read the finance board — ${reading.error}.`
               : `The scanner at ${p?.baseUrl ?? 'its configured address'} is not answering.`}
@@ -73,7 +75,7 @@ export function PickerHUD({ visible, onClose }: PickerHUDProps) {
             <StatRow label="Universe" value={reading.board.pickerUniverseCount} />
           )}
           {p.detail && (
-            <div style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5, marginTop: 6 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginTop: space.sm }}>
               {p.detail}
             </div>
           )}
@@ -81,7 +83,7 @@ export function PickerHUD({ visible, onClose }: PickerHUDProps) {
       )}
 
       <Section title="AWAITING" trimColor={COLORS.neonAmber}>
-        <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5 }}>
           The Picker's own runs announce under the Financier's id, so its work
           currently lights that orb instead of this one. Until the attribution
           is fixed in the daemon, this figure stands still — the scan facts

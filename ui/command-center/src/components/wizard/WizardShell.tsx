@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react';
-import { duration, ease, radius, textSize } from '../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { ProgressDots, BackChevron } from './atoms';
 import { MomentWelcome } from './MomentWelcome';
@@ -13,9 +13,9 @@ import { MomentChat } from './MomentChat';
 import { api, apiFetch } from '../../lib/api';
 import { stashWizardIntent } from '../../lib/wizardIntent';
 import { safeWizardError } from './wizardErrors';
-import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
+import { Tooltip } from '../common/Tooltip';
 interface Persona {
   name: string;
   traits: string[];
@@ -139,7 +139,7 @@ export function WizardShell({ onComplete }: Props) {
     }}>
       {/* Top bar: back + dots */}
       {step > 0 && step < 7 && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: `${space.xxl}px ${space.xxxl}px` }}>
           <BackChevron onClick={back} />
           {/* Dots track the interior config steps (1–6); step 0 (welcome) and
               the final chat step show no bar. Keep `count` equal to the number
@@ -169,8 +169,8 @@ export function WizardShell({ onComplete }: Props) {
       {saveError && (
         <div style={{
           position: 'absolute', left: '50%', bottom: 28, transform: 'translateX(-50%)',
-          display: 'flex', alignItems: 'center', gap: 12, maxWidth: 560,
-          padding: '10px 16px', borderRadius: 10, zIndex: 10,
+          display: 'flex', alignItems: 'center', gap: space.xl, maxWidth: 560,
+          padding: `${space.lg}px ${space.xxl}px`, borderRadius: 10, zIndex: 10,
           background: colors.bgDeeper, border: `1px solid ${colors.danger}66`,
           fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
         }}>
@@ -195,24 +195,25 @@ export function WizardShell({ onComplete }: Props) {
               fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5, flexShrink: 0,
             } as CSSProperties}
           >{saving ? 'Retrying…' : 'Retry'}</Button>
-          <Button
-            colors={colors}
-            variant="bare"
-            type="button"
-            onClick={() => { stashWizardIntent(intent); onComplete(); }}
-            title="Enter the app anyway — your persona choices may not be saved and setup may reappear next launch"
-            style={{
-              '--pa-btn-fg': colors.textMuted,
-              '--pa-btn-fg-hover': colors.text,
-              '--pa-btn-bg-hover': 'transparent',
-              '--pa-btn-bg-active': 'transparent',
-              '--pa-btn-pad': '0',
-              '--pa-btn-radius': '0',
-              '--pa-btn-weight': 400,
-              fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5,
-              textDecoration: 'underline', flexShrink: 0,
-            } as CSSProperties}
-          >Continue anyway</Button>
+          <Tooltip content="Enter the app anyway — your persona choices may not be saved and setup may reappear next launch">
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => { stashWizardIntent(intent); onComplete(); }}
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-bg-active': 'transparent',
+                '--pa-btn-pad': '0',
+                '--pa-btn-radius': '0',
+                '--pa-btn-weight': 400,
+                fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5,
+                textDecoration: 'underline', flexShrink: 0,
+              } as CSSProperties}
+            >Continue anyway</Button>
+          </Tooltip>
         </div>
       )}
     </div>

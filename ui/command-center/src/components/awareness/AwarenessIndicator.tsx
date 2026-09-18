@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { api } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
-import { font } from '../../styles/tokens';
+import { font, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 interface DigestSummary {
@@ -90,8 +90,8 @@ export function AwarenessIndicator({ onOpenInspection }: Props) {
 const containerStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: 6,
-  padding: '4px 12px',
+  gap: space.sm,
+  padding: `${space.xs}px ${space.xl}px`,
   cursor: 'pointer',
   userSelect: 'none',
   borderTop: `1px solid rgba(255,255,255,0.04)`,

@@ -6,6 +6,7 @@ import type { BrowserTab } from './components/browser/BrowserTabs';
 import { TerminalManager, type TerminalManagerHandle, type TerminalTab } from './components/terminal/TerminalManager';
 import { emitRedock, takePaneTab, type PaneKind } from './lib/paneWindows';
 import { useTheme } from './styles/useTheme';
+import { reinsetTrafficLights, TITLEBAR_HEIGHT } from './lib/windowChrome';
 
 export default function PaneWindowApp() {
   const params = new URLSearchParams(location.search);
@@ -16,6 +17,19 @@ export default function PaneWindowApp() {
   const terminalRef = useRef<TerminalManagerHandle>(null);
   const browserRef = useRef<{ getActiveTab: () => BrowserTab; getAllTabs: () => BrowserTab[] }>(null);
   const { gradient } = useTheme();
+
+  // Same chrome as the main window. A pane window is created through the JS
+  // `WebviewWindow` constructor, i.e. the Rust builder path, and the A1a spike
+  // proved that path silently drops `trafficLightPosition` while the `unstable`
+  // cargo feature is on — which it permanently is, because the in-app browser
+  // is built on `Window::add_child`. `titleBarStyle`/`hiddenTitle` DO survive
+  // the builder (paneWindows.ts passes them); the position does not, so it is
+  // reapplied here against the live NSWindow. Once, on mount: `set_title` is
+  // the only thing that undoes it afterwards and Rust re-insets at every
+  // `set_title` call site itself.
+  useEffect(() => {
+    void reinsetTrafficLights(getCurrentWindow().label);
+  }, []);
 
   useEffect(() => {
     if (handoffConsumed.current) return;
@@ -146,10 +160,22 @@ export default function PaneWindowApp() {
   }, [kind]);
 
   return (
-    <div style={{ width: '100vw', height: '100vh', background: gradient.workspace }}>
-      {kind === 'browser'
-        ? initial.loaded && <Browser ref={browserRef} initialTab={initial.tab as BrowserTab | null} ownerWindowLabel={owner} detached />
-        : initial.loaded && <TerminalManager ref={terminalRef} initialTab={initial.tab as TerminalTab | null} detached />}
+    <div style={{
+      width: '100vw', height: '100vh', background: gradient.workspace,
+      display: 'flex', flexDirection: 'column',
+    }}>
+      {/* The window's own titlebar band, drawn by us because the window runs
+          `titleBarStyle: Overlay` + `hiddenTitle`. Reserving it in the LAYOUT
+          rather than overlaying it is what keeps the detached browser correct:
+          the browser is a native child webview whose bounds are its container's
+          `getBoundingClientRect()`, so a flex sibling above it subtracts itself
+          from that rect for free, and nothing about the bounds pump changes. */}
+      <div data-tauri-drag-region style={{ height: TITLEBAR_HEIGHT, flexShrink: 0 }} />
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        {kind === 'browser'
+          ? initial.loaded && <Browser ref={browserRef} initialTab={initial.tab as BrowserTab | null} ownerWindowLabel={owner} detached />
+          : initial.loaded && <TerminalManager ref={terminalRef} initialTab={initial.tab as TerminalTab | null} detached />}
+      </div>
     </div>
   );
 }

@@ -20,12 +20,13 @@ import { FiExternalLink } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview, type BrainMemoryTarget } from '../brain/brainMemoryFocus';
-import { font, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Project } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 type Result = { files: number; memoryKey: string };
 
 export function CodeIndexPanel({ project }: { project: Project }) {
@@ -81,7 +82,7 @@ export function CodeIndexPanel({ project }: { project: Project }) {
 
   return (
     <Panel title="Codebase">
-      <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.55, marginBottom: 10 }}>
+      <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.55, marginBottom: space.lg }}>
         Parse this project's code into your Brain — its directory structure and
         symbols become recallable and described, the same way its documents and
         notes are.
@@ -95,7 +96,7 @@ export function CodeIndexPanel({ project }: { project: Project }) {
           '--pa-btn-bg': colors.cyanSoft,
           '--pa-btn-border': colors.borderHi,
           '--pa-btn-pad': '6px 14px',
-          '--pa-btn-radius': '7px',
+          '--pa-btn-radius': `${radius.md}px`,
           '--pa-btn-weight': 600,
           fontFamily: font.body,
           fontSize: textSize.caption,
@@ -105,43 +106,46 @@ export function CodeIndexPanel({ project }: { project: Project }) {
       </Button>
 
       {error && (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, marginTop: 8 }}>{error}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginTop: space.md }}>{error}</div>
       )}
 
       {result && !error && (
-        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 8, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.md, lineHeight: 1.5 }}>
           <span style={{ color: colors.success, fontWeight: 600 }}>
             Indexed {result.files} file{result.files !== 1 ? 's' : ''}
           </span>{' '}
           into your Brain, scoped to this project.
           {/* The code map's key, now a link back into the Brain (was inert text). */}
-          <Button
-            colors={colors}
-            variant="bare"
-            onClick={viewInBrain}
-            disabled={viewing}
-            title="View this code map in your Brain"
-            // `Button` wraps children in a `.pa-btn__label` span, which would
-            // put the truncating key in a box of its own and kill the ellipsis.
-            // `display: contents` dissolves the wrapper so the key and the icon
-            // are the button's own flex children, exactly as before.
-                        style={{
-              '--pa-btn-fg': colors.cyan,
-              '--pa-btn-bg-hover': 'transparent',
-              '--pa-btn-pad': '0',
-              '--pa-btn-weight': 'inherit',
-              marginTop: 3,
-              maxWidth: '100%',
-              gap: 5,
-              fontFamily: font.mono,
-              fontSize: 10,
-            } as CSSProperties}
-          >
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {result.memoryKey}
+          <Tooltip content="View this code map in your Brain">
+            <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+              <Button
+                colors={colors}
+                variant="bare"
+                onClick={viewInBrain}
+                disabled={viewing}
+                // `Button` wraps children in a `.pa-btn__label` span, which would
+                // put the truncating key in a box of its own and kill the ellipsis.
+                // `display: contents` dissolves the wrapper so the key and the icon
+                // are the button's own flex children, exactly as before.
+                            style={{
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-pad': '0',
+                  '--pa-btn-weight': 'inherit',
+                  marginTop: space.xxs,
+                  maxWidth: '100%',
+                  gap: space.xs,
+                  fontFamily: font.mono,
+                  fontSize: 10,
+                } as CSSProperties}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {result.memoryKey}
+                </span>
+                <FiExternalLink size={10} style={{ flexShrink: 0 }} />
+              </Button>
             </span>
-            <FiExternalLink size={10} style={{ flexShrink: 0 }} />
-          </Button>
+          </Tooltip>
         </div>
       )}
     </Panel>

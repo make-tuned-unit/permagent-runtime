@@ -3708,7 +3708,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN
-                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','malformed')),
+                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','config_change_proposal','malformed')),
             goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
             project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
             tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -3796,6 +3796,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 || !sql.contains("council_action")
                 || !sql.contains("auto-mode-launch")
                 || !sql.contains("headless_policy")
+                || !sql.contains("config_change_proposal")
         })
         .unwrap_or(false)
     {
@@ -3823,7 +3824,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             "CREATE TABLE decisions_new (
                 id            TEXT PRIMARY KEY,
                 kind          TEXT NOT NULL CHECK (kind IN
-                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','malformed')),
+                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','config_change_proposal','malformed')),
                 goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
                 project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
                 tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),

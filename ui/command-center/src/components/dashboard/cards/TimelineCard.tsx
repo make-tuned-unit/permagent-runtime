@@ -15,7 +15,7 @@ import { useState, useEffect, useRef, useCallback, type CSSProperties } from 're
 import {
   FiFlag, FiHelpCircle, FiCheckCircle, FiBookOpen, FiBell, FiAlertTriangle, FiActivity,
 } from 'react-icons/fi';
-import { font, radius, textSize } from '../../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import { StateBlock } from '../../common/StateBlock';
@@ -26,6 +26,7 @@ import { useDecisions } from '../decisions/useDecisions';
 import { DecisionInbox } from '../decisions/DecisionInbox';
 import { useBrowserNavigate } from '../../../hooks/useBrowserNavigate';
 
+import { Tooltip } from '../../common/Tooltip';
 interface JournalItem {
   id: string;
   ts: string;
@@ -191,14 +192,14 @@ export function TimelineCard() {
         borderRadius: radius.lg,
         background: colors.surface,
         border: `1px solid ${colors.border}`,
-        boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-        padding: '18px 20px',
+        boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
+        padding: `${space.xxxl}px`,
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
       }}>
         <SectionTitle title="Timeline" right={items.length > 0 ? 'last 90 days' : undefined} />
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap',
+          display: 'flex', alignItems: 'center', gap: space.sm, flexWrap: 'wrap',
           margin: '2px 0 8px',
         }}>
           {KIND_CHIPS.map((chip, idx) => {
@@ -235,7 +236,7 @@ export function TimelineCard() {
               onChange={e => setActor(e.target.value || null)}
               aria-label="Filter by actor"
               style={{
-                padding: '3px 6px',
+                padding: `${space.xs}px ${space.sm}px`,
                 borderRadius: radius.sm,
                 border: `1px solid ${actor ? colors.cyan : colors.border}`,
                 background: 'transparent',
@@ -276,7 +277,7 @@ export function TimelineCard() {
               <div key={group.label}>
                 <div style={{
                   position: 'sticky', top: 0, zIndex: 1,
-                  padding: '6px 0 4px',
+                  padding: `${space.sm}px 0 ${space.xs}px`,
                   background: colors.surface,
                   fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
                   letterSpacing: '0.10em', textTransform: 'uppercase',
@@ -347,10 +348,11 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
   isLast: boolean;
   onOpenDecisions: () => void;
 }) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
   const openInBrowser = useBrowserNavigate();
   const [hover, setHover] = useState(false);
+  const [pressed, setPressed] = useState(false);
 
   const meta = KIND_META[item.kind] ?? { icon: FiActivity, colorKey: 'cyan' as const };
   const Icon = meta.icon;
@@ -369,47 +371,54 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
             : undefined;
 
   return (
-    <div
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      title={onClick ? 'View evidence' : undefined}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 12, padding: '9px 6px',
-        borderBottom: isLast ? 'none' : `1px solid ${colors.border}`,
-        borderRadius: radius.sm,
-        cursor: onClick ? 'pointer' : 'default',
-        background: onClick && hover ? colors.cyanSoft : 'transparent',
-        transition: 'background 120ms ease',
-      }}
-    >
-      <div style={{
-        width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
-        background: accent + '26', color: accent,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        <Icon size={13} />
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+    <Tooltip content={onClick ? 'View evidence' : undefined}>
+      <div
+        onClick={onClick}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => { setHover(false); setPressed(false); }}
+        onPointerDown={() => onClick && setPressed(true)}
+        onPointerUp={() => setPressed(false)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: space.xl, padding: `${space.lg}px ${space.sm}px`,
+          borderBottom: isLast ? 'none' : `1px solid ${colors.border}`,
+          borderRadius: radius.sm,
+          cursor: onClick ? 'pointer' : 'default',
+          // Was `colors.cyanSoft` — every row tinting the accent on hover is
+          // exactly the "rainbow tinting" anti-slop item (D8: one tinted action
+          // per view, and it isn't this list). Neutral fillHover/fillActive
+          // instead, with real press feedback where there was none.
+          background: !onClick ? 'transparent' : pressed ? colors.fillActive : hover ? colors.fillHover : 'transparent',
+          transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
+        }}
+      >
         <div style={{
-          fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text,
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>{item.title}</div>
-        {item.detail && (
+          width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
+          background: accent + '26', color: accent,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <Icon size={13} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{
-            fontSize: textSize.micro, color: colors.textMuted, marginTop: 1,
+            fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>{item.detail}</div>
-        )}
+          }}>{item.title}</div>
+          {item.detail && (
+            <div style={{
+              fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>{item.detail}</div>
+          )}
+        </div>
+        <span style={{
+          fontFamily: font.mono, fontSize: 10, color: colors.textDim,
+          flexShrink: 0,
+        }}>{item.actor}</span>
+        <span style={{
+          fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim,
+          flexShrink: 0, minWidth: 44, textAlign: 'right',
+        }}>{timeLabel(item.ts)}</span>
       </div>
-      <span style={{
-        fontFamily: font.mono, fontSize: 10, color: colors.textDim,
-        flexShrink: 0,
-      }}>{item.actor}</span>
-      <span style={{
-        fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim,
-        flexShrink: 0, minWidth: 44, textAlign: 'right',
-      }}>{timeLabel(item.ts)}</span>
-    </div>
+    </Tooltip>
   );
 }

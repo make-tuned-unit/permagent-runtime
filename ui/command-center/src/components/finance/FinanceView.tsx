@@ -8,7 +8,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
-import { duration, ease, font, radius, tabularNums, type, textSize } from '../../styles/tokens';
+import { concentric, duration, ease, font, inkOnTrim, radius, space, tabularNums, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { api, apiFetch, uploadFinanceStatement } from '../../lib/api';
@@ -54,6 +54,7 @@ import {
   sortPicks,
 } from './financeLabs';
 
+import { Tooltip } from '../common/Tooltip';
 interface Quote {
   symbol: string;
   name?: string | null;
@@ -542,7 +543,7 @@ export function FinanceView() {
           </>
         }
       />
-      <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px 48px' }}>
+      <div style={{ flex: 1, overflow: 'auto', padding: `${space.xxxl}px ${space.huge}px 48px` }}>
         {error && (
           <div style={{
             ...type.small,
@@ -550,8 +551,8 @@ export function FinanceView() {
             background: warnFill(colors.danger),
             border: `1px solid ${warnFill(colors.danger, 0.35)}`,
             borderRadius: radius.md,
-            padding: '10px 14px',
-            marginBottom: 16,
+            padding: `${space.lg}px 14px`,
+            marginBottom: space.xxl,
           }}
           >
             {error}
@@ -561,7 +562,7 @@ export function FinanceView() {
           <div style={{ ...type.small, color: colors.textMuted }}>Loading…</div>
         )}
         {view && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1120 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, maxWidth: 1120 }}>
             <SummaryStrip
               board={view}
               colors={colors}
@@ -570,7 +571,7 @@ export function FinanceView() {
               mutate={mutate}
               setLab={setLab}
             />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
               <HoldingsSection
                 holdings={view.holdings}
                 rsiThreshold={view.rsiThreshold}
@@ -602,7 +603,7 @@ export function FinanceView() {
               mutate={mutate}
               setError={setError}
             />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: space.xxl }}>
               <WatchlistSection board={view} colors={colors} busy={busy} mutate={mutate} />
               <NotesSection board={view} colors={colors} busy={busy} mutate={mutate} />
             </div>
@@ -636,21 +637,22 @@ function CurrencyControl({
 }) {
   const line = rateLine(money.display, money.rates);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 6, ...type.label, color: colors.textMuted }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: space.xxs }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: space.sm, ...type.label, color: colors.textMuted }}>
         Show in
-        <select
-          data-testid="finance-currency"
-          aria-label="Display currency"
-          title={GLOSSARY.displayCurrency}
-          value={money.requested}
-          onChange={(e) => onChange(e.target.value)}
-          style={{ ...inputStyle(colors), ...type.caption, padding: '4px 8px', minWidth: 0 }}
-        >
-          {DISPLAY_CURRENCIES.map((c) => (
-            <option key={c.code} value={c.code}>{c.code}</option>
-          ))}
-        </select>
+        <Tooltip content={GLOSSARY.displayCurrency}>
+          <select
+            data-testid="finance-currency"
+            aria-label="Display currency"
+            value={money.requested}
+            onChange={(e) => onChange(e.target.value)}
+            style={{ ...inputStyle(colors), ...type.caption, padding: `${space.xs}px ${space.md}px`, minWidth: 0 }}
+          >
+            {DISPLAY_CURRENCIES.map((c) => (
+              <option key={c.code} value={c.code}>{c.code}</option>
+            ))}
+          </select>
+        </Tooltip>
       </label>
       {money.requested !== BASE_CURRENCY && (
         <div
@@ -699,8 +701,8 @@ function SummaryStrip({
   // card caption can open the very form it tells the user to use.
   const [showPickerAdd, setShowPickerAdd] = useState(false);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, alignItems: 'start' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.xl }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: space.xl, alignItems: 'start' }}>
         {board.polybotEnabled && (
           <Card colors={colors} warn={p.stale} testId="finance-polybot-card">
             <Eyebrow colors={colors}>Polybot</Eyebrow>
@@ -721,8 +723,8 @@ function SummaryStrip({
               data-testid="finance-polybot-freshness"
               data-stale={p.stale ? 'true' : 'false'}
               style={p.stale
-                ? { ...type.small, color: colors.warning, fontWeight: 600, marginTop: 4 }
-                : { ...type.caption, color: colors.textMuted, marginTop: 4 }}
+                ? { ...type.small, color: colors.warning, fontWeight: 600, marginTop: space.xs }
+                : { ...type.caption, color: colors.textMuted, marginTop: space.xs }}
             >
               {p.stale
                 ? `As of ${fmtWhen(asOf)}${p.staleDays != null ? ` · ${p.staleDays}d stale` : ''}`
@@ -730,17 +732,17 @@ function SummaryStrip({
                   ? 'Paused · live file'
                   : `Live file · ${fmtWhen(asOf)}`}
             </div>
-            <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 14, marginTop: space.lg, flexWrap: 'wrap' }}>
               <Mini colors={colors} label="Realized" value={money.signed(p.realizedPnl)} tone={toneFor(p.realizedPnl, colors)} />
               <Mini colors={colors} label="Open" value={money.fmt(p.openExposure)} />
               <Mini colors={colors} label="Trades" value={p.tradeCount != null ? String(p.tradeCount) : '—'} />
             </div>
-            <div style={{ ...type.caption, color: colors.textMuted, marginTop: 8 }}>
+            <div style={{ ...type.caption, color: colors.textMuted, marginTop: space.md }}>
               {p.running ? `Running${p.pid != null ? ` · pid ${p.pid}` : ''}` : 'Process down'}
               {p.paused ? ' · paused' : ''}
               {p.credentialsReady ? ' · keys in keychain' : ' · keys missing'}
             </div>
-            <div style={{ marginTop: 10 }}>
+            <div style={{ marginTop: space.lg }}>
               <PolybotControls polybot={p} colors={colors} busy={busy} mutate={mutate} setLab={setLab} />
             </div>
           </Card>
@@ -749,12 +751,12 @@ function SummaryStrip({
         <Card colors={colors} testId="finance-holdings-card">
           <Eyebrow colors={colors}>Holdings</Eyebrow>
           <Hero colors={colors} value={money.signed(board.holdings.netPnl)} tone={toneFor(board.holdings.netPnl, colors)} />
-          <div style={{ ...type.caption, color: colors.textMuted, marginTop: 4 }}>
+          <div style={{ ...type.caption, color: colors.textMuted, marginTop: space.xs }}>
             Net P&amp;L · {board.holdings.openCount} open
             {' · '}
             {board.holdings.source === 'picker' ? 'Picker journal' : 'local ledger'}
           </div>
-          <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 14, marginTop: space.lg, flexWrap: 'wrap' }}>
             <Mini colors={colors} label="Unrealized" value={money.signed(board.holdings.netUnrealized)} tone={toneFor(board.holdings.netUnrealized, colors)} />
             <Mini colors={colors} label="Realized" value={money.signed(board.holdings.netRealized)} tone={toneFor(board.holdings.netRealized, colors)} />
           </div>
@@ -774,7 +776,7 @@ function SummaryStrip({
                 names it *could* rank) and the handful the user typed in. The
                 card showed only the first, labelled as if it were the second.
                 They now get separate lines and separate words. */}
-            <div data-testid="picker-scanner-pool" style={{ ...type.caption, color: colors.textMuted, marginTop: 4 }}>
+            <div data-testid="picker-scanner-pool" style={{ ...type.caption, color: colors.textMuted, marginTop: space.xs }}>
               {(board.pickerUniverseCount ?? 0) > 0
                 ? `Scanner pool · ${board.pickerUniverseCount?.toLocaleString()} tickers it can rank`
                 : board.picker.reachable
@@ -783,7 +785,7 @@ function SummaryStrip({
             </div>
             <div
               data-testid="picker-your-tickers"
-              style={{ ...type.caption, color: colors.textMuted, marginTop: 2, display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}
+              style={{ ...type.caption, color: colors.textMuted, marginTop: space.xxs, display: 'flex', gap: space.sm, alignItems: 'baseline', flexWrap: 'wrap' }}
             >
               {(board.pickerUniverse?.length ?? 0) > 0
                 ? `Your tickers · ${board.pickerUniverse?.length} you added`
@@ -801,7 +803,7 @@ function SummaryStrip({
                 </Button>
               )}
             </div>
-            <div style={{ marginTop: 10 }}>
+            <div style={{ marginTop: space.lg }}>
               <PickerControls
                 picker={board.picker}
                 universe={board.pickerUniverse ?? []}
@@ -847,7 +849,7 @@ function LabsRow({
         data-testid="finance-labs-row"
         style={{
           display: 'flex',
-          gap: 8,
+          gap: space.md,
           flexWrap: 'wrap',
           alignItems: 'center',
         }}
@@ -880,29 +882,29 @@ function LabsRow({
       </div>
       {dialog === 'polybot' && (
         <DisclaimerDialog
-          title="Turn on Polybot"
-          body={POLYBOT_DISCLAIMER}
-          confirmLabel="I understand this can lose real money"
-          colors={colors}
-          busy={busy}
-          onCancel={() => setDialog(null)}
-          onConfirm={() => {
-            void setLab(POLYBOT_ENABLED_KEY, true).then(() => setDialog(null));
-          }}
+              title="Turn on Polybot"
+              body={POLYBOT_DISCLAIMER}
+              confirmLabel="I understand this can lose real money"
+              colors={colors}
+              busy={busy}
+              onCancel={() => setDialog(null)}
+              onConfirm={() => {
+                void setLab(POLYBOT_ENABLED_KEY, true).then(() => setDialog(null));
+              }}
         />
       )}
       {dialog === 'picker' && (
         <DisclaimerDialog
-          title="Turn on Picker"
-          body={PICKER_DISCLAIMER}
-          confirmLabel="Enable Picker"
-          colors={colors}
-          busy={busy}
-          requireCheck={false}
-          onCancel={() => setDialog(null)}
-          onConfirm={() => {
-            void setLab(PICKER_ENABLED_KEY, true).then(() => setDialog(null));
-          }}
+              title="Turn on Picker"
+              body={PICKER_DISCLAIMER}
+              confirmLabel="Enable Picker"
+              colors={colors}
+              busy={busy}
+              requireCheck={false}
+              onCancel={() => setDialog(null)}
+              onConfirm={() => {
+                void setLab(PICKER_ENABLED_KEY, true).then(() => setDialog(null));
+              }}
         />
       )}
     </>
@@ -927,27 +929,27 @@ function DisclaimerDialog({
       data-testid="finance-disclaimer"
       style={{
         border: `1px solid ${colors.border}`,
-        borderRadius: 10,
-        padding: '12px 14px',
+        borderRadius: radius.lg,
+        padding: `${space.xl}px 14px`,
         background: colors.bgDeeper,
         maxWidth: 560,
       }}
     >
-      <div style={{ ...type.label, color: colors.textMuted, marginBottom: 8 }}>{title}</div>
+      <div style={{ ...type.label, color: colors.textMuted, marginBottom: space.md }}>{title}</div>
       <p style={{ ...type.small, color: colors.text, margin: 0, lineHeight: 1.5 }}>{body}</p>
       {requireCheck && (
-        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 12, ...type.caption, color: colors.text }}>
+        <label style={{ display: 'flex', gap: space.md, alignItems: 'flex-start', marginTop: space.xl, ...type.caption, color: colors.text }}>
           <input
             type="checkbox"
             data-testid="finance-disclaimer-check"
             checked={checked}
             onChange={(e) => setChecked(e.target.checked)}
-            style={{ marginTop: 2 }}
+            style={{ marginTop: space.xxs }}
           />
           <span>I have read this. The bot can place real orders.</span>
         </label>
       )}
-      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+      <div style={{ display: 'flex', gap: space.md, marginTop: space.xl }}>
         <Button
           colors={colors}
           variant="primary"
@@ -977,8 +979,8 @@ function PolybotControls({
 }) {
   const [showKeys, setShowKeys] = useState(false);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+      <div style={{ display: 'flex', gap: space.sm, flexWrap: 'wrap', alignItems: 'center' }}>
         <Button
           colors={colors}
           variant={polybot.running && !polybot.paused ? 'ghost' : 'primary'}
@@ -1060,8 +1062,8 @@ function PickerControls({
     mutate(() => api.upsertConfig(PICKER_UNIVERSE_KEY, next.join('\n')));
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+      <div style={{ display: 'flex', gap: space.sm, flexWrap: 'wrap', alignItems: 'center' }}>
         <Button
           colors={colors}
           type="button"
@@ -1108,7 +1110,7 @@ function PickerControls({
       </div>
       <JobProgress job={scanJob} label="Picker scan" />
       {universe.length > 0 && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} data-testid="picker-extras">
+        <div style={{ display: 'flex', gap: space.sm, flexWrap: 'wrap' }} data-testid="picker-extras">
           {universe.map((t) => (
             <span
               key={t}
@@ -1116,10 +1118,10 @@ function PickerControls({
                 ...type.micro,
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: 4,
+                gap: space.xs,
                 border: `1px solid ${colors.border}`,
                 borderRadius: radius.sm,
-                padding: '2px 6px',
+                padding: `${space.xxs}px ${space.sm}px`,
                 fontFamily: font.mono,
               }}
             >
@@ -1132,6 +1134,12 @@ function PickerControls({
                 aria-label={`Remove ${t}`}
                 flashSuccess={false}
                 onClick={() => saveExtras(universe.filter((x) => x !== t))}
+                // The one clean corner-offset relationship on this screen
+                // (D4): the × sits inside a radius.sm tag with 2px of
+                // vertical padding, so its own hover backer is concentric to
+                // the tag's corner rather than reusing the tag's radius
+                // outright.
+                style={{ '--pa-btn-radius': `${concentric(radius.sm, 2)}px` } as CSSProperties}
               >
                 ×
               </Button>
@@ -1152,7 +1160,7 @@ function PickerControls({
               setTimeout(() => setAdded(false), SUCCESS_FLASH_MS);
             });
           }}
-          style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}
+          style={{ display: 'flex', gap: space.sm, flexWrap: 'wrap', alignItems: 'center' }}
         >
           <input
             value={draft}
@@ -1231,7 +1239,7 @@ function HoldingsSection({
 
   return (
     <Card colors={colors}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: space.xl, marginBottom: space.xl }}>
         <SectionTitle colors={colors}>Lots</SectionTitle>
         <Button
           colors={colors}
@@ -1253,18 +1261,18 @@ function HoldingsSection({
           style={{
             border: `1px solid ${colors.border}`,
             borderRadius: radius.sm,
-            padding: 12,
+            padding: space.xl,
             marginBottom: 14,
             display: 'flex',
             flexDirection: 'column',
-            gap: 10,
+            gap: space.lg,
             background: colors.bgDeeper,
           }}
         >
           <div style={{ ...type.label, color: colors.textMuted }}>
             {editing ? 'Edit trade' : 'Record a trade already made'}
           </div>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: space.lg, flexWrap: 'wrap' }}>
             <Field colors={colors} label="Ticker">
               <input value={draft.ticker} onChange={(e) => setDraft({ ...draft, ticker: e.target.value })} placeholder="SHOP.TO" style={inputStyle(colors)} required />
             </Field>
@@ -1281,7 +1289,7 @@ function HoldingsSection({
               <input value={draft.shares} onChange={(e) => setDraft({ ...draft, shares: e.target.value })} placeholder="0" style={inputStyle(colors)} required />
             </Field>
           </div>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: space.lg, flexWrap: 'wrap' }}>
             <Field colors={colors} label="Exit date">
               <input value={draft.exitDate} onChange={(e) => setDraft({ ...draft, exitDate: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} />
             </Field>
@@ -1292,7 +1300,7 @@ function HoldingsSection({
               <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="Why you took it" style={{ ...inputStyle(colors), minWidth: 220 }} />
             </Field>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: space.md }}>
             <Button colors={colors} variant="primary" type="submit" pending={busy} disabled={busy}>
               {editing ? 'Save trade' : 'Record trade'}
             </Button>
@@ -1310,7 +1318,7 @@ function HoldingsSection({
         </p>
       ) : (
         <>
-          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+          <div style={{ display: 'flex', gap: space.sm, marginBottom: space.lg }}>
             <Button colors={colors} variant={filter === 'open' ? 'ghostOn' : 'ghost'} type="button" aria-pressed={filter === 'open'} onClick={() => setFilter('open')}>
               Open ({holdings.openCount})
             </Button>
@@ -1405,8 +1413,8 @@ function LotActions({
     : `/api/finance/positions/${encodeURIComponent(row.id)}`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end', minWidth: 0 }}>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, alignItems: 'flex-end', minWidth: 0 }}>
+      <div style={{ display: 'flex', gap: space.sm, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
         <Button colors={colors} type="button" disabled={busy} onClick={onEdit}>Edit</Button>
         {!row.exitDate && (
           <Button colors={colors} type="button" disabled={busy} aria-expanded={closing} onClick={() => setClosing((c) => !c)}>
@@ -1434,7 +1442,7 @@ function LotActions({
               }),
             );
           }}
-          style={{ display: 'flex', gap: 6 }}
+          style={{ display: 'flex', gap: space.sm }}
         >
           <input value={exitDate} onChange={(e) => setExitDate(e.target.value)} aria-label="Exit date" style={{ ...inputStyle(colors), minWidth: 110 }} required />
           {/* The journal is recorded, not converted — the number typed here is
@@ -1470,21 +1478,22 @@ function PicksSection({
 
   return (
     <Card colors={colors} testId="finance-picks-card">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: space.md, marginBottom: space.md }}>
         <SectionTitle colors={colors}>Picks</SectionTitle>
         {/* A bare agent name is not a label — it says who, never what pressing
             it does. The app already gets this right elsewhere ("Security — from
             the Guard"), so the cross-link takes a verb and names its
             destination. */}
-        <Button
-          colors={colors}
-          type="button"
-          data-testid="picks-world-link"
-          title="Open the World view, where the Financier's panel lives"
-          onClick={() => navigateToTool('world')}
-        >
-          View in World
-        </Button>
+        <Tooltip content="Open the World view, where the Financier's panel lives">
+          <Button
+            colors={colors}
+            type="button"
+            data-testid="picks-world-link"
+            onClick={() => navigateToTool('world')}
+          >
+            View in World
+          </Button>
+        </Tooltip>
       </div>
       {/* The old caption said "your universe" even when the user had added
           nothing — in that case every row is the scanner's own ranking, so say
@@ -1529,7 +1538,7 @@ function PicksSection({
             <Button
               colors={colors}
               type="button"
-              style={{ alignSelf: 'flex-start', marginTop: 8 }}
+              style={{ alignSelf: 'flex-start', marginTop: space.md }}
               onClick={() => setShowAll(true)}
             >
               Show {hidden} more
@@ -1550,6 +1559,7 @@ function PickRow({
   onPrefill: (draft: TradeDraft) => void;
 }) {
   const money = useMoney();
+  const { reduceMotion } = useTheme();
   const [open, setOpen] = useState(approved);
   const loop = pick.loop;
   const yahoo = pick.quote?.price ?? null;
@@ -1564,7 +1574,7 @@ function PickRow({
         padding: '8px 0',
       }}
     >
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+      <div style={{ display: 'flex', gap: space.md, flexWrap: 'wrap', alignItems: 'baseline' }}>
         {/* Both controls on this row were introduced in the same commit series
             as the Button primitive and neither used it, so pressing either one
             looked identical to not pressing it — an inline `style` cannot
@@ -1587,7 +1597,7 @@ function PickRow({
             fontFamily: font.body,
             fontSize: 'inherit',
             color: colors.text,
-            gap: 8,
+            gap: space.md,
             alignItems: 'baseline',
             justifyContent: 'flex-start',
             flex: 1,
@@ -1605,7 +1615,10 @@ function PickRow({
               color: colors.textMuted,
               display: 'inline-block',
               transform: open ? 'rotate(90deg)' : 'none',
-              transition: `transform ${duration.fast}ms ${ease.out}`,
+              // A disclosure toggle is a control-state change, not a hover
+              // ripple — D9's snappy spring (bounce ~0.15) is the one built
+              // for exactly this, not the plain ease.out curve.
+              transition: reduceMotion ? 'none' : `transform ${duration.snappy}ms ${ease.snappy}`,
             }}
           >
             ▸
@@ -1618,22 +1631,25 @@ function PickRow({
           )}
         </button>
         {approved && (
-          <span
-            data-testid="pick-financier-badge"
-            title={GLOSSARY.financierApproved}
-            style={{
-              ...type.micro,
-              color: '#3d2e0a',
-              background: AGENT_TRIM.financier,
-              fontWeight: 700,
-              letterSpacing: '0.04em',
-              textTransform: 'uppercase',
-              padding: '2px 7px',
-              borderRadius: radius.pill,
-            }}
-          >
-            Agent approved
-          </span>
+          <Tooltip content={GLOSSARY.financierApproved}>
+            <span tabIndex={0} style={{ outline: 'none' }}>
+              <span
+                data-testid="pick-financier-badge"
+                style={{
+                  ...type.micro,
+                  color: inkOnTrim(AGENT_TRIM.financier),
+                  background: AGENT_TRIM.financier,
+                  fontWeight: 700,
+                  letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                  padding: `${space.xxs}px ${space.sm}px`,
+                  borderRadius: radius.pill,
+                }}
+              >
+                Agent approved
+              </span>
+            </span>
+          </Tooltip>
         )}
         {loop && (
           // The tag IS the affordance: the reason it names is one click away,
@@ -1656,7 +1672,7 @@ function PickRow({
             title={loopTagTitle(loop)}
             data-testid="pick-loop-tag"
             onClick={() => setOpen((v) => !v)}
-            style={{ gap: 4 }}
+            style={{ gap: space.xs }}
           >
             {loopTagLabel(loop)}
             {!loop.passed && <span aria-hidden="true" style={{ opacity: 0.7 }}>ⓘ</span>}
@@ -1685,8 +1701,8 @@ function PickRow({
         </Button>
       </div>
       {open && (
-        <div id={rowId} style={{ ...type.caption, color: colors.textMuted, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', ...tabularNums }}>
+        <div id={rowId} style={{ ...type.caption, color: colors.textMuted, marginTop: space.sm, display: 'flex', flexDirection: 'column', gap: space.xs }}>
+          <div style={{ display: 'flex', gap: space.xl, flexWrap: 'wrap', ...tabularNums }}>
             <span>Scan {money.fmt(pick.pickerPrice)}</span>
             <span>Yahoo {pick.quoteError ? pick.quoteError : money.fmt(yahoo, { source: pick.quote?.currency })}</span>
             <span>RSI {pick.pickerRsi != null ? pick.pickerRsi.toFixed(1) : '—'}</span>
@@ -1703,13 +1719,21 @@ function PickRow({
                   learns nothing from a number beside it, and the number is
                   precisely what the filter above it acted on. */}
               <span style={{ opacity: 0.75 }} data-testid="pick-loop-metrics">
-                <span title={GLOSSARY.icir} style={{ cursor: 'help', borderBottom: `1px dotted ${colors.border}` }}>
-                  ICIR
-                </span>
+                <Tooltip content={GLOSSARY.icir}>
+                  <span tabIndex={0} style={{ outline: 'none' }}>
+                    <span style={{ cursor: 'help', borderBottom: `1px dotted ${colors.border}` }}>
+                      ICIR
+                    </span>
+                  </span>
+                </Tooltip>
                 {' '}{fmtNum(loop.icir)} ·{' '}
-                <span title={GLOSSARY.halfLife} style={{ cursor: 'help', borderBottom: `1px dotted ${colors.border}` }}>
-                  half-life
-                </span>
+                <Tooltip content={GLOSSARY.halfLife}>
+                  <span tabIndex={0} style={{ outline: 'none' }}>
+                    <span style={{ cursor: 'help', borderBottom: `1px dotted ${colors.border}` }}>
+                      half-life
+                    </span>
+                  </span>
+                </Tooltip>
                 {' '}{loop.halfLifeDays != null ? `${loop.halfLifeDays.toFixed(1)}d` : '—'}
               </span>
             </p>
@@ -1735,6 +1759,7 @@ function HouseholdSection({
   setError: (s: string | null) => void;
 }) {
   const money = useMoney();
+  const { reduceMotion } = useTheme();
   const fileRef = useRef<HTMLInputElement>(null);
   const [hint, setHint] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -1759,7 +1784,7 @@ function HouseholdSection({
   return (
     <Card colors={colors}>
       <SectionTitle colors={colors}>Household</SectionTitle>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, margin: '12px 0 16px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: space.xl, margin: '12px 0 16px' }}>
         <Mini colors={colors} label="30-day run-rate" value={money.fmt(household.forecast.runRate30d)} large />
         <Mini colors={colors} label="90-day run-rate" value={money.fmt(household.forecast.runRate90d)} large />
         <Mini colors={colors} label="Spent (window)" value={money.fmt(household.forecast.spend90d)} large />
@@ -1776,8 +1801,9 @@ function HouseholdSection({
         style={{
           border: `1px dashed ${dragOver ? colors.cyan : colors.border}`,
           borderRadius: radius.sm,
-          padding: '12px 14px',
+          padding: `${space.xl}px 14px`,
           marginBottom: 14,
+          transition: reduceMotion ? 'none' : `border-color ${duration.fast}ms ${ease.out}`,
         }}
       >
         <span style={{ ...type.small, color: colors.textMuted }}>
@@ -1800,7 +1826,7 @@ function HouseholdSection({
         {hint && <p style={{ ...type.caption, color: colors.textMuted, margin: '8px 0 0' }}>{hint}</p>}
       </div>
       {household.forecast.byCategory.length > 0 && (
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: space.xxl, flexWrap: 'wrap', marginBottom: space.xl }}>
           {household.forecast.byCategory.slice(0, 6).map((c) => (
             <Mini key={c.category} colors={colors} label={c.category} value={money.fmt(c.amount)} />
           ))}
@@ -1937,7 +1963,7 @@ function WatchlistSection({
           </tbody>
         </table>
       )}
-      <form onSubmit={onAdd} style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+      <form onSubmit={onAdd} style={{ display: 'flex', gap: space.md, marginTop: space.xl, flexWrap: 'wrap' }}>
         <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="AAPL" style={inputStyle(colors)} />
         <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Name" style={inputStyle(colors)} />
         <Button colors={colors} type="submit" pending={busy} disabled={busy || !symbol.trim()}>Add</Button>
@@ -1975,13 +2001,13 @@ function NotesSection({
   return (
     <Card colors={colors}>
       <SectionTitle colors={colors}>Notes</SectionTitle>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
         {board.notes.map((n) => (
-          <div key={n.id} style={{ borderBottom: `1px solid ${colors.border}`, paddingBottom: 10 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+          <div key={n.id} style={{ borderBottom: `1px solid ${colors.border}`, paddingBottom: space.lg }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: space.xl }}>
               <div>
                 <span style={{ fontWeight: 600 }}>{n.title}</span>
-                {n.symbol && <span style={{ ...type.caption, color: colors.textMuted, marginLeft: 8 }}>{n.symbol}</span>}
+                {n.symbol && <span style={{ ...type.caption, color: colors.textMuted, marginLeft: space.md }}>{n.symbol}</span>}
               </div>
               <Button
                 colors={colors}
@@ -1999,8 +2025,8 @@ function NotesSection({
           </div>
         ))}
       </div>
-      <form onSubmit={onAdd} style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <form onSubmit={onAdd} style={{ display: 'flex', flexDirection: 'column', gap: space.md, marginTop: space.xl }}>
+        <div style={{ display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" style={inputStyle(colors)} required />
           <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="Ticker" style={inputStyle(colors)} />
         </div>
@@ -2052,7 +2078,7 @@ function HoldingsSparkline({ values, colors }: { values: number[]; colors: Theme
       height={40}
       role="img"
       aria-label="Holdings net P&L trend"
-      style={{ marginTop: 10, display: 'block' }}
+      style={{ marginTop: space.lg, display: 'block' }}
     >
       {zeroY != null && (
         <line x1={0} x2={W} y1={zeroY} y2={zeroY} stroke={colors.border} strokeWidth={1} vectorEffect="non-scaling-stroke" />
@@ -2073,16 +2099,17 @@ function Card({
   warn?: boolean;
   testId?: string;
 }) {
-  const { theme } = useTheme();
-  const veil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
   return (
     <section
       data-testid={testId}
       style={{
-        background: veil,
+        // Resting tint, not a hand-rolled per-theme rgba ternary — the same
+        // white-alpha-idiom replacement Reduce Transparency and every hover
+        // fill in the app already read from (see fillSubtle in tokens.ts).
+        background: colors.fillSubtle,
         border: `1px solid ${warn ? warnFill(colors.warning, 0.45) : colors.border}`,
-        borderRadius: 10,
-        padding: '14px 16px',
+        borderRadius: radius.lg,
+        padding: `14px ${space.xxl}px`,
         overflow: 'hidden',
         minWidth: 0,
       }}
@@ -2102,7 +2129,7 @@ function Hero({ colors, value, tone }: { colors: ThemeColors; value: string; ton
       letterSpacing: '-0.015em',
       ...tabularNums,
       color: tone ?? colors.text,
-      marginTop: 2,
+      marginTop: space.xxs,
     }}
     >
       {value}
@@ -2122,7 +2149,7 @@ function Mini({
   return (
     <div>
       <div style={{ ...type.label, color: colors.textMuted }}>{label}</div>
-      <div style={{ ...(large ? type.heading : type.body), ...tabularNums, color: tone ?? colors.text, marginTop: 2 }}>
+      <div style={{ ...(large ? type.heading : type.body), ...tabularNums, color: tone ?? colors.text, marginTop: space.xxs }}>
         {value}
       </div>
     </div>
@@ -2142,7 +2169,7 @@ function Field({
   wide?: boolean;
 }) {
   return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: wide ? 220 : 110, flex: wide ? 1 : undefined }}>
+    <label style={{ display: 'flex', flexDirection: 'column', gap: space.xs, minWidth: wide ? 220 : 110, flex: wide ? 1 : undefined }}>
       <span style={{ ...type.label, color: colors.textMuted }}>{label}</span>
       {children}
     </label>
@@ -2191,7 +2218,7 @@ function inputStyle(colors: ThemeColors): CSSProperties {
     color: colors.text,
     border: `1px solid ${colors.border}`,
     borderRadius: radius.sm,
-    padding: '6px 10px',
+    padding: `${space.sm}px ${space.lg}px`,
     fontFamily: font.body,
     minWidth: 100,
   };

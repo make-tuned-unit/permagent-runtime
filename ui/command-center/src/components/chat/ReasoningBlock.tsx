@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { FiChevronRight } from 'react-icons/fi';
-import { font, textSize } from '../../styles/tokens';
+import { font, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 /**
@@ -25,7 +25,7 @@ export function ReasoningBlock({ thinking, hasAnswer }: { thinking: string; hasA
   const label = hasAnswer ? 'Reasoning' : 'Thinking…';
 
   return (
-    <div style={{ marginBottom: 8 }}>
+    <div style={{ marginBottom: space.md }}>
       {/* Disclosure toggle, not an action: there is nothing to await, so the
           pending floor and success tick of the Button primitive are wrong for
           it and `Button` would displace the aria-expanded/aria-controls pairing
@@ -43,7 +43,7 @@ export function ReasoningBlock({ thinking, hasAnswer }: { thinking: string; hasA
           '--pa-btn-fg-hover': colors.textMuted,
           '--pa-btn-bg-hover': 'transparent',
           '--pa-btn-pad': '2px 0',
-          gap: 6,
+          gap: space.sm,
           fontFamily: font.mono,
           fontSize: textSize.micro,
           letterSpacing: '0.04em',
@@ -60,8 +60,8 @@ export function ReasoningBlock({ thinking, hasAnswer }: { thinking: string; hasA
       {open && (
         <div
           style={{
-            marginTop: 5,
-            paddingLeft: 10,
+            marginTop: space.xs,
+            paddingLeft: space.lg,
             borderLeft: `2px solid ${colors.borderHi}`,
             fontFamily: font.body,
             fontSize: 12.5,

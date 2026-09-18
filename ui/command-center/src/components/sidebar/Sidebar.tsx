@@ -1,16 +1,74 @@
 import { useState, useEffect, useCallback, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { ease, font, radius, textSize } from '../../styles/tokens';
+import type { LayoutNode } from '../../lib/store';
+import { ease, font, radius, space, shell, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { FiBell, FiChevronLeft, FiChevronRight, FiSettings } from 'react-icons/fi';
+import { FiBell, FiChevronLeft, FiChevronRight, FiClock, FiSettings } from 'react-icons/fi';
 import type { IconType } from 'react-icons';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
 import { Mobius } from '../mobius/Mobius';
 import { markAllRead, toggleTray, useNotifications, useTrayOpen } from '../../lib/notifications';
 import { resolveIconPath } from '../common/icons';
 import { SidebarTooltip, useSidebarTooltip } from './SidebarTooltip';
 import { MeetingRecorder } from '../voice/MeetingRecorder';
+import { NavStatusBadge, NavStatusLine, useNavAgentStatus } from './NavAgentStatus';
 
+/** The workspace whose layout is a single `dashboard` panel — "Home". Walks
+ *  split layouts too, though Home in practice is never split. Identifying it
+ *  by tool rather than by name keeps this honest against a renamed workspace
+ *  (workspace names, like the agent's, are user-configurable). */
+function hasDashboardTool(node: LayoutNode): boolean {
+  if (node.type === 'panel') return node.tool === 'dashboard';
+  return node.children.some(hasDashboardTool);
+}
+
+
+/** History row — Sessions, Downloads, Activity and Spend.
+ *
+ *  A record of what your agent did is not a setting, and until this row
+ *  existed reading one cost a trip through the configuration screen: the
+ *  2026-08 ruling folded the retired Console into Settings because there was
+ *  nowhere else to put it, and #1177 made the four one component precisely so
+ *  that hoisting them out would be an import and a branch rather than a move.
+ *
+ *  It carries the same download badge the Downloads segment shows, off the
+ *  same notification stream the tray and the toasts read — a file that landed
+ *  while you were elsewhere is the one thing here worth a mark on the rail,
+ *  and it is not a second poll.
+ */
+function HistoryRow({ open, active, onOpen, onHover, onLeave }: {
+  open: boolean;
+  active: boolean;
+  onOpen: () => void;
+  onHover?: (el: HTMLElement | null, label: string, shortcut?: string) => void;
+  onLeave?: () => void;
+}) {
+  const { colors } = useTheme();
+  const { items } = useNotifications();
+  const unread = items.filter(n => n.kind === 'download' && !n.read).length;
+  return (
+    <div style={{ position: 'relative' }}>
+      <SidebarRow
+        icon={FiClock}
+        label={unread > 0 ? `History (${unread > 9 ? '9+' : unread})` : 'History'}
+        active={active}
+        open={open}
+        onHover={onHover}
+        onLeave={onLeave}
+        onClick={onOpen}
+      />
+      {unread > 0 && (
+        <span style={{
+          position: 'absolute', top: 7,
+          left: open ? 24 : 'calc(50% + 5px)',
+          width: 8, height: 8, borderRadius: radius.xs,
+          background: colors.cyan, pointerEvents: 'none',
+        }} />
+      )}
+    </div>
+  );
+}
 
 /** Notifications row — a standard sidebar row (above Settings) that toggles
  *  the tray rendered by NotificationHost; open state is shared through the
@@ -131,7 +189,7 @@ function SidebarRow({
         position: 'relative',
         width: open ? 'calc(100% - 16px)' : 40,
         height: 40,
-        display: 'flex', gap: 12,
+        display: 'flex', gap: space.xl,
         justifyContent: open ? 'flex-start' : 'center',
         margin: open ? '0 8px' : '0 auto',
         fontFamily: font.body, fontSize: textSize.small,
@@ -169,13 +227,20 @@ export function Sidebar() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   const { target: tooltipTarget, show: showTooltip, hide: hideTooltip } = useSidebarTooltip();
+  const navStatus = useNavAgentStatus();
 
   const isSettingsOpen = activePanel === 'settings';
+  const isHistoryOpen = activePanel === 'history';
   // Any non-chat panel (settings, skills) is a full-screen overlay. It
   // must be dismissed when the user picks a workspace, or the overlay stays
   // stuck over the tab they just selected.
   const overlayOpen = activePanel !== 'chat';
-  const W = open ? 208 : 64;
+  // The rail's silhouette now runs the full height of the window, so its
+  // collapsed width is no longer a free choice: the native traffic lights sit
+  // INSIDE it and span 72px (`trafficLightSpan()`), which is why
+  // `shell.rail.collapsed` is 76 and not the 64 it was while a title strip sat
+  // above the rail. `styles/shell.test.ts` fails if the two ever cross.
+  const W = open ? shell.rail.open : shell.rail.collapsed;
 
   const goToWorkspace = useCallback((workspaceId: string) => {
     switchWorkspace(workspaceId);
@@ -205,10 +270,21 @@ export function Sidebar() {
       borderRight: `1px solid ${colors.border}`,
       background: gradient.sidebar,
       display: 'flex', flexDirection: 'column',
-      padding: '14px 0', gap: 4,
+      padding: '0 0 14px', gap: space.xs,
       transition: `width 220ms ${ease.out}`,
       overflow: 'hidden',
     }}>
+      {/* The titlebar band, which belongs to the rail. The window runs
+          `titleBarStyle: Overlay` + `hiddenTitle`, so this area is ours to draw
+          and the native traffic lights composite over it — they are a native
+          surface and nothing the webview paints can ever cover them, which is
+          why this is empty space rather than something to lay out around.
+          `shell.titlebar` (40) is what centres the 14px buttons at their 13px
+          inset; the arithmetic lives in tokens.ts and in chrome.rs, and a test
+          holds the three copies together. Draggable, so the whole top edge of
+          the window moves it. */}
+      <div data-tauri-drag-region style={{ height: shell.titlebar, flexShrink: 0 }} />
+
       {/* Brand row */}
       <div style={{
         display: 'flex', alignItems: 'center',
@@ -234,18 +310,49 @@ export function Sidebar() {
         const shortcut = i < 9
           ? (navigator.platform.includes('Mac') ? `⌘${i + 1}` : `Ctrl+${i + 1}`)
           : undefined;
+        // Home carries the agent status indicator (2026-09-01 ruling) — the
+        // dashboard's old hero card, retired, in a quiet line beside its row
+        // instead of a whole card's worth of chrome. See NavAgentStatus.tsx.
+        // Every other row is unaffected — same bare SidebarRow as before.
+        if (!hasDashboardTool(ws.layoutJson)) {
+          return (
+            <SidebarRow
+              key={ws.id}
+              icon={iconPath}
+              label={ws.name}
+              active={isActive}
+              open={open}
+              onClick={() => goToWorkspace(ws.id)}
+              shortcut={shortcut}
+              onHover={showTooltip}
+              onLeave={hideTooltip}
+            />
+          );
+        }
         return (
-          <SidebarRow
-            key={ws.id}
-            icon={iconPath}
-            label={ws.name}
-            active={isActive}
-            open={open}
-            onClick={() => goToWorkspace(ws.id)}
-            shortcut={shortcut}
-            onHover={showTooltip}
-            onLeave={hideTooltip}
-          />
+          <div key={ws.id} style={{ position: 'relative' }}>
+            <SidebarRow
+              icon={iconPath}
+              label={ws.name}
+              active={isActive}
+              open={open}
+              onClick={() => goToWorkspace(ws.id)}
+              shortcut={shortcut}
+              onHover={showTooltip}
+              onLeave={hideTooltip}
+            />
+            {open ? (
+              <NavStatusLine name={navStatus.name} state={navStatus.state} word={navStatus.word} />
+            ) : (
+              <NavStatusBadge
+                name={navStatus.name}
+                state={navStatus.state}
+                word={navStatus.word}
+                onHover={showTooltip}
+                onLeave={hideTooltip}
+              />
+            )}
+          </div>
         );
       })}
 
@@ -263,8 +370,17 @@ export function Sidebar() {
           was not there. */}
       <MeetingRecorder open={open} />
 
-      {/* The Console row is gone (2026-08 ruling): Sessions, Inbox, Activity
-          (Trace), and Spend live inside Settings now. */}
+      {/* History — Sessions, Downloads, Activity, Spend. This row is what the
+          2026-08 ruling could not give them: the retired Console's four pages
+          have their own destination again, rather than living behind Settings
+          because Settings was the only overlay left standing. */}
+      <HistoryRow
+        open={open}
+        active={isHistoryOpen}
+        onOpen={() => setActivePanel(isHistoryOpen ? 'chat' : 'history')}
+        onHover={showTooltip}
+        onLeave={hideTooltip}
+      />
 
       {/* Notifications — bell row with unread badge, tray anchors beside it. */}
       <NotificationBellRow open={open} onHover={showTooltip} onLeave={hideTooltip} />
@@ -282,49 +398,51 @@ export function Sidebar() {
 
       {/* Collapse / Expand toggle */}
       {open ? (
-        <Button
-          colors={colors}
-          variant="bare"
-          onClick={() => setOpen(false)}
-          title="Collapse"
-                    style={{
-            '--pa-btn-fg': colors.textDim,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-bg-hover': colors.surfaceHi,
-            '--pa-btn-pad': '0',
-            '--pa-btn-radius': `${radius.md}px`,
-            width: 'calc(100% - 16px)', height: 32,
-            margin: '4px 8px 0',
-            gap: 8,
-            fontFamily: font.body, fontSize: textSize.micro,
-          } as CSSProperties}
-        >
-          <FiChevronLeft size={12} />
-          Collapse
-        </Button>
+        <Tooltip content="Collapse" placement="right">
+          <Button
+            colors={colors}
+            variant="bare"
+            onClick={() => setOpen(false)}
+            style={{
+              '--pa-btn-fg': colors.textDim,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': `${radius.md}px`,
+              width: 'calc(100% - 16px)', height: 32,
+              margin: '4px 8px 0',
+              gap: space.md,
+              fontFamily: font.body, fontSize: textSize.micro,
+            } as CSSProperties}
+          >
+            <FiChevronLeft size={12} />
+            Collapse
+          </Button>
+        </Tooltip>
       ) : (
-        <Button
-          colors={colors}
-          variant="bare"
-          onClick={() => setOpen(true)}
-          title="Expand"
-          aria-label="Expand"
-          style={{
-            '--pa-btn-fg': colors.textDim,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-bg-hover': colors.surfaceHi,
-            '--pa-btn-pad': '0',
-            '--pa-btn-radius': `${radius.md}px`,
-            width: 40, height: 32, margin: '4px auto 0',
-          } as CSSProperties}
-        >
-          <FiChevronRight size={12} />
-        </Button>
+        <Tooltip content="Expand" placement="right">
+          <Button
+            colors={colors}
+            variant="bare"
+            onClick={() => setOpen(true)}
+            aria-label="Expand"
+            style={{
+              '--pa-btn-fg': colors.textDim,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': `${radius.md}px`,
+              width: 40, height: 32, margin: '4px auto 0',
+            } as CSSProperties}
+          >
+            <FiChevronRight size={12} />
+          </Button>
+        </Tooltip>
       )}
 
       {/* Portalled to document.body — the rail sets overflow:hidden to animate
           its width, which would clip a tooltip rendered inside it. */}
-      <SidebarTooltip target={tooltipTarget} />
+      <SidebarTooltip target={tooltipTarget} onDismiss={hideTooltip} />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import { applyForumSurfaceMaterials } from './ForumSurfaceMaterials';
 import { Suspense, useEffect, useMemo, useState, useCallback, useRef, type CSSProperties, type RefObject } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { Mesh, PCFShadowMap } from 'three';
 import { ROSTER } from '../agents';
@@ -29,6 +29,8 @@ import { registerForumCollision } from './walkCollision';
 import { MeshAgora } from './MeshAgora';
 import { ForumPostProcessing } from './ForumPostProcessing';
 import { ForumPassport } from './ForumPassport';
+import { ForumShips } from './ForumShips';
+import { advanceForumSurfaceClock, releaseForumSurfaceClock } from './ForumSurfaceMaterials';
 import { useHudPresence } from './useHudPresence';
 import { gateApproachPoint } from './meshPortal';
 import { extendForumLoader } from './forumGltf';
@@ -95,6 +97,13 @@ function useOnScreen(ref: RefObject<HTMLElement | null>): boolean {
   }, [ref]);
   return onScreen;
 }
+/** Drives the shared water clock so the lagoon moves. One number per frame. */
+function ForumWater() {
+  useFrame((_, delta) => advanceForumSurfaceClock(delta));
+  useEffect(() => releaseForumSurfaceClock, []);
+  return null;
+}
+
 export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgent }: { visible?: boolean; onNavigate?: (tool: ToolType) => void; onOpenGoal?: (projectId:string,id:string)=>void; onManageAgent?: (id:string)=>void }) {
   const { colors } = useTheme();
   const appearance = useSystemAppearance();
@@ -205,6 +214,8 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
             walker is still standing on out at the gate — is never rebuilt. */}
         <group visible={!agoraOpen}>
           <VaultBoundary fallback={<Fallback />}><Suspense fallback={<Fallback />}><ForumAsset /></Suspense></VaultBoundary>
+          <ForumWater />
+          <Suspense fallback={null}><ForumShips /></Suspense>
           <Suspense fallback={null}><ForumAgents hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => { setSelected(id); setTab('meet'); setSaved(false); }} /></Suspense>
         </group>
         {walking

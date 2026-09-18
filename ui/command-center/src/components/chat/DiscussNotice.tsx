@@ -15,7 +15,7 @@
  */
 
 import { type CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
 import { Button } from '../common/Button';
@@ -36,9 +36,9 @@ export function DiscussNotice() {
         flexShrink: 0,
         display: 'flex',
         alignItems: 'flex-start',
-        gap: 10,
+        gap: space.lg,
         margin: '0 12px 8px',
-        padding: '8px 10px',
+        padding: `${space.md}px ${space.lg}px`,
         borderRadius: radius.md,
         border: `1px solid ${accent}`,
         background: notice.tone === 'error' ? 'transparent' : colors.cyanSoft,

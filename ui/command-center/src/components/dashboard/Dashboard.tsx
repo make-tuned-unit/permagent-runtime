@@ -1,6 +1,6 @@
-import { FiEdit2, FiX, FiPlus, FiRotateCcw } from 'react-icons/fi';
+import { FiEdit2, FiX, FiPlus, FiRotateCcw, FiCornerRightDown } from 'react-icons/fi';
 
-import { font, radius, textSize } from '../../styles/tokens';
+import { concentric, duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from './useDashboard';
@@ -20,6 +20,7 @@ import { Button } from '../common/Button';
 import { AsOf } from '../common/AsOf';
 import { useState, useCallback, useRef, useMemo, type CSSProperties } from 'react';
 
+import { Tooltip } from '../common/Tooltip';
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 function persistAndNotify(
@@ -35,10 +36,10 @@ function persistAndNotify(
 }
 
 const ROW_HEIGHT = 60;
-const GAP = 16;
+const GAP = space.xxl;
 
 export function Dashboard() {
-  const { gradient, colors } = useTheme();
+  const { gradient, colors, reduceMotion } = useTheme();
   const { data, loading, error, lastOkAt, failing, retry, refresh } = useDashboard();
   // One shared live-goal subscription for every "in flight" surface (count,
   // list, header, status) so they always agree. Sessions are a separate stat.
@@ -179,7 +180,7 @@ export function Dashboard() {
         {!loading && error ? (
           // Initial load failed with nothing to show — an explicit, recoverable
           // dead-end instead of a spinner that never resolves.
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, textAlign: 'center', fontFamily: font.body }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: space.sm, textAlign: 'center', fontFamily: font.body }}>
             <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.danger }}>Couldn't load the dashboard</div>
             <div style={{ fontSize: textSize.micro, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
               The daemon didn't respond. Check that it's running, then try again.
@@ -199,7 +200,7 @@ export function Dashboard() {
                 '--pa-btn-pad': '5px 14px',
                 '--pa-btn-radius': `${radius.sm}px`,
                 '--pa-btn-weight': 600,
-                marginTop: 6, fontSize: textSize.micro, fontFamily: font.body,
+                marginTop: space.sm, fontSize: textSize.micro, fontFamily: font.body,
               } as CSSProperties}
             >
               Try again
@@ -213,7 +214,6 @@ export function Dashboard() {
   }
 
   const cardDataMap: Record<string, any> = {
-    hero: { agent: data.agent, activeCount },
     stats: { stats: data.stats },
     in_flight: inFlightProps,
     decisions: { activeCount },
@@ -288,10 +288,10 @@ export function Dashboard() {
         // chrome. This names both so "shape cards into columns or rows" is not
         // a hidden feature.
         <div style={{
-          flexShrink: 0, padding: '8px 32px',
+          flexShrink: 0, padding: `${space.md}px ${space.huge}px`,
           background: colors.cyanSoft, borderBottom: `1px solid ${colors.border}`,
           fontFamily: font.body, fontSize: textSize.caption, color: colors.cyan,
-          display: 'flex', alignItems: 'center', gap: 8,
+          display: 'flex', alignItems: 'center', gap: space.md,
         }}>
           <FiEdit2 size={12} />
           <span>
@@ -301,7 +301,10 @@ export function Dashboard() {
         </div>
       )}
 
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 40px' }}>
+      {/* 28/32/40 measured close to `huge` (24) but past its ceiling — the
+          space scale caps at panel-scale padding, and this is exactly that:
+          round to the ceiling rather than add a step for one caller. */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: `${space.huge}px` }}>
 
       {/* The banner slot (C8): ONE of these is on screen at a time, never both.
           Echo resurfaces a dormant Brain thread; Learn next coaches an untried
@@ -358,9 +361,22 @@ export function Dashboard() {
                   : isResizing ? `2px solid ${colors.cyan}`
                   : isEditMode ? `1px solid ${colors.cyanSoft}` : 'none',
                 outlineOffset: -1,
-                boxShadow: isEditMode ? `0 0 12px ${colors.cyanGlow}` : 'none',
+                // Lift affordance: picking a card up raises it off the grid
+                // (elevationFloating — the same step a toast sits at) with a
+                // hair of scale; dropping settles it back with a softer
+                // spring. `reduceMotion` drops the scale outright rather than
+                // just shortening it — a card that visibly grows and shrinks
+                // is exactly the motion that setting asks to lose.
+                boxShadow: isDragging
+                  ? colors.elevationFloating
+                  : isEditMode ? `0 0 ${space.xl}px ${colors.cyanGlow}` : 'none',
+                transform: !reduceMotion && isDragging ? 'scale(1.02)' : 'scale(1)',
                 opacity: isDragging ? 0.5 : 1,
-                transition: isResizing ? 'none' : 'outline 150ms ease, box-shadow 200ms ease, opacity 150ms ease',
+                transition: reduceMotion || isResizing
+                  ? 'none'
+                  : isDragging
+                    ? `outline ${duration.fast}ms ${ease.out}, box-shadow ${duration.snappy}ms ${ease.snappy}, transform ${duration.snappy}ms ${ease.snappy}, opacity ${duration.fast}ms ${ease.out}`
+                    : `outline ${duration.fast}ms ${ease.out}, box-shadow ${duration.smooth}ms ${ease.smooth}, transform ${duration.smooth}ms ${ease.smooth}, opacity ${duration.fast}ms ${ease.out}`,
                 position: 'relative',
                 minHeight: 0,
                 overflow: 'hidden',
@@ -420,13 +436,13 @@ export function Dashboard() {
         <div
           onClick={() => setShowPicker(true)}
           style={{
-            marginTop: 16,
+            marginTop: space.xxl,
             height: 80, borderRadius: radius.lg,
             border: `1px dashed ${colors.border}`,
             background: colors.cyanSoft,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            gap: 8, cursor: 'pointer',
-            transition: 'border-color 150ms ease, background 150ms ease',
+            gap: space.md, cursor: 'pointer',
+            transition: reduceMotion ? 'none' : `border-color ${duration.fast}ms ${ease.out}, background ${duration.fast}ms ${ease.out}`,
           }}
           onMouseEnter={e => {
             e.currentTarget.style.borderColor = colors.cyan;
@@ -482,54 +498,69 @@ function RemoveButton({ disabled, onClick }: { disabled: boolean; onClick: () =>
     // do by hand — redden on hover, and only when removable — is now the
     // primitive's `--pa-btn-*-hover` pair, held at the resting values when the
     // last card can't be removed.
-    <Button
-      colors={colors}
-      variant="bare"
-      type="button"
-      onClick={e => { e.stopPropagation(); if (!disabled) onClick(); }}
-      title={disabled ? 'Dashboard needs at least one card' : 'Remove this card'}
-      aria-label="Remove this card"
-      style={{
-        '--pa-btn-bg': disabled ? colors.cyanSoft : colors.surface,
-        '--pa-btn-fg': disabled ? colors.textDim : colors.textMuted,
-        '--pa-btn-border': 'transparent',
-        '--pa-btn-bg-hover': disabled ? colors.cyanSoft : colors.danger + '26',
-        '--pa-btn-fg-hover': disabled ? colors.textDim : colors.danger,
-        '--pa-btn-bg-active': disabled ? colors.cyanSoft : colors.danger + '26',
-        '--pa-btn-pad': '0',
-        '--pa-btn-radius': '50%',
-        position: 'absolute', top: 8, right: 8, zIndex: 5,
-        width: 24, height: 24,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-      } as CSSProperties}
-    >
-      <FiX size={14} />
-    </Button>
+    <Tooltip content={disabled ? 'Dashboard needs at least one card' : 'Remove this card'}>
+      <Button
+        colors={colors}
+        variant="bare"
+        type="button"
+        onClick={e => { e.stopPropagation(); if (!disabled) onClick(); }}
+        aria-label="Remove this card"
+        style={{
+          '--pa-btn-bg': disabled ? colors.cyanSoft : colors.surface,
+          '--pa-btn-fg': disabled ? colors.textDim : colors.textMuted,
+          '--pa-btn-border': 'transparent',
+          '--pa-btn-bg-hover': disabled ? colors.cyanSoft : colors.danger + '26',
+          '--pa-btn-fg-hover': disabled ? colors.textDim : colors.danger,
+          '--pa-btn-bg-active': disabled ? colors.cyanSoft : colors.danger + '26',
+          '--pa-btn-pad': '0',
+          '--pa-btn-radius': '50%',
+          position: 'absolute', top: space.md, right: space.md, zIndex: 5,
+          width: 24, height: 24,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+        } as CSSProperties}
+      >
+        <FiX size={14} />
+      </Button>
+    </Tooltip>
   );
 }
 
 function ResizeHandle({ onPointerDown }: { onPointerDown: (e: React.PointerEvent) => void }) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
+  const [hover, setHover] = useState(false);
   return (
-    <div
-      onPointerDown={onPointerDown}
-      title="Drag to resize — wider for a row, taller for a column"
-      style={{
-        position: 'absolute', bottom: 4, right: 4, width: 22, height: 22,
-        cursor: 'nwse-resize', zIndex: 5, borderRadius: radius.sm,
-        background: colors.cyanSoft, border: `1px solid ${colors.cyan}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}
-    >
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <path d="M11 3L3 11M11 7L7 11" stroke={colors.cyan} strokeWidth={1.6} strokeLinecap="round" />
-      </svg>
-    </div>
+    <Tooltip content="Drag to resize — wider for a row, taller for a column">
+      <span tabIndex={0} style={{ outline: 'none' }}>
+        <div
+          onPointerDown={onPointerDown}
+          onMouseEnter={() => setHover(true)}
+          onMouseLeave={() => setHover(false)}
+          style={{
+            position: 'absolute', bottom: space.xs, right: space.xs, width: 22, height: 22,
+            cursor: 'nwse-resize', zIndex: 5,
+            // Concentric to the card's own radius.lg corner, 4px in — the one
+            // clean corner-offset relationship in this file (D4).
+            borderRadius: concentric(radius.lg, 4),
+            background: hover ? colors.cyanGlow : colors.cyanSoft,
+            border: `1px solid ${colors.cyan}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
+          }}
+        >
+          {/* Was a hand-drawn <svg> (two diagonal strokes). Feather has no
+              resize-handle glyph, but a corner arrow is the conventional
+              substitute and IS a glyph Feather has a name for — the
+              one-icon-system gate's own test: "ask whether Feather would have
+              a word for it; if it would, use Feather's." */}
+          <FiCornerRightDown size={12} color={colors.cyan} />
+        </div>
+      </span>
+    </Tooltip>
   );
 }
 
 function SaveIndicator({ state }: { state: SaveState }) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   if (state === 'idle') return null;
   const config: Record<Exclude<SaveState, 'idle'>, { label: string; color: string }> = {
     saving: { label: 'Saving...', color: colors.textMuted },
@@ -540,7 +571,8 @@ function SaveIndicator({ state }: { state: SaveState }) {
   return (
     <span style={{
       fontFamily: font.body, fontSize: textSize.micro, fontWeight: 500,
-      color: c.color, transition: 'opacity 200ms ease',
+      color: c.color,
+      transition: reduceMotion ? 'none' : `opacity ${duration.base}ms ${ease.out}`,
     }}>
       {c.label}
     </span>

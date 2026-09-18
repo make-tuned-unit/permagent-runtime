@@ -490,6 +490,12 @@ fn surface_daemon_failure(app: &tauri::AppHandle, detail: &str) {
     eprintln!("[permagent-app] ERROR: {detail}");
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_title(&format!("Permagent — {detail}"));
+        // `set_title` rebuilds the titlebar container and snaps the traffic
+        // lights back to AppKit's (9, 9) — permanently (tauri#13044, measured
+        // by the A1a spike). Without this, a daemon hiccup leaves the window
+        // controls sitting outside the sidebar's titlebar band for the rest of
+        // the session. See chrome.rs.
+        crate::chrome::ensure_inset(&window);
     }
 }
 

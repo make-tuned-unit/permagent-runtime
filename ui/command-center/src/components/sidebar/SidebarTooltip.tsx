@@ -1,8 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { font, radius, ease, textSize } from '../../styles/tokens';
-import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
+import {
+  TooltipBubble,
+  TOOLTIP_COLD_DELAY_MS,
+  TOOLTIP_WARM_WINDOW_MS,
+  isTooltipWarm,
+  noteTooltipHidden,
+  useTooltipDismiss,
+} from '../common/Tooltip';
+import { placeSidebarTooltip } from './tooltipPlacement';
 
 /**
  * Hover label for a sidebar row.
@@ -24,28 +31,28 @@ import { useCommandCenter } from '../../lib/store';
  *     subview above the web content of the window that hosts it. The tooltip
  *     is drawn to the RIGHT of the rail, i.e. into the pane the browser
  *     occupies — so with the browser filling that pane it disappeared behind
- *     it, `zIndex: 9999` and all (reported 2026-08-19). The fix cannot live in
- *     CSS: the tooltip publishes its measured rect and `Browser.tsx` keeps the
- *     native bounds clear of it (WEBVIEW_LIFECYCLE.md ruling D2).
+ *     it, `zIndex: 9999` and all (reported 2026-08-19).
+ *
+ *     FIXED 2026-08-19 by having the tooltip publish its rect and having
+ *     `Browser.tsx` subtract it from the native bounds (WEBVIEW_LIFECYCLE.md
+ *     ruling D2). CHANGED 2026-09-01: that made showing a tooltip able to
+ *     move the page, and #1068's own file warned that dormant machinery of
+ *     exactly this shape invites rewiring the bug back in. `placeSidebarTooltip`
+ *     (./tooltipPlacement.ts) inverts it — the Browser publishes its OWN rect
+ *     (`browserPaneRect` in the store, read-only here) and this component
+ *     places ITSELF to guarantee no overlap, including pulling its own left
+ *     edge back over the rail's icon column (ordinary DOM; a portal can paint
+ *     over it with no native-surface conflict) rather than ever reaching into
+ *     the browser's rect. The page never moves for this again.
+ *
+ * The chrome (glass, concentric radius, spring-in, reduce-motion /
+ * reduce-transparency) lives in `common/Tooltip` (`TooltipBubble`). This file
+ * keeps the multi-row warm-hover controller and the browser-pane inversion.
  *
  * The delay is short on first hover and drops to zero while the pointer is
  * moving between rows (the "warm" window), matching how OS menu bars behave:
  * deliberate on entry, instant once you are clearly browsing.
  */
-
-const COLD_DELAY_MS = 260;
-const WARM_WINDOW_MS = 700;
-
-/**
- * Breathing room between the label and the native browser surface. The rect
- * the shell measures in CSS pixels becomes a native frame in device pixels, and
- * a boundary that lands exactly on the label's border can round the wrong way
- * and clip it. Cheap insurance; it costs the page nothing it would miss.
- */
-const TOOLTIP_CLEARANCE_PX = 6;
-
-/** Shared across rows: when a tooltip last closed, for the warm-hover window. */
-let lastHiddenAt = 0;
 
 export interface TooltipTarget {
   rect: DOMRect;
@@ -60,16 +67,15 @@ export function useSidebarTooltip() {
   const show = (el: HTMLElement | null, label: string, shortcut?: string) => {
     if (!el) return;
     clearTimeout(timer.current);
-    const warm = Date.now() - lastHiddenAt < WARM_WINDOW_MS;
     const commit = () => setTarget({ rect: el.getBoundingClientRect(), label, shortcut });
-    if (warm) commit();
-    else timer.current = setTimeout(commit, COLD_DELAY_MS);
+    if (isTooltipWarm()) commit();
+    else timer.current = setTimeout(commit, TOOLTIP_COLD_DELAY_MS);
   };
 
   const hide = () => {
     clearTimeout(timer.current);
     setTarget(prev => {
-      if (prev) lastHiddenAt = Date.now();
+      if (prev) noteTooltipHidden();
       return null;
     });
   };
@@ -79,74 +85,48 @@ export function useSidebarTooltip() {
   return { target, show, hide };
 }
 
-export function SidebarTooltip({ target }: { target: TooltipTarget | null }) {
-  const { colors, reduceMotion } = useTheme();
-  const setReservedRect = useCommandCenter(s => s.setSidebarTooltipRect);
-  const boxRef = useRef<HTMLDivElement | null>(null);
+// Re-export so existing warm-window timing references stay discoverable.
+export { TOOLTIP_COLD_DELAY_MS as COLD_DELAY_MS, TOOLTIP_WARM_WINDOW_MS as WARM_WINDOW_MS };
 
-  const top = target ? target.rect.top + target.rect.height / 2 : 0;
-  const left = target ? target.rect.right + 10 : 0;
+export function SidebarTooltip({
+  target,
+  onDismiss,
+}: {
+  target: TooltipTarget | null;
+  /** Escape / scroll — parent clears its `useSidebarTooltip` target. */
+  onDismiss?: () => void;
+}) {
+  // Read-only: the Browser publishes this from its own bounds sync and never
+  // hears about the sidebar at all. See tooltipPlacement.ts for the geometry
+  // proof that placing the label around this rect can never overlap it.
+  const browserPaneRect = useCommandCenter(s => s.browserPaneRect);
 
-  // Measure AFTER layout, before paint: the label's width depends on the text,
-  // so the rect the browser has to keep clear is not knowable until the node
-  // exists. Nothing is reserved while no tooltip is up, which is why the
-  // browser is untouched in the overwhelmingly common case.
-  //
-  // Width and height come from the node; the LEFT edge does not. `sidebarTooltipIn`
-  // starts the label 4px to the left and slides it into place, so a rect
-  // measured now would be that 4px short and leave a sliver of the finished
-  // label under the webview. `left` is where it is going, which is the edge
-  // the browser actually has to clear.
-  useLayoutEffect(() => {
-    if (!target) {
-      setReservedRect(null);
-      return;
-    }
-    const el = boxRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    setReservedRect({
-      x: left,
-      y: r.y,
-      width: r.width + TOOLTIP_CLEARANCE_PX,
-      height: r.height,
-    });
-  }, [target, left, setReservedRect]);
-
-  // A tooltip that is unmounted mid-hover (view switch, sidebar collapse) must
-  // not leave the browser permanently narrowed.
-  useEffect(() => () => setReservedRect(null), [setReservedRect]);
+  useTooltipDismiss(Boolean(target), () => {
+    onDismiss?.();
+  });
 
   if (!target) return null;
 
+  const placement = placeSidebarTooltip(target.rect, browserPaneRect);
+  if (!placement.visible) return null;
+
+  // Right-of-rail resting pose (translateY -50%); enter with a short nudge.
+  const transform = 'translateY(-50%)';
+  const fromTransform = 'translateY(-50%) translateX(-4px)';
+
   return createPortal(
-    <div
-      ref={boxRef}
-      role="tooltip"
-      style={{
-        position: 'fixed', top, left, transform: 'translateY(-50%)',
-        zIndex: 9999, pointerEvents: 'none',
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '5px 9px',
-        borderRadius: radius.sm,
-        background: colors.surface,
-        border: `1px solid ${colors.border}`,
-        boxShadow: colors.elevationRaised ?? colors.cardShadow,
-        fontFamily: font.body, fontSize: textSize.caption, fontWeight: 500,
-        color: colors.text, whiteSpace: 'nowrap',
-        animation: reduceMotion ? undefined : `sidebarTooltipIn 120ms ${ease.out}`,
-      }}
+    <TooltipBubble
+      id="pa-sidebar-tooltip"
+      left={placement.left}
+      top={placement.top}
+      transform={transform}
+      fromTransform={fromTransform}
+      maxWidth={placement.maxWidth}
+      wrap={placement.maxWidth !== undefined}
+      shortcut={target.shortcut}
     >
       {target.label}
-      {target.shortcut && (
-        <span style={{
-          fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
-          color: colors.textDim,
-          border: `1px solid ${colors.border}`,
-          borderRadius: radius.xs, padding: '1px 4px',
-        }}>{target.shortcut}</span>
-      )}
-    </div>,
+    </TooltipBubble>,
     document.body,
   );
 }

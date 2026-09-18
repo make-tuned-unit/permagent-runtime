@@ -5,8 +5,7 @@ import {
   FEATURE_ROWS,
   GMAIL_CONNECT_COMMAND,
   gmailTokenPresent,
-  readFlag,
-} from './features';
+} from './workerGates';
 
 describe('features helpers', () => {
   it('names exactly the six daemon config keys, in display order', () => {
@@ -89,13 +88,5 @@ describe('features helpers', () => {
     expect(unreadable).not.toContain(GMAIL_CONNECT_COMMAND);
     expect(unreadable).toMatch(/Couldn't check/);
     expect(conciergePreconditionCopy(true, true)).toBe(unreadable);
-  });
-
-  it('only a literal true reads as on (bare-value /config/read contract)', () => {
-    expect(readFlag(true)).toBe(true);
-    expect(readFlag(null)).toBe(false);
-    expect(readFlag('true')).toBe(false);
-    expect(readFlag(1)).toBe(false);
-    expect(readFlag(undefined)).toBe(false);
   });
 });

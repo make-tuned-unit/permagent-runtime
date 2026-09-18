@@ -769,10 +769,11 @@ impl AppState {
         // Seed starter recipes (Workspace Snapshot, Storage Insights) on first run.
         crate::automation::starters::seed_starter_recipes(agent_manager.scheduler().as_ref()).await;
 
-        // Boot goal reconciliation is started by commands::agent AFTER the
-        // serving daemon installs its dispatcher. Starting it here raced slow
-        // AppState initialization and could strand requeued work with no hook.
-        // Pure AppState construction must not launch autonomous goal workers.
+        // Boot goal reconciliation (R2b) is started by commands::agent AFTER
+        // the serving daemon installs its dispatcher. Starting it here raced
+        // slow AppState initialization and could strand requeued work with no
+        // hook. Pure AppState construction must not launch autonomous goal
+        // workers — dozens of tests build an AppState.
 
         // First-run welcome memories (#298): seed once onboarding is complete.
         // Idempotent (config marker); also triggered immediately on completion via

@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { font, radius, tabularNums, textSize } from '../../../styles/tokens';
+import { duration, ease, font, radius, space, tabularNums, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useDecisions } from '../decisions/useDecisions';
 import { DecisionInbox } from '../decisions/DecisionInbox';
@@ -35,6 +35,7 @@ export function DecisionsCard({ activeCount }: Props = {}) {
   const agentName = persona?.display_name ?? 'your agent';
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
+  const [pressed, setPressed] = useState(false);
 
   const s = summarizeDecisions(data, agentName, activeCount);
   const { count } = s;
@@ -61,25 +62,34 @@ export function DecisionsCard({ activeCount }: Props = {}) {
         onClick={() => setOpen(true)}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(true); } }}
         onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
+        onMouseLeave={() => { setHover(false); setPressed(false); }}
+        onPointerDown={() => setPressed(true)}
+        onPointerUp={() => setPressed(false)}
         style={{
           height: '100%', boxSizing: 'border-box',
           borderRadius: radius.lg,
           background: colors.surface,
           border: `1px solid ${hover ? colors.borderHi : colors.border}`,
-          boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-          padding: '18px 20px',
+          // Press settles back to the resting raised step; hover lifts one
+          // step (overlay) — the same physical "pick up / put down" the drag
+          // handle uses, just without the scale (D10).
+          boxShadow: pressed
+            ? colors.elevationRaised
+            : hover
+              ? [colors.elevationOverlay, colors.cardHighlight].filter(Boolean).join(', ')
+              : [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
+          padding: `${space.xxxl}px`,
           display: 'flex', flexDirection: 'column',
           overflow: 'hidden',
           cursor: 'pointer',
-          transition: reduceMotion ? 'none' : 'border-color 150ms ease',
+          transition: reduceMotion ? 'none' : `border-color ${duration.fast}ms ${ease.out}, box-shadow ${duration.fast}ms ${ease.out}`,
         }}
       >
         {/* Kicker */}
         <div style={{
           fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
           letterSpacing: '0.10em', textTransform: 'uppercase',
-          color: colors.textDim, marginBottom: 6,
+          color: colors.textDim, marginBottom: space.sm,
         }}>
           Needs you
         </div>
@@ -87,7 +97,7 @@ export function DecisionsCard({ activeCount }: Props = {}) {
         {empty ? (
           // One line and a small tick, top-aligned. "All clear" is genuinely
           // low-information — it should cost a line, not a whole card.
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.md, paddingTop: space.xs }}>
             <span style={{
               width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
               background: colors.success + '26', color: colors.success,
@@ -107,16 +117,19 @@ export function DecisionsCard({ activeCount }: Props = {}) {
             }}>
               {data === null ? '—' : count}
             </div>
-            <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text, marginTop: 2 }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text, marginTop: space.xxs }}>
               {s.headline}
             </div>
             {s.oldestLabel && (
-              <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, marginTop: 6 }}>
+              <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, marginTop: space.sm }}>
                 {s.oldestLabel}
               </div>
             )}
             {s.attentionLabel && (
-              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: '#e8a33d', marginTop: 6 }}>
+              // Was a raw hex, hardcoded regardless of theme — the one gap in
+              // this screen's otherwise-clean token grade. "Needs your
+              // attention" is the warning semantic, not a bespoke amber.
+              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.warning, marginTop: space.sm }}>
                 {s.attentionLabel}
               </div>
             )}

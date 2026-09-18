@@ -1,12 +1,13 @@
 import { useEffect, useState, useMemo, type CSSProperties } from 'react';
 import { FiLoader, FiZap, FiSearch, FiGrid, FiList, FiX } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { SkillCard } from './SkillCard';
 import { SkillDetailPanel } from './SkillDetailPanel';
 
+import { Tooltip } from '../common/Tooltip';
 /**
  * Full Skills Library. Reused as a workspace tool (no chrome) and as the
  * `activePanel:'skills'` overlay — when hosted as an overlay, `onClose` is
@@ -88,29 +89,31 @@ export function SkillsPanel({ onClose }: { onClose?: () => void } = {}) {
             >
               {filtered.length}
             </span>
-            <Button
-              colors={colors}
-              variant="bare"
-              type="button"
-              onClick={() => setViewMode(viewMode === 'list' ? 'grid' : 'list')}
-              title={viewMode === 'list' ? 'Grid view' : 'List view'}
-              aria-label={viewMode === 'list' ? 'Grid view' : 'List view'}
-              style={headerIconVars}
-            >
-              {viewMode === 'list' ? <FiGrid size={13} /> : <FiList size={13} />}
-            </Button>
-            {onClose && (
+            <Tooltip content={viewMode === 'list' ? 'Grid view' : 'List view'}>
               <Button
                 colors={colors}
                 variant="bare"
                 type="button"
-                onClick={onClose}
-                title="Close (Esc)"
-                aria-label="Close skills library"
+                onClick={() => setViewMode(viewMode === 'list' ? 'grid' : 'list')}
+                aria-label={viewMode === 'list' ? 'Grid view' : 'List view'}
                 style={headerIconVars}
               >
-                <FiX size={14} />
+                {viewMode === 'list' ? <FiGrid size={13} /> : <FiList size={13} />}
               </Button>
+            </Tooltip>
+            {onClose && (
+              <Tooltip content="Close (Esc)">
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  type="button"
+                  onClick={onClose}
+                  aria-label="Close skills library"
+                  style={headerIconVars}
+                >
+                  <FiX size={14} />
+                </Button>
+              </Tooltip>
             )}
           </div>
         </div>
@@ -171,7 +174,7 @@ export function SkillsPanel({ onClose }: { onClose?: () => void } = {}) {
                   '--pa-btn-pad': '4px 12px',
                   '--pa-btn-radius': `${radius.sm}px`,
                   '--pa-btn-weight': 600,
-                  marginTop: 4,
+                  marginTop: space.xs,
                   fontFamily: font.body,
                   fontSize: 10,
                   lineHeight: '15px',

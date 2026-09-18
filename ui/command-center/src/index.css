@@ -6,6 +6,31 @@
   color-scheme: dark;
 }
 
+/* Spring easings — see SPRING_LINEAR in styles/tokens.ts for the physics that
+   produced these three strings and the durations they must be paired with.
+
+   Two rungs on purpose. The bare :root values are beziers, so a WKWebView
+   without linear() (Safari < 17.2; our minimumSystemVersion is macOS 11) falls
+   back to a curve we chose rather than to the browser's `ease` — which is what
+   an unparseable inline `transition-timing-function` would otherwise give it.
+   The @supports block then upgrades every one of them to the real sampled
+   spring on anything current. `ease.smooth` and friends reference these by
+   var(), which is why the tokens can be spring physics and still be safe to
+   drop into an inline style. */
+:root {
+  --pa-ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  --pa-ease-snappy: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --pa-ease-bouncy: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@supports (transition-timing-function: linear(0, 1)) {
+  :root {
+    --pa-ease-smooth: linear(0, 0.0493, 0.1576, 0.2855, 0.4117, 0.526, 0.6243, 0.7061, 0.7724, 0.8253, 0.8668, 0.8991, 0.9239, 0.9429, 0.9574, 0.9683, 0.9764, 0.9826, 0.9871, 0.9905, 0.993, 0.9949, 0.9963, 0.9973, 1);
+    --pa-ease-snappy: linear(0, 0.0466, 0.1541, 0.2869, 0.4226, 0.5485, 0.658, 0.749, 0.8218, 0.8781, 0.9203, 0.9509, 0.9724, 0.9869, 0.9962, 1.0018, 1.0048, 1.0061, 1.0063, 1.0059, 1.0051, 1.0043, 1.0034, 1.0027, 1);
+    --pa-ease-bouncy: linear(0, 0.0607, 0.2009, 0.3722, 0.5425, 0.6933, 0.8159, 0.9083, 0.9726, 1.0134, 1.0358, 1.045, 1.0453, 1.0405, 1.0331, 1.0251, 1.0176, 1.0113, 1.0063, 1.0027, 1.0003, 0.9988, 0.9981, 0.9979, 1);
+  }
+}
+
 html,
 body,
 #root {
@@ -367,9 +392,24 @@ body {
 
 /* Global keyboard focus ring. ~17 surfaces strip `outline:none` with no
    replacement, making keyboard nav invisible. This restores a branded ring
-   for keyboard users only (never on mouse click, via :focus-visible). */
+   for keyboard users only (never on mouse click, via :focus-visible).
+
+   `--tw-accent` is a bare "R G B" channel triplet (tokens.ts `_syncCssVars`,
+   e.g. "0 213 255"), stored that way so Tailwind's `rgb(var(--tw-accent) /
+   <alpha-value>)` alpha-modifier utilities can compose it — see
+   tailwind.config.js. It is NOT a standalone `<color>`. Using it bare, as
+   `var(--tw-accent, #00D5FF)`, inside `outline: 2px solid …` made the whole
+   declaration invalid at computed-value time (a triplet isn't a valid
+   outline-color), and because the custom property IS defined, the `#00D5FF`
+   fallback never applied either — a `var()` fallback only fires when the
+   property is unset, not when its value is merely invalid for the context.
+   Net effect, confirmed live in Chromium: `el.matches(':focus-visible')` was
+   `true` but `getComputedStyle(el).outlineStyle` was `'none'` — the ring
+   never painted anywhere in the app (#1178 flagged this on toast buttons,
+   but it was global). Fix: wrap it in `rgb()`, the same pattern
+   tailwind.config.js already uses for this exact variable. */
 :focus-visible {
-  outline: 2px solid var(--tw-accent, #00D5FF);
+  outline: 2px solid rgb(var(--tw-accent, 0 213 255));
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -380,7 +420,7 @@ a:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
-  outline: 2px solid var(--tw-accent, #00D5FF);
+  outline: 2px solid rgb(var(--tw-accent, 0 213 255));
   outline-offset: 2px;
 }
 
@@ -426,7 +466,18 @@ select:focus-visible {
    no visible difference. Colors arrive per-instance as custom properties from
    the theme, so this one rule set covers every variant without hard-coding a
    palette here. Durations follow the motion tokens (fast = 160ms hover/focus)
-   and inherit the prefers-reduced-motion guard above. */
+   and inherit the prefers-reduced-motion guard above.
+
+   D9: the curve is `var(--pa-ease-smooth)`, not a hand-copied bezier literal.
+   The two used to be numerically identical
+   (`cubic-bezier(0.22, 1, 0.36, 1)` === the bezier fallback of
+   `--pa-ease-smooth`), which is exactly the trap — hardcoding the fallback
+   value permanently opted every button in the app out of the `@supports
+   (transition-timing-function: linear(0, 1))` upgrade near the top of this
+   file that swaps it for the real sampled spring on anything current. `var()`
+   makes that upgrade apply here too. Reduce Motion still wins: the
+   `prefers-reduced-motion` block above uses `!important` on
+   `transition-duration`, so it collapses this to ~0 regardless of curve. */
 .pa-btn {
   display: inline-flex;
   align-items: center;
@@ -444,12 +495,12 @@ select:focus-visible {
   cursor: pointer;
   box-shadow: 0 0 0 0 transparent;
   transition:
-    background-color 160ms cubic-bezier(0.22, 1, 0.36, 1),
-    border-color 160ms cubic-bezier(0.22, 1, 0.36, 1),
-    color 160ms cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 160ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 160ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 80ms cubic-bezier(0.22, 1, 0.36, 1);
+    background-color 160ms var(--pa-ease-smooth),
+    border-color 160ms var(--pa-ease-smooth),
+    color 160ms var(--pa-ease-smooth),
+    box-shadow 160ms var(--pa-ease-smooth),
+    opacity 160ms var(--pa-ease-smooth),
+    transform 80ms var(--pa-ease-smooth);
 }
 /* Text color is part of hover, not just fill: the commonest resting pattern in
    this app is a muted icon that comes up to full on hover, and expressing that

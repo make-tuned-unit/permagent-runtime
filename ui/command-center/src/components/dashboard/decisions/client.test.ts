@@ -15,8 +15,8 @@ vi.mock('../../../lib/api', () => ({
 }));
 
 import { realDecisionsClient } from './client';
-import { DecisionConflictError, choiceOptions, draftText, recommendedChoiceId, resolutionText } from './types';
-import type { Decision } from './types';
+import { DecisionConflictError, choiceOptions, deadLetterText, draftText, recommendedChoiceId, resolutionText } from './types';
+import type { Decision, HistoryItem } from './types';
 
 const wireDecision = {
   id: 'd-1',
@@ -313,6 +313,34 @@ describe('payload helpers', () => {
       .toBe('Rejected — note: not yet');
     expect(resolutionText({ ...wireDecision, answer: 'edit', acted_by: 'jesse' } as Decision))
       .toBe('Accepted with edits');
+  });
+
+  it('deadLetterText only fires on the dead-letter audit row (CASE A fix #4)', () => {
+    const historyRow = (outcome: string): HistoryItem => ({
+      ...wireDecision,
+      status: 'answered',
+      answer: 'approve',
+      acted_by: 'jesse',
+      seq: 1,
+      outcome,
+      audit_acted_by: 'jesse',
+      audit_created_at: '2026-06-12T00:05:00Z',
+    } as HistoryItem);
+
+    // Ordinary rows (the answer itself, a plain success outcome): no line.
+    expect(deadLetterText(historyRow('approve'))).toBeNull();
+    expect(deadLetterText(historyRow('effect_retry: NotFound'))).toBeNull();
+
+    // The dead-letter row: a plain-language line naming the real error, never
+    // silently indistinguishable from a decision whose effect actually ran.
+    expect(deadLetterText(historyRow('effect_dead: NotFound'))).toBe(
+      'Approved, but this never took effect after every retry — NotFound',
+    );
+    // The Rust side always writes "effect_dead: " (with the separator space)
+    // even when the underlying error string is empty.
+    expect(deadLetterText(historyRow('effect_dead: '))).toBe(
+      'Approved, but this never took effect after every retry.',
+    );
   });
 
   it('draftText reads payload.draft only when it is a non-empty string', () => {

@@ -197,10 +197,19 @@ describe('CostStatusline', () => {
     });
     expect(useCommandCenter.getState().codingSpend?.budget).toEqual(budget);
     const eventText = container!.textContent;
-    expect(eventText).toContain('$0.75');
-    expect(eventText).toContain('session unknown $0.75');
-    expect(eventText).toContain('session remaining $0.25');
-    expect(eventText).toContain('session budget unknown');
+    // These figures come from the shared Rust golden
+    // (scripts/testdata/budget_projection_v1.json), and they changed on
+    // 2026-09-09 in ce4f111b, "Reconcile stale unknown provider-spend
+    // reservations instead of refusing forever": that lane moved the fixture
+    // out of the unknown-spend state it used to model (unknown $0.75,
+    // remaining $0.25) into a settled one, and these assertions were not
+    // updated with it. Reading them off the fixture keeps the two sides of the
+    // golden honest the next time it moves.
+    expect(eventText).toContain('session settled $0.00');
+    expect(eventText).toContain('session used $0.10');
+    expect(eventText).toContain('session remaining $0.90');
+    expect(eventText).toContain('session held $0.10');
+    expect(eventText).toContain('session billing paid_api');
 
     getActiveHarnessRuns.mockResolvedValueOnce([{
       runId: 'restarted-run', sessionId: budget.rootSessionId,

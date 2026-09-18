@@ -71,9 +71,14 @@ export const Mobius = memo(function Mobius({
   // Apply appearance prefs
   const effectiveGlow = glow * (mobiusGlow / 100);
   const isIdle = state === 'idle';
-  const idleDisabled = isIdle && (idleAnim === 'still' || reduceMotion);
-  const isAnimated = state !== 'sleeping' && !idleDisabled;
-  const fps = idleDisabled ? 0 : (FPS[state] || 0);
+  // Reduce Motion freezes every state, not just `idle` — `thinking`,
+  // `speaking` and `calibrating` are rAF loops exactly like the idle pulse,
+  // and the setting is a blanket "stop animating", not an idle-only one.
+  // `idleAnim === 'still'` stays idle-only: it's a separate preference for
+  // the resting pulse specifically, with no equivalent for the active loops.
+  const motionDisabled = reduceMotion || (isIdle && idleAnim === 'still');
+  const isAnimated = state !== 'sleeping' && !motionDisabled;
+  const fps = motionDisabled ? 0 : (FPS[state] || 0);
 
   // Preload frames once per set
   useEffect(() => {

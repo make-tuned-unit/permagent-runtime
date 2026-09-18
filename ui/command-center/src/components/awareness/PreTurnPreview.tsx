@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '../../lib/api';
-import { font, ease } from '../../styles/tokens';
+import { font, ease, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 interface Props {
@@ -48,7 +48,7 @@ export function PreTurnPreview({ visible }: Props) {
 
   return (
     <div style={{
-      padding: '2px 12px 4px',
+      padding: `${space.xxs}px ${space.xl}px ${space.xs}px`,
       fontSize: 10,
       fontFamily: font.body,
       fontStyle: 'italic',

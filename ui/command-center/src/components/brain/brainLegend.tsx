@@ -25,6 +25,7 @@
 import type { LegendRow } from '../common/CanvasLegend';
 import { MEMORY_STRENGTH } from '../../lib/vocabulary';
 import { hex, MEMORY_FRESH, NODE_COLORS } from './graphPalette';
+import { space } from '../../styles/tokens';
 
 function Swatch({ color, shape }: { color: number; shape: 'sphere' | 'cube' | 'diamond' }) {
   const size = shape === 'sphere' ? 9 : 8;
@@ -58,7 +59,7 @@ export const BRAIN_VOCABULARY: LegendRow[] = [
   },
   {
     marker: (
-      <span style={{ display: 'inline-flex', gap: 2 }}>
+      <span style={{ display: 'inline-flex', gap: space.xxs }}>
         <Swatch color={NODE_COLORS.project} shape="cube" />
         <Swatch color={NODE_COLORS.tool} shape="cube" />
         <Swatch color={NODE_COLORS.organization} shape="cube" />
@@ -69,7 +70,7 @@ export const BRAIN_VOCABULARY: LegendRow[] = [
   },
   {
     marker: (
-      <span style={{ display: 'inline-flex', gap: 3 }}>
+      <span style={{ display: 'inline-flex', gap: space.xxs }}>
         <Swatch color={NODE_COLORS.concept} shape="diamond" />
         <Swatch color={NODE_COLORS.location} shape="diamond" />
       </span>

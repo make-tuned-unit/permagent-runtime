@@ -156,18 +156,21 @@ it('shows a Financier review badge on the approved pick and previews six rows', 
   expect(caption).toContain('Agent approved');
   expect(caption).not.toMatch(/gold/i);
   // And the badge itself explains what approval meant.
-  expect(container.querySelector('[data-testid="pick-financier-badge"]')?.getAttribute('title'))
-    .toMatch(/Financier/);
+  const badge = container.querySelector('[data-testid="pick-financier-badge"]') as HTMLElement;
+  expect(badge).toBeTruthy();
+  act(() => { (badge.parentElement as HTMLElement).focus(); });
+  expect(document.querySelector('[role="tooltip"]')?.textContent).toMatch(/Financier/);
 });
 
 it('labels the cross-link with what it does, not with who lives there', async () => {
   apiFetch.mockResolvedValue(board({ pickerEnabled: true, picks: [] }));
   await act(async () => { root.render(<FinanceView />); });
   await flush();
-  const link = container.querySelector('[data-testid="picks-world-link"]');
+  const link = container.querySelector('[data-testid="picks-world-link"]') as HTMLElement;
   // A bare agent name says who, never what pressing it does.
   expect(link?.textContent).toBe('View in World');
-  expect(link?.getAttribute('title')).toMatch(/Financier/);
+  act(() => { link.focus(); });
+  expect(document.querySelector('[role="tooltip"]')?.textContent).toMatch(/Financier/);
 });
 
 it('separates the scanner pool from the tickers the user added', async () => {
@@ -242,9 +245,14 @@ it('explains a filtered pick on the tag, and the tag opens the reason', async ()
   // The reason is not in the label: nearly every row carries this tag, and a
   // per-row phrase turns the column into fifteen sentences to read.
   expect(tag.textContent).not.toContain('looks like noise');
-  // Hovering is enough to get the reason, headline first.
-  expect(tag.getAttribute('title')).toContain('looks like noise');
-  expect(tag.getAttribute('title')).toContain('likely noise');
+  // Focus opens the Tooltip primitive (title no longer sets a native attribute).
+  await act(async () => { tag.focus(); });
+  const tipId = tag.getAttribute('aria-describedby');
+  expect(tipId).toBeTruthy();
+  const tip = tipId ? document.getElementById(tipId) : null;
+  expect(tip?.getAttribute('role')).toBe('tooltip');
+  expect(tip?.textContent).toContain('looks like noise');
+  expect(tip?.textContent).toContain('likely noise');
   // And the common case whispers: a hairline, no fill.
   expect(tag.style.getPropertyValue('--pa-btn-bg')).toBe('transparent');
   // The row starts closed, and the tag is what opens it.

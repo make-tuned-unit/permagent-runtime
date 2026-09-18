@@ -1,5 +1,5 @@
 import { memo, useState, type CSSProperties } from 'react';
-import { radius, textSize } from '../../../styles/tokens';
+import { duration, ease, radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import { SectionTitle, EmptyNote } from '../atoms';
@@ -12,6 +12,7 @@ import {
   type UseDueTodos,
 } from '../../../lib/useDueTodos';
 
+import { Tooltip } from '../../common/Tooltip';
 /**
  * Every dated to-do from every kanban board, soonest first (#todo-dashboard).
  *
@@ -43,8 +44,8 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
       borderRadius: radius.lg,
       background: colors.surface,
       border: `1px solid ${colors.border}`,
-      boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-      padding: 16,
+      boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
+      padding: space.xxl,
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
     }}>
@@ -55,10 +56,10 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
         // "nothing due" — and here the difference is "you're clear" versus
         // "you have no idea what's due". Say which one it is.
         <Centered>
-          <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 6 }}>
+          <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: space.sm }}>
             Couldn't load your to-dos
           </div>
-          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 10 }}>{error}</div>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.lg }}>{error}</div>
           <Button
             colors={colors}
             type="button"
@@ -85,7 +86,7 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
           Nothing due
         </EmptyNote>
       ) : (
-        <div style={{ flex: 1, overflowY: 'auto', marginTop: 4, marginRight: -8, paddingRight: 8 }}>
+        <div style={{ flex: 1, overflowY: 'auto', marginTop: space.xs, marginRight: -space.md, paddingRight: space.md }}>
           {groups.map(group => (
             <Group key={group.bucket} group={group} today={today} todos={todos} />
           ))}
@@ -111,8 +112,8 @@ function Group({ group, today, todos }: { group: DueGroup; today: string; todos:
       <div style={{
         fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.6,
         color: overdue ? colors.danger : colors.textDim,
-        fontWeight: 600, marginBottom: 6, position: 'sticky', top: 0,
-        background: colors.surface, paddingBottom: 2,
+        fontWeight: 600, marginBottom: space.sm, position: 'sticky', top: 0,
+        background: colors.surface, paddingBottom: space.xs,
       }}>
         {group.label} · {group.todos.length}
       </div>
@@ -126,7 +127,7 @@ function Group({ group, today, todos }: { group: DueGroup; today: string; todos:
 function TodoRow({
   todo, bucket, today, todos,
 }: { todo: DueTodo; bucket: DueBucket; today: string; todos: UseDueTodos }) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const [hovered, setHovered] = useState(false);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -146,12 +147,15 @@ function TodoRow({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '7px 8px', marginBottom: 2,
+        display: 'flex', alignItems: 'center', gap: space.lg,
+        padding: `${space.md}px`, marginBottom: space.xxs,
         borderRadius: radius.sm,
-        background: hovered ? colors.borderHi : 'transparent',
+        // Was `colors.borderHi` — a cyan-tinted hairline reused as a hover
+        // fill. Neutral `fillHover` matches D10/D8: rows get a visible hover,
+        // not a second tinted accent competing with the Decisions card's.
+        background: hovered ? colors.fillHover : 'transparent',
         opacity: busy ? 0.5 : 1,
-        transition: 'background 120ms ease, opacity 120ms ease',
+        transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}, opacity ${duration.fast}ms ${ease.out}`,
       }}
     >
       {/* Title + provenance. Clicking opens the card on its own board.
@@ -160,25 +164,26 @@ function TodoRow({
           gives them. The primitive wraps its children in one span, which has no
           such width to truncate against — the row would overflow instead of
           ellipsing. Left as a raw button. */}
-      <button
-        onClick={open}
-        title={`Open on the ${todo.projectName} board`}
-        style={{
-          flex: 1, minWidth: 0, textAlign: 'left', cursor: 'pointer',
-          background: 'transparent', border: 'none', padding: 0, color: 'inherit', font: 'inherit',
-        }}
-      >
-        <div style={{
-          fontSize: 12.5, color: colors.text,
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-        }}>{todo.title}</div>
-        <div style={{
-          fontSize: 10.5, color: colors.textDim, marginTop: 2,
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-        }}>
-          {todo.projectName} · {todo.columnName}
-        </div>
-      </button>
+      <Tooltip content={`Open on the ${todo.projectName} board`}>
+        <button
+          onClick={open}
+          style={{
+            flex: 1, minWidth: 0, textAlign: 'left', cursor: 'pointer',
+            background: 'transparent', border: 'none', padding: 0, color: 'inherit', font: 'inherit',
+          }}
+        >
+          <div style={{
+            fontSize: 12.5, color: colors.text,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>{todo.title}</div>
+          <div style={{
+            fontSize: 10.5, color: colors.textDim, marginTop: space.xxs,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {todo.projectName} · {todo.columnName}
+          </div>
+        </button>
+      </Tooltip>
 
       {editing ? (
         <input
@@ -192,59 +197,63 @@ function TodoRow({
             if (e.key === 'Escape') setEditing(false);
           }}
           style={{
-            fontSize: textSize.micro, padding: '2px 4px', colorScheme: 'inherit',
+            fontSize: textSize.micro, padding: `${space.xs}px`, colorScheme: 'inherit',
             borderRadius: radius.sm, border: `1px solid ${colors.border}`,
             background: colors.surface, color: colors.text,
           }}
         />
       ) : (
-        <Button
-          colors={colors}
-          variant="bare"
-          type="button"
-          onClick={() => setEditing(true)}
-          title="Change the due date"
-          style={{
-            '--pa-btn-bg': 'transparent',
-            '--pa-btn-fg': overdue ? colors.danger : colors.textMuted,
-            '--pa-btn-border': 'transparent',
-            '--pa-btn-bg-hover': colors.surfaceHi,
-            '--pa-btn-fg-hover': overdue ? colors.danger : colors.text,
-            '--pa-btn-bg-active': colors.surface,
-            '--pa-btn-pad': '2px 4px',
-            '--pa-btn-radius': `${radius.sm}px`,
-            '--pa-btn-weight': overdue ? 600 : 400,
-            fontSize: 10.5, whiteSpace: 'nowrap',
-            // Driven by the ROW's hover, not this button's — keep it inline.
-            textDecoration: hovered ? 'underline' : 'none',
-          } as CSSProperties}
-        >{relativeDueLabel(todo.dueDate, today)}</Button>
+        <Tooltip content="Change the due date">
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
+            onClick={() => setEditing(true)}
+            style={{
+              '--pa-btn-bg': 'transparent',
+              '--pa-btn-fg': overdue ? colors.danger : colors.textMuted,
+              '--pa-btn-border': 'transparent',
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-fg-hover': overdue ? colors.danger : colors.text,
+              '--pa-btn-bg-active': colors.surface,
+              '--pa-btn-pad': '2px 4px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              '--pa-btn-weight': overdue ? 600 : 400,
+              fontSize: 10.5, whiteSpace: 'nowrap',
+              // Driven by the ROW's hover, not this button's — keep it inline.
+              textDecoration: hovered ? 'underline' : 'none',
+            } as CSSProperties}
+          >{relativeDueLabel(todo.dueDate, today)}</Button>
+        </Tooltip>
       )}
 
-      <Button
-        colors={colors}
-        variant="bare"
-        type="button"
-        onClick={() => todos.dismiss(todo)}
-        disabled={busy}
-        aria-label={`Dismiss ${todo.title}`}
-        title="Hide from this list — the card stays on its board"
-        style={{
-          '--pa-btn-bg': 'transparent',
-          '--pa-btn-fg': colors.textDim,
-          '--pa-btn-border': 'transparent',
-          '--pa-btn-bg-hover': colors.surfaceHi,
-          '--pa-btn-fg-hover': colors.text,
-          '--pa-btn-bg-active': colors.surface,
-          '--pa-btn-pad': '0',
-          '--pa-btn-radius': `${radius.sm}px`,
-          '--pa-btn-weight': 400,
-          width: 20, height: 20, flexShrink: 0, lineHeight: '18px',
-          fontSize: textSize.small,
-          // Revealed by the ROW's hover, not this button's — keep it inline.
-          visibility: hovered ? 'visible' : 'hidden',
-        } as CSSProperties}
-      >×</Button>
+      <Tooltip content="Hide from this list — the card stays on its board">
+        <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
+            onClick={() => todos.dismiss(todo)}
+            disabled={busy}
+            aria-label={`Dismiss ${todo.title}`}
+            style={{
+              '--pa-btn-bg': 'transparent',
+              '--pa-btn-fg': colors.textDim,
+              '--pa-btn-border': 'transparent',
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-active': colors.surface,
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': `${radius.sm}px`,
+              '--pa-btn-weight': 400,
+              width: 20, height: 20, flexShrink: 0, lineHeight: '18px',
+              fontSize: textSize.small,
+              // Revealed by the ROW's hover, not this button's — keep it inline.
+              visibility: hovered ? 'visible' : 'hidden',
+            } as CSSProperties}
+          >×</Button>
+        </span>
+      </Tooltip>
     </div>
   );
 }

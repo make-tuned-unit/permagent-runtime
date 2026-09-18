@@ -24,8 +24,13 @@ import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
 import { VoiceVisualizer } from './VoiceVisualizer';
 import { handsFreeStatusLabel } from './voiceStatus';
-import { radius } from '../../styles/tokens';
+import { radius, space } from '../../styles/tokens';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
+
+/** The mic and its sibling chip are toolbar-dense controls, not prominent
+ *  ones, so they stay rounded rectangles rather than capsules (D5). */
+const CONTROL = 28;
 
 const STATE_LABELS: Record<VoiceState, string> = {
   idle: '',
@@ -193,43 +198,45 @@ export function VoiceButton() {
           ? { bg: colors.cyanSoft, fg: colors.cyan, border: `${colors.cyan}80`, fgHover: colors.cyan }
           : { bg: colors.surfaceHi, fg: colors.textMuted, border: colors.border, fgHover: colors.text };
 
+  const micTip =
+    state === 'idle' ? 'Enable voice (spacebar to talk)'
+    : state === 'ready' ? 'Hold to talk (spacebar)'
+    : isInterruptibleState(state) ? `Stop ${agentName} — click or press space to interrupt`
+    : STATE_LABELS[state];
+
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-      <Button
-        colors={colors}
-        variant="bare"
-        onClick={handleClick}
-        onPointerDown={state === 'ready' ? handlePointerDown : undefined}
-        onPointerUp={state === 'recording' ? handlePointerUp : undefined}
-        onPointerLeave={state === 'recording' ? handlePointerUp : undefined}
-        title={
-          state === 'idle' ? 'Enable voice (spacebar to talk)'
-          : state === 'ready' ? 'Hold to talk (spacebar)'
-          : isInterruptibleState(state) ? `Stop ${agentName} — click or press space to interrupt`
-          : STATE_LABELS[state]
-        }
-        aria-label="Voice"
-        style={{
-          '--pa-btn-bg': face.bg,
-          '--pa-btn-fg': face.fg,
-          '--pa-btn-border': face.border,
-          '--pa-btn-bg-hover': face.bg,
-          '--pa-btn-border-hover': face.border,
-          '--pa-btn-fg-hover': face.fgHover,
-          '--pa-btn-bg-active': face.bg,
-          '--pa-btn-pad': '0',
-          '--pa-btn-radius': `${radius.sm}px`,
-          width: 28,
-          height: 28,
-          flexShrink: 0,
-        } as CSSProperties}
-      >
-        <FiMic
-          size={12}
-          color={isActive ? stateColor : 'currentColor'}
-          style={{ display: 'block' }}
-        />
-      </Button>
+    <div style={{ display: 'flex', alignItems: 'center', gap: space.xs }}>
+      <Tooltip content={micTip}>
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={handleClick}
+          onPointerDown={state === 'ready' ? handlePointerDown : undefined}
+          onPointerUp={state === 'recording' ? handlePointerUp : undefined}
+          onPointerLeave={state === 'recording' ? handlePointerUp : undefined}
+          aria-label="Voice"
+          style={{
+            '--pa-btn-bg': face.bg,
+            '--pa-btn-fg': face.fg,
+            '--pa-btn-border': face.border,
+            '--pa-btn-bg-hover': face.bg,
+            '--pa-btn-border-hover': face.border,
+            '--pa-btn-fg-hover': face.fgHover,
+            '--pa-btn-bg-active': face.bg,
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': `${radius.sm}px`,
+            width: CONTROL,
+            height: CONTROL,
+            flexShrink: 0,
+          } as CSSProperties}
+        >
+          <FiMic
+            size={12}
+            color={isActive ? stateColor : 'currentColor'}
+            style={{ display: 'block' }}
+          />
+        </Button>
+      </Tooltip>
 
       {/* While the agent speaks, the waveform IS the label — a live frequency
           visualization instead of static "Speaking..." text. Clicking it
@@ -237,54 +244,56 @@ export function VoiceButton() {
           voice-activity detection (silence ends your turn, loud speech barges
           in), no spacebar needed. Click again to leave. */}
       {handsFree ? (
-        <Button
-          colors={colors}
-          onClick={() => {
-            void setHandsFree(false);
-            deactivate();
-          }}
-          title="Hands-free conversation is ON — click to stop listening"
-          style={{
-            '--pa-btn-bg': colors.cyanSoft,
-            '--pa-btn-fg': 'inherit',
-            '--pa-btn-border': `${colors.cyan}80`,
-            '--pa-btn-bg-hover': colors.cyanSoft,
-            '--pa-btn-border-hover': colors.cyan,
-            '--pa-btn-bg-active': colors.cyanSoft,
-            '--pa-btn-pad': '3px 8px',
-            '--pa-btn-radius': `${radius.sm}px`,
-            gap: 6,
-          } as CSSProperties}
-        >
-          {state === 'playing' ? (
-            <VoiceVisualizer getAnalyser={getAnalyser} active />
-          ) : (
-            <span style={{ fontSize: 10, color: colors.cyan, whiteSpace: 'nowrap' }}>
-              {handsFreeStatusLabel(state, gatedWakePhrase)}
-            </span>
-          )}
-        </Button>
+        <Tooltip content="Hands-free conversation is ON — click to stop listening">
+          <Button
+            colors={colors}
+            onClick={() => {
+              void setHandsFree(false);
+              deactivate();
+            }}
+            style={{
+              '--pa-btn-bg': colors.cyanSoft,
+              '--pa-btn-fg': 'inherit',
+              '--pa-btn-border': `${colors.cyan}80`,
+              '--pa-btn-bg-hover': colors.cyanSoft,
+              '--pa-btn-border-hover': colors.cyan,
+              '--pa-btn-bg-active': colors.cyanSoft,
+              '--pa-btn-pad': `${space.xs}px ${space.md}px`,
+              '--pa-btn-radius': `${radius.sm}px`,
+              gap: space.sm,
+            } as CSSProperties}
+          >
+            {state === 'playing' ? (
+              <VoiceVisualizer getAnalyser={getAnalyser} active />
+            ) : (
+              <span style={{ fontSize: 10, color: colors.cyan, whiteSpace: 'nowrap' }}>
+                {handsFreeStatusLabel(state, gatedWakePhrase)}
+              </span>
+            )}
+          </Button>
+        </Tooltip>
       ) : state === 'playing' && !error ? (
         // The waveform IS the control here: it has no padding of its own, so a
         // hover fill would sit flush against the bars and read as a glitch.
         // Press give and focus still arrive from `.pa-btn`.
-        <Button
-          colors={colors}
-          variant="bare"
-          onClick={() => void setHandsFree(true)}
-          title="Click to go hands-free — always listening, talk naturally"
-          aria-label="Go hands-free"
-          style={{
-            '--pa-btn-bg': 'transparent',
-            '--pa-btn-border': 'transparent',
-            '--pa-btn-bg-hover': 'transparent',
-            '--pa-btn-border-hover': 'transparent',
-            '--pa-btn-bg-active': 'transparent',
-            '--pa-btn-pad': '0',
-          } as CSSProperties}
-        >
-          <VoiceVisualizer getAnalyser={getAnalyser} active />
-        </Button>
+        <Tooltip content="Click to go hands-free — always listening, talk naturally">
+          <Button
+            colors={colors}
+            variant="bare"
+            onClick={() => void setHandsFree(true)}
+            aria-label="Go hands-free"
+            style={{
+              '--pa-btn-bg': 'transparent',
+              '--pa-btn-border': 'transparent',
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-border-hover': 'transparent',
+              '--pa-btn-bg-active': 'transparent',
+              '--pa-btn-pad': '0',
+            } as CSSProperties}
+          >
+            <VoiceVisualizer getAnalyser={getAnalyser} active />
+          </Button>
+        </Tooltip>
       ) : showLabel ? (
         <span style={{
           fontSize: 10,

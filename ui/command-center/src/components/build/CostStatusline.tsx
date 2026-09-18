@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
-import { font, textSize } from '../../styles/tokens';
+import { font, space, textSize } from '../../styles/tokens';
 import { formatCostMeter, type SubagentCostIncl } from '../../lib/costMeter';
 import { GLOSSARY } from '../../lib/vocabulary';
 import { useLiveGoals } from '../../lib/useLiveGoals';
 import { api } from '../../lib/api';
 import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 
+import { Tooltip } from '../common/Tooltip';
 function budgetTitle(codingSpend: ReturnType<typeof useCommandCenter.getState>['codingSpend']): string {
   const budget = codingSpend?.budget;
   if (!budget) return GLOSSARY.costMeter;
@@ -101,76 +102,79 @@ export function CostStatusline() {
   const note = routeNote?.hold_note || routeNote?.routing_note;
 
   return (
-    <div
-      role="status"
-      aria-label={meter.ariaLabel}
-      // The line compresses four ideas into about forty characters — "37% ctx",
-      // "cache saved $0.12", "incl. 2 subagents". The audience is technical and
-      // the severity is low, but a term the interface invents still gets
-      // defined somewhere, and hover is the cheapest somewhere on a status bar
-      // with no room for prose.
-      title={budgetTitle(codingSpend)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 2,
-        padding: '6px 18px',
-        borderTop: `1px solid ${colors.border}`,
-        fontFamily: font.mono,
-        fontSize: textSize.micro,
-        color: colors.textMuted,
-        flexShrink: 0,
-        overflow: 'hidden',
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {/* THE authoritative number: running session spend. */}
-      <span
-        style={{
-          fontWeight: 700,
-          color: colors.text,
-          fontVariantNumeric: 'tabular-nums',
-        }}
-      >
-        {meter.cost}
+    // The line compresses four ideas into about forty characters — "37% ctx",
+    // "cache saved $0.12", "incl. 2 subagents". The audience is technical and
+    // the severity is low, but a term the interface invents still gets defined
+    // somewhere, and the tip is the cheapest somewhere on a status bar with no
+    // room for prose. `budgetTitle` spends that room on the live projection
+    // when there is one and falls back to the glossary entry when there isn't.
+    <Tooltip content={budgetTitle(codingSpend)}>
+      <span tabIndex={0} style={{ outline: 'none' }}>
+        <div
+          role="status"
+          aria-label={meter.ariaLabel}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: space.xxs,
+            padding: `${space.sm}px 18px`,
+            borderTop: `1px solid ${colors.border}`,
+            fontFamily: font.mono,
+            fontSize: textSize.micro,
+            color: colors.textMuted,
+            flexShrink: 0,
+            overflow: 'hidden',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {/* THE authoritative number: running session spend. */}
+          <span
+            style={{
+              fontWeight: 700,
+              color: colors.text,
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {meter.cost}
+          </span>
+          {meter.segments.map((seg, i) => {
+            const isSaving = seg.startsWith('cache saved');
+            // The fail-closed estimate disclosure needs to read as a caution, not
+            // as ordinary supporting context — colors.warning exists on the theme,
+            // so use it; a theme without one would fall back to textMuted rather
+            // than inventing a color that isn't part of the design system.
+            const isEstimated = seg === 'estimated — no published price';
+            return (
+              <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
+                  ·
+                </span>
+                <span
+                  style={{
+                    color: isSaving
+                      ? colors.success
+                      : isEstimated
+                        ? (colors.warning ?? colors.textMuted)
+                        : colors.textMuted,
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
+                  {seg}
+                </span>
+              </span>
+            );
+          })}
+          {note && (
+            <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+              <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
+                ·
+              </span>
+              <span style={{ color: colors.textMuted }}>{note}</span>
+            </span>
+          )}
+          <RoleRoutingPrompt variant="compact" />
+        </div>
       </span>
-
-      {meter.segments.map((seg, i) => {
-        const isSaving = seg.startsWith('cache saved');
-        // The fail-closed estimate disclosure needs to read as a caution, not
-        // as ordinary supporting context — colors.warning exists on the theme,
-        // so use it; a theme without one would fall back to textMuted rather
-        // than inventing a color that isn't part of the design system.
-        const isEstimated = seg === 'estimated — no published price';
-        return (
-          <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>
-            <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
-              ·
-            </span>
-            <span
-              style={{
-                color: isSaving
-                  ? colors.success
-                  : isEstimated
-                    ? (colors.warning ?? colors.textMuted)
-                    : colors.textMuted,
-                fontVariantNumeric: 'tabular-nums',
-              }}
-            >
-              {seg}
-            </span>
-          </span>
-        );
-      })}
-      {note && (
-        <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-          <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
-            ·
-          </span>
-          <span style={{ color: colors.textMuted }}>{note}</span>
-        </span>
-      )}
-      <RoleRoutingPrompt variant="compact" />
-    </div>
+    </Tooltip>
   );
 }

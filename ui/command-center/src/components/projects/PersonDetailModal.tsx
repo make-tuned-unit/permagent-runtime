@@ -31,22 +31,33 @@
  * PersonDetailModalHost is mounted once at the app root and renders the overlay
  * dock when the target was opened from a project (PeopleView owns the inline
  * case so the graph stays visible beside it).
+ *
+ * The panel itself is a `common/DetailModal` (R12). It used to be
+ * `PersonDetailShell`, 108 lines of second modal: its own header/badge/close
+ * row, its own scrollable body, its own footer, its own Escape handler and its
+ * own hand-rolled glass, each of them a re-implementation of the shared shell
+ * that then drifted from it. All that is left here is WHERE the panel sits —
+ * `PersonDetailDock`, below — because that is the only thing about this
+ * surface that was ever actually different.
  */
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { FiBookOpen, FiCalendar, FiCheck, FiCheckSquare, FiExternalLink, FiFileText, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
+import { FiBookOpen, FiCalendar, FiCheck, FiCheckSquare, FiExternalLink, FiFileText, FiPlus, FiTrash2 } from 'react-icons/fi';
 import { apiFetch } from '../../lib/api';
 import { hapticSuccess } from '../../lib/haptic';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
-import { ease, font, radius, textSize } from '../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { TITLEBAR_HEIGHT } from '../../lib/windowChrome';
 import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
+import { DetailModal } from '../common/DetailModal';
 import type { DeleteReport, MergeReport, Person, PersonActivity, PersonAssociation, PersonMeeting, PersonProject, PersonRelationship, UndoReport } from './types';
 import { PersonFace } from '../people/PersonFace';
 import { MergePersonPanel } from '../people/MergePersonPanel';
 
+import { Tooltip } from '../common/Tooltip';
 /**
  * The relationships people actually record, offered by name. The graph stores
  * a free-form predicate and will take anything, so this is a set of
@@ -641,107 +652,120 @@ export function PersonDetailModal({
   );
 
   return (
-    <PersonDetailShell variant={variant} title={view.display_name} badge={badge} onClose={handleClose} footer={footer}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {deletedReport ? (
-          <DeletedCard colors={colors} report={deletedReport} onClose={onClose} />
-        ) : merging ? (
-          <MergePersonPanel person={view} onDone={handleMergeDone} onCancel={() => setMerging(false)} />
-        ) : (
-          <>
-            {mergeReport && (
-              <MergeResultCard
+    <PersonDetailDock variant={variant}>
+      <DetailModal
+        placement="contained"
+        title={view.display_name}
+        badge={badge}
+        onClose={handleClose}
+        footer={footer}
+        bodyStyle={{ padding: space.xxl }}
+        // Six actions in a 400px dock: they wrap, and they read left-to-right
+        // from the primary pair rather than being right-aligned against the
+        // destructive ones.
+        footerStyle={{ flexWrap: 'wrap', justifyContent: 'flex-start', gap: space.md }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
+          {deletedReport ? (
+            <DeletedCard colors={colors} report={deletedReport} onClose={onClose} />
+          ) : merging ? (
+            <MergePersonPanel person={view} onDone={handleMergeDone} onCancel={() => setMerging(false)} />
+          ) : (
+            <>
+              {mergeReport && (
+                <MergeResultCard
+                  colors={colors}
+                  report={mergeReport}
+                  undoing={undoing}
+                  undoReport={undoReport}
+                  undoError={undoError}
+                  onUndo={undoMerge}
+                />
+              )}
+              {deleteStep === 1 && (
+                <DeleteWarningCard
+                  colors={colors}
+                  name={view.display_name}
+                  meetingsCount={meetings.length}
+                  projectsCount={projectsStatus === 'error' ? null : personProjects.length}
+                  deleting={deleting}
+                  error={deleteError}
+                  onCancel={() => { setDeleteStep(0); setDeleteError(null); }}
+                  onConfirm={doDelete}
+                />
+              )}
+              <EditForm
                 colors={colors}
-                report={mergeReport}
-                undoing={undoing}
-                undoReport={undoReport}
-                undoError={undoError}
-                onUndo={undoMerge}
+                personName={view.display_name}
+                draft={draft}
+                onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
               />
-            )}
-            {deleteStep === 1 && (
-              <DeleteWarningCard
+              {association && (
+                <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>
+                  {association.project_role ? `${association.project_role} · ` : ''}Associated {fmtTime(association.associated_at)}
+                </div>
+              )}
+              <PersonProjects
                 colors={colors}
-                name={view.display_name}
-                meetingsCount={meetings.length}
-                projectsCount={projectsStatus === 'error' ? null : personProjects.length}
-                deleting={deleting}
-                error={deleteError}
-                onCancel={() => { setDeleteStep(0); setDeleteError(null); }}
-                onConfirm={doDelete}
+                rows={personProjects}
+                status={projectsStatus}
+                onRetry={loadProjects}
+                onOpen={openProject}
               />
-            )}
-            <EditForm
-              colors={colors}
-              personName={view.display_name}
-              draft={draft}
-              onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
-            />
-            {association && (
-              <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>
-                {association.project_role ? `${association.project_role} · ` : ''}Associated {fmtTime(association.associated_at)}
-              </div>
-            )}
-            <PersonProjects
-              colors={colors}
-              rows={personProjects}
-              status={projectsStatus}
-              onRetry={loadProjects}
-              onOpen={openProject}
-            />
-            <RelatedPeople colors={colors} rows={relationships} people={allPeople} status={relatedStatus}
-              adding={addingRelationship} targetId={targetId} predicate={predicate}
-              onStart={() => setAddingRelationship(true)} onCancel={() => setAddingRelationship(false)}
-              onTarget={setTargetId} onPredicate={setPredicate} onAdd={addRelationship} onRemove={removeRelationship} />
-            <MeetingsSection
-              colors={colors}
-              personName={view.display_name}
-              rows={meetings}
-              projects={personProjects}
-              status={meetingsStatus}
-              adding={addingMeeting}
-              title={meetingTitle}
-              starts={meetingStarts}
-              notes={meetingNotes}
-              projectId={meetingProjectId}
-              followUp={followUp}
-              followUpAt={followUpAt}
-              followUpNote={followUpNote}
-              saving={savingMeeting}
-              onStart={() => {
-                setAddingMeeting(true);
-                setFollowUpAt(plusDaysLocal(meetingStarts || localDateTimeValue(), 7));
-              }}
-              onCancel={() => setAddingMeeting(false)}
-              onTitle={setMeetingTitle}
-              onStarts={v => {
-                setMeetingStarts(v);
-                if (followUp) setFollowUpAt(plusDaysLocal(v, 7));
-              }}
-              onNotes={setMeetingNotes}
-              onProject={setMeetingProjectId}
-              onFollowUp={setFollowUp}
-              onFollowUpAt={setFollowUpAt}
-              onFollowUpNote={setFollowUpNote}
-              onAdd={addMeeting}
-              onRetry={loadMeetings}
-              onFollowUpDone={markFollowUpDone}
-            />
-            <PersonActivityTimeline colors={colors} rows={activity} status={activityStatus} onRetry={loadActivity} />
+              <RelatedPeople colors={colors} rows={relationships} people={allPeople} status={relatedStatus}
+                adding={addingRelationship} targetId={targetId} predicate={predicate}
+                onStart={() => setAddingRelationship(true)} onCancel={() => setAddingRelationship(false)}
+                onTarget={setTargetId} onPredicate={setPredicate} onAdd={addRelationship} onRemove={removeRelationship} />
+              <MeetingsSection
+                    colors={colors}
+                    personName={view.display_name}
+                    rows={meetings}
+                    projects={personProjects}
+                    status={meetingsStatus}
+                    adding={addingMeeting}
+                    title={meetingTitle}
+                    starts={meetingStarts}
+                    notes={meetingNotes}
+                    projectId={meetingProjectId}
+                    followUp={followUp}
+                    followUpAt={followUpAt}
+                    followUpNote={followUpNote}
+                    saving={savingMeeting}
+                    onStart={() => {
+                      setAddingMeeting(true);
+                      setFollowUpAt(plusDaysLocal(meetingStarts || localDateTimeValue(), 7));
+                    }}
+                    onCancel={() => setAddingMeeting(false)}
+                    onTitle={setMeetingTitle}
+                    onStarts={v => {
+                      setMeetingStarts(v);
+                      if (followUp) setFollowUpAt(plusDaysLocal(v, 7));
+                    }}
+                    onNotes={setMeetingNotes}
+                    onProject={setMeetingProjectId}
+                    onFollowUp={setFollowUp}
+                    onFollowUpAt={setFollowUpAt}
+                    onFollowUpNote={setFollowUpNote}
+                    onAdd={addMeeting}
+                    onRetry={loadMeetings}
+                    onFollowUpDone={markFollowUpDone}
+              />
+              <PersonActivityTimeline colors={colors} rows={activity} status={activityStatus} onRetry={loadActivity} />
 
-            {error && (
-              <div style={{
-                fontSize: textSize.caption, color: colors.danger,
-                borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-                background: colors.danger + '14', padding: '8px 12px',
-              }}>
-                {error}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </PersonDetailShell>
+              {error && (
+                <div style={{
+                  fontSize: textSize.caption, color: colors.danger,
+                  borderRadius: radius.md, border: `1px solid ${colors.danger}`,
+                  background: colors.danger + '14', padding: `${space.md}px ${space.xl}px`,
+                }}>
+                  {error}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </DetailModal>
+    </PersonDetailDock>
   );
 }
 
@@ -758,9 +782,9 @@ function MergeResultCard({ colors, report, undoing, undoReport, undoError, onUnd
 }) {
   return (
     <div style={{
-      display: 'flex', flexDirection: 'column', gap: 6,
+      display: 'flex', flexDirection: 'column', gap: space.sm,
       borderRadius: radius.md, border: `1px solid ${colors.cyan}`,
-      background: colors.cyanSoft, padding: '10px 12px',
+      background: colors.cyanSoft, padding: `${space.lg}px ${space.xl}px`,
     }}>
       <div style={{ fontSize: textSize.caption, color: colors.text }}>{report.summary}</div>
       {undoReport ? (
@@ -768,13 +792,13 @@ function MergeResultCard({ colors, report, undoing, undoReport, undoError, onUnd
           Undone — restored {undoReport.restored_name} ({undoReport.meetings_restored} meeting{undoReport.meetings_restored === 1 ? '' : 's'},{' '}
           {undoReport.project_links_restored} project link{undoReport.project_links_restored === 1 ? '' : 's'}).
           {undoReport.not_reverted.length > 0 && (
-            <div style={{ marginTop: 4 }}>
+            <div style={{ marginTop: space.xs }}>
               Not reverted: {undoReport.not_reverted.join(', ')}
             </div>
           )}
         </div>
       ) : (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
           <Button colors={colors} onClick={onUndo} pending={undoing} disabled={undoing} style={miniVars(colors)}>
             {undoing ? 'Undoing…' : 'Undo merge'}
           </Button>
@@ -802,9 +826,9 @@ function DeleteWarningCard({ colors, name, meetingsCount, projectsCount, deletin
 }) {
   return (
     <div style={{
-      display: 'flex', flexDirection: 'column', gap: 8,
+      display: 'flex', flexDirection: 'column', gap: space.md,
       borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-      background: colors.danger + '14', padding: '10px 12px',
+      background: colors.danger + '14', padding: `${space.lg}px ${space.xl}px`,
     }}>
       <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>
         Delete {name}? This can't be undone.
@@ -817,7 +841,7 @@ function DeleteWarningCard({ colors, name, meetingsCount, projectsCount, deletin
         {' '}for {name}.
       </div>
       {error && <div style={{ fontSize: textSize.micro, color: colors.danger }}>{error}</div>}
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: space.md }}>
         <Button colors={colors} onClick={onCancel} disabled={deleting} style={ghostVars(colors)}>Keep</Button>
         <Button colors={colors} onClick={onConfirm} pending={deleting} disabled={deleting} style={dangerVars(colors)}>
           {deleting ? 'Deleting…' : `Confirm delete ${name}`}
@@ -836,7 +860,7 @@ function DeletedCard({ colors, report, onClose }: {
   onClose: () => void;
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
       <div style={{ fontSize: textSize.small, color: colors.text }}>
         Deleted {report.display_name}: {report.meetings_deleted} meeting{report.meetings_deleted === 1 ? '' : 's'},{' '}
         {report.project_links_deleted} project link{report.project_links_deleted === 1 ? '' : 's'},{' '}
@@ -846,9 +870,9 @@ function DeletedCard({ colors, report, onClose }: {
       {report.retained.length > 0 && (
         <div style={{
           fontSize: textSize.micro, color: colors.textMuted, borderRadius: radius.md,
-          border: `1px solid ${colors.border}`, padding: '8px 10px',
+          border: `1px solid ${colors.border}`, padding: `${space.md}px ${space.lg}px`,
         }}>
-          <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 4 }}>
+          <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: space.xs }}>
             What stays put
           </div>
           {report.retained.map((line, i) => <div key={i}>{line}</div>)}
@@ -884,12 +908,12 @@ function PersonProjects({ colors, rows, status, onRetry, onOpen }: {
 }) {
   return (
     <section data-testid="person-projects">
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 7 }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: space.sm }}>
         <SectionLabel colors={colors}>Projects</SectionLabel>
       </div>
       {status === 'loading' && rows.length === 0 && <Small colors={colors}>Loading projects…</Small>}
       {status === 'error' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
           <Small colors={colors}>Couldn't load this person's projects.</Small>
           <Button colors={colors} onClick={onRetry} style={miniVars(colors)}>Try again</Button>
         </div>
@@ -899,7 +923,7 @@ function PersonProjects({ colors, rows, status, onRetry, onOpen }: {
       )}
       {rows.length > 0 && (
         <>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm }}>
             {rows.map(row => (
               <Chip
                 key={row.project_id}
@@ -919,7 +943,7 @@ function PersonProjects({ colors, rows, status, onRetry, onOpen }: {
               says so, and this is the surface you land on from it, so the two
               have to agree. Only when the list actually loaded: a failed fetch
               gets the message above, never a claim about the picture. */}
-          <div data-testid="person-projects-cluster" style={{ marginTop: 6 }}>
+          <div data-testid="person-projects-cluster" style={{ marginTop: space.sm }}>
             <Small colors={colors}>
               {rows.length > 1
                 ? `In the People graph they bridge these ${rows.length} groups.`
@@ -939,19 +963,19 @@ function RelatedPeople({ colors, rows, people, status, adding, targetId, predica
   onAdd: () => void; onRemove: (r: PersonRelationship) => void;
 }) {
   return <section>
-    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 7 }}>
+    <div style={{ display: 'flex', alignItems: 'center', marginBottom: space.sm }}>
       <SectionLabel colors={colors}>Related people</SectionLabel><span style={{ flex: 1 }} />
       {!adding && <Button colors={colors} aria-label="Add related person" onClick={onStart} style={miniVars(colors)}><FiPlus size={12} />Add</Button>}
     </div>
     {status === 'loading' && <Small colors={colors}>Loading relationships…</Small>}
     {status === 'error' && <Small colors={colors}>Couldn't load relationships.</Small>}
     {status === 'ready' && rows.length === 0 && !adding && <Small colors={colors}>No related people yet.</Small>}
-    {rows.map(row => <div key={`${row.from_entity_uuid}-${row.to_entity_uuid}-${row.predicate}`} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${colors.border}` }}>
+    {rows.map(row => <div key={`${row.from_entity_uuid}-${row.to_entity_uuid}-${row.predicate}`} style={{ display: 'flex', gap: space.md, alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${colors.border}` }}>
       <span style={{ color: colors.text, fontSize: textSize.caption, fontWeight: 600 }}>{row.other_person.display_name}</span>
       <span style={{ color: colors.textDim, fontSize: textSize.micro }}>{row.predicate.replace(/_/g, ' ')}</span><span style={{ flex: 1 }} />
       <Button colors={colors} variant="bare" aria-label={`Remove ${row.other_person.display_name} relationship`} onClick={() => onRemove(row)} style={iconVars(colors)}><FiTrash2 size={12} /></Button>
     </div>)}
-    {adding && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, marginTop: 8 }}>
+    {adding && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: space.sm, marginTop: space.md }}>
       <select aria-label="Related person" value={targetId} onChange={e => onTarget(e.target.value)} style={control(colors)}><option value="">Choose person…</option>{people.map(p => <option key={p.entity_uuid} value={p.entity_uuid}>{p.display_name}</option>)}</select>
       {/* The field used to be an empty box whose only hint was the raw graph
           predicate, `related_to` — a schema token asked of the user as though
@@ -969,7 +993,7 @@ function RelatedPeople({ colors, rows, people, status, adding, targetId, predica
       <datalist id="person-relationship-predicates">
         {RELATIONSHIP_PREDICATES.map(p => <option key={p.value} value={p.value} label={p.label} />)}
       </datalist>
-      <div style={{ display: 'flex', gap: 4 }}><Button colors={colors} onClick={onCancel} style={miniVars(colors)}>Cancel</Button><Button colors={colors} onClick={onAdd} disabled={!targetId || !predicate.trim()} style={miniVars(colors)}>Add</Button></div>
+      <div style={{ display: 'flex', gap: space.xs }}><Button colors={colors} onClick={onCancel} style={miniVars(colors)}>Cancel</Button><Button colors={colors} onClick={onAdd} disabled={!targetId || !predicate.trim()} style={miniVars(colors)}>Add</Button></div>
     </div>}
   </section>;
 }
@@ -985,28 +1009,28 @@ function MeetingsSection({ colors, personName, rows, projects, status, adding, t
   onAdd: () => void; onRetry: () => void; onFollowUpDone: (m: PersonMeeting) => void;
 }) {
   return <section>
-    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 7 }}>
+    <div style={{ display: 'flex', alignItems: 'center', marginBottom: space.sm }}>
       <SectionLabel colors={colors}>Meetings</SectionLabel><span style={{ flex: 1 }} />
       {!adding && <Button colors={colors} aria-label="Log a meeting" onClick={onStart} style={miniVars(colors)}><FiPlus size={12} />Add</Button>}
     </div>
     {status === 'loading' && <Small colors={colors}>Loading meetings…</Small>}
     {status === 'error' && <Small colors={colors}>Couldn't load meetings. <Button colors={colors} variant="bare" className="hover:underline" onClick={onRetry} style={linkVars(colors)}>Retry</Button></Small>}
     {status === 'ready' && rows.length === 0 && !adding && <Small colors={colors}>No meetings logged yet. Add one to put it on their profile and Apple Calendar.</Small>}
-    {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}>
-      <span style={{ color: colors.cyan, marginTop: 2 }}><FiCalendar size={12} /></span>
+    {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: space.md, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}>
+      <span style={{ color: colors.cyan, marginTop: space.xxs }}><FiCalendar size={12} /></span>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{row.title}</div>
         <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>{fmtTime(row.starts_at)}{row.calendar_synced ? ' · Calendar' : ''}{row.calendar_uid ? ' · from iCal' : ''}</div>
         {row.notes ? <div style={{ fontSize: textSize.micro, color: colors.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.notes}</div> : null}
         {row.follow_up_at && !row.follow_up_done && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginTop: space.xs }}>
             <span style={{ fontSize: textSize.micro, color: colors.cyan }}>Follow up {fmtTime(row.follow_up_at)}{row.follow_up_note ? ` · ${row.follow_up_note}` : ''}</span>
             <Button colors={colors} aria-label="Mark follow-up done" onClick={() => onFollowUpDone(row)} style={miniVars(colors)}><FiCheck size={12} />Done</Button>
           </div>
         )}
       </div>
     </div>)}
-    {adding && <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+    {adding && <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, marginTop: space.md }}>
       <input aria-label="Meeting title" value={title} onChange={e => onTitle(e.target.value)} placeholder={`Meeting with ${personName}`} style={control(colors)} />
       <input aria-label="Meeting time" type="datetime-local" value={starts} onChange={e => onStarts(e.target.value)} style={control(colors)} />
       {projects.length > 0 && (
@@ -1016,7 +1040,7 @@ function MeetingsSection({ colors, personName, rows, projects, status, adding, t
         </select>
       )}
       <textarea aria-label="Meeting notes" value={notes} onChange={e => onNotes(e.target.value)} placeholder="What you covered" rows={3} style={{ ...control(colors), resize: 'vertical' }} />
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: textSize.caption, color: colors.text }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: space.md, fontSize: textSize.caption, color: colors.text }}>
         <input aria-label="Schedule a follow-up" type="checkbox" checked={followUp} onChange={e => onFollowUp(e.target.checked)} />
         Follow up in a week
       </label>
@@ -1026,7 +1050,7 @@ function MeetingsSection({ colors, personName, rows, projects, status, adding, t
           <input aria-label="Follow-up note" value={followUpNote} onChange={e => onFollowUpNote(e.target.value)} placeholder="Send recap, check in…" style={control(colors)} />
         </>
       )}
-      <div style={{ display: 'flex', gap: 4 }}>
+      <div style={{ display: 'flex', gap: space.xs }}>
         <Button colors={colors} onClick={onCancel} style={miniVars(colors)}>Cancel</Button>
         <Button colors={colors} onClick={onAdd} pending={saving} disabled={saving || !starts} style={miniVars(colors)}>{saving ? 'Saving…' : 'Log meeting'}</Button>
       </div>
@@ -1040,12 +1064,12 @@ function PersonActivityTimeline({ colors, rows, status, onRetry }: { colors: Ret
     {status === 'loading' && <Small colors={colors}>Loading activity…</Small>}
     {status === 'error' && <Small colors={colors}>Couldn't load activity. <Button colors={colors} variant="bare" className="hover:underline" onClick={onRetry} style={linkVars(colors)}>Retry</Button></Small>}
     {status === 'ready' && rows.length === 0 && <Small colors={colors}>No activity referencing this person yet.</Small>}
-    {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}><span style={{ color: colors.cyan, marginTop: 2 }}>{icon(row.kind)}</span><div style={{ minWidth: 0 }}><div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{row.title}</div><div style={{ fontSize: textSize.micro, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.detail}</div><div style={{ fontSize: 10, color: colors.textDim }}>{fmtTime(row.timestamp)}</div></div></div>)}
+    {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: space.md, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}><span style={{ color: colors.cyan, marginTop: space.xxs }}>{icon(row.kind)}</span><div style={{ minWidth: 0 }}><div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{row.title}</div><div style={{ fontSize: textSize.micro, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.detail}</div><div style={{ fontSize: 10, color: colors.textDim }}>{fmtTime(row.timestamp)}</div></div></div>)}
   </section>;
 }
 
 function SectionLabel({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>{children}</div>; }
-function Small({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 6 }}>{children}</div>; }
+function Small({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.sm }}>{children}</div>; }
 
 /** A profile link rendered as a button: clicking navigates the in-app browser
  *  on the Build tab. Not an <a href>, deliberately — an anchor would hand the
@@ -1057,25 +1081,26 @@ function LinkButton({ colors, label, title, onClick }: {
   onClick: () => void;
 }) {
   return (
-    <Button
-      colors={colors}
-      variant="bare"
-      className="hover:underline"
-      type="button"
-      onClick={e => { e.preventDefault(); e.stopPropagation(); onClick(); }}
-      title={title}
-      style={{
-        '--pa-btn-fg': colors.cyan,
-        '--pa-btn-bg-hover': 'transparent',
-        '--pa-btn-bg-active': 'transparent',
-        '--pa-btn-pad': '0',
-        fontSize: 'inherit', fontFamily: 'inherit',
-        gap: 4,
-      } as CSSProperties}
-    >
-      <FiExternalLink size={11} />
-      {label}
-    </Button>
+    <Tooltip content={title}>
+      <Button
+        colors={colors}
+        variant="bare"
+        className="hover:underline"
+        type="button"
+        onClick={e => { e.preventDefault(); e.stopPropagation(); onClick(); }}
+        style={{
+          '--pa-btn-fg': colors.cyan,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-bg-active': 'transparent',
+          '--pa-btn-pad': '0',
+          fontSize: 'inherit', fontFamily: 'inherit',
+          gap: space.xs,
+        } as CSSProperties}
+      >
+        <FiExternalLink size={11} />
+        {label}
+      </Button>
+    </Tooltip>
   );
 }
 
@@ -1087,23 +1112,23 @@ function EditForm({ colors, personName, draft, onChange }: {
 }) {
   const openInBrowser = useBrowserNavigate();
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.xl }}>
       {EDITABLE_FIELDS.map(({ key, label, multiline, placeholder, link }) => {
         const href = link ? safeLink(draft[key]) : null;
         return (
-          <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
             <span style={{
-              display: 'flex', alignItems: 'center', gap: 8,
+              display: 'flex', alignItems: 'center', gap: space.md,
               fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
               textTransform: 'uppercase', letterSpacing: '0.04em',
             }}>
               {label}
               {href && (
                 <LinkButton
-                  colors={colors}
-                  label={key === 'personal_site' ? 'Open site' : key === 'photo_url' ? 'Open image' : 'Open profile'}
-                  title={href}
-                  onClick={() => openInBrowser(href)}
+                    colors={colors}
+                    label={key === 'personal_site' ? 'Open site' : key === 'photo_url' ? 'Open image' : 'Open profile'}
+                    title={href}
+                    onClick={() => openInBrowser(href)}
                 />
               )}
             </span>
@@ -1133,131 +1158,72 @@ function EditForm({ colors, personName, draft, onChange }: {
   );
 }
 
-function PersonDetailShell({
-  variant,
-  title,
-  badge,
-  onClose,
-  footer,
-  children,
-}: {
+/** The dock is 400px wide in both placements — wide enough for the widest
+ *  thing in it (a datetime input beside its label) and narrow enough that the
+ *  board or the graph it opens over is still legible beside it. */
+const DOCK_WIDTH = 400;
+
+/**
+ * Where the person panel sits — and, after R12, the only thing this file still
+ * decides about the panel's chrome.
+ *
+ * `overlay` pins it to the window's right edge (opened from a project's People
+ * list, over the board). `inline` docks it into PeopleView's layout, where the
+ * graph shrinks to make room and stays live beside it — which is exactly why
+ * `DetailModal` is asked for `placement="contained"` and not for a modal: a
+ * scrim would black out the graph this panel exists to explain, and a focus
+ * trap would swallow Tab on a surface the user can still see and still click.
+ *
+ * `data-testid` rides here now because the dock IS the panel from the outside;
+ * PeopleView's tests locate the open panel by it.
+ */
+function PersonDetailDock({ variant, children }: {
   variant: 'inline' | 'overlay';
-  title: string;
-  badge?: { label: string; color: string; bg: string } | null;
-  onClose: () => void;
-  footer?: ReactNode;
   children: ReactNode;
 }) {
-  const { colors, theme, reduceMotion } = useTheme();
-
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [onClose]);
-
-  const panel = (
-    <div
-      data-testid="person-detail-panel"
-      style={{
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        background: theme === 'silver' ? 'rgba(255,255,255,0.92)' : 'rgba(20,28,48,0.92)',
-        backdropFilter: 'blur(24px) saturate(140%)',
-        WebkitBackdropFilter: 'blur(24px) saturate(140%)',
-        borderLeft: `1px solid ${theme === 'silver' ? 'rgba(167,176,190,0.35)' : 'rgba(0,213,255,0.16)'}`,
-        boxShadow: theme === 'silver'
-          ? '0 24px 60px rgba(30,37,48,0.12)'
-          : '0 24px 60px rgba(0,0,0,0.35)',
-      }}
-    >
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '14px 16px',
-        borderBottom: `1px solid ${colors.border}`,
-        flexShrink: 0,
-      }}>
-        <span style={{
-          fontFamily: font.display, fontSize: textSize.heading, fontWeight: 600,
-          color: colors.text, flex: 1, minWidth: 0,
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>
-          {title}
-        </span>
-        {badge && (
-          <span style={{
-            fontFamily: font.mono, fontSize: 10, letterSpacing: '0.04em',
-            textTransform: 'uppercase', borderRadius: radius.pill, padding: '2px 9px',
-            flexShrink: 0, color: badge.color, background: badge.bg,
-          }}>
-            {badge.label}
-          </span>
-        )}
-        <Button
-          colors={colors}
-          variant="bare"
-          onClick={onClose}
-          title="Close"
-          aria-label="Close"
-          style={{
-            '--pa-btn-fg': colors.textMuted,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-bg-hover': 'transparent',
-            '--pa-btn-pad': '4px',
-          } as CSSProperties}
-        >
-          <FiX size={16} />
-        </Button>
-      </div>
-      <div style={{ overflow: 'auto', padding: '16px', flex: 1 }}>
-        {children}
-      </div>
-      {footer && (
-        <div style={{
-          padding: '12px 16px', borderTop: `1px solid ${colors.border}`,
-          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
-          flexShrink: 0,
-        }}>
-          {footer}
-        </div>
-      )}
-    </div>
-  );
+  const { reduceMotion } = useTheme();
 
   if (variant === 'inline') {
     return (
-      <div style={{
-        width: 400, flexShrink: 0, height: '100%', minHeight: 0,
-        transition: reduceMotion ? 'none' : `width 240ms ${ease.out}`,
-      }}>
-        {panel}
+      <div
+        data-testid="person-detail-panel"
+        style={{
+          width: DOCK_WIDTH, flexShrink: 0, height: '100%', minHeight: 0,
+          transition: reduceMotion ? 'none' : `width ${duration.smooth}ms ${ease.smooth}`,
+        }}
+      >
+        {children}
       </div>
     );
   }
 
   return (
-    <div style={{
-      position: 'fixed', top: 28, right: 0, bottom: 0, width: 400, zIndex: 80,
-    }}>
-      {panel}
+    <div
+      data-testid="person-detail-panel"
+      style={{
+        // The overlay dock starts below the titlebar band rather than under
+        // it. `TITLEBAR_HEIGHT` (lib/windowChrome.ts) IS `shell.titlebar`
+        // (#1173) — the one source for that geometry, not a re-guessed local.
+        position: 'fixed', top: TITLEBAR_HEIGHT, right: 0, bottom: 0,
+        width: DOCK_WIDTH, zIndex: 80,
+      }}
+    >
+      {children}
     </div>
   );
 }
 
 function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
   return {
-    fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
-    background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
+    fontSize: textSize.caption, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md,
+    background: colors.fillSubtle, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none', width: '100%',
     boxSizing: 'border-box',
   };
 }
 
 function control(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
-  return { ...inputStyle(colors), padding: '5px 7px' };
+  return { ...inputStyle(colors), padding: `${space.xs}px ${space.sm}px` };
 }
 
 /**

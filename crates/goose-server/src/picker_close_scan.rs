@@ -186,12 +186,33 @@ mod tests {
         announce_scan("working");
         announce_judgement("working");
 
-        let scan = bus.try_recv().expect("the scan must announce");
-        assert_eq!(scan.payload["agent_id"], "picker");
-        assert_eq!(scan.payload["name"], "The Picker");
+        let mut events = Vec::new();
+        for _ in 0..64 {
+            match bus.try_recv() {
+                Ok(event) => events.push(event),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    panic!("the event bus closed before the announcements were read")
+                }
+            }
+        }
 
-        let judged = bus.try_recv().expect("the judgement must announce");
-        assert_eq!(judged.payload["agent_id"], "financier");
-        assert_eq!(judged.payload["name"], "The Financier");
+        for (agent_id, name) in [("picker", "The Picker"), ("financier", "The Financier")] {
+            let announced: Vec<_> = events
+                .iter()
+                .filter(|event| {
+                    event.event_type == permagent::events::PermagentEventType::AgentStateChanged
+                        && event.payload["agent_id"] == agent_id
+                })
+                .collect();
+            assert_eq!(
+                announced.len(),
+                1,
+                "{name} must announce exactly once; saw {events:?}"
+            );
+            assert_eq!(announced[0].payload["name"], name);
+            assert_eq!(announced[0].payload["state"], "working");
+        }
     }
 }

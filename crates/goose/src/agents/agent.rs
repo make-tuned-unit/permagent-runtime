@@ -3011,11 +3011,16 @@ impl Agent {
                                     break;
                                 }
                             }
-                            yield AgentEvent::Message(
-                                Message::assistant().with_text(
-                                    "The model stream dropped before the reply finished.\n\nPlease resend your message to try again."
-                                )
+                            // Persisted, not just yielded. The chat client
+                            // reloads the transcript from the daemon when the
+                            // turn finishes, so an unpersisted final message is
+                            // wiped milliseconds after it appears — which is
+                            // how a dead turn ended up looking like silence.
+                            let message = Message::assistant().with_text(
+                                "The model stream dropped before the reply finished.\n\nPlease resend your message to try again."
                             );
+                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
                         }
@@ -3070,11 +3075,15 @@ impl Agent {
                                     break;
                                 }
                             }
-                            yield AgentEvent::Message(
-                                Message::assistant().with_text(
-                                    format!("{provider_err}\n\nPlease resend your message to try again.")
-                                )
+                            // Same reason as the stream-drop arm above: the
+                            // client's end-of-turn reload replaces whatever is
+                            // on screen with the daemon's persisted copy, so a
+                            // terminal error has to be in that copy to survive.
+                            let message = Message::assistant().with_text(
+                                format!("{provider_err}\n\nPlease resend your message to try again.")
                             );
+                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
                         }
@@ -3696,6 +3705,15 @@ impl Agent {
                             session_id: &session_config.id,
                             messages: conversation.messages(),
                             prior_holds: after_turn_holds,
+                            // `tools` is this turn's resolved tool list (same
+                            // one sent to the provider) — CASE B: a recipe
+                            // that never loaded `summon` has no `delegate`
+                            // tool at all, and `ReviewerMandate` must know
+                            // that instead of asking for a tool that can't be
+                            // called.
+                            delegate_tool_available: crate::after_turn::delegate_tool_loaded(
+                                &tools,
+                            ),
                         })
                         .await;
                     match action {

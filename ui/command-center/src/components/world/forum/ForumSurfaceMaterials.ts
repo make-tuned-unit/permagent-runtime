@@ -23,6 +23,12 @@ type SurfaceProfile = {
   fineFrequency: number;
   roughnessMin: number;
   roughnessMax: number;
+  /** Water only: drive the noise with a clock so the surface actually moves.
+   *  Everything else on the island is static stone, timber and glass, and a
+   *  crawling wall would read as a bug rather than as life. */
+  waveSpeed?: number;
+  /** How far the highlight bands travel, in world units per noise period. */
+  waveScale?: number;
 };
 
 const SURFACE_PROFILES: Record<SurfaceKind, SurfaceProfile> = {
@@ -35,8 +41,9 @@ const SURFACE_PROFILES: Record<SurfaceKind, SurfaceProfile> = {
     broadFrequency: 0.18, fineFrequency: 1.7, roughnessMin: 0.1, roughnessMax: 0.32,
   },
   water: {
-    id: 'water', colorVariation: 0.018, roughnessVariation: 0.025,
-    broadFrequency: 0.12, fineFrequency: 0.8, roughnessMin: 0.06, roughnessMax: 0.22,
+    id: 'water', colorVariation: 0.03, roughnessVariation: 0.05,
+    broadFrequency: 0.12, fineFrequency: 0.8, roughnessMin: 0.04, roughnessMax: 0.2,
+    waveSpeed: 0.05, waveScale: 1.0,
   },
   metal: {
     id: 'metal', colorVariation: 0.018, roughnessVariation: 0.035,
@@ -73,6 +80,33 @@ type AppliedSurfaceState = {
 };
 
 const appliedRoots = new WeakMap<THREE.Object3D, AppliedSurfaceState>();
+
+/**
+ * The water clock.
+ *
+ * Every animated surface material shares one value, held by reference in the
+ * compiled shader's uniform object, so the whole lagoon moves together and a
+ * frame costs one number per material rather than a shader recompile. The set
+ * is weak-keyed by nothing — materials are disposed explicitly by
+ * `disposeForumSurfaceMaterials`, and a stale uniform here would keep an object
+ * alive — so `releaseForumSurfaceClock` clears it when the scene unmounts.
+ */
+let forumSurfaceClock = 0;
+const animatedUniforms = new Set<{ value: number }>();
+
+/** Advance the water by `deltaSeconds`; call once per frame from the scene. */
+export function advanceForumSurfaceClock(deltaSeconds: number): void {
+  if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0) return;
+  // Clamped so a backgrounded tab returning after a minute does not teleport
+  // the swell, and wrapped so the float never loses precision in a long session.
+  forumSurfaceClock = (forumSurfaceClock + Math.min(deltaSeconds, 0.1)) % 10000;
+  for (const uniform of animatedUniforms) uniform.value = forumSurfaceClock;
+}
+
+/** Drop every tracked uniform — the scene is going away. */
+export function releaseForumSurfaceClock(): void {
+  animatedUniforms.clear();
+}
 
 export type ForumSurfaceCleanup = () => void;
 
@@ -163,15 +197,30 @@ function addWorldPositionVarying(vertexShader: string): string {
 }
 
 function addSurfaceVariation(fragmentShader: string, profile: SurfaceProfile): string {
+  const animated = (profile.waveSpeed ?? 0) > 0;
   if (fragmentShader.includes(FRAGMENT_MARKER)) return fragmentShader;
-  const marker = `${FRAGMENT_MARKER}\n${FORUM_SURFACE_HELPERS}`;
+  const marker = `${FRAGMENT_MARKER}\n${animated ? 'uniform float forumTime;\n' : ''}${FORUM_SURFACE_HELPERS}`;
   const withHelpers = fragmentShader.replace('varying vec3 vViewPosition;', `varying vec3 vViewPosition;\nvarying vec3 forumSurfaceWorldPosition;\n${marker}`);
-  const colourValue = `float forumSurfaceColorValue = forumSurfaceValueNoise( forumSurfaceWorldPosition * ${profile.broadFrequency.toFixed(3)} ) * 0.35 + forumSurfaceValueNoise( forumSurfaceWorldPosition * ${profile.fineFrequency.toFixed(3)} ) * 0.65;`;
-  const roughnessValue = `float forumSurfaceRoughnessValue = forumSurfaceValueNoise( forumSurfaceWorldPosition * ${profile.broadFrequency.toFixed(3)} ) * 0.35 + forumSurfaceValueNoise( forumSurfaceWorldPosition * ${profile.fineFrequency.toFixed(3)} ) * 0.65;`;
+  // A still surface emits exactly the shader it always did — no drift
+  // declarations, no extra parentheses. Stone, timber and glass make up most of
+  // the island's materials, and a moving sample position on any of them would
+  // read as a crawling wall; keeping their generated source byte-identical also
+  // keeps the program cache, and the test that pins it, honest.
+  const sampleA = animated ? '( forumSurfaceWorldPosition + forumDriftA )' : 'forumSurfaceWorldPosition';
+  const sampleB = animated ? '( forumSurfaceWorldPosition + forumDriftB )' : 'forumSurfaceWorldPosition';
+  const drift = animated
+    ? `vec3 forumDriftA = vec3( forumTime * ${(profile.waveSpeed ?? 0).toFixed(3)}, 0.0, forumTime * ${((profile.waveSpeed ?? 0) * 0.6).toFixed(3)} );\n\tvec3 forumDriftB = vec3( forumTime * ${((profile.waveSpeed ?? 0) * -0.42).toFixed(3)}, 0.0, forumTime * ${((profile.waveSpeed ?? 0) * 0.31).toFixed(3)} );\n\t`
+    : '';
+  const colourValue = `${drift}float forumSurfaceColorValue = forumSurfaceValueNoise( ${sampleA} * ${profile.broadFrequency.toFixed(3)} ) * 0.35 + forumSurfaceValueNoise( ${sampleB} * ${profile.fineFrequency.toFixed(3)} ) * 0.65;`;
+  const roughnessValue = `float forumSurfaceRoughnessValue = forumSurfaceValueNoise( ${sampleB} * ${profile.broadFrequency.toFixed(3)} ) * 0.35 + forumSurfaceValueNoise( ${sampleA} * ${profile.fineFrequency.toFixed(3)} ) * 0.65;`;
   const colour = `\n\t${colourValue}\n\tdiffuseColor.rgb = clamp( diffuseColor.rgb * ( 1.0 + ( forumSurfaceColorValue - 0.5 ) * ${profile.colorVariation.toFixed(4)} ), 0.0, 1.0 );`;
   const roughness = `\n\t${roughnessValue}\n\troughnessFactor = clamp( roughnessFactor + ( forumSurfaceRoughnessValue - 0.5 ) * ${profile.roughnessVariation.toFixed(4)}, 0.0, 1.0 );`;
   const withColour = withHelpers.replace('#include <color_fragment>', `#include <color_fragment>${colour}`);
-  return withColour.replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>${roughness}`);
+  const withRoughness = withColour.replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>${roughness}`);
+  if (!animated) return withRoughness;
+  const scale = (profile.waveScale ?? 1).toFixed(3);
+  const ripple = `\n\tfloat forumWaveA = forumSurfaceValueNoise( ( forumSurfaceWorldPosition + forumDriftA ) * ${scale} );\n\tfloat forumWaveB = forumSurfaceValueNoise( ( forumSurfaceWorldPosition.zyx + forumDriftB ) * ${(Number(scale) * 1.7).toFixed(3)} );\n\tnormal = normalize( normal + vec3( ( forumWaveA - 0.5 ) * 0.22, 0.0, ( forumWaveB - 0.5 ) * 0.22 ) );`;
+  return withRoughness.replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>${ripple}`);
 }
 
 function cloneForProfile(source: StandardMaterial, profile: SurfaceProfile): StandardMaterial {
@@ -212,6 +261,12 @@ function cloneForProfile(source: StandardMaterial, profile: SurfaceProfile): Sta
       sourceOnBeforeCompile(shader, renderer);
       shader.vertexShader = addWorldPositionVarying(shader.vertexShader);
       shader.fragmentShader = addSurfaceVariation(shader.fragmentShader, profile);
+      if ((profile.waveSpeed ?? 0) > 0) {
+        // The uniform object is created here and held by reference, so
+        // advancing it later reaches the compiled program without recompiling.
+        shader.uniforms.forumTime = { value: forumSurfaceClock };
+        animatedUniforms.add(shader.uniforms.forumTime as { value: number });
+      }
     };
     replacement.customProgramCacheKey = () => `${SHADER_VERSION}:${profile.id}:${sourceProgramCacheKey}`;
     replacement.needsUpdate = true;

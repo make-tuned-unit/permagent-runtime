@@ -1,9 +1,16 @@
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, type CSSProperties } from 'react';
 import type { CameraMode } from './types';
-import { COLORS } from './constants';
-import { radius, textSize } from '../../styles/tokens';
+import { font, space, textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
+import { useGlass } from '../common/Glass';
 import { CanvasLegend } from '../common/CanvasLegend';
 import { worldGestures, worldVocabulary } from './worldLegend';
+import {
+  HUD_GEOM,
+  HUD_PANEL_RADIUS,
+  HUD_PILL_RADIUS,
+  hudTransition,
+} from './hudChrome';
 
 interface WorldHUDProps {
   mode: CameraMode;
@@ -42,27 +49,30 @@ export function WorldHUD({
   hoveredStation,
   stationTooltip,
 }: WorldHUDProps) {
-  const hudStyle: React.CSSProperties = {
+  const { colors, reduceMotion } = useTheme();
+  const glass = useGlass('glass');
+
+  const hudStyle: CSSProperties = {
     position: 'absolute',
-    bottom: 16,
-    right: 16,
+    bottom: HUD_GEOM.panelInset,
+    right: HUD_GEOM.panelInset,
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'flex-end',
-    gap: 8,
-    fontFamily: 'monospace',
+    gap: space.md,
+    fontFamily: font.mono,
     fontSize: textSize.caption,
-    color: COLORS.neonCyan,
+    color: colors.cyan,
     pointerEvents: 'none',
     zIndex: 10,
   };
 
-  const badgeStyle: React.CSSProperties = {
-    background: 'rgba(10, 14, 26, 0.8)',
-    padding: '4px 10px',
-    borderRadius: radius.xs,
-    border: `1px solid ${COLORS.neonCyan}30`,
-    backdropFilter: 'blur(4px)',
+  const badgeStyle: CSSProperties = {
+    ...glass,
+    padding: `${HUD_GEOM.badgePadY}px ${HUD_GEOM.badgePadX}px`,
+    borderRadius: HUD_PILL_RADIUS > 0 ? HUD_PILL_RADIUS : HUD_PANEL_RADIUS,
+    border: `1px solid ${colors.borderHi}`,
+    transition: hudTransition(reduceMotion),
   };
 
   return (
@@ -71,25 +81,19 @@ export function WorldHUD({
           because the badge below only ever said "WASD to walk" once the camera
           had already switched, which teaches the gesture to someone who has
           already been surprised by it. The badge keeps its reminder for while
-          you are walking; the key is where you learn it first. */}
+          you are walking; the key is where you learn it first.
+          Palette omitted: CanvasLegend takes theme + glass on its own plane. */}
       <CanvasLegend
         canvasId="world"
         gestures={worldGestures(mode)}
         vocabulary={worldVocabulary()}
-        palette={{
-          bg: 'rgba(10, 14, 26, 0.86)',
-          border: `${COLORS.neonCyan}30`,
-          text: COLORS.primaryMarble,
-          dim: `${COLORS.primaryMarble}99`,
-          accent: COLORS.neonCyan,
-        }}
       />
 
       <div style={hudStyle}>
         <div style={badgeStyle}>
           {mode === 'orbit' ? 'ORBIT' : 'WALKING'}
           {mode === 'third-person' && (
-            <span style={{ opacity: 0.6, marginLeft: 8 }}>WASD to walk · ESC to exit</span>
+            <span style={{ opacity: 0.6, marginLeft: space.md }}>WASD to walk · ESC to exit</span>
           )}
         </div>
 
@@ -100,7 +104,6 @@ export function WorldHUD({
         )}
       </div>
 
-      {/* Station tooltip */}
       {hoveredStation && stationTooltip && (
         <div
           style={{
@@ -108,16 +111,15 @@ export function WorldHUD({
             top: '50%',
             left: '50%',
             transform: 'translate(-50%, -50%)',
-            background: 'rgba(10, 14, 26, 0.9)',
-            color: stationTooltip.includes('coming soon') ? COLORS.neonAmber : COLORS.neonCyan,
-            padding: '8px 16px',
-            borderRadius: radius.md,
-            fontFamily: 'monospace',
+            ...glass,
+            color: stationTooltip.includes('coming soon') ? colors.warning : colors.cyan,
+            padding: `${space.md}px ${space.xxl}px`,
+            borderRadius: HUD_PANEL_RADIUS,
+            fontFamily: font.mono,
             fontSize: textSize.body,
-            border: `1px solid ${COLORS.neonCyan}40`,
+            border: `1px solid ${colors.borderHi}`,
             pointerEvents: 'none',
             zIndex: 10,
-            backdropFilter: 'blur(4px)',
           }}
         >
           {stationTooltip}

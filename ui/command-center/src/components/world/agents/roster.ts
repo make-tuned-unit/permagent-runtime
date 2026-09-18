@@ -1,8 +1,8 @@
 // Agent roster — identity config for the real inhabitants: Henry the
 // orchestrator, the Librarian, the Reader (local OCR/ingest), the Watcher
 // (proactive nudges), the Steward (git hygiene), the Guard, the Financier, the
-// Forecaster, (J11) the Council, Polybot and the Picker, and (D18) Growth
-// measurement.
+// Forecaster, (J11) the Council, the Trader (Polybot) and the Picker, and
+// (D18) the Grower (growth measurement).
 // WORLD_VIEW_BIBLE.md §2, §4. Identity (trim color, crown) is fixed here; state
 // NEVER repaints identity trim. The decorative sim agents (Aria/Felix/Nova)
 // were removed — only agents that map to a real backend worker live here, so
@@ -217,13 +217,13 @@ export const ROSTER: AgentIdentity[] = [
     wire: 'daemon',
   },
   {
-    // Polybot — the autonomous trading process the Finance tab drives
-    // (`/api/finance` → polybot.status()). It is a SEPARATE process, so
+    // The Trader — Polybot, the autonomous trading process the Finance tab
+    // drives (`/api/finance` → polybot.status()). It is a SEPARATE process, so
     // "running" is a fact about the machine rather than about a model: the HUD
     // reads the real board and says OFF when the board says OFF. No
     // agent_state_changed is emitted anywhere for it (D22).
     id: 'polybot',
-    name: 'Polybot',
+    name: 'The Trader',
     role: 'agent',
     trimColor: AGENT_TRIM.polybot,
     isHenry: false,
@@ -252,11 +252,11 @@ export const ROSTER: AgentIdentity[] = [
     wire: 'daemon',
   },
   {
-    // Growth measurement — the nightly pass that closes the Grow loop: verify
-    // a shipped action, freeze its before-window, and as each 7/14/28-day
-    // window closes compare after with before against the project's own
-    // week-to-week swing to write a verdict (helped, hindered, no effect,
-    // inconclusive, or confounded). `growth_sweep.rs` now announces
+    // The Grower — growth measurement, the nightly pass that closes the Grow
+    // loop: verify a shipped action, freeze its before-window, and as each
+    // 7/14/28-day window closes compare after with before against the
+    // project's own week-to-week swing to write a verdict (helped, hindered,
+    // no effect, inconclusive, or confounded). `growth_sweep.rs` now announces
     // `agent_state_changed` on the `growth_measurement` id — the worker
     // descriptor that already existed in self_knowledge — `working` only
     // while a pass genuinely runs, every 6 hours (agent-QA D18). That is a
@@ -266,7 +266,7 @@ export const ROSTER: AgentIdentity[] = [
     // own numbers over time and write a judged trend, one about the market
     // and one about an action taken on the project itself.
     id: 'growth_measurement',
-    name: 'Growth measurement',
+    name: 'The Grower',
     role: 'agent',
     trimColor: AGENT_TRIM.growthMeasurement,
     isHenry: false,

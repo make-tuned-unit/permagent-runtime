@@ -30,10 +30,11 @@
 
 import { useCallback, useId, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { font, type } from '../../styles/tokens';
+import { font, space, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from './Button';
 import { DetailModal } from './DetailModal';
+import { Tooltip } from './Tooltip';
 
 export interface FormModalProps {
   /** Names the thing being made or changed — "New automation", not "Form". */
@@ -115,18 +116,35 @@ export function FormModal({
         {/* `type="submit"` + `form` so the button lives in the footer and still
             submits the form in the body — and so Enter and the click are one
             code path rather than two that can disagree. */}
-        <Button
-          colors={colors}
-          variant="primary"
-          type="submit"
-          form={formId}
-          pending={pending}
-          disabled={submitDisabled || pending}
-          title={submitDisabled ? disabledReason : undefined}
-          style={{ '--pa-btn-weight': 600 } as CSSProperties}
-        >
-          {submitLabel}
-        </Button>
+        {submitDisabled && disabledReason ? (
+          <Tooltip content={disabledReason}>
+            <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+              <Button
+                colors={colors}
+                variant="primary"
+                type="submit"
+                form={formId}
+                pending={pending}
+                disabled={submitDisabled || pending}
+                style={{ '--pa-btn-weight': 600 } as CSSProperties}
+              >
+                {submitLabel}
+              </Button>
+            </span>
+          </Tooltip>
+        ) : (
+          <Button
+            colors={colors}
+            variant="primary"
+            type="submit"
+            form={formId}
+            pending={pending}
+            disabled={submitDisabled || pending}
+            style={{ '--pa-btn-weight': 600 } as CSSProperties}
+          >
+            {submitLabel}
+          </Button>
+        )}
       </>}
     >
       <form
@@ -140,7 +158,7 @@ export function FormModal({
         <div
           role="alert"
           style={{
-            marginTop: 12, fontFamily: font.body, ...type.caption,
+            marginTop: space.xl, fontFamily: font.body, ...type.caption,
             color: colors.danger, lineHeight: 1.5,
           }}
         >
@@ -149,7 +167,9 @@ export function FormModal({
       )}
       {submitDisabled && disabledReason && !failure && (
         <div style={{
-          marginTop: 12, fontFamily: font.body, ...type.caption,
+          marginTop: space.xl, fontFamily: font.body, ...type.caption,
+          // textMuted, not textDim: this line is the only explanation of why
+          // the submit will not go, so it has to clear reading contrast.
           color: colors.textMuted, lineHeight: 1.5,
         }}>
           {disabledReason}

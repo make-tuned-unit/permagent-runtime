@@ -20,12 +20,13 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { FiDownload } from 'react-icons/fi';
 import { api } from '../../lib/api';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { DetailModal } from '../common/DetailModal';
 import type { ProjectDocument } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 // ── The single dispatch point ────────────────────────────────────────────────
 
 type RendererKind = 'image' | 'pdf' | 'markdown' | 'csv' | 'text' | 'fallback';
@@ -119,7 +120,10 @@ export function DocumentViewer({ projectId, doc, onClose }: {
       </>}
       bodyStyle={{
         padding: 0, minHeight: 0,
-        background: kind === 'image' ? '#0b0b0f' : colors.surface,
+        // The image mat. `bgDeeper` is the theme's own recessed ground, which
+        // is what a mat is; the literal near-black it replaces stayed near-black
+        // on the silver theme, where Preview.app's own mat is a light grey.
+        background: kind === 'image' ? colors.bgDeeper : colors.surface,
       }}
     >
       {error
@@ -148,7 +152,7 @@ function renderContent(
   switch (kind) {
     case 'image':
       return objectUrl
-        ? <div style={{ display: 'flex', justifyContent: 'center', padding: 16 }}>
+        ? <div style={{ display: 'flex', justifyContent: 'center', padding: space.xxl }}>
             <img src={objectUrl} alt={doc.filename} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
           </div>
         : <Loading colors={colors} />;
@@ -181,7 +185,7 @@ function renderContent(
       return (
         <div style={{
           height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center',
-          justifyContent: 'center', gap: 14, padding: 24, textAlign: 'center',
+          justifyContent: 'center', gap: 14, padding: space.huge, textAlign: 'center',
         }}>
           <div style={{ fontSize: textSize.small, color: colors.textMuted }}>
             No inline preview for <span style={{ fontFamily: font.mono }}>{doc.mime_type || 'this type'}</span>.
@@ -190,14 +194,14 @@ function renderContent(
             colors={colors}
             onClick={onDownload}
             style={{
-              '--pa-btn-bg': 'rgba(255,255,255,0.04)',
-              '--pa-btn-bg-hover': 'rgba(255,255,255,0.08)',
+              '--pa-btn-bg': colors.fillSubtle,
+              '--pa-btn-bg-hover': colors.fillActive,
               '--pa-btn-border': colors.border,
               '--pa-btn-border-hover': colors.borderHi,
               '--pa-btn-pad': '8px 14px',
               '--pa-btn-radius': `${radius.md}px`,
               fontSize: textSize.caption,
-              gap: 8,
+              gap: space.md,
             } as CSSProperties}
           >
             <FiDownload size={14} />
@@ -215,13 +219,13 @@ function CsvTable({ text, colors }: { text: string; colors: ReturnType<typeof us
   if (rows.length === 0) return <Notice colors={colors}>Empty file.</Notice>;
   const [head, ...body] = rows;
   return (
-    <div style={{ padding: 16, overflow: 'auto' }}>
+    <div style={{ padding: space.xxl, overflow: 'auto' }}>
       <table style={{ borderCollapse: 'collapse', fontSize: textSize.caption, fontFamily: font.mono, color: colors.text }}>
         <thead>
           <tr>
             {head.map((cell, i) => (
               <th key={i} style={{
-                textAlign: 'left', padding: '5px 10px', borderBottom: `1px solid ${colors.border}`,
+                textAlign: 'left', padding: `${space.xs}px ${space.lg}px`, borderBottom: `1px solid ${colors.border}`,
                 color: colors.textMuted, position: 'sticky', top: 0, background: colors.surface,
               }}>{cell}</th>
             ))}
@@ -231,7 +235,7 @@ function CsvTable({ text, colors }: { text: string; colors: ReturnType<typeof us
           {body.map((row, r) => (
             <tr key={r}>
               {row.map((cell, c) => (
-                <td key={c} style={{ padding: '4px 10px', borderBottom: `1px solid ${colors.border}22` }}>{cell}</td>
+                <td key={c} style={{ padding: `${space.xs}px ${space.lg}px`, borderBottom: `1px solid ${colors.border}22` }}>{cell}</td>
               ))}
             </tr>
           ))}
@@ -279,33 +283,34 @@ function IconButton({ title, onClick, colors, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <Button
-      colors={colors}
-      variant="bare"
-      title={title}
-      // The only child is a glyph, so the title has to be said out loud too.
-      aria-label={title}
-      onClick={onClick}
-      style={{
-        '--pa-btn-fg': colors.textMuted,
-        '--pa-btn-fg-hover': colors.text,
-        '--pa-btn-bg-hover': 'transparent',
-        '--pa-btn-bg-active': 'transparent',
-        '--pa-btn-pad': '4px',
-        flexShrink: 0,
-      } as CSSProperties}
-    >
-      {children}
-    </Button>
+    <Tooltip content={title}>
+      <Button
+        colors={colors}
+        variant="bare"
+        // The only child is a glyph, so the title has to be said out loud too.
+        aria-label={title}
+        onClick={onClick}
+        style={{
+          '--pa-btn-fg': colors.textMuted,
+          '--pa-btn-fg-hover': colors.text,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-bg-active': 'transparent',
+          '--pa-btn-pad': '4px',
+          flexShrink: 0,
+        } as CSSProperties}
+      >
+        {children}
+      </Button>
+    </Tooltip>
   );
 }
 
 function Loading({ colors }: { colors: ReturnType<typeof useTheme>['colors'] }) {
-  return <div style={{ padding: 24, fontSize: textSize.caption, color: colors.textDim }}>Loading…</div>;
+  return <div style={{ padding: space.huge, fontSize: textSize.caption, color: colors.textDim }}>Loading…</div>;
 }
 
 function Notice({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: React.ReactNode }) {
-  return <div style={{ padding: 24, fontSize: textSize.caption, color: colors.textDim }}>{children}</div>;
+  return <div style={{ padding: space.huge, fontSize: textSize.caption, color: colors.textDim }}>{children}</div>;
 }
 
 export function formatSize(bytes: number): string {

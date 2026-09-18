@@ -136,8 +136,8 @@ export function AddCustomProviderModal({ onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm"
-      style={{ background: 'rgba(0,0,0,0.5)' }}
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: colors.veil }}
       onClick={onClose}
     >
       <div
@@ -316,7 +316,7 @@ export function AddCustomProviderModal({ onClose }: Props) {
               '--pa-btn-fg-hover': colors.text,
               '--pa-btn-border': colors.border,
               '--pa-btn-border-hover': colors.border,
-              '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+              '--pa-btn-bg-hover': colors.fillHover,
               '--pa-btn-pad': '6px 16px',
               '--pa-btn-radius': `${radius.xs}px`,
               fontSize: textSize.body,

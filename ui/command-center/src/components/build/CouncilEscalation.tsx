@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, type HarnessRunView } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 
 const POLL_MS = 4_000;
@@ -67,16 +67,16 @@ export function CouncilEscalation() {
       role="status"
       data-testid="council-escalation"
       style={{
-        margin: '10px 18px 0', padding: '10px 12px', borderRadius: radius.md,
+        margin: '10px 18px 0', padding: `${space.lg}px ${space.xl}px`, borderRadius: radius.md,
         border: `1px solid ${colors.purple ?? colors.borderHi}`,
-        background: colors.surfaceHi, display: 'flex', alignItems: 'center', gap: 12,
+        background: colors.surfaceHi, display: 'flex', alignItems: 'center', gap: space.xl,
       }}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ color: colors.text, fontFamily: font.body, fontSize: textSize.caption, fontWeight: 700 }}>
           {state === 'started' ? 'Council is preparing the DAG' : 'This request may benefit from the Council'}
         </div>
-        <div style={{ color: state === 'error' ? colors.danger : colors.textMuted, fontSize: textSize.micro, marginTop: 2 }}>
+        <div style={{ color: state === 'error' ? colors.danger : colors.textMuted, fontSize: textSize.micro, marginTop: space.xxs }}>
           {state === 'error'
             ? `Couldn’t start: ${error}`
             : state === 'started'

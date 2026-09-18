@@ -15,7 +15,7 @@
  * really has gone says so and can be removed.
  */
 
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ManifestStatus } from './cards/useCardRegistry';
 
@@ -38,9 +38,9 @@ export function MissingCard({ type, status }: { type: string; status: ManifestSt
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 6,
+        gap: space.sm,
         textAlign: 'center',
-        padding: '20px 24px',
+        padding: `${space.xxxl}px ${space.huge}px`,
         borderRadius: radius.lg,
         border: `1px dashed ${colors.border}`,
         background: colors.surface,

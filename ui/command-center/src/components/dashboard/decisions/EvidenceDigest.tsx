@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useId, useState, type CSSProperties } from 'react';
-import { font, radius, textSize } from '../../../styles/tokens';
+import { font, radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { decisionsClient } from './client';
 import type { DispatchEvidenceData, EvidenceDigestData, IndependentReviewDetail } from './types';
@@ -46,14 +46,14 @@ export function EvidenceDigest({ projectId, goalId }: { projectId: string; goalI
 
   if (state.kind === 'loading') {
     return (
-      <div style={{ marginTop: 12, fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>
+      <div style={{ marginTop: space.xl, fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>
         Loading evidence…
       </div>
     );
   }
   if (state.kind === 'none') {
     return (
-      <div style={{ marginTop: 12, fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>
+      <div style={{ marginTop: space.xl, fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>
         No verification evidence has been recorded for this item yet.
       </div>
     );
@@ -82,11 +82,11 @@ function DispatchEvidenceView({ ev }: { ev: DispatchEvidenceData }) {
   const diffLine = `${ev.files_changed} file${ev.files_changed === 1 ? '' : 's'} changed, +${ev.insertions} / -${ev.deletions}`;
 
   return (
-    <div style={{ marginTop: 12 }}>
+    <div style={{ marginTop: space.xl }}>
       <div style={{
         borderRadius: radius.sm, border: `1px solid ${colors.border}`,
-        padding: '10px 14px', fontFamily: font.body, fontSize: textSize.caption,
-        color: colors.textMuted, display: 'flex', flexDirection: 'column', gap: 6,
+        padding: `${space.lg}px 14px`, fontFamily: font.body, fontSize: textSize.caption,
+        color: colors.textMuted, display: 'flex', flexDirection: 'column', gap: space.sm,
       }}>
         <SummaryRow ok={ev.commits.length > 0} text={headline} />
         <div style={{ color: colors.text, fontWeight: 500 }}>{diffLine}</div>
@@ -120,7 +120,7 @@ function DispatchEvidenceView({ ev }: { ev: DispatchEvidenceData }) {
       {showDetails && (
         <pre id={detailsId} style={{
           margin: '8px 0 0', borderRadius: radius.sm,
-          background: colors.codeBg, padding: '12px 14px',
+          background: colors.codeBg, padding: `${space.xl}px 14px`,
           fontFamily: font.mono, fontSize: textSize.micro, lineHeight: 1.6,
           color: colors.textMuted,
           whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
@@ -168,12 +168,12 @@ function DigestView({ digest }: { digest: EvidenceDigestData }) {
         : `Cost so far: unknown (${digest.costs.note ?? 'worker token usage unavailable'})`;
 
   return (
-    <div style={{ marginTop: 12 }}>
+    <div style={{ marginTop: space.xl }}>
       {/* Plain-language summary layer — server-built one-liners, verbatim */}
       <div style={{
         borderRadius: radius.sm, border: `1px solid ${colors.border}`,
-        padding: '10px 14px', fontFamily: font.body, fontSize: textSize.caption,
-        color: colors.textMuted, display: 'flex', flexDirection: 'column', gap: 6,
+        padding: `${space.lg}px 14px`, fontFamily: font.body, fontSize: textSize.caption,
+        color: colors.textMuted, display: 'flex', flexDirection: 'column', gap: space.sm,
       }}>
         <SummaryRow ok={checksOk} text={cs.one_line} />
         <SummaryRow ok={verifierOk} text={digest.verifier_summary} />
@@ -212,7 +212,7 @@ function DigestView({ digest }: { digest: EvidenceDigestData }) {
       {showDetails && (
         <pre id={detailsId} style={{
           margin: '8px 0 0', borderRadius: radius.sm,
-          background: colors.codeBg, padding: '12px 14px',
+          background: colors.codeBg, padding: `${space.xl}px 14px`,
           fontFamily: font.mono, fontSize: textSize.micro, lineHeight: 1.6,
           color: colors.textMuted,
           whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
@@ -309,7 +309,7 @@ function formatTokens(n: number): string {
 function SummaryRow({ ok, text }: { ok: boolean; text: string }) {
   const { colors } = useTheme();
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+    <div style={{ display: 'flex', gap: space.md, alignItems: 'baseline' }}>
       <span style={{ color: ok ? colors.success : colors.warning, flexShrink: 0 }}>
         {ok ? '✓' : '•'}
       </span>

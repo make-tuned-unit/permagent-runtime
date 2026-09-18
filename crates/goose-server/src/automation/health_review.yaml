@@ -22,6 +22,14 @@ parameters:
 extensions:
   - type: builtin
     name: developer
+  # CASE B fix #2: this recipe mutates (writes the evidence JSON + the
+  # report), so ReviewerMandate fires — but it declared only `developer`, so
+  # the `delegate` tool the mandate asks for was never loaded. Without this,
+  # the mandate now Parks honestly instead of asking for a missing tool
+  # (CASE B fix #1), which is correct but still means this job's own report
+  # never gets an independent review. Load `summon` so it can.
+  - type: builtin
+    name: summon
 
 prompt: |
   Review Permagent's own logs for the exact last {{ hours }} hours. This is a

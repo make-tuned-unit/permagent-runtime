@@ -7851,15 +7851,6 @@ pub(crate) async fn dispatch_goal_fn(
         super::dispatch_digest::load_dispatch_digest(&pool, &project, &card.id, bridge_available)
             .await
     {
-        // R48c: tighter than `dispatch_digest::DIGEST_MAX_CHARS` (already
-        // ~400 tokens for every profile) — a compact-profile worker's
-        // sibling-awareness is a nice-to-have, not required to verify/
-        // commit/report. No-op for the default profile.
-        let block = if compact_worker_profile {
-            bound_compact_block(&block, COMPACT_DIGEST_MAX_LINES, COMPACT_DIGEST_MAX_CHARS)
-        } else {
-            block
-        };
         instructions = format!("{instructions}\n\n{block}");
     }
 
@@ -45741,6 +45732,13 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             .with_writer(move || sink.clone())
             .finish();
         let _guard = tracing::subscriber::set_default(subscriber);
+        // `tracing` caches per-callsite interest across every registered
+        // dispatcher. When tests install subscribers concurrently, a callsite
+        // first evaluated under another test's dispatcher can be cached as
+        // "not interested" and skip this thread-local one, so the capture
+        // comes back empty. Rebuilding the cache after installing the
+        // subscriber is the documented remedy.
+        tracing::callsite::rebuild_interest_cache();
         f.await;
         let bytes = buf.lock().unwrap().clone();
         String::from_utf8_lossy(&bytes).to_string()

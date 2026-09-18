@@ -9,8 +9,10 @@
  */
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
+import { growCard, growLabel } from './growChrome';
+import { CARD_INNER_R, CARD_PAD, CARD_R, ROW_PAD, ROW_R } from './growGeometry';
 import { Button } from '../common/Button';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
@@ -122,10 +124,9 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
 
   return (
     <section>
-      <div style={{ marginBottom: 18 }}>
+      <div style={{ marginBottom: space.xxxl }}>
         <h3 style={{
-          fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim,
-          textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 4px',
+          ...growLabel(colors), margin: `0 0 ${space.xs}px`,
         }}>This project</h3>
         <p style={{ fontSize: textSize.small, color: colors.textMuted, margin: 0, lineHeight: 1.5 }}>
           Actions you marked implemented, and what the 7 / 14 / 28-day windows
@@ -135,7 +136,7 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
             change" is a real question here in a way it is not on a live board.
             Quiet while fresh; it speaks up once the reading has aged past two
             poll intervals. */}
-        <p style={{ fontSize: textSize.micro, color: colors.textDim, margin: '6px 0 0' }}>
+        <p style={{ fontSize: textSize.micro, color: colors.textDim, margin: `${space.sm}px 0 0` }}>
           <AsOf asOf={asOf} prefix="Verdicts read" staleAfterMs={RESULTS_POLL_MS * 2} dot />
         </p>
       </div>
@@ -153,7 +154,7 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
               { label: 'Too little data', value: projectResults.inconclusive },
             ]}
           />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.md, marginTop: space.xl }}>
             {projectResults.actions.map((row) => (
               <ResultRowCard key={row.actionId} row={row} colors={colors} showProject={false} />
             ))}
@@ -177,12 +178,11 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
 function FleetSection({ fleet, colors }: { fleet: GrowthFleetResults; colors: ThemeColors }) {
   const measured = fleet.helped + fleet.hindered + fleet.noEffect + fleet.inconclusive;
   return (
-    <div style={{ marginTop: 28 }}>
+    <div style={{ marginTop: space.huge }}>
       <h3 style={{
-        fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim,
-        textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 4px',
+        ...growLabel(colors), margin: `0 0 ${space.xs}px`,
       }}>Across all projects</h3>
-      <p style={{ fontSize: textSize.small, color: colors.textMuted, margin: '0 0 12px', lineHeight: 1.5 }}>
+      <p style={{ fontSize: textSize.small, color: colors.textMuted, margin: `0 0 ${space.xl}px`, lineHeight: 1.5 }}>
         {measured === 0
           ? 'Once any project has a measured window, the same strategies show up here so a result on one site can inform the next.'
           : `Measured on ${fleet.projects} active project${fleet.projects === 1 ? '' : 's'}. Aggregate and per-category, never merged into one score.`}
@@ -200,35 +200,32 @@ function FleetSection({ fleet, colors }: { fleet: GrowthFleetResults; colors: Th
             ]}
           />
           {(fleet.trend?.length ?? 0) > 0 && (
-            <div style={{ marginTop: 14 }}>
+            <div style={{ marginTop: space.xxl }}>
               <h4 style={{
-                fontFamily: font.mono, fontSize: 10, color: colors.textDim,
-                textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 6px',
+                ...growLabel(colors), margin: `0 0 ${space.sm}px`,
               }}>Last 12 weeks — cumulative helped minus hindered</h4>
               <GrowthSparkline points={fleet.trend} colors={colors} height={72} />
             </div>
           )}
           {(fleet.byProject?.length ?? 0) > 0 && (
-            <div style={{ marginTop: 14 }}>
+            <div style={{ marginTop: space.xxl }}>
               <h4 style={{
-                fontFamily: font.mono, fontSize: 10, color: colors.textDim,
-                textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 8px',
+                ...growLabel(colors), margin: `0 0 ${space.md}px`,
               }}>By project</h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
                 {fleet.byProject.map((row) => (
                   <div
                     key={row.projectId}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: 12,
-                      background: colors.surface, border: `1px solid ${colors.border}`,
-                      borderRadius: radius.md, padding: '8px 12px',
+                      display: 'flex', alignItems: 'center', gap: space.xl,
+                      ...growCard(colors, { r: ROW_R, pad: ROW_PAD }),
                     }}
                   >
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, color: colors.text }}>
                         {row.projectName}
                       </div>
-                      <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginTop: 2 }}>
+                      <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs / 2 }}>
                         {row.helped} helped · {row.hindered} hindered
                         {row.noEffect > 0 ? ` · ${row.noEffect} no change` : ''}
                       </div>
@@ -245,8 +242,8 @@ function FleetSection({ fleet, colors }: { fleet: GrowthFleetResults; colors: Th
             <div style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-              gap: 10,
-              marginTop: 14,
+              gap: space.lg,
+              marginTop: space.xxl,
             }}>
               {fleet.categories.map((cat) => (
                 <CategoryChip key={cat.category} cat={cat} colors={colors} />
@@ -254,12 +251,11 @@ function FleetSection({ fleet, colors }: { fleet: GrowthFleetResults; colors: Th
             </div>
           )}
           {fleet.recent.length > 0 && (
-            <div style={{ marginTop: 18 }}>
+            <div style={{ marginTop: space.xxxl }}>
               <h4 style={{
-                fontFamily: font.mono, fontSize: 10, color: colors.textDim,
-                textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 8px',
+                ...growLabel(colors), margin: `0 0 ${space.md}px`,
               }}>Recent verdicts</h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
                 {fleet.recent.map((row) => (
                   <ResultRowCard key={`${row.projectId}-${row.actionId}`} row={row} colors={colors} showProject />
                 ))}
@@ -280,19 +276,18 @@ function TallyRow({
 }) {
   return (
     <div style={{
-      display: 'flex', flexWrap: 'wrap', gap: 8,
+      display: 'flex', flexWrap: 'wrap', gap: space.md,
     }}>
       {items.map((item) => (
         <div
           key={item.label}
           style={{
             background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-            borderRadius: radius.md, padding: '8px 12px', minWidth: 88,
+            borderRadius: CARD_INNER_R, padding: `${space.md}px ${space.xl}px`, minWidth: 88,
           }}
         >
           <div style={{
-            fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
-            textTransform: 'uppercase', color: colors.textDim, marginBottom: 2,
+            ...growLabel(colors), marginBottom: space.xs / 2,
           }}>{item.label}</div>
           <div style={{
             fontFamily: font.display, fontSize: textSize.title, fontWeight: 600,
@@ -310,12 +305,10 @@ function CategoryChip({ cat, colors }: { cat: GrowthCategorySummary; colors: The
   const delta = formatDeltaPct(cat.medianDeltaPct);
   return (
     <div style={{
-      background: colors.surface, border: `1px solid ${colors.border}`,
-      borderRadius: radius.md, padding: 12,
+      ...growCard(colors, { r: CARD_R, pad: CARD_PAD }),
     }}>
       <div style={{
-        fontFamily: font.mono, fontSize: 10, letterSpacing: '0.08em',
-        textTransform: 'uppercase', color: colors.textDim, marginBottom: 6,
+        ...growLabel(colors), marginBottom: space.sm,
       }}>{label}</div>
       <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.45 }}>
         Helped {cat.helped} · hindered {cat.hindered} · no change {cat.noEffect}
@@ -338,12 +331,11 @@ export function ResultRowCard({
   const cat = ACTION_CATEGORY_LABELS[normalizeActionCategory(row.category)] ?? row.category;
   return (
     <div style={{
-      background: colors.surface, border: `1px solid ${colors.border}`,
-      borderRadius: radius.lg, padding: '12px 14px',
+      ...growCard(colors, { r: CARD_R, pad: CARD_PAD }),
     }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md, flexWrap: 'wrap' }}>
         <span style={{
-          fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
+          fontFamily: font.mono, fontSize: textSize.micro, letterSpacing: '0.08em',
           textTransform: 'uppercase', color: colors.textDim,
         }}>{cat}</span>
         <span style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
@@ -356,7 +348,7 @@ export function ResultRowCard({
           {row.windowDays ? ` at ${row.windowDays}d` : ''}
         </span>
       </div>
-      <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4 }}>
+      <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs }}>
         {showProject ? `${row.projectName} · ` : ''}
         {row.targetMetric && row.targetDir
           ? `${row.targetMetric} ${row.targetDir}`

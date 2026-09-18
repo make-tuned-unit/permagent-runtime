@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { FiCheckCircle } from 'react-icons/fi';
-import { ease, font, radius, type ThemeColors, textSize } from '../../styles/tokens';
+import { ease, font, radius, space, type ThemeColors, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { PrimaryButton, GhostLink, Glass, Particles, Select, type SelectOption } from './atoms';
 import { Mobius } from '../mobius/Mobius';
@@ -286,8 +286,8 @@ export function MomentHardware({ active = true, onAdvance }: Props) {
           <h1 style={h1Style(colors)}>Optimizing for your hardware</h1>
 
           {/* Hardware summary */}
-          <Glass r={12} padding={16} style={{ width: 400, marginBottom: 20 }}>
-            <div style={{ display: 'flex', gap: 20, justifyContent: 'center' }}>
+          <Glass r={12} padding={16} style={{ width: 400, marginBottom: space.xxxl }}>
+            <div style={{ display: 'flex', gap: space.xxxl, justifyContent: 'center' }}>
               <HwStat label="CPU" value={hardware.cpuBrand.replace('Apple ', '')} />
               <HwStat label="RAM" value={`${hardware.ramGB} GB`} />
               <HwStat label="Free" value={`${hardware.diskFreeGB} GB`} />
@@ -301,7 +301,7 @@ export function MomentHardware({ active = true, onAdvance }: Props) {
                 Your system has {hardware.ramGB} GB of RAM — not enough to run a local model comfortably.
                 The Librarian will be disabled, but everything else in Permagent works normally.
               </p>
-              <PrimaryButton onClick={async () => { await handleSkip(); }} full style={{ width: 360, marginTop: 8 }}>
+              <PrimaryButton onClick={async () => { await handleSkip(); }} full style={{ width: 360, marginTop: space.md }}>
                 Continue
               </PrimaryButton>
             </>
@@ -316,19 +316,19 @@ export function MomentHardware({ active = true, onAdvance }: Props) {
               )}
 
               {showAdvanced && (
-                <div style={{ width: 360, marginBottom: 12 }}>
+                <div style={{ width: 360, marginBottom: space.xl }}>
                   <Select value={selectedModel} onChange={setSelectedModel} options={modelOptions} />
                 </div>
               )}
 
               {!showAdvanced && (
-                <GhostLink onClick={() => setShowAdvanced(true)} style={{ marginBottom: 12 }}>
+                <GhostLink onClick={() => setShowAdvanced(true)} style={{ marginBottom: space.xl }}>
                   Use a different model
                 </GhostLink>
               )}
 
               {/* PATH A: one-click setup */}
-              <div style={{ width: 400, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ width: 400, display: 'flex', flexDirection: 'column', gap: space.lg }}>
                 <PrimaryButton onClick={handleSetup} disabled={!ollamaReachable} full>
                   {modelInstalled
                     ? 'Enable the Librarian'
@@ -341,13 +341,13 @@ export function MomentHardware({ active = true, onAdvance }: Props) {
                 </p>
 
                 {ollamaReachable === false && ollamaStarting && (
-                  <p style={{ ...fineprint(colors), color: colors.textMuted, marginTop: 4 }}>
+                  <p style={{ ...fineprint(colors), color: colors.textMuted, marginTop: space.xs }}>
                     Starting the local model runtime…
                   </p>
                 )}
 
                 {ollamaReachable === false && !ollamaStarting && (
-                  <Glass r={10} padding={14} style={{ marginTop: 4 }}>
+                  <Glass r={10} padding={14} style={{ marginTop: space.xs }}>
                     <p style={{ ...fineprint(colors), margin: '0 0 8px' }}>
                       One quick install first: Ollama runs the model on your
                       machine — free and private. We'll pick things up here
@@ -360,11 +360,11 @@ export function MomentHardware({ active = true, onAdvance }: Props) {
                 )}
 
                 {/* PATH B: Skip */}
-                <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 14, marginTop: 6 }}>
+                <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 14, marginTop: space.sm }}>
                   <GhostLink onClick={handleSkip} style={{ display: 'block', textAlign: 'center' }}>
                     Skip for now
                   </GhostLink>
-                  <p style={{ ...fineprint(colors), marginTop: 6 }}>
+                  <p style={{ ...fineprint(colors), marginTop: space.sm }}>
                     Your agent still works fully — chat, tasks, browser, everything functions.
                     But memories won't be described or enriched. You can enable the Librarian
                     later in Settings.
@@ -381,7 +381,7 @@ export function MomentHardware({ active = true, onAdvance }: Props) {
         <>
           <Mobius size={120} state="calibrating" />
           <h1 style={h1Style(colors)}>Downloading {selectedModel}</h1>
-          <div style={{ width: 360, marginTop: 16 }}>
+          <div style={{ width: 360, marginTop: space.xxl }}>
             {/* Progress bar */}
             <div style={{
               width: '100%', height: 6, borderRadius: radius.pill,
@@ -394,7 +394,7 @@ export function MomentHardware({ active = true, onAdvance }: Props) {
                 transition: `width 300ms ${ease.out}`,
               }} />
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: space.md }}>
               <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted }}>
                 {pullStatus.length > 50 ? pullStatus.slice(0, 50) + '...' : pullStatus}
               </span>
@@ -414,7 +414,7 @@ export function MomentHardware({ active = true, onAdvance }: Props) {
           <p style={{ ...subtitleStyle(colors), maxWidth: 380 }}>
             You can enable it anytime in Settings → Librarian.
           </p>
-          <PrimaryButton onClick={onAdvance} full style={{ width: 360, marginTop: 16 }}>
+          <PrimaryButton onClick={onAdvance} full style={{ width: 360, marginTop: space.xxl }}>
             Continue
           </PrimaryButton>
         </>
@@ -424,18 +424,18 @@ export function MomentHardware({ active = true, onAdvance }: Props) {
       {phase === 'ready' && (
         <>
           <Mobius size={120} state="idle" />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginTop: space.md }}>
             <FiCheckCircle size={22} color={colors.cyan} />
             <h1 style={{ ...h1Style(colors), margin: 0 }}>Ready to go</h1>
           </div>
-          <p style={{ ...subtitleStyle(colors), maxWidth: 380, marginTop: 10 }}>
+          <p style={{ ...subtitleStyle(colors), maxWidth: 380, marginTop: space.lg }}>
             <span style={{ color: colors.cyan, fontWeight: 600 }}>{selectedModel}</span> is installed.
             The Librarian will enrich your agent's memory automatically.
           </p>
-          <PrimaryButton onClick={onAdvance} full style={{ width: 360, marginTop: 20 }}>
+          <PrimaryButton onClick={onAdvance} full style={{ width: 360, marginTop: space.xxxl }}>
             Continue
           </PrimaryButton>
-          <p style={{ ...fineprint(colors), marginTop: 10 }}>Continuing automatically…</p>
+          <p style={{ ...fineprint(colors), marginTop: space.lg }}>Continuing automatically…</p>
         </>
       )}
 
@@ -445,7 +445,7 @@ export function MomentHardware({ active = true, onAdvance }: Props) {
           <Mobius size={120} state="idle" />
           <h1 style={h1Style(colors)}>Something went wrong</h1>
           <p style={{ ...subtitleStyle(colors), color: colors.danger, maxWidth: 380 }}>{errorMsg}</p>
-          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+          <div style={{ display: 'flex', gap: space.xl, marginTop: space.xxl }}>
             <GhostLink onClick={() => { setPhase('scanning'); setScanNonce(n => n + 1); }}>Retry</GhostLink>
             <GhostLink onClick={handleSkip}>Skip for now</GhostLink>
           </div>
@@ -459,7 +459,7 @@ function HwStat({ label, value }: { label: string; value: string }) {
   const { colors } = useTheme();
   return (
     <div style={{ textAlign: 'center' }}>
-      <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+      <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted, marginBottom: space.xs, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
         {label}
       </div>
       <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
@@ -476,7 +476,7 @@ const h1Style = (c: ThemeColors) => ({
 
 const subtitleStyle = (c: ThemeColors) => ({
   fontFamily: font.body, fontSize: textSize.body, color: c.textMuted,
-  marginBottom: 24, textAlign: 'center' as const, lineHeight: 1.6,
+  marginBottom: space.huge, textAlign: 'center' as const, lineHeight: 1.6,
 } as const);
 
 const fineprint = (c: ThemeColors) => ({

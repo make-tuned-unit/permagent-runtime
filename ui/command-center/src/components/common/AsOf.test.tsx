@@ -87,6 +87,8 @@ describe('AsOf', () => {
 
   it('puts the exact timestamp on hover', () => {
     const el = render(<AsOf asOf={minutesAgo(2)} now={NOW} />);
-    expect(el.title).toBe(new Date(minutesAgo(2)).toLocaleString());
+    act(() => { el.focus(); });
+    expect(document.querySelector('[role="tooltip"]')?.textContent)
+      .toBe(new Date(minutesAgo(2)).toLocaleString());
   });
 });

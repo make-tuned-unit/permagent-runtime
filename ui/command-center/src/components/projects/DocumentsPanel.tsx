@@ -16,17 +16,22 @@ import { FiFile, FiTrash2, FiUploadCloud } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview } from '../brain/brainMemoryFocus';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import { DocumentViewer, formatSize } from './DocumentViewer';
 import type { Project, ProjectDocument } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 export function DocumentsPanel({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   // White veils vanish on silver — flip to a faint graphite tint there.
-  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const rowVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
   const [docs, setDocs] = useState<ProjectDocument[]>([]);
   const [viewing, setViewing] = useState<ProjectDocument | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -156,8 +161,8 @@ export function DocumentsPanel({ project }: { project: Project }) {
           onClick={() => fileInput.current?.click()}
           onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.current?.click(); } }}
           style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            padding: '10px 12px', marginBottom: docs.length ? 8 : 0, cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: space.md,
+            padding: `${space.lg}px ${space.xl}px`, marginBottom: docs.length ? 8 : 0, cursor: 'pointer',
             borderRadius: radius.md, fontSize: textSize.micro,
             color: dragging ? colors.cyan : colors.textDim,
             border: `1px dashed ${dragging ? colors.cyan : colors.border}`,
@@ -170,7 +175,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
         </div>
 
         {error && (
-          <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>
+          <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{error}</div>
         )}
 
         {status === 'loading' && (
@@ -178,7 +183,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
         )}
 
         {status === 'error' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
             <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load documents.</span>
             <Button
               colors={colors}
@@ -200,61 +205,63 @@ export function DocumentsPanel({ project }: { project: Project }) {
         )}
 
         {status === 'ready' && docs.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
             {docs.map(doc => (
               <div
                 key={doc.id}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px',
-                  borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}`,
+                  display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.md}px`,
+                  borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}`,
                   transition: 'border-color 150ms',
                 }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
               >
-                <Button
-                  colors={colors}
-                  variant="bare"
-                  onClick={() => setViewing(doc)}
-                  title="Open"
-                  // `contents` dissolves Button's `.pa-btn__label` wrapper so
-                  // the icon, the truncating filename and the size stay the
-                  // button's own flex row — otherwise the ellipsis is lost.
-                                    style={{
-                    '--pa-btn-fg': colors.text,
-                    '--pa-btn-bg-hover': 'transparent',
-                    '--pa-btn-fg-hover': colors.cyan,
-                    '--pa-btn-pad': '0',
-                    justifyContent: 'flex-start',
-                    textAlign: 'left',
-                    flex: 1,
-                    minWidth: 0,
-                    gap: 8,
-                    fontFamily: font.body,
-                  } as CSSProperties}
-                >
-                  <FiFile size={13} color={colors.textMuted} style={{ flexShrink: 0 }} />
-                  <span style={{ fontSize: textSize.caption, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {doc.filename}
-                  </span>
-                  <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0 }}>{formatSize(doc.size_bytes)}</span>
-                </Button>
-                <Button
-                  colors={colors}
-                  variant="bare"
-                  onClick={() => remove(doc)}
-                  title="Delete"
-                  aria-label="Delete"
-                  style={{
-                    '--pa-btn-fg': colors.textDim,
-                    '--pa-btn-fg-hover': colors.danger,
-                    '--pa-btn-bg-hover': 'transparent',
-                    '--pa-btn-pad': '2px',
-                    flexShrink: 0,
-                  } as CSSProperties}
-                >
-                  <FiTrash2 size={13} />
-                </Button>
+                <Tooltip content="Open">
+                  <Button
+                    colors={colors}
+                    variant="bare"
+                    onClick={() => setViewing(doc)}
+                    // `contents` dissolves Button's `.pa-btn__label` wrapper so
+                    // the icon, the truncating filename and the size stay the
+                    // button's own flex row — otherwise the ellipsis is lost.
+                                      style={{
+                      '--pa-btn-fg': colors.text,
+                      '--pa-btn-bg-hover': 'transparent',
+                      '--pa-btn-fg-hover': colors.cyan,
+                      '--pa-btn-pad': '0',
+                      justifyContent: 'flex-start',
+                      textAlign: 'left',
+                      flex: 1,
+                      minWidth: 0,
+                      gap: space.md,
+                      fontFamily: font.body,
+                    } as CSSProperties}
+                  >
+                    <FiFile size={13} color={colors.textMuted} style={{ flexShrink: 0 }} />
+                    <span style={{ fontSize: textSize.caption, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {doc.filename}
+                    </span>
+                    <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0 }}>{formatSize(doc.size_bytes)}</span>
+                  </Button>
+                </Tooltip>
+                <Tooltip content="Delete">
+                  <Button
+                    colors={colors}
+                    variant="bare"
+                    onClick={() => remove(doc)}
+                    aria-label="Delete"
+                    style={{
+                      '--pa-btn-fg': colors.textDim,
+                      '--pa-btn-fg-hover': colors.danger,
+                      '--pa-btn-bg-hover': 'transparent',
+                      '--pa-btn-pad': '2px',
+                      flexShrink: 0,
+                    } as CSSProperties}
+                  >
+                    <FiTrash2 size={13} />
+                  </Button>
+                </Tooltip>
               </div>
             ))}
           </div>

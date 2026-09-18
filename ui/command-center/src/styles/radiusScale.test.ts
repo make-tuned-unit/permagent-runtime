@@ -33,7 +33,12 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 
 describe('radius scale', () => {
   it('is the one the code converged on by hand', () => {
-    expect(radius).toEqual({ xs: 4, sm: 6, md: 8, lg: 12, xl: 16, pill: 999 });
+    // `glass` is the one step nobody converged on by hand, because nothing was
+    // shaped like it yet: it is the outermost floating surface, derived from
+    // the macOS window corner rather than chosen. Its derivation — and the
+    // screencapture it was measured from — is in tokens.ts; the arithmetic is
+    // re-checked in glassTokens.test.ts.
+    expect(radius).toEqual({ xs: 4, sm: 6, md: 8, lg: 12, xl: 16, glass: 9, pill: 999 });
   });
 
   it('is not re-hardcoded anywhere the token already exists', () => {

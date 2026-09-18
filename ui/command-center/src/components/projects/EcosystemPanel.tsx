@@ -3,12 +3,13 @@ import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { relativeTimeAgo } from '../../lib/time-decay';
 import { isSafeHttpUrl } from '../../lib/url';
-import { font, textSize } from '../../styles/tokens';
+import { font, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Project } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 export interface ProjectIntelItem {
   id: string;
   kind: 'competitor' | 'partner' | 'adjacent';
@@ -162,37 +163,38 @@ export function EcosystemPanel({ project }: { project: Project }) {
         <div style={{ color: colors.textDim, fontSize: 10 }}>Last researched {freshness}</div>
       )}
       {status === 'ready' && groups.map(([label, items]) => items.length > 0 && (
-        <section key={label} style={{ marginTop: 10 }}>
-          <div style={{ color: colors.textMuted, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>
+        <section key={label} style={{ marginTop: space.lg }}>
+          <div style={{ color: colors.textMuted, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: space.sm }}>
             {label}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
             {items.map(item => (
-              <div key={item.id} style={{ borderLeft: `2px solid ${colors.cyan}`, paddingLeft: 9 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <div key={item.id} style={{ borderLeft: `2px solid ${colors.cyan}`, paddingLeft: space.md }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.md }}>
                   <div style={{ color: colors.text, fontSize: textSize.caption, fontWeight: 600 }}>{item.name}</div>
-                  <Button
-                    colors={colors}
-                    variant="bare"
-                    type="button"
-                    aria-label={`Dismiss ${item.name}`}
-                    title="Dismiss"
-                    onClick={() => dismiss(item.id)}
-                    style={{
-                      '--pa-btn-fg': colors.textDim,
-                      '--pa-btn-fg-hover': colors.danger,
-                      '--pa-btn-bg-hover': 'transparent',
-                      '--pa-btn-pad': '2px',
-                      '--pa-btn-weight': 'inherit',
-                      fontSize: textSize.body,
-                      lineHeight: 1,
-                    } as CSSProperties}
-                  >
-                    ×
-                  </Button>
+                  <Tooltip content="Dismiss">
+                    <Button
+                      colors={colors}
+                      variant="bare"
+                      type="button"
+                      aria-label={`Dismiss ${item.name}`}
+                      onClick={() => dismiss(item.id)}
+                      style={{
+                        '--pa-btn-fg': colors.textDim,
+                        '--pa-btn-fg-hover': colors.danger,
+                        '--pa-btn-bg-hover': 'transparent',
+                        '--pa-btn-pad': '2px',
+                        '--pa-btn-weight': 'inherit',
+                        fontSize: textSize.body,
+                        lineHeight: 1,
+                      } as CSSProperties}
+                    >
+                      ×
+                    </Button>
+                  </Tooltip>
                 </div>
-                {item.note && <div style={{ color: colors.textMuted, fontSize: textSize.micro, marginTop: 2 }}>{item.note}</div>}
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 3, fontSize: 10 }}>
+                {item.note && <div style={{ color: colors.textMuted, fontSize: textSize.micro, marginTop: space.xxs }}>{item.note}</div>}
+                <div style={{ display: 'flex', gap: space.md, alignItems: 'center', marginTop: space.xxs, fontSize: 10 }}>
                   {isSafeHttpUrl(item.source_url) ? (
                     <a href={item.source_url} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>Source</a>
                   ) : (

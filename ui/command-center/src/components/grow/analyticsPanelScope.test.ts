@@ -10,9 +10,8 @@
  * field rather than the single one that happened to leak.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
 
-const SRC = readFileSync(new URL('./GrowView.tsx', import.meta.url), 'utf8');
+import { GROW_SOURCE as SRC } from './growSource';
 
 /** Extract the JSX props of a component usage, so we can assert on `key`. */
 function usage(component: string): string {

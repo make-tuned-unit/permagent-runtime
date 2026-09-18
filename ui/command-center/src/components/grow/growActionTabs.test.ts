@@ -6,6 +6,7 @@ import {
   groupActionsByCategory,
   normalizeActionCategory,
 } from './growActionTabs';
+import { GROW_SOURCE } from './growSource';
 
 describe('action category tabs', () => {
   it('uses the same keys the generator is allowed to emit', () => {
@@ -51,7 +52,7 @@ describe('action category tabs', () => {
   });
 
   it('is what the Actions panel renders', () => {
-    const source = readFileSync(join(__dirname, 'GrowView.tsx'), 'utf8');
+    const source = GROW_SOURCE;
     expect(source).toContain('groupActionsByCategory');
     expect(source).toContain('aria-label="Action category"');
     expect(source).toContain('showCategory={false}');

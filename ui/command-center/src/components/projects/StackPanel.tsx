@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiEdit2, FiExternalLink, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
-import { font, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -40,6 +40,7 @@ import {
   type StackEntry,
 } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 /** Composer state — used for both "add" and "edit" (id set = editing). */
 interface EntryForm {
   id: string | null;
@@ -60,8 +61,12 @@ const EMPTY_FORM: EntryForm = {
 };
 
 export function StackPanel({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
-  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const { colors } = useTheme();
+  const rowVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
   const navigate = useBrowserNavigate();
 
   const [entries, setEntries] = useState<StackEntry[]>([]);
@@ -158,7 +163,7 @@ export function StackPanel({ project }: { project: Project }) {
   };
 
   const inputStyle: React.CSSProperties = {
-    fontSize: textSize.caption, padding: '6px 9px', borderRadius: 7,
+    fontSize: textSize.caption, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md,
     background: colors.inputBg, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none',
   };
@@ -181,7 +186,7 @@ export function StackPanel({ project }: { project: Project }) {
               '--pa-btn-bg-hover': 'transparent',
               '--pa-btn-pad': '0',
               '--pa-btn-weight': 600,
-              gap: 4,
+              gap: space.xs,
               fontFamily: font.body,
               fontSize: textSize.micro,
             } as CSSProperties}
@@ -199,7 +204,7 @@ export function StackPanel({ project }: { project: Project }) {
               '--pa-btn-bg-hover': 'transparent',
               '--pa-btn-pad': '0',
               '--pa-btn-weight': 600,
-              gap: 4,
+              gap: space.xs,
               fontFamily: font.body,
               fontSize: textSize.micro,
             } as CSSProperties}
@@ -212,11 +217,11 @@ export function StackPanel({ project }: { project: Project }) {
       {/* Composer (add or edit) */}
       {form && (
         <div style={{
-          display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10,
-          padding: '10px', borderRadius: 7, background: rowVeil,
+          display: 'flex', flexDirection: 'column', gap: space.sm, marginBottom: space.lg,
+          padding: space.lg, borderRadius: radius.md, background: rowVeil,
           border: `1px solid ${colors.borderHi}`,
         }}>
-          <div style={{ display: 'flex', gap: 6 }}>
+          <div style={{ display: 'flex', gap: space.sm }}>
             <input
               value={form.serviceName}
               onChange={e => setForm({ ...form, serviceName: e.target.value })}
@@ -253,7 +258,7 @@ export function StackPanel({ project }: { project: Project }) {
             placeholder='Notes — e.g. "free tier, 2 projects max"'
             style={inputStyle}
           />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
             <Button
               colors={colors}
               variant="ghostOn"
@@ -263,7 +268,7 @@ export function StackPanel({ project }: { project: Project }) {
                 '--pa-btn-bg': colors.cyanSoft,
                 '--pa-btn-border': colors.borderHi,
                 '--pa-btn-pad': '6px 14px',
-                '--pa-btn-radius': '7px',
+                '--pa-btn-radius': `${radius.md}px`,
                 '--pa-btn-weight': 600,
                 fontFamily: font.body,
                 fontSize: textSize.caption,
@@ -279,7 +284,7 @@ export function StackPanel({ project }: { project: Project }) {
       )}
 
       {error && (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{error}</div>
       )}
 
       {status === 'loading' && (
@@ -287,7 +292,7 @@ export function StackPanel({ project }: { project: Project }) {
       )}
 
       {status === 'error' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load the stack.</span>
           <Button
             colors={colors}
@@ -316,42 +321,45 @@ export function StackPanel({ project }: { project: Project }) {
       )}
 
       {status === 'ready' && groups.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
           {groups.map(group => (
             <div key={group.category}>
               <div style={{
                 fontSize: 10, fontWeight: 600, color: colors.textDim,
-                textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4,
+                textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: space.xs,
               }}>
                 {STACK_CATEGORY_LABELS[group.category]}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
                 {group.entries.map(entry => (
                   <div
                     key={entry.id}
                     style={{
-                      display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px',
-                      borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}`,
+                      display: 'flex', alignItems: 'flex-start', gap: space.md, padding: `${space.md}px ${space.lg}px`,
+                      borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}`,
                       transition: 'border-color 150ms',
                     }}
                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
                     onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
                   >
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md, flexWrap: 'wrap' }}>
                         <span style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>
                           {entry.service_name}
                         </span>
                         {entry.identity ? (
-                          <span
-                            title="The login identity used for this service on this project"
-                            style={{
-                              fontSize: textSize.micro, color: colors.cyan, fontFamily: font.mono,
-                              overflowWrap: 'anywhere',
-                            }}
-                          >
-                            {entry.identity}
-                          </span>
+                          <Tooltip content="The login identity used for this service on this project">
+                            <span tabIndex={0} style={{ outline: 'none' }}>
+                              <span
+                                style={{
+                                  fontSize: textSize.micro, color: colors.cyan, fontFamily: font.mono,
+                                  overflowWrap: 'anywhere',
+                                }}
+                              >
+                                {entry.identity}
+                              </span>
+                            </span>
+                          </Tooltip>
                         ) : (
                           <span style={{ fontSize: textSize.micro, color: colors.textDim, fontStyle: 'italic' }}>
                             no identity recorded
@@ -361,65 +369,68 @@ export function StackPanel({ project }: { project: Project }) {
                       {entry.notes && (
                         <div style={{
                           fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5,
-                          marginTop: 2, overflowWrap: 'anywhere',
+                          marginTop: space.xxs, overflowWrap: 'anywhere',
                         }}>
                           {entry.notes}
                         </div>
                       )}
                       {entry.dashboard_url && (
-                        <Button
-                          colors={colors}
-                          variant="bare"
-                          className="hover:underline"
-                          onClick={() => navigate(entry.dashboard_url!)}
-                          title={`Open ${entry.dashboard_url} in the in-app browser`}
-                          style={{
-                            '--pa-btn-fg': colors.cyan,
-                            '--pa-btn-bg-hover': 'transparent',
-                            '--pa-btn-pad': '0',
-                            '--pa-btn-weight': 600,
-                            marginTop: 4,
-                            gap: 4,
-                            fontFamily: font.body,
-                            fontSize: 10,
-                          } as CSSProperties}
-                        >
-                          Dashboard <FiExternalLink size={9} />
-                        </Button>
+                        <Tooltip content={`Open ${entry.dashboard_url} in the in-app browser`}>
+                          <Button
+                            colors={colors}
+                            variant="bare"
+                            className="hover:underline"
+                            onClick={() => navigate(entry.dashboard_url!)}
+                            style={{
+                              '--pa-btn-fg': colors.cyan,
+                              '--pa-btn-bg-hover': 'transparent',
+                              '--pa-btn-pad': '0',
+                              '--pa-btn-weight': 600,
+                              marginTop: space.xs,
+                              gap: space.xs,
+                              fontFamily: font.body,
+                              fontSize: 10,
+                            } as CSSProperties}
+                          >
+                            Dashboard <FiExternalLink size={9} />
+                          </Button>
+                        </Tooltip>
                       )}
                     </div>
-                    <Button
-                      colors={colors}
-                      variant="bare"
-                      onClick={() => startEdit(entry)}
-                      title="Edit entry"
-                      aria-label="Edit entry"
-                      style={{
-                        '--pa-btn-fg': colors.textDim,
-                        '--pa-btn-fg-hover': colors.cyan,
-                        '--pa-btn-bg-hover': 'transparent',
-                        '--pa-btn-pad': '2px',
-                        flexShrink: 0,
-                      } as CSSProperties}
-                    >
-                      <FiEdit2 size={13} />
-                    </Button>
-                    <Button
-                      colors={colors}
-                      variant="bare"
-                      onClick={() => remove(entry)}
-                      title="Remove entry"
-                      aria-label="Remove entry"
-                      style={{
-                        '--pa-btn-fg': colors.textDim,
-                        '--pa-btn-fg-hover': colors.danger,
-                        '--pa-btn-bg-hover': 'transparent',
-                        '--pa-btn-pad': '2px',
-                        flexShrink: 0,
-                      } as CSSProperties}
-                    >
-                      <FiTrash2 size={13} />
-                    </Button>
+                    <Tooltip content="Edit entry">
+                      <Button
+                        colors={colors}
+                        variant="bare"
+                        onClick={() => startEdit(entry)}
+                        aria-label="Edit entry"
+                        style={{
+                          '--pa-btn-fg': colors.textDim,
+                          '--pa-btn-fg-hover': colors.cyan,
+                          '--pa-btn-bg-hover': 'transparent',
+                          '--pa-btn-pad': '2px',
+                          flexShrink: 0,
+                        } as CSSProperties}
+                      >
+                        <FiEdit2 size={13} />
+                      </Button>
+                    </Tooltip>
+                    <Tooltip content="Remove entry">
+                      <Button
+                        colors={colors}
+                        variant="bare"
+                        onClick={() => remove(entry)}
+                        aria-label="Remove entry"
+                        style={{
+                          '--pa-btn-fg': colors.textDim,
+                          '--pa-btn-fg-hover': colors.danger,
+                          '--pa-btn-bg-hover': 'transparent',
+                          '--pa-btn-pad': '2px',
+                          flexShrink: 0,
+                        } as CSSProperties}
+                      >
+                        <FiTrash2 size={13} />
+                      </Button>
+                    </Tooltip>
                   </div>
                 ))}
               </div>

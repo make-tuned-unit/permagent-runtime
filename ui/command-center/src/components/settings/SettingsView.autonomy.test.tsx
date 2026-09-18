@@ -88,16 +88,19 @@ describe('AutonomyPanel guardrail wiring', () => {
     expect(container.textContent).toContain('Open Decisions on Home');
   });
 
-  it('replaced the spend-cap sliders with a link to Settings → Spend', async () => {
+  it('replaced the spend-cap sliders with a link to Spend', async () => {
     const goto = vi.fn();
     await mount(goto);
-    // No sliders left — the Spend pane is the one writer of the budget now.
+    // No sliders left — the Spend page is the one writer of the budget now.
     expect(container.querySelectorAll('input[type="range"]')).toHaveLength(0);
     const link = Array.from(container.querySelectorAll('button')).find(
-      b => b.textContent?.includes('Set spend caps in Spend'),
+      b => b.textContent?.includes('Open Spend'),
     ) as HTMLButtonElement;
     expect(link).toBeTruthy();
     await act(async () => { link.click(); });
+    // Still the 'spend' SECTION key, not the 'history' pane key: Spend moved
+    // into History as a segment, and `SECTION_HOME` is what turns the section
+    // into the pane. Asking for the pane here would open History on Sessions.
     expect(goto).toHaveBeenCalledWith('spend');
   });
 

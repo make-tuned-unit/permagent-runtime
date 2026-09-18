@@ -61,8 +61,17 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
         std::sync::Arc::new(permagent::session::SessionManager::instance()),
     );
     info!("Goal dispatch hook installed (auto-dispatch on promotion/unpark)");
+    // R2b: reconcile goals interrupted by the previous daemon lifecycle, at
+    // boot rather than waiting for the first agent session to load the
+    // orchestrator extension. A machine that restarts and then sits idle used
+    // to leave its in-flight goals stranded in `in_progress`. That late trigger
+    // is still in place and is idempotent — both claim the same process-wide
+    // guard, so only whichever fires first sweeps.
+    //
     // Readiness ordering is explicit, not a race against the reconciler's
-    // short delay. AppState construction can take longer than two seconds.
+    // short delay: this runs AFTER the dispatch hook above, because AppState
+    // construction can take longer than two seconds and a reconcile that
+    // requeued work before the hook existed would strand it with no worker.
     permagent::agents::platform_extensions::orchestrator::spawn_boot_reconcile(
         std::sync::Arc::new(permagent::session::SessionManager::instance()),
     );

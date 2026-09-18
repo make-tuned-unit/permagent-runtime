@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
-import { radius, font, textSize } from '../../../styles/tokens';
+import { radius, font, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Stat, SectionTitle, EmptyNote } from '../atoms';
 import { apiFetch } from '../../../lib/api';
@@ -8,6 +8,7 @@ import { CardIcon } from './cardIcons';
 import { AsOf } from '../../common/AsOf';
 import { Button } from '../../common/Button';
 
+import { Tooltip } from '../../common/Tooltip';
 /**
  * How long a fetch-once card's reading stays plain before its age becomes part
  * of what it says. Five minutes: long enough that opening the dashboard and
@@ -142,10 +143,10 @@ export function ManifestCard({ manifest }: Props) {
 
   const shell = (children: React.ReactNode) => (
     <div style={{
-      padding: isCompact ? 14 : 24, borderRadius: radius.lg,
+      padding: isCompact ? space.xxl : space.huge, borderRadius: radius.lg,
       background: colors.surface,
       border: `1px solid ${colors.border}`,
-      boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
+      boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
       height: '100%', boxSizing: 'border-box',
       overflow: 'hidden',
       display: 'flex', flexDirection: 'column',
@@ -155,7 +156,7 @@ export function ManifestCard({ manifest }: Props) {
         <div
           data-testid="manifest-card-as-of"
           style={{
-            marginTop: 'auto', paddingTop: 8,
+            marginTop: 'auto', paddingTop: space.md,
             fontFamily: font.body, fontSize: 10,
           }}
         >
@@ -188,14 +189,14 @@ export function ManifestCard({ manifest }: Props) {
     return shell(
       <>
         <SectionTitle title={manifest.name} />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 10 }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: space.lg }}>
           {data?.note && (
             <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textDim, textAlign: 'center' }}>
               {data.note}
             </div>
           )}
           {configOpen ? (
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ display: 'flex', gap: space.sm }}>
               <input
                 autoFocus
                 value={configValue}
@@ -204,7 +205,7 @@ export function ManifestCard({ manifest }: Props) {
                 placeholder={manifest.configure!.placeholder}
                 disabled={configBusy}
                 style={{
-                  flex: 1, padding: '6px 10px', borderRadius: radius.sm,
+                  flex: 1, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm,
                   border: `1px solid ${colors.border}`, background: colors.bg,
                   color: colors.text, fontFamily: font.body, fontSize: textSize.caption, outline: 'none',
                 }}
@@ -289,8 +290,8 @@ export function ManifestCard({ manifest }: Props) {
     const inline = rest.filter(c => c.group !== 'forecast');
     const forecast = rest.filter(c => c.group === 'forecast');
     return shell(
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minHeight: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: colors.textDim }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, minHeight: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, color: colors.textDim }}>
           <CardIcon name={hero.icon} size={13} />
           <span style={{
             fontFamily: font.body, fontSize: 10, fontWeight: 600, letterSpacing: '0.08em',
@@ -312,21 +313,24 @@ export function ManifestCard({ manifest }: Props) {
 
         {inline.length > 0 && (
           <div style={{
-            display: 'flex', flexWrap: 'wrap', gap: '3px 10px',
+            display: 'flex', flexWrap: 'wrap', gap: `${space.xs}px ${space.lg}px`,
             fontFamily: font.body, fontSize: 10.5, lineHeight: 1.45, minWidth: 0,
           }}>
             {inline.map((c, i) => (
-              <span
-                key={i}
-                title={`${c.label}: ${c.value}`}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: colors.textDim }}
-              >
-                <CardIcon name={c.icon} size={11} />
-                <span style={{
-                  color: c.accent ? colors.cyan : colors.textMuted, fontWeight: 500,
-                  fontVariantNumeric: 'tabular-nums',
-                }}>{c.value}</span>
-              </span>
+              <Tooltip content={`${c.label}: ${c.value}`}>
+                <span tabIndex={0} style={{ outline: 'none' }}>
+                  <span
+                    key={i}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: space.xs, color: colors.textDim }}
+                  >
+                    <CardIcon name={c.icon} size={11} />
+                    <span style={{
+                      color: c.accent ? colors.cyan : colors.textMuted, fontWeight: 500,
+                      fontVariantNumeric: 'tabular-nums',
+                    }}>{c.value}</span>
+                  </span>
+                </span>
+              </Tooltip>
             ))}
           </div>
         )}
@@ -336,33 +340,36 @@ export function ManifestCard({ manifest }: Props) {
             role="list"
             aria-label="Forecast"
             style={{
-              display: 'flex', gap: 4, marginTop: 2, minWidth: 0,
-              borderTop: `1px solid ${colors.border}`, paddingTop: 7,
+              display: 'flex', gap: space.xs, marginTop: space.xxs, minWidth: 0,
+              borderTop: `1px solid ${colors.border}`, paddingTop: space.md,
             }}
           >
             {forecast.map((c, i) => (
-              <div
-                key={i}
-                role="listitem"
-                title={c.sub ? `${c.label}: ${c.value} · ${c.sub}` : `${c.label}: ${c.value}`}
-                style={{
-                  flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
-                  alignItems: 'center', gap: 2, fontFamily: font.body,
-                }}
-              >
-                <span style={{
-                  fontSize: 9.5, fontWeight: 600, letterSpacing: '0.06em',
-                  textTransform: 'uppercase', color: colors.textDim,
-                }}>{c.label}</span>
-                <CardIcon name={c.icon} size={13} />
-                <span style={{
-                  fontSize: 10.5, color: colors.textMuted, fontVariantNumeric: 'tabular-nums',
-                  whiteSpace: 'nowrap',
-                }}>{c.value}</span>
-                {c.sub && (
-                  <span style={{ fontSize: 9, color: colors.textDim, whiteSpace: 'nowrap' }}>{c.sub}</span>
-                )}
-              </div>
+              <Tooltip content={c.sub ? `${c.label}: ${c.value} · ${c.sub}` : `${c.label}: ${c.value}`}>
+                <span tabIndex={0} style={{ outline: 'none' }}>
+                  <div
+                    key={i}
+                    role="listitem"
+                    style={{
+                      flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
+                      alignItems: 'center', gap: space.xs, fontFamily: font.body,
+                    }}
+                  >
+                    <span style={{
+                      fontSize: 9.5, fontWeight: 600, letterSpacing: '0.06em',
+                      textTransform: 'uppercase', color: colors.textDim,
+                    }}>{c.label}</span>
+                    <CardIcon name={c.icon} size={13} />
+                    <span style={{
+                      fontSize: 10.5, color: colors.textMuted, fontVariantNumeric: 'tabular-nums',
+                      whiteSpace: 'nowrap',
+                    }}>{c.value}</span>
+                    {c.sub && (
+                      <span style={{ fontSize: 9, color: colors.textDim, whiteSpace: 'nowrap' }}>{c.sub}</span>
+                    )}
+                  </div>
+                </span>
+              </Tooltip>
             ))}
           </div>
         )}
@@ -375,7 +382,7 @@ export function ManifestCard({ manifest }: Props) {
       <SectionTitle title={manifest.name} />
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         {manifest.layout === 'stat-grid' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignContent: 'center', height: '100%' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: space.xxxl, alignContent: 'center', height: '100%' }}>
             {cells.map((c, i) => (
               <Stat key={i} label={c.label} value={c.value} delta={c.delta} cyan={c.accent} />
             ))}
@@ -383,9 +390,9 @@ export function ManifestCard({ manifest }: Props) {
         )}
 
         {manifest.layout === 'key-value' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
             {cells.map((c, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+              <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl }}>
                 <span style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textDim }}>{c.label}</span>
                 <span style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: c.accent ? colors.cyan : colors.text }}>{c.value}</span>
               </div>
@@ -394,12 +401,12 @@ export function ManifestCard({ manifest }: Props) {
         )}
 
         {manifest.layout === 'list' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
             {cells.map((c, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '6px 0', borderBottom: i < cells.length - 1 ? `1px solid ${colors.border}` : 'none' }}>
+              <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl, padding: `${space.sm}px 0`, borderBottom: i < cells.length - 1 ? `1px solid ${colors.border}` : 'none' }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.label}</div>
-                  {c.sub && <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, marginTop: 1 }}>{c.sub}</div>}
+                  {c.sub && <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, marginTop: space.xxs }}>{c.sub}</div>}
                 </div>
                 {c.value !== '' && c.value != null && (
                   <span style={{ fontFamily: font.body, fontSize: textSize.caption, color: c.accent ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{c.value}</span>

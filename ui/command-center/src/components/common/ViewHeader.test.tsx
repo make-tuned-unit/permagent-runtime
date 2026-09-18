@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { act } from 'react-dom/test-utils';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ViewHeader } from './ViewHeader';
+import { hardScrollEdgeSurface, ViewHeader } from './ViewHeader';
 import { type } from '../../styles/tokens';
 
 let container: HTMLDivElement;
@@ -73,6 +73,33 @@ describe('ViewHeader', () => {
     expect(container.querySelector('[data-testid="lead"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="act"]')).not.toBeNull();
   });
+
+  // ── D11 hard scroll edge ──
+  // The header stays transparent (the historical default) unless a view opts
+  // into `surface`, since some parents are already opaque behind it.
+  it('stays transparent with no `surface` prop', () => {
+    render(<ViewHeader title="Home" />);
+    const header = container.querySelector('[data-testid="view-header"]') as HTMLElement;
+    expect(header.style.background).toBe('');
+    expect(header.style.position).toBe('');
+  });
+
+  it('`surface` paints the opaque fill and pins the header above scrolling content', () => {
+    render(<ViewHeader title="Grow" surface="rgb(1, 2, 3)" />);
+    const header = container.querySelector('[data-testid="view-header"]') as HTMLElement;
+    expect(header.style.background).toBe('rgb(1, 2, 3)');
+    expect(header.style.position).toBe('relative');
+    expect(header.style.zIndex).toBe('1');
+  });
+
+  it('hardScrollEdgeSurface is exactly what `surface` applies', () => {
+    render(<ViewHeader title="Grow" surface="rgb(1, 2, 3)" />);
+    const header = container.querySelector('[data-testid="view-header"]') as HTMLElement;
+    const expected = hardScrollEdgeSurface('rgb(1, 2, 3)');
+    expect(header.style.background).toBe(expected.background);
+    expect(header.style.position).toBe(expected.position);
+    expect(header.style.zIndex).toBe(String(expected.zIndex));
+  });
 });
 
 // ── Source guard ──
@@ -94,4 +121,22 @@ describe('every top-level view uses the shared header', () => {
       expect(source).toContain("from '../common/ViewHeader'");
     });
   }
+});
+
+// The two screens that used to paint their own hard-scroll-edge fill by hand
+// (#1180's grow/ wrapper div, #1164's chat dock header) now go through
+// ViewHeader's `surface` prop / `hardScrollEdgeSurface` instead — this pins
+// that they stayed on the shared mechanic rather than drifting back to a
+// hand-rolled `background` + `position: 'relative'` + `zIndex: 1` trio.
+describe('grow/ and chat/ adopted the shared hard-scroll-edge mechanic', () => {
+  it('GrowView passes `surface` to ViewHeader instead of wrapping it in its own filled div', () => {
+    const source = readFileSync(join(__dirname, '..', 'grow', 'GrowView.tsx'), 'utf8');
+    expect(source).toMatch(/<ViewHeader[\s\S]{0,80}surface=/);
+  });
+
+  it('ChatDock uses hardScrollEdgeSurface for its own (non-ViewHeader) header', () => {
+    const source = readFileSync(join(__dirname, '..', 'chat', 'ChatDock.tsx'), 'utf8');
+    expect(source).toContain("import { hardScrollEdgeSurface } from '../common/ViewHeader'");
+    expect(source).toMatch(/\.\.\.hardScrollEdgeSurface\(/);
+  });
 });

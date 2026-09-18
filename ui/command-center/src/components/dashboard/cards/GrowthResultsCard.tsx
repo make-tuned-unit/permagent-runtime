@@ -1,5 +1,6 @@
 import { memo, useEffect, useState } from 'react';
-import { font, radius, textSize } from '../../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../../styles/tokens';
+import type { ThemeColors } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { SectionTitle, EmptyNote, StatCompact } from '../atoms';
 import { apiFetch } from '../../../lib/api';
@@ -8,6 +9,7 @@ import { GrowthSparkline } from '../../grow/GrowthSparkline';
 import type { GrowthResultsData } from '../../grow/growthResults';
 import { lastCumulativeNet } from '../../grow/growthTrend';
 
+import { Tooltip } from '../../common/Tooltip';
 /**
  * Home-dashboard view of growth actions taken — fleet trend, then each project.
  *
@@ -17,7 +19,7 @@ import { lastCumulativeNet } from '../../grow/growthTrend';
  * the same line per project underneath.
  */
 export const GrowthResultsCard = memo(function GrowthResultsCard() {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const setOpenGrowLens = useCommandCenter((s) => s.setOpenGrowLens);
   const growProject = useCommandCenter((s) => s.growProject);
   const [data, setData] = useState<GrowthResultsData | null>(null);
@@ -63,15 +65,17 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
         borderRadius: radius.lg,
         background: colors.surface,
         border: `1px solid ${colors.border}`,
-        boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-        padding: 16,
+        boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
+        padding: space.xxl,
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
       }}
     >
-      <div onClick={openFleet} title="Open growth results" style={{ cursor: 'pointer' }}>
-        <SectionTitle title="Growth" right={measured > 0 ? `${measured} measured` : undefined} />
-      </div>
+      <Tooltip content="Open growth results">
+        <div onClick={openFleet} style={{ cursor: 'pointer' }}>
+          <SectionTitle title="Growth" right={measured > 0 ? `${measured} measured` : undefined} />
+        </div>
+      </Tooltip>
 
       {error ? (
         <EmptyNote hint="Open Grow → Results to try again">Couldn’t load growth results</EmptyNote>
@@ -85,7 +89,7 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{
             display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-            gap: '10px 12px',
+            gap: `${space.lg}px ${space.xl}px`,
           }}>
             <StatCompact label="Helped" value={fleet.helped} cyan={fleet.helped > 0} />
             <StatCompact label="Hindered" value={fleet.hindered} />
@@ -94,20 +98,22 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
           </div>
 
           {trend.length > 0 && (
-            <div onClick={openFleet} title="All projects, last 12 weeks" style={{ cursor: 'pointer', marginTop: 12 }}>
-              <div style={{
-                fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
-                textTransform: 'uppercase', color: colors.textDim, marginBottom: 4,
-              }}>All projects</div>
-              <GrowthSparkline points={trend} colors={colors} height={52} />
-            </div>
+            <Tooltip content="All projects, last 12 weeks">
+              <div onClick={openFleet} style={{ cursor: 'pointer', marginTop: space.xl }}>
+                <div style={{
+                  fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
+                  textTransform: 'uppercase', color: colors.textDim, marginBottom: space.xs,
+                }}>All projects</div>
+                <GrowthSparkline points={trend} colors={colors} height={52} />
+              </div>
+            </Tooltip>
           )}
 
           {byProject.length > 0 && (
-            <div style={{ flex: 1, overflowY: 'auto', marginTop: 10, minHeight: 0 }}>
+            <div style={{ flex: 1, overflowY: 'auto', marginTop: space.lg, minHeight: 0 }}>
               <div style={{
                 fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
-                textTransform: 'uppercase', color: colors.textDim, marginBottom: 4,
+                textTransform: 'uppercase', color: colors.textDim, marginBottom: space.xs,
               }}>By project</div>
               {byProject.map((row) => {
                 const net = lastCumulativeNet(row.points);
@@ -116,41 +122,38 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
                   // a truncating project name that must flex, a stats line, and
                   // a fixed-width sparkline, all laid out by the button itself.
                   // The primitive wraps its children in a single span, which
-                  // would collapse that three-part row. Left as a raw button.
-                  <button
-                    key={row.projectId}
-                    type="button"
-                    onClick={() => openProject(row.projectId)}
-                    title={`Open ${row.projectName} results`}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 10,
-                      width: '100%', padding: '5px 0',
-                      border: 'none', borderTop: `1px solid ${colors.border}`,
-                      background: 'transparent', cursor: 'pointer', textAlign: 'left',
-                    }}
-                  >
-                    <span style={{
-                      fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      minWidth: 0, flex: 1,
-                    }}>{row.projectName}</span>
-                    <span style={{
-                      fontFamily: font.mono, fontSize: 10, color: colors.textDim, flexShrink: 0,
-                    }}>
-                      {row.helped} helped
-                      {row.hindered > 0 ? ` · ${row.hindered} hindered` : ''}
-                      {net !== 0 ? ` · ${net > 0 ? '+' : ''}${net}` : ''}
-                    </span>
-                    <div style={{ width: 88, flexShrink: 0 }}>
-                      <GrowthSparkline
-                        points={row.points}
-                        colors={colors}
-                        height={22}
-                        showAxis={false}
-                        stroke={net < 0 ? colors.danger : colors.cyan}
-                      />
-                    </div>
-                  </button>
+                  // would collapse that three-part row. Left as a raw button —
+                  // which is why it needs its own hover/press feedback (D10);
+                  // this row had none before.
+                  <GrowthProjectRow
+                      key={row.projectId}
+                      onClick={() => openProject(row.projectId)}
+                      title={`Open ${row.projectName} results`}
+                      reduceMotion={reduceMotion}
+                      colors={colors}
+                    >
+                      <span style={{
+                        fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        minWidth: 0, flex: 1,
+                      }}>{row.projectName}</span>
+                      <span style={{
+                        fontFamily: font.mono, fontSize: 10, color: colors.textDim, flexShrink: 0,
+                      }}>
+                        {row.helped} helped
+                        {row.hindered > 0 ? ` · ${row.hindered} hindered` : ''}
+                        {net !== 0 ? ` · ${net > 0 ? '+' : ''}${net}` : ''}
+                      </span>
+                      <div style={{ width: 88, flexShrink: 0 }}>
+                        <GrowthSparkline
+                          points={row.points}
+                          colors={colors}
+                          height={22}
+                          showAxis={false}
+                          stroke={net < 0 ? colors.danger : colors.cyan}
+   />
+                      </div>
+                    </GrowthProjectRow>
                 );
               })}
             </div>
@@ -160,3 +163,44 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
     </div>
   );
 });
+
+/**
+ * The per-project row's own hover/press feedback (D10) — a plain `<button>`
+ * had none. `fillHover`/`fillActive` layer over the card's own `colors.surface`
+ * (the row sits directly on it), so a hover reads as the same surface lit up
+ * a shade, not a second material.
+ */
+function GrowthProjectRow({
+  onClick, title, reduceMotion, colors, children,
+}: {
+  onClick: () => void;
+  title: string;
+  reduceMotion: boolean;
+  colors: ThemeColors;
+  children: React.ReactNode;
+}) {
+  const [hover, setHover] = useState(false);
+  const [pressed, setPressed] = useState(false);
+  return (
+    <Tooltip content={title}>
+      <button
+        type="button"
+        onClick={onClick}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => { setHover(false); setPressed(false); }}
+        onPointerDown={() => setPressed(true)}
+        onPointerUp={() => setPressed(false)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: space.lg,
+          width: '100%', padding: `${space.sm}px 0`,
+          border: 'none', borderTop: `1px solid ${colors.border}`,
+          background: pressed ? colors.fillActive : hover ? colors.fillHover : 'transparent',
+          cursor: 'pointer', textAlign: 'left', borderRadius: radius.xs,
+          transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
+        }}
+      >
+        {children}
+      </button>
+    </Tooltip>
+  );
+}

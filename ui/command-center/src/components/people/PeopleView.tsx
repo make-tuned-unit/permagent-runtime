@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useState, type CSSProperties } from 'react';
-import { font, radius, type, textSize } from '../../styles/tokens';
+import { font, radius, space, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
@@ -24,6 +24,7 @@ import { PeopleDirectory } from './PeopleDirectory';
 import { PeopleGraph } from './PeopleGraphCanvas';
 import { matchPendingPerson } from './personNavigation';
 
+import { Tooltip } from '../common/Tooltip';
 type PeopleMode = 'graph' | 'list';
 const MODE_KEY = 'permagent-people-mode';
 
@@ -158,18 +159,21 @@ function CalendarImportNote({
   const { colors } = useTheme();
   const line = calendarImportLine(state);
   return (
-    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-      <span
-        data-testid="people-calendar-note"
-        title={line.title}
-        style={{
-          ...type.micro,
-          color: line.tone === 'warning' ? colors.warning : colors.textMuted,
-          cursor: line.title ? 'help' : undefined,
-        }}
-      >
-        {line.text}
-      </span>
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: space.md }}>
+      <Tooltip content={line.title}>
+        <span tabIndex={0} style={{ outline: 'none' }}>
+          <span
+            data-testid="people-calendar-note"
+            style={{
+              ...type.micro,
+              color: line.tone === 'warning' ? colors.warning : colors.textMuted,
+              cursor: line.title ? 'help' : undefined,
+            }}
+          >
+            {line.text}
+          </span>
+        </span>
+      </Tooltip>
       {line.retry && (
         <Button colors={colors} type="button" flashSuccess={false} onClick={onRetry}>
           Retry
@@ -187,7 +191,7 @@ function ModeToggle({ mode, onChange }: { mode: PeopleMode; onChange: (m: People
   ];
   return (
     <div style={{
-      display: 'inline-flex', gap: 2, padding: 2, borderRadius: radius.md,
+      display: 'inline-flex', gap: space.xxs, padding: space.xxs, borderRadius: radius.md,
       background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
     }}>
       {tabs.map(t => {

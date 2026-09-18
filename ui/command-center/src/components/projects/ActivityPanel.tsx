@@ -13,12 +13,13 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'r
 import { FiActivity, FiBookOpen, FiCheckSquare, FiFileText, FiRefreshCw } from 'react-icons/fi';
 import { api, apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Card, Project, ProjectMemory, ProjectNote } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 type ActivityItem = {
   id: string;
   kind: 'memory' | 'note' | 'task';
@@ -28,8 +29,12 @@ type ActivityItem = {
 };
 
 export function ActivityPanel({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
-  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const { colors } = useTheme();
+  const rowVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
   const projectsRev = useCommandCenter(s => s.projectsRev);
   const [memories, setMemories] = useState<ProjectMemory[]>([]);
   const [notes, setNotes] = useState<ProjectNote[]>([]);
@@ -71,25 +76,26 @@ export function ActivityPanel({ project }: { project: Project }) {
 
   return (
     <Panel title="Recent activity" action={status === 'ready' ? (
-      <Button
-        colors={colors}
-        variant="bare"
-        onClick={load}
-        aria-label="Refresh activity"
-        title="Refresh"
-        style={{
-          '--pa-btn-fg': colors.textDim,
-          '--pa-btn-fg-hover': colors.textMuted,
-          '--pa-btn-bg-hover': 'transparent',
-          '--pa-btn-pad': '0',
-        } as CSSProperties}
-      >
-        <FiRefreshCw size={12} />
-      </Button>
+      <Tooltip content="Refresh">
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={load}
+          aria-label="Refresh activity"
+          style={{
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.textMuted,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+          } as CSSProperties}
+        >
+          <FiRefreshCw size={12} />
+        </Button>
+      </Tooltip>
     ) : undefined}>
       {status === 'loading' && <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading activity…</div>}
       {status === 'error' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load activity.</span>
           <Button
             colors={colors}
@@ -110,19 +116,19 @@ export function ActivityPanel({ project }: { project: Project }) {
         </div>
       )}
       {status === 'ready' && items.length === 0 && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: textSize.micro, color: colors.textDim }}>
+        <div style={{ display: 'flex', gap: space.md, alignItems: 'center', fontSize: textSize.micro, color: colors.textDim }}>
           <FiActivity size={13} /> No project activity yet.
         </div>
       )}
       {status === 'ready' && items.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
           {items.map(item => (
-            <div key={item.id} style={{ display: 'flex', gap: 9, padding: '8px 10px', borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}` }}>
-              <span style={{ color: colors.cyan, marginTop: 2, flexShrink: 0 }}>{icon(item.kind)}</span>
+            <div key={item.id} style={{ display: 'flex', gap: space.md, padding: `${space.md}px ${space.lg}px`, borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}` }}>
+              <span style={{ color: colors.cyan, marginTop: space.xxs, flexShrink: 0 }}>{icon(item.kind)}</span>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{item.title}</div>
-                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.detail}</div>
-                <div style={{ fontSize: 10, color: colors.textDim, marginTop: 3 }}>{formatActivityTime(item.timestamp)}</div>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.detail}</div>
+                <div style={{ fontSize: 10, color: colors.textDim, marginTop: space.xxs }}>{formatActivityTime(item.timestamp)}</div>
               </div>
             </div>
           ))}

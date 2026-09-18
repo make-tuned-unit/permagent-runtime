@@ -14,13 +14,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { FiSquare } from 'react-icons/fi';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { apiFetch } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
 import { useCommandCenter } from '../../lib/store';
 
+import { Tooltip } from '../common/Tooltip';
 interface RunItem {
   kind: 'worker' | 'schedule' | 'session';
   id: string;
@@ -104,11 +105,11 @@ export function RunRoster() {
         background: colors.surface,
         border: `1px solid ${colors.border}`,
         borderRadius: radius.lg,
-        padding: '14px 16px',
-        marginBottom: 16,
+        padding: `14px ${space.xxl}px`,
+        marginBottom: space.xxl,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: space.lg }}>
         <div style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, color: colors.text, letterSpacing: 0.2 }}>
           Agents at work
         </div>
@@ -122,13 +123,13 @@ export function RunRoster() {
       )}
 
       {stopError && (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, fontFamily: font.body, marginBottom: 8 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, fontFamily: font.body, marginBottom: space.md }}>
           {stopError}
         </div>
       )}
 
       {status === 'error' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontSize: textSize.caption, color: colors.danger, fontFamily: font.body }}>Couldn't load activity.</span>
           <Button
             colors={colors}
@@ -155,26 +156,29 @@ export function RunRoster() {
       )}
 
       {status === 'ready' && sorted.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
           {sorted.map(r => (
             <div
               key={`${r.kind}:${r.id}`}
               style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px',
+                display: 'flex', alignItems: 'center', gap: space.lg, padding: `${space.sm}px ${space.lg}px`,
                 borderRadius: radius.md, background: colors.bgDeeper,
                 border: `1px solid ${colors.border}`,
               }}
             >
-              <span
-                title={r.status}
-                style={{
-                  width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-                  background: dotColor(r.status),
-                  boxShadow: r.status === 'working' ? `0 0 6px ${colors.cyanGlow}` : 'none',
-                }}
-              />
+              <Tooltip content={r.status}>
+                <span tabIndex={0} style={{ outline: 'none' }}>
+                  <span
+                    style={{
+                      width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                      background: dotColor(r.status),
+                      boxShadow: r.status === 'working' ? `0 0 6px ${colors.cyanGlow}` : 'none',
+                    }}
+     />
+                </span>
+              </Tooltip>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md }}>
                   <span style={{ fontSize: 12.5, fontWeight: 600, color: colors.text, fontFamily: font.body, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {r.name}
                   </span>
@@ -194,26 +198,27 @@ export function RunRoster() {
                 </span>
               )}
               {r.kind === 'worker' && (
-                <Button
-                  colors={colors}
-                  type="button"
-                  onClick={() => openAgentSettings(r.id)}
-                  title="Open in Settings → Agents"
-                  style={{
-                    '--pa-btn-fg': colors.cyan,
-                    '--pa-btn-border': colors.border,
-                    '--pa-btn-bg-hover': colors.surfaceHi,
-                    '--pa-btn-border-hover': colors.borderHi,
-                    '--pa-btn-pad': '3px 7px',
-                    '--pa-btn-radius': `${radius.sm}px`,
-                    fontFamily: font.body,
-                    fontSize: 10,
-                    gap: 4,
-                    flexShrink: 0,
-                  } as CSSProperties}
-                >
-                  Settings
-                </Button>
+                <Tooltip content="Open in Settings → Agents">
+                  <Button
+                    colors={colors}
+                    type="button"
+                    onClick={() => openAgentSettings(r.id)}
+                    style={{
+                      '--pa-btn-fg': colors.cyan,
+                      '--pa-btn-border': colors.border,
+                      '--pa-btn-bg-hover': colors.surfaceHi,
+                      '--pa-btn-border-hover': colors.borderHi,
+                      '--pa-btn-pad': '3px 7px',
+                      '--pa-btn-radius': `${radius.sm}px`,
+                      fontFamily: font.body,
+                      fontSize: 10,
+                      gap: space.xs,
+                      flexShrink: 0,
+                    } as CSSProperties}
+                  >
+                    Settings
+                  </Button>
+                </Tooltip>
               )}
               {/* Only schedules have a kill verb today — showing Stop on
                   worker/session rows made a button that did nothing
@@ -221,26 +226,27 @@ export function RunRoster() {
               {r.interruptible && r.kind === 'schedule' && (
                 // No tick: the row dropping out of "working" on the next poll is
                 // the confirmation that the run stopped.
-                <Button
-                  colors={colors}
-                  onClick={() => interrupt(r)}
-                  title="Stop this run"
-                  flashSuccess={false}
-                  style={{
-                    '--pa-btn-fg': colors.danger,
-                    '--pa-btn-border': colors.border,
-                    '--pa-btn-bg-hover': colors.surfaceHi,
-                    '--pa-btn-border-hover': colors.danger,
-                    '--pa-btn-pad': '3px 7px',
-                    '--pa-btn-radius': `${radius.sm}px`,
-                    fontFamily: font.body,
-                    fontSize: 10,
-                    gap: 4,
-                    flexShrink: 0,
-                  } as CSSProperties}
-                >
-                  <FiSquare size={9} /> Stop
-                </Button>
+                <Tooltip content="Stop this run">
+                  <Button
+                    colors={colors}
+                    onClick={() => interrupt(r)}
+                    flashSuccess={false}
+                    style={{
+                      '--pa-btn-fg': colors.danger,
+                      '--pa-btn-border': colors.border,
+                      '--pa-btn-bg-hover': colors.surfaceHi,
+                      '--pa-btn-border-hover': colors.danger,
+                      '--pa-btn-pad': '3px 7px',
+                      '--pa-btn-radius': `${radius.sm}px`,
+                      fontFamily: font.body,
+                      fontSize: 10,
+                      gap: space.xs,
+                      flexShrink: 0,
+                    } as CSSProperties}
+                  >
+                    <FiSquare size={9} /> Stop
+                  </Button>
+                </Tooltip>
               )}
             </div>
           ))}

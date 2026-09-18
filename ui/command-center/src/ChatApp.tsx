@@ -5,9 +5,10 @@
  */
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react';
 import { FiEye } from 'react-icons/fi';
-import { font, radius } from './styles/tokens';
+import { font, radius, space } from './styles/tokens';
 import { useTheme } from './styles/useTheme';
 import { Button } from './components/common/Button';
+import { Tooltip } from './components/common/Tooltip';
 import { Mobius } from './components/mobius/Mobius';
 import { useCommandCenter } from './lib/store';
 import { api } from './lib/api';
@@ -138,7 +139,7 @@ export default function ChatApp() {
       <div style={{
         height: 36, flexShrink: 0,
         display: 'flex', alignItems: 'center',
-        padding: '0 12px', gap: 8,
+        padding: '0 12px', gap: space.md,
         borderBottom: `1px solid ${colors.border}`,
       }}>
         {/* NO `overflow: hidden` on this row. It is the positioning ancestor
@@ -147,7 +148,7 @@ export default function ChatApp() {
             becomes unreachable. A long agent name is kept from pushing the
             model picker off the bar by truncating the NAME (below), which is
             the only thing that can grow, rather than by clipping the row. */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md, flex: 1, minWidth: 0 }}>
           <Mobius size={16} state="idle" glow={0.6} />
 
           <SessionPicker />
@@ -156,26 +157,27 @@ export default function ChatApp() {
 
           <ModelPicker />
 
-          <Button
-            colors={colors}
-            variant="bare"
-            onClick={() => setInspectionOpen(!inspectionOpen)}
-            title="What your agent sees"
-            aria-label="What your agent sees"
-            style={{
-              // Bare glyph (2026-07-27): the boxed version overflowed the
-              // header bar. Open state reads through the icon color alone, and
-              // so does hover — no fill, or the box comes back.
-              '--pa-btn-fg': inspectionOpen ? colors.cyan : colors.textMuted,
-              '--pa-btn-fg-hover': colors.cyan,
-              '--pa-btn-bg-hover': 'transparent',
-              '--pa-btn-pad': '0',
-              '--pa-btn-radius': `${radius.sm}px`,
-              width: 22, height: 22, flexShrink: 0,
-            } as CSSProperties}
-          >
-            <FiEye size={12} />
-          </Button>
+          <Tooltip content="What your agent sees">
+            <Button
+              colors={colors}
+              variant="bare"
+              onClick={() => setInspectionOpen(!inspectionOpen)}
+              aria-label="What your agent sees"
+              style={{
+                // Bare glyph (2026-07-27): the boxed version overflowed the
+                // header bar. Open state reads through the icon color alone, and
+                // so does hover — no fill, or the box comes back.
+                '--pa-btn-fg': inspectionOpen ? colors.cyan : colors.textMuted,
+                '--pa-btn-fg-hover': colors.cyan,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+                '--pa-btn-radius': `${radius.sm}px`,
+                width: 22, height: 22, flexShrink: 0,
+              } as CSSProperties}
+            >
+              <FiEye size={12} />
+            </Button>
+          </Tooltip>
         </div>
       </div>
 

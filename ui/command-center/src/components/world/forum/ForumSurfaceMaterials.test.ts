@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { applyForumSurfaceMaterials, disposeForumSurfaceMaterials } from './ForumSurfaceMaterials';
+import { advanceForumSurfaceClock, applyForumSurfaceMaterials, disposeForumSurfaceMaterials, releaseForumSurfaceClock } from './ForumSurfaceMaterials';
 
 const cleanups: Array<() => void> = [];
 
@@ -116,5 +116,55 @@ describe('forum runtime surface materials', () => {
     expect(slab.material).not.toEqual([stone, timber]);
     secondCleanup();
     expect(slab.material).toEqual([stone, timber]);
+  });
+});
+
+describe('the water moves', () => {
+  it('gives a water material a clock, and leaves still surfaces alone', () => {
+    const water = new THREE.MeshStandardMaterial({ name: 'Water' });
+    const stone = new THREE.MeshStandardMaterial({ name: 'Sandstone' });
+    const root = new THREE.Group();
+    root.add(new THREE.Mesh(new THREE.BufferGeometry(), water));
+    root.add(new THREE.Mesh(new THREE.BufferGeometry(), stone));
+    const cleanup = applyForumSurfaceMaterials(root);
+
+    const shaderFor = (mesh: THREE.Mesh) => {
+      const material = mesh.material as THREE.MeshStandardMaterial;
+      const shader = {
+        uniforms: {} as Record<string, { value: number }>,
+        vertexShader: 'varying vec3 vViewPosition;\n#include <worldpos_vertex>',
+        fragmentShader:
+          'varying vec3 vViewPosition;\n#include <color_fragment>\n#include <roughnessmap_fragment>\n#include <normal_fragment_maps>',
+      } as Parameters<THREE.MeshStandardMaterial['onBeforeCompile']>[0];
+      material.onBeforeCompile(shader, undefined as never);
+      return shader;
+    };
+
+    const waterShader = shaderFor(root.children[0] as THREE.Mesh);
+    expect(waterShader.fragmentShader).toContain('uniform float forumTime;');
+    // The highlight has to travel, not just the tint: without a perturbed
+    // normal a flat sheet of water reads as a still photograph of water.
+    expect(waterShader.fragmentShader).toContain('normal = normalize(');
+    expect(waterShader.uniforms.forumTime).toBeDefined();
+
+    const stoneShader = shaderFor(root.children[1] as THREE.Mesh);
+    expect(stoneShader.fragmentShader).not.toContain('forumTime');
+    expect(stoneShader.uniforms.forumTime).toBeUndefined();
+
+    // Advancing the clock reaches the compiled program by reference.
+    const before = waterShader.uniforms.forumTime.value;
+    advanceForumSurfaceClock(0.05);
+    expect(waterShader.uniforms.forumTime.value).toBeGreaterThan(before);
+
+    // A backgrounded tab returning after a minute must not teleport the swell.
+    const beforeJump = waterShader.uniforms.forumTime.value;
+    advanceForumSurfaceClock(60);
+    // `toBeCloseTo`, because the clamp is a float sum: 0.1 lands as
+    // 0.10000000000000002 and an exact bound would fail on arithmetic dust
+    // rather than on behaviour.
+    expect(waterShader.uniforms.forumTime.value - beforeJump).toBeCloseTo(0.1, 6);
+
+    releaseForumSurfaceClock();
+    cleanup();
   });
 });

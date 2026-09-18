@@ -30,14 +30,25 @@ vi.mock('./lib/store', () => ({
     setActivePanel: mocks.setActivePanel,
   }),
 }));
-vi.mock('./styles/useTheme', () => ({
-  useTheme: () => ({
-    gradient: { shell: '#10141f', sidebar: '#0b1020' },
-    density: 'comfortable',
-    theme: 'silver',
-    themePref: 'system',
-  }),
-}));
+// The real themed palette, not a stub: this mock only exists to pin the
+// gradient and density, and every surface that renders during startup —
+// BootScreen most of all — reads real colour fields off it. A hand-written
+// subset silently breaks whenever a component reaches for one more token,
+// which is exactly how this test started failing when the splash became
+// BootScreen.
+vi.mock('./styles/useTheme', async () => {
+  const { getThemedColors } = await import('./styles/tokens');
+  return {
+    useTheme: () => ({
+      colors: getThemedColors(),
+      gradient: { shell: '#10141f', sidebar: '#0b1020' },
+      density: 'comfortable',
+      theme: 'silver',
+      themePref: 'system',
+      reduceMotion: true,
+    }),
+  };
+});
 vi.mock('./components/splash/Splash', () => ({
   Splash: ({ onDone }: { onDone: () => void }) => <button data-testid="splash" onClick={onDone}>Start</button>,
 }));

@@ -10,19 +10,20 @@
 
 import { useState, useCallback, useId, type CSSProperties } from 'react';
 import { useLiveGoals } from '../../../lib/useLiveGoals';
-import { font, radius, ease, textSize } from '../../../styles/tokens';
+import { font, radius, ease, duration, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import { DetailModal } from '../../common/DetailModal';
 import { StateBlock } from '../../common/StateBlock';
 import type { useDecisions } from './useDecisions';
 import type { HistoryItem } from './types';
-import { resolutionText } from './types';
+import { resolutionText, deadLetterText } from './types';
 import { DecisionItem } from './DecisionItem';
 import { decisionsClient } from './client';
-import { formatAge } from './format';
+import { formatAge, withAlpha } from './format';
 import { usePersona } from '../../settings/useSettings';
 
+import { Tooltip } from '../../common/Tooltip';
 interface Props {
   inbox: ReturnType<typeof useDecisions>;
   onClose: () => void;
@@ -149,7 +150,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                all-clear (2026-07 wiring audit D4): a dead daemon looked
                identical to a clear inbox. */
             <div style={{ padding: '48px 18px', textAlign: 'center' }}>
-              <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 4 }}>
+              <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: space.xs }}>
                 Couldn't reach the decision inbox.
               </div>
               <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: 14 }}>
@@ -184,11 +185,11 @@ export function DecisionInbox({ inbox, onClose }: Props) {
             <div style={{ padding: '48px 18px', textAlign: 'center' }}>
               <div style={{
                 width: 34, height: 34, borderRadius: '50%',
-                background: colors.success + '26', color: colors.success,
+                background: withAlpha(colors.success, 0.15), color: colors.success,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: textSize.heading, margin: '0 auto 10px',
               }}>✓</div>
-              <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 4 }}>No decisions needed.</div>
+              <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: space.xs }}>No decisions needed.</div>
               <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>
                 {goals} goal{goals === 1 ? '' : 's'} in flight.
               </div>
@@ -199,11 +200,14 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                   (wave-1 item 1): before this bucket the flag only hid the
                   goal from every active list. */}
               {attentionGoals.length > 0 && (
-                <div style={{ padding: '10px 18px 4px' }}>
+                <div style={{ padding: `${space.lg}px 18px ${space.xs}px` }}>
                   <div style={{
                     fontFamily: font.body, fontSize: 10, fontWeight: 700,
                     letterSpacing: '0.10em', textTransform: 'uppercase',
-                    color: '#e8a33d', marginBottom: 6,
+                    // "Needs attention" is the warning semantic (D8), not a
+                    // bespoke amber — the dashboard's DecisionsCard made the
+                    // same call for the same bucket (one concept, one color).
+                    color: colors.warning, marginBottom: space.sm,
                   }}>
                     Parked goals — waiting on you
                   </div>
@@ -211,7 +215,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                     <div
                       key={g.id}
                       style={{
-                        display: 'flex', alignItems: 'baseline', gap: 8,
+                        display: 'flex', alignItems: 'baseline', gap: space.md,
                         padding: '6px 0',
                         borderBottom: `1px solid ${colors.border}`,
                       }}
@@ -221,9 +225,13 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                         {g.state_binding}
                       </span>
                       {g.reason && (
-                        <span style={{ fontSize: textSize.micro, color: colors.textMuted, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.reason}>
-                          {g.reason}
-                        </span>
+                        <Tooltip content={g.reason}>
+                          <span tabIndex={0} style={{ outline: 'none' }}>
+                            <span style={{ fontSize: textSize.micro, color: colors.textMuted, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {g.reason}
+                            </span>
+                          </span>
+                        </Tooltip>
                       )}
                     </div>
                   ))}
@@ -295,7 +303,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                       '--pa-btn-bg-active': colors.cyanSoft,
                       '--pa-btn-pad': '12px 18px',
                       '--pa-btn-radius': '0',
-                      gap: 10, width: '100%',
+                      gap: space.lg, width: '100%',
                       justifyContent: 'flex-start',
                       borderTop: `1px solid ${colors.border}`,
                       textAlign: 'left', fontFamily: font.body,
@@ -312,13 +320,16 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                     <span style={{
                       color: colors.textDim, fontSize: textSize.micro,
                       transform: tier1Open ? 'rotate(90deg)' : 'none',
-                      transition: reduceMotion ? 'none' : `transform 150ms ${ease.out}`,
+                      // D9: a control-state change, so the snappy spring
+                      // (240ms) — not the old bare bezier with no duration
+                      // token behind it.
+                      transition: reduceMotion ? 'none' : `transform ${duration.snappy}ms ${ease.snappy}`,
                     }}>▸</span>
                   </button>
                   {tier1Open && (
                     <div id={tier1Id}>
                       {history === null ? (
-                        <div style={{ padding: '10px 18px 10px 36px', fontSize: textSize.caption, color: colors.textMuted }}>
+                        <div style={{ padding: `${space.lg}px 18px ${space.lg}px 36px`, fontSize: textSize.caption, color: colors.textMuted }}>
                           Loading…
                         </div>
                       ) : (
@@ -326,8 +337,8 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                           <div
                             key={row.id}
                             style={{
-                              display: 'flex', alignItems: 'center', gap: 10,
-                              padding: '8px 18px 8px 36px', fontSize: textSize.caption,
+                              display: 'flex', alignItems: 'center', gap: space.lg,
+                              padding: `${space.md}px 18px ${space.md}px 36px`, fontSize: textSize.caption,
                               color: colors.textMuted,
                               borderTop: `1px solid ${colors.border}`,
                               fontFamily: font.body,
@@ -411,18 +422,18 @@ function HistoryList({ items, failed, onRetry }: {
         <div
           key={item.id}
           style={{
-            padding: '12px 18px',
+            padding: `${space.xl}px 18px`,
             borderBottom: `1px solid ${colors.border}`,
             fontFamily: font.body,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
             <span style={{
               fontFamily: font.mono, fontSize: 10, letterSpacing: '0.06em',
-              textTransform: 'uppercase', borderRadius: radius.xs, padding: '2px 6px',
+              textTransform: 'uppercase', borderRadius: radius.xs, padding: `${space.xxs}px ${space.sm}px`,
               flexShrink: 0,
               color: item.tier === 1 ? colors.success : colors.cyan,
-              background: item.tier === 1 ? colors.success + '26' : colors.cyanSoft,
+              background: item.tier === 1 ? withAlpha(colors.success, 0.15) : colors.cyanSoft,
             }}>
               {item.tier === 1 ? agentName : 'you'}
             </span>
@@ -436,9 +447,25 @@ function HistoryList({ items, failed, onRetry }: {
               {formatAge(item.created_at)}
             </span>
           </div>
-          <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 4 }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.xs }}>
             {resolutionText(item, agentName)}
           </div>
+          {/* CASE A fix #4: the answer succeeded but the gated effect never
+              took effect after every retry — the decisions row alone reads
+              identically to a decision whose effect actually ran, so this is
+              the one place that says otherwise. */}
+          {deadLetterText(item) && (
+            <div
+              role="alert"
+              style={{
+                marginTop: space.sm, fontSize: textSize.caption, color: colors.danger,
+                borderRadius: radius.md, border: `1px solid ${colors.danger}`,
+                background: withAlpha(colors.danger, 0.08), padding: `${space.sm}px ${space.lg}px`,
+              }}
+            >
+              {deadLetterText(item)}
+            </div>
+          )}
         </div>
       ))}
     </div>

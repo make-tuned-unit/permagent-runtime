@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, type CSSProperties } from 'react';
 import { FiArrowLeft, FiChevronDown } from 'react-icons/fi';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { ProjectKanban } from './ProjectsView';
@@ -53,8 +53,8 @@ export function ProjectWorkspace({ project, projects, onSwitchProject, onBack, o
     }}>
       {/* Shared chrome */}
       <div style={{
-        padding: '10px 24px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0,
-        display: 'flex', alignItems: 'center', gap: 12,
+        padding: `${space.lg}px ${space.huge}px`, borderBottom: `1px solid ${colors.border}`, flexShrink: 0,
+        display: 'flex', alignItems: 'center', gap: space.xl,
       }}>
         <Button
           colors={colors}
@@ -69,7 +69,7 @@ export function ProjectWorkspace({ project, projects, onSwitchProject, onBack, o
             '--pa-btn-radius': `${radius.sm}px`,
             fontSize: textSize.caption,
             fontFamily: font.body,
-            gap: 4,
+            gap: space.xs,
           } as CSSProperties}
         >
           <FiArrowLeft size={12} />
@@ -133,16 +133,16 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
       >
         {project.name}
         <FiChevronDown size={11} color={colors.textMuted}
-          style={{ marginLeft: 8, verticalAlign: 'middle', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }} />
+          style={{ marginLeft: space.md, verticalAlign: 'middle', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }} />
       </Button>
       <div style={{ fontSize: 10, color: colors.textMuted, marginTop: -2 }}>{project.slug}</div>
 
       {open && (
         <div style={{
-          position: 'absolute', top: '100%', left: 0, marginTop: 6, zIndex: 50,
+          position: 'absolute', top: '100%', left: 0, marginTop: space.sm, zIndex: 50,
           minWidth: 200, maxHeight: 320, overflow: 'auto',
           background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: radius.md,
-          boxShadow: colors.elevationOverlay, padding: 4,
+          boxShadow: colors.elevationOverlay, padding: space.xs,
         }}>
           {sorted.map(p => {
             const isCurrent = p.id === project.id;
@@ -157,10 +157,10 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
                   '--pa-btn-fg': isCurrent ? colors.cyan : colors.text,
                   // The row the user is already on stayed inert under the mouse
                   // before, and still does — hover is a "you can go here" signal.
-                  '--pa-btn-bg-hover': isCurrent ? colors.cyanSoft : 'rgba(255,255,255,0.05)',
-                  '--pa-btn-bg-active': isCurrent ? colors.cyanSoft : 'rgba(255,255,255,0.09)',
+                  '--pa-btn-bg-hover': isCurrent ? colors.cyanSoft : colors.fillHover,
+                  '--pa-btn-bg-active': isCurrent ? colors.cyanSoft : colors.fillActive,
                   '--pa-btn-pad': '6px 10px',
-                  '--pa-btn-radius': '5px',
+                  '--pa-btn-radius': `${radius.xs}px`,
                   '--pa-btn-weight': isCurrent ? 600 : 400,
                   width: '100%',
                   justifyContent: 'flex-start',
@@ -190,8 +190,8 @@ function ViewToggle({ lens, onChange }: { lens: ProjectLens; onChange: (l: Proje
   ];
   return (
     <div style={{
-      display: 'flex', gap: 2, padding: 2, borderRadius: radius.md,
-      background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
+      display: 'flex', gap: space.xxs, padding: space.xxs, borderRadius: radius.md,
+      background: colors.fillSubtle, border: `1px solid ${colors.border}`,
     }}>
       {tabs.map(t => {
         const active = lens === t.key;
@@ -206,9 +206,9 @@ function ViewToggle({ lens, onChange }: { lens: ProjectLens; onChange: (l: Proje
               '--pa-btn-fg': active ? colors.cyan : colors.textMuted,
               // The selected tab is already where you are: hover only offers the
               // other two.
-              '--pa-btn-bg-hover': active ? colors.cyanSoft : 'rgba(255,255,255,0.05)',
+              '--pa-btn-bg-hover': active ? colors.cyanSoft : colors.fillHover,
               '--pa-btn-fg-hover': active ? colors.cyan : colors.text,
-              '--pa-btn-bg-active': active ? colors.cyanSoft : 'rgba(255,255,255,0.09)',
+              '--pa-btn-bg-active': active ? colors.cyanSoft : colors.fillActive,
               '--pa-btn-pad': '4px 12px',
               '--pa-btn-radius': `${radius.sm}px`,
               '--pa-btn-weight': active ? 600 : 500,

@@ -491,6 +491,28 @@ mod tests {
         }
     }
 
+    /// CASE B fix #2: this recipe mutates (writes the evidence JSON + report),
+    /// so `ReviewerMandate` fires on it — but before this fix it declared
+    /// only `developer` (auto-widened to `[developer, analyze]` by
+    /// `ensure_analyze_for_developer`), never `summon`, so the `delegate` tool
+    /// the mandate asks for was never loaded and the mandate degraded to a
+    /// suggestion the recipe could not act on.
+    #[test]
+    fn health_review_loads_with_the_summon_extension() {
+        let recipe =
+            Recipe::from_content(HEALTH_REVIEW_YAML).expect("health review starter must parse");
+        let names: Vec<String> = recipe
+            .extensions
+            .as_ref()
+            .map(|exts| exts.iter().map(|e| e.name()).collect())
+            .unwrap_or_default();
+        assert!(
+            names.iter().any(|n| n == "summon"),
+            "the reviewer mandate needs the `delegate` tool, which only `summon` provides — \
+             loaded extensions were {names:?}"
+        );
+    }
+
     #[test]
     fn health_review_bundles_its_evidence_collector() {
         let starter = STARTERS
