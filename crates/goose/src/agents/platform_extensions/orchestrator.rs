@@ -24065,13 +24065,70 @@ fn reviewer_gate_total_budget(
             std::time::Duration::from_secs(REVIEWER_GATE_SALVAGE_TIMEOUT_SECS).saturating_mul(2)
         }
         GoalReviewKind::Verified { .. } => {
-            let configured = reviewer_gate_total_budget_from_env();
-            let capped = match remaining_wall_budget_secs(metadata) {
-                WallBudgetCeiling::Unbounded => configured,
-                WallBudgetCeiling::Remaining(remaining) => configured.min(remaining),
-            };
-            std::time::Duration::from_secs(capped)
+            std::time::Duration::from_secs(reviewer_gate_total_budget_secs(
+                reviewer_gate_total_budget_from_env(),
+                remaining_wall_budget_secs(metadata),
+                remaining_headless_drain_secs(),
+            ))
         }
+    }
+}
+
+/// Lane R71b (M55 r70 s2): how much of the headless drain is left, or `None`
+/// when this process is not running under one (interactive, tests, or a build
+/// that predates [`PERMAGENT_HEADLESS_STARTED_AT_ENV`]).
+///
+/// Same two env vars, same clock and same saturating arithmetic
+/// [`headless_wallclock_cap_patch`] uses at dispatch — read fresh here because
+/// a review happens much later in the run than the dispatch that sized the
+/// goal's wall budget.
+fn remaining_headless_drain_secs() -> Option<u64> {
+    let drain_secs: u64 = std::env::var("PERMAGENT_HEADLESS_DRAIN_SECS")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    let started_at_unix: i64 = std::env::var(PERMAGENT_HEADLESS_STARTED_AT_ENV)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    Some(headless_wallclock_cap_from_process_start(
+        drain_secs,
+        chrono::Utc::now().timestamp() - started_at_unix,
+    ))
+}
+
+/// Lane R71b: the pure budget arithmetic, so the inversion below is testable
+/// without env vars, clocks or a running drain.
+///
+/// r70 s2 `harness-testfix-inventory-suite-green` lost a correct, committed,
+/// verified fix to a budget inversion. The review gate was bounded by the
+/// configured total (300 s) and by the GOAL's remaining wall budget (~267 s),
+/// but never by the RUN's remaining drain time. The drain's own default is
+/// 240 s measured from process start, and a goal's wall budget is measured
+/// from its own (later) dispatch — so a single reviewer call was allowed to
+/// outlive the process by construction. The reviewer never returned, the
+/// process hit the drain cap ~182 s later, and the goal exited still in
+/// Review with `ready_unconsumed(commit=…)`: the fix was stranded on its
+/// branch and trunk kept the seed.
+///
+/// Clamping by the drain's remaining time means the gate always times out
+/// INSIDE the run, which reaches the honest park (and the R68a retry) instead
+/// of being cut off mid-flight. A missing drain reading (interactive, tests)
+/// changes nothing.
+fn reviewer_gate_total_budget_secs(
+    configured: u64,
+    wall: WallBudgetCeiling,
+    drain_remaining: Option<u64>,
+) -> u64 {
+    let capped = match wall {
+        WallBudgetCeiling::Unbounded => configured,
+        WallBudgetCeiling::Remaining(remaining) => configured.min(remaining),
+    };
+    match drain_remaining {
+        Some(drain) => capped.min(drain),
+        None => capped,
     }
 }
 
@@ -24119,11 +24176,39 @@ fn reviewer_gate_attempt_timeout(
     call_timeout: std::time::Duration,
     budget: &ReviewTimeBudget,
 ) -> Option<std::time::Duration> {
-    let remaining = budget.remaining();
-    if remaining < std::time::Duration::from_secs(REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS) {
+    reviewer_gate_attempt_timeout_from(call_timeout, budget.remaining())
+}
+
+/// Lane R71b: the pure rule behind [`reviewer_gate_attempt_timeout`], split
+/// out so the share arithmetic is testable without a running clock.
+///
+/// One attempt may spend at most HALF of what is left, so an unresponsive
+/// reviewer cannot consume the whole budget on its first call and leave
+/// nothing for the retry or for the escalation to a DIFFERENT model. r70 s2
+/// `harness-testfix-inventory-suite-green` is the case: the single reviewer
+/// call never returned, and with the whole budget behind it there was no
+/// second chance — the run exited with a verified fix stranded on its branch.
+/// The two records that passed that same task both landed after a reviewer
+/// answered in 11 s and 58 s, so half a budget is ample for a working
+/// reviewer while making a hang recoverable.
+///
+/// The halving stops at [`REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS`]: once that
+/// little is left, splitting it further only guarantees two useless calls, so
+/// the last attempt gets everything that remains.
+fn reviewer_gate_attempt_timeout_from(
+    call_timeout: std::time::Duration,
+    remaining: std::time::Duration,
+) -> Option<std::time::Duration> {
+    let min_useful = std::time::Duration::from_secs(REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS);
+    if remaining < min_useful {
         return None;
     }
-    Some(call_timeout.min(remaining))
+    let share = if remaining >= min_useful.saturating_mul(2) {
+        remaining / 2
+    } else {
+        remaining
+    };
+    Some(call_timeout.min(share))
 }
 
 /// Lane R22c-e (G26 MED-2): the reviewer's prompt window, in characters
@@ -42770,8 +42855,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// diff is usually correct and re-doing it wastes the attempt budget.
     #[test]
     fn the_write_scope_finding_names_the_paths_and_asks_for_a_revert() {
-        let finding =
-            write_scope_violation_finding(&["a.py".to_string()], &["b.py".to_string()]);
+        let finding = write_scope_violation_finding(&["a.py".to_string()], &["b.py".to_string()]);
         assert!(finding.contains("a.py"), "{finding}");
         assert!(finding.contains("b.py"), "{finding}");
         assert!(finding.contains("Revert"), "{finding}");
@@ -57389,5 +57473,99 @@ mod r68a_tests {
             salvage,
             std::time::Duration::from_secs(REVIEWER_GATE_SALVAGE_TIMEOUT_SECS * 2)
         );
+    }
+
+    /// Lane R71b: the r70 s2 inversion, exactly. Configured 300 s, the goal's
+    /// own wall budget says 267 s, but only 120 s of the process's drain is
+    /// left — the review must be bounded by the drain, or it outlives the run
+    /// and strands a verified commit on its branch.
+    #[test]
+    fn the_review_budget_never_outlives_the_remaining_drain() {
+        assert_eq!(
+            reviewer_gate_total_budget_secs(300, WallBudgetCeiling::Remaining(267), Some(120)),
+            120
+        );
+    }
+
+    /// The goal's own wall budget still wins when it is the smaller of the
+    /// three: a review must never spend more of a run than its goal has left.
+    #[test]
+    fn the_goal_wall_budget_still_caps_the_review() {
+        assert_eq!(
+            reviewer_gate_total_budget_secs(300, WallBudgetCeiling::Remaining(90), Some(240)),
+            90
+        );
+    }
+
+    /// No drain reading (interactive, tests, or a build predating the started-at
+    /// stamp) leaves the pre-R71b behaviour exactly as it was.
+    #[test]
+    fn a_missing_drain_reading_changes_nothing() {
+        assert_eq!(
+            reviewer_gate_total_budget_secs(300, WallBudgetCeiling::Remaining(267), None),
+            267
+        );
+        assert_eq!(
+            reviewer_gate_total_budget_secs(300, WallBudgetCeiling::Unbounded, None),
+            300
+        );
+    }
+
+    /// Lane R71b: one attempt may spend at most half of what is left, so a
+    /// reviewer that never answers still leaves a second chance behind it.
+    #[test]
+    fn one_attempt_cannot_consume_the_whole_review_budget() {
+        let call_timeout = std::time::Duration::from_secs(300);
+        let first =
+            reviewer_gate_attempt_timeout_from(call_timeout, std::time::Duration::from_secs(120))
+                .expect("120s is a useful budget");
+        assert_eq!(first, std::time::Duration::from_secs(60));
+
+        // After that attempt hangs and burns its 60s, the retry still gets a
+        // real call rather than an immediate park.
+        let retry =
+            reviewer_gate_attempt_timeout_from(call_timeout, std::time::Duration::from_secs(60))
+                .expect("60s is still useful");
+        assert_eq!(retry, std::time::Duration::from_secs(30));
+    }
+
+    /// The per-kind call timeout still wins when it is the smaller bound.
+    #[test]
+    fn the_call_timeout_still_bounds_a_generous_budget() {
+        assert_eq!(
+            reviewer_gate_attempt_timeout_from(
+                std::time::Duration::from_secs(45),
+                std::time::Duration::from_secs(600),
+            ),
+            Some(std::time::Duration::from_secs(45))
+        );
+    }
+
+    /// Halving stops at the useful floor: the last attempt gets everything
+    /// left rather than two calls too short to answer.
+    #[test]
+    fn the_last_attempt_gets_the_whole_remainder() {
+        let remaining = std::time::Duration::from_secs(REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS + 5);
+        assert_eq!(
+            reviewer_gate_attempt_timeout_from(std::time::Duration::from_secs(300), remaining),
+            Some(remaining)
+        );
+        assert_eq!(
+            reviewer_gate_attempt_timeout_from(
+                std::time::Duration::from_secs(300),
+                std::time::Duration::from_secs(REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS - 1),
+            ),
+            None
+        );
+    }
+
+    /// An exhausted drain yields 0, which is below
+    /// [`REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS`], so the gate parks honestly
+    /// instead of starting a call that cannot finish.
+    #[test]
+    fn an_exhausted_drain_leaves_no_useful_review_budget() {
+        let budget = reviewer_gate_total_budget_secs(300, WallBudgetCeiling::Unbounded, Some(0));
+        assert_eq!(budget, 0);
+        assert!(budget < REVIEWER_GATE_MIN_USEFUL_BUDGET_SECS);
     }
 }
