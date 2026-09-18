@@ -525,10 +525,15 @@ export function FinanceView() {
 
   return (
     <MoneyContext.Provider value={money}>
-    // Finance was the one workspace that painted no background of its own,
-    // so it showed whatever the shell happened to be and read as a different
-    // colour from every other tab. `gradient.workspace` is what Projects,
-    // Grow and Brain all use.
+    {/* Finance was the one workspace that painted no background of its own, so
+        it showed whatever the shell happened to be and read as a different
+        colour from every other tab. `gradient.workspace` is what Projects,
+        Grow and Brain all use.
+
+        Written as a JSX comment, because the `//` form here is not a comment
+        at all — in child position it is a text node, and it rendered as four
+        lines of source across the top of the Finance tab in the shipped app.
+        tsc is happy with it; only looking at the screen catches it. */}
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: gradient.workspace, fontFamily: font.body, color: colors.text }}>
       <ViewHeader
         title="Finance"
