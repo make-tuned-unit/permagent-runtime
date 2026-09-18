@@ -12,5 +12,26 @@
 	     than showing a permission prompt. -->
 	<key>NSCameraUsageDescription</key>
 	<string>Permagent uses the camera for video calls you join in the in-app browser.</string>
+
+	<!-- The Calendar card reads today's events by sending Apple events to
+	     Calendar.app (`osascript` + `tell application "Calendar"`, in
+	     goose-server's dashboard_cards route). That is Automation, NOT the
+	     EventKit calendar permission, so the key macOS looks for is
+	     NSAppleEventsUsageDescription — NSCalendarsUsageDescription would do
+	     nothing here because nothing in the app links EventKit.
+
+	     Without this key macOS refuses the event with -1743 and never shows a
+	     prompt, which is why the card could only ever say "Grant Calendar
+	     access" with no way to grant it.
+
+	     IMPORTANT, and the reason this key alone does not finish the job: TCC
+	     attributes the request to the RESPONSIBLE process, which is whatever
+	     started `permagentd`. This Info.plist only covers the case where the
+	     app itself spawned the daemon as a bundled sidecar (daemon.rs mode 3).
+	     When launchd owns permagentd (mode 2, the normal installed setup) the
+	     responsible process is a bare executable with no Info.plist at all,
+	     and no prompt is possible no matter what this file says. -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Permagent reads today's events from your Apple Calendar to show them on the Home dashboard.</string>
 </dict>
 </plist>

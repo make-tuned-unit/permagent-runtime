@@ -5,6 +5,7 @@ import { Stat, SectionTitle, EmptyNote } from '../atoms';
 import { apiFetch } from '../../../lib/api';
 import type { CardManifest } from './registry';
 import { CardIcon } from './cardIcons';
+import { correctCardNote } from './cardNotes';
 import { AsOf } from '../../common/AsOf';
 import { Button } from '../../common/Button';
 
@@ -254,12 +255,19 @@ export function ManifestCard({ manifest }: Props) {
 
   const cells = data?.cells ?? [];
 
+  // A note that tells the user to grant a permission this app cannot ask for
+  // is worse than no note: it reads as their failure to find a control that
+  // was never built. See `cardNotes.ts`.
+  const corrected = correctCardNote(manifest.type, data?.note);
+
   // ── Error / empty ──────────────────────────────────────────────────────────
   if (phase === 'error' && cells.length === 0) {
     return shell(
       <>
         <SectionTitle title={manifest.name} />
-        <EmptyNote>{data?.note || "Couldn't load this card"}</EmptyNote>
+        <EmptyNote hint={corrected?.hint}>
+          {corrected?.text || data?.note || "Couldn't load this card"}
+        </EmptyNote>
       </>,
     );
   }
@@ -267,7 +275,9 @@ export function ManifestCard({ manifest }: Props) {
     return shell(
       <>
         <SectionTitle title={manifest.name} />
-        <EmptyNote>{data?.note || 'Nothing to show'}</EmptyNote>
+        <EmptyNote hint={corrected?.hint}>
+          {corrected?.text || data?.note || 'Nothing to show'}
+        </EmptyNote>
       </>,
     );
   }

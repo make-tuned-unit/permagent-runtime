@@ -1648,6 +1648,28 @@ mod tty {
             self.cols = cols.max(24) as usize;
         }
 
+        /// True when the pane has been resized since the last painted frame.
+        ///
+        /// `self.cols` was only ever re-read as a SIDE EFFECT of painting —
+        /// `refresh_size` has two callers, `install_region` (once, at startup)
+        /// and `resync_region` (only from `paint`). The idle tick below
+        /// repaints only when the provider wait or the busy second changes, so
+        /// a composer sitting at "Ready" never painted, never re-read the
+        /// terminal size, and kept its startup width forever. There is no
+        /// SIGWINCH handler anywhere in the workspace to catch it either, so
+        /// widening the pane left the box drawn at the old column count with a
+        /// dead gap to the right of it — reported as "the field for the
+        /// terminal chat is not responsive and doesnt grow".
+        ///
+        /// Polling TIOCGWINSZ four times a second is free, and the loop that
+        /// does it already exists. `refresh_size` is idempotent, so the
+        /// `resync_region` inside the resulting paint simply reads the same
+        /// numbers again.
+        fn geometry_changed(&mut self) -> bool {
+            self.refresh_size();
+            self.cols != self.last_cols || self.rows != self.last_rows
+        }
+
         fn region_bottom(&self) -> usize {
             region_bottom_row(self.rows, self.last_height)
         }
@@ -1824,7 +1846,11 @@ mod tty {
             // Repaint on an edit, and also once a second while busy so the
             // elapsed counter ticks even when nothing was typed.
             let wait_changed = self.refresh_provider_wait();
+            // Same omission as the idle tick: a busy pane that is resized but
+            // not typed into would otherwise wait for the next second boundary.
+            let resized = self.geometry_changed();
             if changed
+                || resized
                 || wait_changed
                 || busy_second_changed(
                     self.state.busy,
@@ -1857,7 +1883,12 @@ mod tty {
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
                         let wait_changed = self.refresh_provider_wait();
-                        if wait_changed
+                        // Geometry first, and unconditionally: a resize is the
+                        // one change that is invisible to every other signal
+                        // here, because an idle composer produces none of them.
+                        let resized = self.geometry_changed();
+                        if resized
+                            || wait_changed
                             || busy_second_changed(
                                 self.state.busy,
                                 self.last_busy_second,
@@ -2909,6 +2940,48 @@ mod tests {
         assert!(clear_frame_ansi(30, 5).contains("\x1b[26;1H\x1b[K"));
         assert!(clear_frame_ansi(30, 5).contains("\x1b[30;1H\x1b[K"));
         assert!(!clear_frame_ansi(30, 5).contains('\n'));
+    }
+
+    #[test]
+    fn both_repaint_paths_check_the_terminal_geometry() {
+        // Jesse: "The field for the terminal chat is not responsive and doesnt
+        // grow with the terminal screen size."
+        //
+        // `self.cols` is only re-read by `refresh_size`, which only runs from
+        // `install_region` (once, at startup) and `resync_region` (only from
+        // `paint`). Both repaint guards used to fire solely on an edit, a
+        // provider-wait change, or a busy-second tick — none of which an idle
+        // composer produces. So the width froze at startup, there is no
+        // SIGWINCH handler in the workspace to catch the resize, and the box
+        // stayed drawn at the old column count with a dead gap beside it.
+        //
+        // This is a STRUCTURAL assertion, and only that: it proves each guard
+        // still consults the geometry, not that a real pane repaints. The
+        // honest end-to-end check needs a PTY and a wall-clock tick, and lives
+        // outside the unit suite. What it does buy is that the trigger cannot
+        // be quietly dropped again, which is exactly how this shipped — every
+        // existing composer test passes an explicit `width` to the pure
+        // renderers, so all of them were green while the width was stale.
+        let source = include_str!("composer.rs");
+        let idle_tick = source
+            .split("_ = tokio::time::sleep(std::time::Duration::from_millis(250))")
+            .nth(1)
+            .expect("the idle tick arm must still exist");
+        let idle_guard = &idle_tick[..idle_tick.find("self.paint();").expect("tick repaints")];
+        assert!(
+            idle_guard.contains("geometry_changed()"),
+            "the idle tick must notice a resize; an idle composer emits no other signal"
+        );
+
+        let drain = source
+            .split("fn drain_keys")
+            .nth(1)
+            .expect("drain_keys must still exist");
+        let drain_guard = &drain[..drain.find("self.paint();").expect("drain repaints")];
+        assert!(
+            drain_guard.contains("geometry_changed()"),
+            "a busy pane resized but not typed into must not wait for the next second"
+        );
     }
 
     #[test]
