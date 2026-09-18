@@ -77,6 +77,9 @@ fn default_env_filter() -> EnvFilter {
         // `permagent_daemon::…`) was silently dropped while the filter looked
         // healthy. The registry test below now red-builds on that class.
         .add_directive("permagent=info".parse().unwrap())
+        // Coding-harness context packet diagnostics use an explicit dotted
+        // target, so the crate-root directive above does not cover them.
+        .add_directive("permagent.context_packet=info".parse().unwrap())
         .add_directive("permagent_daemon=info".parse().unwrap())
         .add_directive("permagentd=info".parse().unwrap())
         .add_directive("tower_http=info".parse().unwrap())

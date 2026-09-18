@@ -38,6 +38,18 @@ use std::io::Read;
 use std::path::PathBuf;
 use tracing::warn;
 
+/// Default `PERMAGENT_HEADLESS_DRAIN_SECS` cap for `handle_run_command`'s
+/// post-headless drain (Lane U / U3, HARNESS_LOOP_LOG.md "Lane G4 review"
+/// finding 3, MEDIUM): the prior 600s default sat AT OR ABOVE the
+/// coding-harness eval's own measured per-task `harness_timeout`
+/// (400.1s/500.1s per Lane M3's results), so the eval's SIGKILL fired before
+/// drain's own cap-expiry park path ever could — drain's "never leave a
+/// goal silently InProgress" guarantee was moot under the exact harness
+/// meant to measure it. Lowered well under that floor; an explicit
+/// `PERMAGENT_HEADLESS_DRAIN_SECS` still overrides this for any run whose
+/// own timeout differs.
+pub(crate) const DEFAULT_HEADLESS_DRAIN_SECS: u64 = 240;
+
 #[derive(Parser)]
 #[command(name = "permagent", author, version, display_name = "", about, long_about = None)]
 pub struct Cli {
@@ -48,6 +60,18 @@ pub struct Cli {
 #[cfg(test)]
 mod worker_session_tests {
     use super::*;
+
+    /// Lane U / U3, the default value itself: pins the exact repair (600 →
+    /// 240) so a future edit cannot silently drift the default back above
+    /// the eval's measured harness_timeout floor.
+    #[test]
+    fn default_headless_drain_secs_is_well_under_the_evals_harness_timeout_floor() {
+        assert_eq!(DEFAULT_HEADLESS_DRAIN_SECS, 240);
+        assert!(
+            DEFAULT_HEADLESS_DRAIN_SECS < 400,
+            "the default must stay under the eval's smallest measured harness_timeout (400.1s)"
+        );
+    }
 
     #[tokio::test]
     async fn inherited_worker_id_must_resolve_to_a_durable_session() {
@@ -1631,6 +1655,28 @@ async fn handle_run_command(
         goose_mode,
     )
     .await?;
+    // Lane R22b-b (M24 forensics, round 2): `receipts::begin_run()` used to
+    // sit below, right before `session.headless(contents)`. R22b made
+    // `begin_run()` also reset `cost_router::routing_receipt`'s counters AND
+    // planner every run (previously never reset at all); R22b-b then made
+    // `build_session` set that same planner at coordinator session start
+    // (`session/builder.rs`'s `headless_coding_dispatch` block) — but
+    // `build_session` runs BEFORE `begin_run()` did, so a run's freshly-set
+    // planner would be wiped by `begin_run()`'s reset moments later, before
+    // the coordinator ever took a turn, silently reintroducing the
+    // `planner=unknown/unknown` sentinel `harness_log.rs` discards a
+    // real-dispatch run's receipt over. Hoisted here, before `build_session`,
+    // gated on the same `!run_behavior.interactive` this is only ever
+    // meaningful for (receipts collection is headless-only; `build_session`
+    // itself is shared with the interactive path just below and must not be
+    // treated as "receipts active" for it) — see `receipts::begin_run`'s own
+    // doc comment for why an eager call is safe (no write happens until the
+    // first counter mutation). (r64 s5: `build_session` no longer seeds the
+    // planner; `decompose_roadmap` sets it from the planner that answered, or
+    // it prints `planner=none`. The early reset stays correct either way.)
+    if !run_behavior.interactive {
+        permagent::receipts::begin_run();
+    }
     let mut session = build_session(SessionBuilderConfig {
         session_id,
         resume: run_behavior.resume,
@@ -1656,7 +1702,17 @@ async fn handle_run_command(
     .await;
 
     if run_behavior.interactive {
-        session.interactive(input_config.contents).await
+        let result = session.interactive(input_config.contents).await;
+        // `interactive` marks a clean exit itself; this covers the error path
+        // (idempotent), so only a crash leaves the lease to read as lost.
+        session
+            .finish_harness_lease(if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            })
+            .await;
+        result
     } else if let Some(contents) = input_config.contents {
         let session_start = std::time::Instant::now();
         let session_type = if recipe.is_some() { "recipe" } else { "run" };
@@ -1668,8 +1724,48 @@ async fn handle_run_command(
             "Headless session started"
         );
 
-        let result = session.headless(contents).await;
+        // Lane R22b-b: `begin_run()` moved above `build_session` — see the
+        // comment there. Not called again here.
+        let mut result = session.headless(contents).await;
+
+        // Harness loop, Lane R18f (A17 analysis Class 4): `Rule5HonestFailureGuard`
+        // (crates/goose/src/after_turn.rs) parks a headless coding-harness
+        // turn that ends in free text with no roadmap and no escalate, but
+        // `AfterTurnAction::Park` only ends the turn with a message in the
+        // transcript — it cannot itself make `session.headless()` return
+        // `Err`. Without this check an otherwise-`Ok` result would still
+        // report a clean exit for exactly the "zero decisions, zero
+        // dispatches" shape this lane exists to stop silently passing.
+        if result.is_ok() && permagent::after_turn::take_rule5_free_text_turn() {
+            result = Err(anyhow::anyhow!(
+                "rule5_free_text_turn: the coding-harness coordinator ended a turn in free \
+                 text with no roadmap and no escalate (Lane R18f) — see the session transcript \
+                 for the parked reason"
+            ));
+        }
         let succeeded = result.is_ok();
+
+        // Harness loop, Lane T / T3: wait (bounded) for any goals this run
+        // dispatched to reach a terminal state before the process exits — a
+        // no-op with no DB query when the session never dispatched anything.
+        // `PERMAGENT_HEADLESS_DRAIN_SECS` (default `DEFAULT_HEADLESS_DRAIN_SECS`;
+        // `0` disables). Lane U / U3 (HARNESS_LOOP_LOG.md, "Lane G4 review"
+        // finding 3, MEDIUM): the old 600s default sat AT OR ABOVE the eval's
+        // own measured per-task harness_timeout (400.1s/500.1s), so the eval's
+        // own SIGKILL fired before drain's cap-expiry park path ever could —
+        // lowered well under that floor. `CliSession::drain_dispatched_goals`
+        // additionally races the wait against a SIGTERM/SIGINT so a kill
+        // during the drain still parks whatever is still running first.
+        let drain_cap_secs: u64 = Config::global()
+            .get_param("PERMAGENT_HEADLESS_DRAIN_SECS")
+            .unwrap_or(DEFAULT_HEADLESS_DRAIN_SECS);
+        session
+            .drain_dispatched_goals(std::time::Duration::from_secs(drain_cap_secs))
+            .await;
+        session.print_harness_receipts();
+        session
+            .finish_harness_lease(if succeeded { "completed" } else { "failed" })
+            .await;
         log_session_completion(&session, session_start, session_type, succeeded).await;
         result
     } else {

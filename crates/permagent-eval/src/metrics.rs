@@ -26,6 +26,22 @@ pub struct TaskResult {
     pub harness_timed_out: bool,
     /// The oracle verdict.
     pub oracle: OracleOutcome,
+    /// The oracle process exit code (`None` = killed / timed out / spawn
+    /// error). Mirrors [`Self::harness_exit`].
+    pub oracle_exit: Option<i32>,
+    /// Whether the oracle run hit its wall-clock ceiling
+    /// (`task.oracle_timeout_secs()`). Lane K7: when true, [`Self::oracle`]
+    /// is always [`OracleOutcome::Errored`] regardless of
+    /// [`Self::oracle_exit`] — a killed/SIGTERM'd oracle process did not
+    /// produce a trustworthy verdict, even if it happened to exit with a
+    /// pass- or fail-looking code during its grace window. See
+    /// [`crate::oracle::outcome_from_run`].
+    pub oracle_timed_out: bool,
+    /// Wall-clock seconds the oracle process ran, regardless of outcome —
+    /// distinguishes a slow-but-real grade from an instant spawn failure,
+    /// and (paired with `oracle_timed_out`) shows how close a passing run
+    /// came to its ceiling.
+    pub oracle_secs: f64,
     /// Optional human note (e.g. an error explanation, or why a task was
     /// skipped for [`OracleOutcome::NotRun`]).
     pub note: Option<String>,
@@ -33,6 +49,74 @@ pub struct TaskResult {
     /// rate-limit events, turn-limit hit). Zeroed for a task that was never
     /// run.
     pub signals: LogSignals,
+    /// G3: whether a `category: "selection"` fixture's declared
+    /// `selection_check` was satisfied by this run's tool-call sequence.
+    /// `None` for every non-selection fixture, AND for a selection fixture
+    /// that never actually ran (e.g. a hard runner error before `signals`
+    /// could be read) — never fabricated as `Some(false)` for a run this
+    /// harness never observed. See [`crate::selection`] and
+    /// [`dag_selection_pct`].
+    pub selection_correct: Option<bool>,
+    /// Lane R18c (A17 Q6): the specific [`crate::selection::SelectionCheck`]
+    /// rule(s) this run violated, human-readable
+    /// (`SelectionCheck::evaluate_detailed`'s failure list). Empty when
+    /// `selection_correct` is `Some(true)` or `None`.
+    pub selection_check_failures: Vec<String>,
+    /// The SHA of the git commit the runner seeded the workspace with before
+    /// invoking the harness (see [`crate::runner::seed_git_repo`]) — the
+    /// baseline a dispatched worker's landing should fast-forward onto.
+    /// `None` for a task that was never launched, or whose seeding failed
+    /// before a commit could be made (reported as [`OracleOutcome::Errored`]
+    /// instead).
+    pub seed_commit: Option<String>,
+    /// Lane K8: whether this task shipped a `seed/harness_state.json`
+    /// (`crate::task::Task::seed_state_path`) that was applied to the run's
+    /// isolated store before the harness started — see [`crate::seed_state`].
+    /// `false` for the overwhelming majority of fixtures, which ship none.
+    pub seeded_state: bool,
+    /// The effective `PERMAGENT_HEADLESS_AUTOLAND` value the child actually
+    /// received (Lane K3: the eval turns headless auto-land on explicitly,
+    /// default off everywhere else — see `HARNESS_LOOP_LOG.md` "JESSE RULING").
+    /// Read back from the assembled [`crate::invocation::Invocation`] AFTER an
+    /// A/B arm's own override, so this reflects what was actually sent, not
+    /// just the runner's default. `None` only if a task never reached the
+    /// point where the runner sets it (i.e. it was never launched).
+    pub headless_autoland: Option<String>,
+    /// The effective `PERMAGENT_HEADLESS_DRAIN_SECS` value the child actually
+    /// received, likewise read back post-arm-override. See
+    /// [`Self::headless_autoland`].
+    pub headless_drain_secs: Option<String>,
+    /// Lane R17a (M17 readiness audit §6.1, gaps 1 & 4): which source
+    /// supplied this task's RECEIPT CONTRACT v1 evidence in
+    /// [`Self::signals`] — `"stdout"` when the captured log's own clean-exit
+    /// print already had it, `"sidecar"` when at least one field had to be
+    /// filled in from `PERMAGENT_RECEIPTS_SIDECAR` after a timeout/SIGKILL
+    /// (see [`crate::harness_log::fill_receipts_from_sidecar`]), or `None`
+    /// when neither source had any receipt evidence. Purely informational —
+    /// deliberately NOT read by [`crate::qualification`]'s gate, which must
+    /// keep treating the merged [`Self::signals`] as the one source of
+    /// truth regardless of where each field came from.
+    pub receipt_source: Option<String>,
+    /// Lane K6 / K6-b: the resolved harness wall-clock ceiling THIS run
+    /// actually used, seconds — a `--harness-timeout-secs` CLI override if
+    /// given, else `max(the task's own `harness_timeout_secs:` in
+    /// `task.yaml` (or [`crate::task::DEFAULT_HARNESS_TIMEOUT_SECS`]), the
+    /// tier's own floor)` (see
+    /// [`crate::task::TaskSpec::resolved_harness_timeout_secs`]). `None`
+    /// only if the task never reached the point where the runner resolves
+    /// it (i.e. it was never launched). Retained so latency evidence
+    /// (`duration_secs`, `harness_timed_out`) can be read against the
+    /// ceiling that actually produced it, rather than assumed from the
+    /// task's static default.
+    pub harness_timeout_secs: Option<u64>,
+    /// Lane K10 (2026-09-14 M22 zai w1 defect): the matched
+    /// [`crate::provider_unavailable`] marker when this task's oracle
+    /// outcome was forced to [`OracleOutcome::Errored`] because the
+    /// provider itself was billing/auth/quota unavailable — the harness
+    /// never got a real chance to attempt the task. `None` for every
+    /// ordinary run, including an unrelated hard error or a genuine
+    /// oracle failure.
+    pub provider_error: Option<String>,
 }
 
 impl TaskResult {
@@ -52,8 +136,20 @@ impl TaskResult {
             harness_exit: None,
             harness_timed_out: false,
             oracle,
+            oracle_exit: None,
+            oracle_timed_out: false,
+            oracle_secs: 0.0,
             note: None,
             signals: LogSignals::default(),
+            selection_correct: None,
+            selection_check_failures: Vec::new(),
+            seed_commit: None,
+            seeded_state: false,
+            headless_autoland: None,
+            headless_drain_secs: None,
+            receipt_source: None,
+            harness_timeout_secs: None,
+            provider_error: None,
         }
     }
 }
@@ -97,6 +193,26 @@ pub struct Aggregate {
     /// [`CostReading::cache_hit_rate`](crate::cost::CostReading::cache_hit_rate)
     /// for the single-task version and its "inclusive input" caveat.
     pub cache_hit_rate: Option<f64>,
+    /// G3: correct tool/DAG selections over attempted `category: "selection"`
+    /// fixtures, `[0,1]`. `None` when this task set attempted zero selection
+    /// fixtures — never fabricated as `0.0` (which would read as "every
+    /// selection failed") or `1.0` (which would read as "graduated") for a
+    /// role/tier that was never measured. See [`dag_selection_pct`].
+    pub dag_selection_pct: Option<f64>,
+    /// K18 (`## A45 design` Q3): sum of [`CostReading::coordinator_usd`]
+    /// across every task with a known reading — the coordinator's own
+    /// spend. `None` when no task carries role/provider ledger data (e.g.
+    /// a pre-K18 ledger schema), never conflated with `Some(0.0)`.
+    pub coordinator_usd: Option<f64>,
+    /// K18: sum of [`CostReading::worker_usd`] across every task with a
+    /// known reading — dispatched-worker spend. `None` under the same
+    /// condition as [`Self::coordinator_usd`].
+    pub worker_usd: Option<f64>,
+    /// K18: sum of [`CostReading::worker_offset_usd`] across every task —
+    /// the total USD a local worker tier is measured to have "offset" by
+    /// running on `$0` Ollama instead of the MECHANICAL pack's cloud rung.
+    /// `None` when no task had any local-worker tokens to offset.
+    pub worker_offset_usd: Option<f64>,
 }
 
 /// Tasks NOT skipped by a budget stop — i.e. everything except
@@ -153,6 +269,29 @@ pub fn total_rate_limit_events(results: &[TaskResult]) -> usize {
     results.iter().map(|r| r.signals.rate_limit_events).sum()
 }
 
+/// G3: correct tool/DAG selections over attempted selection fixtures,
+/// `[0,1]`. Only results carrying `selection_correct = Some(_)` count toward
+/// either half of the ratio — a task with no `selection_check` (ordinary
+/// code-correctness fixtures) contributes to neither, so mixing selection
+/// and non-selection fixtures in one run never dilutes this metric. `None`
+/// when the denominator is zero (this run attempted no selection fixtures at
+/// all) — the same "never fabricate from absence" discipline `pass_rate`
+/// already follows for [`crate::oracle::OracleOutcome::NotRun`].
+pub fn dag_selection_pct(results: &[TaskResult]) -> Option<f64> {
+    let attempted = results
+        .iter()
+        .filter(|r| r.selection_correct.is_some())
+        .count();
+    if attempted == 0 {
+        return None;
+    }
+    let correct = results
+        .iter()
+        .filter(|r| r.selection_correct == Some(true))
+        .count();
+    Some(correct as f64 / attempted as f64)
+}
+
 /// Aggregate cache-hit rate across every task with known token figures: total
 /// cache-read tokens over total input tokens. `None` when no task carries
 /// known token data.
@@ -171,6 +310,44 @@ pub fn cache_hit_rate(results: &[TaskResult]) -> Option<f64> {
         return None;
     }
     Some(total_cache_read as f64 / total_input as f64)
+}
+
+/// K18 (`## A45 design` Q3): sum a per-task `Option<f64>` cost field
+/// (`coordinator_usd`, `worker_usd`, or `worker_offset_usd`) across every
+/// result, the same "`None` only when *no* task had a known value" rule
+/// [`total_cost`] uses — mirrored here as a small generic helper so the
+/// three role/offset totals don't hand-roll the accumulator three times.
+fn sum_known_role_cost(
+    results: &[TaskResult],
+    field: impl Fn(&CostReading) -> Option<f64>,
+) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut any_known = false;
+    for r in results {
+        if let Some(v) = field(&r.cost) {
+            sum += v;
+            any_known = true;
+        }
+    }
+    any_known.then_some(sum)
+}
+
+/// K18: total coordinator spend across every task. See
+/// [`Aggregate::coordinator_usd`].
+pub fn coordinator_usd(results: &[TaskResult]) -> Option<f64> {
+    sum_known_role_cost(results, |c| c.coordinator_usd)
+}
+
+/// K18: total dispatched-worker spend across every task. See
+/// [`Aggregate::worker_usd`].
+pub fn worker_usd(results: &[TaskResult]) -> Option<f64> {
+    sum_known_role_cost(results, |c| c.worker_usd)
+}
+
+/// K18: total local-worker "offset" across every task. See
+/// [`Aggregate::worker_offset_usd`].
+pub fn worker_offset_usd(results: &[TaskResult]) -> Option<f64> {
+    sum_known_role_cost(results, |c| c.worker_offset_usd)
 }
 
 /// Sum of the known per-task costs. Returns `(total, any_unknown, any_estimated)`
@@ -246,6 +423,10 @@ pub fn aggregate(results: &[TaskResult]) -> Aggregate {
         total_tool_calls: total_tool_calls(results),
         total_rate_limit_events: total_rate_limit_events(results),
         cache_hit_rate: cache_hit_rate(results),
+        dag_selection_pct: dag_selection_pct(results),
+        coordinator_usd: coordinator_usd(results),
+        worker_usd: worker_usd(results),
+        worker_offset_usd: worker_offset_usd(results),
     }
 }
 
@@ -475,5 +656,92 @@ mod tests {
     fn cache_hit_rate_is_none_when_no_task_has_known_tokens() {
         let r = vec![res("a", true, Some(1.0)), res("b", false, None)];
         assert_eq!(cache_hit_rate(&r), None);
+    }
+
+    // ── G3: dag_selection_pct ────────────────────────────────────────────
+
+    #[test]
+    fn dag_selection_pct_is_none_when_no_task_carries_a_selection_verdict() {
+        let r = vec![res("a", true, Some(1.0)), res("b", false, Some(1.0))];
+        assert_eq!(dag_selection_pct(&r), None);
+        assert_eq!(aggregate(&r).dag_selection_pct, None);
+    }
+
+    #[test]
+    fn dag_selection_pct_counts_only_evaluated_selection_fixtures() {
+        let mut a = res("a", true, Some(1.0));
+        a.selection_correct = Some(true);
+        let mut b = res("b", true, Some(1.0));
+        b.selection_correct = Some(false);
+        let mut c = res("c", true, Some(1.0));
+        c.selection_correct = Some(true);
+        // Ordinary (non-selection) fixture: must not dilute the ratio.
+        let d = res("d", true, Some(1.0));
+        let r = vec![a, b, c, d];
+        // 2 correct of 3 EVALUATED (d is excluded, not a zero).
+        assert!((dag_selection_pct(&r).unwrap() - 2.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dag_selection_pct_excludes_not_run_tasks() {
+        let mut a = res("a", true, Some(1.0));
+        a.selection_correct = Some(true);
+        let r = vec![a, not_run("b")];
+        assert_eq!(dag_selection_pct(&r), Some(1.0));
+    }
+
+    #[test]
+    fn dag_selection_pct_all_wrong_is_zero_not_none() {
+        let mut a = res("a", false, Some(1.0));
+        a.selection_correct = Some(false);
+        assert_eq!(dag_selection_pct(&[a]), Some(0.0));
+    }
+
+    // ── K18: per-role, per-provider cost accounting ─────────────────────────
+
+    #[test]
+    fn role_cost_totals_are_none_when_no_task_carries_role_data() {
+        let r = vec![res("a", true, Some(1.0)), res("b", false, Some(2.0))];
+        assert_eq!(coordinator_usd(&r), None);
+        assert_eq!(worker_usd(&r), None);
+        assert_eq!(worker_offset_usd(&r), None);
+        let agg = aggregate(&r);
+        assert_eq!(agg.coordinator_usd, None);
+        assert_eq!(agg.worker_usd, None);
+        assert_eq!(agg.worker_offset_usd, None);
+    }
+
+    #[test]
+    fn role_cost_totals_sum_known_values_across_tasks() {
+        let mut a = res("a", true, Some(1.0));
+        a.cost.coordinator_usd = Some(0.05);
+        a.cost.worker_usd = Some(0.01);
+        a.cost.worker_offset_usd = Some(0.002);
+
+        let mut b = res("b", true, Some(0.5));
+        b.cost.coordinator_usd = Some(0.03);
+        b.cost.worker_usd = Some(0.02);
+        b.cost.worker_offset_usd = Some(0.004);
+
+        // A third task with no role data at all must not turn the totals
+        // into `None` — only ALL-unknown does that.
+        let c = res("c", false, Some(0.1));
+
+        let r = vec![a, b, c];
+        assert!((coordinator_usd(&r).unwrap() - 0.08).abs() < 1e-12);
+        assert!((worker_usd(&r).unwrap() - 0.03).abs() < 1e-12);
+        assert!((worker_offset_usd(&r).unwrap() - 0.006).abs() < 1e-12);
+
+        let agg = aggregate(&r);
+        assert!((agg.coordinator_usd.unwrap() - 0.08).abs() < 1e-12);
+        assert!((agg.worker_usd.unwrap() - 0.03).abs() < 1e-12);
+        assert!((agg.worker_offset_usd.unwrap() - 0.006).abs() < 1e-12);
+    }
+
+    #[test]
+    fn role_cost_totals_over_empty_results_are_none() {
+        assert_eq!(coordinator_usd(&[]), None);
+        assert_eq!(worker_usd(&[]), None);
+        assert_eq!(worker_offset_usd(&[]), None);
     }
 }

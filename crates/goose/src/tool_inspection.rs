@@ -16,7 +16,7 @@ pub struct CodingDagInspector {
 }
 
 pub const CODING_DAG_INSPECTOR_NAME: &str = "coding_dag";
-const CODING_HARNESS_RECIPE_TITLE: &str = "Permagent Coding Harness";
+pub(crate) const CODING_HARNESS_RECIPE_TITLE: &str = "Permagent Coding Harness";
 
 impl CodingDagInspector {
     pub fn new(session_manager: std::sync::Arc<crate::session::SessionManager>) -> Self {
@@ -24,14 +24,24 @@ impl CodingDagInspector {
     }
 }
 
-fn is_top_level_coding_harness(
+/// The one definition of "this is the coding harness COORDINATOR" — the
+/// top-level planner session the recipe's protocol addresses, as opposed to
+/// a dispatched worker (which has a parent) or any other recipe.
+///
+/// Shared, not copied: [`CodingDagInspector`] uses it to decide whether a
+/// mutation must be refused here, and
+/// [`NoRoadmapGuard`](crate::after_turn::NoRoadmapGuard) uses the identical
+/// predicate to decide whether a turn may end without a roadmap. Two guards
+/// enforcing halves of the same protocol must never disagree about who they
+/// apply to.
+pub(crate) fn is_top_level_coding_harness(
     recipe_title: Option<&str>,
     parent_session_id: Option<&str>,
 ) -> bool {
     recipe_title == Some(CODING_HARNESS_RECIPE_TITLE) && parent_session_id.is_none()
 }
 
-fn requires_dispatched_coding_worker(name: &str) -> bool {
+pub(crate) fn requires_dispatched_coding_worker(name: &str) -> bool {
     let base = name.rsplit("__").next().unwrap_or(name);
     crate::after_turn::is_mutating_tool_name(name)
         || matches!(
@@ -87,10 +97,11 @@ impl ToolInspector for CodingDagInspector {
                     requires_dispatched_coding_worker(call.name.as_ref())
                 })
             })
+            .inspect(|_| crate::receipts::record("dag_enforcement", "bypass_attempts"))
             .map(|request| InspectionResult {
                 tool_request_id: request.id.clone(),
                 action: InspectionAction::Deny,
-                reason: "Top-level coding harness sessions must create an approved orchestrator DAG and dispatch its node; direct shell execution or edits bypass routing, verification evidence, and approval. Use read/search tools to plan, decompose_roadmap/create_roadmap (or an approved Council plan), then let the dispatched worker execute and edit.".to_string(),
+                reason: "Top-level coding harness sessions must create an approved orchestrator DAG and dispatch its node; direct shell execution or edits bypass routing, verification evidence, and approval. Use read/search tools to plan, decompose_roadmap/create_roadmap (or an approved Council plan), then call orchestrator__goal_advance with action \"dispatch\" (card_id may be omitted — it resolves this project's single Ready goal card) to have a worker make the change. The coordinator itself never edits or runs shell.".to_string(),
                 confidence: 1.0,
                 inspector_name: CODING_DAG_INSPECTOR_NAME.to_string(),
                 finding_id: Some("coding_dag_required".to_string()),
@@ -127,7 +138,8 @@ pub const SAFETY_SWITCHES: &[SafetySwitch] = &[
     SafetySwitch {
         inspector: "write_jail",
         switch: "SECURITY_WRITE_JAIL_ENABLED",
-        loses: "writes outside the session working directory are no longer flagged for approval",
+        loses: "writes outside the session working directory are no longer flagged for approval, \
+                and a dispatched goal worker is no longer confined to its own worktree",
     },
     SafetySwitch {
         inspector: "security",
@@ -294,15 +306,46 @@ impl ToolInspectionManager {
                 // still reported it as registered. Every call it does not
                 // inspect now says so at WARN, carrying the marker (D34).
                 match safety_switch_for(inspector.name()) {
-                    Some(switch) => tracing::warn!(
-                        marker = SAFETY_DISABLE_MARKER,
-                        inspector_name = inspector.name(),
-                        switch = switch.switch,
-                        loses = switch.loses,
-                        tool_count = tool_requests.len(),
-                        session_id,
-                        "safety inspector disabled — tool calls are running past it"
-                    ),
+                    Some(switch) => {
+                        tracing::warn!(
+                            marker = SAFETY_DISABLE_MARKER,
+                            inspector_name = inspector.name(),
+                            switch = switch.switch,
+                            loses = switch.loses,
+                            tool_count = tool_requests.len(),
+                            session_id,
+                            "safety inspector disabled — tool calls are running past it"
+                        );
+                        // Lane R18a-b (G21 HIGH-2): a disabled write jail
+                        // loses ALL visibility into goal-worker escapes, not
+                        // just denials. An `unknown` receipt would break the
+                        // whole `safety_and_trust` line's parse, so — fail
+                        // CLOSED for scoring — count every write/shell
+                        // request in this batch that the jail never got to
+                        // judge as a `jail_bypasses` bypass instead.
+                        if inspector.name()
+                            == crate::security::write_jail::WRITE_JAIL_INSPECTOR_NAME
+                        {
+                            let bypassed =
+                                crate::security::write_jail::count_jail_relevant_requests(
+                                    tool_requests,
+                                );
+                            if bypassed > 0 {
+                                tracing::warn!(
+                                    session_id,
+                                    bypassed,
+                                    "write jail disabled — counting {bypassed} unobserved \
+                                     write/shell request(s) in this batch as jail_bypasses \
+                                     (fail-open)"
+                                );
+                                crate::receipts::record_count(
+                                    "safety_and_trust",
+                                    "jail_bypasses",
+                                    bypassed as u64,
+                                );
+                            }
+                        }
+                    }
                     // No break-glass switch: an opt-in inspector (the adversary
                     // reviewer) that was simply never configured. Nothing was
                     // turned off, so this is not an alarm.
@@ -526,6 +569,71 @@ mod tests {
         }
     }
 
+    /// A26 (M30 MiniCPM5-2B fizzbuzz probe): the denial text told a weak
+    /// coordinator model to "let the dispatched worker execute and edit"
+    /// without ever naming the call that dispatches one. The model tried
+    /// write/shell/delegate/start_agent/send_message and never
+    /// `goal_advance(action: dispatch)` — the one legal path — in 25 tool
+    /// calls. This pins the fix at the source: a real top-level coding
+    /// harness session's `write` denial must name `goal_advance` and its
+    /// `dispatch` action explicitly, not just describe the DAG in the
+    /// abstract.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn coding_dag_denial_names_goal_advance_dispatch_as_the_next_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_manager = std::sync::Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                crate::session::SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let recipe = crate::recipe::Recipe::builder()
+            .version("1.0.0")
+            .title(CODING_HARNESS_RECIPE_TITLE)
+            .description("coding harness")
+            .prompt("plan and dispatch")
+            .build()
+            .unwrap();
+        session_manager
+            .update(&session.id)
+            .recipe(Some(recipe))
+            .apply()
+            .await
+            .unwrap();
+
+        let inspector = CodingDagInspector::new(session_manager);
+        let write_request = ToolRequest {
+            id: "req_write".to_string(),
+            tool_call: Ok(CallToolRequestParams::new("write").with_arguments(object!({}))),
+            metadata: None,
+            tool_meta: None,
+        };
+        let results = inspector
+            .inspect(&session.id, &[write_request], &[], GooseMode::Auto)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].action, InspectionAction::Deny);
+        assert!(
+            results[0].reason.contains("goal_advance"),
+            "denial must name the exact tool to call: {}",
+            results[0].reason
+        );
+        assert!(
+            results[0].reason.contains("dispatch"),
+            "denial must name the dispatch action: {}",
+            results[0].reason
+        );
+    }
+
     #[test]
     fn test_apply_inspection_results() {
         let tool_request = ToolRequest {
@@ -613,6 +721,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(receipts_global_registry)]
     fn a_skipped_safety_inspector_warns_with_the_marker_on_every_call() {
         let mut manager = ToolInspectionManager::new();
         manager.add_inspector(Box::new(DisabledInspector("write_jail")));
@@ -642,6 +751,66 @@ mod tests {
         assert!(
             logs.contains("SECURITY_WRITE_JAIL_ENABLED"),
             "the WARN must name the switch that turned it off: {logs}"
+        );
+    }
+
+    /// Lane R18a-b (G21 HIGH-2): the `jail_bypasses` producer for a globally
+    /// disabled write jail — the inspector never ran at all, so the one
+    /// shell request in this batch went completely unwatched. Fails CLOSED
+    /// for scoring: the receipt must count it as a bypass (`jail_bypasses=1`
+    /// after one shell request, `=2` after a second disabled call with two
+    /// requests), never print a clean `jail_bypasses=0` and never `unknown`
+    /// (that would break the whole line's parse — the exact defect this
+    /// lane exists to fix). `#[serial]` under the same shared key
+    /// `receipts.rs`'s own global-API tests use, so none of them interleave
+    /// on the process-wide `REGISTRY`/`ACTIVE` statics.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn a_disabled_write_jail_counts_unobserved_requests_as_jail_bypasses() {
+        crate::receipts::begin_run();
+        let mut manager = ToolInspectionManager::new();
+        manager.add_inspector(Box::new(DisabledInspector(
+            crate::security::write_jail::WRITE_JAIL_INSPECTOR_NAME,
+        )));
+        let shell_request = |id: &str| ToolRequest {
+            id: id.to_string(),
+            tool_call: Ok(
+                CallToolRequestParams::new("shell").with_arguments(object!({"command": "ls"}))
+            ),
+            metadata: None,
+            tool_meta: None,
+        };
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(manager.inspect_tools(
+            "sess-1",
+            &[shell_request("req_1")],
+            &[],
+            GooseMode::Auto,
+        ))
+        .unwrap();
+        let line = crate::receipts::snapshot().lines()[2].clone();
+        assert!(
+            line.contains("jail_bypasses=1"),
+            "one unobserved shell request while the jail is disabled must count as one bypass: {line}"
+        );
+
+        // A second disabled call with TWO requests must ADD 2, not reset or
+        // overwrite — `jail_bypasses` is a running per-run total.
+        rt.block_on(manager.inspect_tools(
+            "sess-1",
+            &[shell_request("req_2"), shell_request("req_3")],
+            &[],
+            GooseMode::Auto,
+        ))
+        .unwrap();
+        let line = crate::receipts::snapshot().lines()[2].clone();
+        crate::receipts::end_run();
+        assert!(
+            line.contains("jail_bypasses=3"),
+            "jail_bypasses must accumulate across calls in the same run: {line}"
         );
     }
 

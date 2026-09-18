@@ -38,7 +38,7 @@ pub const KEY_SESSION_GATE: &str = "PERMAGENT_BUDGET_SESSION_GATE_USD";
 pub const KEY_SESSION_HARD: &str = "PERMAGENT_BUDGET_SESSION_HARD_USD";
 
 /// Per-scope thresholds in USD, ascending: soft ≤ gate ≤ hard.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BudgetCeilings {
     pub soft: f64,
     pub gate: f64,
@@ -65,7 +65,7 @@ impl BudgetCeilings {
 
 /// Task + session ceilings. CONFIGURABLE — the defaults are the only free
 /// parameters and are the owner's call to tune.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BudgetConfig {
     pub task: BudgetCeilings,
     pub session: BudgetCeilings,
@@ -320,6 +320,12 @@ pub fn gate_choice_payload(scope: BudgetScope, spent: f64, increment: f64) -> Ch
         proposal: None,
         check_approval: None,
         roadmap_approval: None,
+        // This is the historical SETTLED-spend gate, not the reservation
+        // gate `reservation_gate_decision_request` builds below — leaving
+        // this `None` is what keeps `auto_approve_reservation_gate` from
+        // ever matching it, even though the option ids happen to be
+        // identical.
+        reservation_gate: None,
     }
 }
 
@@ -410,10 +416,45 @@ pub fn reservation_gate_decision_request(
             proposal: None,
             check_approval: None,
             roadmap_approval: None,
+            // R2 (harness loop, Lane D1): the typed settlement evidence the
+            // headless auto-answer path (`decisions::auto_approve_reservation_gate`)
+            // reads instead of re-parsing `detail`'s prose, and the marker
+            // that shape-scopes that auto-answer to EXACTLY this kind of
+            // gate — never an arbitrary `choice` decision.
+            reservation_gate: Some(decisions::ReservationGatePayload {
+                scope: scope.word().to_string(),
+                settled_usd,
+                held_usd,
+                requested_usd,
+                ceiling_usd,
+                requesting_session_id: None,
+            }),
         })
         .unwrap_or_default(),
         ..Default::default()
     }
+}
+
+/// I1 (harness loop, 2026-09-10, from M10's forensics): stamp
+/// [`decisions::ReservationGatePayload::requesting_session_id`] onto a
+/// request built by [`reservation_gate_decision_request`] — used only for a
+/// session-scoped gate (a coordinator's own provider call, which carries no
+/// `goal_id`), so [`decisions::find_open_reservation_gate_decision_for_session`]
+/// has something to dedupe on. Silently returns `request` unchanged if its
+/// payload isn't shaped like a reservation-gate `choice` decision —
+/// defensive, never a panic on a caller's own construction.
+pub fn with_requesting_session_id(mut request: NewDecision, session_id: &str) -> NewDecision {
+    let Ok(mut payload) = serde_json::from_value::<ChoicePayload>(request.payload.clone()) else {
+        return request;
+    };
+    let Some(gate) = payload.reservation_gate.as_mut() else {
+        return request;
+    };
+    gate.requesting_session_id = Some(session_id.to_string());
+    if let Ok(v) = serde_json::to_value(payload) {
+        request.payload = v;
+    }
+    request
 }
 
 /// Raise the spend-gate decision in the Decision Inbox and return the created

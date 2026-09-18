@@ -54,6 +54,7 @@ use crate::security::egress_inspector::EgressInspector;
 use crate::security::security_inspector::SecurityInspector;
 use crate::security::write_jail::WriteJailInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
+use crate::session::turn_timing::TurnTimingRecorder;
 use crate::session::{Session, SessionManager};
 use crate::tool_inspection::ToolInspectionManager;
 use crate::tool_monitor::{assess_monologue, LoopAction, ProgressMonitor};
@@ -228,6 +229,15 @@ pub struct AgentRunnerConfig {
     pub goose_mode: GooseMode,
     pub disable_session_naming: bool,
     pub goose_platform: GoosePlatform,
+    /// R48c (harness loop, "Lane R48c"): true for a dispatched goal worker
+    /// running the compact prompt profile. `new()` defaults this to `false`
+    /// so every existing call site is unaffected — only `with_compact_
+    /// worker_profile` (goal_engine.rs's `InternalSubagentEngine::spawn`)
+    /// sets it. Read by `Agent::list_tools` to drop the always-on
+    /// `platform__load_feature_lesson` tool, which is appended outside the
+    /// extension-grant mechanism entirely and so is otherwise unreachable
+    /// by the profile's tool-set narrowing.
+    pub compact_worker_profile: bool,
 }
 
 impl AgentRunnerConfig {
@@ -246,7 +256,17 @@ impl AgentRunnerConfig {
             goose_mode,
             disable_session_naming,
             goose_platform,
+            compact_worker_profile: false,
         }
+    }
+
+    /// R48c: opt a subagent run into the compact worker prompt profile's
+    /// tool-set effect at the `Agent::list_tools` layer. See the field's own
+    /// doc comment for why this can't just be another `new()` parameter's
+    /// worth of plumbing — it's set at exactly one call site.
+    pub fn with_compact_worker_profile(mut self, compact: bool) -> Self {
+        self.compact_worker_profile = compact;
+        self
     }
 }
 
@@ -289,6 +309,18 @@ pub struct Agent {
     /// full config read + YAML parse on every request. See
     /// `sync_extensions_with_config`.
     last_extension_config_mtime: Mutex<Option<std::time::SystemTime>>,
+    /// R46a (harness loop, "A43 analysis" lever 3): the raw provider-error
+    /// text behind this agent's most recent context-length-exceeded give-up
+    /// (recorded only at that one arm of the reply loop — see
+    /// `record_context_length_failure`). A caller that drives an `Agent`
+    /// headless (`delegate`/`delegate_many`'s spawned subagent, via
+    /// `subagent_handler::get_agent_messages`) reads this AFTER the reply
+    /// stream ends to turn a bare `AgentRuntimeOutcome::Failed` into a
+    /// classified reason instead of leaving the coordinator with an opaque
+    /// `-32603`. Never read by the ordinary user-facing reply path — the
+    /// turn's own visible text stays scrubbed of raw provider payloads,
+    /// unchanged.
+    last_context_length_failure: Mutex<Option<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -389,6 +421,96 @@ pub(crate) fn coalesce_turn_messages(messages: Vec<Message>) -> (Vec<Message>, u
     (folded, issues.len())
 }
 
+/// Lane R19a (harness loop 2026-09-14, M19 DeepSeek forensics). Should a
+/// pre-first-byte provider stall be retried, or has this turn already spent
+/// its one retry?
+///
+/// `stream_committed` guards against retrying a stream that already
+/// delivered content: once part of an answer has reached the user there is
+/// no longer a "same request" that is safe to resend silently underneath it.
+/// `already_retried` bounds the retry to exactly one attempt per turn — a
+/// second stall falls through to the ordinary give-up path instead of
+/// retrying forever.
+///
+/// A pure, free function on purpose: the decision is exercised directly by
+/// tests below without needing to drive the whole streaming reply generator.
+fn should_retry_first_byte_stall(
+    provider_err: &ProviderError,
+    stream_committed: bool,
+    already_retried: bool,
+) -> bool {
+    provider_err.is_first_byte_provider_stall() && !stream_committed && !already_retried
+}
+
+/// Lane R19c (G24 HIGH-1 + HIGH-2). Retry a first-byte-stalled provider
+/// stream exactly once, honestly against the cost reservation and bounded
+/// against the turn's own first-byte ceiling.
+///
+/// **HIGH-1 (double-spend).** The pre-R19c retry called
+/// `with_reservation_attempts(manager, invocation_id, attempts_reserved,
+/// retry)` — a FRESH `AttemptAuthorization` scope that re-grants the
+/// invocation's WHOLE `attempts_reserved` budget again, on top of whatever
+/// the first stream already spent, without ever calling
+/// `extend_reservation`. This instead extends the SAME reservation by
+/// exactly one physical attempt (`extend_reservation(invocation_id, 1)`,
+/// the real ledger call `authorized_attempts::authorize_attempt` itself uses
+/// to extend — see that module's doc) and authorizes only that one attempt
+/// locally (`with_authorized_attempts(1, …)`, no further extension capability
+/// installed): if the retry's OWN internal transport-level retry logic wants
+/// more than the one attempt just paid for, it is correctly refused rather
+/// than silently re-granted a full fresh batch. `attempts_reserved: None`
+/// (no paid hold on this call at all) skips the ledger entirely and retries
+/// directly, matching how the ORIGINAL call ran when it took no hold.
+///
+/// **HIGH-2 (worst-case wall clock).** The retry is scoped under
+/// `stream_budget::FIRST_BYTE_WINDOW_OVERRIDE` with whatever remains of
+/// `DEFAULT_FIRST_BYTE_SECS` since `first_byte_wait_started` — NOT a fresh
+/// window — so one coordinator turn spends at most
+/// `DEFAULT_FIRST_BYTE_SECS` (~180s) of silent pre-first-byte waiting in
+/// total across both attempts, not ~2x that. A stall that consumed the
+/// whole ceiling on the first attempt leaves the retry almost no additional
+/// silent wait — if the provider answers essentially immediately this time,
+/// the retry still succeeds; if not, it fails fast instead of burning
+/// another full window.
+async fn retry_first_byte_stall(
+    session_manager: &Arc<crate::session::SessionManager>,
+    invocation: &crate::agents::reply_parts::ProviderInvocationContext,
+    first_byte_wait_started: std::time::Instant,
+    retry: impl std::future::Future<Output = Result<crate::providers::base::MessageStream, ProviderError>>
+        + Send,
+) -> Result<crate::providers::base::MessageStream, ProviderError> {
+    let remaining =
+        std::time::Duration::from_secs(crate::providers::stream_budget::DEFAULT_FIRST_BYTE_SECS)
+            .saturating_sub(first_byte_wait_started.elapsed());
+    // Lane R19d: `Secs(remaining)`, never `Unlimited` — the retry's own
+    // ceiling is always a concrete (possibly zero) duration, not "no
+    // first-byte timer at all".
+    let scoped_retry = crate::providers::stream_budget::FIRST_BYTE_WINDOW_OVERRIDE.scope(
+        crate::providers::stream_budget::FirstByteWindow::Secs(remaining),
+        retry,
+    );
+
+    if invocation.attempts_reserved.is_none() {
+        // No paid hold governs this call at all — retry with no reservation
+        // scope, exactly like the original call.
+        return scoped_retry.await;
+    }
+    match session_manager
+        .extend_reservation(&invocation.invocation_id, 1)
+        .await
+    {
+        Ok(crate::session::CostReservationOutcome::Granted { .. }) => {
+            crate::cost_router::authorized_attempts::with_authorized_attempts(1, scoped_retry).await
+        }
+        Ok(other) => Err(ProviderError::ExecutionError(format!(
+            "the cost reservation for this call would not authorize a retry attempt: {other:?}"
+        ))),
+        Err(extend_err) => Err(ProviderError::ExecutionError(format!(
+            "could not extend the reservation for a retry attempt: {extend_err}"
+        ))),
+    }
+}
+
 async fn persist_turn_ending_message(
     session_manager: &Arc<crate::session::SessionManager>,
     session_id: &str,
@@ -452,6 +574,7 @@ impl Agent {
             ),
             container: Mutex::new(None),
             last_extension_config_mtime: Mutex::new(None),
+            last_context_length_failure: Mutex::new(None),
         }
     }
 
@@ -466,10 +589,44 @@ impl Agent {
     /// files end without an independent, cross-family reviewer having been
     /// asked (or a `Park` explaining why none could be). Same applicability
     /// gate as `PrematureDoneGuard` — ordinary conversation never triggers it.
+    ///
+    /// `RoadmapDispatchGuard` runs third (X-dag-2, coding-harness excellence
+    /// iteration): it refuses to let a turn end claiming a roadmap's goals
+    /// are dispatched/in-progress when the durable goal-card state says
+    /// otherwise — Lane M3's Defect M3-2. Its own applicability gate is
+    /// durable state, not the transcript: a session that never called
+    /// `create_roadmap` has no cards attributed to it, so ordinary
+    /// conversation and non-harness sessions never trigger it either.
+    ///
+    /// `NoRoadmapGuard` runs fourth (Lane Y5, harness loop, from Lane A13's
+    /// M13 forensics): it refuses to let a coding-harness COORDINATOR turn end
+    /// having never called `decompose_roadmap`/`create_roadmap` at all — the
+    /// fx02 "prose roadmap, say the word and I'll dispatch" and fx06 "denied
+    /// shell, then a question" exits, which `PrematureDoneGuard` (needs a
+    /// successful mutation) and `RoadmapDispatchGuard` (needs cards or an
+    /// approved proposal) both structurally cannot see. Its gate is the same
+    /// predicate `CodingDagInspector` uses, so no other recipe and no
+    /// dispatched worker can reach it, and it fires at most once per session.
     fn create_after_turn_manager() -> crate::after_turn::AfterTurnManager {
         let mut manager = crate::after_turn::AfterTurnManager::new();
         manager.add_hook(Box::new(crate::after_turn::PrematureDoneGuard::new()));
         manager.add_hook(Box::new(crate::after_turn::ReviewerMandate::new()));
+        manager.add_hook(Box::new(crate::after_turn::RoadmapDispatchGuard::new()));
+        manager.add_hook(Box::new(crate::after_turn::NoRoadmapGuard::new()));
+        // Lane R35a (A32 root cause 1): refuses to let the turn end in prose
+        // while a goal already carries a worker's verified, committed PASS
+        // (`ready`/`review` + `dispatch_evidence.verdict.status == "pass"`)
+        // that nothing has advanced to Review/land yet. Complements
+        // `NoRoadmapGuard`'s own stranded-Ready nudge (R31b), which fires on
+        // a different shape (resumed, not verified).
+        manager.add_hook(Box::new(
+            crate::after_turn::VerifiedGoalAwaitingLandGuard::new(),
+        ));
+        // Lane R18f: headless-only backstop for the rule-5 free-text ending
+        // NoRoadmapGuard cannot see (a roadmap tool call that was ATTEMPTED
+        // but failed, e.g. -32002, reads to NoRoadmapGuard as "rule 1
+        // satisfied"). See Rule5HonestFailureGuard's doc comment.
+        manager.add_hook(Box::new(crate::after_turn::Rule5HonestFailureGuard::new()));
         manager
     }
 
@@ -695,22 +852,55 @@ impl Agent {
         Ok(tool_futures)
     }
 
+    /// The reason an INSPECTOR denied `request_id`, if one did.
+    ///
     /// A ProgressMonitor block (L1/L3) carries an actionable "try a different
     /// approach" reason. Surface it to the model in place of the generic
     /// declined text so it can self-correct — the whole point of the L1 nudge.
-    /// Every other denial keeps `DECLINED_RESPONSE`.
-    fn progress_monitor_block_reason(
+    ///
+    /// Y4c (harness loop, 2026-09-10, from Lane A12's M12 forensics): this
+    /// used to be the ProgressMonitor's reason and NOTHING else, so every
+    /// other inspector's carefully written reason was replaced by
+    /// `DECLINED_RESPONSE` — text that tells the model *the user* refused.
+    /// `CodingDagInspector`'s reason is the case A12 measured: it explains
+    /// that a top-level coding session must dispatch a worker rather than
+    /// edit, and the coordinator never saw it. fx09 msg 18 reasons "The user
+    /// declined both shell and write tool calls"; fx04 msg 32 opens "I
+    /// understand - you've stopped this implementation". Between fx04, fx05
+    /// and fx09 that cost 11 tool calls and about a third of each run, on
+    /// denials whose reason was sitting in `inspection_results` the whole
+    /// time. A denial with no inspector reason behind it — an actual user
+    /// decline — still gets `DECLINED_RESPONSE`, unchanged.
+    ///
+    /// The ProgressMonitor keeps first claim when several inspectors deny the
+    /// same call, so its behavior is exactly what it was.
+    ///
+    /// G11 (harness loop, 2026-09-10): unlike the fixed/templated reasons
+    /// above, `AdversaryInspector`'s is a live LLM completion over the tool
+    /// call's own (possibly attacker-controlled) arguments — it can echo
+    /// injected text back into context or act as a bypass-iteration oracle.
+    /// Inspectors listed here keep the generic `DECLINED_RESPONSE` instead.
+    const NON_COACHING_INSPECTORS: &[&str] = &["adversary"];
+
+    fn inspector_deny_reason(
         request_id: &str,
         inspection_results: &[crate::tool_inspection::InspectionResult],
     ) -> Option<String> {
-        inspection_results
-            .iter()
-            .find(|r| {
-                r.tool_request_id == request_id
-                    && r.inspector_name == crate::tool_monitor::PROGRESS_MONITOR_NAME
-                    && r.action == crate::tool_inspection::InspectionAction::Deny
-            })
-            .map(|r| r.reason.clone())
+        let mut first_other: Option<&crate::tool_inspection::InspectionResult> = None;
+        for result in inspection_results.iter().filter(|r| {
+            r.tool_request_id == request_id
+                && r.action == crate::tool_inspection::InspectionAction::Deny
+                && !r.reason.trim().is_empty()
+                && !Self::NON_COACHING_INSPECTORS.contains(&r.inspector_name.as_str())
+        }) {
+            if result.inspector_name == crate::tool_monitor::PROGRESS_MONITOR_NAME {
+                return Some(result.reason.clone());
+            }
+            if first_other.is_none() {
+                first_other = Some(result);
+            }
+        }
+        first_other.map(|r| r.reason.clone())
     }
 
     fn handle_denied_tools(
@@ -720,7 +910,7 @@ impl Agent {
     ) {
         for request in &permission_check_result.denied {
             if let Some(response) = request_to_response_map.get_mut(&request.id) {
-                let text = Self::progress_monitor_block_reason(&request.id, inspection_results)
+                let text = Self::inspector_deny_reason(&request.id, inspection_results)
                     .unwrap_or_else(|| DECLINED_RESPONSE.to_string());
                 response.add_tool_response_with_metadata(
                     request.id.clone(),
@@ -1408,8 +1598,16 @@ impl Agent {
             prefixed_tools.push(platform_tools::manage_schedule_tool());
         }
 
-        // Guided-tour lesson loader — always available (read-only, no deps).
-        if extension_name.is_none() || extension_name.as_deref() == Some("platform") {
+        // Guided-tour lesson loader — always available (read-only, no deps),
+        // EXCEPT for a compact-profile dispatched goal worker (R48c, harness
+        // loop "Lane R48c"): this tool is appended here unconditionally,
+        // outside the extension-grant mechanism `GOAL_WORKER_EXTENSION_KEYS`
+        // narrows, so it survived R30a's own narrowing and A39's compact-
+        // profile-motivating measurement (`platform__load_feature_lesson`,
+        // 1 of the 12 tools measured).
+        if (extension_name.is_none() || extension_name.as_deref() == Some("platform"))
+            && !self.config.compact_worker_profile
+        {
             prefixed_tools.push(platform_tools::load_feature_lesson_tool());
         }
 
@@ -1462,6 +1660,25 @@ impl Agent {
     /// [`Agent::set_headless`].
     pub fn is_headless(&self) -> bool {
         self.headless.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// R46a: record the raw provider-error text behind a context-length
+    /// give-up, for [`Agent::take_context_length_failure`] to read after the
+    /// reply stream ends. Called from exactly one place in the reply loop
+    /// (the `ProviderError::ContextLengthExceeded` arm's final, no-more-
+    /// compaction-attempts branch) — see that field's doc comment for why.
+    async fn record_context_length_failure(&self, detail: String) {
+        *self.last_context_length_failure.lock().await = Some(detail);
+    }
+
+    /// Takes (clears) the most recent context-length-exceeded detail
+    /// recorded by [`Agent::record_context_length_failure`], if any. See
+    /// `last_context_length_failure`'s doc comment: this is a non-user-
+    /// facing side channel a headless caller (a `delegate`/`delegate_many`
+    /// subagent) opts into reading to classify an `AgentRuntimeOutcome::
+    /// Failed` instead of reporting a bare "Subagent runtime failed".
+    pub async fn take_context_length_failure(&self) -> Option<String> {
+        self.last_context_length_failure.lock().await.take()
     }
 
     /// Handle a confirmation response for a tool request.
@@ -1844,6 +2061,12 @@ impl Agent {
             .count();
 
         let working_dir = session.working_dir.clone();
+        // Lane R62f (A61 miss 2): the turn-budget "git commit NOW" nudge is
+        // for dispatched goal workers only, never a capped coordinator.
+        let turn_budget_nudge_eligible = crate::after_turn::turn_budget_nudge_applies(
+            session_config.max_turns,
+            session.session_type,
+        );
         let reply_stream_span = tracing::info_span!(target: "permagent::agents::agent", "reply_stream", session.id = %session_config.id);
         let inner = Box::pin(async_stream::try_stream! {
             // Working on entry; Drop records done/error on every exit path (#348).
@@ -1879,6 +2102,11 @@ impl Agent {
             // out of credit would ping-pong the turn forever — the same
             // unbounded-retry defect this PR removes from the retry layer.
             let mut permanent_failure_fallback_used = false;
+            // R28a (HARNESS_LOOP_LOG.md "A27 analysis" misses 1/2): fires at
+            // most once per reply, mirroring `monologue_nudged` above — see
+            // `after_turn::turn_budget_nudge_text`'s own doc comment for why
+            // this lives outside the `AfterTurn` chain.
+            let mut turn_budget_nudged = false;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -1902,6 +2130,14 @@ impl Agent {
                     );
                     break;
                 }
+
+                // Lane X-lat (coding-harness excellence iteration): one
+                // recorder per outer-loop turn attempt. `finish()` is called
+                // at the very end of this loop body, after the after-turn
+                // hooks and any context-management work, and the resulting
+                // record is attached to this turn's already-settled
+                // `cost_ledger` row via `update_cost_ledger_timing`.
+                let mut turn_timing = TurnTimingRecorder::start();
 
                 // TODO(S8): $-budget pre-turn stop. Once the cost ledger from
                 // PR #714 lands (in CI, unmerged), add the pre-turn spend check
@@ -1971,7 +2207,33 @@ impl Agent {
                 // independent of mutable session settings so a provider switch
                 // on a later turn cannot rewrite this call's attribution.
                 let turn_provider = self.provider().await?;
-                let invocation_id = Uuid::new_v4().to_string();
+                let turn_model_name = turn_provider.get_model_config().model_name;
+                // I1 (harness loop, 2026-09-10): reuse a still-pending,
+                // TTL-valid reservation grant from a prior headless gate
+                // auto-answer for THIS session, if one exists, instead of
+                // always minting a fresh invocation_id — see
+                // `reusable_gate_grant_invocation_id`'s own doc comment for
+                // why a fresh id every call meant such a grant could never
+                // be consumed (F10's forensics).
+                //
+                // F3 (harness loop, Round F, from Lane G9's HIGH finding):
+                // `turn_provider`/`turn_model_name` are threaded in here so
+                // a grant is only ever reused when it was minted for THIS
+                // exact provider/model — a provider/role switch on a later
+                // turn (this codebase's own routing/role-pin machinery does
+                // this) now falls through to a fresh gate evaluation instead
+                // of silently reusing a different provider's dollar bound.
+                let invocation_id = match crate::agents::reply_parts::reusable_gate_grant_invocation_id(
+                    &self.config.session_manager,
+                    &session.id,
+                    turn_provider.get_name(),
+                    &turn_model_name,
+                )
+                .await
+                {
+                    Some(reused) => reused,
+                    None => Uuid::new_v4().to_string(),
+                };
                 let invocation = match self
                     .reserve_provider_invocation(
                         &session,
@@ -1980,29 +2242,114 @@ impl Agent {
                     )
                     .await
                 {
-                    Ok(invocation) => invocation,
+                    Ok(invocation) => {
+                        // Lane R18a-b (G21 HIGH-1): a per-run observation, not
+                        // a compile-time literal — see
+                        // `reply_parts::record_provider_call_authorized`'s doc
+                        // comment. This arm never went through the
+                        // gate/failure path at all: the reservation itself
+                        // authorized the call, so it plainly proceeds WITH
+                        // authorization.
+                        crate::agents::reply_parts::record_provider_call_authorized(true);
+                        invocation
+                    }
                     Err(failure) => {
-                        let reason = self
-                            .handle_provider_authorization_failure(&session, &failure)
+                        let outcome = self
+                            .handle_provider_authorization_failure(
+                                &session,
+                                &invocation_id,
+                                &failure,
+                                turn_provider.get_name(),
+                                &turn_model_name,
+                            )
                             .await;
-                        let message = Message::assistant().with_text(format!(
-                            "I did not send this request because provider spend could not be authorized: {reason}."
-                        ));
-                        persist_turn_ending_message(&session_manager, &session_config.id, &message)
-                            .await;
-                        yield AgentEvent::Message(message);
-                        state_guard.mark_error();
-                        break;
+                        // Y4a (harness loop, 2026-09-10, from Lane A12's M12
+                        // forensics): when the handler got the gate headlessly
+                        // auto-answered it ALSO minted a `granted_via_gate=1`,
+                        // `state='pending'` reservation under this very
+                        // `invocation_id` — a paid-for authorization. Reusing
+                        // that id here takes `reserve_provider_invocation`'s
+                        // early idempotent lookup (`AlreadyReserved`), so the
+                        // call goes out on THIS turn. Pre-Y4a the code always
+                        // fell through to the message + `break` below, and the
+                        // `reusable_gate_grant_invocation_id` seam above could
+                        // only consume the grant on a LATER turn — which a
+                        // coordinator never gets, because its turn ending is
+                        // the run ending (A12: fx01 and fx09 each threw away a
+                        // correct worker result this way; fx07 was truncated).
+                        // Exactly one retry, never a loop: a second failure
+                        // takes the unchanged park path.
+                        let retried = if outcome.gate_grant_minted {
+                            match self
+                                .reserve_provider_invocation(
+                                    &session,
+                                    &turn_provider,
+                                    invocation_id.clone(),
+                                )
+                                .await
+                            {
+                                Ok(invocation) => Some(invocation),
+                                Err(retry_failure) => {
+                                    tracing::warn!(
+                                        session_id = %session_config.id,
+                                        invocation_id = %invocation_id,
+                                        "reservation gate was auto-granted but the single retry \
+                                         still could not authorize the call ({retry_failure}); \
+                                         ending the turn"
+                                    );
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        match retried {
+                            Some(invocation) => {
+                                // Lane R18a-b (G21 HIGH-1): reached only when
+                                // `outcome.gate_grant_minted` was true AND the
+                                // retried reservation itself succeeded — a
+                                // real `ProviderAuthorizationOutcome` grant
+                                // backs this call, never an assumption.
+                                crate::agents::reply_parts::record_provider_call_authorized(true);
+                                invocation
+                            }
+                            None => {
+                                let reason = outcome.detail;
+                                let message = Message::assistant().with_text(format!(
+                                    "I did not send this request because provider spend could not be authorized: {reason}."
+                                ));
+                                persist_turn_ending_message(&session_manager, &session_config.id, &message)
+                                    .await;
+                                yield AgentEvent::Message(message);
+                                state_guard.mark_error();
+                                break;
+                            }
+                        }
                     }
                 };
 
-                let mut stream = match Self::stream_response_from_provider(
-                    turn_provider.clone(),
-                    &session_config.id,
-                    &system_prompt,
-                    conversation_with_moim.messages(),
-                    &tools,
-                    &toolshim_tools,
+                turn_timing.start_model();
+                // Lane R19c (G24 HIGH-2): marks when THIS turn started
+                // waiting for a first byte, so a first-byte-stall retry can
+                // be given the REMAINING part of `DEFAULT_FIRST_BYTE_SECS`
+                // instead of a fresh window — see the retry arm below and
+                // `stream_budget::FIRST_BYTE_WINDOW_OVERRIDE`'s doc comment.
+                let first_byte_wait_started = std::time::Instant::now();
+                // Carry the hold's count and extension authorizer into physical
+                // retries. Exhausting the count requires a new one-attempt grant.
+                // Unpaid work keeps the provider's retry policy unchanged.
+                let mut stream = match crate::cost_router::authorized_attempts::with_reservation_attempts(
+                    Arc::clone(&session_manager),
+                    invocation.invocation_id.clone(),
+                    invocation.attempts_reserved,
+                    Self::stream_response_from_provider(
+                        turn_provider.clone(),
+                        &session_config.id,
+                        &system_prompt,
+                        conversation_with_moim.messages(),
+                        &tools,
+                        &toolshim_tools,
+                    ),
                 )
                 .await
                 {
@@ -2067,6 +2414,10 @@ impl Agent {
                 // saw a partial answer). Billing/auth still announce.
                 let mut stream_committed = false;
                 let mut exit_chat = false;
+                // Lane R19a: a pre-first-byte provider stall gets exactly one
+                // retry of the identical request. This bounds it to one per
+                // turn attempt — see `should_retry_first_byte_stall`.
+                let mut first_byte_stall_retried = false;
 
                 // Track whether this provider turn has already emitted visible
                 // thinking so a later tool-call chunk can suppress replayed
@@ -2074,6 +2425,7 @@ impl Agent {
                 let mut surfaced_thinking_in_turn = false;
 
                 while let Some(next) = stream.next().await {
+                    turn_timing.record_first_token();
                     if is_token_cancelled(&cancel_token) || exit_chat {
                         break;
                     }
@@ -2242,6 +2594,25 @@ impl Agent {
                                         }
                                     }
 
+                                    // Lane X-lat: per-tool-call name lookup for
+                                    // the timing detail recorded as each result
+                                    // arrives off `combined` below. Built once,
+                                    // before dispatch, since `request_id` is
+                                    // consumed by `add_tool_response_with_metadata`
+                                    // when its result lands.
+                                    let tool_name_by_request_id: HashMap<String, String> =
+                                        remaining_requests
+                                            .iter()
+                                            .map(|request| {
+                                                let name = request
+                                                    .tool_call
+                                                    .as_ref()
+                                                    .map(|call| call.name.to_string())
+                                                    .unwrap_or_else(|_| "unknown".to_string());
+                                                (request.id.clone(), name)
+                                            })
+                                            .collect();
+
                                     let mut tool_futures = self.handle_approved_and_denied_tools(
                                         &permission_check_result,
                                         &mut request_to_response_map,
@@ -2272,6 +2643,7 @@ impl Agent {
                                         })
                                         .collect::<Vec<_>>();
 
+                                    let tool_phase_start = std::time::Instant::now();
                                     let mut combined = stream::select_all(with_id);
                                     let mut all_install_successful = true;
 
@@ -2292,6 +2664,14 @@ impl Agent {
                                                     Some((request_id, item)) => {
                                                         match item {
                                                             ToolStreamItem::Result(output) => {
+                                                                if let Some(name) =
+                                                                    tool_name_by_request_id.get(&request_id)
+                                                                {
+                                                                    turn_timing.record_tool_call(
+                                                                        name.clone(),
+                                                                        tool_phase_start,
+                                                                    );
+                                                                }
                                                                 if let Ok(ref call_result) = output {
                                                                     if let Some(ref meta) = call_result.meta {
                                                                         if let Some(notification_data) = meta.0.get("platform_notification") {
@@ -2333,6 +2713,7 @@ impl Agent {
                                             }
                                         }
                                     }
+                                    turn_timing.record_tool_phase(tool_phase_start);
 
                                     // check for remaining elicitation messages after all tools complete
                                     for msg in self.drain_elicitation_messages(&session_config.id).await {
@@ -2437,7 +2818,6 @@ impl Agent {
                                 no_tools_called = false;
                             }
                         }
-                        #[allow(unused_variables)]
                         Err(ref provider_err @ ProviderError::ContextLengthExceeded(_)) => {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
@@ -2445,6 +2825,18 @@ impl Agent {
 
                             if compaction_attempts >= 2 {
                                 error!("Context limit exceeded after compaction - prompt too large");
+                                // R46a (harness loop, "A43 analysis" lever 3):
+                                // the turn's own visible text below is
+                                // deliberately scrubbed of the raw provider
+                                // payload (it is shown to a human and read
+                                // aloud); the RAW text — which for a local
+                                // llama.cpp-shaped 400 carries the actual
+                                // `n_prompt_tokens`/`n_ctx` numbers — is kept
+                                // here instead, for a headless caller
+                                // (`delegate`/`delegate_many`'s subagent) to
+                                // read back via `take_context_length_failure`
+                                // and turn into a classified reason.
+                                self.record_context_length_failure(provider_err.to_string()).await;
                                 yield AgentEvent::Message(
                                     Message::assistant().with_system_notification(
                                         SystemNotificationType::InlineMessage,
@@ -2474,14 +2866,16 @@ impl Agent {
                                 Arc::clone(&compact_provider),
                                 true,
                             );
-                            match compact_messages_accounted(
+                            let compaction_started = std::time::Instant::now();
+                            let compaction_result = compact_messages_accounted(
                                 &session_config.id,
                                 &conversation,
                                 false,
                                 compact_accounting.as_ref(),
                             )
-                            .await
-                            {
+                            .await;
+                            turn_timing.record_context_mgmt(compaction_started);
+                            match compaction_result {
                                 Ok((compacted_conversation, usage)) => {
                                     session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
                                     // Accounting occurred inside the reserved
@@ -2796,6 +3190,156 @@ impl Agent {
                             state_guard.mark_error();
                             break;
                         }
+                        // Lane R19a (harness loop 2026-09-14, M19 DeepSeek
+                        // forensics): a stall before the provider sent even
+                        // one byte is not the same failure as a mid-stream
+                        // stall or a repeating model (Y8a) — it is commonly
+                        // provider-side queueing/prefill on a large context,
+                        // and the M17-vs-M19 comparison showed an
+                        // equivalent-sized request to a different provider,
+                        // same binary, same moment, answering in seconds.
+                        // Retry the identical request exactly once —
+                        // `stream_committed` confirms nothing from THIS
+                        // stream has reached the user yet, so there is no
+                        // partial answer a second attempt could contradict.
+                        //
+                        // Lane R19c (G24 MED-1 correction): what actually
+                        // keeps THIS arm from tripping Lane R18f's rule5
+                        // guard is that it never ends the turn at all — it
+                        // `continue`s the stream loop on a successful retry.
+                        // Recording the stall as a `tracing::warn!`
+                        // observability signal here, rather than an
+                        // assistant message, is about not narrating an
+                        // internal retry to the model/user as if it were the
+                        // model's own text — it is not what saves this
+                        // iteration from rule5; not ending the turn is.
+                        Err(ref provider_err)
+                            if should_retry_first_byte_stall(
+                                provider_err,
+                                stream_committed,
+                                first_byte_stall_retried,
+                            ) =>
+                        {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            first_byte_stall_retried = true;
+                            // Lane R19c (G24 MED-2): `crate::receipts::record`
+                            // is a NO-OP for any (area, key) pair not already
+                            // in `receipts::FIELDS` — a fixed-size const array
+                            // `permagent-eval`'s regex parses by exact key
+                            // set (see `safety_and_trust`'s own comment on
+                            // why an unknown key there breaks the whole
+                            // line). "provider"/"first_byte_stall_retry" is
+                            // not one of the 14 existing pairs, and adding it
+                            // changes that contract for every other
+                            // consumer — out of scope for this lane to
+                            // decide. `tracing::warn!` below is the
+                            // observability signal instead; a scorecard-
+                            // visible counter is a receipts-contract change,
+                            // not a stream-budget one.
+                            tracing::warn!(
+                                target: "permagent::provider_stall",
+                                session_id = %session_config.id,
+                                provider = %turn_provider.get_name(),
+                                model = %turn_model_name,
+                                error = %provider_err,
+                                "provider_stall: first-byte stall, retrying the identical request once (Lane R19a)"
+                            );
+                            match retry_first_byte_stall(
+                                &session_manager,
+                                &invocation,
+                                first_byte_wait_started,
+                                Self::stream_response_from_provider(
+                                    turn_provider.clone(),
+                                    &session_config.id,
+                                    &system_prompt,
+                                    conversation_with_moim.messages(),
+                                    &tools,
+                                    &toolshim_tools,
+                                ),
+                            )
+                            .await
+                            {
+                                Ok(fresh) => {
+                                    stream = fresh;
+                                    continue;
+                                }
+                                Err(retry_error) => {
+                                    tracing::warn!(
+                                        target: "permagent::provider_stall",
+                                        session_id = %session_config.id,
+                                        provider = %turn_provider.get_name(),
+                                        error = %retry_error,
+                                        "provider_stall: the retry attempt itself could not start a new stream"
+                                    );
+                                    let message = Message::assistant().with_system_notification(
+                                        SystemNotificationType::InlineMessage,
+                                        format!(
+                                            "{} did not respond in time — this was retried once and still did not \
+                                             respond. Your message was not sent; send it again once the provider \
+                                             recovers.",
+                                            turn_provider.get_name(),
+                                        ),
+                                    );
+                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                                    yield AgentEvent::Message(message);
+                                    state_guard.mark_error();
+                                    break;
+                                }
+                            }
+                        }
+                        // The retry above was already spent (or did not apply —
+                        // content had already streamed) and this turn stalled
+                        // before the first byte again. Give up the same way
+                        // the rate-limit arm above does: a system
+                        // notification in the assistant's own voice, never
+                        // "Ran into this error… do not retry" advice text.
+                        //
+                        // Lane R19c (G24 MED-1 correction): this does NOT
+                        // prevent Lane R18f's rule5 guard from firing.
+                        // `Rule5HonestFailureGuard` (after_turn.rs) checks
+                        // only for a tool call / `escalate` on the turn's
+                        // final message (`final_message_has_tool_call` /
+                        // `turn_called_escalate`) — Text vs
+                        // SystemNotification content is irrelevant to it, and
+                        // this arm calls neither a tool nor `escalate`. Rule5
+                        // firing here is the CORRECT, intended outcome: the
+                        // provider genuinely did not answer twice in a row,
+                        // the coordinator has nothing left to do this turn,
+                        // and an honest "this run could not make progress"
+                        // is what the guard exists to produce — not a defect
+                        // to be engineered around. What this lane actually
+                        // fixes is upstream of rule5: the turn now reaches
+                        // this give-up only after one real retry, with the
+                        // reason recorded as a `provider_stall`
+                        // observability signal, instead of every attempt
+                        // burning the model's own turn on "do not retry the
+                        // same request" free text it had no way to act on.
+                        Err(ref provider_err) if provider_err.is_first_byte_provider_stall() => {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            tracing::warn!(
+                                target: "permagent::provider_stall",
+                                session_id = %session_config.id,
+                                provider = %turn_provider.get_name(),
+                                model = %turn_model_name,
+                                error = %provider_err,
+                                retried = first_byte_stall_retried,
+                                "provider_stall: first-byte stall persisted; ending the turn without a retry left"
+                            );
+                            let message = Message::assistant().with_system_notification(
+                                SystemNotificationType::InlineMessage,
+                                format!(
+                                    "{} — {}. Your message was not sent; send it again once the provider recovers.",
+                                    turn_provider.get_name(),
+                                    provider_err.user_facing_summary(),
+                                ),
+                            );
+                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            yield AgentEvent::Message(message);
+                            state_guard.mark_error();
+                            break;
+                        }
                         Err(ref provider_err) => {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
@@ -2828,8 +3372,24 @@ impl Agent {
                                     break;
                                 }
                             }
+                            // G13 L6: "please retry" is a lie for an error the
+                            // retry layer has already refused to retry. A
+                            // stream-budget breach is OURS — we stopped the
+                            // reply — and resending the identical request walks
+                            // straight back into the same runaway.
+                            let advice = if provider_err.is_stream_budget_exceeded() {
+                                "We stopped this reply ourselves: it ran past a streaming safety budget. \
+                                 Do not retry the same request — it would hit the same bound. \
+                                 Continue from the work that is already done, or split what is left into \
+                                 smaller steps and take the first one."
+                            } else if provider_err.is_permanent() {
+                                "This failure is permanent — retrying the same request will not help. \
+                                 Proceed with what you have, or take a different approach."
+                            } else {
+                                "Please retry if you think this is a transient or recoverable error."
+                            };
                             let message = Message::assistant().with_text(
-                                format!("Ran into this error: {provider_err}.\n\nPlease retry if you think this is a transient or recoverable error.")
+                                format!("Ran into this error: {provider_err}.\n\n{advice}")
                             );
                             persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
                             yield AgentEvent::Message(message);
@@ -2838,6 +3398,7 @@ impl Agent {
                         }
                     }
                 }
+                turn_timing.end_model();
                 if invocation.cost_tier.is_chargeable() {
                     let has_authoritative_usage = terminal_usage.as_ref().is_some_and(|usage| {
                         let u = usage.usage;
@@ -3014,6 +3575,31 @@ impl Agent {
                     }
                 }
 
+                // R28a (HARNESS_LOOP_LOG.md "A27 analysis" misses 1/2): tell a
+                // dispatched goal worker plainly, once, when only a handful of
+                // turns remain before the hard `max_turns` cap below discards
+                // whatever it has not yet committed. Independent of whether
+                // THIS turn called a tool — the failure mode is a worker that
+                // keeps calling tools (manual shell re-tests) right up to the
+                // cap, never a monologuing one, so this cannot live inside the
+                // `no_tools_called` branch above. `has_explicit_cap` (`session_
+                // config.max_turns.is_some()`) is what keeps this off ordinary
+                // interactive chats — see `turn_budget_nudge_text`'s own doc
+                // comment. R62f: and `turn_budget_nudge_applies` keeps it off a
+                // capped top-level coordinator.
+                if !turn_budget_nudged {
+                    if let Some(nudge_text) = crate::after_turn::turn_budget_nudge_text(
+                        turns_taken,
+                        max_turns,
+                        turn_budget_nudge_eligible,
+                    ) {
+                        turn_budget_nudged = true;
+                        let nudge = Message::user().with_text(nudge_text);
+                        messages_to_add.push(nudge.clone());
+                        yield AgentEvent::Message(nudge);
+                    }
+                }
+
                 // ── Make the turn WELL-FORMED before anything is added to it ──
                 //
                 // One provider turn can arrive as SEVERAL assistant messages:
@@ -3055,7 +3641,10 @@ impl Agent {
                     tool_pair_summarization_task.abort();
                 }
 
-                if let Ok(summaries) = tool_pair_summarization_task.await {
+                let summarization_started = std::time::Instant::now();
+                let summarization_result = tool_pair_summarization_task.await;
+                turn_timing.record_context_mgmt(summarization_started);
+                if let Ok(summaries) = summarization_result {
                     let mut updated_messages = conversation.messages().clone();
 
                     for (summary_msg, tool_id) in summaries {
@@ -3099,6 +3688,7 @@ impl Agent {
                 // injected instruction instead of finishing — the interactive
                 // twin of `HoldOutcome::Hold { inject_plan }`, which until now
                 // only ever fired on a goal card's InProgress → Review edge.
+                let after_turn_started = std::time::Instant::now();
                 if exit_chat && !self.after_turn_manager.is_empty() {
                     let action = self
                         .after_turn_manager
@@ -3125,6 +3715,46 @@ impl Agent {
                             persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
                             yield AgentEvent::Message(message);
                         }
+                    }
+                }
+                turn_timing.record_after_turn(after_turn_started);
+
+                // Lane X-lat: attach this turn's wall-clock breakdown to its
+                // already-settled `cost_ledger` row. Best-effort — a call_id
+                // with no settled row (an unrecoverable pre-dispatch failure
+                // broke out of the loop earlier and never reaches this point;
+                // a recoverable error that produced no authoritative usage
+                // settles no row either) is a harmless no-op, and a write
+                // failure here must never fail the turn — this is
+                // observability, not money accounting.
+                let turn_timing_record = turn_timing.finish();
+                if let Err(error) = session_manager
+                    .update_cost_ledger_timing(&invocation_id, &turn_timing_record)
+                    .await
+                {
+                    debug!(
+                        session_id = %session_config.id,
+                        %error,
+                        "failed to persist per-turn harness timing (best-effort observability, not fatal)"
+                    );
+                }
+
+                // Lane R17a (M17 readiness audit §6.1, gaps 1 & 4): refresh
+                // the receipts sidecar's `harness_overhead` line at this turn
+                // boundary too, not only at the session's clean exit — a
+                // harness SIGKILLed for exceeding the eval's wall-clock
+                // ceiling still leaves a recent-enough reading on disk for
+                // `permagent-eval`'s timeout fallback
+                // (`PERMAGENT_RECEIPTS_SIDECAR`) to read. `is_active` gates
+                // this before any rollup query, so an ordinary run without a
+                // sidecar configured pays no extra cost.
+                if crate::receipts::is_active() {
+                    if let Ok(rollup) =
+                        session_manager.session_timing_rollup(&session_config.id).await
+                    {
+                        crate::receipts::set_harness_overhead_line(
+                            crate::session::format_harness_overhead_line(&rollup),
+                        );
                     }
                 }
 
@@ -3750,6 +4380,389 @@ mod tests {
         assert!(!source.contains(&direct_call));
     }
 
+    // --- Lane R19a: retry-once decision for a first-byte provider stall --
+
+    /// The first first-byte stall on a turn that has not streamed anything
+    /// yet is retried; a second one (after the retry is spent) is not.
+    #[test]
+    fn a_first_byte_stall_is_retried_exactly_once() {
+        let err = crate::providers::errors::ProviderError::first_byte_stall(
+            "the provider sent nothing at all for 300 s",
+        );
+        assert!(
+            should_retry_first_byte_stall(&err, false, false),
+            "first occurrence, nothing streamed yet: retry"
+        );
+        assert!(
+            !should_retry_first_byte_stall(&err, false, true),
+            "the one retry is already spent: do not retry again"
+        );
+    }
+
+    /// A first-byte stall is never retried once part of an answer has
+    /// already reached the user on this stream — there is no longer a "same
+    /// request" that is safe to resend silently underneath a partial reply.
+    #[test]
+    fn a_first_byte_stall_is_not_retried_once_the_stream_is_committed() {
+        let err = crate::providers::errors::ProviderError::first_byte_stall("0 chars in 300 s");
+        assert!(
+            !should_retry_first_byte_stall(&err, true, false),
+            "content already streamed: do not resend the request"
+        );
+    }
+
+    /// A genuine mid-stream stall (or repetition, or wall-clock) — anything
+    /// that is `is_stream_budget_exceeded()` but NOT specifically a
+    /// first-byte stall — must never take this retry path. Y8a's "never
+    /// retry a runaway" verdict for that class is unchanged.
+    #[test]
+    fn an_ordinary_mid_stream_stall_is_never_retried_by_this_path() {
+        let err = crate::providers::errors::ProviderError::stream_budget_exceeded(
+            "the provider sent nothing for longer than 120s allows",
+        );
+        assert!(err.is_stream_budget_exceeded());
+        assert!(!should_retry_first_byte_stall(&err, false, false));
+    }
+
+    /// A wholly unrelated error (never a stream-budget failure at all) is
+    /// also never retried by this path.
+    #[test]
+    fn an_unrelated_error_is_never_retried_by_this_path() {
+        let err = crate::providers::errors::ProviderError::ServerError("502".to_string());
+        assert!(!should_retry_first_byte_stall(&err, false, false));
+    }
+
+    /// Lane R19c (G24 HIGH-1): a first-byte retry must authorize exactly ONE
+    /// more physical attempt against the SAME invocation's reservation —
+    /// never re-grant the invocation's whole `attempts_reserved` budget
+    /// again (the double-spend G24 flagged in the pre-R19c
+    /// `with_reservation_attempts(..., attempts_reserved, ...)` call).
+    /// Reserves 3 attempts up front, then proves the retry sees exactly
+    /// `authorized_attempts() == Some(1)` from INSIDE the retried future —
+    /// not `Some(3)`.
+    #[tokio::test]
+    async fn a_first_byte_retry_authorizes_exactly_one_more_attempt_not_the_whole_reservation() {
+        use crate::config::GooseMode;
+        use crate::cost_router::budget::{BudgetCeilings, BudgetConfig};
+        use crate::session::{CostReservationOutcome, CostTier, SessionType};
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "r19c retry".into(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task = manager.begin_budget_task(&session.id).await.unwrap();
+        let model = crate::model::ModelConfig::new("glm-4.7")
+            .unwrap()
+            .with_context_limit(Some(204_800))
+            .with_max_tokens(Some(131_072));
+        // Reserve 3 physical attempts up front — the ORIGINAL invocation's
+        // hold. A naive retry that re-authorized `attempts_reserved` would
+        // see `Some(3)`, not `Some(1)`.
+        let reserved: u32 = 3;
+        let bound = crate::cost_router::plan_reservation_bound(
+            "zai",
+            "glm-4.7",
+            CostTier::PaidApi,
+            &model,
+            reserved,
+        )
+        .unwrap()
+        .unwrap();
+        // A generous ceiling: the extension must succeed so the test
+        // observes what gets AUTHORIZED, not a budget refusal.
+        let limits = BudgetCeilings {
+            soft: 0.0,
+            gate: 1000.0,
+            hard: 1000.0,
+        };
+        let config = BudgetConfig {
+            task: limits,
+            session: limits,
+        };
+        let outcome = manager
+            .reserve_bounded_provider_invocation(
+                "r19c-invocation",
+                &session.id,
+                Some(&task),
+                bound,
+                "2099-01-01T00:00:00Z",
+                &config,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, CostReservationOutcome::Granted { .. }));
+
+        let invocation = crate::agents::reply_parts::ProviderInvocationContext {
+            invocation_id: "r19c-invocation".to_string(),
+            provider: "zai".to_string(),
+            model: "glm-4.7".to_string(),
+            cost_tier: CostTier::PaidApi,
+            reservation_id: Some("r19c-invocation".to_string()),
+            attempts_reserved: Some(reserved),
+        };
+
+        let seen_authorized: Arc<std::sync::Mutex<Option<Option<u32>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let seen = Arc::clone(&seen_authorized);
+        let retry_future = async move {
+            *seen.lock().unwrap() =
+                Some(crate::cost_router::authorized_attempts::authorized_attempts());
+            Ok::<crate::providers::base::MessageStream, ProviderError>(Box::pin(
+                futures::stream::empty(),
+            ))
+        };
+
+        let result = retry_first_byte_stall(
+            &manager,
+            &invocation,
+            std::time::Instant::now(),
+            retry_future,
+        )
+        .await;
+
+        // The Ok side is a boxed `dyn Stream`, which has no Debug; print the
+        // error instead, which is the half that matters when this fails.
+        assert!(result.is_ok(), "{:?}", result.as_ref().err());
+        assert_eq!(
+            *seen_authorized.lock().unwrap(),
+            Some(Some(1)),
+            "a first-byte retry must authorize exactly ONE more attempt, not the \
+             invocation's whole {reserved}-attempt reservation again"
+        );
+    }
+
+    /// Lane R19c (G24 HIGH-1): when no reservation governs the call at all
+    /// (`attempts_reserved: None` — a free/unpaid dispatch), the retry must
+    /// skip the ledger entirely and run with no authorization scope, exactly
+    /// like the ORIGINAL call did.
+    #[tokio::test]
+    async fn a_first_byte_retry_with_no_reservation_skips_the_ledger_entirely() {
+        use crate::session::CostTier;
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let invocation = crate::agents::reply_parts::ProviderInvocationContext {
+            invocation_id: "unpaid-invocation".to_string(),
+            provider: "local".to_string(),
+            model: "local-model".to_string(),
+            cost_tier: CostTier::PaidApi,
+            reservation_id: None,
+            attempts_reserved: None,
+        };
+
+        let seen_authorized: Arc<std::sync::Mutex<Option<Option<u32>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let seen = Arc::clone(&seen_authorized);
+        let retry_future = async move {
+            *seen.lock().unwrap() =
+                Some(crate::cost_router::authorized_attempts::authorized_attempts());
+            Ok::<crate::providers::base::MessageStream, ProviderError>(Box::pin(
+                futures::stream::empty(),
+            ))
+        };
+
+        let result = retry_first_byte_stall(
+            &manager,
+            &invocation,
+            std::time::Instant::now(),
+            retry_future,
+        )
+        .await;
+
+        // The Ok side is a boxed `dyn Stream`, which has no Debug; print the
+        // error instead, which is the half that matters when this fails.
+        assert!(result.is_ok(), "{:?}", result.as_ref().err());
+        assert_eq!(
+            *seen_authorized.lock().unwrap(),
+            Some(None),
+            "no reservation governs this call: no authorization scope should be installed"
+        );
+    }
+
+    /// The text `handle_denied_tools` actually put on the wire for `id`.
+    fn denied_response_text(responses: &HashMap<String, Message>, id: &str) -> String {
+        responses
+            .get(id)
+            .expect("a response message for the denied request")
+            .content
+            .iter()
+            .find_map(|content| match content {
+                crate::conversation::message::MessageContent::ToolResponse(response) => {
+                    response.tool_result.as_ref().ok().map(|result| {
+                        result
+                            .content
+                            .iter()
+                            .filter_map(|c| match &c.raw {
+                                rmcp::model::RawContent::Text(text) => Some(text.text.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                }
+                _ => None,
+            })
+            .expect("the denial is recorded as a tool response")
+    }
+
+    fn denial_fixture(
+        request_id: &str,
+        inspection_results: Vec<crate::tool_inspection::InspectionResult>,
+    ) -> HashMap<String, Message> {
+        let request = ToolRequest {
+            id: request_id.to_string(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams::new("developer__shell")),
+            metadata: None,
+            tool_meta: None,
+        };
+        let permission_check_result = PermissionCheckResult {
+            approved: vec![],
+            needs_approval: vec![],
+            denied: vec![request],
+        };
+        let mut responses = HashMap::new();
+        responses.insert(request_id.to_string(), Message::user());
+        Agent::handle_denied_tools(
+            &permission_check_result,
+            &mut responses,
+            &inspection_results,
+        );
+        responses
+    }
+
+    fn deny(
+        request_id: &str,
+        inspector: &str,
+        reason: &str,
+    ) -> crate::tool_inspection::InspectionResult {
+        crate::tool_inspection::InspectionResult {
+            tool_request_id: request_id.to_string(),
+            action: crate::tool_inspection::InspectionAction::Deny,
+            reason: reason.to_string(),
+            confidence: 1.0,
+            inspector_name: inspector.to_string(),
+            finding_id: None,
+        }
+    }
+
+    /// Y4c pin (harness loop, 2026-09-10, from Lane A12's M12 forensics): when
+    /// an INSPECTOR denies a tool call, the model must be told the inspector's
+    /// own reason — not `DECLINED_RESPONSE`, which says the USER refused.
+    ///
+    /// A12 traced every coordinator `shell`/`edit`/`write` in the M12 slice to
+    /// `CodingDagInspector`, whose reason explains that a top-level coding
+    /// session must dispatch a worker; the model saw only the generic decline
+    /// and reasoned "The user declined both shell and write tool calls"
+    /// (fx09 msg 18) and "I understand - you've stopped this implementation"
+    /// (fx04 msg 32). Pre-Y4c this test fails: the filter matched the progress
+    /// monitor's name alone, so this denial came back as `DECLINED_RESPONSE`.
+    #[test]
+    fn a_denied_tool_carries_the_denying_inspectors_own_reason() {
+        let reason = "Top-level coding harness sessions must create an approved orchestrator \
+                      DAG and dispatch its node";
+        let responses = denial_fixture(
+            "req_dag",
+            vec![deny(
+                "req_dag",
+                crate::tool_inspection::CODING_DAG_INSPECTOR_NAME,
+                reason,
+            )],
+        );
+        assert_eq!(denied_response_text(&responses, "req_dag"), reason);
+    }
+
+    /// Y4c: the ProgressMonitor's L1/L3 nudge is unchanged — it still wins,
+    /// including when a second inspector denies the same call.
+    #[test]
+    fn a_progress_monitor_block_still_wins_over_another_inspectors_reason() {
+        let responses = denial_fixture(
+            "req_loop",
+            vec![
+                deny("req_loop", "some_other_inspector", "a different reason"),
+                deny(
+                    "req_loop",
+                    crate::tool_monitor::PROGRESS_MONITOR_NAME,
+                    "identical call already failed twice — try a different approach",
+                ),
+            ],
+        );
+        assert_eq!(
+            denied_response_text(&responses, "req_loop"),
+            "identical call already failed twice — try a different approach"
+        );
+    }
+
+    /// Y4c: a denial with NO inspector behind it is a real user decline and
+    /// keeps `DECLINED_RESPONSE`, exactly as before. An inspector result for a
+    /// DIFFERENT request id must never leak onto this one, and an inspector
+    /// that allowed the call is not a denial reason either.
+    #[test]
+    fn a_user_decline_still_reads_as_a_user_decline() {
+        let responses = denial_fixture(
+            "req_user",
+            vec![
+                deny("req_other", "some_inspector", "not this request"),
+                crate::tool_inspection::InspectionResult {
+                    tool_request_id: "req_user".to_string(),
+                    action: crate::tool_inspection::InspectionAction::Allow,
+                    reason: "Auto mode - all tools approved".to_string(),
+                    confidence: 1.0,
+                    inspector_name: "some_inspector".to_string(),
+                    finding_id: None,
+                },
+            ],
+        );
+        assert_eq!(
+            denied_response_text(&responses, "req_user"),
+            DECLINED_RESPONSE
+        );
+    }
+
+    /// G11: `AdversaryInspector`'s reason is a live LLM completion over
+    /// attacker-reachable input, so it never reaches the model even though
+    /// it is a genuine inspector denial — it falls back to the generic
+    /// `DECLINED_RESPONSE`, same as a real user decline. The denylist is
+    /// narrow: `CodingDagInspector` (fixed string, no attacker-influenced
+    /// content) still surfaces its own reason, exactly as Y4c left it.
+    #[test]
+    fn adversary_deny_reason_is_suppressed_but_coding_dag_still_surfaces() {
+        let adversary_responses = denial_fixture(
+            "req_adv",
+            vec![deny(
+                "req_adv",
+                "adversary",
+                "🛡️ Adversary blocked: command echoes injected text",
+            )],
+        );
+        assert_eq!(
+            denied_response_text(&adversary_responses, "req_adv"),
+            DECLINED_RESPONSE
+        );
+
+        let dag_reason = "Top-level coding harness sessions must create an approved \
+                          orchestrator DAG and dispatch its node";
+        let dag_responses = denial_fixture(
+            "req_dag2",
+            vec![deny(
+                "req_dag2",
+                crate::tool_inspection::CODING_DAG_INSPECTOR_NAME,
+                dag_reason,
+            )],
+        );
+        assert_eq!(denied_response_text(&dag_responses, "req_dag2"), dag_reason);
+    }
+
     #[test]
     fn compact_control_reply_keeps_the_existing_budget_task() {
         assert!(!starts_new_budget_task(
@@ -4096,6 +5109,36 @@ mod tests {
         Ok(())
     }
 
+    /// R48c (harness loop, "Lane R48c"): `platform__load_feature_lesson` is
+    /// appended in `list_tools` OUTSIDE the extension-grant mechanism
+    /// `GOAL_WORKER_EXTENSION_KEYS` narrows (A39 measured it surviving R30a's
+    /// own narrowing, one of the 12 tools that overflowed a 32,768-token
+    /// worker). `AgentRunnerConfig::new`'s default (`compact_worker_profile:
+    /// false`) must keep today's behaviour byte-identical; only an explicit
+    /// opt-in drops the tool.
+    #[tokio::test]
+    async fn compact_worker_profile_drops_the_platform_load_feature_lesson_tool() {
+        let mut agent = Agent::new();
+
+        let tools_default = agent.list_tools("compact-test-session", None).await;
+        assert!(
+            tools_default
+                .iter()
+                .any(|t| t.name == PLATFORM_LOAD_FEATURE_LESSON_TOOL_NAME),
+            "sanity: the default profile (AgentRunnerConfig::new's default) keeps the \
+             platform tool, unchanged from before this lane"
+        );
+
+        agent.config.compact_worker_profile = true;
+        let tools_compact = agent.list_tools("compact-test-session", None).await;
+        assert!(
+            !tools_compact
+                .iter()
+                .any(|t| t.name == PLATFORM_LOAD_FEATURE_LESSON_TOOL_NAME),
+            "the compact worker prompt profile must drop platform__load_feature_lesson"
+        );
+    }
+
     #[tokio::test]
     async fn test_tool_inspection_manager_has_all_inspectors() -> Result<()> {
         let agent = Agent::new();
@@ -4208,5 +5251,141 @@ mod tests {
             let msg = parse_recovery_text(&err);
             assert!(msg.chars().count() < MAX_PARSE_ERROR_ECHO_CHARS + 500);
         }
+    }
+
+    /// Lane X-lat (coding-harness excellence iteration): a provider with a
+    /// fixed, injected delay, driven through a REAL `Agent::reply()` call.
+    /// Proves the reply loop's timing wiring end to end — `start_model`/
+    /// `end_model`/`finish`/`update_cost_ledger_timing` — not just the
+    /// `TurnTimingRecorder` in isolation (see
+    /// `crate::session::turn_timing::tests` for that unit-level coverage,
+    /// including a fixed-delay fake tool).
+    struct FixedDelayProvider {
+        delay_ms: u64,
+    }
+
+    impl std::fmt::Debug for FixedDelayProvider {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("FixedDelayProvider").finish()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for FixedDelayProvider {
+        fn get_name(&self) -> &str {
+            "test-fixed-delay"
+        }
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            // Explicit context_limit/max_tokens: the reservation planner
+            // (`cost_router::reservation::calculate_bound`) requires both to
+            // authorize a chargeable call, and a bare `ModelConfig::new`
+            // leaves them `None` unless ambient global config happens to set
+            // `GOOSE_CONTEXT_LIMIT` — not something this test should depend
+            // on to reach the provider at all.
+            crate::model::ModelConfig::new("test")
+                .unwrap()
+                // Small on purpose: the reservation planner bounds on the
+                // FULL context capacity at the worst-case known rate across
+                // the whole bundled registry (no pricing exists for this
+                // unknown provider), so a large context here could exceed
+                // the default per-task budget ceiling ($2/$5/$10
+                // soft/gate/hard) before this test ever reaches the
+                // provider.
+                .with_context_limit(Some(4_096))
+                .with_max_tokens(Some(512))
+        }
+        async fn stream(
+            &self,
+            _: &crate::model::ModelConfig,
+            _: &str,
+            _: &str,
+            _: &[crate::conversation::message::Message],
+            _: &[rmcp::model::Tool],
+        ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            let usage = ProviderUsage::new(
+                "test-model".to_string(),
+                crate::providers::base::Usage::new(Some(5), Some(5), Some(10)),
+            );
+            let message = Message::assistant().with_text("done");
+            let stream = futures::stream::once(async move { Ok((Some(message), Some(usage))) });
+            Ok(Box::pin(stream))
+        }
+    }
+
+    #[tokio::test]
+    async fn reply_loop_persists_model_timing_close_to_the_providers_injected_delay() {
+        const DELAY_MS: u64 = 40;
+        // Real-clock test: generous slack for scheduler jitter under load
+        // (CI, a busy dev machine) without being so loose it stops meaning
+        // anything.
+        const TOLERANCE_MS: i64 = 250;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let config = AgentRunnerConfig::new(
+            session_manager.clone(),
+            PermissionManager::instance(),
+            None,
+            GooseMode::Auto,
+            true, // disable session naming: don't consume an extra provider call
+            GoosePlatform::GooseCli,
+        );
+        let agent = Agent::with_config(config);
+        let provider = Arc::new(FixedDelayProvider { delay_ms: DELAY_MS });
+
+        let session = session_manager
+            .create_session(
+                std::path::PathBuf::from("."),
+                "x-lat-timing-test".to_string(),
+                crate::session::SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .expect("create session");
+        let session_id = session.id.clone();
+        // A `Hidden` session is not "interactive", so `reply()`'s automatic
+        // `starts_new_budget_task` check never fires for it — without this,
+        // the paid-dispatch reservation is refused before the provider is
+        // ever called (see `reply_parts::tests::
+        // primary_stream_reservation_refuses_paid_dispatch_without_a_task`,
+        // which pins exactly this behaviour).
+        session_manager
+            .begin_budget_task(&session_id)
+            .await
+            .expect("begin budget task");
+        agent
+            .update_provider(provider, &session_id)
+            .await
+            .expect("update provider");
+
+        let session_config = SessionConfig {
+            id: session_id.clone(),
+            schedule_id: None,
+            max_turns: Some(1),
+            retry_config: None,
+        };
+
+        let reply_stream = agent
+            .reply(Message::user().with_text("hello"), session_config, None)
+            .await
+            .expect("reply starts");
+        tokio::pin!(reply_stream);
+        while let Some(event) = reply_stream.next().await {
+            event.expect("no error events");
+        }
+
+        let rollup = session_manager
+            .session_timing_rollup(&session_id)
+            .await
+            .expect("rollup reads back");
+        assert_eq!(rollup.turns, 1, "one provider turn was made");
+        assert!(
+            (rollup.model_ms_total - DELAY_MS as i64).abs() <= TOLERANCE_MS,
+            "model_ms_total {} not within tolerance of the injected {DELAY_MS}ms delay",
+            rollup.model_ms_total
+        );
+        assert_eq!(rollup.tool_exec_ms_total, 0, "no tool was called this turn");
     }
 }

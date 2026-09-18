@@ -1247,11 +1247,15 @@ mod tests {
     #[tokio::test]
     async fn create_project_rejects_fictional_root() {
         let pool = test_pool().await;
+        // A root that cannot exist on any machine: a missing child of a fresh
+        // temp dir. A hardcoded home path exists on some hosts.
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("Signal Consultancy");
         let err = create_project(
             &pool,
             CreateProject {
                 name: "Ghost".to_string(),
-                root_path: Some("/Users/jessesharratt/dev/Signal Consultancy".into()),
+                root_path: Some(missing.to_string_lossy().into_owned().into()),
                 ..Default::default()
             },
         )

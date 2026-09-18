@@ -1,0 +1,20 @@
+id: harness-cli-argparse-log-filter
+title: "logfilter doesn't validate its own arguments"
+category: harness-lever-spec-following-edge-cases
+max_turns: 25
+harness_timeout_secs: 500
+oracle_timeout_secs: 60
+test: [bash, oracle_check.sh]
+# The oracle is a pure bash script that shells out to the CLI directly, so
+# the Python import allowlist never comes into play.
+deliverables: []
+# lang=py difficulty=medium needs_repo_map=false needs_test_run=false
+prompt: |
+  `logfilter` (see README.md for the intended behavior) doesn't actually
+  enforce most of what it documents: bad `--since` dates and unknown
+  `--level` values are silently ignored instead of rejected, `--level` only
+  matches log lines with the exact same case, `--since` and `--last` can be
+  given together with confusing results, `--last 0` or a negative `--last`
+  doesn't get rejected, and a missing log file produces no error and no
+  output at all instead of a clear failure. Bring the implementation in line
+  with the documented behavior, including exit codes.

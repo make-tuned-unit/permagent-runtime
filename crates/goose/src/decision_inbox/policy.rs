@@ -436,6 +436,7 @@ mod tests {
         assert_eq!(state_of(&pool, &goal.id).await, "complete");
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn henry_registered_program_uses_exact_a_to_b_handoff() {
         use crate::agents::platform_extensions::{execution_receipt, orchestrator};
@@ -665,6 +666,7 @@ mod tests {
         assert!(!orchestrator::test_dispatch_recorder::saw(&c.id));
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn henry_malformed_program_metadata_fails_closed_before_promotion() {
         use crate::agents::platform_extensions::orchestrator;
@@ -792,6 +794,10 @@ mod tests {
     /// D10, unpark path: "re-dispatch eligible" used to mean nothing — the
     /// unparked goal sat in Ready with no worker until a human resumed the
     /// roadmap by hand. The resume now asks the dispatcher to start it.
+    // I1 (harness loop, 2026-09-10, gate fix): GOAL_DISPATCH_HOOK is a
+    // process-global OnceLock every test_dispatch_recorder::install() call
+    // races to set — serialized against every other test that touches it.
+    #[serial_test::serial]
     #[tokio::test]
     async fn resuming_a_parked_goal_dispatches_it() {
         use crate::agents::platform_extensions::orchestrator::test_dispatch_recorder;

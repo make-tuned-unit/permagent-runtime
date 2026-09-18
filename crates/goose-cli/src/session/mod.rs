@@ -5,6 +5,7 @@ mod composer;
 mod editor;
 mod elicitation;
 mod export;
+pub(crate) mod harness_lease;
 mod input;
 mod output;
 pub(crate) mod spend_announce;
@@ -286,6 +287,15 @@ pub struct CliSession {
     /// CLEAR the previous turn's memories instead of leaving them standing as
     /// background for an unrelated question.
     recall_installed: bool,
+    /// Which memories this session's recall may read (Lane R61a): the repo
+    /// the session works in, plus whatever the user approved at the terminal
+    /// for this session. Held here and nowhere else, so it ends with the
+    /// process.
+    memory_scope: brain_sync::MemoryScope,
+    /// This process's `harness_process_leases` row, for a coding-harness
+    /// session only. Lets other processes (the daemon's chat, a second
+    /// terminal) see this run as live, and tell it apart from a dead one.
+    harness_lease: Option<harness_lease::HarnessLease>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,6 +393,16 @@ pub fn split_quoted(input: &str) -> Result<Vec<String>> {
     Ok(parts)
 }
 
+/// Pure: should [`CliSession::drain_dispatched_goals`] even query the
+/// database? (harness loop, Lane T / T3). Mirrors `builder::
+/// wants_headless_goal_dispatch`'s scoping — only a coding-harness session
+/// ever installs the headless dispatch hook, so any other session has
+/// nothing to drain; `cap == 0` is the explicit `PERMAGENT_HEADLESS_DRAIN_SECS`
+/// escape hatch, and must cost no query or delay at all.
+fn wants_headless_goal_drain(coding_harness: bool, cap: std::time::Duration) -> bool {
+    coding_harness && !cap.is_zero()
+}
+
 impl CliSession {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
@@ -396,13 +416,14 @@ impl CliSession {
         output_format: String,
         coding_harness: bool,
     ) -> Self {
-        let messages = agent
+        let session = agent
             .config
             .session_manager
             .get_session(&session_id, true)
             .await
-            .map(|session| session.conversation.unwrap_or_default())
             .unwrap();
+        let memory_scope = brain_sync::MemoryScope::for_working_dir(&session.working_dir);
+        let messages = session.conversation.unwrap_or_default();
 
         CliSession {
             agent,
@@ -419,6 +440,37 @@ impl CliSession {
             coding_harness,
             composer: None,
             recall_installed: false,
+            memory_scope,
+            harness_lease: None,
+        }
+    }
+
+    /// Write this process's harness lease and start its heartbeat. A no-op
+    /// (no query) for a session that is not a coding harness, and for a
+    /// session that already holds a lease.
+    pub(crate) async fn start_harness_lease(
+        &mut self,
+        interactive: bool,
+        recipe_title: Option<&str>,
+    ) {
+        if self.harness_lease.is_some() {
+            return;
+        }
+        self.harness_lease = harness_lease::HarnessLease::start_for_session(
+            &self.agent.config.session_manager,
+            &self.session_id,
+            self.coding_harness,
+            interactive,
+            recipe_title,
+            harness_lease::LeaseTiming::default(),
+        )
+        .await;
+    }
+
+    /// Mark the harness lease exited. Idempotent, and a no-op without a lease.
+    pub async fn finish_harness_lease(&self, exit_status: &str) {
+        if let Some(lease) = self.harness_lease.as_ref() {
+            lease.finish(exit_status).await;
         }
     }
 
@@ -649,6 +701,11 @@ impl CliSession {
         interactive: bool,
         cancel_token: CancellationToken,
     ) -> Result<()> {
+        if let Some(lease) = self.harness_lease.as_ref() {
+            lease
+                .set_phase(permagent::harness_lease::LeasePhase::Turn)
+                .await;
+        }
         let provider = self.agent.provider().await?;
         let turn_provider = provider.get_name().to_string();
         let turn_model = provider.get_model_config().model_name;
@@ -688,6 +745,11 @@ impl CliSession {
         heartbeat
             .finish_observed((result != "unknown").then_some(result))
             .await;
+        if let Some(lease) = self.harness_lease.as_ref() {
+            lease
+                .set_phase(permagent::harness_lease::LeasePhase::Idle)
+                .await;
+        }
         response
     }
 
@@ -787,6 +849,7 @@ impl CliSession {
         // task would be dropped before it ever reached the daemon — which is
         // precisely when the meter most needs the final number.
         spend_announce::announce_now(&self.session_id, true).await;
+        self.finish_harness_lease("completed").await;
 
         println!(
             "\n  {} {}",
@@ -1491,9 +1554,345 @@ impl CliSession {
     /// Process a single message and exit
     pub async fn headless(&mut self, prompt: String) -> Result<()> {
         let message = Message::user().with_text(&prompt);
-        self.process_message(message, CancellationToken::default(), false)
-            .await?;
-        Ok(())
+        let result = self
+            .process_message(message, CancellationToken::default(), false)
+            .await;
+        self.print_harness_overhead_line().await;
+        result
+    }
+
+    /// Print final harness receipts after the headless goal drain completes.
+    /// Print once after the headless run's goal drain, including on failure.
+    ///
+    /// M17 integration (G15's HIGH-1 and its integration note): Q-receipts and
+    /// Q-routing each landed their own exit print. Q-routing's printed from
+    /// `headless()` BEFORE `cli.rs`'s `drain_dispatched_goals().await`, so any
+    /// goal the Y6 drain dispatched mid-drain incremented the routing atomics
+    /// after the line had already gone out. Both now print from this one sink,
+    /// called after the drain, so all four RECEIPT CONTRACT v1 lines describe
+    /// the same finished run. Q-routing's `result`-capturing rewrite of
+    /// `headless()` is kept (it also fixed `print_harness_overhead_line` being
+    /// skipped on the error path via `?`); only its `println!` moved here.
+    ///
+    /// Lane R22b (M24 `dschat-select-existing-roadmap-resumes-not-
+    /// redecomposes` forensics — a resume-path run that finished with no
+    /// `receipt cost_routing …` line at all): audited this call site again.
+    /// The cost_routing print below is unconditional — no snapshot/audit
+    /// gate, no dispatch-count check — so it always fires, on every headless
+    /// run, whether or not this run's `resume_roadmap` / `goal_advance
+    /// (dispatch)` / decompose path actually dispatched anything (see the
+    /// `cost_router::routing_receipt` module's `Snapshot::format_line` for
+    /// the honest zero-value line an unrouted run prints instead of omitting
+    /// the line entirely). No change needed at this site; the actual gap
+    /// this lane fixed was that module never resetting its counters between
+    /// runs (see `receipts::begin_run`).
+    pub fn print_harness_receipts(&self) {
+        println!("{}", permagent::cost_router::routing_receipt::format_line());
+        for line in permagent::receipts::snapshot().lines() {
+            println!("{line}");
+        }
+        permagent::receipts::end_run();
+    }
+
+    /// Lane X-lat-2 (coding-harness excellence iteration): print the
+    /// session's per-turn harness-overhead rollup as one stable plain-text
+    /// line so `permagent-eval`'s harness_log parser can read it without
+    /// touching JSON. Exact, stable format (see
+    /// `permagent::session::format_harness_overhead_line`):
+    ///
+    /// `harness_overhead p50=<ms> p95=<ms> model=<ms> tools=<ms> wall=<ms>`
+    ///
+    /// I1 (harness loop, 2026-09-10, wiring E2c): when this session has a
+    /// goal (`harness_overhead_attempt_context`), three trailing tokens are
+    /// appended — `attempts=`/`cache_hits=`/`wall_budget=` — exactly M11's
+    /// own analysis needs to attribute a session-total `wall=` figure across
+    /// however many dispatch attempts produced it (M9's/F9's dominant
+    /// failure class was wall-clock exhaustion across multiple attempts,
+    /// invisible in the base line's session-total numbers alone). A session
+    /// with no goal (an ordinary interactive/chat run) prints the exact
+    /// same line as before this lane — see
+    /// `format_line_with_attempts_matches_the_base_line_when_extras_are_all_absent`.
+    ///
+    /// Best-effort: a rollup query failure is logged and swallowed rather
+    /// than failing an otherwise-successful headless run over an
+    /// observability read.
+    async fn print_harness_overhead_line(&self) {
+        match self
+            .agent
+            .config
+            .session_manager
+            .session_timing_rollup(&self.session_id)
+            .await
+        {
+            Ok(rollup) => {
+                let extras = self.harness_overhead_attempt_context().await;
+                println!(
+                    "{}",
+                    permagent::session::format_harness_overhead_line_with_attempts(
+                        &rollup, &extras
+                    )
+                );
+            }
+            Err(error) => {
+                tracing::debug!(
+                    session_id = %self.session_id,
+                    %error,
+                    "failed to read the per-turn harness timing rollup (best-effort observability, not fatal)"
+                );
+            }
+        }
+    }
+
+    /// I1 (harness loop, 2026-09-10, wiring E2c into the CLI print call
+    /// site): the `attempts`/`cache_hits`/`wall_budget_remaining_ms` this
+    /// session's own goal (if any) can report right now — every field stays
+    /// `None`, printing nothing extra, when this session carries no
+    /// `goal_id` at all (an ordinary interactive/chat run, or a
+    /// coordinator's own multi-goal session), when the goal card cannot be
+    /// read, or when the goal has no `wallclock_cap_secs` configured (no
+    /// budget to report a remaining figure for). Best-effort throughout,
+    /// same posture as `print_harness_overhead_line` itself: any read
+    /// failure here degrades to `None`, never to a failed run.
+    async fn harness_overhead_attempt_context(&self) -> permagent::session::AttemptContext {
+        let mut extras = permagent::session::AttemptContext::default();
+        let Ok(session) = self
+            .agent
+            .config
+            .session_manager
+            .get_session(&self.session_id, false)
+            .await
+        else {
+            return extras;
+        };
+        let Some(goal_id) = permagent::session::goal_id(&session.extension_data) else {
+            return extras;
+        };
+        let Ok(pool) = self.agent.config.session_manager.pool_clone().await else {
+            return extras;
+        };
+        let Ok(Some(card)) = permagent::cards::get_card(&pool, &goal_id).await else {
+            return extras;
+        };
+
+        extras.attempts = card
+            .metadata_json
+            .get("attempt_count")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32);
+        extras.cache_hits = Some(permagent::check_cache::hit_count(&goal_id) as u32);
+
+        let budget = permagent::goal_transition::goal_budget(&card.metadata_json);
+        if let Some(cap_secs) = budget.wallclock_cap_secs {
+            if let Some(first_dispatched_at) = card
+                .metadata_json
+                .get("first_dispatched_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            {
+                let elapsed_secs = (chrono::Utc::now()
+                    - first_dispatched_at.with_timezone(&chrono::Utc))
+                .num_seconds();
+                let remaining_secs = cap_secs as i64 - elapsed_secs;
+                extras.wall_budget_remaining_ms = Some(remaining_secs.max(0) * 1000);
+            }
+        }
+        extras
+    }
+
+    /// Harness loop, Lane T / T3: after a headless coding-harness Auto run's
+    /// coordinator turn ends, `handle_run_command` calls this to wait
+    /// (bounded) for any goals THIS session dispatched to reach a terminal
+    /// state before the process exits — S1
+    /// (`install_dispatch_hook_for_headless_session`) made `create_roadmap`
+    /// dispatch real goals whose workers run on a background task the CLI
+    /// process can outlive, so without this a dispatched goal could be left
+    /// silently `InProgress` forever.
+    ///
+    /// `cap` comes from `PERMAGENT_HEADLESS_DRAIN_SECS` (default
+    /// `crate::cli::DEFAULT_HEADLESS_DRAIN_SECS`; `0` disables the wait
+    /// entirely — no query, no delay, matching "must never block a run that
+    /// dispatched nothing" for the common case where a caller has opted all
+    /// the way out). Not scoped further than `coding_harness`: an ordinary
+    /// chat/run session never installs the headless dispatch hook, so it
+    /// never has anything to drain, and the one query costs nothing worth
+    /// skipping.
+    ///
+    /// Lane U / U3 (HARNESS_LOOP_LOG.md, "Lane G4 review" finding 3): races
+    /// the poll loop against a SIGTERM/SIGINT (the eval's own
+    /// harness-timeout kill, or an operator Ctrl+C) — the same source
+    /// `crate::signal::shutdown_signal` the daemon's own graceful-shutdown
+    /// path uses. When the signal wins the race, every goal this run
+    /// dispatched that is still non-terminal is parked immediately (no
+    /// remaining poll wait) through the same `handle_goal_timeout` path a
+    /// cap expiry would have used, so a kill mid-drain still cannot leave a
+    /// goal silently `InProgress`.
+    pub async fn drain_dispatched_goals(&self, cap: std::time::Duration) {
+        if !wants_headless_goal_drain(self.coding_harness, cap) {
+            return;
+        }
+        if let Some(lease) = self.harness_lease.as_ref() {
+            lease
+                .set_phase(permagent::harness_lease::LeasePhase::Draining)
+                .await;
+        }
+        let Ok(pool) = self.agent.config.session_manager.pool_clone().await else {
+            return;
+        };
+        // Harness loop, Lane V2: say plainly whether this run could land its
+        // own dispatched work before the process exits — the user's ruling
+        // (HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1
+        // landing → option 3") made this an explicit, default-off switch, and
+        // a transcript should show which way it was set for this run rather
+        // than leave a reader to infer it from whether goals stayed in
+        // Review.
+        if let Some(auto_land) =
+            permagent::agents::platform_extensions::orchestrator::headless_auto_land_status(
+                &self.agent.config.session_manager,
+            )
+            .await
+        {
+            output::render_notice(&format!(
+                "headless auto-land is {} for this run (PERMAGENT_HEADLESS_AUTOLAND)",
+                if auto_land { "ON" } else { "off" }
+            ));
+        }
+        let poll_interval = std::time::Duration::from_secs(2).min(cap);
+        let result = tokio::select! {
+            result = permagent::agents::platform_extensions::orchestrator::drain_dispatched_goals(
+                &pool,
+                &self.session_id,
+                cap,
+                poll_interval,
+                |worker_session_id, state| {
+                    output::render_notice(&format!(
+                        "goal worker {worker_session_id}: {}",
+                        state.binding()
+                    ));
+                    // Lane R17a had a `permagent::receipts::write_sidecar()`
+                    // call here, but this closure (`on_status`) only fires on
+                    // a goal STATE TRANSITION, not on every poll tick — see
+                    // G20 review MED-1. Lane R17b moved the unconditional,
+                    // once-per-poll-iteration refresh into the actual poll
+                    // loop instead: `drain_dispatched_goals_with` in
+                    // `crates/goose/src/agents/platform_extensions/orchestrator.rs`.
+                },
+            ) => result,
+            _ = crate::signal::shutdown_signal() => {
+                output::render_notice(
+                    "shutdown signal received during goal drain — parking still-running \
+                     goals before exit",
+                );
+                permagent::agents::platform_extensions::orchestrator::park_dispatched_goals_now(
+                    &pool,
+                    &self.session_id,
+                )
+                .await
+            }
+        };
+        match result {
+            Ok(summary) if summary.dispatched_anything() => {
+                output::render_notice(&format!(
+                    "{} goal(s) finished, {} still running at exit \u{2192} parked",
+                    summary.finished, summary.timed_out
+                ));
+                // Lane R35a (A32 root cause 1): the line above alone cannot
+                // distinguish a worker genuinely still mid-attempt from a
+                // goal that already has a verified, committed PASS sitting
+                // unconsumed (the exact shape that flake traced) from one
+                // never dispatched at all — append one reason line per
+                // still-running goal, after the existing summary line so its
+                // own prefix/format never changes for anything parsing it.
+                if summary.timed_out > 0 {
+                    match permagent::agents::platform_extensions::orchestrator::still_running_goal_reasons_for_session(
+                        &pool,
+                        &self.session_id,
+                    )
+                    .await
+                    {
+                        Ok(reasons) => {
+                            for (card_id, reason) in reasons {
+                                output::render_notice(&format!("park_reason {card_id} {reason}"));
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("post-run park-reason summary failed (non-fatal): {e}");
+                        }
+                    }
+                }
+                // Harness loop, Lane V (V2): print exactly which of this
+                // run's dispatched goals actually LANDED (fast-forwarded
+                // onto the working directory's checked-out branch), not just
+                // that they reached a terminal card state — "finished" above
+                // already covers Cancelled/Failed too, neither of which put
+                // anything on disk.
+                match permagent::agents::platform_extensions::orchestrator::landed_goals_for_session(
+                    &pool,
+                    &self.session_id,
+                )
+                .await
+                {
+                    Ok(landed) => {
+                        for (card_id, head_commit) in landed {
+                            let short: String = head_commit.chars().take(9).collect();
+                            output::render_notice(&format!("landed {card_id} \u{2192} {short}"));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("post-run landed-goal summary failed (non-fatal): {e}");
+                    }
+                }
+                // YF2 (G6 review, Lane Y-fix 2026-09-09, finding #2): a
+                // Complete goal with real commits whose landing outcome was
+                // NeedsMerge/Skipped must never be silently absent from this
+                // summary — that reads as "nothing to check" when a human
+                // merge is actually required.
+                match permagent::agents::platform_extensions::orchestrator::needs_merge_goals_for_session(
+                    &pool,
+                    &self.session_id,
+                )
+                .await
+                {
+                    Ok(needs_merge) => {
+                        for (card_id, reason) in needs_merge {
+                            output::render_notice(&format!("needs merge: {card_id} ({reason})"));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("post-run needs-merge summary failed (non-fatal): {e}");
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("post-run goal drain failed (non-fatal): {e}");
+            }
+        }
+
+        // Lane R31b (A30 analysis): this is the single point the ordinary
+        // drain and `park_dispatched_goals_now`'s shutdown-signal path both
+        // converge, and the last code this method runs before returning —
+        // so it is the last chance to land a goal that finished a headless-
+        // unblock resume (or otherwise ended up Ready/in_progress with a
+        // real, unlanded commit) too late for any earlier redispatch/park
+        // cycle to claim it. Unconditional: runs whether the drain above
+        // dispatched anything, timed out, or itself failed — a drain error
+        // does not mean nothing is stranded.
+        match permagent::agents::platform_extensions::orchestrator::run_end_salvage_sweep(
+            &pool,
+            &self.session_id,
+        )
+        .await
+        {
+            Ok((attempted, landed)) if attempted > 0 => {
+                output::render_notice(&format!(
+                    "run-end salvage sweep: {attempted} goal(s) had unlanded work, {landed} landed"
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("run-end salvage sweep failed (non-fatal): {e}");
+            }
+        }
     }
 
     async fn process_agent_response(
@@ -1532,7 +1931,10 @@ impl CliSession {
         // Bounded and silent: a wedged daemon costs this turn 750ms once, and a
         // missing one costs nothing at all (no token file ⇒ no network attempt).
         let turn_idx = self.messages.len();
-        if let Some(context) = brain_sync::recall_context(&user_text).await {
+        //
+        // Scoped (Lane R61a): only this repo's memories, plus scopes the user
+        // approved for this session through `request_memory_access`.
+        if let Some(context) = brain_sync::recall_context(&user_text, &self.memory_scope).await {
             self.recall_installed = true;
             let contributions = context
                 .spectral_memories
@@ -1621,6 +2023,7 @@ impl CliSession {
         let mut thinking_header_shown = false;
         let mut fatal: Option<anyhow::Error> = None;
         let mut interrupt_kind: Option<bool> = None;
+        let harness_lease = self.harness_lease.clone();
 
         use futures::StreamExt;
         loop {
@@ -1628,6 +2031,15 @@ impl CliSession {
                 result = stream.as_mut().unwrap().next() => {
                     match result {
                         Some(Ok(AgentEvent::Message(message))) => {
+                            if let Some(lease) = harness_lease.as_ref() {
+                                for content in &message.content {
+                                    if let MessageContent::ToolRequest(request) = content {
+                                        if let Ok(call) = request.tool_call.as_ref() {
+                                            lease.note_tool_activity(call.name.as_ref());
+                                        }
+                                    }
+                                }
+                            }
                             if let Some(telemetry) = harness_telemetry.as_ref() {
                                 for content in &message.content {
                                     match content {
@@ -1741,6 +2153,41 @@ impl CliSession {
                                     principal_type: PrincipalType::Tool,
                                     permission,
                                 }).await;
+                            } else if let Some((request_id, arguments)) = find_memory_access_request(&message) {
+                                // Lane R61a: the model asked for memories
+                                // beyond this repo. The agent is parked on the
+                                // frontend tool until this CLI answers, and
+                                // the answer is the user's, from the terminal.
+                                let can_prompt = interactive
+                                    && std::io::stdin().is_terminal()
+                                    && std::io::stdout().is_terminal();
+                                if can_prompt {
+                                    output::hide_thinking();
+                                    let _ = progress_bars.hide();
+                                    if let Some(c) = composer.as_mut() {
+                                        c.suspend();
+                                    }
+                                }
+                                let text = answer_memory_access_request(
+                                    &self.agent,
+                                    &mut self.memory_scope,
+                                    arguments.as_ref(),
+                                    can_prompt,
+                                )
+                                .await;
+                                if can_prompt {
+                                    if let Some(c) = composer.as_mut() {
+                                        c.resume();
+                                    }
+                                }
+                                self.agent
+                                    .handle_tool_result(
+                                        request_id,
+                                        Ok(rmcp::model::CallToolResult::success(vec![
+                                            rmcp::model::Content::text(text),
+                                        ])),
+                                    )
+                                    .await;
                             } else if let Some((elicitation_id, elicitation_message, schema)) = find_elicitation_request(&message) {
                                 if !interactive {
                                     // Non-interactive/headless mode: cannot collect user input
@@ -1995,14 +2442,22 @@ impl CliSession {
             .map(|m| m.as_concat_text())
             .collect::<Vec<_>>()
             .join("\n");
+        // The same working directory recall is scoped by (Lane R61a), so the
+        // daemon attributes this turn to the project the next recall asks for.
         brain_sync::persist_turn(
             self.session_id.clone(),
             turn_idx,
             user_text,
             assistant_text,
-            std::env::current_dir()
-                .ok()
-                .map(|p| p.display().to_string()),
+            self.memory_scope
+                .working_dir()
+                .map(str::to_string)
+                .or_else(|| {
+                    std::env::current_dir()
+                        .ok()
+                        .map(|p| p.display().to_string())
+                }),
+            self.memory_scope.repo_root().map(str::to_string),
         );
 
         if let Some(e) = fatal {
@@ -2449,6 +2904,126 @@ fn prompt_tool_confirmation(security_prompt: &Option<String>) -> Result<Permissi
     }
 }
 
+/// Extract a `request_memory_access` frontend tool call from a message.
+fn find_memory_access_request(
+    message: &Message,
+) -> Option<(String, Option<serde_json::Map<String, Value>>)> {
+    message.content.iter().find_map(|content| match content {
+        MessageContent::FrontendToolRequest(request) => match &request.tool_call {
+            Ok(call) if call.name == brain_sync::MEMORY_ACCESS_TOOL_NAME => {
+                Some((request.id.clone(), call.arguments.clone()))
+            }
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// Answer one `request_memory_access` call (Lane R61a) and return the tool
+/// result text.
+///
+/// Resolves the requested project against the session database's registry (so
+/// the user is shown exactly what they would grant), then lets
+/// [`brain_sync::decide_memory_access`] decide: refused without a terminal,
+/// otherwise the user's answer from [`prompt_memory_access`]. An approved
+/// request searches the granted scope once and returns what it finds.
+async fn answer_memory_access_request(
+    agent: &Agent,
+    scope: &mut brain_sync::MemoryScope,
+    arguments: Option<&serde_json::Map<String, Value>>,
+    can_prompt: bool,
+) -> String {
+    // No terminal, no one to approve: refused before anything is read, and the
+    // scope stays this repo's.
+    if !can_prompt {
+        tracing::info!(
+            target: "permagent::memory_access",
+            decision = brain_sync::MemoryAccessDecision::Refused.kind(),
+            "memory access request refused: no interactive terminal"
+        );
+        return brain_sync::MEMORY_ACCESS_HEADLESS_REFUSAL.to_string();
+    }
+    let request = match brain_sync::parse_memory_access_request(arguments) {
+        Ok(request) => request,
+        Err(error) => return format!("Invalid request_memory_access call: {error}"),
+    };
+    let pool = match agent.config.session_manager.pool_clone().await {
+        Ok(pool) => pool,
+        Err(error) => {
+            tracing::warn!(%error, "memory access: session database unavailable");
+            return "The project registry is unavailable, so no memory access was requested. \
+                    Continue with this repo's context."
+                .to_string();
+        }
+    };
+    let target = match brain_sync::resolve_memory_target(&pool, &request.target).await {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let repo_paths: Vec<&str> = [scope.working_dir(), scope.repo_root()]
+        .into_iter()
+        .flatten()
+        .collect();
+    let current_repo_wing = if repo_paths.is_empty() {
+        None
+    } else {
+        permagent::session_wing::resolve_project_wing_for_paths(&pool, &repo_paths).await
+    };
+    let decision = brain_sync::decide_memory_access(
+        scope,
+        &target,
+        current_repo_wing.as_deref(),
+        &request.reason,
+        can_prompt,
+        prompt_memory_access,
+    );
+    tracing::info!(
+        target: "permagent::memory_access",
+        scope = %target.label(),
+        decision = decision.kind(),
+        can_prompt,
+        "memory access request decided"
+    );
+    let memories = match &decision {
+        brain_sync::MemoryAccessDecision::Granted { search_scope, .. } => {
+            brain_sync::search_granted(search_scope, &request.query, &target).await
+        }
+        _ => None,
+    };
+    brain_sync::memory_access_result_text(&decision, &target, memories.as_deref())
+}
+
+/// Ask the user, in the terminal, whether the harness may read memories beyond
+/// this repo. Same `cliclack::select` surface as tool approval, with no
+/// "Always Allow": a memory grant never outlives the session. Any prompt
+/// failure, including Ctrl-C, is a denial.
+fn prompt_memory_access(prompt: &brain_sync::MemoryAccessPrompt) -> brain_sync::MemoryGrantAnswer {
+    use brain_sync::MemoryGrantAnswer;
+    output::hide_thinking();
+    println!(
+        "\nPermagent is asking to read memories from outside this repo.\n  Scope:  {}\n  Reason: {}",
+        prompt.target_label, prompt.reason
+    );
+    cliclack::select("Allow memory access beyond this repo?")
+        .item(
+            MemoryGrantAnswer::AllowOnce,
+            "Allow once",
+            "Search it for this request only",
+        )
+        .item(
+            MemoryGrantAnswer::AllowForSession,
+            "Allow for this session",
+            "Also include it in recall until this session ends",
+        )
+        .item(
+            MemoryGrantAnswer::Deny,
+            "Deny",
+            "Keep memory scoped to this repo",
+        )
+        .interact()
+        .unwrap_or(MemoryGrantAnswer::Deny)
+}
+
 /// Extract tool confirmation request from a message
 fn find_tool_confirmation(message: &Message) -> Option<(String, String, Option<String>)> {
     message.content.iter().find_map(|content| {
@@ -2828,6 +3403,58 @@ mod tests {
     use permagent::config::ExtensionConfig;
     use std::time::Duration;
     use test_case::test_case;
+
+    #[test]
+    fn cost_routing_receipt_is_printed_only_after_the_goal_drain() {
+        let cli = include_str!("../cli.rs");
+        // Lane R22b-b: was `"let result = ..."` (no `mut`) — Lane R18f
+        // (`84e688f5`, before this lane, unrelated) changed the declaration
+        // to `let mut result = ...` for its own Class-4 fix but never
+        // updated this literal, so `.find()` could never match and this
+        // test would panic on `.unwrap()`. Found while re-verifying this
+        // exact contract for R22b/R22b-b; fixed here since it directly
+        // covers the print-site ordering both of those lanes depend on.
+        let headless_call = cli
+            .find("let mut result = session.headless(contents).await;")
+            .unwrap();
+        let tail = &cli[headless_call..];
+        let drain = tail.find(".drain_dispatched_goals(").unwrap();
+        let drain_done = drain + tail[drain..].find(".await;").unwrap() + ".await;".len();
+        let receipts = tail.find("session.print_harness_receipts();").unwrap();
+        let completion = tail.find("log_session_completion(").unwrap();
+        assert!(drain_done < receipts && receipts < completion);
+        assert_eq!(cli.matches("session.print_harness_receipts();").count(), 1);
+
+        let session = include_str!("mod.rs")
+            .split("\nmod tests {")
+            .next()
+            .unwrap();
+        let headless = session.split("pub async fn headless(").nth(1).unwrap();
+        let (headless, receipt_sink) = headless
+            .split_once("pub fn print_harness_receipts(")
+            .unwrap();
+        assert!(!headless.contains("routing_receipt::format_line()"));
+        assert!(headless.contains("self.print_harness_overhead_line().await;"));
+        assert!(receipt_sink.contains("routing_receipt::format_line()"));
+        assert_eq!(session.matches("routing_receipt::format_line()").count(), 1);
+    }
+
+    // ── Harness loop, Lane T / T3: bounded post-run drain gate ──────────────
+
+    #[test]
+    fn drain_is_scoped_to_coding_harness_and_a_nonzero_cap() {
+        assert!(wants_headless_goal_drain(true, Duration::from_secs(600)));
+        assert!(
+            !wants_headless_goal_drain(false, Duration::from_secs(600)),
+            "an ordinary chat/run session never installed the headless dispatch \
+             hook — nothing to drain"
+        );
+        assert!(
+            !wants_headless_goal_drain(true, Duration::ZERO),
+            "PERMAGENT_HEADLESS_DRAIN_SECS=0 must disable the wait entirely"
+        );
+        assert!(!wants_headless_goal_drain(false, Duration::ZERO));
+    }
 
     // ── /model: only a provider/model pair reaches the switch ──────────────
 

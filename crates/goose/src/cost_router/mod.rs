@@ -36,28 +36,48 @@
 //! core.
 
 pub mod assess;
+pub mod authorized_attempts;
 pub mod best_of_n;
 pub mod budget;
 pub mod cache;
+pub mod call_site_completeness;
+pub mod capability_directory;
 pub mod cheap;
 pub mod delegate;
 pub mod derived;
+// Cross-crate schema-drift guard for Lane Z4's `permagent-eval graduate`
+// evidence pipeline. `permagent-eval` cannot depend on this crate (a real
+// cyclic-package-dependency block — see `crates/permagent-eval/src/
+// graduate.rs`'s module doc), so it hand-mirrors this crate's capability-
+// directory schema; THIS crate already depends on `permagent-eval`
+// (`Cargo.toml:76`), so it is the only side that can see both schemas at
+// once and catch drift. Test-only: never built into the shipped binary.
+#[cfg(test)]
+mod directory_evidence_drift;
 pub mod escalation;
 pub mod fallback;
 pub mod hold_done;
 pub mod knowledge;
 pub mod mesh;
 pub mod packs;
+pub mod planner_complexity;
+pub mod provider_circuit;
 pub mod recommend;
 pub mod reservation;
 pub mod review_gate;
 pub mod reviewer_pick;
 pub mod role_map;
+pub mod routing_matrix;
+pub mod routing_receipt;
 pub mod snapshot;
 pub mod tier;
 pub mod tool_signals;
 
-pub use assess::{assess_goal, Assessment};
+pub use assess::{assess_goal, default_worker_tier_for_goal, Assessment};
+pub use authorized_attempts::{
+    attempt_is_authorized, authorized_attempts, with_authorized_attempts,
+    with_authorized_attempts_opt,
+};
 pub use best_of_n::{
     best_of_n_enabled, best_of_n_from, difficulty, load_best_of_n, plan_candidates, run_best_of_n,
     select as select_candidate, BestOfNOutcome, BestOfNPlan, CandidateSource, CandidateVerdict,
@@ -71,17 +91,31 @@ pub use cache::{
     may_swap_main_loop_model, model_change_breaks_cache, prefix_is_cache_stable, ModelKey,
     PrefixSegment, CANONICAL_PREFIX, HARNESS_PREFIX,
 };
+pub use call_site_completeness::{
+    absent_call_sites, detect_signature_changes, enumerate_call_sites, line_defines_symbol,
+    missing_call_sites, parse_call_site_line, render_call_site_section,
+    unaccounted_call_site_files, CallSite, CallSiteEnumeration, CallSiteStatus, CallSiteVerdict,
+    SignatureChange, UnaccountedCallSiteFile,
+};
+pub use capability_directory::{
+    annotate_orchestrate_refusal, billing_class_for, card_role_graduation_json,
+    evidence_excludes_role, pin_clears_orchestrate_floor, resolve_planner, role_graduation_status,
+    validate_graduation, worker_graduation_json, CapabilityCard, CapabilityDirectory, CardSource,
+    PlannerReason, RoleEvidence, RoleGraduationStatus, StrengthProfile, MICRO_SUITE_PASS_FLOOR,
+    PLANNER_STRENGTH_BAND, SCHEMA_VERSION,
+};
 pub use cheap::{
     build_ladder, default_anchor, discover_priced_candidates, is_key_configured, load_ladder,
     reference_cost_for, CheapCandidate, CheapLadder, PricedCandidate,
 };
 pub use delegate::{
-    decide_delegate_model, delegate_routing, delegate_routing_live,
-    escalation_allowed as delegate_escalation_allowed, DelegateRouting, DelegateSource,
-    EscalationRefusal, KEY_ALLOW_ESCALATION,
+    audit_delegate_dispatch, decide_delegate_model, delegate_routing, delegate_routing_live,
+    escalation_allowed as delegate_escalation_allowed, pack_to_role_model, DelegateCostAudit,
+    DelegateRouting, DelegateSource, EscalationRefusal, KEY_ALLOW_ESCALATION,
 };
 pub use derived::{
-    config_key_affects_derived_map, derive_role_map, derived_role_map, invalidate_derived_role_map,
+    cached_capability_directory, config_key_affects_derived_map, derive_role_map,
+    derive_role_map_from_directory, derived_role_map, invalidate_derived_role_map,
     model_routing_receipt, DerivedRoleMap, Provenance, RoleSource, DERIVED_ROLE_MAP_TTL,
 };
 pub use escalation::{
@@ -98,8 +132,9 @@ pub use mesh::{
     gate as mesh_gate, MeshGateInputs, MeshIneligible, MeshRoute, MeshWorkload, PoolHealth,
 };
 pub use packs::{
-    configured_pack_pin, load_packs, pack_pin, pack_role_for_workflow_role, packs_from,
-    resolve as resolve_model, role_for_tier, ModelPack, ModelPacks, Role,
+    configured_pack_pin, configured_review_pack_pin, load_packs, pack_pin,
+    pack_role_for_workflow_role, packs_from, resolve as resolve_model, review_pack_pin,
+    role_for_tier, ModelPack, ModelPacks, Role,
 };
 pub use recommend::{
     available_from, discover_available_models, discover_available_models_async,
@@ -109,24 +144,33 @@ pub use recommend::{
     WorkflowRole, EDIT_RELIABILITY_FLOOR,
 };
 pub use reservation::{
-    plan_reservation_bound, PricingProvenance, ReservationBound, ReservationBoundError,
+    describe_pricing_source, plan_reservation_bound, reserved_physical_attempts,
+    reserved_physical_attempts_with, PricingProvenance, ReservationBound, ReservationBoundError,
+    DEFAULT_RESERVED_ATTEMPTS, RESERVE_ATTEMPTS_ENV,
 };
 pub use review_gate::{
-    build_review_prompt, classify_path, gate_decision, parse_review, review_required,
-    reviewer_dispatch, reviewer_routing, FileClass, GateDecision, ReviewFinding, ReviewLens,
-    ReviewOutcome, ReviewTrigger, ReviewerDispatch, ReviewerRouting, Verdict as ReviewVerdict,
+    apply_breaker_to_review_dispatch, build_review_prompt, build_review_prompt_with_call_sites,
+    classify_path, decide_review_route, gate_decision, gate_decision_with_call_sites, parse_review,
+    resolve_actual_review_dispatch, review_required, reviewer_dispatch, reviewer_retry_target,
+    reviewer_routing, FileClass, GateDecision, ReviewFinding, ReviewLens, ReviewOutcome,
+    ReviewRoute, ReviewTrigger, ReviewerDispatch, ReviewerRouting, Verdict as ReviewVerdict,
     REVIEWER_DIVERSITY_WARNING, REVIEWER_EXTENSIONS, REVIEW_ESCALATE_AT, REVIEW_SYSTEM_PROMPT,
 };
 pub use review_gate::{build_rubric_prompt, REVIEW_RUBRIC_SYSTEM_PROMPT};
 pub use reviewer_pick::{
-    family_of, model_is_retired, reviewer_spend_gate, select_reviewer, ReviewerPick,
-    ReviewerSelection, ReviewerSource, SpendDecision, NO_REVIEWER_AVAILABLE,
-    REVIEWER_MIN_ORCHESTRATION, REVIEWER_STRONG_ORCHESTRATION, SMALL_DIFF_LINES,
+    cheapest_cross_family_reviewer, family_of, model_is_retired, reviewer_spend_gate,
+    select_reviewer, ReviewerPick, ReviewerSelection, ReviewerSource, SpendDecision,
+    NO_REVIEWER_AVAILABLE, REVIEWER_MIN_ORCHESTRATION, REVIEWER_STRONG_ORCHESTRATION,
+    SMALL_DIFF_LINES,
 };
 pub use role_map::{
     cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,
     mappings_to_persist, resolve_role_model, resolve_role_model_or_derived, role_model,
     role_model_or_derived, set_role_model, should_prompt_role_routing, RoleModel,
+};
+pub use routing_matrix::{
+    capability_for_category, choose_worker, Fixture, FixtureCapability, RoutingCandidate,
+    RoutingDifficulty,
 };
 pub use snapshot::{RoutingSnapshot, ROUTING_SNAPSHOT_KEY};
 pub use tier::{
@@ -304,6 +348,24 @@ pub fn route_pack(
     let tier = route(signals, mesh_inputs);
     let pack = concrete_pack_for_tier(tier, packs, ladder, is_key_set);
     (tier, pack)
+}
+
+/// R48d (HARNESS_LOOP_LOG.md "A45 design", Addendum (a)/(c)): whether a
+/// provider id names an on-device/local runtime rather than a metered cloud
+/// one. Shared so the coordinator-visible routing roster (`orchestrator__
+/// routing_roster`) and the routing receipt's future `routed_local`/
+/// `routed_cloud` counters (R48b) can never disagree about the
+/// classification — both call this one function rather than growing their
+/// own copies of the provider-id list. Mirrors `agents::reply_parts`'s own
+/// private `is_local_provider` (a different call site, kept separate on
+/// purpose — see that module — but deliberately the same provider-id rule).
+pub fn is_local_provider(provider: &str) -> bool {
+    let provider = provider.to_ascii_lowercase();
+    provider == "local"
+        || provider.contains("ollama")
+        || provider == "lmstudio"
+        || provider == "llama_swap"
+        || provider == "qwen38_split"
 }
 
 #[cfg(test)]
@@ -490,10 +552,9 @@ mod tests {
         // A fresh owned "both cheap keys set" predicate per call.
         let cheap = || keyed(&["MINIMAX_API_KEY", "MOONSHOT_API_KEY"]);
 
-        // Frontier → the hard (Opus) pack, regardless of cheap keys.
+        // Frontier → the hard pack, regardless of cheap keys.
         let f = concrete_pack_for_tier(Tier::Frontier, &packs, &ladder, cheap());
         assert_eq!(&f, packs.pack_for(Role::Hard));
-        assert_eq!(f.model, "claude-opus-4-8");
 
         // Local + Mesh → the local (Ollama) pack.
         let l = concrete_pack_for_tier(Tier::LocalFree, &packs, &ladder, cheap());
@@ -519,13 +580,30 @@ mod tests {
         assert_eq!(tier, Tier::LocalFree);
         assert_eq!(pack.model, "qwen3");
 
-        // Reasoning → Frontier on Opus.
+        // Reasoning → Frontier on the hard pack.
         let s = TaskSignals {
             multi_file: true,
             ..Default::default()
         };
         let (tier, pack) = route_pack(&s, no_pool(), &packs, &ladder, |_| false);
         assert_eq!(tier, Tier::Frontier);
-        assert_eq!(pack.model, "claude-opus-4-8");
+        assert_eq!(&pack, packs.pack_for(Role::Hard));
+    }
+
+    #[test]
+    fn is_local_provider_classifies_known_local_runtimes_and_nothing_else() {
+        assert!(is_local_provider("local"));
+        assert!(is_local_provider("ollama"));
+        assert!(is_local_provider("remote-ollama"));
+        assert!(is_local_provider("lmstudio"));
+        assert!(is_local_provider("llama_swap"));
+        assert!(is_local_provider("qwen38_split"));
+        assert!(
+            is_local_provider("OLLAMA"),
+            "classification is case-insensitive"
+        );
+        assert!(!is_local_provider("anthropic"));
+        assert!(!is_local_provider("openai"));
+        assert!(!is_local_provider("custom_deepseek"));
     }
 }

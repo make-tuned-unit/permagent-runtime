@@ -816,6 +816,12 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // backing store.
     apply_harness_run_snapshots_schema(pool).await?;
 
+    // Per-process leases for coding-harness CLI runs. Version-independent and
+    // idempotent: each terminal process writes its own row so other processes
+    // (the daemon, a second terminal) can tell a live foreign run from a dead
+    // one.
+    apply_harness_process_leases_schema(pool).await?;
+
     // First-party analytics events (schema v38). Idempotent; shared with
     // migrate_v37_to_v38 so fresh installs get it on first boot.
     apply_analytics_events_schema(pool).await?;
@@ -1978,6 +1984,48 @@ pub async fn migrate_v52_to_v53(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// v54: `cost_ledger.timing_json` (coding-harness excellence iteration, lane
+/// X-lat). Reconciles the column onto existing DBs by re-running
+/// `apply_cost_ledger_schema`, which is idempotent (`CREATE TABLE IF NOT
+/// EXISTS` + PRAGMA-guarded `ADD COLUMN`) — fresh installs already get the
+/// column from `init_spectral_db`, which calls the same function. Purely
+/// additive and base-independent.
+pub async fn migrate_v53_to_v54(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v53 -> v54 (cost_ledger.timing_json)");
+    apply_cost_ledger_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (54)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v54 (cost_ledger.timing_json)");
+    Ok(())
+}
+
+/// v55: `cost_reservations.provider`/`.model`/`.reuse_count`/
+/// `.reused_by_invocation_id` (harness loop, Round F, Lane F3, from Lane
+/// G9's HIGH/MEDIUM findings on gate-grant reuse — see
+/// `apply_cost_reservations_schema`'s own doc comments on these columns for
+/// why they exist). Reconciles them onto existing DBs by re-running
+/// `apply_cost_reservations_schema`, which is idempotent (PRAGMA-guarded
+/// `ADD COLUMN`s) — fresh installs already get them from `init_spectral_db`,
+/// which calls the same function. Purely additive and base-independent.
+///
+/// NOTE on numbering: this branch's `v54` step (`migrate_v53_to_v54`,
+/// `cost_ledger.timing_json`, lane X-lat) is already documented in this
+/// loop's log as colliding with an unmerged `voice_turns` migration on a
+/// different branch — whichever side merges second there must renumber.
+/// `v55` is the next free step on THIS branch (`fix/harness-loop-r1` @
+/// `bd557978`) as of 2026-09-10; a merge that also brings in the colliding
+/// v54 must renumber this step too.
+pub async fn migrate_v54_to_v55(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v54 -> v55 (cost_reservations provider/model/reuse columns)");
+    apply_cost_reservations_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (55)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v55 (cost_reservations provider/model/reuse columns)");
+    Ok(())
+}
+
 /// The Council of LLMs: one debate session, the per-member positions across
 /// two rounds, and the chair's synthesised weekly report. New tables + indexes
 /// only — additive, idempotent, and base-independent so it can run on every
@@ -2801,6 +2849,46 @@ pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
         }
     }
 
+    // PRAGMA-guarded timing column on `cost_ledger` itself (lane X-lat,
+    // coding-harness excellence iteration): a nullable JSON blob holding the
+    // serialized `crate::session::turn_timing::TurnTiming` for the reply-loop
+    // turn that produced this row, set after the fact by
+    // `SessionManager::update_cost_ledger_timing` once the turn's after-turn
+    // hooks and context-management work have finished (the ledger row itself
+    // is written earlier, mid-turn, for fail-closed money accounting). `NULL`
+    // for every row written before this column existed, and for the small
+    // number of non-turn cost_ledger writers (compaction/tool-pair
+    // summarization side calls, council debate, orchestrator fan-out) that
+    // do not go through the reply loop's turn timer at all.
+    for (col, ddl) in [
+        (
+            "timing_json",
+            "ALTER TABLE cost_ledger ADD COLUMN timing_json TEXT",
+        ),
+        (
+            // YF1 (G6 review, Lane Y-fix 2026-09-09): a reservation that was
+            // already reconciled away (settled to $0 / released, no ledger
+            // evidence at the time) can still have its provider call
+            // complete for real afterward. `append_cost_ledger_with_usage`
+            // now accepts that late settlement instead of hard-erroring, so
+            // the real spend lands in the ledger and keeps counting toward
+            // the ceiling; this column flags those rows for audit rather
+            // than silently mixing them into ordinary on-time settlements.
+            "late_settlement",
+            "ALTER TABLE cost_ledger ADD COLUMN late_settlement INTEGER NOT NULL DEFAULT 0",
+        ),
+    ] {
+        let has_column: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('cost_ledger') WHERE name = ?",
+        )
+        .bind(col)
+        .fetch_one(&mut *tx)
+        .await?;
+        if has_column == 0 {
+            sqlx::query(ddl).execute(&mut *tx).await?;
+        }
+    }
+
     tx.commit().await?;
     Ok(())
 }
@@ -2844,6 +2932,133 @@ pub async fn apply_cost_reservations_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(&mut *tx)
     .await?;
+
+    // YF1 (G6 review, Lane Y-fix 2026-09-09): distinguishes the two ways a
+    // reservation reaches `state = 'unknown'`. `mark_provider_invocation_unknown`
+    // sets this column (to its own `updated_at`) because that path only runs
+    // after the caller has locally concluded the attempt is over (a stream
+    // setup failure, missing authoritative usage, or a failed settlement
+    // write) — reconciling it immediately is safe. The lease-expiry sweep in
+    // `reserve_provider_invocation` leaves it NULL, because a lease expiring
+    // proves nothing about whether the provider call itself is still
+    // genuinely in flight; `reconcile_stale_reservations` uses NULL here to
+    // hold those rows until they clear a grace window, instead of releasing
+    // a hold whose spend may still land.
+    let has_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'unknown_marked_at'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_column == 0 {
+        sqlx::query("ALTER TABLE cost_reservations ADD COLUMN unknown_marked_at TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    // I1 (harness loop, 2026-09-10, wiring F1b's grant-consumption primitive
+    // into the live turn loop): marks a row created by
+    // `grant_reservation_after_gate_approval` (a headless reservation-gate
+    // auto-answer) rather than by the ordinary budget-checked
+    // `reserve_provider_invocation` path. Needed so a later call can find
+    // "this session's still-pending grant" without ever mistaking an
+    // ordinary in-flight reservation for one that already cleared the gate
+    // — reusing an ordinary reservation's invocation_id for a different call
+    // would corrupt the one-reservation-per-call settlement invariant
+    // `append_cost_ledger_with_usage` enforces. PRAGMA-guarded `ADD COLUMN`:
+    // additive, base-independent, applied on every boot exactly like
+    // `unknown_marked_at` above.
+    let has_gate_grant_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'granted_via_gate'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_gate_grant_column == 0 {
+        sqlx::query(
+            "ALTER TABLE cost_reservations ADD COLUMN granted_via_gate INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    // F3 (harness loop, Round F, Lane F3, from Lane G9's HIGH finding): a
+    // reused gate grant (`granted_via_gate = 1`) was never checked against
+    // the CURRENT call's provider/model, because this table carried no
+    // provider/model identity at all — a stale grant minted under one
+    // provider/model could silently authorize a call to a DIFFERENT
+    // provider/model with no detection (an under- or over-reservation).
+    // Populated only by `grant_reservation_after_gate_approval` (the only
+    // reservation creator `find_pending_gate_grant` ever looks up by
+    // provider/model); NULL on an ordinary `reserve_provider_invocation`
+    // row is harmless — those rows are never looked up this way.
+    // PRAGMA-guarded `ADD COLUMN`s: additive, base-independent, applied on
+    // every boot exactly like `granted_via_gate` just above.
+    let has_provider_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'provider'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_provider_column == 0 {
+        sqlx::query("ALTER TABLE cost_reservations ADD COLUMN provider TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+    let has_model_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'model'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_model_column == 0 {
+        sqlx::query("ALTER TABLE cost_reservations ADD COLUMN model TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    // F3 (M1, from Lane G9's MEDIUM finding): a grant is meant to authorize
+    // exactly ONE retry of the specific call that got gated, not be
+    // silently reusable forever while the row happens to still be
+    // `pending`. `reuse_count` tracks how many times `consume_granted_
+    // reservation` has handed this grant back as reusable — a second
+    // attempt is refused once it is nonzero. `reused_by_invocation_id`
+    // records the invocation_id that consumed it (today always equal to
+    // this row's own `invocation_id`, since a reuse is threaded back in
+    // under the SAME id — recorded explicitly, not assumed, so a future
+    // design that mints a fresh id for the retry does not silently lose
+    // this audit trail).
+    let has_reuse_count_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'reuse_count'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_reuse_count_column == 0 {
+        sqlx::query(
+            "ALTER TABLE cost_reservations ADD COLUMN reuse_count INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    let has_reused_by_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'reused_by_invocation_id'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_reused_by_column == 0 {
+        sqlx::query("ALTER TABLE cost_reservations ADD COLUMN reused_by_invocation_id TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    // Original bound/config evidence for retry extensions; NULL fails closed.
+    let has_extension: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'extension_json'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_extension == 0 {
+        sqlx::query("ALTER TABLE cost_reservations ADD COLUMN extension_json TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+
     tx.commit().await?;
     Ok(())
 }
@@ -3507,7 +3722,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             answer_note   TEXT,
             answer_choice_id TEXT,
             answer_input  TEXT,
-            acted_by      TEXT CHECK (acted_by IN ('jesse','henry-policy','system')),
+            acted_by      TEXT CHECK (acted_by IN ('jesse','henry-policy','system','auto-mode-launch','headless_policy')),
             created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             resolved_at   TEXT,
             CHECK (status != 'answered'
@@ -3543,15 +3758,25 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     // (needs-approval tool calls routed to the inbox), 'file_to_project'
     // (the file_to_project tool's review-gated note+people proposal), and
     // 'session_gate' (supervised-terminal gates, S3 #429), AND the `answer`
-    // CHECK to admit 'edit' (approve-with-edits / edit-as-training).
+    // CHECK to admit 'edit' (approve-with-edits / edit-as-training), AND the
+    // `acted_by` CHECK to admit 'auto-mode-launch' (harness loop R1: an
+    // unattended GooseMode::Auto session pre-approving its own roadmap
+    // proposal via `decisions::auto_approve_roadmap_launch`, since no human
+    // exists to answer the Decision Inbox item in that mode) AND
+    // 'headless_policy' (harness loop R2, Lane D1: a headless
+    // `HeadlessDispatchPolicy` run auto-answering a reservation/spend-
+    // authorization gate within budget via
+    // `decisions::auto_approve_reservation_gate` — a distinct actor from
+    // 'auto-mode-launch' on purpose, see that constant's own doc comment).
     // SQLite cannot ALTER a CHECK, so an older table is rebuilt in place.
     // FK-safe: nothing references `decisions` via a foreign key (decision_audit
     // stores a plain TEXT id; the complete-guard trigger resolves by name after
     // the rename). Gated on the widened constraints' marker tokens, so it runs
     // at most once per widening: a table missing 'enrichment_proposal', the
-    // 'edit' answer value, 'tool_approval', 'file_to_project', OR 'session_gate'
-    // is rebuilt to the current DDL, which widens all of them together (an older
-    // DB only ever holds legacy values, all valid under the new CHECK, so the
+    // 'edit' answer value, 'tool_approval', 'file_to_project', 'session_gate',
+    // OR the 'auto-mode-launch'/'headless_policy' acted_by values is rebuilt
+    // to the current DDL, which widens all of them together (an older DB
+    // only ever holds legacy values, all valid under the new CHECK, so the
     // row copy is lossless).
     let decisions_ddl: Option<String> =
         sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'")
@@ -3569,6 +3794,8 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 || !sql.contains("capability_gap")
                 || !sql.contains("regression_proposal")
                 || !sql.contains("council_action")
+                || !sql.contains("auto-mode-launch")
+                || !sql.contains("headless_policy")
         })
         .unwrap_or(false)
     {
@@ -3610,7 +3837,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 answer_note   TEXT,
                 answer_choice_id TEXT,
                 answer_input  TEXT,
-                acted_by      TEXT CHECK (acted_by IN ('jesse','henry-policy','system')),
+                acted_by      TEXT CHECK (acted_by IN ('jesse','henry-policy','system','auto-mode-launch','headless_policy')),
                 created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
                 resolved_at   TEXT,
                 CHECK (status != 'answered'
@@ -3912,6 +4139,55 @@ pub async fn apply_harness_run_snapshots_schema(pool: &Pool<Sqlite>) -> Result<(
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_harness_run_snapshots_session
          ON harness_run_snapshots(session_id, updated_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// One row per coding-harness CLI process (`harness_process_leases`).
+///
+/// The row is written by the process that owns it, directly to the shared
+/// database, and heartbeated for the whole process lifetime. Readers classify
+/// it with [`crate::harness_lease::classify`]: live while non-exited and
+/// recently heartbeated, lost when non-exited but stale (a crash or kill),
+/// ended once `exited`. `lifecycle_id` is the owning process's
+/// `daemon_lifecycle_id()`, the same value stamped as `dispatched_lifecycle`
+/// on goal cards it dispatches, which is what joins a run to its goals.
+/// `last_activity` holds a tool name at most, never message text.
+pub async fn apply_harness_process_leases_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS harness_process_leases (
+            lease_id         TEXT PRIMARY KEY,
+            lifecycle_id     TEXT NOT NULL,
+            session_id       TEXT NOT NULL,
+            session_name     TEXT,
+            working_dir      TEXT NOT NULL,
+            repo_root        TEXT,
+            project_id       TEXT,
+            mode             TEXT NOT NULL,
+            recipe           TEXT,
+            pid              INTEGER NOT NULL,
+            phase            TEXT NOT NULL,
+            started_at       TEXT NOT NULL,
+            heartbeat_at     TEXT NOT NULL,
+            last_activity_at TEXT,
+            last_activity    TEXT,
+            ended_at         TEXT,
+            exit_status      TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_harness_leases_phase_hb
+         ON harness_process_leases(phase, heartbeat_at)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_harness_leases_lifecycle
+         ON harness_process_leases(lifecycle_id)",
     )
     .execute(pool)
     .await?;

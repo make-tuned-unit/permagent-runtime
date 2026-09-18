@@ -221,6 +221,52 @@ pub async fn get_skill(pool: &Pool<Sqlite>, skill_id: &str) -> Result<Option<Ski
     }))
 }
 
+/// Get full detail for a skill by its exact `name` — the lookup `skill_run`
+/// uses, since a tool caller names a skill, not its opaque row id. Active
+/// (`status != 'archived'`) skills only, and the most recently updated wins on
+/// a name collision — a deliberately narrow tie-break rather than an error, so
+/// a re-saved skill under the same name shadows its predecessor instead of
+/// making the tool unusable.
+pub async fn get_skill_by_name(
+    pool: &Pool<Sqlite>,
+    name: &str,
+) -> Result<Option<SkillDetail>, String> {
+    let row = sqlx::query(
+        "SELECT id, name, description,
+                json_extract(trigger_value, '$.tool_used') as tool_used,
+                definition_json, trigger_type,
+                trigger_value, status, version, source_task_id, created_at, updated_at
+         FROM skills
+         WHERE name = ? AND user_id = 'default' AND status != 'archived'
+         ORDER BY updated_at DESC
+         LIMIT 1",
+    )
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(row.map(|r| {
+        let def_str: String = r.get("definition_json");
+        let definition_json: serde_json::Value =
+            serde_json::from_str(&def_str).unwrap_or(serde_json::Value::Null);
+        SkillDetail {
+            id: r.get("id"),
+            name: r.get("name"),
+            description: r.get("description"),
+            tool_used: r.get("tool_used"),
+            definition_json,
+            trigger_type: r.get("trigger_type"),
+            trigger_value: r.get("trigger_value"),
+            status: r.get("status"),
+            version: r.get("version"),
+            source_task_id: r.get("source_task_id"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        }
+    }))
+}
+
 /// Delete a skill (and cascade to skill_triggers).
 pub async fn delete_skill(pool: &Pool<Sqlite>, skill_id: &str) -> Result<bool, String> {
     let result = sqlx::query("DELETE FROM skills WHERE id = ? AND user_id = 'default'")

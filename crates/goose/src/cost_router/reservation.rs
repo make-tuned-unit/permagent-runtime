@@ -21,11 +21,107 @@ use thiserror::Error;
 /// Where the rate used for a reservation came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PricingProvenance {
-    /// A complete rate was found for the requested provider/model pair.
+    /// A complete rate was found for the requested provider/model pair in the
+    /// live canonical registry (`providers::canonical`).
     CanonicalExact,
-    /// No complete pair-specific rate was available; the provider/registry
-    /// maximum was used so an unknown model cannot evade a spend cap.
+    /// R2(b) (harness loop, Lane D1): the canonical registry has no row at
+    /// all for this pair, but `cost_router::knowledge`'s curated, cited
+    /// published-price table does. Still a real, pair-specific rate — never
+    /// the pessimistic provider/registry maximum — kept as its own variant
+    /// so a caller can tell "priced from the recommender's KB" apart from
+    /// "priced from the live billing registry" without re-deriving it.
+    KnowledgeTable,
+    /// No complete pair-specific rate was available anywhere; the
+    /// provider/registry maximum was used so an unknown model cannot evade a
+    /// spend cap.
     WorstCase,
+}
+
+/// F2 (harness loop, Round F, from the I1/M11 forensics chain): a short,
+/// stable, log-friendly name for a [`PricingProvenance`] variant. Three
+/// straight lanes (F8, D1's own isolated tests, I1) chased a "flat $1.66
+/// worst-case bound" on every `zai`/`glm-4.7` reservation without ever being
+/// able to see, from the receipt alone, which of these three sources actually
+/// produced it — `cost_reservations` has no `provider`/`model`/pricing-source
+/// columns at all, so the only way to check was re-deriving the math by hand
+/// against the live `sessions`/`cost_ledger` rows (see this lane's own report
+/// in `HARNESS_LOOP_LOG.md`, `## Lane F2`, for the bit-exact reproduction:
+/// the constant is `CanonicalExact` pricing × 5 physical attempts, NOT
+/// `WorstCase`). This function exists purely so the tracing line added at the
+/// reservation call site (`agents::reply_parts::reserve_provider_invocation_for_model`)
+/// can name the source without a caller having to match on the enum itself.
+pub fn describe_pricing_source(provenance: PricingProvenance) -> &'static str {
+    match provenance {
+        PricingProvenance::CanonicalExact => "canonical_exact",
+        PricingProvenance::KnowledgeTable => "knowledge_table",
+        PricingProvenance::WorstCase => "worst_case",
+    }
+}
+
+/// Y7 (harness loop, from Lane A12's Q6 measurement): how many *physical*
+/// attempts one logical provider call reserves money for up front.
+///
+/// A reservation is a hold, not a prediction, so the historical choice was to
+/// pre-reserve the provider's entire retry envelope
+/// ([`RetryConfig::max_physical_attempts`](crate::providers::retry::RetryConfig::max_physical_attempts),
+/// 5 under every default config). A12 measured what that costs in practice on
+/// the M12 slice: every `zai`/`glm-4.7` hold was `$1.662976` while the largest
+/// *settled* single call in the whole slice was `$0.0234` and the typical one
+/// `$0.005` — an over-reservation of ~70–330×. With a `$5.00` session ceiling
+/// two live holds ($3.325952) leave no room for a third, so the run stalls on
+/// hold arithmetic long before it approaches its actual `$2.50` spend cap
+/// (every gate message in that slice: "holds $3.33, requested bound $1.66,
+/// ceiling $5.00"). The ceiling was never the binding constraint; this
+/// multiplier was.
+///
+/// Default 2 (orchestrator ruling, 2026-09-10): reserve what one attempt can
+/// actually cost, plus one real retry. The retry envelope is then enforced
+/// against the reservation at the seam where a physical retry would happen
+/// (`cost_router::authorized_attempts`), so a retry that the hold does not
+/// cover is refused with an honest error rather than silently spending past
+/// the authorization.
+///
+/// Two rather than one because a default of one would mean a paid call that
+/// hits a 429 or a 5xx never retries at all — the exact failure
+/// `RATE_LIMIT_MIN_RETRY_INTERVAL_MS` / `RATE_LIMIT_MAX_RETRIES` were added
+/// for on 2026-08-25 (Z.AI 1302). Two holds `$0.665` on the measured
+/// `zai`/`glm-4.7` inputs: still 7 concurrent holds under a `$5.00` ceiling
+/// instead of the pre-Y7 2, so the spend cap goes back to being the binding
+/// constraint, and one rate-limit retry still survives.
+pub const RESERVE_ATTEMPTS_ENV: &str = "PERMAGENT_RESERVE_ATTEMPTS";
+
+/// Physical attempts reserved when [`RESERVE_ATTEMPTS_ENV`] says nothing:
+/// one attempt plus one retry (see [`RESERVE_ATTEMPTS_ENV`] for why two).
+pub const DEFAULT_RESERVED_ATTEMPTS: u32 = 2;
+
+/// How many physical attempts to reserve, given the retry policy's own
+/// envelope.
+///
+/// Clamped into `1..=max_physical_attempts`: the knob can never authorize more
+/// attempts than the retry policy would ever make (that would over-reserve
+/// again), and never fewer than one (a zero-attempt reservation cannot
+/// authorize the call at all). `max_physical_attempts == 0` is passed straight
+/// through so [`plan_reservation_bound`] still fails closed with
+/// [`ReservationBoundError::InvalidAttempts`] instead of this function
+/// inventing an attempt the policy does not allow.
+pub fn reserved_physical_attempts(max_physical_attempts: u32) -> u32 {
+    reserved_physical_attempts_with(max_physical_attempts, |key| std::env::var(key).ok())
+}
+
+/// Testable core of [`reserved_physical_attempts`]; `read` stands in for the
+/// process environment.
+pub fn reserved_physical_attempts_with(
+    max_physical_attempts: u32,
+    read: impl Fn(&str) -> Option<String>,
+) -> u32 {
+    if max_physical_attempts == 0 {
+        return 0;
+    }
+    read(RESERVE_ATTEMPTS_ENV)
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_RESERVED_ATTEMPTS)
+        .clamp(1, max_physical_attempts)
 }
 
 /// A finite upper bound for one physical provider invocation (including its
@@ -96,19 +192,53 @@ pub fn plan_reservation_bound(
     calculate_bound(model_config, max_physical_attempts, pricing, provenance).map(Some)
 }
 
-fn resolve_pricing(
+pub(crate) fn resolve_pricing(
     provider: &str,
     model: &str,
 ) -> Result<(Pricing, PricingProvenance), ReservationBoundError> {
-    match maybe_get_pricing(provider, model) {
-        Some(pricing) => Ok((pricing, PricingProvenance::CanonicalExact)),
-        None => Ok((
-            worst_case_pricing(provider).ok_or_else(|| ReservationBoundError::MissingPricing {
-                provider: provider.to_string(),
-            })?,
-            PricingProvenance::WorstCase,
-        )),
+    if let Some(pricing) = maybe_get_pricing(provider, model) {
+        return Ok((pricing, PricingProvenance::CanonicalExact));
     }
+    // R2(b) (harness loop, Lane D1, from Lane F8 forensics 2026-09-10).
+    // CORRECTION during this lane's own gate run: `zai`/`glm-4.7` turns out
+    // to already resolve via `maybe_get_pricing` above (`canonical_models.json`
+    // carries a bare `"zai/glm-4.7"` row, `{input:0.60,output:2.20}` — this
+    // lane's first-pass root-cause read, "the canonical registry has no zai
+    // row at all", was wrong: it came from a truncated grep that hid every
+    // `"zai/..."` id sorting after the `"zai-coding-plan/..."`/`"zai-org/..."`
+    // ids it did show). So THIS exact pair no longer reaches this branch, and
+    // Lane F8's own observed $1.662976 constant is NOT reproduced by this
+    // path — its true mechanism (a different model_config shape at the real
+    // call site, most likely) remains unconfirmed; not chased further here.
+    //
+    // The branch itself is still a real, worthwhile improvement kept in
+    // place: `cost_router::knowledge` is a curated, cited pricing table
+    // (built for the recommender) that can carry a pair before the
+    // generated/billing registry does — `maybe_get_pricing`'s own doc
+    // comment already names exactly this lag as a spend-gate failure mode
+    // ("the generated table always lags what is selectable"). Trying this
+    // SAME row before the pessimistic global worst-case fallback costs
+    // nothing when canonical already has an answer (this `if` is simply
+    // skipped) and gives a real, tight bound instead of the worst-case
+    // constant on the day a KB-priced pair genuinely is missing from the
+    // registry.
+    if let Some(known) = crate::cost_router::knowledge::lookup(provider, model) {
+        return Ok((
+            Pricing {
+                input: Some(known.input_usd_per_mtok),
+                output: Some(known.output_usd_per_mtok),
+                cache_read: None,
+                cache_write: None,
+            },
+            PricingProvenance::KnowledgeTable,
+        ));
+    }
+    Ok((
+        worst_case_pricing(provider).ok_or_else(|| ReservationBoundError::MissingPricing {
+            provider: provider.to_string(),
+        })?,
+        PricingProvenance::WorstCase,
+    ))
 }
 
 fn validate_attempts(max_physical_attempts: u32) -> Result<(), ReservationBoundError> {
@@ -187,8 +317,23 @@ fn optional_positive_rate(
     rate: Option<f64>,
     field: &'static str,
 ) -> Result<Option<f64>, ReservationBoundError> {
-    rate.map(|rate| positive_rate(Some(rate), field))
-        .transpose()
+    match rate {
+        None => Ok(None),
+        // H4 (Lane M, 2026-09-08 live evidence): a rate of exactly 0.0 is a
+        // provider legitimately charging nothing for this rate (e.g. no
+        // cache-write premium — `providers/canonical/cost.rs`'s "no
+        // premium" cases, observed with zai/glm-4.7), not a missing or
+        // invalid one. Treating it as invalid made every call to that
+        // provider get refused before it started: "provider budget is
+        // unknown; refusing call: cannot authorize provider call:
+        // cache_write pricing rate must be finite and positive". Free is
+        // excluded from the max-rate fold below the same way `None` already
+        // is. NaN/infinite/negative still fail closed via `positive_rate`,
+        // and this only touches the OPTIONAL cache_read/cache_write rates —
+        // the required input/output rates keep their strict positive check.
+        Some(0.0) => Ok(None),
+        Some(rate) => positive_rate(Some(rate), field).map(Some),
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +385,250 @@ mod tests {
         .unwrap();
         assert_eq!(bound.pricing_provenance, PricingProvenance::WorstCase);
     }
+
+    /// R2(b) (harness loop, Lane D1, from Lane F8 forensics), CORRECTED
+    /// during this lane's own gate run: `zai`/`glm-4.7` was first believed to
+    /// have no row anywhere in `providers::canonical`'s registry (a grep that
+    /// turned out truncated hid it) — it actually resolves via
+    /// `maybe_get_pricing` already, `CanonicalExact`, at the real published
+    /// rate ($0.60 input / $2.20 output per Mtok, `canonical_models.json`'s
+    /// bare `"zai/glm-4.7"` row). This test pins the OUTCOME the task asked
+    /// for regardless of which branch supplies it: the bound for this pair
+    /// with a known price lands far below F8's observed $1.662976 constant.
+    /// (`resolve_pricing`'s new `KnowledgeTable` fallback branch below this
+    /// one is exercised separately, since every currently-priced
+    /// `cost_router::knowledge` row already has a matching canonical entry —
+    /// see `knowledge_table_fallback_fires_when_canonical_has_no_row` for how
+    /// that's tested without fabricating a live pricing pair.)
+    #[test]
+    fn zai_glm_4_7_has_a_known_price_far_below_the_old_worst_case_constant() {
+        // F8's own "what could not be determined" note ties the recurring
+        // $1.662976 constant to a max_tokens of 131072; reproduced here as
+        // context == max_tokens so the whole bound is output-cost-driven,
+        // matching that observation's shape.
+        let cfg = config(Some(131_072), Some(131_072));
+        let bound = plan_reservation_bound("zai", "glm-4.7", CostTier::PaidApi, &cfg, 1)
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            bound.pricing_provenance,
+            PricingProvenance::WorstCase,
+            "a known-priced model must never fall back to the registry's global worst case: \
+             {bound:?}"
+        );
+        assert!(
+            bound.amount_usd < 1.66,
+            "the bound must land well under the old flat worst-case constant, got ${:.6}",
+            bound.amount_usd
+        );
+        // Sanity: output-only cost at the real $2.20/Mtok rate for 131,072
+        // output tokens (input_tokens is 0 here by construction).
+        let expected = 131_072.0 / 1_000_000.0 * 2.20;
+        assert!(
+            (bound.amount_usd - expected).abs() < 0.0001,
+            "expected ${expected:.6}, got ${:.6}",
+            bound.amount_usd
+        );
+    }
+
+    /// I1 pin (harness loop, 2026-09-10, from M10's forensics: 10/10 M10
+    /// coordinators hit the reservation gate at the flat $1.662976
+    /// worst-case constant, and `cost_reservations` shows it STILL applied
+    /// to `zai`/`glm-4.7`). This pins the org-qualified `"zai-org"`
+    /// provider spelling specifically — `providers::canonical::name_builder`'s
+    /// new alias (`"zai-org" => "zai"`) resolves it to the SAME real
+    /// $0.60/$2.20-per-Mtok rate `"zai"` itself carries, never the global
+    /// worst case. Pre-fix, `resolve_pricing("zai-org", "glm-4.7")` matched
+    /// nothing in the canonical registry (no bare top-level `"zai-org"` id
+    /// exists) and fell all the way to `WorstCase`.
+    #[test]
+    fn zai_org_alias_never_falls_back_to_the_worst_case_constant() {
+        let cfg = config(Some(131_072), Some(131_072));
+        let bound = plan_reservation_bound("zai-org", "glm-4.7", CostTier::PaidApi, &cfg, 1)
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            bound.pricing_provenance,
+            PricingProvenance::WorstCase,
+            "the zai-org alias must resolve real zai pricing, not the global worst case: \
+             {bound:?}"
+        );
+        let expected = 131_072.0 / 1_000_000.0 * 2.20;
+        assert!(
+            (bound.amount_usd - expected).abs() < 0.0001,
+            "expected ${expected:.6}, got ${:.6}",
+            bound.amount_usd
+        );
+    }
+
+    /// F2 pin (harness loop, Round F, from the M11/I1 forensics chain).
+    /// D1's own `zai_glm_4_7_has_a_known_price_far_below_the_old_worst_case_constant`
+    /// test above used a *synthetic* `ModelConfig` (`context: 131_072,
+    /// max_tokens: 131_072`) and `max_physical_attempts: 1` — neither of
+    /// which match what a real headless coordinator/worker session actually
+    /// configures. This test feeds the EXACT live values instead, read
+    /// directly off the M11 slice's own kept per-fixture `permagent.db`s
+    /// (`sessions.model_config_json` for `20260910_1`/`_2`/`_3` in every one
+    /// of fx01/fx05/fx08/fx09/fx10: `{"model_name":"glm-4.7",
+    /// "context_limit":204800,"max_tokens":131072,...}`, `sessions
+    /// .provider_name = "zai"`) plus the DEFAULT `RetryConfig`'s
+    /// `max_physical_attempts()` (`providers::retry::RetryConfig::default()
+    /// .max_physical_attempts() == 5`, the value every zai/glm-4.7
+    /// `OpenAiCompatibleProvider` actually uses — no override exists for
+    /// this provider).
+    ///
+    /// This reproduces F8/D1/I1/M11's observed `amount_usd =
+    /// 1.6629760000000002` bit-for-bit (verified directly against the M11
+    /// `cost_reservations` rows, not merely "close"). The provenance is
+    /// `CanonicalExact`, never `WorstCase` — three straight lanes'
+    /// "flat worst-case constant" diagnosis was wrong. The number IS flat
+    /// across every call only because `context_limit`/`max_tokens`
+    /// (fixed per model) and `max_physical_attempts` (fixed per provider's
+    /// retry policy) never vary call to call for this pair — the bound is a
+    /// correctly-priced authorization ceiling covering up to 5 physical
+    /// attempts of ONE logical turn, not a mispriced fallback. This test
+    /// passes both before and after this lane's changes — it adds no fix,
+    /// only a permanent, exact regression pin so a future lane can check
+    /// this arithmetic in five seconds instead of re-deriving it from raw
+    /// DB rows again.
+    #[test]
+    fn zai_glm_4_7_live_reservation_is_canonical_exact_not_worst_case() {
+        let cfg = config(Some(204_800), Some(131_072));
+        let bound = plan_reservation_bound("zai", "glm-4.7", CostTier::PaidApi, &cfg, 5)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bound.pricing_provenance,
+            PricingProvenance::CanonicalExact,
+            "the live zai/glm-4.7 reservation must be priced from the canonical registry, \
+             not any fallback: {bound:?}"
+        );
+        // Bit-exact match to the value observed in every M11 fixture's
+        // cost_reservations.amount_usd for a zai/glm-4.7 invocation.
+        assert_eq!(bound.amount_usd, 1.6629760000000002);
+        assert_eq!(
+            describe_pricing_source(bound.pricing_provenance),
+            "canonical_exact"
+        );
+    }
+
+    /// Y7 pin (harness loop, from Lane A12's Q6 measurement): the hold scales
+    /// linearly with the reserved attempt count, for the identical live inputs
+    /// pinned by the test above. One attempt holds exactly one fifth of what
+    /// the same call held before ($1.662976 → $0.3325952), and the SHIPPED
+    /// default of two holds exactly two fifths ($0.6651904) — against a
+    /// *settled* cost measured at $0.005–$0.0234 on the same slice. Nothing
+    /// about pricing changes: the only difference is how many attempts' worth
+    /// of money is held up front.
+    #[test]
+    fn the_reserved_attempt_count_scales_the_hold_off_the_five_attempt_bound() {
+        let cfg = config(Some(204_800), Some(131_072));
+        let five = plan_reservation_bound("zai", "glm-4.7", CostTier::PaidApi, &cfg, 5)
+            .unwrap()
+            .unwrap();
+        let one = plan_reservation_bound("zai", "glm-4.7", CostTier::PaidApi, &cfg, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(one.max_physical_attempts, 1);
+        assert_eq!(one.amount_usd, 0.33259520000000004);
+        assert_eq!(one.amount_usd * 5.0, five.amount_usd);
+        // Everything else about the bound is untouched.
+        assert_eq!(one.input_tokens, five.input_tokens);
+        assert_eq!(one.output_tokens, five.output_tokens);
+        assert_eq!(one.pricing_provenance, five.pricing_provenance);
+
+        // The shipped default: two attempts, two fifths of the old hold.
+        let shipped = plan_reservation_bound(
+            "zai",
+            "glm-4.7",
+            CostTier::PaidApi,
+            &cfg,
+            DEFAULT_RESERVED_ATTEMPTS,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(shipped.max_physical_attempts, 2);
+        assert_eq!(shipped.amount_usd, one.amount_usd * 2.0);
+        assert_eq!(shipped.amount_usd * 2.5, five.amount_usd);
+    }
+
+    /// Y7: the knob can lower the hold but never authorize more attempts than
+    /// the retry policy would ever physically make, and never zero. The
+    /// shipped default is two (one attempt plus one retry).
+    #[test]
+    fn reserved_attempts_default_to_two_and_clamp_to_the_retry_envelope() {
+        let env = |value: Option<&str>| {
+            let value = value.map(str::to_string);
+            move |key: &str| {
+                assert_eq!(key, RESERVE_ATTEMPTS_ENV);
+                value.clone()
+            }
+        };
+        assert_eq!(DEFAULT_RESERVED_ATTEMPTS, 2);
+        assert_eq!(reserved_physical_attempts_with(5, env(None)), 2);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("1"))), 1);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("3"))), 3);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some(" 5 "))), 5);
+        // Above the envelope: clamped down, never over-reserved again.
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("9"))), 5);
+        // Meaningless values fall back to the default rather than to zero.
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("0"))), 2);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("many"))), 2);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some(""))), 2);
+        // A one-attempt envelope still clamps the two-attempt default down.
+        assert_eq!(reserved_physical_attempts_with(1, env(None)), 1);
+        // A zero envelope stays zero so `plan_reservation_bound` still fails
+        // closed instead of this function inventing an attempt.
+        assert_eq!(reserved_physical_attempts_with(0, env(Some("4"))), 0);
+        assert_eq!(
+            plan_reservation_bound(
+                "zai",
+                "glm-4.7",
+                CostTier::PaidApi,
+                &config(Some(204_800), Some(131_072)),
+                reserved_physical_attempts_with(0, env(None)),
+            ),
+            Err(ReservationBoundError::InvalidAttempts)
+        );
+    }
+
+    /// F2 pin: this is the ONLY assertion in this lane that fails to compile
+    /// on `bd557978` (`describe_pricing_source` does not exist pre-fix) —
+    /// see that function's own doc comment for why it exists: three lanes in
+    /// a row had no way to see, from a reservation's own record, which
+    /// pricing source actually produced its bound.
+    #[test]
+    fn describe_pricing_source_names_every_provenance_variant() {
+        assert_eq!(
+            describe_pricing_source(PricingProvenance::CanonicalExact),
+            "canonical_exact"
+        );
+        assert_eq!(
+            describe_pricing_source(PricingProvenance::KnowledgeTable),
+            "knowledge_table"
+        );
+        assert_eq!(
+            describe_pricing_source(PricingProvenance::WorstCase),
+            "worst_case"
+        );
+    }
+
+    // NOTE on the `KnowledgeTable` branch's own coverage: every real,
+    // non-local, non-zero-priced row currently in `cost_router::knowledge`
+    // already has a matching entry in the canonical registry (by design —
+    // see that module's own "pricing agrees with the canonical table"
+    // comments), so no LIVE (provider, model) pair in this codebase can
+    // reach the `KnowledgeTable` arm via `plan_reservation_bound` today.
+    // `unknown_model_uses_worst_case_pricing` just above already proves the
+    // fallthrough PAST it is intact: "provider-that-is-not-in-registry" /
+    // "brand-new-model" misses `maybe_get_pricing` (as before this lane) AND
+    // misses `cost_router::knowledge::lookup` (not a curated pair either),
+    // landing on `WorstCase` exactly as it did pre-fix. The `KnowledgeTable`
+    // arm itself reuses the identical `Pricing`-construction shape
+    // `maybe_get_pricing`'s own `CanonicalExact` arm uses one line above it,
+    // and is covered by code review parity with that arm and with the
+    // already-tested `WorstCase` arm, rather than by a live pair no current
+    // data can provide.
 
     #[test]
     fn free_tiers_do_not_require_limits_or_pricing() {
@@ -303,7 +692,10 @@ mod tests {
                 Err(ReservationBoundError::InvalidRate { field: "input" })
             );
         }
-        for bad in [Some(0.0), Some(-1.0), Some(f64::NAN), Some(f64::INFINITY)] {
+        // H4: 0.0 is no longer here — an optional rate of exactly zero is
+        // "free", not invalid (see `zero_cache_write_rate_is_treated_as_free_not_invalid`
+        // below).
+        for bad in [Some(-1.0), Some(f64::NAN), Some(f64::INFINITY)] {
             let mut p = pricing();
             p.cache_write = bad;
             assert_eq!(
@@ -316,6 +708,55 @@ mod tests {
                 Err(ReservationBoundError::InvalidRate {
                     field: "cache_write"
                 })
+            );
+        }
+    }
+
+    /// H4 (Lane M live evidence, 2026-09-08): every zai/glm-4.7 call was
+    /// refused in under a second with "provider budget is unknown; refusing
+    /// call: cannot authorize provider call: cache_write pricing rate must
+    /// be finite and positive" — that provider genuinely has no cache-write
+    /// premium (rate 0.0), and `optional_positive_rate` treated 0.0 the same
+    /// as missing/invalid. A rate of exactly zero must produce the SAME
+    /// bound as no rate at all (excluded from the max-rate fold either way),
+    /// not an error. Before the fix this failed with exactly the
+    /// `InvalidRate { field: "cache_write" }` error quoted above (see
+    /// `invalid_rates_fail_closed`, which asserted this same input was an
+    /// error prior to this change).
+    #[test]
+    fn zero_cache_write_rate_is_treated_as_free_not_invalid() {
+        let mut free = pricing();
+        free.cache_write = Some(0.0);
+        let mut absent = pricing();
+        absent.cache_write = None;
+        let cfg = config(Some(100), Some(20));
+
+        let free_bound = calculate_bound(&cfg, 1, free, PricingProvenance::CanonicalExact).unwrap();
+        let absent_bound =
+            calculate_bound(&cfg, 1, absent, PricingProvenance::CanonicalExact).unwrap();
+
+        assert_eq!(free_bound.amount_usd, absent_bound.amount_usd);
+    }
+
+    /// Regression guard alongside the fix above: a genuinely invalid
+    /// cache_write rate (negative, NaN, infinite) must still fail closed —
+    /// only exactly 0.0 is "free".
+    #[test]
+    fn negative_or_nan_cache_write_rate_still_fails_closed() {
+        for bad in [Some(-1.0), Some(f64::NAN), Some(f64::INFINITY)] {
+            let mut p = pricing();
+            p.cache_write = bad;
+            assert_eq!(
+                calculate_bound(
+                    &config(Some(100), Some(20)),
+                    1,
+                    p,
+                    PricingProvenance::CanonicalExact
+                ),
+                Err(ReservationBoundError::InvalidRate {
+                    field: "cache_write"
+                }),
+                "cache_write = {bad:?} must still fail closed"
             );
         }
     }

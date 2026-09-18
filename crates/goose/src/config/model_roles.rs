@@ -110,6 +110,22 @@ impl CoordinatorEligibility {
 /// fail closed and a known non-default model still needs harness graduation
 /// evidence before it may coordinate. All models remain available to the
 /// mechanical routing lane.
+///
+/// ## Distinct from the roadmap-decomposition planner gate (2026-09-09)
+///
+/// This function is deliberately conservative — it grants `TrustedDefault`
+/// to exactly the ONE compiled-in route ([`DEFAULT_HARNESS_PROVIDER_ID`]/
+/// [`DEFAULT_HARNESS_MODEL_ID`]) and treats every other model, however
+/// strong, as only a `HeuristicCandidate` — because it gates the SESSION
+/// coordinator: the model that owns the top-level coding DAG for an entire
+/// run with no further human check. Since Round C (`HARNESS_LOOP_LOG.md`
+/// Lane Z3), the roadmap-DECOMPOSITION planner uses a different, narrower
+/// gate instead: `cost_router::capability_directory::pin_clears_orchestrate_
+/// floor` — "clears the ORCHESTRATE floor (0.80) or carries graduated
+/// evidence" — for a single PLANNING pass whose output (goals + acceptance
+/// criteria) is itself reviewed at approval before anything executes. Do not
+/// widen THIS function's gate to match that one; they answer different
+/// questions with different blast radii.
 pub fn assess_harness_coordinator(provider: &str, model: &str) -> CoordinatorEligibility {
     let Some((knowledge, _confidence)) =
         crate::cost_router::lookup_with_confidence(provider, model)

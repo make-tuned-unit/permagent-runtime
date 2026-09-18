@@ -973,10 +973,23 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
             // every code goal before cost is even considered, and the routing
             // below can never be exercised. The only InternalSubagent worker
             // before this was the read-only `reviewer`.
+            //
+            // `search`/`testing` (Z1-3, harness loop Lane M6 Defect #4): honest
+            // additions, not aspirational ones — the `developer` extension this
+            // worker inherits already exposes a literal `search` tool
+            // (ripgrep-backed, `developer/search.rs`) and a `verify` tool that
+            // runs this project's own test command (`developer/verify.rs`,
+            // reused by `RepoFacts`). Before this, a goal tagged `search` or
+            // `testing` — a tag `decompose_roadmap`'s planner reaches for
+            // often, since it names a real activity — zeroed out dispatch
+            // entirely with "No suitable worker available" even though the one
+            // always-available internal worker could already do it.
             tool_kinds: vec![
                 "code_edit".to_string(),
                 "shell".to_string(),
                 "git".to_string(),
+                "search".to_string(),
+                "testing".to_string(),
             ],
             // Derives WorkflowRole::Edit, so PERMAGENT_ROLE_EDIT_PROVIDER +
             // _MODEL choose the engine behind it — Kimi (moonshot), Grok (xai),
@@ -1006,9 +1019,14 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
                    assume a bug until you have checked, and treat the author's reasoning as a \
                    claim to test, not evidence. Review through five lenses — correctness, \
                    security, performance, spec-fit, and test-integrity (were tests weakened or \
-                   deleted to pass?). You are READ-ONLY: read and analyze, never edit. Default \
-                   to reject — if you cannot confidently sign off, the verdict is UNCERTAIN, \
-                   not APPROVE"
+                   deleted to pass?). You are READ-ONLY: read and analyze, never edit — and you \
+                   must not modify any file by any means, including through shell (no sed -i, no \
+                   output redirection, no rm, no git commit/checkout --); you keep shell only to \
+                   run read-only investigation and the verify command, never to change files. \
+                   Default to reject — if you cannot confidently sign off, the verdict is \
+                   UNCERTAIN, not APPROVE. A suggestion outside the task's own stated scope is a \
+                   non-blocking NOTE — never grounds for REQUEST_CHANGES; you are checking \
+                   whether THIS diff does what was asked, not proposing more work"
                 .to_string(),
             // `review` derives WorkflowRole::Review (cost_router::role_map::derive_role), so a
             // configured REVIEW role→model routes this delegate to a DIFFERENT-family model;
@@ -1471,6 +1489,28 @@ workers:
         );
     }
 
+    /// Z1-3 (harness loop, Lane M6 Defect #4): `decompose_roadmap`'s planner
+    /// tags a goal `search` or `testing` often, since those are real
+    /// activities — but before this the roster had zero dispatchable workers
+    /// declaring either, so `select_best_worker` returned "No suitable
+    /// worker available" and the goal never dispatched at all, no work of any
+    /// kind attempted. Permagent's own `developer` extension already exposes
+    /// a ripgrep-backed `search` tool and a `verify` tool that runs this
+    /// project's own test command, so declaring these is the honest fix, not
+    /// an aspirational widening.
+    #[test]
+    fn the_permagent_harness_declares_search_and_testing_it_can_already_service() {
+        let roster = default_roster();
+        let harness = &roster["permagent"];
+        for kind in ["search", "testing"] {
+            assert!(
+                harness.tool_kinds.iter().any(|k| k == kind),
+                "the harness must declare '{kind}' or a goal tagged with it can never dispatch \
+                 to any worker"
+            );
+        }
+    }
+
     /// Ruling (2026-08-09): a flat-rate subscription call costs nothing
     /// at the margin, so it outranks a cheap metered API. The harness is the
     /// fallback tier, not the default for routine coding work.
@@ -1596,6 +1636,29 @@ workers:
             reviewer.routing_role(),
             Some(crate::cost_router::WorkflowRole::Review),
             "the reviewer must route to the Review role for cross-vendor dispatch"
+        );
+        // E6: an out-of-scope suggestion is a non-blocking NOTE, never a
+        // REQUEST_CHANGES — pinned against Lane A's defect 2 (a reviewer
+        // suggesting an unrequested "discount larger than base" error case
+        // burned an entire turn budget on an already-solved, already-verified
+        // task).
+        assert!(
+            reviewer.role.contains("non-blocking"),
+            "the reviewer's mandate must say out-of-scope suggestions are non-blocking: {:?}",
+            reviewer.role
+        );
+        // H2 (Lane G review, finding 2): the reviewer keeps `shell` (needed
+        // to run verify/tests) with no read-only enforcement on it — a
+        // reviewer could otherwise `sed -i`/redirect/`rm`/`git commit`
+        // through shell and defeat the whole point of the allowlist. There
+        // is no read-only shell tool here, so the mandate text must say
+        // explicitly that READ-ONLY covers shell too, not just `write`/
+        // `edit`.
+        assert!(
+            reviewer.role.contains("shell"),
+            "the reviewer's mandate must say explicitly that it must not \
+             modify files through shell: {:?}",
+            reviewer.role
         );
 
         // Claude Code: external CLI, prompt token present, gated on the binary.

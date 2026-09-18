@@ -884,6 +884,10 @@ mod tests {
 
     #[tokio::test]
     async fn new_install_seeds_with_current_version_and_hash() {
+        // Initialize the process-lifetime test root before overriding the env.
+        // Otherwise a concurrent test can initialize it while this guard is
+        // held and redirect later starter writes away from this tempdir.
+        let _ = crate::test_support::test_root();
         let tmp = TempDir::new().unwrap();
         let _guard =
             env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);

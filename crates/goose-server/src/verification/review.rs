@@ -28,10 +28,11 @@ use serde_json::Value;
 use std::path::Path;
 
 use permagent::cost_router::{
-    build_review_prompt, build_rubric_prompt, gate_decision, parse_review, review_required,
-    reviewer_spend_gate, select_reviewer, GateDecision, ReviewFinding, ReviewLens, ReviewOutcome,
-    ReviewVerdict, ReviewerPick, ReviewerSelection, SpendDecision, REVIEW_ESCALATE_AT,
-    REVIEW_RUBRIC_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT,
+    build_review_prompt, build_review_prompt_with_call_sites, build_rubric_prompt, gate_decision,
+    gate_decision_with_call_sites, parse_review, render_call_site_section, review_required,
+    reviewer_spend_gate, select_reviewer, CallSiteEnumeration, GateDecision, ReviewFinding,
+    ReviewLens, ReviewOutcome, ReviewVerdict, ReviewerPick, ReviewerSelection, SpendDecision,
+    REVIEW_ESCALATE_AT, REVIEW_RUBRIC_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT,
 };
 
 /// Where the review lands on the goal card: inside the verdict record the
@@ -260,6 +261,23 @@ impl IndependentReview {
                     f.evidence.trim()
                 }
             ));
+            // G26 MED-4: E7's call-site enumeration is deliberately
+            // recall-first (see `cost_router::call_site_completeness`'s
+            // module doc) — a same-named symbol elsewhere, or a call site
+            // the new signature genuinely does not affect, can HOLD as a
+            // false positive. Without this, the only way to resolve one was
+            // the reviewer re-judging a bare `file:line` snippet on the next
+            // round — the worker itself had no way to say anything. Give it
+            // one: explain why in the summary, and the reviewer can mark the
+            // site UNAFFECTED next round instead of holding on it again.
+            if f.lens == ReviewLens::CallSiteCompleteness {
+                out.push_str(
+                    "    if this call site does not actually need a change for the new \
+                     signature, say so explicitly in your summary with the reason — the \
+                     reviewer re-checks it next round and can mark it UNAFFECTED instead of \
+                     holding on it again\n",
+                );
+            }
         }
         if let Some(pick) = &self.reviewer {
             out.push_str(&format!("\nReviewed by {} ({}).\n", pick.label(), pick.why));
@@ -408,6 +426,28 @@ pub struct ReviewInputs {
     pub worker: Option<(String, String)>,
     /// The previous round's review, for the repeated-finding cap.
     pub prior: Option<IndependentReview>,
+    /// E7 (`permagent::cost_router::call_site_completeness`): the call sites
+    /// of any function/method signature change detected in `body`, computed
+    /// by the caller (`verification::run_independent_review`) from a BOUNDED
+    /// snapshot of the SAME goal worktree the diff itself came from — never
+    /// an unconditional whole-repo read (see
+    /// `verification::bounded_repo_snapshot`: file-count and per-file/total
+    /// size caps, text files only, `.git`/`node_modules`/`target`/etc.
+    /// skipped). Empty when `body` triggered no detected signature change,
+    /// `mode` is Rubric (prose has no signature to change), or the worktree
+    /// could not be read — `run_review` then defers entirely to the ordinary
+    /// (pre-E7) prompt and gate.
+    pub call_site_enumerations: Vec<CallSiteEnumeration>,
+    /// R43b (`orchestrator::AC_EXISTENCE_ONLY_METADATA_KEY`): every one of
+    /// this goal's acceptance criteria reads as a claim that some code
+    /// EXISTS ("contains validation that ...", "the function is defined"),
+    /// never a claim about what running the change actually produces — the
+    /// A38 miss-1 shape, where a worker's own verify call found a genuine
+    /// pass against criteria that never exercised the real bug. When
+    /// `true`, [`ReviewInputs::task_spec`] appends an explicit instruction
+    /// requiring the reviewer to check real behavior, not just that code
+    /// was added, before it may APPROVE.
+    pub ac_existence_only: bool,
 }
 
 impl ReviewInputs {
@@ -422,6 +462,16 @@ impl ReviewInputs {
             for (i, c) in self.acceptance_criteria.iter().enumerate() {
                 s.push_str(&format!("{}. {}\n", i + 1, c.trim()));
             }
+        }
+        if self.ac_existence_only {
+            s.push_str(
+                "\n\nR43b NOTE: every acceptance criterion above only claims that some code \
+                 exists (\"contains validation that ...\", \"the function is defined\") — none \
+                 of them says what running the change actually produces. Do not APPROVE on the \
+                 strength of these criteria alone: find and state, in CHECKED, what you \
+                 confirmed about the change's REAL runtime behavior (an actual input and its \
+                 observed output/exit code), not merely that supporting code was added.",
+            );
         }
         s
     }
@@ -543,14 +593,25 @@ pub async fn run_review(
         .as_ref()
         .map(|p| p.findings.clone())
         .unwrap_or_default();
-    let user_prompt = match mode {
-        ReviewMode::Code => build_review_prompt(
+    // E7: only Code mode ever has call sites — a Rubric goal's `body` is
+    // prose, not a diff, so there is no signature to have changed.
+    let call_site_section = (mode == ReviewMode::Code && !inputs.call_site_enumerations.is_empty())
+        .then(|| render_call_site_section(&inputs.call_site_enumerations));
+    let user_prompt = match (mode, &call_site_section) {
+        (ReviewMode::Code, Some(section)) => build_review_prompt_with_call_sites(
+            &inputs.task_spec(),
+            &body,
+            &inputs.verify_output,
+            &prior_findings,
+            section,
+        ),
+        (ReviewMode::Code, None) => build_review_prompt(
             &inputs.task_spec(),
             &body,
             &inputs.verify_output,
             &prior_findings,
         ),
-        ReviewMode::Rubric => build_rubric_prompt(
+        (ReviewMode::Rubric, _) => build_rubric_prompt(
             &inputs.task_spec(),
             &inputs.acceptance_criteria,
             &body,
@@ -600,8 +661,16 @@ pub async fn run_review(
         _ => 1,
     };
     // The trigger already ruled a code diff substantive; a prose artifact always
-    // is (there is no "trivial" essay).
-    let decision = gate_decision(&outcome, true, consecutive);
+    // is (there is no "trivial" essay). E7: when this diff carried a detected
+    // signature change, `gate_decision_with_call_sites` additionally HOLDS on
+    // any call site the reviewer's own table never accounted for — regardless
+    // of the verdict token above — before falling back to the identical
+    // `gate_decision` this call always used to make.
+    let decision = if inputs.call_site_enumerations.is_empty() {
+        gate_decision(&outcome, true, consecutive)
+    } else {
+        gate_decision_with_call_sites(&outcome, true, consecutive, &inputs.call_site_enumerations)
+    };
 
     let mut r = IndependentReview::base(mode, ReviewDecision::Blocked, String::new());
     r.verdict = Some(outcome.verdict);
@@ -852,7 +921,30 @@ mod tests {
             verify_output: "all checks passed".into(),
             worker: Some(("workerco".into(), "worker-1".into())),
             prior: None,
+            call_site_enumerations: Vec::new(),
+            ac_existence_only: false,
         }
+    }
+
+    // ── R43b: existence-only ACs must push the reviewer toward a real check ──
+
+    #[test]
+    fn task_spec_is_unchanged_when_acceptance_criteria_are_behavioural() {
+        let inputs = code_inputs();
+        assert!(!inputs.task_spec().contains("R43b NOTE"));
+    }
+
+    #[test]
+    fn task_spec_appends_an_explicit_behavioural_check_requirement_when_flagged() {
+        let mut inputs = code_inputs();
+        inputs.ac_existence_only = true;
+        let spec = inputs.task_spec();
+        assert!(spec.contains("R43b NOTE"));
+        assert!(spec.contains("REAL runtime behavior"));
+        // The ordinary sections are still present -- this is an addition,
+        // not a replacement.
+        assert!(spec.contains("ACCEPTANCE CRITERIA"));
+        assert!(spec.contains("Do the thing"));
     }
 
     #[tokio::test]
@@ -1036,6 +1128,8 @@ mod tests {
             verify_output: "no checks declared".into(),
             worker: Some(("workerco".into(), "worker-1".into())),
             prior: None,
+            call_site_enumerations: Vec::new(),
+            ac_existence_only: false,
         }
     }
 
@@ -1146,5 +1240,147 @@ mod tests {
         let back = IndependentReview::from_metadata(&meta).expect("round trip");
         assert_eq!(back.decision, ReviewDecision::Rejected);
         assert_eq!(back.mode, ReviewMode::Code);
+    }
+
+    // ── E7, end-to-end through the real headless path (`run_review`) ─────────
+
+    fn shipping_quote_call_sites() -> Vec<CallSiteEnumeration> {
+        vec![CallSiteEnumeration {
+            symbol: "shippingQuote".to_string(),
+            file: "src/shipping/quote.ts".to_string(),
+            call_sites: vec![
+                permagent::cost_router::CallSite {
+                    file: "src/checkout/checkout.ts".to_string(),
+                    line: 12,
+                    text: "return shippingQuote(order, region, opts);".to_string(),
+                },
+                permagent::cost_router::CallSite {
+                    file: "src/admin/manualQuote.ts".to_string(),
+                    line: 7,
+                    text: "return finalize(shippingQuote(order.region), order.override);"
+                        .to_string(),
+                },
+            ],
+        }]
+    }
+
+    /// The measured defect (`harness-refactor-shipping-quote-signature`), run
+    /// through the ACTUAL headless entry point rather than the pure gate
+    /// functions directly: the reviewer's raw response accounts for the
+    /// obvious `checkout.ts` call site but never mentions
+    /// `admin/manualQuote.ts` at all, and still emits `VERDICT: APPROVE`.
+    /// Before E7 was wired into `run_review`, this would have PASSED — this
+    /// pins that it no longer does.
+    #[tokio::test]
+    async fn e7_end_to_end_a_missed_caller_is_rejected_even_on_an_approve() {
+        let mut inputs = code_inputs();
+        inputs.call_site_enumerations = shipping_quote_call_sites();
+        let raw = "VERDICT: APPROVE\n\
+                   CHECKED: read the diff and the checkout call site\n\
+                   CALLSITE shippingQuote | src/checkout/checkout.ts:12 | UPDATED | passes the new opts arg\n";
+        let r = run_review(
+            &inputs,
+            &pick(true),
+            Some(&SpendDecision::Allow),
+            &Canned(raw.into()),
+        )
+        .await;
+        assert_eq!(
+            r.decision,
+            ReviewDecision::Rejected,
+            "a call site absent from the reviewer's own table must reject, not pass, even on APPROVE"
+        );
+        assert!(!r.decision.allows_completion());
+        assert_eq!(r.findings.len(), 1);
+        assert_eq!(r.findings[0].lens, ReviewLens::CallSiteCompleteness);
+        assert!(
+            r.findings[0].evidence.contains("admin/manualQuote.ts:7"),
+            "{:?}",
+            r.findings[0]
+        );
+    }
+
+    /// Control case: the reviewer's table accounts for BOTH call sites
+    /// (one UPDATED, one UNAFFECTED) — the APPROVE stands.
+    #[tokio::test]
+    async fn e7_end_to_end_all_callers_accounted_for_approves() {
+        let mut inputs = code_inputs();
+        inputs.call_site_enumerations = shipping_quote_call_sites();
+        let raw = "VERDICT: APPROVE\n\
+                   CHECKED: read the diff and every listed call site\n\
+                   CALLSITE shippingQuote | src/checkout/checkout.ts:12 | UPDATED | passes the new opts arg\n\
+                   CALLSITE shippingQuote | src/admin/manualQuote.ts:7 | UNAFFECTED | this call omits opts positionally; default applies\n";
+        let r = run_review(
+            &inputs,
+            &pick(true),
+            Some(&SpendDecision::Allow),
+            &Canned(raw.into()),
+        )
+        .await;
+        assert_eq!(r.decision, ReviewDecision::Passed);
+        assert!(r.decision.allows_completion());
+    }
+
+    /// A diff with no detected/injected call sites (the ordinary case, and
+    /// every pre-existing test above) behaves exactly as before E7 existed.
+    #[tokio::test]
+    async fn e7_absent_call_sites_is_the_unchanged_ordinary_path() {
+        let r = run_review(
+            &code_inputs(),
+            &pick(true),
+            Some(&SpendDecision::Allow),
+            &Canned("VERDICT: APPROVE\nCHECKED: the new fn and its callers".into()),
+        )
+        .await;
+        assert_eq!(r.decision, ReviewDecision::Passed);
+    }
+
+    // ── G26 MED-4: an E7 hold tells the worker how to dispute it ──────────────
+
+    /// The corrective plan for an E7 finding gives the worker a way to
+    /// dispute a false positive (`enumerate_call_sites` is deliberately
+    /// recall-first) instead of only "fix it" — without this, only the
+    /// reviewer's own next-round re-judgment of a bare `file:line` snippet
+    /// could resolve one.
+    #[tokio::test]
+    async fn e7_hold_detail_tells_the_worker_it_can_mark_a_site_unaffected() {
+        let mut inputs = code_inputs();
+        inputs.call_site_enumerations = shipping_quote_call_sites();
+        let raw = "VERDICT: APPROVE\n\
+                   CHECKED: read the diff and the checkout call site\n\
+                   CALLSITE shippingQuote | src/checkout/checkout.ts:12 | UPDATED | passes the new opts arg\n";
+        let r = run_review(
+            &inputs,
+            &pick(true),
+            Some(&SpendDecision::Allow),
+            &Canned(raw.into()),
+        )
+        .await;
+        assert_eq!(r.decision, ReviewDecision::Rejected);
+        let plan = r.corrective_plan();
+        assert!(plan.contains("admin/manualQuote.ts:7"));
+        assert!(
+            plan.contains("UNAFFECTED"),
+            "the worker must be told it can dispute a call site: {plan}"
+        );
+    }
+
+    /// Control: an ORDINARY (non-E7) finding's corrective plan carries no
+    /// such instruction — it is specific to `CallSiteCompleteness`.
+    #[tokio::test]
+    async fn a_non_e7_hold_detail_carries_no_unaffected_instruction() {
+        let r = run_review(
+            &code_inputs(),
+            &pick(true),
+            Some(&SpendDecision::Allow),
+            &Canned(
+                "VERDICT: REQUEST_CHANGES\nCHECKED: the diff\n\
+                 FINDING TEST_INTEGRITY | the assertion was narrowed to always hold | crates/goose/src/lib.rs:42\n"
+                    .into(),
+            ),
+        )
+        .await;
+        let plan = r.corrective_plan();
+        assert!(!plan.contains("UNAFFECTED"), "{plan}");
     }
 }

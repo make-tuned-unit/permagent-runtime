@@ -35,7 +35,7 @@
 use crate::agents::self_knowledge::{FeatureCategory, FeatureDescriptor, StateSource};
 use crate::config::Config;
 use crate::decision_inbox::escalate::{
-    DecisionDraft, DecisionKind, DecisionSink, RecordedDecision, ResumeMode,
+    DecisionDraft, DecisionKind, DecisionSink, EscalationKind, RecordedDecision, ResumeMode,
 };
 
 // ── Flag gate (default OFF) ───────────────────────────────────────────────────
@@ -472,6 +472,14 @@ pub fn draft_decision_from_proposal(proposal: &TriageProposal) -> DecisionDraft 
         requested_by_display: CONCIERGE_NAME.to_string(),
         raw_payload: None,
         validation_errors: Vec::new(),
+        // Concierge builds a typed `ApproveReview` draft directly — never
+        // through the `escalate` tool's freeform `kind` field, so there is
+        // nothing to have coerced.
+        requested_kind: None,
+        // ApproveReview is the decisions-table kind `escalate.kind =
+        // approval` maps to (see `map_kind`) — the reverse mapping for a
+        // draft built outside the `escalate` tool's own payload.
+        escalate_kind: EscalationKind::Approval,
     }
 }
 

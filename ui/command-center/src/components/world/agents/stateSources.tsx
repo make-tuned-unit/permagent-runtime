@@ -54,8 +54,10 @@ function mapHenryState(currentState: string): AgentHudState {
 export function AgentStateSources() {
   // ── Henry — daemon status poll ─────────────────────────────────────
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false, polling = false;
     const poll = async () => {
+      if (polling || cancelled) return;
+      polling = true;
       try {
         const s = await api.getHenryStatus();
         if (cancelled) return;
@@ -74,7 +76,7 @@ export function AgentStateSources() {
           // Unreachable daemon must not leave a stale tool claim floating.
           setHenryWork({ tool: null, tasksInFlight: 0 });
         }
-      }
+      } finally { polling = false; }
     };
     poll();
     const t = setInterval(poll, HENRY_POLL_MS);

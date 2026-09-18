@@ -436,6 +436,34 @@ pub fn install_post_landing_hook(hook: PostLandingHook) {
     let _ = POST_LANDING_HOOK.set(hook);
 }
 
+/// H1 (G8 review, harness loop Lane E3 2026-09-10): the working directory
+/// independently recorded for whatever session dispatched this goal —
+/// `sessions.working_dir`, set at session creation and never re-derived
+/// from the process's own live `current_dir()`. Read via the card's
+/// `worker_session_id` (the same key R3/the requeue guard already use to
+/// identify "the session that ran this goal"). `None` when the goal has no
+/// recorded dispatching session, or that session's row cannot be found —
+/// [`crate::goal_landing::verify_worktree_landing_target`] treats an
+/// unknown working directory as a refusal, never as license to trust the
+/// worktree's own claim about where it came from.
+///
+/// Lane R22d: `pub(crate)` (was private) so `orchestrator.rs`'s salvage path
+/// can resolve the SAME trusted landing root this function's own caller
+/// (`land_approved_goal`) actually lands onto — salvage's notion of
+/// "already landed" must never disagree with the real landing decision.
+pub(crate) async fn goal_dispatching_session_working_dir(
+    pool: &Pool<Sqlite>,
+    metadata: &serde_json::Value,
+) -> Option<String> {
+    let session_id = metadata.get("worker_session_id").and_then(|v| v.as_str())?;
+    sqlx::query_scalar::<_, String>("SELECT working_dir FROM sessions WHERE id = ?")
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Fast-forward an approved goal's work onto the project trunk.
 ///
 /// The first member is `None` when there is nothing to land at all (no
@@ -453,10 +481,16 @@ pub fn install_post_landing_hook(hook: PostLandingHook) {
 /// approval actually takes: `approve_review` is outbox-eligible, so
 /// `execute_effect` delegates before reaching its own inline arm. This code
 /// spent its whole life in that unreachable arm (L7, 2026-08-31).
+///
+/// `headless_auto_land` (Lane R63b) is the `auto_land_allowed` the approval
+/// arrived with — true only on the `PERMAGENT_HEADLESS_AUTOLAND` path. Only
+/// then does a `NeedsMerge` get the rebase + fresh re-verify retry below;
+/// interactive approvals keep reporting "needs merge" unchanged.
 async fn land_approved_goal(
     pool: &Pool<Sqlite>,
     goal_id: &str,
     project_id: Option<&str>,
+    headless_auto_land: bool,
 ) -> (
     Option<(String, crate::goal_landing::LandOutcome)>,
     Option<String>,
@@ -465,21 +499,484 @@ async fn land_approved_goal(
         return (None, None);
     };
     let project_id = project_id.unwrap_or(card.project_id.as_str()).to_string();
-    let Some(root) = crate::projects::get_project_by_id_or_slug(pool, &project_id)
+    let configured_root = crate::projects::get_project_by_id_or_slug(pool, &project_id)
         .await
         .ok()
         .flatten()
-        .and_then(|project| project.root_path)
-    else {
-        return (None, None);
+        .and_then(|project| project.root_path);
+
+    // The ROLLING `dispatch_evidence.commits` only answers "did THIS attempt
+    // commit anything new" — Y16b resets it to the prior attempt's own tip
+    // on every re-dispatch, so once an earlier attempt commits a real fix,
+    // every LATER attempt's rolling evidence reads empty even though the
+    // fix already sits, unlanded, on the goal branch.
+    let rolling_commits_empty = card
+        .metadata_json
+        .pointer("/dispatch_evidence/commits")
+        .and_then(|v| v.as_array())
+        .is_none_or(|commits| commits.is_empty());
+    let worktree_path_hint = card
+        .metadata_json
+        .pointer("/dispatch_evidence/worktree_path")
+        .and_then(|v| v.as_str());
+
+    // R43a (A38 Miss 2): before refusing on an empty rolling gate, consult
+    // the SAME trunk-relative question `maybe_hold_review` (R42a) and
+    // `maybe_salvage_committed_work`/the read-only-landing refusal
+    // (R22d/R29b) already trust — does the goal branch carry ANY commit the
+    // trunk hasn't seen yet, regardless of which attempt made it. A goal
+    // reviewed and approved on the strength of an earlier attempt's commit
+    // must not be refused here just because THIS attempt's own rolling
+    // evidence is empty.
+    //
+    // R43a-b (G31 review, HIGH-1): an unlanded commit ALONE is not evidence
+    // it was ever verified — R28a's teardown checkpoint commits every dirty
+    // tracked change unconditionally, with no build/test check. Mirror
+    // `maybe_hold_review`'s own R42a-b discipline: only credit the
+    // trunk-relative commit as landable when EITHER this goal's own
+    // recorded verdict is a PASS bound to that exact head
+    // (`dispatch_evidence.head_commit == worktree HEAD`), or a fresh,
+    // time-boxed verify against the worktree genuinely passes right now
+    // (`run_fresh_verify_for_hold`, the identical helper `maybe_hold_
+    // review`'s override calls). Neither is attempted when the goal's own
+    // `salvage_receipt` already recorded a verify FAILURE for this branch —
+    // salvage already spent time proving this exact, still-unmoved range
+    // broken.
+    //
+    // Falls back to the plain refusal below whenever no trusted trunk root
+    // resolves, the worktree hint is missing, nothing is actually unlanded
+    // there, or nothing verifies at that head — never widened beyond that.
+    // `refusal_reason` names WHY, for the note below: `no_evidence` (no
+    // worktree hint to even consult), `no_trunk` (no trusted trunk root
+    // resolved), `nothing_unlanded` (trunk resolved; zero unlanded
+    // commits), `unverified_head` (commits are unlanded but none verify at
+    // that exact head).
+    let (trunk_relative_head, refusal_reason) = if rolling_commits_empty {
+        match worktree_path_hint {
+            Some(worktree) => {
+                let worktree_path = std::path::Path::new(worktree);
+                match crate::agents::platform_extensions::orchestrator::commits_unlanded_at_trunk(
+                    pool,
+                    &card,
+                    worktree_path,
+                )
+                .await
+                {
+                    Ok((unlanded, _trunk_head)) if unlanded > 0 => {
+                        let salvage_already_failed = card
+                            .metadata_json
+                            .pointer("/salvage_receipt/outcome")
+                            .and_then(|v| v.as_str())
+                            == Some("salvage_verify_failed");
+                        if salvage_already_failed {
+                            (None, "unverified_head")
+                        } else {
+                            let current_head =
+                                crate::agents::platform_extensions::orchestrator::worktree_head_commit(
+                                    worktree_path,
+                                )
+                                .await;
+                            let recorded_pass_at_head = card
+                                .metadata_json
+                                .pointer("/dispatch_evidence/verdict/status")
+                                .and_then(|v| v.as_str())
+                                == Some("pass")
+                                && match (
+                                    card.metadata_json
+                                        .pointer("/dispatch_evidence/head_commit")
+                                        .and_then(|v| v.as_str()),
+                                    current_head.as_deref(),
+                                ) {
+                                    (Some(recorded), Some(current)) => {
+                                        crate::agents::platform_extensions::orchestrator::sha_matches(
+                                            recorded, current,
+                                        )
+                                    }
+                                    _ => false,
+                                };
+                            let verified = recorded_pass_at_head
+                                || crate::agents::platform_extensions::orchestrator::run_fresh_verify_for_hold(
+                                    pool,
+                                    &card,
+                                    worktree_path,
+                                )
+                                .await;
+                            if verified {
+                                match current_head {
+                                    Some(head) => (Some(head), ""),
+                                    None => (None, "unverified_head"),
+                                }
+                            } else {
+                                (None, "unverified_head")
+                            }
+                        }
+                    }
+                    Ok(_) => (None, "nothing_unlanded"),
+                    Err(_) => (None, "no_trunk"),
+                }
+            }
+            None => (None, "no_evidence"),
+        }
+    } else {
+        (None, "")
     };
 
-    let Some(req) =
-        crate::goal_landing::land_request_from_metadata(&card.metadata_json, Some(&root))
-    else {
-        return (None, None);
+    // R62d (A61 Miss 5): a goal `maybe_hold_review` allowed as already
+    // satisfied at its baseline (a genuine verify bound to this attempt,
+    // nothing to commit, the trunk already carrying its files as verified)
+    // has nothing to land by construction. Complete it with the receipt's
+    // honest note and NO landing outcome — never a fabricated "landed" —
+    // instead of parking it for "no commits past the baseline". Only when
+    // the trunk check itself found nothing unlanded, and only while the
+    // receipt still names this worker session at the worktree's current
+    // head.
+    if rolling_commits_empty
+        && trunk_relative_head.is_none()
+        && refusal_reason == "nothing_unlanded"
+    {
+        if let Some(worktree) = worktree_path_hint {
+            if let Some(note) =
+                crate::agents::platform_extensions::orchestrator::already_satisfied_receipt_still_holds(
+                    &card,
+                    std::path::Path::new(worktree),
+                )
+                .await
+            {
+                tracing::info!(
+                    goal_id,
+                    "land_skipped reason=already_satisfied: {note}"
+                );
+                return (None, Some(format!("note: {note}")));
+            }
+        }
+    }
+
+    // Missing evidence or empty history cannot establish committed work.
+    // Preserve an actionable refusal even if the upstream hold was bypassed.
+    if rolling_commits_empty && trunk_relative_head.is_none() {
+        let worktree = worktree_path_hint.unwrap_or("unknown worktree");
+        // R43a-c: the card note stays exactly the human sentence it always
+        // was — `refusal_reason` is a machine diagnostic and goes to
+        // tracing plus the persisted, structured landing outcome below,
+        // never prepended onto user-visible text (two pre-existing tests,
+        // `land_empty_commit_evidence_reports_note_and_unblock` and
+        // `land_approved_goal_requires_a_verified_head_for_the_trunk_
+        // relative_override`, want the same note shape for different
+        // reasons — only the structured field can distinguish them).
+        let note = format!(
+            "note: not landed — goal {goal_id} has no commits past the baseline \
+             (uncommitted work in {worktree})"
+        );
+        tracing::warn!(
+            goal_id,
+            reason = refusal_reason,
+            "land_refused reason={refusal_reason}: {note}"
+        );
+        let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
+        persist_landing_outcome(pool, goal_id, &card, &outcome, Some(refusal_reason)).await;
+        crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
+            .await;
+        return (Some((project_id, outcome)), Some(note));
+    }
+
+    // When the override above found real trunk-unlanded work despite empty
+    // rolling evidence, hand the rest of this function a metadata view
+    // corrected to match: `evidence_head_and_worktree`/`land_request_from_
+    // metadata` both deliberately read the ROLLING `commits`/`head_commit`
+    // pair as "nothing to land" whenever `commits` is empty (see their own
+    // doc comment and `goal_landing::tests::a_worker_that_committed_
+    // nothing_has_nothing_to_land`) — exactly the trap this override exists
+    // to see past. Only `commits`/`head_commit` are substituted; every
+    // other field (worktree_path, baseline_commit, ...) is the card's own.
+    let landing_metadata = match &trunk_relative_head {
+        Some(head) => {
+            let mut evidence = card
+                .metadata_json
+                .get("dispatch_evidence")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            evidence.insert(
+                "head_commit".to_string(),
+                serde_json::Value::String(head.clone()),
+            );
+            evidence.insert(
+                "commits".to_string(),
+                serde_json::json!([
+                    "(trunk-relative: unlanded commit(s) from an earlier attempt, R43a)"
+                ]),
+            );
+            serde_json::json!({ "dispatch_evidence": evidence })
+        }
+        None => card.metadata_json.clone(),
     };
-    let outcome = crate::goal_landing::land(&req).await;
+
+    let Some((worktree_path, _head_commit)) =
+        crate::goal_landing::evidence_head_and_worktree(&landing_metadata)
+    else {
+        // A41 audit (row #23): `landing_metadata` is built above to always
+        // carry a usable `head_commit`/non-empty `commits` pair once the
+        // trunk-relative override fired (`trunk_relative_head.is_some()`),
+        // so reaching here on that path would itself be a bug — but the
+        // NON-override path (`rolling_commits_empty == false`) still hands
+        // this the card's own raw metadata unmodified, and nothing enforces
+        // `head_commit` being present/non-empty whenever `commits` merely
+        // happens to be non-empty.
+        //
+        // R43a-b (M38 gate): two genuinely different shapes reach here and
+        // they are NOT the same defect. A `head_commit` key present but
+        // blank/empty (or `commits` present-but-empty) is a real,
+        // inconsistent evidence shape — the worker's own session recorded
+        // SOME commits yet left nothing usable to land from; that must stay
+        // a reported, parked refusal (unchanged from the A41 hardening
+        // below). But a `head_commit` key entirely ABSENT means this
+        // evidence was never shaped to describe a land in the first place —
+        // the sibling-credit (`try_credit_sibling_goals`) and
+        // promoted-dependent (Y15) card shapes both stamp `commits` as a
+        // marker/receipt with no `head_commit` field at all, because the
+        // credited/promoted goal has no worktree of its OWN to land from
+        // (the commit belongs to a different goal's dispatch). Parking
+        // THOSE goals here re-fails a Review→Complete transition
+        // `advance_goal_checked_with_auto_land` already made before this
+        // function ever ran — the exact M38 gate regression (two
+        // pre-existing landing-success tests: `approving_a_review_
+        // dispatches_the_promoted_dependent`,
+        // `try_credit_sibling_goals_auto_lands_the_credited_goal_under_
+        // headless_auto_land`). Falls back to the ORIGINAL rolling-evidence
+        // behaviour for that shape: report it honestly (never silent) but
+        // never park a goal that has nothing of its own to land.
+        let worktree = worktree_path_hint.unwrap_or("unknown worktree");
+        let head_commit_key_present = landing_metadata
+            .pointer("/dispatch_evidence/head_commit")
+            .is_some();
+        if !head_commit_key_present {
+            let note = format!(
+                "land_refused reason=no_evidence: note: not landed — goal {goal_id} has no \
+                 worktree of its own to land from (worktree {worktree})"
+            );
+            tracing::info!(goal_id, "{note}");
+            let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
+            persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
+            return (Some((project_id, outcome)), Some(note));
+        }
+        let note = format!(
+            "land_refused reason=no_evidence_head: goal {goal_id} has no usable head commit \
+             to land (worktree {worktree})"
+        );
+        tracing::warn!(goal_id, "{note}");
+        let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
+        persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
+        crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
+            .await;
+        return (Some((project_id, outcome)), Some(note));
+    };
+
+    // R1 (harness loop, Lane D1, from Lane F8 forensics 2026-09-10): a
+    // project seeded with no `root_path` (the eval harness's default
+    // `personal` project, `session/spectral_schema.rs:610`, and any project
+    // created with no local folder) used to make this function return
+    // `(None, None)` right here — landing silently no-op'd, `Review ->
+    // Complete` proceeded unconditionally, and the card read as landed while
+    // the trunk never moved (F8's fx02/fx03: two genuinely-correct,
+    // oracle-passing fixes — 7/7 and 13/13 tests re-run against the pristine
+    // hidden oracle — lost this way, 100%-reproducing). When the project
+    // itself doesn't know its root, fall back to what the goal's own
+    // worktree knows about its git baseline before giving up.
+    //
+    // H1 (G8 review, harness loop Lane E3 2026-09-10): that fallback alone
+    // is not enough — "git says this is where the worktree came from" is
+    // not the same as "this is the project the user intended", and the
+    // daemon's own cwd could be exactly what a NULL `root_path` fell back
+    // to at dispatch time (`orchestrator.rs`, closed alongside this fix).
+    // `verify_worktree_landing_target` requires the recovered candidate to
+    // match an independently recorded working directory (the dispatching
+    // session's own `sessions.working_dir`) AND for the goal's own dispatch
+    // baseline to be a real ancestor of the candidate's HEAD before this
+    // fallback is trusted — see that function's own doc comment for why
+    // both checks are required. A mismatch is recorded and reported exactly
+    // like every other landing refusal in this function; it is never a
+    // silent no-op and never an attempted fast-forward.
+    let root = match configured_root {
+        Some(root) => Some(root),
+        None => match crate::goal_landing::resolve_primary_checkout_from_worktree(&worktree_path)
+            .await
+        {
+            Some(candidate) => {
+                let baseline_commit = card
+                    .metadata_json
+                    .pointer("/dispatch_evidence/baseline_commit")
+                    .and_then(|v| v.as_str());
+                let known_working_dir =
+                    goal_dispatching_session_working_dir(pool, &card.metadata_json).await;
+                match crate::goal_landing::verify_worktree_landing_target(
+                    &candidate,
+                    baseline_commit,
+                    known_working_dir.as_deref(),
+                )
+                .await
+                {
+                    Ok(()) => Some(candidate),
+                    Err(reason) => {
+                        let outcome = crate::goal_landing::LandOutcome::Skipped(format!(
+                            "landing target is not the goal's repo ({reason})"
+                        ));
+                        tracing::warn!(
+                            goal_id,
+                            project_id = %project_id,
+                            candidate_root = %candidate,
+                            %reason,
+                            "land_approved_goal: worktree-derived landing target failed \
+                             verification; refusing to land rather than trust an unverified \
+                             fallback"
+                        );
+                        persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
+                        return (Some((project_id, outcome)), None);
+                    }
+                }
+            }
+            None => None,
+        },
+    };
+
+    let Some(root) = root else {
+        // There IS real work to land (we already confirmed a head commit and
+        // a non-empty commit range above) but no root path could be
+        // resolved by any means — never silently return `(None, None)` here.
+        // Record the honest failure on the card and the approval response,
+        // exactly as `goal_landing::land`'s own refusals do.
+        let outcome = crate::goal_landing::LandOutcome::Skipped(format!(
+            "project '{project_id}' has no root_path and the goal's own worktree \
+             ('{worktree_path}') could not resolve a primary checkout via git — \
+             landing needs a repo root to fast-forward onto, not silence"
+        ));
+        tracing::warn!(
+            goal_id,
+            project_id = %project_id,
+            worktree_path = %worktree_path,
+            "land_approved_goal: no landing target could be resolved; recording an \
+             honest failure instead of the old silent no-op"
+        );
+        persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
+        return (Some((project_id, outcome)), None);
+    };
+
+    let Some(req) = crate::goal_landing::land_request_from_metadata(&landing_metadata, Some(&root))
+    else {
+        // A41 audit (row #23), same hardening as the `evidence_head_and_
+        // worktree` check above: `land_request_from_metadata` re-derives
+        // the same `(worktree, head_commit)` pair from `landing_metadata`
+        // (already proven resolvable a few lines up) and additionally
+        // needs the worktree path's own file name to derive a branch name
+        // — the only way to land here is a pathological worktree path
+        // (empty, `/`, or ending in `..`). Report it rather than silently
+        // returning `(None, None)`.
+        let note = format!(
+            "land_refused reason=no_evidence_head: goal {goal_id}'s worktree path \
+             ('{worktree_path}') could not be turned into a landing request"
+        );
+        tracing::warn!(goal_id, "{note}");
+        let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
+        persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
+        crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
+            .await;
+        return (Some((project_id, outcome)), Some(note));
+    };
+    let mut req = req;
+    let mut outcome = crate::goal_landing::land(&req).await;
+
+    // Lane R63b (M47 r63 s2): R56a's derived disjoint write scopes dispatch
+    // sibling goals in PARALLEL, so once the first lands the rest cannot
+    // fast-forward — fast-forward-only landing was only enough while siblings
+    // were serialized. Under headless auto-land, rebase the goal branch onto
+    // the moved trunk (never a merge commit: history stays linear), re-verify
+    // the rebased head, and land it through the SAME `land` call, so every
+    // receipt, note and consumer below is unchanged. The helper refuses
+    // unless the goal's write_scope and own changes are disjoint from what the
+    // trunk changed, the worktree is clean and the rebase applies. A refusal
+    // or conflict leaves the branch intact and keeps the honest `NeedsMerge`;
+    // a failed re-verify parks the goal. Bounded, because a sibling can land
+    // while this one re-verifies.
+    let mut card = card;
+    let mut rebase_refusal: Option<&'static str> = None;
+    if headless_auto_land {
+        for _ in 0..HEADLESS_REBASE_MAX_ATTEMPTS {
+            let crate::goal_landing::LandOutcome::NeedsMerge { trunk, .. } = &outcome else {
+                break;
+            };
+            let attempt =
+                crate::agents::platform_extensions::orchestrator::rebase_goal_branch_for_headless_land(
+                    pool,
+                    &card,
+                    std::path::Path::new(&worktree_path),
+                    &root,
+                    trunk,
+                    &req.branch,
+                    &req.head_commit,
+                )
+                .await;
+            // The helper re-points metadata on a rebase; re-read so the
+            // landing receipt below never writes a stale evidence copy back.
+            if let Some(fresh) = crate::cards::get_card(pool, goal_id).await.ok().flatten() {
+                card = fresh;
+            }
+            match attempt {
+                crate::agents::platform_extensions::orchestrator::HeadlessRebase::Verified {
+                    head,
+                } => {
+                    req.head_commit = head;
+                    outcome = crate::goal_landing::land(&req).await;
+                    rebase_refusal = Some("rebase_retries_exhausted");
+                }
+                crate::agents::platform_extensions::orchestrator::HeadlessRebase::NotRebased {
+                    reason,
+                } => {
+                    rebase_refusal = Some(reason);
+                    break;
+                }
+                crate::agents::platform_extensions::orchestrator::HeadlessRebase::ReverifyFailed {
+                    detail,
+                } => {
+                    let note = format!("note: not landed — {detail}");
+                    tracing::warn!(
+                        goal_id,
+                        reason = "rebase_reverify_failed",
+                        "land_refused reason=rebase_reverify_failed: {note}"
+                    );
+                    let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
+                    persist_landing_outcome(
+                        pool,
+                        goal_id,
+                        &card,
+                        &outcome,
+                        Some("rebase_reverify_failed"),
+                    )
+                    .await;
+                    crate::agents::platform_extensions::orchestrator::park_refused_goal(
+                        pool, &card, &note,
+                    )
+                    .await;
+                    return (Some((project_id, outcome)), Some(note));
+                }
+            }
+        }
+        if !matches!(outcome, crate::goal_landing::LandOutcome::NeedsMerge { .. }) {
+            rebase_refusal = None;
+        }
+    }
+
+    // YF2 (G6 review, Lane Y-fix 2026-09-09, finding #2): this outcome used
+    // to be computed and then discarded — only folded into a one-shot
+    // response string. Review -> Complete is unconditional, so a card could
+    // reach Complete with real commits whose `land()` call returned
+    // `NeedsMerge`/`Skipped`, and every later reader
+    // (`goal_landed_head_commit`, the CLI drain summary) had no durable way
+    // to tell that apart from a genuine landing — printing a fabricated
+    // `landed <id> → <sha>` line whenever the trunk had moved out from
+    // under the worker (e.g. a second goal in the same roadmap landing
+    // first). Persist it onto the card so those readers can gate on whether
+    // landing actually happened, not merely whether it was attempted.
+    persist_landing_outcome(pool, goal_id, &card, &outcome, rebase_refusal).await;
+
     let warning = if let crate::goal_landing::LandOutcome::NeedsMerge { branch, trunk } = &outcome {
         ensure_needs_merge_decision(pool, goal_id, &card.title, &card.project_id, branch, trunk)
             .await
@@ -492,6 +989,69 @@ async fn land_approved_goal(
     (Some((project_id, outcome)), warning)
 }
 
+/// Lane R63b: how many rebase + re-verify rounds one headless landing may
+/// spend when siblings keep moving the trunk underneath it.
+const HEADLESS_REBASE_MAX_ATTEMPTS: usize = 3;
+
+/// Shared `dispatch_evidence.landing` persistence (YF2, G6 review, Lane
+/// Y-fix 2026-09-09) — factored out (R1, Lane D1) so both the ordinary git
+/// fast-forward path and the "no landing target resolvable" honest-failure
+/// path leave the same durable trail for `goal_landed_head_commit`/the CLI
+/// drain summary to read back later. Best-effort: a metadata-write failure
+/// is logged, never propagated — the landing itself (or its refusal) has
+/// already happened by the time this runs.
+async fn persist_landing_outcome(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    card: &crate::cards::Card,
+    outcome: &crate::goal_landing::LandOutcome,
+    refusal_reason: Option<&str>,
+) {
+    let landing_json = serde_json::json!({
+        "outcome": outcome.outcome_key(),
+        // E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10):
+        // explicit trunk-reached signal, independent of `outcome`'s coarser
+        // grouping and of any external grading/overlay step's own verdict —
+        // F9 found fx02/fx03 graded "solved" while `main`'s HEAD never
+        // moved. So M10's analysis (and any other reader) can tell a
+        // genuine land apart from a fix that stayed in the working tree.
+        "trunk_state": outcome.trunk_state(),
+        "landed_head": outcome.landed_head(),
+        "describe": outcome.describe(),
+        // R43a-c (M38 gate, 2026-09-15 20:20): machine diagnostics never go
+        // into the human-readable card note (two pre-existing tests want
+        // opposite note text depending only on WHY landing was refused) —
+        // the reason lives here instead, as a durable, structured field a
+        // reader can match on without re-parsing prose. `None` (persisted
+        // as `null`) for every non-refusal outcome and for refusals that
+        // predate this field's introduction.
+        "refusal_reason": refusal_reason,
+        "at": chrono::Utc::now().to_rfc3339(),
+    });
+    if let Some(mut evidence) = card
+        .metadata_json
+        .get("dispatch_evidence")
+        .and_then(|value| value.as_object())
+        .cloned()
+    {
+        evidence.insert("landing".to_string(), landing_json);
+        if let Err(error) = crate::cards::merge_card_metadata(
+            pool,
+            goal_id,
+            serde_json::json!({ "dispatch_evidence": serde_json::Value::Object(evidence) }),
+            false,
+        )
+        .await
+        {
+            tracing::warn!(
+                goal_id,
+                %error,
+                "could not persist the landing outcome onto dispatch_evidence"
+            );
+        }
+    }
+}
+
 /// Registered program successors may start only after the approved source is
 /// actually present on the project trunk. Re-run the existing fast-forward
 /// check on an outbox retry so a crash between Review → Complete and landing
@@ -499,6 +1059,7 @@ async fn land_approved_goal(
 async fn ensure_registered_goal_landed(
     pool: &Pool<Sqlite>,
     goal_id: &str,
+    headless_auto_land: bool,
 ) -> Result<(), GuardError> {
     let card = crate::cards::get_card(pool, goal_id)
         .await
@@ -524,7 +1085,8 @@ async fn ensure_registered_goal_landed(
         // the completion authority; there is no trunk to fast-forward.
         return Ok(());
     }
-    let (landing, warning) = land_approved_goal(pool, goal_id, Some(&card.project_id)).await;
+    let (landing, warning) =
+        land_approved_goal(pool, goal_id, Some(&card.project_id), headless_auto_land).await;
     let Some((_, outcome)) = landing else {
         return Err(GuardError::Db(format!(
             "registered continuation blocked: approved goal '{}' has no durable landing outcome{}",
@@ -592,11 +1154,41 @@ async fn ensure_needs_merge_decision(
 /// Apply an outbox-eligible decision effect without daemon `AppState`.
 ///
 /// `tool_approval` and `session_gate` deliberately are not handled here.
+///
+/// Thin wrapper over [`apply_decision_effect_with_auto_land`] with headless
+/// auto-land off — every pre-existing caller (`goose-server`'s
+/// verification/decisions routes, `overbought`, `decision_inbox`, the effect
+/// outbox drain below, and every test) keeps this exact signature and this
+/// exact behavior; none of them needed to change for Lane V2.
 pub async fn apply_decision_effect(
     pool: &Pool<Sqlite>,
     decision: &Decision,
     proof: DecisionProof,
     kind: &str,
+) -> Result<EffectResult, GuardError> {
+    apply_decision_effect_with_auto_land(pool, decision, proof, kind, false, None).await
+}
+
+/// [`apply_decision_effect`], plus the two arguments its `approve_review`
+/// "approve" arm needs to pass into
+/// `goal_transition::advance_goal_checked_with_auto_land` so
+/// `check_proof`'s Tier-1 arm can ever accept
+/// [`decisions::ACTOR_AUTO_LAUNCH`] (harness loop, Lane V2 — the user's ruling,
+/// HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1 landing →
+/// option 3"). `auto_land_allowed: false` (what [`apply_decision_effect`]
+/// always passes) makes this byte-identical to the pre-V2 function. The ONLY
+/// caller that ever passes `true` is
+/// `orchestrator::auto_land_headless_goal`, itself reached only when a
+/// headless Auto dispatch policy has `PERMAGENT_HEADLESS_AUTOLAND` on. Every
+/// other match arm in this function ignores both new arguments entirely —
+/// they are meaningful only to the `("approve_review", Some("approve"))` arm.
+pub async fn apply_decision_effect_with_auto_land(
+    pool: &Pool<Sqlite>,
+    decision: &Decision,
+    proof: DecisionProof,
+    kind: &str,
+    auto_land_allowed: bool,
+    calling_session_id: Option<&str>,
 ) -> Result<EffectResult, GuardError> {
     if decision.kind != kind {
         return Err(GuardError::Invalid(format!(
@@ -630,7 +1222,7 @@ pub async fn apply_decision_effect(
                     // registered continuation hit a transient storage or
                     // dispatch failure. Re-enter only that exact continuation
                     // seam; never replay the broad legacy promoter.
-                    ensure_registered_goal_landed(pool, goal_id).await?;
+                    ensure_registered_goal_landed(pool, goal_id, auto_land_allowed).await?;
                     match crate::agents::platform_extensions::program_bridge::handoff_registered_goal(pool, goal_id).await {
                         Ok(Some(response))
                             if response.status
@@ -682,7 +1274,7 @@ pub async fn apply_decision_effect(
                     ));
                 }
             }
-            goal_transition::advance_goal_checked(
+            goal_transition::advance_goal_checked_with_auto_land(
                 pool,
                 goal_id,
                 GoalAction::Approve,
@@ -692,6 +1284,8 @@ pub async fn apply_decision_effect(
                     review_notes: decision.answer_note.clone(),
                     ..Default::default()
                 },
+                auto_land_allowed,
+                calling_session_id,
             )
             .await?;
             // Approving used to move the card and merge NOTHING, so the work
@@ -712,8 +1306,20 @@ pub async fn apply_decision_effect(
             let (landing, landing_warning) = if no_write_program {
                 (None, None)
             } else {
-                land_approved_goal(pool, goal_id, decision.project_id.as_deref()).await
+                land_approved_goal(
+                    pool,
+                    goal_id,
+                    decision.project_id.as_deref(),
+                    auto_land_allowed,
+                )
+                .await
             };
+            if goal_state(pool, goal_id).await?.as_deref() == Some("failed") {
+                return Ok((
+                    Some("goal not landed — parked with an unblock decision".to_string()),
+                    landing_warning,
+                ));
+            }
             let effect = match &landing {
                 Some((_, outcome)) => {
                     format!("goal approved: Review → Complete; {}", outcome.describe())
@@ -910,6 +1516,22 @@ pub async fn apply_decision_effect(
                 patch.insert(
                     "attempt_count".to_string(),
                     serde_json::json!(attempt_count + 1),
+                );
+                // Y16c (G19 MED): stamp which session's work this reject
+                // decision covers, so a later re-dispatch's
+                // `prior_goal_branch_tip` (orchestrator.rs) can refuse to
+                // rebuild on this exact branch even if the card later cycles
+                // back through Ready with `worker_session_id` still pointing
+                // at it (e.g. via a reconciliation path unrelated to review
+                // outcome). Only meaningful when a worker actually ran;
+                // `null` on a card rejected before any dispatch is harmless
+                // (it can never equal a real session id).
+                patch.insert(
+                    "goal_branch_rejected_session_id".to_string(),
+                    card.metadata_json
+                        .get("worker_session_id")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
                 );
                 goal_transition::advance_goal_checked(
                     pool,
@@ -2037,6 +2659,193 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn land_empty_commit_evidence_reports_note_and_unblock() {
+        let pool = test_pool().await;
+        let card = goal_in_review(&pool).await;
+        crate::cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": "/missing/goal-worktree",
+                "baseline_commit": "seed",
+                "head_commit": "seed",
+                "commits": [],
+                "verdict": {"status": "pass"},
+            }),
+        )
+        .await
+        .unwrap();
+        // Exercise the approval effect as well: a parked goal must not be
+        // described as Complete or reach dependent promotion.
+        let decision = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".into(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(card.project_id.clone()),
+                // `decisions` CHECKs length(headline) > 0 AND length(detail) > 0,
+                // and `create_decision` stores a validation failure as a
+                // `malformed` row rather than erroring — without these two the
+                // row comes back `malformed` and `answer_decision` refuses it
+                // ("outbox kind 'approve_review' does not match decision kind
+                // 'malformed'"), which is what this fixture hit.
+                headline: Some("Review the finished work".into()),
+                detail: Some("evidence".into()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "approve".into(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &decision.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+        let (effect, note) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+        assert!(effect.unwrap().contains("parked"));
+        let expected = format!(
+            "note: not landed — goal {} has no commits past the baseline \
+             (uncommitted work in /missing/goal-worktree)",
+            card.id
+        );
+        assert_eq!(note.as_deref(), Some(expected.as_str()));
+        // R43a-c: the machine reason behind an identically-shaped note lives
+        // on the structured landing outcome, not the note text itself —
+        // `/missing/goal-worktree` doesn't exist, so no trusted trunk root
+        // resolves.
+        let refreshed = crate::cards::get_card(&pool, &card.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = refreshed
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("the refusal must still be persisted onto dispatch_evidence.landing");
+        assert_eq!(
+            landing.get("refusal_reason").and_then(|v| v.as_str()),
+            Some("no_trunk"),
+            "landing: {landing:?}"
+        );
+        assert_eq!(goal_state_of(&pool, &card.id).await, "failed");
+        let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(unblock.detail.contains(&expected));
+        // Repeating the landing refusal reuses the same open unblock.
+        let (_, repeated_note) = land_approved_goal(&pool, &card.id, None, false).await;
+        assert_eq!(repeated_note, note);
+        let repeated = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(repeated.id, unblock.id);
+    }
+
+    #[tokio::test]
+    async fn land_absent_dispatch_evidence_reports_note_and_unblock() {
+        let pool = test_pool().await;
+        let card = goal_in_review(&pool).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_remove(metadata_json, '$.dispatch_evidence') WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (landing, note) = land_approved_goal(&pool, &card.id, None, false).await;
+        assert!(matches!(
+            landing,
+            Some((_, crate::goal_landing::LandOutcome::Skipped(_)))
+        ));
+        let note = note.unwrap();
+        assert!(note.contains("note: not landed"));
+        assert!(note.contains("unknown worktree"));
+        assert_eq!(goal_state_of(&pool, &card.id).await, "failed");
+        let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(unblock.detail.contains(&note));
+    }
+
+    /// A41 audit (row #23): outside the trunk-relative override (rolling
+    /// `commits` is non-empty here, so `land_approved_goal`'s own empty-
+    /// commits gate never refuses), an inconsistent `dispatch_evidence`
+    /// shape — commits present, but no usable `head_commit` — used to make
+    /// `evidence_head_and_worktree` return `None` and this function
+    /// silently return `(None, None)`: no refusal note, no park, no
+    /// persisted `dispatch_evidence.landing`, nothing for a human or the
+    /// next A-series analysis to see. Pins the hardened, honest refusal.
+    #[tokio::test]
+    async fn land_approved_goal_reports_an_honest_refusal_when_evidence_has_no_usable_head_commit()
+    {
+        let pool = test_pool().await;
+        let card = goal_in_review(&pool).await;
+        crate::cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": "/tmp/.permagent-goal-worktrees/no-head-commit",
+                "baseline_commit": "seed",
+                "head_commit": "",
+                "commits": ["abc123 the work"],
+                "verdict": {"status": "pass"},
+            }),
+        )
+        .await
+        .unwrap();
+
+        let (landing, note) = land_approved_goal(&pool, &card.id, None, false).await;
+        assert!(
+            matches!(
+                landing,
+                Some((_, crate::goal_landing::LandOutcome::Skipped(_)))
+            ),
+            "the refusal must be reported, never a silent (None, None): {landing:?}"
+        );
+        let note = note.expect("a genuine refusal must report a note");
+        assert!(
+            note.contains("land_refused reason=no_evidence_head"),
+            "note: {note}"
+        );
+        assert_eq!(goal_state_of(&pool, &card.id).await, "failed");
+
+        let refreshed = crate::cards::get_card(&pool, &card.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = refreshed
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("the refusal must still be persisted onto dispatch_evidence.landing");
+        assert_eq!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("skipped")
+        );
+        let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .expect("a refused land must leave an answerable unblock decision");
+        assert!(unblock.detail.contains(&note));
+    }
+
     async fn goal_state_of(pool: &Pool<Sqlite>, card_id: &str) -> String {
         let card = crate::cards::get_card(pool, card_id)
             .await
@@ -2071,7 +2880,7 @@ mod tests {
             .await
             .unwrap();
 
-        ensure_registered_goal_landed(&pool, &goal.id)
+        ensure_registered_goal_landed(&pool, &goal.id, false)
             .await
             .expect("explicit no-write contract must not require a repository landing");
     }
@@ -2329,6 +3138,81 @@ mod tests {
         assert_eq!(goal_state_of(&pool, &goal.id).await, "review");
     }
 
+    /// Y16c (G19 MED): a rejected review under the attempt cap advances to
+    /// InProgress for rework (unchanged), AND stamps
+    /// `goal_branch_rejected_session_id` with the exact worker session whose
+    /// branch was rejected — the marker `prior_goal_branch_tip`
+    /// (orchestrator.rs) refuses to continue from, even if the card later
+    /// cycles back through Ready with `worker_session_id` still intact.
+    #[tokio::test]
+    async fn rejected_review_stamps_the_rejected_session_for_prior_goal_branch_tip() {
+        let pool = test_pool().await;
+        let goal = goal_in_review(&pool).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.worker_session_id', ?) WHERE id = ?",
+        )
+        .bind("worker-session-rejected")
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let decision = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Reject the reviewed work".to_string()),
+                detail: Some("test".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "reject".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+
+        let (effect, _warning) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+        assert_eq!(
+            effect.as_deref(),
+            Some("goal rejected: Review → InProgress for rework")
+        );
+        assert_eq!(goal_state_of(&pool, &goal.id).await, "in_progress");
+
+        let after = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after
+                .metadata_json
+                .get("goal_branch_rejected_session_id")
+                .and_then(|v| v.as_str()),
+            Some("worker-session-rejected"),
+            "the reject arm must stamp which session's branch was rejected so \
+             `prior_goal_branch_tip` can refuse to continue from it"
+        );
+    }
+
+    // I1 (harness loop, 2026-09-10, gate fix): GOAL_DISPATCH_HOOK is a
+    // process-global OnceLock every test_dispatch_recorder::install() call
+    // races to set — serialized against every other test that touches it
+    // (see test_dispatch_recorder's own doc comment) so a losing race never
+    // silently starves this test's own dispatch recorder.
+    #[serial_test::serial]
     #[tokio::test]
     async fn council_plan_retry_reuses_existing_node_cards() {
         crate::agents::platform_extensions::orchestrator::test_dispatch_recorder::install();
@@ -2427,6 +3311,7 @@ mod tests {
     /// dependents Triage→Ready — and, since the nudge, actually starts them.
     /// Before the nudge the dependent sat in Ready with no worker until a
     /// human called `resume_roadmap` by hand.
+    #[serial_test::serial]
     #[tokio::test]
     async fn approving_a_review_dispatches_the_promoted_dependent() {
         use crate::agents::platform_extensions::orchestrator::test_dispatch_recorder;
@@ -2434,6 +3319,26 @@ mod tests {
 
         let pool = test_pool().await;
         let parent = goal_in_review(&pool).await;
+        // Y15 refuses to land a goal whose dispatch evidence carries no
+        // commits past the baseline. This pin is about dependent promotion,
+        // not about that refusal, so give the parent the one thing Y15's
+        // precondition asks for. Deliberately no `worktree_path` /
+        // `head_commit`: `evidence_head_and_worktree` then still returns
+        // None, so `land_approved_goal` has no worktree of the parent's OWN
+        // to land from — R43a-b: that shape is reported (never silent) but
+        // never PARKED (parking would undo the Review→Complete transition
+        // `advance_goal_checked_with_auto_land` already made), so this test
+        // exercises the same promotion path it always did.
+        crate::cards::set_goal_dispatch_evidence(
+            &pool,
+            &parent.id,
+            serde_json::json!({
+                "verdict": {"status": "pass"},
+                "commits": ["deadbeef"],
+            }),
+        )
+        .await
+        .unwrap();
         let triage = crate::cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "triage")
             .await
             .unwrap()
@@ -2638,6 +3543,1723 @@ mod tests {
         assert!(
             effect.contains("main"),
             "the landing outcome must be reported on the approval, not left silent: {effect}"
+        );
+
+        // YF2 (G6 review, Lane Y-fix 2026-09-09): the outcome must also be
+        // durably persisted on the card — a one-shot response string is not
+        // enough for `goal_landed_head_commit`/the CLI drain summary to
+        // read back later.
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = card
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("land_approved_goal must persist the outcome onto dispatch_evidence.landing");
+        assert_eq!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("landed")
+        );
+        assert_eq!(
+            landing.get("landed_head").and_then(|v| v.as_str()),
+            Some(head.as_str())
+        );
+        // E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10):
+        // pin the new explicit trunk-reached field. Pre-fix: the
+        // `trunk_state` key does not exist (this assertion fails on `None`
+        // != `Some("landed_on_trunk")`).
+        assert_eq!(
+            landing.get("trunk_state").and_then(|v| v.as_str()),
+            Some("landed_on_trunk")
+        );
+    }
+
+    /// R1 (harness loop, Lane D1, from Lane F8 forensics): the eval harness's
+    /// default `personal` project (and any project created with no local
+    /// folder) is seeded with `root_path` NULL
+    /// (`session/spectral_schema.rs:610`). Before this lane,
+    /// `land_approved_goal` bailed to `(None, None)` right there and the
+    /// approval proceeded to Complete having landed nothing — F8 proved two
+    /// of five measured fixtures were genuinely-correct, oracle-passing
+    /// fixes lost exactly this way. Pre-fix, this test fails: `HEAD` stays
+    /// on the base commit and `dispatch_evidence/landing` never exists.
+    ///
+    /// H1 (G8 review, Lane E3 2026-09-10): this is also G8's own pinning
+    /// test 2 — "same setup [as the refusal below] with the session's
+    /// project root = repo A → lands on A". The card now records a
+    /// `worker_session_id` whose session's `working_dir` genuinely IS the
+    /// worktree's origin repo, and `dispatch_evidence.baseline_commit` is
+    /// the real pre-branch commit — exactly what a real dispatch leaves
+    /// behind — so `verify_worktree_landing_target`'s two checks both pass
+    /// and this fallback still lands correctly, not just before this lane.
+    #[tokio::test]
+    async fn a_project_with_no_root_path_lands_via_the_goal_worktree_git_baseline() {
+        let (repo, head) = repo_with_finished_goal_branch();
+        let baseline = git_in(repo.path(), &["rev-parse", "main"]);
+
+        // A REAL linked worktree at `goal/run-1`, mirroring exactly what
+        // `goal_engine::create_goal_worktree` does at dispatch time, so
+        // `resolve_primary_checkout_from_worktree`'s `git rev-parse
+        // --git-common-dir` has a genuine worktree to resolve.
+        let worktrees_root = tempfile::tempdir().unwrap();
+        let worktree_path = worktrees_root.path().join("run-1");
+        git_in(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "goal/run-1",
+            ],
+        );
+
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "No root_path project".to_string(),
+                root_path: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            crate::projects::get_project(&pool, &project.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .root_path
+                .is_none(),
+            "precondition: this project must have no root_path, matching the eval seed"
+        );
+
+        // The independently recorded working directory `verify_worktree_
+        // landing_target` requires — a REAL session whose own `working_dir`
+        // is this goal's actual repo, exactly what a real dispatch leaves
+        // behind (never re-derived from the daemon's own `current_dir()`).
+        let session_id = "d1-worktree-baseline-session".to_string();
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(repo.path().to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Finished goal, no project root".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 0,
+                    "goal_state": "review",
+                    "worker_session_id": session_id,
+                    "dispatch_evidence": {
+                        "worktree_path": worktree_path.to_string_lossy(),
+                        "head_commit": head,
+                        "baseline_commit": baseline,
+                        "commits": ["abc123 the work"],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(project.id.clone()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        let (effect, _warning) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git_in(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "a NULL root_path must not silently no-op landing when the goal's own \
+             worktree can resolve its primary checkout via git"
+        );
+        let effect = effect.unwrap_or_default();
+        assert!(
+            effect.contains("main"),
+            "the landing outcome must be reported, not left silent: {effect}"
+        );
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = card
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect(
+                "a NULL root_path must not skip persisting the landing outcome onto \
+                 dispatch_evidence",
+            );
+        assert_eq!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("landed"),
+            "outcome: {landing:?}"
+        );
+        assert_eq!(
+            landing.get("landed_head").and_then(|v| v.as_str()),
+            Some(head.as_str())
+        );
+    }
+
+    /// R43a (A38 Miss 2): a goal reviewed and approved on the strength of an
+    /// EARLIER attempt's commit must still land when THIS attempt's own
+    /// rolling `dispatch_evidence.commits` reads empty (Y16b resets the
+    /// rolling baseline to the prior attempt's own tip on every
+    /// re-dispatch). Reproduces the confirmed shape verbatim:
+    /// `dispatch_evidence.commits: []`, `baseline_commit == head_commit` ==
+    /// the real fix an EARLIER attempt already committed to the goal
+    /// branch. Before this lane the first gate in `land_approved_goal`
+    /// refused outright and parked the goal (`goal_state: "failed"`) even
+    /// though the fix was one fast-forward away.
+    #[tokio::test]
+    async fn land_approved_goal_lands_trunk_unlanded_work_despite_empty_rolling_evidence() {
+        let (repo, head) = repo_with_finished_goal_branch();
+        let root = repo.path().to_string_lossy().into_owned();
+
+        // A REAL linked worktree checked out on the goal branch — the
+        // trunk-relative override needs somewhere to run its own `git`
+        // calls against, exactly like a real dispatched worker's worktree.
+        let worktrees_root = tempfile::tempdir().unwrap();
+        let worktree_path = worktrees_root.path().join("run-1");
+        git_in(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "goal/run-1",
+            ],
+        );
+
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Trunk-relative landing test".to_string(),
+                root_path: Some(root.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Goal reviewed on an earlier attempt's commit".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 3,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        "worktree_path": worktree_path.to_string_lossy(),
+                        "baseline_commit": head,
+                        "head_commit": head,
+                        "commits": [],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(project.id.clone()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        let (effect, note) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            note, None,
+            "a successful land must not also report a refusal note"
+        );
+        let effect = effect.unwrap_or_default();
+        assert!(
+            effect.contains("main"),
+            "the fast-forward must be reported on the approval: {effect}"
+        );
+        assert_eq!(
+            git_in(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "the trunk must advance onto the earlier attempt's already-committed fix"
+        );
+        assert_eq!(goal_state_of(&pool, &goal.id).await, "complete");
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = card
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("landing outcome must be persisted");
+        assert_eq!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("landed")
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &goal.id, "unblock")
+                .await
+                .unwrap()
+                .is_none(),
+            "a goal that actually lands must never also be left parked with an unblock decision"
+        );
+    }
+
+    /// R62d (A61 Miss 5): the goal `maybe_hold_review` allowed as already
+    /// satisfied at its baseline has nothing to land by construction. The
+    /// approval must complete it with the receipt's honest note and no
+    /// landing outcome, never park it for "no commits past the baseline" —
+    /// but only while the receipt names the card's current worker session;
+    /// a stale receipt still refuses and parks exactly as
+    /// `land_approved_goal_still_refuses_when_nothing_is_unlanded_anywhere`.
+    #[tokio::test]
+    async fn approving_an_already_satisfied_goal_completes_it_without_a_landing() {
+        struct Approved {
+            pool: Pool<Sqlite>,
+            goal_id: String,
+            effect: Option<String>,
+            note: Option<String>,
+            _repo: tempfile::TempDir,
+            _worktrees: tempfile::TempDir,
+        }
+        async fn approve_with_receipt(receipt_session: &str) -> Approved {
+            let (repo, _head) = repo_with_finished_goal_branch();
+            let root = repo.path().to_string_lossy().into_owned();
+            let base_sha = git_in(repo.path(), &["rev-parse", "main"]);
+            let worktrees_root = tempfile::tempdir().unwrap();
+            let worktree_path = worktrees_root.path().join("already-satisfied");
+            git_in(
+                repo.path(),
+                &[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    worktree_path.to_str().unwrap(),
+                    &base_sha,
+                ],
+            );
+            let pool = test_pool().await;
+            let project = crate::projects::create_project(
+                &pool,
+                crate::projects::CreateProject {
+                    name: "Already satisfied test".to_string(),
+                    root_path: Some(root.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            crate::cards::seed_goal_columns(&pool, &project.id)
+                .await
+                .unwrap();
+            let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+                .await
+                .unwrap()
+                .unwrap();
+            let goal = crate::cards::create_card(
+                &pool,
+                crate::cards::CreateCard {
+                    project_id: project.id.clone(),
+                    title: "Goal a sibling already satisfied".to_string(),
+                    description: Some("test".to_string()),
+                    card_type: Some("goal".to_string()),
+                    column_id: Some(review.id),
+                    created_by: None,
+                    metadata_json: Some(serde_json::json!({
+                        "attempt_count": 1,
+                        "goal_state": "review",
+                        "worker_session_id": "sess-current",
+                        "dispatch_evidence": {
+                            "worktree_path": worktree_path.to_string_lossy(),
+                            "baseline_commit": base_sha,
+                            "head_commit": base_sha,
+                            "commits": [],
+                            "verdict": {"status": "pass"},
+                        },
+                        "already_satisfied": {
+                            "note": "already satisfied at baseline: test receipt — nothing was landed for this goal",
+                            "trunk_head": base_sha,
+                            "head": base_sha,
+                            "worker_session_id": receipt_session,
+                            "scope": [],
+                        },
+                    })),
+                },
+            )
+            .await
+            .unwrap();
+            let d = decisions::create_decision(
+                &pool,
+                NewDecision {
+                    kind: "approve_review".to_string(),
+                    goal_id: Some(goal.id.clone()),
+                    project_id: Some(project.id.clone()),
+                    headline: Some("Review the finished work".to_string()),
+                    detail: Some("evidence".to_string()),
+                    payload: serde_json::json!({}),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            decisions::answer_decision(
+                &pool,
+                &d.id,
+                &DecisionAnswer {
+                    answer: "approve".to_string(),
+                    ..Default::default()
+                },
+                ACTOR_JESSE,
+            )
+            .await
+            .unwrap();
+            let answered = decisions::get_decision(&pool, &d.id)
+                .await
+                .unwrap()
+                .unwrap();
+            let proof = DecisionProof::from_answered_row(&answered).unwrap();
+            let (effect, note) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+                .await
+                .unwrap();
+            assert_eq!(
+                git_in(repo.path(), &["rev-parse", "main"]),
+                base_sha,
+                "the trunk never moves: there is nothing to land"
+            );
+            Approved {
+                pool,
+                goal_id: goal.id,
+                effect,
+                note,
+                _repo: repo,
+                _worktrees: worktrees_root,
+            }
+        }
+
+        let Approved {
+            pool,
+            goal_id,
+            effect,
+            note,
+            _repo,
+            _worktrees,
+        } = approve_with_receipt("sess-current").await;
+        let effect = effect.unwrap_or_default();
+        assert!(effect.contains("Review → Complete"), "effect: {effect}");
+        assert!(!effect.contains("parked"), "effect: {effect}");
+        let note = note.expect("the already-satisfied note is reported");
+        assert!(
+            note.contains("already satisfied at baseline"),
+            "note: {note}"
+        );
+        assert_eq!(goal_state_of(&pool, &goal_id).await, "complete");
+        let card = crate::cards::get_card(&pool, &goal_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            card.metadata_json
+                .pointer("/dispatch_evidence/landing")
+                .is_none(),
+            "no landing receipt of any kind is fabricated"
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &goal_id, "unblock")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let Approved {
+            pool,
+            goal_id,
+            effect,
+            note,
+            _repo,
+            _worktrees,
+        } = approve_with_receipt("sess-an-earlier-attempt").await;
+        assert!(effect.unwrap_or_default().contains("parked"));
+        assert!(note
+            .unwrap_or_default()
+            .contains("no commits past the baseline"));
+        assert_eq!(goal_state_of(&pool, &goal_id).await, "failed");
+    }
+
+    /// R43a (A38 Miss 2): the override above must still refuse when there is
+    /// genuinely nothing to credit — the rolling gate is empty AND the
+    /// trunk-relative check ALSO finds nothing unlanded (a real worktree
+    /// pinned at the exact same commit as the trunk). Proves the override
+    /// only ever widens the Allow when real trunk-unlanded work exists; it
+    /// must never force a land merely because it ran.
+    #[tokio::test]
+    async fn land_approved_goal_still_refuses_when_nothing_is_unlanded_anywhere() {
+        let (repo, _head) = repo_with_finished_goal_branch();
+        let root = repo.path().to_string_lossy().into_owned();
+        let base_sha = git_in(repo.path(), &["rev-parse", "main"]);
+
+        let worktrees_root = tempfile::tempdir().unwrap();
+        let worktree_path = worktrees_root.path().join("nothing-committed");
+        git_in(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                worktree_path.to_str().unwrap(),
+                &base_sha,
+            ],
+        );
+
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Nothing unlanded test".to_string(),
+                root_path: Some(root.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Goal with genuinely nothing committed".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 3,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        "worktree_path": worktree_path.to_string_lossy(),
+                        "baseline_commit": base_sha,
+                        "head_commit": base_sha,
+                        "commits": [],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(project.id.clone()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        let (effect, note) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert!(effect.unwrap_or_default().contains("parked"));
+        let note = note.expect("a genuine refusal must report a note");
+        assert!(
+            note.contains("no commits past the baseline"),
+            "note: {note}"
+        );
+        assert_eq!(
+            git_in(repo.path(), &["rev-parse", "main"]),
+            base_sha,
+            "the trunk must never move on a genuine refusal"
+        );
+        assert_eq!(goal_state_of(&pool, &goal.id).await, "failed");
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = card.metadata_json.pointer("/dispatch_evidence/landing");
+        assert_ne!(
+            landing
+                .and_then(|l| l.get("outcome"))
+                .and_then(|v| v.as_str()),
+            Some("landed"),
+            "a refused land must never be recorded as landed"
+        );
+        let unblock = decisions::find_open_decision_for_goal(&pool, &goal.id, "unblock")
+            .await
+            .unwrap()
+            .expect("a refused land must leave an answerable unblock decision");
+        assert!(unblock.detail.contains(&note));
+    }
+
+    /// R43a-b (G31 review, M38 lanes, HIGH-1): the trunk-relative override
+    /// must not credit "committed work exists" from `commits_unlanded_at_
+    /// trunk > 0` alone — an unlanded commit with no verify bound to its
+    /// exact head is refused (mirrors `maybe_hold_review`'s own R42a-b
+    /// discipline); the identical shape with a recorded PASS bound to that
+    /// head lands normally. The refused half uses `salvage_receipt.outcome
+    /// == "salvage_verify_failed"` rather than an actually-undetectable
+    /// build stack — deterministic and fast (no subprocess), and the fresh-
+    /// verify-subprocess path itself already has real-process coverage from
+    /// R42a-b's own `maybe_hold_review` tests via the same shared
+    /// `run_fresh_verify_for_hold` helper this override now also calls.
+    #[tokio::test]
+    async fn land_approved_goal_requires_a_verified_head_for_the_trunk_relative_override() {
+        let (repo, head) = repo_with_finished_goal_branch();
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let worktrees_root = tempfile::tempdir().unwrap();
+        let worktree_path = worktrees_root.path().join("run-1");
+        git_in(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "goal/run-1",
+            ],
+        );
+
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Verify-gated trunk-relative override".to_string(),
+                root_path: Some(root.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Unlanded at trunk, but no verify is bound to that head — salvage
+        // already tried and failed this exact, still-unmoved range.
+        let goal_unverified = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Unlanded but never verified".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 3,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        "worktree_path": worktree_path.to_string_lossy(),
+                        "baseline_commit": head,
+                        "head_commit": head,
+                        "commits": [],
+                    },
+                    "salvage_receipt": {"outcome": "salvage_verify_failed"},
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let (landing, note) = land_approved_goal(&pool, &goal_unverified.id, None, false).await;
+        assert!(
+            matches!(
+                landing,
+                Some((_, crate::goal_landing::LandOutcome::Skipped(_)))
+            ),
+            "an unlanded commit with no verify bound to its head must be refused, not landed: \
+             {landing:?}"
+        );
+        let note = note.expect("a genuine refusal must report a note");
+        assert_eq!(
+            note,
+            format!(
+                "note: not landed — goal {} has no commits past the baseline \
+                 (uncommitted work in {})",
+                goal_unverified.id,
+                worktree_path.to_string_lossy()
+            ),
+            "the card note stays the human sentence — the machine reason lives on the \
+             structured landing outcome, not prepended here (R43a-c)"
+        );
+        let refreshed = crate::cards::get_card(&pool, &goal_unverified.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = refreshed
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("the refusal must still be persisted onto dispatch_evidence.landing");
+        assert_eq!(
+            landing.get("refusal_reason").and_then(|v| v.as_str()),
+            Some("unverified_head"),
+            "landing: {landing:?}"
+        );
+        assert_eq!(goal_state_of(&pool, &goal_unverified.id).await, "failed");
+        assert_ne!(
+            git_in(repo.path(), &["rev-parse", "main"]),
+            head,
+            "the trunk must never move on an unverified-head refusal"
+        );
+
+        // Identical unlanded commit, but this goal's own recorded verdict is
+        // a PASS bound to that exact head.
+        let goal_verified = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Unlanded and verified at head".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 3,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        "worktree_path": worktree_path.to_string_lossy(),
+                        "baseline_commit": head,
+                        "head_commit": head,
+                        "commits": [],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let (landing, note) = land_approved_goal(&pool, &goal_verified.id, None, false).await;
+        assert_eq!(
+            note, None,
+            "a successful land must not also report a refusal note"
+        );
+        assert!(
+            matches!(
+                landing,
+                Some((_, crate::goal_landing::LandOutcome::FastForwarded { .. }))
+            ),
+            "a verified unlanded commit must land: {landing:?}"
+        );
+        assert_eq!(
+            git_in(repo.path(), &["rev-parse", "main"]),
+            head,
+            "the trunk must advance once the unlanded commit is verified at its head"
+        );
+        // Note: `land_approved_goal` is called directly here (as the other
+        // direct-call tests in this module do) rather than through
+        // `apply_decision_effect` — the Review→Complete transition itself
+        // is `advance_goal_checked_with_auto_land`'s job, called BEFORE
+        // landing in the real approval flow, so this goal's card column is
+        // left exactly where it started (Review); only the trunk-side
+        // outcome asserted above is this function's own contract.
+    }
+
+    // ── Lane R63b: headless landing rebases a parallel sibling's branch ──────
+
+    /// M47 r63 s2 shape: two sibling goal branches forked from the same
+    /// trunk commit, each committed in its own linked worktree
+    /// (`<tmp>/run-a`, `<tmp>/run-b` -> `goal/run-a`, `goal/run-b`).
+    struct R63bSiblings {
+        repo: tempfile::TempDir,
+        _worktrees: tempfile::TempDir,
+        wt_a: std::path::PathBuf,
+        wt_b: std::path::PathBuf,
+        base: String,
+        head_a: String,
+        head_b: String,
+    }
+
+    fn r63b_siblings(a_files: &[&str], b_files: &[&str]) -> R63bSiblings {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        git_in(root, &["init", "-b", "main"]);
+        git_in(root, &["config", "user.email", "test@example.com"]);
+        git_in(root, &["config", "user.name", "Test"]);
+        git_in(root, &["config", "commit.gpgsign", "false"]);
+        // No excludes from the machine's global config: a global `*.pyc`
+        // ignore would change what `add -A` tracks and what a checkout may
+        // overwrite, and the rebase-abort test depends on both.
+        git_in(root, &["config", "core.excludesFile", "/dev/null"]);
+        std::fs::write(root.join("README.md"), "base\n").unwrap();
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-m", "base"]);
+        let base = git_in(root, &["rev-parse", "HEAD"]);
+
+        let worktrees = tempfile::tempdir().unwrap();
+        let commit_sibling = |name: &str, files: &[&str]| {
+            let wt = worktrees.path().join(format!("run-{name}"));
+            let branch = format!("goal/run-{name}");
+            git_in(
+                root,
+                &["worktree", "add", "-b", &branch, wt.to_str().unwrap()],
+            );
+            for file in files {
+                let path = wt.join(file);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, format!("goal {name}\n")).unwrap();
+            }
+            git_in(&wt, &["add", "-A"]);
+            git_in(&wt, &["commit", "-m", &format!("goal {name}")]);
+            let head = git_in(&wt, &["rev-parse", "HEAD"]);
+            (wt, head)
+        };
+        let (wt_a, head_a) = commit_sibling("a", a_files);
+        let (wt_b, head_b) = commit_sibling("b", b_files);
+        R63bSiblings {
+            repo,
+            _worktrees: worktrees,
+            wt_a,
+            wt_b,
+            base,
+            head_a,
+            head_b,
+        }
+    }
+
+    async fn r63b_project(pool: &Pool<Sqlite>, root: &std::path::Path) -> String {
+        let project = crate::projects::create_project(
+            pool,
+            crate::projects::CreateProject {
+                name: format!("R63b {}", uuid::Uuid::new_v4()),
+                root_path: Some(root.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::cards::seed_goal_columns(pool, &project.id)
+            .await
+            .unwrap();
+        project.id
+    }
+
+    /// A reviewed goal with a PASS verdict, a declared `write_scope`, and a
+    /// worker session whose recorded genuine verify command is
+    /// `verify_command` — what `run_fresh_verify_for_hold` re-runs.
+    async fn r63b_goal(
+        pool: &Pool<Sqlite>,
+        project_id: &str,
+        worktree: &std::path::Path,
+        base: &str,
+        head: &str,
+        scope: &[&str],
+        verify_command: &str,
+    ) -> crate::cards::Card {
+        use crate::conversation::message::MessageContent;
+        use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+
+        let review = crate::cards::get_goal_column(pool, project_id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let session_id = format!("r63b-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&session_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        let request = MessageContent::tool_request(
+            "r63b-call",
+            Ok(
+                CallToolRequestParams::new("developer__verify".to_string()).with_arguments(
+                    serde_json::Map::from_iter([(
+                        "command".to_string(),
+                        serde_json::json!(verify_command),
+                    )]),
+                ),
+            ),
+        );
+        let mut result = CallToolResult::success(vec![Content::text("PASS")]);
+        result.structured_content = Some(serde_json::json!({
+            "kind": crate::agents::platform_extensions::developer::verify::VERIFICATION_OBSERVATION_KIND,
+            "command": verify_command,
+            "verdict": "pass",
+            "evidence": "pass",
+            "vacuous_reason": null,
+        }));
+        let response = MessageContent::tool_response("r63b-call", Ok(result));
+        for (role, content) in [("assistant", request), ("user", response)] {
+            sqlx::query(
+                "INSERT INTO messages (message_id, session_id, role, content_json, \
+                 created_timestamp) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(&session_id)
+            .bind(role)
+            .bind(serde_json::to_string(&vec![content]).unwrap())
+            .bind(chrono::Utc::now().timestamp())
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        crate::cards::create_card(
+            pool,
+            crate::cards::CreateCard {
+                project_id: project_id.to_string(),
+                title: format!("R63b sibling {}", worktree.display()),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 1,
+                    "goal_state": "review",
+                    "worker_session_id": session_id,
+                    "write_scope": scope,
+                    "dispatch_evidence": {
+                        "worktree_path": worktree.to_string_lossy(),
+                        "baseline_commit": base,
+                        "head_commit": head,
+                        "commits": [format!("{} the work", head.chars().take(7).collect::<String>())],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    fn r63b_landing(card: &crate::cards::Card) -> serde_json::Value {
+        card.metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .cloned()
+            .expect("the landing outcome must be persisted")
+    }
+
+    /// Lane R63b (M47 r63 s2): two siblings with disjoint write scopes ran in
+    /// parallel; the first fast-forwards, and the second, which used to be
+    /// refused "needs merge", is rebased onto the moved trunk, re-verified on
+    /// the rebased head (the recorded check only passes once goal a's file is
+    /// present), and landed through the same `land` path.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn headless_landing_rebases_a_disjoint_sibling_and_lands_it_after_reverify() {
+        let fx = r63b_siblings(&["a.txt"], &["b.txt"]);
+        let pool = test_pool().await;
+        let project_id = r63b_project(&pool, fx.repo.path()).await;
+        let goal_a = r63b_goal(
+            &pool,
+            &project_id,
+            &fx.wt_a,
+            &fx.base,
+            &fx.head_a,
+            &["a.txt"],
+            "test -f a.txt",
+        )
+        .await;
+        let goal_b = r63b_goal(
+            &pool,
+            &project_id,
+            &fx.wt_b,
+            &fx.base,
+            &fx.head_b,
+            &["b.txt"],
+            "test -f a.txt",
+        )
+        .await;
+
+        let (landing_a, _) = land_approved_goal(&pool, &goal_a.id, None, true).await;
+        assert!(
+            matches!(
+                landing_a,
+                Some((_, crate::goal_landing::LandOutcome::FastForwarded { .. }))
+            ),
+            "{landing_a:?}"
+        );
+        assert_eq!(git_in(fx.repo.path(), &["rev-parse", "main"]), fx.head_a);
+
+        let (landing_b, note_b) = land_approved_goal(&pool, &goal_b.id, None, true).await;
+        let Some((_, crate::goal_landing::LandOutcome::FastForwarded { head, .. })) =
+            landing_b.clone()
+        else {
+            panic!("the disjoint sibling must rebase and land: {landing_b:?} {note_b:?}");
+        };
+        assert_eq!(note_b, None);
+        assert_ne!(head, fx.head_b, "a rebased head is a new commit");
+        assert_eq!(git_in(fx.repo.path(), &["rev-parse", "main"]), head);
+        assert_eq!(
+            git_in(fx.repo.path(), &["rev-parse", "main^"]),
+            fx.head_a,
+            "linear history: goal b sits directly on goal a, no merge commit"
+        );
+        assert_eq!(git_in(&fx.wt_b, &["rev-parse", "HEAD"]), head);
+
+        let card = crate::cards::get_card(&pool, &goal_b.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = r63b_landing(&card);
+        assert_eq!(landing["outcome"], "landed", "{landing:?}");
+        assert_eq!(landing["landed_head"], serde_json::json!(head));
+        assert!(landing["refusal_reason"].is_null(), "{landing:?}");
+        let evidence = &card.metadata_json["dispatch_evidence"];
+        assert_eq!(evidence["head_commit"], serde_json::json!(head));
+        assert_eq!(evidence["baseline_commit"], serde_json::json!(fx.head_a));
+        assert_eq!(
+            card.metadata_json["baseline_commit"],
+            serde_json::json!(fx.head_a)
+        );
+        assert_eq!(evidence["commits"].as_array().map(Vec::len), Some(1));
+        assert_eq!(evidence["rebased_onto_trunk"]["reverify"], "pass");
+        assert_eq!(
+            evidence["rebased_onto_trunk"]["from_head"],
+            serde_json::json!(fx.head_b)
+        );
+    }
+
+    /// The trunk changed a path inside the goal's declared scope (a directory
+    /// claims its descendants). The rebase would even apply cleanly, but
+    /// independence is unproven, so nothing is rebased: the branch is
+    /// untouched and the existing "needs merge" refusal and unblock stand.
+    #[tokio::test]
+    async fn headless_landing_does_not_rebase_when_the_trunk_touched_the_goal_scope() {
+        let fx = r63b_siblings(&["docs/a.md"], &["docs/b.md"]);
+        let pool = test_pool().await;
+        let project_id = r63b_project(&pool, fx.repo.path()).await;
+        git_in(fx.repo.path(), &["merge", "--ff-only", "goal/run-a"]);
+        let goal_b = r63b_goal(
+            &pool,
+            &project_id,
+            &fx.wt_b,
+            &fx.base,
+            &fx.head_b,
+            &["docs"],
+            "true",
+        )
+        .await;
+
+        let (landing, _) = land_approved_goal(&pool, &goal_b.id, None, true).await;
+        assert!(
+            matches!(
+                landing,
+                Some((_, crate::goal_landing::LandOutcome::NeedsMerge { .. }))
+            ),
+            "{landing:?}"
+        );
+        assert_eq!(git_in(&fx.wt_b, &["rev-parse", "HEAD"]), fx.head_b);
+        assert_eq!(git_in(fx.repo.path(), &["rev-parse", "main"]), fx.head_a);
+        let card = crate::cards::get_card(&pool, &goal_b.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = r63b_landing(&card);
+        assert_eq!(landing["outcome"], "needs_merge");
+        assert_eq!(landing["refusal_reason"], "rebase_trunk_overlap");
+        assert!(card
+            .metadata_json
+            .pointer("/dispatch_evidence/rebased_onto_trunk")
+            .is_none());
+        assert_eq!(
+            card.metadata_json["dispatch_evidence"]["head_commit"],
+            serde_json::json!(fx.head_b)
+        );
+        let unblock = decisions::find_open_decision_for_goal(&pool, &goal_b.id, "unblock")
+            .await
+            .unwrap()
+            .expect("needs merge still leaves its manual-merge unblock");
+        assert!(unblock.detail.contains("goal/run-b"), "{}", unblock.detail);
+    }
+
+    /// Scope-disjoint, but `git rebase` cannot apply: the trunk now tracks a
+    /// file the goal worktree holds untracked (a regenerated artefact the
+    /// clean check tolerates). The rebase is aborted, the branch is left
+    /// exactly as it was, and the goal keeps the honest "needs merge".
+    #[tokio::test]
+    async fn headless_landing_aborts_a_rebase_that_cannot_apply_and_leaves_the_branch_intact() {
+        let fx = r63b_siblings(&["a.txt", "stray.pyc"], &["b.txt"]);
+        std::fs::write(fx.wt_b.join("stray.pyc"), "local bytecode\n").unwrap();
+        let pool = test_pool().await;
+        let project_id = r63b_project(&pool, fx.repo.path()).await;
+        git_in(fx.repo.path(), &["merge", "--ff-only", "goal/run-a"]);
+        let goal_b = r63b_goal(
+            &pool,
+            &project_id,
+            &fx.wt_b,
+            &fx.base,
+            &fx.head_b,
+            &["b.txt"],
+            "true",
+        )
+        .await;
+
+        let (landing, _) = land_approved_goal(&pool, &goal_b.id, None, true).await;
+        assert!(
+            matches!(
+                landing,
+                Some((_, crate::goal_landing::LandOutcome::NeedsMerge { .. }))
+            ),
+            "{landing:?}"
+        );
+        assert_eq!(git_in(&fx.wt_b, &["rev-parse", "HEAD"]), fx.head_b);
+        assert_eq!(
+            git_in(&fx.wt_b, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "goal/run-b",
+            "no rebase may be left in progress"
+        );
+        assert_eq!(git_in(fx.repo.path(), &["rev-parse", "main"]), fx.head_a);
+        let card = crate::cards::get_card(&pool, &goal_b.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r63b_landing(&card)["refusal_reason"], "rebase_conflict");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &goal_b.id, "unblock")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// The rebase applies, but the worker's recorded check no longer passes
+    /// on the rebased head. Nothing lands; the goal is parked with the reason
+    /// and a `fail` verdict (so the old pass is never credited to the new
+    /// head), and the rebased branch is left intact.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn headless_landing_parks_when_the_rebased_head_fails_reverify() {
+        let fx = r63b_siblings(&["a.txt"], &["b.txt"]);
+        let pool = test_pool().await;
+        let project_id = r63b_project(&pool, fx.repo.path()).await;
+        git_in(fx.repo.path(), &["merge", "--ff-only", "goal/run-a"]);
+        let goal_b = r63b_goal(
+            &pool,
+            &project_id,
+            &fx.wt_b,
+            &fx.base,
+            &fx.head_b,
+            &["b.txt"],
+            "test -f never-created.txt",
+        )
+        .await;
+
+        let (landing, note) = land_approved_goal(&pool, &goal_b.id, None, true).await;
+        assert!(
+            matches!(
+                landing,
+                Some((_, crate::goal_landing::LandOutcome::Skipped(_)))
+            ),
+            "{landing:?}"
+        );
+        let note = note.expect("a refused landing reports its note");
+        assert!(note.contains("did not genuinely pass"), "{note}");
+        assert_eq!(git_in(fx.repo.path(), &["rev-parse", "main"]), fx.head_a);
+        let rebased = git_in(&fx.wt_b, &["rev-parse", "goal/run-b"]);
+        assert_ne!(rebased, fx.head_b);
+        assert_eq!(git_in(&fx.wt_b, &["rev-parse", "goal/run-b^"]), fx.head_a);
+        assert_eq!(goal_state_of(&pool, &goal_b.id).await, "failed");
+
+        let card = crate::cards::get_card(&pool, &goal_b.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = r63b_landing(&card);
+        assert_eq!(landing["outcome"], "skipped");
+        assert_eq!(landing["refusal_reason"], "rebase_reverify_failed");
+        let evidence = &card.metadata_json["dispatch_evidence"];
+        assert_eq!(evidence["verdict"]["status"], "fail");
+        assert_eq!(evidence["head_commit"], serde_json::json!(rebased));
+        assert_eq!(evidence["rebased_onto_trunk"]["reverify"], "fail");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &goal_b.id, "unblock")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// Interactive approvals are unchanged: the same disjoint sibling shape
+    /// that headless landing rebases stays "needs merge" for the human, with
+    /// no rebase, no metadata rewrite and no machine refusal reason.
+    #[tokio::test]
+    async fn interactive_landing_still_reports_needs_merge_without_rebasing() {
+        let fx = r63b_siblings(&["a.txt"], &["b.txt"]);
+        let pool = test_pool().await;
+        let project_id = r63b_project(&pool, fx.repo.path()).await;
+        git_in(fx.repo.path(), &["merge", "--ff-only", "goal/run-a"]);
+        let goal_b = r63b_goal(
+            &pool,
+            &project_id,
+            &fx.wt_b,
+            &fx.base,
+            &fx.head_b,
+            &["b.txt"],
+            "test -f a.txt",
+        )
+        .await;
+
+        let (landing, _) = land_approved_goal(&pool, &goal_b.id, None, false).await;
+        let Some((_, outcome)) = landing else {
+            panic!("an interactive landing still reports its outcome");
+        };
+        assert!(
+            outcome.describe().contains("cannot fast-forward"),
+            "{}",
+            outcome.describe()
+        );
+        assert_eq!(git_in(&fx.wt_b, &["rev-parse", "HEAD"]), fx.head_b);
+        assert_eq!(git_in(fx.repo.path(), &["rev-parse", "main"]), fx.head_a);
+        let card = crate::cards::get_card(&pool, &goal_b.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(r63b_landing(&card)["refusal_reason"].is_null());
+        assert!(card
+            .metadata_json
+            .pointer("/dispatch_evidence/rebased_onto_trunk")
+            .is_none());
+    }
+
+    /// H1 (G8 review, harness loop Lane E3 2026-09-10), G8's own pinning
+    /// test 1: "NULL root_path + goal worktree in repo A + process cwd in
+    /// repo B → landing refused with the reason, repo B HEAD unchanged".
+    /// This is the exact hazard G8 flagged: before this lane,
+    /// `land_approved_goal` trusted `resolve_primary_checkout_from_worktree`
+    /// on its own say-so — "git says this worktree came from here" — with
+    /// no independent confirmation that the recovered repo was ever the
+    /// goal's intended project. Here the worktree really is repo A's own
+    /// linked worktree (so the OLD code would have fast-forwarded A
+    /// correctly), but the goal has no `worker_session_id` at all — no
+    /// independently recorded working directory exists to confirm A is
+    /// legitimate — so the fallback must refuse outright. Repo B stands in
+    /// for the daemon's own cwd / `permagent-runtime` checkout: present in
+    /// this test only to prove landing never touches it either, by
+    /// construction (this function never reads `current_dir()` at all) —
+    /// its HEAD is asserted unchanged as direct evidence of that. Pre-fix,
+    /// this test's assertion on `HEAD` staying on the base commit fails —
+    /// the old code lands A unconditionally.
+    #[tokio::test]
+    async fn a_project_with_no_root_path_and_no_known_session_refuses_the_worktree_fallback() {
+        let (repo_a, head_a) = repo_with_finished_goal_branch();
+        let baseline_a = git_in(repo_a.path(), &["rev-parse", "main"]);
+        let (repo_b, _head_b) = repo_with_finished_goal_branch();
+        let repo_b_head_before = git_in(repo_b.path(), &["rev-parse", "HEAD"]);
+
+        let worktrees_root = tempfile::tempdir().unwrap();
+        let worktree_path = worktrees_root.path().join("run-1");
+        git_in(
+            repo_a.path(),
+            &[
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "goal/run-1",
+            ],
+        );
+
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "No root_path, no known session".to_string(),
+                root_path: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Finished goal, unverifiable landing target".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 0,
+                    "goal_state": "review",
+                    // No `worker_session_id` — no independently recorded
+                    // working directory exists for this goal.
+                    "dispatch_evidence": {
+                        "worktree_path": worktree_path.to_string_lossy(),
+                        "head_commit": head_a,
+                        "baseline_commit": baseline_a,
+                        "commits": ["abc123 the work"],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(project.id.clone()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        let (effect, _warning) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git_in(repo_a.path(), &["rev-parse", "HEAD"]),
+            baseline_a,
+            "repo A must NOT be fast-forwarded without an independently recorded working \
+             directory confirming it as this goal's own repo"
+        );
+        assert_eq!(
+            git_in(repo_b.path(), &["rev-parse", "HEAD"]),
+            repo_b_head_before,
+            "repo B (standing in for the daemon's own cwd) must never be touched by landing"
+        );
+        let effect = effect.unwrap_or_default();
+        assert!(
+            effect.contains("landing target is not the goal's repo"),
+            "the refusal must say why, not just fail: {effect}"
+        );
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = card
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("a refused fallback landing must still be recorded, never silent");
+        assert_eq!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("skipped")
+        );
+        assert_eq!(
+            landing.get("trunk_state").and_then(|v| v.as_str()),
+            Some("left_in_working_tree")
+        );
+    }
+
+    /// R1's second half: when landing genuinely cannot proceed (no
+    /// `root_path` AND the worktree itself is gone/unresolvable — the reaper
+    /// already swept it, or the path was never real), `land_approved_goal`
+    /// must record an honest failure outcome, never the old silent
+    /// `(None, None)`. Pre-fix, this test's `dispatch_evidence/landing`
+    /// assertion fails outright (the key never exists) and the approval
+    /// response carries no landing information at all.
+    #[tokio::test]
+    async fn a_project_with_no_root_path_records_an_honest_failure_when_it_genuinely_cannot_land() {
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "No root_path, no resolvable worktree".to_string(),
+                root_path: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Finished goal, unresolvable landing target".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 0,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        // Never a real git worktree — the reaper already
+                        // swept it, or (as in every eval-seeded fixture)
+                        // there never was a project root to branch it from.
+                        "worktree_path": "/no/such/permagent-d1-worktree-run-1",
+                        "head_commit": "deadbeefcafe",
+                        "commits": ["abc123 the work"],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(project.id.clone()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        let (effect, _warning) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        let effect = effect.unwrap_or_default();
+        assert!(
+            effect.contains("NOT landed"),
+            "an unresolvable landing target must be reported as a real failure, \
+             not silently dropped: {effect}"
+        );
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = card
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect(
+                "a genuinely-unlandable goal must still get an honest \
+                 dispatch_evidence.landing entry, never silence",
+            );
+        assert_ne!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("landed"),
+            "must never read as landed when nothing was landed: {landing:?}"
+        );
+        assert!(
+            landing
+                .get("describe")
+                .and_then(|v| v.as_str())
+                .is_some_and(|d| d.contains("root_path")),
+            "the recorded reason must name what actually went wrong: {landing:?}"
+        );
+        // E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10): a
+        // Skipped outcome (nothing ever resolved a landing target) must
+        // read as left_in_working_tree — never landed_on_trunk.
+        assert_eq!(
+            landing.get("trunk_state").and_then(|v| v.as_str()),
+            Some("left_in_working_tree")
+        );
+    }
+
+    /// A trunk on `main` that has moved (a second commit) since
+    /// `goal/run-1` branched off it — `goal_landing::land` must report
+    /// `NeedsMerge`, not fast-forward.
+    fn repo_with_diverged_trunk() -> (tempfile::TempDir, String) {
+        let (dir, head) = repo_with_finished_goal_branch();
+        let root = dir.path();
+        // `repo_with_finished_goal_branch` leaves the checkout on `main`.
+        std::fs::write(root.join("trunk-moved.txt"), "someone else landed first\n").unwrap();
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-m", "trunk moved"]);
+        (dir, head)
+    }
+
+    /// YF2 (G6 review, Lane Y-fix 2026-09-09, finding #2): approving a goal
+    /// whose branch the trunk has since diverged from must persist the real
+    /// `NeedsMerge` outcome onto the card — not just report it in the
+    /// one-shot approval response and then discard it, which is exactly
+    /// what let a later `Complete` card print a fabricated `landed` line
+    /// for work that never reached the trunk.
+    #[tokio::test]
+    async fn needs_merge_outcome_is_persisted_on_the_card_and_never_reported_as_landed() {
+        let (repo, head) = repo_with_diverged_trunk();
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Needs-merge landing test".to_string(),
+                root_path: Some(root.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Diverged goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 0,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        "worktree_path": "/tmp/.permagent-goal-worktrees/run-1",
+                        "head_commit": head,
+                        "commits": ["abc123 the work"],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(project.id.clone()),
+                headline: Some("Review the diverged work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        let (effect, _warning) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert_ne!(
+            git_in(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "a diverged trunk must never be fast-forwarded"
+        );
+        let effect = effect.unwrap_or_default();
+        assert!(
+            effect.contains("NOT landed"),
+            "a diverged trunk must be reported honestly, not as landed: {effect}"
+        );
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = card
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("land_approved_goal must persist the outcome onto dispatch_evidence.landing");
+        assert_eq!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("needs_merge"),
+            "pre-fix this field never existed at all"
+        );
+        assert!(
+            landing
+                .get("landed_head")
+                .map(|v| v.is_null())
+                .unwrap_or(true),
+            "a NeedsMerge outcome must never carry a landed_head"
+        );
+        // E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10): a
+        // NeedsMerge outcome is real, committed work that is NOT on trunk —
+        // must read as left_in_working_tree, never landed_on_trunk. Pre-fix:
+        // the `trunk_state` key does not exist at all.
+        assert_eq!(
+            landing.get("trunk_state").and_then(|v| v.as_str()),
+            Some("left_in_working_tree"),
+            "pre-fix this field never existed at all"
         );
     }
 

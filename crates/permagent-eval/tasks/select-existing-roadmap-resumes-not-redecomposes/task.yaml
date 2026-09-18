@@ -1,0 +1,53 @@
+id: select-existing-roadmap-resumes-not-redecomposes
+title: Resume a paused roadmap instead of re-planning it
+category: selection
+max_turns: 15
+# G3: this project's roadmap was already proposed, approved, and paused.
+# Continuing the work means resuming dispatch (`resume_roadmap`), not
+# generating a second, competing proposal for goals that already exist.
+#
+# Lane R18c-b (G23 HIGH-1): the original `must_not_call: [decompose_roadmap]`
+# below directly contradicted recipe.yaml's NON-NEGOTIABLE rule 1 (the first
+# execution tool call is always `decompose_roadmap`), and both M17 rounds
+# confirmed it: the coordinator correctly starts with `decompose_roadmap`
+# per rule 1 (r1 log:85, r2 log:54), so the fixture was unsatisfiable
+# regardless of whether the coordinator went on to do the right thing. What
+# actually distinguishes "resumed" from "re-planned" on the coordinator's
+# own tool-call sequence is `create_roadmap`: THAT is what materializes a
+# second, competing roadmap. Calling `decompose_roadmap` once, as rule 1
+# demands, is not itself the defect.
+#
+# Lane K8 (HARNESS_LOOP_LOG.md Lane R20d report, A20 Q2/Q3): this fixture
+# used to point the model at a `roadmap-state.json` workspace file that no
+# tool ever read — inert prose the coordinator had no legal way to act on,
+# so it could only escalate (correct given what it could see) or
+# re-decompose (wrong). The paused roadmap is now REAL, seeded straight into
+# this run's own store before the harness starts
+# (`seed/harness_state.json`, see `crate::seed_state`): a project whose
+# `root_path` matches this workspace, tagged `roadmap_paused`, with one
+# Complete goal and one Ready goal. `resume_roadmap`'s own tool description
+# already documents the no-argument cwd-match fallback
+# (`resolve_resume_project`, orchestrator.rs) that resolves this seeded
+# project, so the model needs nothing beyond the prompt below and the tool
+# list to make the correct call.
+test: [true]
+prompt: |
+  This project's roadmap was already approved and is currently paused.
+  Continue executing it — do not re-plan or propose a new roadmap.
+# Lane R51a (HARNESS_LOOP_LOG.md "Lane R51a"): as K8's note above already
+# flagged for `roadmap-state.json`, `workspace/` here was still empty even
+# after that fix — nothing for the "Add a retry policy to the client"
+# goal's dispatched worker to add a retry to. One observed run's worker
+# fabricated a throwaway `tests/test_retry.py` with a placeholder
+# `api_key` just to have something to commit, and got correctly refused
+# by the credential guard — a fixture defect, not a worker or guard bug.
+# `workspace/` now seeds a real `client.py` (an API call with no retry
+# policy yet, matching the goal's own title) plus a rename/refactor-safe
+# `test_client.py` and a `pyproject.toml` pytest marker, so the worker has
+# real code to add a retry policy to and a genuine (non-vacuous) `verify`
+# PASS is reachable — see Lane R51a's fuller note for why `verify_ran`
+# requires this (`session_had_successful_verify` /
+# `VerifyEvidence::Genuine`, orchestrator.rs).
+selection_check:
+  must_call: [resume_roadmap]
+  must_not_call: [create_roadmap]

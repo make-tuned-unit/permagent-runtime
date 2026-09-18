@@ -9,12 +9,12 @@
       "source": "current_budget_config"
     },
     "settledUsd": 0.0,
-    "heldUsd": 0.0,
-    "unknownUsd": 0.75,
-    "effectiveUsedUsd": 0.75,
-    "remainingUsd": 0.25,
-    "band": "unknown",
-    "completeness": "partial",
+    "heldUsd": 0.1,
+    "unknownUsd": 0.0,
+    "effectiveUsedUsd": 0.1,
+    "remainingUsd": 0.9,
+    "band": "soft",
+    "completeness": "complete",
     "error": null
   },
   "session": {
@@ -25,12 +25,12 @@
       "source": "current_budget_config"
     },
     "settledUsd": 0.0,
-    "heldUsd": 0.0,
-    "unknownUsd": 0.75,
-    "effectiveUsedUsd": 0.75,
-    "remainingUsd": 0.25,
-    "band": "unknown",
-    "completeness": "partial",
+    "heldUsd": 0.1,
+    "unknownUsd": 0.0,
+    "effectiveUsedUsd": 0.1,
+    "remainingUsd": 0.9,
+    "band": "soft",
+    "completeness": "complete",
     "error": null
   },
   "taskBilling": {
@@ -54,7 +54,7 @@
   "provenance": {
     "version": "budget-projection.v1",
     "asOf": "<asOf>",
-    "completeness": "partial",
+    "completeness": "complete",
     "sources": [
       "sessions",
       "cost_ledger",

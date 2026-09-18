@@ -863,6 +863,169 @@ fn placeholder_scan_applies(meta: &serde_json::Map<String, serde_json::Value>) -
 
 // ── The independent cross-family review ─────────────────────────────────────
 
+/// E7 (`permagent::cost_router::call_site_completeness`) snapshot caps — this
+/// reads an UNTRUSTED goal worktree for the sole purpose of finding call
+/// sites to hand the reviewer, so it must never become a way to pull an
+/// unbounded amount of a repo into memory and into a cloud reviewer's prompt.
+const CALL_SITE_SNAPSHOT_MAX_FILES: usize = 400;
+const CALL_SITE_SNAPSHOT_MAX_FILE_BYTES: u64 = 256 * 1024;
+const CALL_SITE_SNAPSHOT_MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
+
+/// Directories E7's bounded snapshot never descends into — generated/vendored
+/// trees that are large, irrelevant to a hand-written call site, and (for
+/// `.git`) not source at all. Any OTHER hidden directory (leading `.`) is
+/// also skipped, so this list only needs to name the non-hidden ones.
+const CALL_SITE_SNAPSHOT_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    "venv",
+    "__pycache__",
+];
+
+/// Read a BOUNDED, text-only snapshot of `root` for E7's call-site
+/// enumeration (`permagent::cost_router::enumerate_call_sites`) — capped at
+/// [`CALL_SITE_SNAPSHOT_MAX_FILES`] files, [`CALL_SITE_SNAPSHOT_MAX_FILE_BYTES`]
+/// per file, and [`CALL_SITE_SNAPSHOT_MAX_TOTAL_BYTES`] total; skips
+/// [`CALL_SITE_SNAPSHOT_SKIP_DIRS`] and every hidden directory (`.git`
+/// included); drops anything that is not valid UTF-8 or contains a NUL byte
+/// (binary content is never handed to a reviewer prompt). A tree larger than
+/// the caps degrades to a PARTIAL snapshot rather than blocking or growing
+/// unbounded — a partial snapshot under-reports call sites, which is a false
+/// negative on E7 (a real defect this run happens not to catch), never a
+/// false HOLD (it can only ever find real `SYMBOL(` text, never invent one).
+///
+/// G26 HIGH-1 (2026-09-14 desk review): `root` is an UNTRUSTED goal
+/// worktree. A symlinked directory or file inside it — pointing at `$HOME`,
+/// `/`, a sibling repo, anything the daemon's own process can read — must
+/// never be walked into or read: that content would flow into
+/// `BEGIN_CALL_SITES` and on into an external cross-family reviewer LLM's
+/// prompt. Two INDEPENDENT guards, neither alone trusted:
+/// 1. Directory-ness and symlink-ness are both decided from
+///    `DirEntry::file_type()` (an `lstat` — never follows a symlink), never
+///    `Path::is_dir()` or the free function `fs::metadata()` (both DO
+///    follow). Any symlink at all, file or directory, is skipped outright —
+///    never pushed onto the walk stack, never read.
+/// 2. `root` is canonicalized once up front; every file this function is
+///    about to actually read is canonicalized again and rejected unless its
+///    canonical path still starts with the canonical root. This does not
+///    lean on guard 1 alone — a TOCTOU swap of a directory for a symlink
+///    between the `file_type()` check and the read, or any escape vector
+///    this function's author did not think of, is still caught here.
+///
+/// Every bound (file count, per-file size, total size) is still checked
+/// BEFORE any file is opened for reading, exactly as before this fix.
+fn bounded_repo_snapshot(root: &Path) -> Vec<(String, String)> {
+    let Ok(canonical_root) = std::fs::canonicalize(root) else {
+        // Cannot even resolve the root itself — refuse to walk anything
+        // rather than guess what is safe. E7 degrades to "no call sites
+        // found" (a false negative), never a guessed-safe read.
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        if out.len() >= CALL_SITE_SNAPSHOT_MAX_FILES
+            || total_bytes >= CALL_SITE_SNAPSHOT_MAX_TOTAL_BYTES
+        {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if out.len() >= CALL_SITE_SNAPSHOT_MAX_FILES
+                || total_bytes >= CALL_SITE_SNAPSHOT_MAX_TOTAL_BYTES
+            {
+                break;
+            }
+            // Guard 1: `lstat`-based file type, never follows. A symlink —
+            // file or directory — is skipped outright.
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if file_type.is_dir() {
+                if name.starts_with('.') || CALL_SITE_SNAPSHOT_SKIP_DIRS.contains(&name.as_str()) {
+                    continue;
+                }
+                dirs.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue; // a device/socket/fifo/etc — never a text file to read
+            }
+            // Guard 2: independent of guard 1 — the canonical path of every
+            // file about to be read must still resolve under the canonical
+            // worktree root.
+            let Ok(canonical_path) = std::fs::canonicalize(&path) else {
+                continue;
+            };
+            if !canonical_path.starts_with(&canonical_root) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.len() == 0 || meta.len() > CALL_SITE_SNAPSHOT_MAX_FILE_BYTES {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            if bytes.contains(&0) {
+                continue; // binary content — text files only
+            }
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            total_bytes += text.len();
+            out.push((rel, text));
+        }
+    }
+    out
+}
+
+/// E7: the call sites of any function/method signature change detected in
+/// `body` (Code mode only — a Rubric goal's `body` is prose, not a diff),
+/// computed from a bounded snapshot of `working_dir` — the SAME worktree the
+/// diff itself came from. `working_dir: None`, no detected signature change,
+/// or a Rubric goal all yield an empty result, which is exactly the signal
+/// [`review::run_review`] reads as "E7 does not apply to this review".
+fn call_site_enumerations_for_review(
+    mode: review::ReviewMode,
+    body: &str,
+    working_dir: Option<&Path>,
+) -> Vec<permagent::cost_router::CallSiteEnumeration> {
+    if mode != review::ReviewMode::Code {
+        return Vec::new();
+    }
+    let changes = permagent::cost_router::detect_signature_changes(body);
+    if changes.is_empty() {
+        return Vec::new();
+    }
+    let Some(wd) = working_dir else {
+        return Vec::new();
+    };
+    let snapshot = bounded_repo_snapshot(wd);
+    permagent::cost_router::enumerate_call_sites(
+        &changes,
+        snapshot.iter().map(|(p, c)| (p.as_str(), c.as_str())),
+    )
+}
+
 /// Assemble the gate's inputs from what verification already computed, choose a
 /// reviewer, and run it. `None` when the gate is turned off for this goal.
 ///
@@ -931,6 +1094,14 @@ async fn run_independent_review(
             .to_string();
     }
 
+    // E7: the reviewer mandate's call-site-completeness check — see
+    // `call_site_enumerations_for_review`'s doc comment. Computed from the
+    // SAME `working_dir` the diff above just came from, so the reviewer's
+    // call-site list and the diff it is reviewing are never two different
+    // trees.
+    let call_site_enumerations =
+        call_site_enumerations_for_review(mode, &body, working_dir.as_deref());
+
     let acceptance_criteria: Vec<String> = meta
         .get("acceptance_criteria")
         .and_then(|v| v.as_array())
@@ -940,6 +1111,17 @@ async fn run_independent_review(
                 .collect()
         })
         .unwrap_or_default();
+
+    // R43b (`orchestrator::AC_EXISTENCE_ONLY_METADATA_KEY` — the SAME key
+    // name `create_roadmap`/`decompose_roadmap` write, not a re-derived
+    // literal): every acceptance criterion above claims code exists, never
+    // what running it produces, and no behavioural check could be derived
+    // from the task text either. Missing/absent means "no", same as every
+    // other optional card-metadata flag this module already reads.
+    let ac_existence_only = meta
+        .get(permagent::agents::platform_extensions::orchestrator::AC_EXISTENCE_ONLY_METADATA_KEY)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let worker = review::worker_model(pool, meta).await;
     let selection = match &deps.selection {
@@ -970,6 +1152,8 @@ async fn run_independent_review(
         verify_output: passing_evidence_summary(record),
         worker,
         prior: review::IndependentReview::from_metadata(meta),
+        call_site_enumerations,
+        ac_existence_only,
     };
 
     Some(review::run_review(&inputs, &selection, spend.as_ref(), deps.client).await)
@@ -1258,8 +1442,14 @@ async fn park_for_command_approval(
             deny: parked.deny.map(|d| d.as_str().to_string()),
             tier: parked.tier.as_str().to_string(),
             project_id: project.id.clone(),
+            // This card is filed by a goal's completion-check gate, not
+            // `skill_run` — no skill/inputs/session binding to carry.
+            skill_id: None,
+            inputs_hash: None,
+            minting_session_id: None,
         }),
         roadmap_approval: None,
+        reservation_gate: None,
     };
 
     let headline = permagent::decisions::truncate_for_headline(&format!(
@@ -5123,5 +5313,96 @@ impl VerificationRecord {
     /// Test helper: degraded runs have an empty rationale.
     fn grades_present(&self) -> bool {
         !self.rationale.is_empty()
+    }
+}
+
+// ── G26 HIGH-1: bounded_repo_snapshot never follows symlinks or leaves root ──
+
+#[cfg(test)]
+mod bounded_repo_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn a_regular_nested_file_is_included() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/a.ts"), "export function a() {}\n").unwrap();
+
+        let snap = bounded_repo_snapshot(root.path());
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].0, "src/a.ts");
+        assert!(snap[0].1.contains("export function a"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_dir_pointing_outside_the_root_is_skipped() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(
+            outside.path().join("secret.ts"),
+            "const TOKEN = \"do-not-leak\";\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("linked")).unwrap();
+        // A real, non-symlinked file too, so the test also proves the walk
+        // did not simply stop dead — it kept going and found this one.
+        std::fs::write(root.path().join("real.ts"), "export function real() {}\n").unwrap();
+
+        let snap = bounded_repo_snapshot(root.path());
+        assert!(
+            snap.iter().all(|(_, text)| !text.contains("do-not-leak")),
+            "content reached through a symlinked directory must never be read: {snap:?}"
+        );
+        assert!(snap.iter().any(|(path, _)| path == "real.ts"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_file_is_skipped() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.ts");
+        std::fs::write(&secret, "const TOKEN = \"do-not-leak\";\n").unwrap();
+        std::os::unix::fs::symlink(&secret, root.path().join("linked.ts")).unwrap();
+        std::fs::write(root.path().join("real.ts"), "export function real() {}\n").unwrap();
+
+        let snap = bounded_repo_snapshot(root.path());
+        assert!(
+            snap.iter().all(|(path, _)| path != "linked.ts"),
+            "a symlinked FILE must never be read: {snap:?}"
+        );
+        assert!(
+            snap.iter().all(|(_, text)| !text.contains("do-not-leak")),
+            "{snap:?}"
+        );
+        assert!(snap.iter().any(|(path, _)| path == "real.ts"));
+    }
+
+    #[test]
+    fn the_file_count_cap_is_respected() {
+        let root = tempfile::tempdir().unwrap();
+        for i in 0..(CALL_SITE_SNAPSHOT_MAX_FILES + 5) {
+            std::fs::write(root.path().join(format!("f{i}.ts")), "x").unwrap();
+        }
+        let snap = bounded_repo_snapshot(root.path());
+        assert!(
+            snap.len() <= CALL_SITE_SNAPSHOT_MAX_FILES,
+            "got {} files, cap is {}",
+            snap.len(),
+            CALL_SITE_SNAPSHOT_MAX_FILES
+        );
+    }
+
+    #[test]
+    fn the_per_file_size_cap_is_respected() {
+        let root = tempfile::tempdir().unwrap();
+        let big = "x".repeat((CALL_SITE_SNAPSHOT_MAX_FILE_BYTES + 1) as usize);
+        std::fs::write(root.path().join("big.ts"), &big).unwrap();
+        std::fs::write(root.path().join("small.ts"), "export function s() {}\n").unwrap();
+
+        let snap = bounded_repo_snapshot(root.path());
+        assert!(snap.iter().all(|(path, _)| path != "big.ts"));
+        assert!(snap.iter().any(|(path, _)| path == "small.ts"));
     }
 }

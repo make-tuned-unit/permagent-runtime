@@ -1,0 +1,22 @@
+id: harness-loc-refund-cents-drift
+title: "Refunds are a cent short after loyalty discounts"
+category: harness-lever-localization
+max_turns: 30
+harness_timeout_secs: 600
+# Lane K7: 300s -- a Rust oracle's `cargo test` builds into a fresh per-run
+# CARGO_TARGET_DIR (Lane R18c isolation), so a cold build takes longer than
+# a warm one; 120s was tight enough that the oracle script's own internal
+# per-step alarm (see oracle_check.sh) could fire first and get misread as
+# a real test failure instead of a grading timeout.
+oracle_timeout_secs: 300
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does not
+# apply; the overlay still makes it untamperable by the agent.
+deliverables: []
+# lang=rs difficulty=hard needs_repo_map=true needs_test_run=false
+prompt: |
+  Support keeps getting tickets that refunds are coming up a cent short after a
+  loyalty discount is applied -- e.g. a customer with a $2.01 return and a
+  small loyalty discount got $1.98 back instead of $1.99. It only happens for
+  some amounts, not all of them. Track down where the discrepancy is coming
+  from and fix it so refunded amounts are correct to the cent.

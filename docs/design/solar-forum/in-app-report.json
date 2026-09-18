@@ -1,0 +1,1776 @@
+{
+  "appUrl": "http://127.0.0.1:5284/ui/",
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "startedAt": "2026-09-14T16:42:36.993Z",
+  "tokenSource": "/Users/j/.permagent/secrets/daemon_token.json (value never recorded)",
+  "notes": [
+    "Drives the real Command Center app against the live local daemon.",
+    "Every sent prompt is prefixed \"[world-e2e-test]\"."
+  ],
+  "gates": {
+    "route": {
+      "description": "world tool renders ForumAppView inside the real app",
+      "workspace": "World",
+      "opened": {
+        "clicked": true,
+        "visible": true,
+        "count": 1,
+        "canvas": {
+          "width": 300,
+          "height": 150,
+          "drawingBuffer": [
+            300,
+            150
+          ]
+        }
+      },
+      "glb": {
+        "url": "/ui/world/solar-forum.glb?v=c4fcaa378a8cf02f",
+        "status": 200
+      },
+      "perf": {
+        "snapshot": {
+          "fps": 80.9,
+          "calls": 203,
+          "triangles": 2258284,
+          "geometries": 125,
+          "textures": 35,
+          "programs": 35,
+          "dpr": 1
+        },
+        "ticks": 3
+      },
+      "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)",
+      "sampling": {
+        "supported": true,
+        "width": 1022,
+        "height": 972,
+        "rgbVariance": 7510.429443359375,
+        "alphaIgnored": true
+      },
+      "screenshot": "assets/world/forum/browser/in-app-world.webp",
+      "districts": "Commons\nGallery\nBuild\nBrain\nAutomate\nMesh\nReading grove\nMaker court\nCouncil garden\nArrival gardens\nConservatory\nMaker hall\nDebating theatre\nHarbor",
+      "appearance": "Day / follows system appearance",
+      "legacyFlagInStorage": null,
+      "at": "2026-09-14T16:43:04.778Z"
+    },
+    "legacy": {
+      "description": "rollback lever: localStorage['permagent.world.legacy']='1' renders the legacy WorldView",
+      "forumShellCount": 0,
+      "legacyMarkers": {
+        "canvases": 3,
+        "bodyHasWorldText": false,
+        "text": "Home\nProjects\nPeople\nBuild\nGrow\nFinance\nAutomate\nWorld\nBrain\nRecord\nNotifications\nSettings\nCollapse\nTHE FORUM\nOPENS WHEN THE MESH DOES\nTHE AGORA\nAWAITS THE MESH\n5 SCHEDULES ARMED\n6 DECISIONS AWAIT YOU\nKEY\n✕\nGETTING AROUND\nDrag\nturns the hall around you\nScroll\nmoves you closer in or further back\nRight-drag or arrow keys\nslides the view sideways\nClick a station\nglides you to it — Build, Brain and Automate then open their tab\nClick an agent\nopens its panel and walks you over: WASD or the arrows to walk, Esc to come back\nWHAT YOU’RE LOOKING AT\nA working pose\na real state for the agents that report"
+      },
+      "opened": {
+        "error": "page.waitForFunction: Timeout 90000ms exceeded."
+      },
+      "screenshot": "assets/world/forum/browser/in-app-world-legacy.webp",
+      "at": "2026-09-14T16:44:52.316Z",
+      "clearedFlag": null,
+      "forumBackAfterClear": true
+    },
+    "sovereign": {
+      "description": "the forum shows the configured orchestrator name",
+      "daemonIdentity": {
+        "status": 200,
+        "first_name": "Henry",
+        "last_name": null
+      },
+      "forumNote": "Henry\n\nYour sovereign orchestrator · leads your team\n\nFind Henry",
+      "findButton": "Find Henry",
+      "selectOption": "Henry · Sovereign orchestrator",
+      "matches": true,
+      "screenshot": "assets/world/forum/browser/in-app-sovereign.webp",
+      "at": "2026-09-14T16:44:52.559Z"
+    },
+    "ask": {
+      "description": "forum ask control streams a real reply into the existing conversation",
+      "buttonLabel": "Ask Henry",
+      "hitTest": {
+        "label": "Ask Henry",
+        "box": {
+          "x": 1259,
+          "y": 493.765625,
+          "width": 313,
+          "height": 40
+        },
+        "hit": {
+          "tag": "SPAN",
+          "class": "pa-btn__label",
+          "text": "Ask Henry"
+        },
+        "obstructed": false,
+        "disabled": false,
+        "clickMode": "normal"
+      },
+      "connection": "connected",
+      "transcriptTail": "You\n01:44 PM\nQuestion from the World forum. Selected agent for context: Henry. This is a request to the orchestrator, not a claim that this specialist has been directly assigned.\nPresentation preference: Warm and direct. Clarify the outcome; explain tradeoffs without grandstanding.\n\n[world-e2e-test] reply with the single word PONG\n\nUseful answer criteria: a one-word reply\nAgent\n01:44 PM\n\nNetwork error: Could not connect to 127.0.0.1:8081 — check your network connection and try again.\n\nPlease resend your message to try again.",
+      "network": [
+        {
+          "url": "/api/sessions",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "url": "/api/sessions/20260914_11",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "url": "/api/sessions/20260914_11/cost",
+          "status": 500,
+          "method": "GET"
+        },
+        {
+          "url": "/sessions/20260914_11/events?token=REDACTED",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "url": "/sessions/20260914_11/reply",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "url": "/api/sessions",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "url": "/api/sessions/20260914_11/cost",
+          "status": 500,
+          "method": "GET"
+        }
+      ],
+      "screenshot": "assets/world/forum/browser/in-app-ask.webp",
+      "at": "2026-09-14T16:44:59.268Z"
+    },
+    "job": {
+      "streamingObservedBeforeCancel": true,
+      "at": "2026-09-14T16:45:05.334Z",
+      "description": "job brief path and cancellation through the forum conversation",
+      "buttonLabel": "Ask to run job · Henry",
+      "hitTest": {
+        "label": "Ask to run job · Henry",
+        "box": {
+          "x": 1259,
+          "y": 493.765625,
+          "width": 313,
+          "height": 40
+        },
+        "hit": {
+          "tag": "SPAN",
+          "class": "pa-btn__label",
+          "text": "Ask to run job · Henry"
+        },
+        "obstructed": false,
+        "disabled": false,
+        "clickMode": "normal"
+      },
+      "goalsBefore": [],
+      "goalsAfter": [],
+      "forumLiveBefore": "0 active jobs reported\nArchitecture preview · existing World agent feeds",
+      "forumLiveAfter": "0 active jobs reported\nArchitecture preview · existing World agent feeds",
+      "stopClickMode": "normal",
+      "stopVisibleAfterCancel": 0,
+      "connection": "connected",
+      "cancelNetwork": [
+        {
+          "url": "/sessions/20260914_11/cancel",
+          "status": 200,
+          "method": "POST"
+        }
+      ],
+      "transcriptTail": " context: Henry. This is a request to the orchestrator, not a claim that this specialist has been directly assigned.\nPresentation preference: Warm and direct. Clarify the outcome; explain tradeoffs without grandstanding.\n\n[world-e2e-test] reply with the single word PONG\n\nUseful answer criteria: a one-word reply\nAgent\n01:44 PM\nYou\n01:45 PM\nJob request from the World forum. Selected agent for context: Henry. This is a request to the orchestrator, not a claim that this specialist has been directly assigned.\nPresentation preference: Warm and direct. Clarify the outcome; explain tradeoffs without grandstanding.\nExecute this brief using the existing runtime and track progress and evidence in the appropriate project or task.\n\n[world-e2e-test] Do not use any tools and do not create files. Just print the numbers 1 to 60, one per line, nothing else.\n\nUseful answer criteria: the numbered lines only",
+      "screenshot": "assets/world/forum/browser/in-app-job-cancel.webp"
+    },
+    "approvals": {
+      "description": "pending approvals render inside the forum conversation (ChatPendingDecisions)",
+      "daemonPendingDecisions": {
+        "status": 200,
+        "body": {
+          "items": [
+            {
+              "id": "01a08af9-f1f5-7232-9066-d060c2c9da15",
+              "kind": "risk_gate",
+              "goal_id": null,
+              "project_id": null,
+              "tier": 1,
+              "headline": "IREN looks stretched — consider taking the gain",
+              "detail": "stochastic %K 86 — at or above 80; 8.5% above the 20-day average\n\nInvalidation: the reading is void once the close is back at or below the 20-day average of 41.82\n\nPosition: 2 shares from 2026-08-31 at 36.23; unrealized +25.2%.\n\nCounter-evidence:\ntrend_ok is false — the long trend is already broken, so this is not a single bad week\nchan_pos_252 is 0.39, in the lower part of its 52-week range\nreversal_risk is false — turnover is not elevated\nearnings proximity is UNKNOWN — this engine has no earnings calendar, so an earnings date near this trigger cannot be ruled out\n\nThis is a rule firing, not a forecast. No probability is attached because the engine is not calibrated. It is a proposal, never an order — nothing in Permagent can place a trade.",
+              "payload": {
+                "action_class": "finance_sell_notice",
+                "description": "stochastic %K 86 — at or above 80; 8.5% above the 20-day average",
+                "requested_by": "financier",
+                "sell_notice": {
+                  "symbol": "IREN",
+                  "trigger": "overbought_composite",
+                  "urgency": "advisory",
+                  "trigger_date": "2026-09-10",
+                  "trigger_close": 45.369998931884766,
+                  "rule_fired": "stochastic %K 86 — at or above 80; 8.5% above the 20-day average",
+                  "invalidation_level": 41.822750091552734,
+                  "invalidation_note": "the reading is void once the close is back at or below the 20-day average of 41.82",
+                  "distance_to_invalidation_pct": -7.818490023897984,
+                  "entry_date": "2026-08-31",
+                  "entry_price": 36.23,
+                  "shares": 2,
+                  "unrealized_pnl_pct": 25.227708892864385,
+                  "unrealized_pnl_usd": 18.279997863769538,
+                  "days_held": 10,
+                  "evidence": {
+                    "dch_lo20": 34.810001373291016,
+                    "dch_hi20": 49.290000915527344,
+                    "dch_lo55": 28.93000030517578,
+                    "sma50": 40.20729999542236,
+                    "sma100": 47.48414999008179,
+                    "sma200": 45.64817504882812,
+                    "atr20": 3.617442670274829,
+                    "atr_pct": 0.07973204221815822,
+                    "chandelier": 36.077672294351295,
+                    "chan_pos_252": 0.3882306929305604,
+                    "rvol": 0.711268085900625,
+                    "dollar_volume_20d": 1833671151.862526
+                  },
+                  "counter_evidence": [
+                    "trend_ok is false — the long trend is already broken, so this is not a single bad week",
+                    "chan_pos_252 is 0.39, in the lower part of its 52-week range",
+                    "reversal_risk is false — turnover is not elevated",
+                    "earnings proximity is UNKNOWN — this engine has no earnings calendar, so an earnings date near this trigger cannot be ruled out"
+                  ],
+                  "caveat": "This is a rule firing, not a forecast. No probability is attached because the engine is not calibrated. It is a proposal, never an order — nothing in Permagent can place a trade."
+                }
+              },
+              "rank": 0.35,
+              "status": "open",
+              "answer": null,
+              "answer_note": null,
+              "answer_choice_id": null,
+              "answer_input": null,
+              "acted_by": null,
+              "created_at": "2026-09-10T11:00:31.349Z",
+              "resolved_at": null,
+              "goal_title": null
+            },
+            {
+              "id": "01a09d78-cec6-7a20-8796-17752c349906",
+              "kind": "council_action",
+              "goal_id": null,
+              "project_id": "019ea34b-88bc-7193-9370-cff1855ab818",
+              "tier": 2,
+              "headline": "Restore Docker and diagnose daemon-restart abort chain",
+              "detail": "Priority 1: Restart Docker (`docker ps` should run). Install strix scanner (`pipx install strix-agent`). Then diagnose the daemon-restart abort pattern: collect logs from one failing goal (e.g., MCP Integration) and trace the restart trigger (resource exhaustion, timeout, orchestration error). Once root cause is isolated, file a fix or escalation. Unblock decision-to-execution pipeline: approve or reject 6 pending branch-delete proposals on the board.",
+              "payload": {
+                "session_id": "03f81cb3-49b8-4e99-bac0-6deb14483ba5",
+                "project_id": "019ea34b-88bc-7193-9370-cff1855ab818",
+                "project_name": "Permagent Runtime",
+                "title": "Restore Docker and diagnose daemon-restart abort chain",
+                "description": "Priority 1: Restart Docker (`docker ps` should run). Install strix scanner (`pipx install strix-agent`). Then diagnose the daemon-restart abort pattern: collect logs from one failing goal (e.g., MCP Integration) and trace the restart trigger (resource exhaustion, timeout, orchestration error). Once root cause is isolated, file a fix or escalation. Unblock decision-to-execution pipeline: approve or reject 6 pending branch-delete proposals on the board."
+              },
+              "rank": 0.19318672839506174,
+              "status": "open",
+              "answer": null,
+              "answer_note": null,
+              "answer_choice_id": null,
+              "answer_input": null,
+              "acted_by": null,
+              "created_at": "2026-09-14T01:12:15.302Z",
+              "resolved_at": null,
+              "goal_title": null
+            },
+            {
+              "id": "01a09d78-cecc-7340-aa55-4cc9d0057e18",
+              "kind": "council_action",
+              "goal_id": null,
+              "project_id": "01a0246f-b29f-74c0-9d43-bad2823733b3",
+              "tier": 2,
+              "headline": "Force-unblock analytics-events card (overdue Sep 8)",
+              "detail": "This card is overdue 6+ days and silently blocks 6 downstream Backlog cards (pricing refresh, founder story, guides, AI Audit, ventures page, build-slot launch through Nov 17). Either ship a minimal analytics scaffold (Segment/PostHog event schema + 3 key events: signup, guide_read, build_slot_inquiry) within 4 hrs, or explicitly defer launch and reset all downstream due dates. No further architectural work—this is a ship-or-defer decision.",
+              "payload": {
+                "session_id": "03f81cb3-49b8-4e99-bac0-6deb14483ba5",
+                "project_id": "01a0246f-b29f-74c0-9d43-bad2823733b3",
+                "project_name": "Atlas Atlantic",
+                "title": "Force-unblock analytics-events card (overdue Sep 8)",
+                "description": "This card is overdue 6+ days and silently blocks 6 downstream Backlog cards (pricing refresh, founder story, guides, AI Audit, ventures page, build-slot launch through Nov 17). Either ship a minimal analytics scaffold (Segment/PostHog event schema + 3 key events: signup, guide_read, build_slot_inquiry) within 4 hrs, or explicitly defer launch and reset all downstream due dates. No further architectural work—this is a ship-or-defer decision."
+              },
+              "rank": 0.19318672839506174,
+              "status": "open",
+              "answer": null,
+              "answer_note": null,
+              "answer_choice_id": null,
+              "answer_input": null,
+              "acted_by": null,
+              "created_at": "2026-09-14T01:12:15.308Z",
+              "resolved_at": null,
+              "goal_title": null
+            },
+            {
+              "id": "01a09d78-cece-7db2-90af-582469265221",
+              "kind": "council_action",
+              "goal_id": null,
+              "project_id": "019e80cd-72e7-7ef0-96fc-96f064939a58",
+              "tier": 2,
+              "headline": "Unblock pre-launch QA and beta (email + payment + social)",
+              "detail": "1,014 pageviews and 4,107 events in 7 days across 21 Canadian cities validate product-market fit. Three cards stalled 14+ days: email template, QA testing (payment flow + social templates), beta test (50–100 users). Allocate 4–8 hrs to finalize email template, run payment/social QA, and recruit beta cohort. This is pure execution, not architecture. $2.99/mo monetization depends on this funnel validation.",
+              "payload": {
+                "session_id": "03f81cb3-49b8-4e99-bac0-6deb14483ba5",
+                "project_id": "019e80cd-72e7-7ef0-96fc-96f064939a58",
+                "project_name": "Evntally",
+                "title": "Unblock pre-launch QA and beta (email + payment + social)",
+                "description": "1,014 pageviews and 4,107 events in 7 days across 21 Canadian cities validate product-market fit. Three cards stalled 14+ days: email template, QA testing (payment flow + social templates), beta test (50–100 users). Allocate 4–8 hrs to finalize email template, run payment/social QA, and recruit beta cohort. This is pure execution, not architecture. $2.99/mo monetization depends on this funnel validation."
+              },
+              "rank": 0.19318672839506174,
+              "status": "open",
+              "answer": null,
+              "answer_note": null,
+              "answer_choice_id": null,
+              "answer_input": null,
+              "acted_by": null,
+              "created_at": "2026-09-14T01:12:15.310Z",
+              "resolved_at": null,
+              "goal_title": null
+            },
+            {
+              "id": "01a09d78-ced0-7ae3-ae5f-5e8e9dba14a9",
+              "kind": "council_action",
+              "goal_id": null,
+              "project_id": "019ea358-b6d6-7671-8938-93531cfddda6",
+              "tier": 2,
+              "headline": "Unblock nav-bar and CI failures (after Permagent daemon fix)",
+              "detail": "Three cards failing: nav-bar color changes (rejected 3/3 attempts), README badge, and commit (\"Add one-line comment to README\"). All appear to be environmental failures tied to cargo test exit 101 on Permagent Runtime (shared CI). Once Permagent daemon is restored, re-attempt nav-bar changes with visual verification loop. 717 pageviews and 1,217 events confirm product-market fit; unfreeze these cards.",
+              "payload": {
+                "session_id": "03f81cb3-49b8-4e99-bac0-6deb14483ba5",
+                "project_id": "019ea358-b6d6-7671-8938-93531cfddda6",
+                "project_name": "Grocery Savers",
+                "title": "Unblock nav-bar and CI failures (after Permagent daemon fix)",
+                "description": "Three cards failing: nav-bar color changes (rejected 3/3 attempts), README badge, and commit (\"Add one-line comment to README\"). All appear to be environmental failures tied to cargo test exit 101 on Permagent Runtime (shared CI). Once Permagent daemon is restored, re-attempt nav-bar changes with visual verification loop. 717 pageviews and 1,217 events confirm product-market fit; unfreeze these cards."
+              },
+              "rank": 0.19318672839506174,
+              "status": "open",
+              "answer": null,
+              "answer_note": null,
+              "answer_choice_id": null,
+              "answer_input": null,
+              "acted_by": null,
+              "created_at": "2026-09-14T01:12:15.312Z",
+              "resolved_at": null,
+              "goal_title": null
+            },
+            {
+              "id": "01a09d78-ced1-74f0-8862-c1315c47bbab",
+              "kind": "council_action",
+              "goal_id": null,
+              "project_id": "01a0497a-3d40-7672-89d5-bbe59d928a29",
+              "tier": 2,
+              "headline": "Clear uncommitted changes and resume repo health",
+              "detail": "Steward reports 'primary working tree has uncommitted changes' untouched for 14+ days. Only 1 card touched this week. Decision: commit or discard the uncommitted changes, assign an owner, and establish a cadence (e.g., weekly repo-health check). Sidebar is a critical privacy product; repo health must not stall. This unblocks steward's cleanup and signals project status.",
+              "payload": {
+                "session_id": "03f81cb3-49b8-4e99-bac0-6deb14483ba5",
+                "project_id": "01a0497a-3d40-7672-89d5-bbe59d928a29",
+                "project_name": "Sidebar",
+                "title": "Clear uncommitted changes and resume repo health",
+                "description": "Steward reports 'primary working tree has uncommitted changes' untouched for 14+ days. Only 1 card touched this week. Decision: commit or discard the uncommitted changes, assign an owner, and establish a cadence (e.g., weekly repo-health check). Sidebar is a critical privacy product; repo health must not stall. This unblocks steward's cleanup and signals project status."
+              },
+              "rank": 0.19318672839506174,
+              "status": "open",
+              "answer": null,
+              "answer_note": null,
+              "answer_choice_id": null,
+              "answer_input": null,
+              "acted_by": null,
+              "created_at": "2026-09-14T01:12:15.313Z",
+              "resolved_at": null,
+              "goal_title": null
+            }
+          ],
+          "summary": {
+            "total_pending": 6,
+            "handled_count": 157,
+            "goals_in_flight": 0,
+            "goals_needing_attention": 21,
+            "oldest_pending_at": "2026-09-10T11:00:31.349Z"
+          },
+          "attentionGoals": [
+            {
+              "id": "01a01d47-252b-76c0-9bae-f37112c81bde",
+              "title": "Enable auto-loop mode (Cursor)",
+              "project_id": "019ea34b-88bc-7193-9370-cff1855ab818",
+              "state_binding": "cancelled",
+              "reason": null,
+              "updated_at": "2026-08-21T18:30:44.275Z"
+            },
+            {
+              "id": "019fd316-2716-7092-a077-6372fd32fa93",
+              "title": "Wake word and spoken stop command for hands-free voice",
+              "project_id": "019ea34b-88bc-7193-9370-cff1855ab818",
+              "state_binding": "cancelled",
+              "reason": null,
+              "updated_at": "2026-08-05T20:00:23.368Z"
+            },
+            {
+              "id": "019fd155-7e48-7712-b217-634bfb667e04",
+              "title": "iOS Listening Duration Fix: Prevent 5-10s Cutoff",
+              "project_id": "019ea34b-88bc-7193-9370-cff1855ab818",
+              "state_binding": "failed",
+              "reason": null,
+              "updated_at": "2026-08-05T10:20:02.291Z"
+            },
+            {
+              "id": "019fd155-6ff5-7cd3-9a7b-bab64fd1396a",
+              "title": "Markdown Stripping: Plain Text Output in CLI",
+              "project_id": "019ea34b-88bc-7193-9370-cff1855ab818",
+              "state_binding": "failed",
+              "reason": null,
+              "updated_at": "2026-08-05T10:20:02.290Z"
+            },
+            {
+              "id": "019fd155-6517-7ea2-a5de-4b0bc5b95abe",
+              "title": "Thinking Animation: Visual Feedback During Inference",
+              "project_id": "019ea34b-88bc-7193-9370-cff1855ab818",
+              "state_binding": "failed",
+              "reason": null,
+              "updated_at": "2026-08-05T10:20:02.238Z"
+            },
+            {
+              "id": "019fd155-5a94-7bb0-817a-a1f64dd3fee9",
+              "title": "Context Compression: Reduce Token Usage on Long Conversations",
+              "project_id": "019ea34b-88bc-7193-9370-cff1855ab818",
+              "state_binding": "failed",
+              "reason": null,
+              "updated_at": "2026-08-05T10:20:02.237Z"
+            },
+            {
+              "id": "019fd155-508f-71c0-8640-ac2ab525ca9e",
+              "title": "Tool Preview Length Configuration",
+              "project_id": "019ea34b-88bc-7193-9370-cff1855ab818",
+              "state_binding": "failed",
+              "reason": null,
+              "updated_at": "2026-08-05T10:20:02.196Z"
+            },
+            {
+              "id": "019fd155-4600-7150-97c7-70e0cc455951",
+              "title": "Cron Management: CLI Command for Scheduled Jobs",
+              "project_id": "019ea34b-88bc-7193-9370-cff1855ab818",
+              "state_binding": "failed",
+              "reason": null,
+              "updated_at": "2026-08-05T10:20:02.192Z"
+            },
+            {
+              "id": "019fd155-3be8-7ec1-b225-d00b4e68071a",
+              "title": "Credential Pool Management: Rotate & Manage API Keys",
+              "project_id": "019ea34b-88bc-7193-9370-cff1855ab818",
+              "state_binding": "failed",
+              "reason": null,
+              "updated_at": "2026-08-05T10:20:02.188Z"
+            },
+            {
+              "id": "019fd155-3163-7432-8326-c7fa1382eceb",
+              "title": "MCP Integration: Standard Tool Protocol Support",
+              "project_id": "019ea34b-88bc-7193-9370-cff1855ab818",
+              "state_binding": "failed",
+              "reason": null,
+              "updated_at": "2026-08-05T10:20:02.174Z"
+            },
+            {
+              "id": "019fd14d-57bb-7f81-91c8-be855a2b6c22",
+              "title": "Diagnose and fix CI failures (retry)",
+              "project_id": "019e7dd0-8f3f-71c3-bca5-39193103e571",
+              "state_binding": "failed",
+              "reason": null,
+              "updated_at": "2026-08-05T10:01:02.578Z"
+            },
+            {
+              "id": "019fd14d-27c7-7d31-973c-73836a49dbf0",
+              "title": "Add multi-day date range picking to calendar and events creation (retry)",
+              "project_id": "019e80cf-d192-7082-8588-5a8fa84d6738",
+              "state_binding": "failed",
+              "reason": null,
+              "updated_at": "2026-08-05T10:01:02.520Z"
+            },
+            {
+              "id": "019fd14c-c7c2-72e0-ab66-cca6ee734edd",
+              "title": "Fix top deals of the week homepage display (retry)",
+              "project_id": "019ea358-b6d6-7671-8938-93531cfddda6",
+              "state_binding": "failed",
+              "reason": null,
+              "updated_at": "2026-08-05T10:01:02.510Z"
+            },
+            {
+              "id": "019f2735-1ea1-7f12-96d3-70a38da31b5b",
+              "title": "List Directory Contents",
+              "project_id": "00000000-0000-0000-0000-000000000001",
+              "state_binding": "triage",
+              "reason": null,
+              "updated_at": "2026-07-03T09:00:20.518Z"
+            },
+            {
+              "id": "019f254d-74d4-7883-a052-ba6f784bdca9",
+              "title": "List Directory Contents",
+              "project_id": "00000000-0000-0000-0000-000000000001",
+              "state_binding": "cancelled",
+              "reason": null,
+              "updated_at": "2026-07-03T00:10:05.976Z"
+            },
+            {
+              "id": "019eff14-443b-7c12-9f46-bf0c4f4496d0",
+              "title": "Change nav bar to a different shade of green",
+              "project_id": "019ea358-b6d6-7671-8938-93531cfddda6",
+              "state_binding": "triage",
+              "reason": null,
+              "updated_at": "2026-06-25T15:10:00.719Z"
+            },
+            {
+              "id": "019efaf8-7726-7810-b09f-df0c7c9bcb72",
+              "title": "Add blue nav bar to Grocery Savers",
+              "project_id": "019ea358-b6d6-7671-8938-93531cfddda6",
+              "state_binding": "triage",
+              "reason": null,
+              "updated_at": "2026-06-25T00:24:09.979Z"
+            },
+            {
+              "id": "019efa7a-6fa9-7902-98c9-ded09a85d18e",
+              "title": "Add new color to nav bar on grocery saber.ca",
+              "project_id": "019ea358-b6d6-7671-8938-93531cfddda6",
+              "state_binding": "triage",
+              "reason": null,
+              "updated_at": "2026-06-24T18:39:33.526Z"
+            },
+            {
+              "id": "019ef6e9-a5ea-7ad1-a869-ce391087ac28",
+              "title": "Bug audit on World Litter Run and report findings",
+              "project_id": "019e80cc-68fc-7df1-b7d7-e18807e31a3c",
+              "state_binding": "triage",
+              "reason": "Parked 2026-06-24: wallclock cap exhausted (1800s) on attempt 1, no deliverable committed. Re-dispatch after the #467 wallclock-cap raise lands; re-dispatching at 1800s would just re-exhaust.",
+              "updated_at": "2026-06-24T15:24:04.727Z"
+            },
+            {
+              "id": "019ef6e4-57d7-7891-a465-fea93c2cb78c",
+              "title": "Add one-line comment to README and push to main",
+              "project_id": "019ea358-b6d6-7671-8938-93531cfddda6",
+              "state_binding": "triage",
+              "reason": null,
+              "updated_at": "2026-06-24T14:43:26.673Z"
+            },
+            {
+              "id": "019ef5b5-cfd7-7373-9cdb-1a5de2eaa722",
+              "title": "Fix missing url_fr fields in sources and build",
+              "project_id": "019e80cd-6f91-78a2-917f-023a5bf87df5",
+              "state_binding": "triage",
+              "reason": null,
+              "updated_at": "2026-06-23T23:50:18.681Z"
+            }
+          ]
+        }
+      },
+      "pendingDecisionsRendered": 1,
+      "note": "A pending decision card was present; it was NOT acted on.",
+      "screenshot": "assets/world/forum/browser/in-app-approvals.webp",
+      "at": "2026-09-14T16:45:05.538Z"
+    },
+    "skills": {
+      "description": "saved-skills list matches /permagent/skills, and Open Skills reaches the app Skills panel",
+      "apiStatus": 200,
+      "apiSkillCount": 37,
+      "apiSkillNames": [
+        "copy_to_clipboard:-text=we-acknowledge-that-we-are-on-the-tradit",
+        "halifax-tide-data",
+        "prefer-web-search-over-browser-reads",
+        "orchestrator__goal_status:-card_id=[redacted]",
+        "orchestrator__goal_advance:-card_id=[redacted]",
+        "list_models",
+        "delegate:-instructions=monitor-goal-[redacted]-(enable-au",
+        "answer_decisions:-answer=reject"
+      ],
+      "forumCapabilitiesText": "CAPABILITIES\n\n2 registered workers\n\nHenry\nPrimary agent\nManage Henry\nLibrarian\nMemory archivist — generates prose descriptions for Brain memories using a local LLM (Ollama)\nManage Librarian\n\n37 saved skills\n\ncopy_to_clipboard:-text=we-acknowledge-that-we-are-on-the-tradit\nactive\nhalifax-tide-data\nactive\nprefer-web-search-over-browser-reads\nactive\norchestrator__goal_status:-card_id=[redacted]\nactive\norchestrator__goal_advance:-card_id=[redacted]\nactive\nlist_models\nactive\n\n0 skill proposals from observed work\n\nDevelop a capabilityOpen Skills",
+      "forumSavedSkills": "37",
+      "forumRegisteredWorkers": "2",
+      "matches": true,
+      "skillsPanelOpened": true,
+      "skillsPanelText": "Home\nProjects\nPeople\nBuild\nGrow\nFinance\nAutomate\nWorld\nBrain\nRecord\nNotifications\nSettings\nCollapse\nSKILLS LIBRARY\n37\ncopy_to_clipboard:-text=we-acknowledge-that-we-are-on-the-tradit\n\ncopy_to_clipboard: text=We acknowledge that we are on the traditional territories of\n\n726 runs\nACTIVE\nhalifax-tide-data\n0 runs\nACTIVE\nprefer-web-search-over-browser-reads\n0 runs\nACTIVE\norchestrator__goal_status:-card_id=[redacted]\n\norchestrator__goal_status: card_id=[REDACTED]\n\n597 runs\nACTIVE\norchestrator__goal_advance:-card_id=[redacted]\n\norchestrator__goal_advance: card_id=[REDACTED]\n\n597 runs\nACTIVE\nlist_models\n\nlist_models\n\n482 runs\nACTIVE\ndelegate:-instructions=monitor-goal-[redacted]-(enable-au\n\ndelegate: instructions=Monitor goal [REDACTED] (Enable au\n\n492 runs\nACTIVE\nanswer_decisions:-answer=reject\n\nanswer_decisions: answer=reject\n\n597 runs\nACTIVE\nact_on_page:-action=click\n\nact_on_page: action=click\n\n730 runs\nACTIVE\nwrite:-path=[redacted]/dev/permagent-runtime/docs/notes/bench-\n\nwrite: path=[REDACTED]/dev/permagent-runtime/docs/notes/bench-\n\n1869 runs\nACTIVE\ntodo__todo_write:-content=#-goal:-bench:-locate-08110301-the-sim\n\ntodo__todo_write: content=# Goal: Bench: locate 08110301 the similarit",
+      "screenshot": "assets/world/forum/browser/in-app-skills-panel.webp",
+      "at": "2026-09-14T16:45:08.240Z"
+    },
+    "reconnect": {
+      "description": "event channel dropped (dev-server proxy killed) and restored; offline emulation recorded separately",
+      "connectionSeededBySendingAQuery": false,
+      "statusBefore": "connected",
+      "offlineEmulation": {
+        "pageFetchWhileOffline": "ERR Failed to fetch",
+        "statusWhileOffline": "connected"
+      },
+      "statusBeforeServerStop": "connected",
+      "devServerPidsKilled": 2,
+      "devServerPortClosed": true,
+      "statusAfterServerStop": "disconnected",
+      "forumStillRenderingWhileDisconnected": {
+        "visible": true,
+        "count": 1,
+        "canvas": {
+          "width": 1022,
+          "height": 972,
+          "drawingBuffer": [
+            1022,
+            972
+          ]
+        }
+      },
+      "devServerBackUp": true,
+      "forumAfterServerRestart": {
+        "clicked": false,
+        "visible": true,
+        "count": 1,
+        "canvas": {
+          "width": 1022,
+          "height": 972,
+          "drawingBuffer": [
+            1022,
+            972
+          ]
+        }
+      },
+      "statusAfterViteReload": "disconnected",
+      "statusAfterServerRestart": "connected",
+      "recovered": true,
+      "screenshots": [
+        "assets/world/forum/browser/in-app-reconnect-server-stopped.webp",
+        "assets/world/forum/browser/in-app-reconnect-recovered.webp"
+      ],
+      "sseResponses": [
+        {
+          "url": "/sessions/20260914_11/events?token=REDACTED",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "url": "/sessions/20260914_11/events?token=REDACTED",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "url": "/sessions/20260914_11/events?token=REDACTED",
+          "status": 200,
+          "method": "GET"
+        }
+      ],
+      "at": "2026-09-14T16:46:03.016Z"
+    },
+    "remount": {
+      "description": "switch away and back: hidden panel stops rendering, keys do not leak, forum keeps rendering",
+      "controlsWhileWalking": "WASD walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview",
+      "perfTicksWhileVisible": 3,
+      "switchedTo": "Home",
+      "hiddenState": {
+        "forumBox": [
+          [
+            0,
+            0
+          ]
+        ],
+        "pointerLock": null,
+        "controls": [
+          "Drag to orbit · Scroll to explore · Select a place or walk from this place"
+        ]
+      },
+      "perfTicksWhileHiddenAfterWASD": 0,
+      "perfSnapshotWhileHidden": {
+        "fps": 82.6,
+        "calls": 211,
+        "triangles": 2259144,
+        "geometries": 130,
+        "textures": 40,
+        "programs": 37,
+        "dpr": 1
+      },
+      "perfTicksAfterReturn": 4,
+      "canvasAfterReturn": {
+        "visible": true,
+        "count": 1,
+        "canvas": {
+          "width": 1022,
+          "height": 972,
+          "drawingBuffer": [
+            1022,
+            972
+          ]
+        }
+      },
+      "samplingAfterReturn": {
+        "supported": true,
+        "width": 1022,
+        "height": 972,
+        "rgbVariance": 7619.590169270833,
+        "alphaIgnored": true
+      },
+      "screenshots": [
+        "assets/world/forum/browser/in-app-other-workspace.webp",
+        "assets/world/forum/browser/in-app-world-return.webp"
+      ],
+      "at": "2026-09-14T16:46:24.878Z"
+    }
+  },
+  "workspaces": {
+    "names": [
+      "Home",
+      "Projects",
+      "People",
+      "Build",
+      "Grow",
+      "Finance",
+      "Automate",
+      "World",
+      "Brain"
+    ],
+    "world": "World",
+    "other": "Home"
+  },
+  "updatedAt": "2026-09-14T16:46:24.885Z",
+  "obstructions": [],
+  "console": [
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004cfc00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glClear: Framebuffer is incomplete: Attachment has zero size."
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x114004daa00] GL_INVALID_FRAMEBUFFER_OPERATION: glDrawArrays: Framebuffer is incomplete: Attachment has zero size."
+    }
+  ],
+  "pageErrors": [
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    },
+    {
+      "message": "Cannot read properties of undefined (reading 'transformCallback')"
+    }
+  ],
+  "requestFailures": [
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_002.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_003.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_004.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_02.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_005.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_006.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_03.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_007.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_008.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_04.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_009.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_010.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_011.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_05.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_012.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_013.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_06.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_014.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_07.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_015.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_016.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_08.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_017.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_018.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_09.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_019.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_020.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_10.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_021.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_022.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_11.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_023.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_024.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_12.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_025.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_026.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_13.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_027.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius/frame_028.webp",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "url": "http://127.0.0.1:5284/ui/mobius-idle/frame_14.webp",
+      "error": "net::ERR_ABORTED"
+    }
+  ],
+  "daemonHttpFailures": [
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/sessions/20260914_11/cost",
+      "status": 500,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/sessions/20260914_11/cost",
+      "status": 500,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/sessions/20260914_11/cost",
+      "status": 500,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/browser/history",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/sessions/20260914_11/cost",
+      "status": 500,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/sessions/20260914_11/cost",
+      "status": 500,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    },
+    {
+      "url": "/api/coding-sessions/harness-runs",
+      "status": 404,
+      "method": "GET"
+    }
+  ],
+  "finishedAt": "2026-09-14T16:46:24.885Z"
+}

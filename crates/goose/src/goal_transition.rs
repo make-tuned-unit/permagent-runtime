@@ -49,13 +49,100 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     "completed_at",
     "depends_on",
     "auto_approve",
+    // Y16c (harness loop, G19 MED): which worker session's branch a human
+    // reviewer explicitly rejected. `prior_goal_branch_tip`
+    // (orchestrator.rs) reads this to refuse continuing a re-dispatch from
+    // that exact branch; a rejected worker must not be able to clear its
+    // own rejection marker via the agent-facing metadata PATCH tool.
+    "goal_branch_rejected_session_id",
+    // X-dag-1 (harness loop, coding-harness excellence iteration): which
+    // session created this roadmap card, stamped once at materialization.
+    // Protected so a mutating worker cannot launder a card into (or out of)
+    // "this session's active roadmap" after the fact.
+    "created_by_session_id",
     // Program registration and transition claims are authoritative roadmap
     // bindings. They may only be written by the program bridge's validated
     // transaction, never by card CRUD or an agent tool.
     "program",
     "program_receipts",
     "program_transition",
+    // Lane R18g: how many times a headless run has auto-answered this
+    // goal's tier-1 `unblock` decision (`decide_goal_hold`'s Park, a
+    // verify/commit-gap hold — never a jail/approval/safety refusal, which
+    // never reaches `decide_goal_hold` at all) and resumed it without a
+    // human. Protected so a worker cannot reset its own bounded-resume
+    // counter via the agent-facing metadata PATCH tool.
+    "headless_unblock_count",
+    // Lane R20b (G25 MED): how many times `maybe_salvage_committed_work`
+    // has attempted to verify/review/land this goal's committed work before
+    // a budget/wall park. Protected so a worker cannot reset its own
+    // one-salvage-per-goal counter via the agent-facing metadata PATCH tool
+    // — same reasoning as `headless_unblock_count` above.
+    "salvage_attempted",
+    // Lane R21a (A21 Q1): whether this goal's acceptance is a code change
+    // (`true`, the default) or a report/review with no change expected
+    // (`false`) — decided once by the planner, from its own acceptance
+    // criteria, at roadmap-creation time (`hold_done::infer_expects_change`).
+    // Protected so a worker cannot flip its own goal to "read-only" via the
+    // agent-facing metadata PATCH tool and skip the commit-required rule.
+    "expects_change",
+    // Lane R21d (A23 Q2 #2): whether the most recent completed attempt made
+    // zero progress, and how many CONSECUTIVE attempts have (see
+    // `ZERO_PROGRESS_STREAK_METADATA_KEY`, `maybe_forgive_zero_progress_attempt`).
+    // Protected so a worker cannot spend its own one-forgiveness-per-goal
+    // allowance twice by resetting the streak via the agent-facing metadata
+    // PATCH tool — same reasoning as `headless_unblock_count` above.
+    "zero_progress",
+    ZERO_PROGRESS_STREAK_METADATA_KEY,
+    // Lane R22c-e (G26 MED-1): the receipt an independent cross-family
+    // reviewer's approval leaves on a goal salvaged with no automated
+    // check to lean on (`orchestrator::land_salvage_approved_by_reviewer`)
+    // — its PRESENCE is what makes `auto_land_headless_goal` bypass the
+    // ordinary verify-evidence gate and land the goal outright (see that
+    // function's own doc comment). Protected so a worker cannot forge its
+    // own reviewer sign-off and auto-land unverified, unreviewed work via
+    // the agent-facing metadata PATCH tool — this key must only ever be
+    // written by the trusted `advance_goal_checked` patch path at the
+    // reviewer-approval call site, never by a raw metadata write.
+    UNVERIFIED_REVIEWER_APPROVAL_METADATA_KEY,
+    // Lane R26b (A25 analysis): stamped by R18g's headless unblock at the
+    // moment it resumes a goal Held → Ready without itself redispatching
+    // it — the drain's re-dispatch sweep reads this to prioritise the
+    // goal (it already burned real attempts getting here) and the audit
+    // trail reads it to tell "R18g's own resume, still Ready" apart from
+    // an ordinary Ready goal waiting its turn. Protected so a worker
+    // cannot forge or clear its own priority/attribution stamp via the
+    // agent-facing metadata PATCH tool.
+    "resumed_by_headless_unblock_at",
+    // Lane R62d (A61 Miss 5): the "already satisfied at baseline" receipt
+    // `maybe_hold_review` leaves when a goal's acceptance already passes on a
+    // trunk a sibling landed. Its presence lets the landing path complete
+    // the goal with nothing to land instead of parking it. Protected so a
+    // worker cannot forge one and complete a goal it never verified.
+    crate::cost_router::hold_done::ALREADY_SATISFIED_METADATA_KEY,
+    // Lane R66a: how many times an independent review sent this goal back
+    // to its worker, and when. The count bounds the send-back to once per
+    // goal and the stamp gives the drain its one continuation, so a worker
+    // cannot reset or forge either via the agent-facing metadata PATCH tool.
+    // Written only through `return_to_ready`'s guarded patch.
+    crate::agents::platform_extensions::orchestrator::REVIEW_SEND_BACK_COUNT_METADATA_KEY,
+    crate::agents::platform_extensions::orchestrator::SENT_BACK_BY_REVIEW_AT_METADATA_KEY,
 ];
+
+/// Lane R22c-e (G26 MED-1): see [`PROTECTED_GOAL_METADATA_KEYS`]'s own
+/// entry for this key.
+pub const UNVERIFIED_REVIEWER_APPROVAL_METADATA_KEY: &str = "unverified_reviewer_approval";
+
+/// Lane R21d (A23 Q2 #2): card metadata key tracking CONSECUTIVE
+/// zero-progress attempts. Absent/`0`: no streak (either no zero-progress
+/// attempt yet, or the last one was followed by a productive attempt, which
+/// resets it). `1`: the goal has spent its one forgiven zero-progress
+/// attempt (`attempt_count` was decremented back for it). `2`: a SECOND
+/// consecutive zero-progress attempt, which counted normally against
+/// `attempt_count` — [`park_goal_with_meta`] folds this into the park
+/// detail (`last_error`) so a human sees the goal spent a real attempt on
+/// nothing, not just the ordinary park reason.
+pub const ZERO_PROGRESS_STREAK_METADATA_KEY: &str = "zero_progress_streak";
 
 // ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -258,11 +345,31 @@ fn apply_patch(
 }
 
 /// Validate a proof against a tier gate and the target card/action.
+///
+/// `auto_land_allowed` / `calling_session_id` (harness loop, Lane V2 —
+/// the user's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55):
+/// Tier-1 landing → option 3"): the ONLY way [`decisions::ACTOR_AUTO_LAUNCH`]
+/// can ever satisfy the Tier-1 gate. `auto_land_allowed` is an explicit bool
+/// the CALLER passes — never read from an env var or global inside this
+/// function — so every existing call site keeps it `false` (byte-identical
+/// pre-V2 behavior) unless it deliberately opts in. Even when `true`, the
+/// proof must ALSO be a single-use `approve_review` decision (the only kind
+/// [`decisions::auto_approve_headless_goal_review`] ever mints under this
+/// actor) whose `minting_session_id` matches `calling_session_id` — the same
+/// minting-session binding Lane R2 added for the roadmap-approval proof
+/// (`RoadmapApprovalPayload::minting_session_id`), reused here rather than
+/// forked, so an auto-land proof minted for one headless session can never be
+/// consumed by presenting it through another. Tier 2 (the `_ =>` arm below)
+/// is deliberately untouched: `ACTOR_AUTO_LAUNCH` never satisfies it,
+/// whatever `auto_land_allowed` says — landing stays the only Tier-1 action
+/// this actor can ever authorize.
 fn check_proof(
     tier: i64,
     proof: Option<&DecisionProof>,
     card_id: &str,
     action: GoalAction,
+    auto_land_allowed: bool,
+    calling_session_id: Option<&str>,
 ) -> Result<(), GuardError> {
     if let Some(p) = proof {
         if let Some(gid) = p.goal_id() {
@@ -301,6 +408,26 @@ fn check_proof(
             {
                 Ok(())
             }
+            Some(p) if p.acted_by() == decisions::ACTOR_AUTO_LAUNCH => {
+                if !auto_land_allowed {
+                    return Err(GuardError::Denied(
+                        "headless auto-land is off (PERMAGENT_HEADLESS_AUTOLAND)".to_string(),
+                    ));
+                }
+                if p.kind() != "approve_review" {
+                    return Err(GuardError::Denied(format!(
+                        "headless auto-land only authorizes 'approve_review' decisions, not \
+                         '{}'",
+                        p.kind()
+                    )));
+                }
+                match (p.minting_session_id(), calling_session_id) {
+                    (Some(minted), Some(calling)) if minted == calling => Ok(()),
+                    _ => Err(GuardError::Denied(
+                        "headless auto-land proof is not bound to the calling session".to_string(),
+                    )),
+                }
+            }
             Some(p) => Err(GuardError::Denied(format!(
                 "Tier-1 transition requires a decision answered by 'jesse' or 'henry-policy' \
                  (got '{}')",
@@ -332,6 +459,11 @@ fn check_proof(
 /// lookup → tier gate (proof) → write (metadata + column) → audit append.
 /// The proof is consumed by value: one answered decision authorizes at most
 /// one transition.
+///
+/// Thin wrapper over [`advance_goal_checked_with_auto_land`] with headless
+/// auto-land off — every pre-existing caller (and there are many, across
+/// `goose-server` and `goose`) keeps this exact signature and this exact
+/// behavior; none of them needed to change for Lane V2.
 pub async fn advance_goal_checked(
     pool: &Pool<Sqlite>,
     card_id: &str,
@@ -339,6 +471,31 @@ pub async fn advance_goal_checked(
     actor: &str,
     proof: Option<DecisionProof>,
     effects: TransitionEffects,
+) -> Result<GoalState, GuardError> {
+    advance_goal_checked_with_auto_land(pool, card_id, action, actor, proof, effects, false, None)
+        .await
+}
+
+/// [`advance_goal_checked`], plus the two arguments [`check_proof`] needs to
+/// ever accept [`decisions::ACTOR_AUTO_LAUNCH`] at Tier 1 (harness loop, Lane
+/// V2 — the user's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08
+/// 23:55): Tier-1 landing → option 3"). `auto_land_allowed: false` (what
+/// [`advance_goal_checked`] always passes) makes this byte-identical to the
+/// pre-V2 function; the ONLY caller that ever passes `true` is
+/// `decisions_effects::apply_decision_effect_with_auto_land`'s
+/// `approve_review`/"approve" arm, itself reached only from
+/// `orchestrator::auto_land_headless_goal`, itself reached only when a
+/// headless Auto dispatch policy has `PERMAGENT_HEADLESS_AUTOLAND` on.
+#[allow(clippy::too_many_arguments)]
+pub async fn advance_goal_checked_with_auto_land(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    action: GoalAction,
+    actor: &str,
+    proof: Option<DecisionProof>,
+    effects: TransitionEffects,
+    auto_land_allowed: bool,
+    calling_session_id: Option<&str>,
 ) -> Result<GoalState, GuardError> {
     // BEGIN IMMEDIATE, not the default BEGIN DEFERRED. This transaction reads the
     // goal + its column binding + the risk tier, THEN upgrades to a write
@@ -385,7 +542,14 @@ pub async fn advance_goal_checked(
         .map_err(db_err)?
         .unwrap_or(2);
 
-    check_proof(tier, proof.as_ref(), card_id, action)?;
+    check_proof(
+        tier,
+        proof.as_ref(),
+        card_id,
+        action,
+        auto_land_allowed,
+        calling_session_id,
+    )?;
 
     let (decision_id, audit_actor) = match proof.as_ref() {
         Some(p) => (p.decision_id().to_string(), p.acted_by().to_string()),
@@ -531,7 +695,7 @@ pub(crate) async fn advance_goal_checked_in_tx(
         .await
         .map_err(db_err)?
         .unwrap_or(2);
-    check_proof(tier, proof.as_ref(), card_id, action)?;
+    check_proof(tier, proof.as_ref(), card_id, action, false, None)?;
 
     let (decision_id, audit_actor) = match proof.as_ref() {
         Some(p) => (p.decision_id().to_string(), p.acted_by().to_string()),
@@ -643,6 +807,20 @@ pub async fn park_goal_with_meta(
 
     let journal_actor = journal_actor(actor, &goal.metadata);
     let mut meta = goal.metadata;
+    // Lane R21d (A23 Q2 #2): every park path (Hold-arm Park, budget
+    // exhaustion, wall-budget refusal) converges here — fold a SECOND
+    // consecutive zero-progress attempt's streak into the park detail so a
+    // human reading `last_error` sees the goal spent a real attempt on
+    // nothing, not just the ordinary park reason. A single forgiven
+    // zero-progress attempt (`streak == 1`) is not noted here — it never
+    // counted against the goal, so it left nothing to explain.
+    let annotated_reason = match meta
+        .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+        .and_then(|v| v.as_u64())
+    {
+        Some(streak) if streak >= 2 => format!("{reason}; zero_progress_streak={streak}"),
+        _ => reason.to_string(),
+    };
     meta.insert(
         "goal_state".to_string(),
         serde_json::Value::String("failed".to_string()),
@@ -653,7 +831,7 @@ pub async fn park_goal_with_meta(
     );
     meta.insert(
         "last_error".to_string(),
-        serde_json::Value::String(reason.to_string()),
+        serde_json::Value::String(annotated_reason),
     );
     for (key, value) in extra_meta {
         meta.insert((*key).to_string(), value.clone());
@@ -690,6 +868,96 @@ pub async fn park_goal_with_meta(
     Ok(())
 }
 
+/// F1c (harness loop, Lane F1 2026-09-10, wired by I1 as a gate fix):
+/// annotate a goal card with abandoned work `handle_goal_status`'s R3
+/// misfire guard discovered — a session it was about to treat as "exited
+/// with no error, safe to redispatch" turns out to have a real commit
+/// beyond baseline in its own worktree. Sets `abandoned_work` and flags
+/// `needs_human_attention` with a reason, WITHOUT moving the card's column
+/// — the goal stays `in_progress`; a human (or a future automated pass) is
+/// the one who decides what to do with the discovered commit, not this
+/// guard. `needs_human_attention` is a protected metadata key
+/// (`PROTECTED_GOAL_METADATA_KEYS`), so — same reasoning as every other
+/// function in this module — `cards::merge_card_metadata` refuses this
+/// write outright; this is the sanctioned mutator for exactly this case.
+pub async fn flag_abandoned_work(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    abandoned_work: &str,
+    reason: &str,
+) -> Result<(), GuardError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
+    let goal = read_goal_tx(&mut tx, card_id).await?;
+    if goal.card_type != "goal" {
+        return Err(GuardError::Invalid(format!(
+            "Card '{}' is not a goal",
+            card_id
+        )));
+    }
+    let mut meta = goal.metadata;
+    meta.insert(
+        "abandoned_work".to_string(),
+        serde_json::Value::String(abandoned_work.to_string()),
+    );
+    meta.insert(
+        "needs_human_attention".to_string(),
+        serde_json::Value::Bool(true),
+    );
+    meta.insert(
+        "needs_human_attention_reason".to_string(),
+        serde_json::Value::String(reason.to_string()),
+    );
+    let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
+        .map_err(|e| GuardError::Db(e.to_string()))?;
+
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+
+    tx.commit().await.map_err(db_err)?;
+    Ok(())
+}
+
+/// Persist an explicit, human-readable refusal reason onto the card when
+/// [`requeue_goal_with_meta`]'s guard refuses (E2, harness loop Round E) —
+/// the spec requires a refusal to be recorded on the card, not merely
+/// returned as an `Err` a caller might drop. Merges into the existing
+/// metadata rather than replacing it, and touches neither `goal_state` nor
+/// the card's column — a refused requeue changes nothing about where the
+/// card lives or what state it is in.
+async fn record_requeue_refusal_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    card_id: &str,
+    existing_metadata: &serde_json::Map<String, serde_json::Value>,
+    actor: &str,
+    reason: &str,
+) -> Result<(), GuardError> {
+    let mut meta = existing_metadata.clone();
+    meta.insert(
+        "requeue_refused_reason".to_string(),
+        serde_json::Value::String(reason.to_string()),
+    );
+    meta.insert(
+        "requeue_refused_at".to_string(),
+        serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+    );
+    let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
+        .map_err(|e| GuardError::Db(e.to_string()))?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    decisions::append_audit_tx(tx, "none", Some(card_id), actor, 0, "requeue_refused", None)
+        .await
+        .map_err(GuardError::Db)?;
+    Ok(())
+}
+
 /// Requeue a goal whose worker died (e.g. daemon restart): InProgress → Ready
 /// with `new_attempt_count` recorded as the attempt count and the abandonment
 /// reason recorded as `last_error`.
@@ -704,7 +972,11 @@ pub async fn requeue_goal(
     new_attempt_count: u64,
     reason: &str,
 ) -> Result<(), GuardError> {
-    requeue_goal_with_meta(pool, card_id, actor, new_attempt_count, reason, &[]).await
+    // The dead-worker contract this wrapper has always documented (see the
+    // doc comment above): every existing caller of the 5-arg form already
+    // believes the dispatched session is gone, so `dispatched_session_alive:
+    // false` merely makes that belief explicit to the guard below.
+    requeue_goal_with_meta(pool, card_id, actor, new_attempt_count, reason, &[], false).await
 }
 
 /// [`requeue_goal`], additionally merging `extra_meta` into the card's metadata
@@ -714,6 +986,31 @@ pub async fn requeue_goal(
 /// (`restart_forgiven_lifecycle`) must land with the requeue it describes, or a
 /// crash between the two would hand the same goal a second free pass for the
 /// same interruption.
+///
+/// `dispatched_session_alive` (E2, harness loop Round E, from Lane F9/M9
+/// forensics 2026-09-10): a REQUIRED, caller-attested liveness assertion —
+/// this guard cannot see process-local session state on its own (that lives
+/// in the in-memory `AgentManager`, not the database this module reads), so
+/// the caller must establish death before calling, exactly as R3's own
+/// `!session_alive` check and the restart reconciler's "worker session gone"
+/// already do. Passing `true` here is refused unconditionally: it describes
+/// the one shape that produced F9's dominant failure class (4/6 of Round D's
+/// M9 fixtures) — a still-working, often-successful session stranded when
+/// the goal's own bookkeeping moved on to a second session dispatched over
+/// it. If a requeue is genuinely needed for a live session, the caller must
+/// cancel/mark that session first, then call this with `false`.
+///
+/// M1 (G8 review, harness loop Lane E3 2026-09-10): a caller passing
+/// `false` is no longer trusted blindly either — this module still cannot
+/// reach the in-memory `AgentManager`/dispatch registry (that cross-check
+/// belongs to a caller that CAN, e.g. R3's own `is_session_busy` before it
+/// gets here), but it DOES independently cross-check the goal's own
+/// `execution_receipt` (a durable record written by a wholly separate code
+/// path — the dispatch/heartbeat loop, not whatever is calling this
+/// function). A `false` claim that contradicts a live, recently-heartbeated
+/// receipt in the CURRENT daemon lifecycle is refused. This is a hint that
+/// must agree with the receipt when one exists, not an unconditionally
+/// trusted assertion; see the check itself, just below.
 pub async fn requeue_goal_with_meta(
     pool: &Pool<Sqlite>,
     card_id: &str,
@@ -721,6 +1018,7 @@ pub async fn requeue_goal_with_meta(
     new_attempt_count: u64,
     reason: &str,
     extra_meta: &[(&str, serde_json::Value)],
+    dispatched_session_alive: bool,
 ) -> Result<(), GuardError> {
     // BEGIN IMMEDIATE: this guard reads the goal row / audit-chain head before
     // upgrading to a write; taking the write lock up front avoids the un-retryable
@@ -748,6 +1046,96 @@ pub async fn requeue_goal_with_meta(
             card_id,
             binding.as_deref().unwrap_or("?")
         )));
+    }
+
+    // E2 (harness loop, Round E, from Lane F9/M9 forensics 2026-09-10): M9
+    // found genuinely-solved, landed goals (fx02/fx06 — trunk HEAD verified
+    // moved via git log) put right back to Ready by a plain requeue after
+    // landing, stranding the completed card in a state that reads as
+    // unfinished forever after. A card whose landing receipt already shows
+    // the fix reached trunk must never be requeued — there is nothing left
+    // to redo, and redoing it risks a second, conflicting attempt.
+    let already_landed = goal
+        .metadata
+        .get("dispatch_evidence")
+        .and_then(|v| v.get("landing"))
+        .and_then(|v| v.get("trunk_state"))
+        .and_then(|v| v.as_str())
+        == Some("landed_on_trunk");
+    if already_landed {
+        let refusal = format!(
+            "requeue refused: goal '{card_id}' already landed on trunk \
+             (dispatch_evidence.landing.trunk_state = landed_on_trunk) — requeuing would \
+             strand completed work, not redo it"
+        );
+        record_requeue_refusal_tx(&mut tx, card_id, &goal.metadata, actor, &refusal).await?;
+        tx.commit().await.map_err(db_err)?;
+        return Err(GuardError::Denied(refusal));
+    }
+
+    // M1 (G8 review, harness loop Lane E3 2026-09-10): `dispatched_session_
+    // alive` is caller-attested and, per this function's own doc comment,
+    // this DB-only module cannot independently query the in-memory
+    // `AgentManager` the way R3's own `is_session_busy` check does. It CAN
+    // be cross-checked against a DIFFERENT independent signal already
+    // persisted here: the goal's own `execution_receipt` — the completion
+    // tracker's heartbeat record of the SAME attempt, written by a wholly
+    // separate code path (the dispatch/heartbeat loop) from whatever caller
+    // is requesting this requeue. `ExecutionReceipt::is_live` is exactly
+    // the rebind-vs-stale test restart recovery already trusts for this
+    // same question. When the receipt itself reports a live,
+    // current-lifecycle, recently-heartbeated attempt, a caller claiming
+    // `dispatched_session_alive: false` is asserting something the goal's
+    // own durable record contradicts — treat that disagreement as
+    // untrustworthy and refuse, rather than silently trusting whichever
+    // side happens to have called this function. A goal with no
+    // `execution_receipt` at all (never dispatched through that path) has
+    // nothing to cross-check against and falls through unchanged.
+    if !dispatched_session_alive {
+        if let Some(receipt) = goal
+            .metadata
+            .get("execution_receipt")
+            .cloned()
+            .and_then(|v| {
+                serde_json::from_value::<
+                    crate::agents::platform_extensions::execution_receipt::ExecutionReceipt,
+                >(v)
+                .ok()
+            })
+        {
+            let current_lifecycle =
+                crate::agents::platform_extensions::orchestrator::daemon_lifecycle_id();
+            if receipt.is_live(
+                current_lifecycle,
+                chrono::Utc::now(),
+                crate::agents::platform_extensions::execution_receipt::DEFAULT_STALENESS_SECS,
+            ) {
+                let refusal = format!(
+                    "requeue refused: caller attested goal '{card_id}' has no live dispatched \
+                     session, but its own execution_receipt still reports a live, \
+                     recently-heartbeated attempt in the current daemon lifecycle — the \
+                     caller-attested flag disagrees with the goal's own durable record and is \
+                     not trusted"
+                );
+                record_requeue_refusal_tx(&mut tx, card_id, &goal.metadata, actor, &refusal)
+                    .await?;
+                tx.commit().await.map_err(db_err)?;
+                return Err(GuardError::Denied(refusal));
+            }
+        }
+    }
+
+    // E1/E2 (harness loop, Round E, from Lane F9 forensics 2026-09-10): see
+    // this function's doc comment — the caller-attested liveness check.
+    if dispatched_session_alive {
+        let refusal = format!(
+            "requeue refused: goal '{card_id}' has a live dispatched session — a goal may \
+             never be requeued out from under a session that is still running; cancel or \
+             confirm it dead first"
+        );
+        record_requeue_refusal_tx(&mut tx, card_id, &goal.metadata, actor, &refusal).await?;
+        tx.commit().await.map_err(db_err)?;
+        return Err(GuardError::Denied(refusal));
     }
 
     let journal_actor = journal_actor(actor, &goal.metadata);
@@ -797,6 +1185,46 @@ pub async fn requeue_goal_with_meta(
     ));
 
     Ok(())
+}
+
+/// F1a (harness loop, Lane F1 2026-09-10, from F10 forensics): whether a
+/// goal's own `execution_receipt` reports a live, current-lifecycle,
+/// recently-heartbeated attempt — the exact rebind-vs-stale test restart
+/// recovery already trusts for this question
+/// (`execution_receipt::ExecutionReceipt::is_live`). Exposed here as a
+/// small, standalone helper (a NEW function, not a change to
+/// `requeue_goal_with_meta`'s own body above — that cross-check belongs to
+/// Lane E3, a sibling harness-loop branch not merged into this lane's base)
+/// so R3's misfire guard
+/// (`platform_extensions::orchestrator::OrchestratorClient::handle_goal_status`)
+/// can reuse the identical semantics without duplicating `is_live`'s logic
+/// inline. A goal with no `execution_receipt` at all has nothing to report
+/// live, so this returns `false` — that is not evidence the session is
+/// exited, only "this check found nothing to contradict a death claim";
+/// callers combine it with their own independent liveness signal (e.g. R3's
+/// own `is_session_busy`).
+pub fn execution_receipt_is_live(
+    metadata: &serde_json::Value,
+    current_lifecycle: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    metadata
+        .get("execution_receipt")
+        .cloned()
+        .and_then(|v| {
+            serde_json::from_value::<
+                crate::agents::platform_extensions::execution_receipt::ExecutionReceipt,
+            >(v)
+            .ok()
+        })
+        .map(|receipt| {
+            receipt.is_live(
+                current_lifecycle,
+                now,
+                crate::agents::platform_extensions::execution_receipt::DEFAULT_STALENESS_SECS,
+            )
+        })
+        .unwrap_or(false)
 }
 
 /// Return a goal to Ready from InProgress **or** Review without consuming the
@@ -1172,6 +1600,24 @@ impl BudgetExhaustion {
         }
     }
 
+    /// Lane R21d (A23 Q2 #2): a short, stable slug naming which dimension
+    /// tripped — `record_headless_unblock_refusal` (orchestrator.rs) used to
+    /// log every `check_budget` refusal under the same generic string,
+    /// `"cost_budget_exhausted"`, no matter which variant fired; A23 traced a
+    /// real `AttemptCap { spent: 3, cap: 3 }` miscategorized that way, costing
+    /// real analysis time chasing a dollar cap that was never close. Callers
+    /// combine this with `spent_and_cap()` in the evidence digest so the next
+    /// analysis reads the dimension and the numbers straight off the audit
+    /// row instead of re-deriving them from `decision_audit`/`cards`.
+    pub fn gate_label(&self) -> &'static str {
+        match self {
+            Self::AttemptCap { .. } => "attempt_cap_exhausted",
+            Self::TokenBudget { .. } => "token_budget_exhausted",
+            Self::Wallclock { .. } => "wallclock_cap_exhausted",
+            Self::RefinementBudget { .. } => "refinement_budget_exhausted",
+        }
+    }
+
     pub fn describe(&self) -> String {
         match self {
             Self::AttemptCap { spent, cap } => {
@@ -1419,6 +1865,131 @@ pub async fn exhaust_and_park(
     .map_err(String::from)?;
 
     Ok(decision_id)
+}
+
+/// Lane R21d (A23 Q2 #2): whether a completed attempt made ANY progress —
+/// a commit, a file change, or a successful verify call beyond its own
+/// dispatch baseline. `false` for all three is the exact shape A23 found on
+/// both DeepSeek m1/m3 misses' 3rd dispatch (`commits: []`,
+/// `files_changed: 0`, no verify): a wasted attempt that immediately
+/// re-triggered the same hold and only spent the cap.
+pub fn attempt_made_zero_progress(
+    has_commit: bool,
+    has_file_change: bool,
+    verify_ran: bool,
+) -> bool {
+    !has_commit && !has_file_change && !verify_ran
+}
+
+/// Lane R21d (A23 Q2 #2): forgive a completed attempt's `attempt_count` when
+/// [`attempt_made_zero_progress`] found it produced nothing — A23 traced
+/// BOTH DeepSeek m1/m3 misses to exactly this: a zero-progress 3rd dispatch
+/// spent the last attempt without moving anything, parking a goal whose
+/// correct fix a SIBLING attempt (byte-identical) had already landed with
+/// one attempt to spare.
+///
+/// Called by the dispatch tracker right after this attempt's
+/// `dispatch_evidence` is persisted and BEFORE `handle_goal_completion`
+/// (`maybe_hold_review` → `check_budget`, an orchestrator.rs concern this
+/// module never reaches into) reads the card — the only point at which
+/// forgiving this attempt can still stop its OWN Hold/Park decision from
+/// spending it, not just the next one.
+///
+/// `attempt_count` is stamped optimistically at DISPATCH time (the claim
+/// patch in `dispatch_goal_fn`), not at completion — many existing tests
+/// read it immediately after dispatch and must keep doing so — so
+/// forgiveness here DECREMENTS the count already stamped for this attempt
+/// rather than skipping an increment that already happened.
+///
+/// Bounded to at most ONE forgiveness per goal
+/// ([`ZERO_PROGRESS_STREAK_METADATA_KEY`]): a card whose immediately prior
+/// attempt was ALSO zero-progress (`streak >= 1`) counts this one normally
+/// instead and records `streak = 2`, so a stuck worker cannot loop forever
+/// on free attempts. Any attempt that DOES make progress resets the streak.
+/// Best-effort: the caller only logs an `Err` — a failure here must never
+/// block the completion handler that runs right after it.
+pub async fn maybe_forgive_zero_progress_attempt(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    zero_progress: bool,
+) -> Result<(), String> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+    let row = sqlx::query(
+        "SELECT card_type, metadata_json FROM cards WHERE id = ? AND archived_at IS NULL",
+    )
+    .bind(card_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(row) = row else {
+        tx.rollback().await.map_err(|e| e.to_string())?;
+        return Ok(());
+    };
+    let card_type: String = row.try_get("card_type").map_err(|e| e.to_string())?;
+    if card_type != "goal" {
+        tx.rollback().await.map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let meta_str: String = row.try_get("metadata_json").map_err(|e| e.to_string())?;
+    let mut meta = serde_json::from_str::<serde_json::Value>(&meta_str)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+
+    let prior_streak = meta
+        .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    if !zero_progress {
+        if prior_streak == 0 {
+            // Nothing to reset — avoid a no-op write.
+            tx.rollback().await.map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        meta.remove(ZERO_PROGRESS_STREAK_METADATA_KEY);
+        meta.remove("zero_progress");
+    } else if prior_streak >= 1 {
+        // Second CONSECUTIVE zero-progress attempt: count it normally
+        // (attempt_count is left exactly as the claim patch stamped it) and
+        // record the streak so park_goal_with_meta can fold it into the
+        // park detail.
+        meta.insert(
+            ZERO_PROGRESS_STREAK_METADATA_KEY.to_string(),
+            serde_json::json!(2),
+        );
+        meta.insert("zero_progress".to_string(), serde_json::json!(true));
+    } else {
+        // First zero-progress attempt this streak: forgive it — undo the
+        // dispatch-time increment for THIS attempt.
+        let attempt_count = meta
+            .get("attempt_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        meta.insert(
+            "attempt_count".to_string(),
+            serde_json::json!(attempt_count.saturating_sub(1)),
+        );
+        meta.insert(
+            ZERO_PROGRESS_STREAK_METADATA_KEY.to_string(),
+            serde_json::json!(1),
+        );
+        meta.insert("zero_progress".to_string(), serde_json::json!(true));
+    }
+
+    let meta_str =
+        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -2029,6 +2600,62 @@ mod tests {
         col.state_binding.unwrap_or_default()
     }
 
+    /// F1a: metadata with no `execution_receipt` at all has nothing to
+    /// report live — this is "found no contradiction", not "confirmed dead".
+    #[test]
+    fn execution_receipt_is_live_is_false_with_no_receipt_at_all() {
+        assert!(!execution_receipt_is_live(
+            &serde_json::json!({}),
+            "life-1",
+            chrono::Utc::now(),
+        ));
+    }
+
+    /// F1a: a fresh, same-lifecycle receipt reads live; the identical receipt
+    /// read from a DIFFERENT daemon lifecycle never does (restart recovery's
+    /// own rebind-vs-stale contract).
+    #[test]
+    fn execution_receipt_is_live_true_for_a_fresh_same_lifecycle_receipt() {
+        use crate::agents::platform_extensions::execution_receipt::ExecutionReceipt;
+        let now = chrono::Utc::now();
+        let receipt = ExecutionReceipt::new(
+            "permagent",
+            "sess-1",
+            serde_json::json!({}),
+            "life-1",
+            now.to_rfc3339(),
+            1,
+        );
+        let metadata = serde_json::json!({ "execution_receipt": receipt });
+        assert!(execution_receipt_is_live(&metadata, "life-1", now));
+        assert!(
+            !execution_receipt_is_live(&metadata, "life-2", now),
+            "a receipt dispatched under a different daemon lifecycle must never read as live"
+        );
+    }
+
+    /// F1a: a terminal receipt (e.g. `StaleWorker`) is never live regardless
+    /// of how recently it was touched — mirrors `ExecutionReceipt::is_live`'s
+    /// own `rebind_vs_stale` unit test.
+    #[test]
+    fn execution_receipt_is_live_false_once_terminal() {
+        use crate::agents::platform_extensions::execution_receipt::{
+            ExecutionReceipt, ReceiptState,
+        };
+        let now = chrono::Utc::now();
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            "sess-1",
+            serde_json::json!({}),
+            "life-1",
+            now.to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::StaleWorker, now.to_rfc3339());
+        let metadata = serde_json::json!({ "execution_receipt": receipt });
+        assert!(!execution_receipt_is_live(&metadata, "life-1", now));
+    }
+
     #[tokio::test]
     async fn system_transition_journals_worker_without_changing_audit_actor() {
         let pool = test_pool().await;
@@ -2241,6 +2868,229 @@ mod tests {
         .unwrap();
         assert_eq!(new, GoalState::Complete);
     }
+
+    // ── Harness loop, Lane V2: headless auto-land, ACTOR_AUTO_LAUNCH at Tier 1
+    // (the user's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55):
+    // Tier-1 landing → option 3") ──
+
+    /// Mint a genuine `ACTOR_AUTO_LAUNCH` proof for an `approve_review`
+    /// decision the same way production does: through
+    /// `decisions::auto_approve_headless_goal_review`, never a hand-built
+    /// `DecisionProof` — the general `answer_decision` path can never
+    /// produce this actor (`VALID_ACTORS` excludes it), so this is the only
+    /// legitimate way to obtain one in a test.
+    async fn auto_land_decision_proof(
+        pool: &Pool<Sqlite>,
+        goal_id: &str,
+        minting_session_id: Option<&str>,
+    ) -> crate::decisions::DecisionProof {
+        let payload = match minting_session_id {
+            Some(session_id) => serde_json::json!({ "minting_session_id": session_id }),
+            None => serde_json::json!({}),
+        };
+        let d = create_decision(
+            pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal_id.to_string()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Review the finished work on the test goal".to_string()),
+                detail: Some("evidence: durable verifier pass".to_string()),
+                payload,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (_, proof) = crate::decisions::auto_approve_headless_goal_review(pool, &d.id, goal_id)
+            .await
+            .unwrap();
+        proof
+    }
+
+    #[tokio::test]
+    async fn tier1_auto_launch_lands_when_allowed_and_session_matches() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "review", 1).await;
+        let proof = auto_land_decision_proof(&pool, &goal.id, Some("coord-session-1")).await;
+        let new = advance_goal_checked_with_auto_land(
+            &pool,
+            &goal.id,
+            GoalAction::Approve,
+            decisions::ACTOR_AUTO_LAUNCH,
+            Some(proof),
+            TransitionEffects::default(),
+            true,
+            Some("coord-session-1"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(new, GoalState::Complete);
+        assert_eq!(state_of(&pool, &goal.id).await, "complete");
+    }
+
+    /// Pre-fix, this exact scenario (an `ACTOR_AUTO_LAUNCH` proof, switch
+    /// off) fell through to the generic "requires jesse or henry-policy"
+    /// message — dishonest about WHY it was refused, since a headless
+    /// auto-land attempt genuinely happened. Post-fix it must name the
+    /// switch.
+    #[tokio::test]
+    async fn tier1_auto_launch_is_denied_when_the_switch_is_off() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "review", 1).await;
+        let proof = auto_land_decision_proof(&pool, &goal.id, Some("coord-session-1")).await;
+        let err = advance_goal_checked_with_auto_land(
+            &pool,
+            &goal.id,
+            GoalAction::Approve,
+            decisions::ACTOR_AUTO_LAUNCH,
+            Some(proof),
+            TransitionEffects::default(),
+            false,
+            Some("coord-session-1"),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            GuardError::Denied(msg) => assert_eq!(
+                msg, "headless auto-land is off (PERMAGENT_HEADLESS_AUTOLAND)",
+                "the denial must name the switch, not the generic jesse/henry message"
+            ),
+            other => panic!("expected Denied, got {:?}", other),
+        }
+        assert_eq!(state_of(&pool, &goal.id).await, "review", "no state change");
+    }
+
+    /// Every pre-existing call site — daemon reconciliation included — only
+    /// ever calls the plain [`advance_goal_checked`], which always passes
+    /// `auto_land_allowed: false, calling_session_id: None`. No daemon code
+    /// path can ever produce an `ACTOR_AUTO_LAUNCH` proof in the first place
+    /// (only `auto_approve_headless_goal_review` mints one, and only
+    /// `orchestrator::auto_land_headless_goal` calls it), but this pins that
+    /// even if one were somehow presented here, the daemon's own call shape
+    /// refuses it exactly like every other unset switch — unchanged from
+    /// what a bare `advance_goal_checked` call has always done.
+    #[tokio::test]
+    async fn tier1_auto_launch_through_the_plain_advance_goal_checked_is_denied_like_a_daemon() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "review", 1).await;
+        let proof = auto_land_decision_proof(&pool, &goal.id, Some("coord-session-1")).await;
+        let err = advance_goal_checked(
+            &pool,
+            &goal.id,
+            GoalAction::Approve,
+            decisions::ACTOR_AUTO_LAUNCH,
+            Some(proof),
+            TransitionEffects::default(),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            GuardError::Denied(msg) => assert_eq!(
+                msg,
+                "headless auto-land is off (PERMAGENT_HEADLESS_AUTOLAND)"
+            ),
+            other => panic!("expected Denied, got {:?}", other),
+        }
+        assert_eq!(state_of(&pool, &goal.id).await, "review");
+    }
+
+    #[tokio::test]
+    async fn tier2_auto_launch_is_denied_even_with_the_switch_on() {
+        let pool = test_pool().await;
+        sqlx::query("UPDATE risk_policy SET tier = 2 WHERE action_class = 'goal_approve_standard'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let goal = goal_in_state(&pool, "review", 1).await;
+        let proof = auto_land_decision_proof(&pool, &goal.id, Some("coord-session-1")).await;
+        let err = advance_goal_checked_with_auto_land(
+            &pool,
+            &goal.id,
+            GoalAction::Approve,
+            decisions::ACTOR_AUTO_LAUNCH,
+            Some(proof),
+            TransitionEffects::default(),
+            true,
+            Some("coord-session-1"),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            GuardError::Denied(msg) => assert_eq!(
+                msg,
+                "Tier-2 transition requires a decision answered by 'jesse' (got 'auto-mode-launch')",
+                "Tier 2 must stay human-only regardless of the auto-land switch"
+            ),
+            other => panic!("expected Denied, got {:?}", other),
+        }
+        assert_eq!(state_of(&pool, &goal.id).await, "review");
+    }
+
+    #[tokio::test]
+    async fn tier1_auto_launch_is_denied_when_the_minting_session_does_not_match() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "review", 1).await;
+        let proof = auto_land_decision_proof(&pool, &goal.id, Some("session-A")).await;
+        let err = advance_goal_checked_with_auto_land(
+            &pool,
+            &goal.id,
+            GoalAction::Approve,
+            decisions::ACTOR_AUTO_LAUNCH,
+            Some(proof),
+            TransitionEffects::default(),
+            true,
+            Some("session-B"),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            GuardError::Denied(msg) => assert_eq!(
+                msg,
+                "headless auto-land proof is not bound to the calling session"
+            ),
+            other => panic!("expected Denied, got {:?}", other),
+        }
+        assert_eq!(state_of(&pool, &goal.id).await, "review");
+    }
+
+    /// A proof with no `minting_session_id` at all (e.g. minted before this
+    /// field existed) must never be treated as bound to whatever session
+    /// happens to call — absence on either side is a mismatch, not a
+    /// wildcard match.
+    #[tokio::test]
+    async fn tier1_auto_launch_is_denied_when_no_minting_session_was_recorded() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "review", 1).await;
+        let proof = auto_land_decision_proof(&pool, &goal.id, None).await;
+        let err = advance_goal_checked_with_auto_land(
+            &pool,
+            &goal.id,
+            GoalAction::Approve,
+            decisions::ACTOR_AUTO_LAUNCH,
+            Some(proof),
+            TransitionEffects::default(),
+            true,
+            Some("coord-session-1"),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, GuardError::Denied(_)));
+        assert_eq!(state_of(&pool, &goal.id).await, "review");
+    }
+
+    // Note: `check_proof`'s "only 'approve_review' decisions" kind check
+    // (the third condition in its doc comment) has no dedicated test here.
+    // `auto_approve_roadmap_launch` — the only OTHER function that can ever
+    // mint an `ACTOR_AUTO_LAUNCH` proof — hardcodes `answer: "choice"`, which
+    // already fails this function's earlier, pre-existing
+    // "Action 'approve' requires a decision answered 'approve'" check before
+    // the tier match is ever reached; no legitimate minter can produce a
+    // proof that clears the answer check with any kind other than
+    // `approve_review`, and `DecisionProof`'s private fields mean no test
+    // outside `decisions.rs` can hand-build one that would. The check is
+    // still correct defense-in-depth against a future minter, verified by
+    // code review rather than by an executable pin.
 
     #[tokio::test]
     async fn proof_for_other_goal_is_rejected() {
@@ -2640,6 +3490,247 @@ mod tests {
         );
     }
 
+    /// Lane R21d (A23 Q2 #2): pure truth table for `attempt_made_zero_progress`
+    /// — ANY of a commit, a file change, or a successful verify disqualifies
+    /// an attempt from "zero progress".
+    #[test]
+    fn attempt_made_zero_progress_requires_all_three_signals_absent() {
+        assert!(attempt_made_zero_progress(false, false, false));
+        assert!(!attempt_made_zero_progress(true, false, false));
+        assert!(!attempt_made_zero_progress(false, true, false));
+        assert!(!attempt_made_zero_progress(false, false, true));
+        assert!(!attempt_made_zero_progress(true, true, true));
+    }
+
+    /// Lane R21d (A23 Q2 #2): a goal's first zero-progress attempt is
+    /// forgiven — `attempt_count` is decremented back to what it was before
+    /// this attempt was dispatched, and the streak is recorded at 1.
+    #[tokio::test]
+    async fn zero_progress_attempt_is_forgiven_once() {
+        let pool = test_pool().await;
+        // Attempt #3 was just dispatched (claim patch already stamped
+        // attempt_count = 3) and completed with nothing to show for it.
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+
+        maybe_forgive_zero_progress_attempt(&pool, &goal.id, true)
+            .await
+            .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(2),
+            "the zero-progress attempt must not count — attempt_count reverts to what it was \
+             before this attempt was dispatched"
+        );
+        assert_eq!(
+            card.metadata_json
+                .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+                .and_then(|v| v.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            card.metadata_json
+                .get("zero_progress")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        // check_budget must now see the forgiven count, not the stamped one
+        // — a goal at the default cap of 3 that has 2 real attempts left has
+        // NOT exhausted its attempt budget.
+        assert!(check_budget(&pool, &card.metadata_json)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// Lane R21d (A23 Q2 #2): a SECOND consecutive zero-progress attempt is
+    /// not forgiven — it counts normally against `attempt_count`, and the
+    /// streak advances to 2 so the eventual park detail can name it.
+    #[tokio::test]
+    async fn a_second_consecutive_zero_progress_attempt_counts_normally() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+
+        // First zero-progress attempt: forgiven (3 -> 2), streak = 1.
+        maybe_forgive_zero_progress_attempt(&pool, &goal.id, true)
+            .await
+            .unwrap();
+
+        // The goal gets its forgiven attempt back: redispatch stamps
+        // attempt_count = 3 again (mirrors the claim patch's own
+        // `attempt_count.saturating_add(1)`).
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Second CONSECUTIVE zero-progress attempt: counts normally.
+        maybe_forgive_zero_progress_attempt(&pool, &goal.id, true)
+            .await
+            .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(3),
+            "a second consecutive zero-progress attempt must count — no second forgiveness"
+        );
+        assert_eq!(
+            card.metadata_json
+                .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+                .and_then(|v| v.as_u64()),
+            Some(2)
+        );
+
+        // At the default cap of 3, this now DOES exhaust the attempt budget.
+        assert!(matches!(
+            check_budget(&pool, &card.metadata_json).await.unwrap(),
+            Some(BudgetExhaustion::AttemptCap { spent: 3, cap: 3 })
+        ));
+    }
+
+    /// Lane R21d (A23 Q2 #2): a productive attempt (a commit, a file change,
+    /// or a successful verify) always counts, and resets any zero-progress
+    /// streak the goal was carrying.
+    #[tokio::test]
+    async fn a_productive_attempt_counts_and_resets_the_streak() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+
+        // A prior zero-progress attempt already spent this goal's one
+        // forgiveness.
+        maybe_forgive_zero_progress_attempt(&pool, &goal.id, true)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // This attempt made real progress.
+        maybe_forgive_zero_progress_attempt(&pool, &goal.id, false)
+            .await
+            .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(3),
+            "a productive attempt is never forgiven and must count as stamped"
+        );
+        assert!(
+            card.metadata_json
+                .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+                .is_none(),
+            "a productive attempt resets the zero-progress streak"
+        );
+        assert!(card.metadata_json.get("zero_progress").is_none());
+    }
+
+    /// Lane R21d (A23 Q2 #2): every park path converges on
+    /// `park_goal_with_meta` — a SECOND consecutive zero-progress attempt's
+    /// streak must show up in the park detail (`last_error`) so a human
+    /// reading it sees the goal spent a real attempt on nothing.
+    #[tokio::test]
+    async fn park_detail_names_a_second_consecutive_zero_progress_streak() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.zero_progress_streak', 2) \
+             WHERE id = ?",
+        )
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        park_goal(
+            &pool,
+            &goal.id,
+            decisions::ACTOR_SYSTEM,
+            "held repeatedly with no verify",
+        )
+        .await
+        .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let last_error = card
+            .metadata_json
+            .get("last_error")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            last_error.contains("zero_progress_streak=2"),
+            "park detail must name the streak, got: {last_error}"
+        );
+        assert!(last_error.starts_with("held repeatedly with no verify"));
+    }
+
+    /// Lane R21d (A23 Q2 #2): a single forgiven zero-progress attempt
+    /// (streak == 1) never counted against the goal, so the park detail
+    /// stays exactly the caller's reason — nothing to explain.
+    #[tokio::test]
+    async fn park_detail_omits_a_single_forgiven_zero_progress_attempt() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.zero_progress_streak', 1) \
+             WHERE id = ?",
+        )
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        park_goal(
+            &pool,
+            &goal.id,
+            decisions::ACTOR_SYSTEM,
+            "held with no verify",
+        )
+        .await
+        .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("last_error")
+                .and_then(|v| v.as_str()),
+            Some("held with no verify")
+        );
+    }
+
     /// #250: the manual-retry path — a parked (Failed) goal advances back to
     /// Ready through the guard, which is exactly what the answered unblock
     /// decision's effect runs.
@@ -2786,6 +3877,269 @@ mod tests {
                 .get("attempt_count")
                 .and_then(|v| v.as_u64()),
             Some(2)
+        );
+    }
+
+    /// E2 (harness loop, Round E, from Lane F9 forensics 2026-09-10): F9's
+    /// dominant failure class was exactly this call succeeding when it
+    /// should have refused — a goal requeued to a fresh session while its
+    /// dispatched session was still alive and working. Pre-fix:
+    /// `requeue_goal_with_meta` takes no `dispatched_session_alive`
+    /// parameter at all (fails to compile against this call).
+    #[tokio::test]
+    async fn requeue_refuses_when_the_dispatched_session_is_still_alive() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 1).await;
+
+        let err = requeue_goal_with_meta(
+            &pool,
+            &goal.id,
+            "system",
+            2,
+            "should never apply — the session is alive",
+            &[],
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, GuardError::Denied(_)),
+            "a live dispatched session must be a refusal, not a silent success: {err:?}"
+        );
+
+        // Refused: the card must stay exactly where it was, not move to Ready.
+        assert_eq!(state_of(&pool, &goal.id).await, "in_progress");
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(1),
+            "a refused requeue must never touch attempt_count"
+        );
+        // And the spec's "explicit reason recorded on the card" requirement.
+        assert!(
+            card.metadata_json
+                .get("requeue_refused_reason")
+                .and_then(|v| v.as_str())
+                .is_some_and(|r| r.contains("live dispatched session")),
+            "the refusal reason must be durably recorded on the card: {:?}",
+            card.metadata_json
+        );
+    }
+
+    /// M1 (G8 review, harness loop Lane E3 2026-09-10): the caller-attested
+    /// `dispatched_session_alive: false` must not be trusted blindly when
+    /// the goal's OWN `execution_receipt` — written by a wholly separate
+    /// code path, the dispatch/heartbeat loop — still reports a live,
+    /// recently-heartbeated attempt in the CURRENT daemon lifecycle. Pre-fix:
+    /// this cross-check does not exist at all, so this call would silently
+    /// succeed and bounce the card to `ready` out from under a receipt that
+    /// says the attempt is still running.
+    #[tokio::test]
+    async fn requeue_refuses_when_caller_says_dead_but_the_execution_receipt_is_still_live() {
+        use crate::agents::platform_extensions::execution_receipt::ExecutionReceipt;
+        use crate::agents::platform_extensions::orchestrator::daemon_lifecycle_id;
+
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 1).await;
+
+        let receipt = ExecutionReceipt::new(
+            "permagent",
+            "live-session-1",
+            serde_json::json!({}),
+            daemon_lifecycle_id().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            "execution_receipt".to_string(),
+            serde_json::to_value(&receipt).unwrap(),
+        );
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(meta).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let err = requeue_goal_with_meta(
+            &pool,
+            &goal.id,
+            "system",
+            2,
+            "caller (wrongly) believes this session is dead",
+            &[],
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, GuardError::Denied(_)),
+            "a caller-attested death that disagrees with a live execution_receipt must be \
+             refused, not silently trusted: {err:?}"
+        );
+
+        assert_eq!(
+            state_of(&pool, &goal.id).await,
+            "in_progress",
+            "the card must stay exactly where it was"
+        );
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(1),
+            "a refused requeue must never touch attempt_count"
+        );
+        assert!(
+            card.metadata_json
+                .get("requeue_refused_reason")
+                .and_then(|v| v.as_str())
+                .is_some_and(|r| r.contains("execution_receipt")),
+            "the refusal reason must name the disagreement: {:?}",
+            card.metadata_json
+        );
+    }
+
+    /// M1: the cross-check above must not block a GENUINELY dead session —
+    /// a terminal (`Completed`) receipt is never "live" regardless of how
+    /// recently it was last touched, so a caller-attested death that AGREES
+    /// with the receipt still succeeds exactly as before this lane.
+    #[tokio::test]
+    async fn requeue_still_succeeds_when_caller_says_dead_and_the_execution_receipt_agrees() {
+        use crate::agents::platform_extensions::execution_receipt::{
+            ExecutionReceipt, ReceiptState,
+        };
+        use crate::agents::platform_extensions::orchestrator::daemon_lifecycle_id;
+
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 1).await;
+
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            "dead-session-1",
+            serde_json::json!({}),
+            daemon_lifecycle_id().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::StaleWorker, chrono::Utc::now().to_rfc3339());
+        let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            "execution_receipt".to_string(),
+            serde_json::to_value(&receipt).unwrap(),
+        );
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(meta).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        requeue_goal_with_meta(
+            &pool,
+            &goal.id,
+            "system",
+            2,
+            "worker session ended before the goal completed",
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(state_of(&pool, &goal.id).await, "ready");
+    }
+
+    /// E2: the guard's OTHER refusal — a goal whose landing receipt already
+    /// shows the fix reached trunk must never be requeued back to Ready,
+    /// even though its column binding is still `in_progress` (M9's own
+    /// observed shape: the requeue is what MOVES it to `ready` in the first
+    /// place — this guard has to catch it before that move, while the card
+    /// is still `in_progress`). Pre-fix: no `trunk_state` check exists at
+    /// all, so this call would have silently succeeded and reset the card.
+    #[tokio::test]
+    async fn requeue_refuses_a_goal_already_landed_on_trunk() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 0).await;
+        let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            "dispatch_evidence".to_string(),
+            serde_json::json!({
+                "landing": { "outcome": "landed", "trunk_state": "landed_on_trunk" },
+            }),
+        );
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(meta).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let err = requeue_goal(
+            &pool,
+            &goal.id,
+            "system",
+            1,
+            "should never apply — already landed",
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, GuardError::Denied(_)), "{err:?}");
+        assert_eq!(
+            state_of(&pool, &goal.id).await,
+            "in_progress",
+            "a landed goal must never be bounced back to ready"
+        );
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(card
+            .metadata_json
+            .get("requeue_refused_reason")
+            .and_then(|v| v.as_str())
+            .is_some_and(|r| r.contains("landed on trunk")));
+    }
+
+    /// E2: D1's R3 silent-death redispatch must keep working through this
+    /// guard unchanged — it always attests `dispatched_session_alive: false`
+    /// (it checks `!session_alive` itself before ever calling requeue; see
+    /// `orchestrator.rs`'s `handle_goal_status`), so a real dead-session
+    /// requeue succeeds exactly once, same as before this lane.
+    #[tokio::test]
+    async fn requeue_with_meta_still_succeeds_for_a_genuinely_dead_session() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 0).await;
+        requeue_goal_with_meta(
+            &pool,
+            &goal.id,
+            decisions::ACTOR_SYSTEM,
+            1,
+            "worker exited with no error and no landing; auto-retrying once before escalation",
+            &[("retry_count", serde_json::json!(1))],
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(state_of(&pool, &goal.id).await, "ready");
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("retry_count")
+                .and_then(|v| v.as_u64()),
+            Some(1)
         );
     }
 
@@ -3084,6 +4438,38 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("auto_approve"), "{}", err);
+    }
+
+    /// Lane R22c-e (G26 MED-1): `unverified_reviewer_approval`'s PRESENCE is
+    /// what makes `auto_land_headless_goal` bypass the ordinary verify-
+    /// evidence gate and land a goal outright — a worker must not be able
+    /// to forge its own reviewer sign-off via the agent-facing metadata
+    /// PATCH tool and auto-land unverified, unreviewed work.
+    #[tokio::test]
+    async fn unverified_reviewer_approval_is_protected_from_raw_metadata_patch() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 0).await;
+        let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            "unverified_reviewer_approval".to_string(),
+            serde_json::json!({
+                "checked": "forged approval",
+                "reviewer_provider": "sneaky",
+                "reviewer_model": "sneaky-model",
+                "note": "forged by the worker, not a real reviewer",
+            }),
+        );
+        let err = crate::cards::update_card(
+            &pool,
+            &goal.id,
+            crate::cards::UpdateCard {
+                metadata_json: Some(serde_json::Value::Object(meta)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("unverified_reviewer_approval"), "{}", err);
     }
 
     // ── promote_eligible_dependents_or_warn (bug-sweep wave 1) ──────────────

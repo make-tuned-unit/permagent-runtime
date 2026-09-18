@@ -246,39 +246,32 @@ pub fn corroborating_consecutive(
     }
 }
 
-/// Pair goose tool requests with their responses from a live conversation.
+/// Pair goose tool requests with their responses from a conversation, live or
+/// read back from the `messages` table. Turns come out in response order.
 pub fn extract_from_messages(
     messages: &[crate::conversation::message::Message],
 ) -> ToolTranscriptSignals {
-    use crate::conversation::message::MessageContent;
-    use std::collections::HashMap;
+    use crate::conversation::message::{tool_requests_by_id, MessageContent};
 
-    let mut pending: HashMap<String, String> = HashMap::new();
+    // Lane R62a: index requests first, then pair, so a response persisted
+    // ahead of its own request still pairs (see `tool_requests_by_id`).
+    let mut pending = tool_requests_by_id(messages.iter().flat_map(|msg| &msg.content));
     let mut owned: Vec<(String, String, bool)> = Vec::new();
-    for msg in messages {
-        for content in &msg.content {
-            match content {
-                MessageContent::ToolRequest(req) => {
-                    if let Ok(call) = &req.tool_call {
-                        pending.insert(req.id.clone(), call.name.to_string());
-                    }
-                }
-                MessageContent::ToolResponse(resp) => {
-                    let Some(name) = pending.remove(&resp.id) else {
-                        continue;
-                    };
-                    let (body, is_error) = match &resp.tool_result {
-                        Ok(r) => (
-                            serde_json::to_string(&r.content).unwrap_or_default(),
-                            r.is_error == Some(true),
-                        ),
-                        Err(e) => (e.to_string(), true),
-                    };
-                    owned.push((name, body, is_error));
-                }
-                _ => {}
-            }
-        }
+    for content in messages.iter().flat_map(|msg| &msg.content) {
+        let MessageContent::ToolResponse(resp) = content else {
+            continue;
+        };
+        let Some(Ok(call)) = pending.remove(resp.id.as_str()).map(|req| &req.tool_call) else {
+            continue;
+        };
+        let (body, is_error) = match &resp.tool_result {
+            Ok(r) => (
+                serde_json::to_string(&r.content).unwrap_or_default(),
+                r.is_error == Some(true),
+            ),
+            Err(e) => (e.to_string(), true),
+        };
+        owned.push((call.name.to_string(), body, is_error));
     }
     let turns: Vec<ToolTurn<'_>> = owned
         .iter()
@@ -551,6 +544,29 @@ mod tests {
         assert!(s.severity >= 0.7, "but they are still hard failures");
         assert!(corroborates_verify_climb(&s));
         assert_eq!(corroborating_consecutive(1, &s, 3), 3);
+    }
+
+    /// Lane R62a (A61 bug A): `load_session_signals` reads a persisted
+    /// transcript, where a tool response can be stored ahead of its own
+    /// request. Both failing verifies must still pair and score as a spin.
+    #[test]
+    fn a_response_stored_before_its_request_still_pairs() {
+        let fail = "error: linker exited with code 1";
+        let swapped = |id: &str| {
+            let exchange = tool_exchange("developer__verify", id, fail, false);
+            let mut content = exchange.content.into_iter();
+            let request = content.next().unwrap();
+            let response = content.next().unwrap();
+            [
+                Message::new(Role::User, 0, vec![response]),
+                Message::new(Role::Assistant, 0, vec![request]),
+            ]
+        };
+        let messages: Vec<Message> = swapped("v1").into_iter().chain(swapped("v2")).collect();
+        let s = extract_from_messages(&messages);
+
+        assert!(s.spinning >= 0.5, "both swapped pairs must still pair");
+        assert!(corroborates_verify_climb(&s));
     }
 
     #[test]

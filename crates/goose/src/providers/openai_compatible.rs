@@ -1,9 +1,12 @@
 use anyhow::Error;
 use async_stream::try_stream;
-use futures::TryStreamExt;
+use futures::{Stream, TryStreamExt};
 use reqwest::header::HeaderMap;
 use reqwest::{Response, StatusCode};
 use serde_json::Value;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::pin;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
@@ -13,6 +16,7 @@ use super::api_client::ApiClient;
 use super::base::{MessageStream, Provider};
 use super::errors::{is_billing_message, ProviderError};
 use super::retry::ProviderRetry;
+use super::stream_budget::StreamBudget;
 use super::utils::{ImageFormat, RequestLog};
 use crate::conversation::message::Message;
 use crate::cost_router::cache::SystemPromptParts;
@@ -381,6 +385,102 @@ pub async fn handle_response_openai_compat(response: Response) -> Result<Value, 
     })
 }
 
+/// Lane R19b (harness loop 2026-09-14, follow-up to R19a's M19 DeepSeek
+/// forensics). Wrap the RAW SSE line stream so EVERY line — a genuine
+/// `data: …` chunk, an SSE comment line (`: keep-alive`), or a blank
+/// keep-alive line — resets the liveness clock, BEFORE
+/// `response_to_streaming_message` gets a chance to see it.
+///
+/// Why this has to sit here and not around the parsed stream: DeepSeek's
+/// documented behavior under load is to hold the connection open and send
+/// SSE comment/blank keep-alive lines while queued, rather than return 429.
+/// `response_to_streaming_message`'s own inner consumption loop
+/// (`formats/openai.rs:921-931`, `strip_data_prefix` returns `None` for a
+/// line that isn't `data: …`, and `if line.is_none() || … { continue }`)
+/// silently discards exactly those lines — no `yield`, so it can absorb an
+/// unbounded run of keep-alives inside ONE call to its own stream's
+/// `.next()`. Y8a's/R19a's budget was wrapped around THAT `.next()` (the
+/// semantic, already-filtered stream), so it could not tell "the provider
+/// went silent" from "the provider is alive and keep-aliving while queued" —
+/// both looked like one `.next()` call that took too long. This wraps the
+/// stream one layer down, at the raw line level, where every keep-alive is
+/// still visible, mirroring the existing `ollama::with_line_timeout`'s
+/// "raw wire level, not the parsed level" shape for the same class of
+/// problem.
+///
+/// Two phases, matching `StreamBudget`: `first_byte_window` bounds the wait
+/// for the FIRST raw line ever seen on the connection; `stall_window` bounds
+/// the gap between every line after that — including a run of `:
+/// keep-alive` lines, each of which resets it. `content_chars` is
+/// `StreamBudget`'s own running content-char counter (updated by the caller
+/// after every successful `budget.record`); it is read only to quote it in
+/// the error text, so a keep-alived-but-otherwise-silent connection reports
+/// two numbers — raw lines received and content chars received — instead of
+/// one that conflates them.
+fn with_raw_line_liveness(
+    stream: impl Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
+    first_byte_window: Option<Duration>,
+    stall_window: Option<Duration>,
+    content_chars: Arc<AtomicU64>,
+) -> impl Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static {
+    // Boxed and pinned so the result is `Unpin` — `response_to_streaming_message`
+    // requires its input stream to be (formats/openai.rs:912), and a bare
+    // `try_stream!` block (a generator) is not, the same reason
+    // `stream_openai_compat` below boxes+pins its own final output.
+    Box::pin(try_stream! {
+        let mut stream = stream;
+        let mut window = first_byte_window.or(stall_window);
+        let mut seen_first = false;
+        let mut raw_lines: u64 = 0;
+
+        loop {
+            let next = match window {
+                Some(w) => tokio::time::timeout(w, stream.next()).await.map_err(|_| {
+                    let chars = content_chars.load(Ordering::Relaxed);
+                    let err: ProviderError = if seen_first {
+                        ProviderError::stream_budget_exceeded(format!(
+                            "the connection sent nothing — not even an SSE comment or blank \
+                             keep-alive line — for longer than {} allows ({}s); {raw_lines} raw \
+                             line(s) were received on the connection and {chars} content char(s) \
+                             were streamed before the stall. Raise or disable {} (0 = unlimited) \
+                             if this model legitimately pauses for longer.",
+                            crate::providers::stream_budget::STALL_SECS_ENV,
+                            w.as_secs(),
+                            crate::providers::stream_budget::STALL_SECS_ENV,
+                        ))
+                    } else {
+                        ProviderError::first_byte_stall(format!(
+                            "the connection sent nothing at all — not even a raw SSE line, a \
+                             comment, or a blank keep-alive — for longer than {} allows ({}s); \
+                             {raw_lines} raw line(s) and {chars} content char(s) were received \
+                             before the stream was stopped. Raise or disable {} (0 = unlimited) \
+                             if this model or provider legitimately needs longer to start \
+                             responding.",
+                            crate::providers::stream_budget::FIRST_BYTE_SECS_ENV,
+                            w.as_secs(),
+                            crate::providers::stream_budget::FIRST_BYTE_SECS_ENV,
+                        ))
+                    };
+                    anyhow::Error::from(err)
+                })?,
+                None => stream.next().await,
+            };
+
+            let Some(item) = next else { break };
+            raw_lines += 1;
+            seen_first = true;
+            window = stall_window;
+            yield item?;
+        }
+    })
+}
+
+/// The ONE SSE consumer eight providers share — `openai`, `openai_compatible`
+/// (z.ai, x.ai, Azure, …), `openrouter`, `nanogpt`, `githubcopilot`,
+/// `databricks` and `tetrate` all route their streams through here. The Y8a
+/// budget therefore lives in exactly this function rather than in each caller;
+/// `anthropic.rs` keeps its own loop (different framing) and carries the same
+/// budget separately.
 pub fn stream_openai_compat(
     response: Response,
     mut log: RequestLog,
@@ -392,13 +492,53 @@ pub fn stream_openai_compat(
         let framed = FramedRead::new(stream_reader, LinesCodec::new())
             .map_err(Error::from);
 
+        // Y8a: bound the response. See `providers::stream_budget` for the M14
+        // runaway (441 s / 12 960 deltas / 3.0 MB of one repeated sentence)
+        // this exists to stop.
+        let budget_source = StreamBudget::from_env();
+
+        // Lane R19b: liveness ("is the provider still there at all") is now
+        // enforced at the RAW LINE level, via `with_raw_line_liveness` — see
+        // its doc comment for why a wrap around the semantic (yielded-item)
+        // stream below cannot see SSE keep-alives. `content_chars` is shared
+        // with the loop below so the raw-line layer's error text can quote
+        // content chars received alongside raw lines received.
+        let content_chars = Arc::new(AtomicU64::new(0));
+        let framed = with_raw_line_liveness(
+            framed,
+            budget_source.first_byte_window(),
+            budget_source.stall_window(),
+            Arc::clone(&content_chars),
+        );
+
         let message_stream = response_to_streaming_message(framed);
         pin!(message_stream);
-        while let Some(message) = message_stream.next().await {
+        let mut budget = budget_source;
+        loop {
+            // Liveness is enforced inside `with_raw_line_liveness` now (Lane
+            // R19b) — a stall, including a truly dead connection hiding
+            // behind what LOOKS like a long wait for the next semantic item,
+            // fires there with the right classification. What is left to
+            // bound here is ONLY the total wall clock (Y8a's backstop): a
+            // connection that stays alive forever — real content or an
+            // endless run of keep-alives — but never produces a full,
+            // USABLE reply must still end eventually.
+            let next = match budget.remaining() {
+                Some(remaining) if !remaining.is_zero() => {
+                    tokio::time::timeout(remaining, message_stream.next())
+                        .await
+                        .map_err(|_| budget.wall_clock_error())?
+                }
+                Some(_) => Err(budget.wall_clock_error())?,
+                None => message_stream.next().await,
+            };
+            let Some(message) = next else { break };
             let (message, usage) = message.map_err(|e|
                 e.downcast::<ProviderError>()
                     .unwrap_or_else(ProviderError::stream_decode)
             )?;
+            budget.record(message.as_ref())?;
+            content_chars.store(budget.chars_so_far(), Ordering::Relaxed);
             log.write(&message, usage.as_ref().map(|f| f.usage).as_ref())?;
             yield (message, usage);
         }
@@ -615,6 +755,255 @@ mod tests {
         assert_eq!(
             actual, expected_telemetry,
             "Expected {expected_variant}, got error: {err:?}"
+        );
+    }
+
+    // ── Y8a: the shared SSE loop is bounded ──────────────────────────────
+    //
+    // Lane A14's M14 forensics: one z.ai `glm-4.7` response streamed 441 s /
+    // 12 960 deltas / 3.0 MB of the same sentence and stopped only when the
+    // eval driver killed the process. Both tests below drive the REAL
+    // `stream_openai_compat` loop over a body that never ends, and both fail
+    // against the pre-Y8a `while let Some(..)` — it has no exit at all.
+
+    fn sse_line(content: &str) -> String {
+        format!(
+            "data: {}\n",
+            json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": content},
+                    "finish_reason": serde_json::Value::Null,
+                }]
+            })
+        )
+    }
+
+    fn fake_response(body: reqwest::Body) -> Response {
+        Response::from(http::Response::new(body))
+    }
+
+    fn throwaway_log() -> RequestLog {
+        // `RequestLog::start` writes under `Paths::in_state_dir("logs")`; the
+        // env guard in each test points that at a tempdir.
+        RequestLog::start(&ModelConfig::new_or_fail("y8a-test-model"), &json!({}))
+            .expect("the request log opens under the test path root")
+    }
+
+    /// The fx04 shape: an endless body repeating one substantial delta. The
+    /// repetition detector must end the stream with a permanent, non-retried
+    /// stream-budget error.
+    #[tokio::test]
+    async fn an_endless_repeating_sse_body_is_stopped_by_the_stream_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap())),
+            (crate::providers::stream_budget::MAX_SECS_ENV, Some("60")),
+            // Unlimited, so there is no ambiguity about which bound fired.
+            (
+                crate::providers::stream_budget::MAX_OUTPUT_CHARS_ENV,
+                Some("0"),
+            ),
+            (crate::providers::stream_budget::STALL_SECS_ENV, Some("0")),
+        ]);
+
+        let chunk =
+            sse_line("Good! Cart preview is now updated. Need to check admin and API next.\n\n");
+        // `stream::repeat` needs a `Clone` item and `io::Error` is not one, so
+        // the endless body is an endless ITERATOR of freshly cloned chunks.
+        let body =
+            reqwest::Body::wrap_stream(futures::stream::iter(std::iter::repeat_with(move || {
+                Ok::<_, std::io::Error>(bytes::Bytes::from(chunk.clone()))
+            })));
+        let log = throwaway_log();
+        let mut stream = stream_openai_compat(fake_response(body), log).expect("stream starts");
+
+        let mut deltas = 0usize;
+        let err = loop {
+            match StreamExt::next(&mut stream).await {
+                Some(Ok(_)) => {
+                    deltas += 1;
+                    assert!(
+                        deltas < 10_000,
+                        "the repetition detector must fire long before this"
+                    );
+                }
+                Some(Err(e)) => break e,
+                None => panic!("an endless body must never end cleanly"),
+            }
+        };
+
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(
+            err.is_permanent(),
+            "a looping stream must not be retried into the same loop: {err}"
+        );
+        assert!(err.to_string().contains("looping"), "{err}");
+    }
+
+    /// The other half: a body that goes silent forever after one delta. The
+    /// INACTIVITY window must end it (G13 H2) — with the total unlimited, so
+    /// this pins the stall window on its own and proves a stalled stream is
+    /// still bounded when `PERMAGENT_PROVIDER_STREAM_MAX_SECS=0`.
+    #[tokio::test]
+    async fn a_stalled_sse_body_is_stopped_by_the_inactivity_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap())),
+            (crate::providers::stream_budget::MAX_SECS_ENV, Some("0")),
+            (crate::providers::stream_budget::STALL_SECS_ENV, Some("1")),
+            (
+                crate::providers::stream_budget::MAX_OUTPUT_CHARS_ENV,
+                Some("0"),
+            ),
+        ]);
+
+        let first = futures::stream::once(async {
+            Ok::<_, std::io::Error>(bytes::Bytes::from(sse_line("thinking...")))
+        });
+        let body = reqwest::Body::wrap_stream(futures::StreamExt::chain(
+            first,
+            futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>(),
+        ));
+        let log = throwaway_log();
+        let mut stream = stream_openai_compat(fake_response(body), log).expect("stream starts");
+
+        let started = std::time::Instant::now();
+        let err = loop {
+            match StreamExt::next(&mut stream).await {
+                Some(Ok(_)) => {}
+                Some(Err(e)) => break e,
+                None => panic!("a stalled body must not end cleanly"),
+            }
+        };
+        let elapsed = started.elapsed();
+
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(err.is_permanent(), "{err}");
+        assert!(
+            err.to_string()
+                .contains(crate::providers::stream_budget::STALL_SECS_ENV),
+            "the error must name the budget it broke: {err}"
+        );
+        // Lane R19a: this stream already delivered its one delta before
+        // going silent, so this must NOT be classified as a first-byte
+        // stall — it is the ordinary mid-stream case, unchanged by R19a.
+        assert!(!err.is_first_byte_provider_stall(), "{err}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "the 1s budget must bite promptly, took {elapsed:?}"
+        );
+    }
+
+    /// Lane R19a (M19 DeepSeek forensics, harness loop 2026-09-14): a body
+    /// that sends NOTHING at all — not even one delta — must be stopped by
+    /// the first-byte window, not the (here, disabled) mid-stream stall
+    /// window, and must be classified as a first-byte stall so the caller
+    /// (`agents::agent`) knows to retry it once.
+    #[tokio::test]
+    async fn a_body_that_never_sends_anything_is_stopped_by_the_first_byte_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap())),
+            (crate::providers::stream_budget::MAX_SECS_ENV, Some("0")),
+            // Disabled, so a mis-set phase (i.e. this test wrongly using the
+            // mid-stream window from the start) would hang instead of
+            // silently passing.
+            (crate::providers::stream_budget::STALL_SECS_ENV, Some("0")),
+            (
+                crate::providers::stream_budget::FIRST_BYTE_SECS_ENV,
+                Some("1"),
+            ),
+            (
+                crate::providers::stream_budget::MAX_OUTPUT_CHARS_ENV,
+                Some("0"),
+            ),
+        ]);
+
+        let body = reqwest::Body::wrap_stream(futures::stream::pending::<
+            Result<bytes::Bytes, std::io::Error>,
+        >());
+        let log = throwaway_log();
+        let mut stream = stream_openai_compat(fake_response(body), log).expect("stream starts");
+
+        let started = std::time::Instant::now();
+        let err = match StreamExt::next(&mut stream).await {
+            Some(Err(e)) => e,
+            Some(Ok(_)) => panic!("a body that never sends anything must never deliver an item"),
+            None => panic!("a body that never sends anything must not end cleanly"),
+        };
+        let elapsed = started.elapsed();
+
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(err.is_first_byte_provider_stall(), "{err}");
+        assert!(
+            err.to_string()
+                .contains(crate::providers::stream_budget::FIRST_BYTE_SECS_ENV),
+            "the error must name the budget it broke: {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "the 1s first-byte budget must bite promptly, took {elapsed:?}"
+        );
+    }
+
+    /// Lane R19b: DeepSeek's documented behavior under load is to hold the
+    /// connection open and send SSE comment/blank keep-alive lines rather
+    /// than content while queued. Six `: keep-alive` lines, 400ms apart
+    /// (2.4s total — more than double the 1s stall window below, so this
+    /// proves EVERY keep-alive resets the clock, not just the first one),
+    /// then the connection ends cleanly with no content ever sent. None of
+    /// that may trip the stall — pre-R19b it would have, because
+    /// `response_to_streaming_message` silently discards every one of these
+    /// lines (they are not `data: …`) without ever yielding, so a budget
+    /// wrapped around the yielded-item stream never saw them at all.
+    #[tokio::test]
+    async fn keep_alive_comment_lines_reset_the_liveness_clock_and_never_trip_the_stall() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap())),
+            (crate::providers::stream_budget::MAX_SECS_ENV, Some("0")),
+            (crate::providers::stream_budget::STALL_SECS_ENV, Some("1")),
+            (
+                crate::providers::stream_budget::FIRST_BYTE_SECS_ENV,
+                Some("1"),
+            ),
+            (
+                crate::providers::stream_budget::MAX_OUTPUT_CHARS_ENV,
+                Some("0"),
+            ),
+        ]);
+
+        let interval = std::time::Duration::from_millis(400);
+        let body_stream = futures::stream::unfold(0u32, move |i| async move {
+            if i >= 6 {
+                return None;
+            }
+            tokio::time::sleep(interval).await;
+            Some((
+                Ok::<_, std::io::Error>(bytes::Bytes::from(": keep-alive\n")),
+                i + 1,
+            ))
+        });
+        let body = reqwest::Body::wrap_stream(body_stream);
+        let log = throwaway_log();
+        let mut stream = stream_openai_compat(fake_response(body), log).expect("stream starts");
+
+        let started = std::time::Instant::now();
+        loop {
+            match StreamExt::next(&mut stream).await {
+                Some(Ok(_)) => {
+                    panic!("no content was ever sent — there is no real delta to yield")
+                }
+                Some(Err(e)) => panic!("a run of live keep-alives must never trip the stall: {e}"),
+                None => break,
+            }
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_secs(2),
+            "the keep-alives must have actually been consumed one at a time \
+             (proving the raw-line level really saw each one), took {elapsed:?}"
         );
     }
 }

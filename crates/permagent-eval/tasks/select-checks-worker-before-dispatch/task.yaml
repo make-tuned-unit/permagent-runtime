@@ -1,0 +1,67 @@
+id: select-checks-worker-before-dispatch
+title: Check a worker's availability before dispatching to it
+category: selection
+max_turns: 15
+# G3: dispatching a goal without first confirming the worker is actually
+# available (or capable) risks a blind dispatch to a dead/misconfigured
+# worker. The correct selection checks first, dispatches second — never the
+# reverse, and never dispatching with no check at all.
+#
+# Lane K8 (HARNESS_LOOP_LOG.md Lane R20d report, A20 Q2/Q3): the "Ready goal
+# card" below used to be prose only — the driver seeded every run's store
+# with nothing but the bare `personal` project, so the coordinator had no
+# real card to look up and no honest way to confirm the prompt's claim. It
+# is now REAL, seeded straight into this run's own store before the harness
+# starts (`seed/harness_state.json`, see `crate::seed_state`): a project and
+# one goal card in the Ready column. `check_worker` + `goal_advance` is now
+# the genuine honest path (no `decompose_roadmap` needed, since nothing
+# needs planning) rather than a fixture the model could only satisfy by
+# fabricating a card id.
+test: [true]
+prompt: |
+  There is a Ready goal card, "rename `old_id` to `new_id` across the repo",
+  a purely mechanical change. Confirm a suitable worker is actually
+  available before dispatching the goal to it.
+# R22a (HARNESS_LOOP_LOG.md "Lane R22a — goal_advance enforces
+# check_worker"): `goal_advance{action: dispatch}` on a Ready goal now
+# REQUIRES a fresh check_worker result for the worker it would use —
+# enforced in `OrchestratorClient::ensure_worker_checked_for_dispatch`
+# (`orchestrator.rs`), not merely hoped for. When the model calls
+# `check_worker` explicitly first (still the preferred, and here the only
+# possible, path — this fixture's seeded Ready card has no other route to
+# `goal_advance` succeeding), that real call's own tool-call banner is
+# printed by the CLI before `goal_advance`'s, exactly as `before` used to
+# require. When the model skips it, `goal_advance` performs the identical
+# check internally and prints the same `"  ▸ check_worker"` banner itself —
+# but only AFTER its own already-printed `goal_advance` banner, since the
+# CLI renders a tool call's banner as soon as the model requests it, before
+# that tool's handler (here, `handle_goal_advance`) ever runs. So a literal
+# `before: [[check_worker, goal_advance]]` text-order rule can no longer
+# distinguish "checked, then dispatched" from "dispatched, and the check
+# ran inside it" — both are now equally correct, because the protocol
+# itself refuses to dispatch without the check having happened either way.
+# There is no RECEIPT CONTRACT v1 field for this yet (`must_receipt` would
+# need a `dag_enforcement`/`verification_integrity`/`safety_and_trust`/
+# `cost_routing` area this lane did not add a counter to — inventing one
+# here would just always read "requirement not met"), so the ordering
+# guarantee is recorded here as this comment instead: it is now structural,
+# not a selection-check concern. `must_call` alone is still meaningful and
+# kept — a run that calls neither, or dispatches without ever reaching
+# `goal_advance`, still fails it.
+# Lane R51a (HARNESS_LOOP_LOG.md "Lane R51a"): `seed/harness_state.json`
+# above seeds the DB card but K8/K12 never gave the dispatched WORKER an
+# actual repo to rename `old_id` in — `workspace/` here was empty, so
+# `git ls-tree` / `search old_id` both came back with nothing, and the
+# worker either honestly escalated ("the repo seed is empty — no files to
+# rename") or improvised a throwaway file just to have something to
+# commit. Both are correct worker behavior given an impossible task; the
+# defect was the fixture. `workspace/` now seeds two real files
+# (`widget.py`, `registry.py`) with `old_id` as a rename-safe parameter
+# name (call sites are positional, so the rename doesn't break the test
+# either way), a `test_widget.py` pytest exercises them, and
+# `pyproject.toml`'s `[tool.pytest.ini_options]` table gives `verify`'s
+# `detect_checks` a real pytest marker so a genuine (non-vacuous) PASS is
+# actually reachable — see `crates/goose/src/agents/platform_extensions/
+# developer/verify.rs`'s `has_pytest_marker`/`PYTHON_MARKERS`.
+selection_check:
+  must_call: [check_worker, goal_advance]

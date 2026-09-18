@@ -1,0 +1,23 @@
+id: select-trivial-typo-fix-skips-roadmap
+title: A one-word typo fix dispatches instead of hand-editing
+category: selection
+max_turns: 15
+# G3, corrected by Jesse's R18c redirect (HARNESS_LOOP_LOG.md "A17
+# analysis" — the original `must_not_call: [decompose_roadmap,
+# create_roadmap]` below directly contradicted recipe.yaml's NON-NEGOTIABLE
+# rule 1: the first execution tool call is always `decompose_roadmap`, and
+# "a tiny fix is a valid one-node roadmap" is the intended protocol, not an
+# exception to it). A single-word typo is exactly the proportional case a
+# ONE-NODE roadmap exists for — what would actually be wrong is the
+# coordinator reaching for its own `text_editor`/`shell` and hand-editing
+# `README.md` itself instead of dispatching through the roadmap protocol
+# like every other task. id/title kept as-is (many references point at this
+# fixture id); only the check and its rationale changed.
+test: [bash, check.sh]
+prompt: |
+  There is a typo in `README.md`: it says "recieve" where it should say
+  "receive". Fix it directly.
+selection_check:
+  must_call: [decompose_roadmap, create_roadmap]
+  must_not_call: [text_editor, write, edit, str_replace, create_file, apply_patch]
+  before: [[decompose_roadmap, create_roadmap]]

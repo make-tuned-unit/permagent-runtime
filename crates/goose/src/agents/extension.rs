@@ -431,6 +431,63 @@ impl ExtensionConfig {
         available_tools.is_empty() || available_tools.contains(&tool_name.to_string())
     }
 
+    /// The extension's own tool allowlist (empty means "every tool is
+    /// available"). Mirrors `is_tool_available`'s match arms so a caller can
+    /// name what IS allowed when a call is refused, not just that one tool
+    /// was refused.
+    pub fn available_tools(&self) -> &[String] {
+        match self {
+            Self::Sse { .. } => &[],
+            Self::StreamableHttp {
+                available_tools, ..
+            }
+            | Self::Stdio {
+                available_tools, ..
+            }
+            | Self::Builtin {
+                available_tools, ..
+            }
+            | Self::Platform {
+                available_tools, ..
+            }
+            | Self::InlinePython {
+                available_tools, ..
+            }
+            | Self::Frontend {
+                available_tools, ..
+            } => available_tools,
+        }
+    }
+
+    /// Mutable access to the same allowlist `available_tools()` reads, for a
+    /// caller that needs to narrow it (e.g. scoping a delegated persona to
+    /// read-only tools). Mirrors the same match arms; `Sse` carries no list
+    /// to narrow (it is already unconditionally disabled by
+    /// `is_tool_available`), so it returns `None`.
+    pub fn available_tools_mut(&mut self) -> Option<&mut Vec<String>> {
+        match self {
+            Self::Sse { .. } => None,
+            Self::StreamableHttp {
+                available_tools, ..
+            }
+            | Self::Stdio {
+                available_tools, ..
+            }
+            | Self::Builtin {
+                available_tools, ..
+            }
+            | Self::Platform {
+                available_tools, ..
+            }
+            | Self::InlinePython {
+                available_tools, ..
+            }
+            | Self::Frontend {
+                available_tools, ..
+            } => Some(available_tools),
+        }
+    }
+
     pub async fn resolve(self, config: &Config) -> ExtensionResult<Self> {
         use crate::agents::extension_manager::{merge_environments, substitute_env_vars};
 

@@ -16,6 +16,13 @@ use serde::{Deserialize, Serialize};
 
 // ── Caps (Phase 0 schema) ───────────────────────────────────────────────
 
+/// Lane R26c (A25 Q2): advisory only — no longer enforced as a rejection
+/// in [`validate_escalation`]. `specific_ask` is free to run past this and
+/// still validate; the derived headline ([`derive_headline`]) is always
+/// truncated to [`MAX_HEADLINE_CHARS`] regardless, and the untruncated text
+/// survives into `detail`. Kept as a named constant for documentation and
+/// because `EscalateParams::kind`'s own doc comment still calls this out as
+/// the informal "one-line ask" budget a well-behaved caller should aim for.
 pub const MAX_SPECIFIC_ASK_CHARS: usize = 140;
 pub const MAX_WHY_BLOCKED_CHARS: usize = 2000;
 pub const MAX_EVIDENCE_REFS: usize = 10;
@@ -52,6 +59,19 @@ pub enum EscalationKind {
     Approval,
 }
 
+impl EscalationKind {
+    /// Wire representation — matches `#[serde(rename_all = "lowercase")]`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EscalationKind::Credential => "credential",
+            EscalationKind::Decision => "decision",
+            EscalationKind::Capability => "capability",
+            EscalationKind::Information => "information",
+            EscalationKind::Approval => "approval",
+        }
+    }
+}
+
 /// Resume behavior after the decision is acted on. Phase 1 supports only "auto".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -70,16 +90,52 @@ pub struct EscalationOption {
     pub consequence: String,
 }
 
+/// Option ids that name a headless-resolvable "keep going" answer: a bounded
+/// retry/continue of the SAME work, never a substantive pick between
+/// different outcomes. Shared by [`super::sink::SqlDecisionSink`] (to give a
+/// `choice` draft carrying one of these an honest, seeded risk_policy class
+/// instead of falling through to the unseeded `choice` class) and by
+/// `orchestrator::headless_escalate_policy` (to recognize the same option it
+/// may auto-answer). Keeping one list in one place is the point: the two
+/// call sites drifting apart is exactly the Lane Y13/Y13b/G-M17 bug — the
+/// sink minted the row with no risk_policy class, `resolve_action_class`
+/// fell through to the unseeded `"choice"` class
+/// (`crates/goose/src/decisions.rs`, `resolve_action_class`), which
+/// fail-closes to Tier 2, so the policy's `d.tier < 2` guard never passed
+/// and every headless escalate parked even when it named a retry option.
+pub const RESUMABLE_OPTION_IDS: &[&str] = &["resume", "retry", "continue", "resume-auto"];
+
+/// True if `options` names a headless-resolvable "keep going" answer.
+pub fn has_resumable_option(options: &[EscalationOption]) -> bool {
+    options
+        .iter()
+        .any(|o| RESUMABLE_OPTION_IDS.contains(&o.id.as_str()))
+}
+
 /// Parameters for the `escalate` tool.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EscalateParams {
-    /// What is being asked for: "credential", "decision", "capability",
-    /// "information", or "approval".
+    /// What is being asked for: "credential" (a secret is needed),
+    /// "decision" (a choice between options), "capability" (a new
+    /// permission is needed), "information" (a question must be
+    /// answered), or "approval" (sign-off is needed). Any other value —
+    /// including a missing or unrecognized kind — is coerced to the
+    /// closest of these five rather than rejected (e.g.
+    /// "question"/"clarification"/"info" -> "information",
+    /// "choice"/"option" -> "decision", "blocked"/"missing" ->
+    /// "credential", anything else -> "information"); the value you
+    /// actually sent is preserved on the recorded decision as
+    /// `requested_kind`, so an approximate kind still gets the escalation
+    /// recorded rather than thrown away.
     pub kind: EscalationKind,
-    /// The one-line "add X so I can proceed" ask. This becomes the
-    /// plain-language headline the user sees: max 80 characters, no PR numbers,
-    /// branch names, file counts, or internal IDs — technical identifiers
-    /// belong in why_blocked and evidence_refs.
+    /// The one-line "add X so I can proceed" ask. Aim for 80 characters or
+    /// fewer — this becomes the plain-language headline the user sees — but
+    /// a longer ask is never rejected for that alone: it is word-boundary
+    /// truncated into the headline (with an ellipsis) and the full text is
+    /// kept alongside it, so getting the length exactly right doesn't
+    /// matter. No PR numbers, branch names, file counts, or internal
+    /// IDs anywhere in this text — technical identifiers belong in
+    /// why_blocked and evidence_refs.
     pub specific_ask: String,
     /// Why work cannot continue without it (technical detail). Max 2000 chars.
     pub why_blocked: String,
@@ -169,6 +225,28 @@ pub struct DecisionDraft {
     pub raw_payload: Option<serde_json::Value>,
     /// Validation errors — non-empty iff kind is `Malformed`.
     pub validation_errors: Vec<String>,
+    /// Lane R24a: the exact `kind` value the caller sent, when [`resolve_kind`]
+    /// had to coerce it to reach [`DecisionDraft::kind`] — `None` means the
+    /// caller's `kind` was already one of the five supported values verbatim
+    /// (or, for a `Malformed` draft, that `kind` itself was never the
+    /// problem). Never dropped: an unrecognized kind is evidence a human
+    /// reviewing the decision may want, not noise.
+    pub requested_kind: Option<String>,
+    /// Lane R26a: the RESOLVED escalate-level kind (post [`resolve_kind`]
+    /// coercion) — distinct from [`DecisionDraft::kind`], which is already
+    /// mapped into L1's decisions-table vocabulary and collapses `credential`
+    /// and `information` into the same `Unblock`/`"unblock"` kind (see
+    /// [`map_kind`]). That collapse is exactly why this field exists: once a
+    /// draft becomes a persisted decision row, `"unblock"` alone can no
+    /// longer tell a missing-credential ask from an implementation-detail
+    /// question, and `orchestrator::headless_information_answer_policy`
+    /// needs that distinction to auto-answer ONLY the latter. Not stamped
+    /// into `detail` here (that would break
+    /// `after_turn::mint_rule5_question_escalation_records_the_question_text_and_receipt`'s
+    /// verbatim-detail contract) — `decision_inbox::sink::compose_detail`
+    /// stamps it into the PERSISTED row's detail instead, downstream of this
+    /// field.
+    pub escalate_kind: EscalationKind,
 }
 
 // ── Validation ──────────────────────────────────────────────────────────
@@ -198,21 +276,45 @@ pub fn worker_display_name(roster_name: Option<&str>) -> String {
 /// - no path- or branch-like tokens (anything containing `/` or `\`)
 /// - no file counts (`12 files`)
 /// - no internal IDs (UUIDs, long hex identifiers)
+///
+/// This is the validator for a FINAL, already-sized headline (the derived
+/// `DecisionDraft::headline`, or a hand-written fallback candidate) — it is
+/// never called against a raw `specific_ask`, which may legitimately run
+/// longer than [`MAX_HEADLINE_CHARS`] and gets word-boundary truncated into
+/// a headline ([`derive_headline`]) rather than rejected. See
+/// [`headline_content_violations`] for the content-only subset
+/// `validate_escalation` runs against `specific_ask` itself (Lane R26c,
+/// A25 Q2).
 pub fn headline_violations(text: &str) -> Vec<String> {
-    let mut violations = Vec::new();
     let trimmed = text.trim();
-
     if trimmed.is_empty() {
-        violations.push("headline is empty".to_string());
-        return violations;
+        return vec!["headline is empty".to_string()];
     }
+    let mut violations = Vec::new();
     if trimmed.chars().count() > MAX_HEADLINE_CHARS {
         violations.push(format!(
             "headline exceeds {} characters",
             MAX_HEADLINE_CHARS
         ));
     }
+    violations.extend(headline_content_violations(trimmed));
+    violations
+}
 
+/// The non-length subset of [`headline_violations`]'s rules: no PR/issue
+/// numbers, no path- or branch-like tokens, no file counts, no internal
+/// IDs. `trimmed` must already be non-empty and already trimmed (callers
+/// wanting the empty-check too should use [`headline_violations`]).
+///
+/// Lane R26c (A25 Q2, M29 DeepSeek m1 `harness-testfix-inventory-suite-
+/// green`): factored out so length can stop being, on its own, a reason to
+/// reject `specific_ask` (which may legitimately run up to
+/// [`MAX_SPECIFIC_ASK_CHARS`], well past the shorter headline budget it
+/// doubles as) while every OTHER Amendment A1 rule — the ones that flag a
+/// genuinely malformed ask, not just a long one — still applies in full,
+/// checked against the complete text, not whatever survives truncation.
+fn headline_content_violations(trimmed: &str) -> Vec<String> {
+    let mut violations = Vec::new();
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
     for (i, raw_token) in tokens.iter().enumerate() {
         let token = raw_token.trim_matches(|c: char| ",.;:()[]{}'\"!?".contains(c));
@@ -256,6 +358,47 @@ pub fn headline_violations(text: &str) -> Vec<String> {
     }
 
     violations
+}
+
+/// Derive the plain-language headline from `specific_ask`.
+///
+/// Lane R26c (harness loop, A25 Q2, M29 DeepSeek m1
+/// `harness-testfix-inventory-suite-green`): the coordinator's `escalate`
+/// call had a valid `kind` and an otherwise well-formed 87-character
+/// `specific_ask` — well within [`MAX_SPECIFIC_ASK_CHARS`] (140) — but
+/// `specific_ask` doubled as the headline, which is hard-capped at
+/// [`MAX_HEADLINE_CHARS`] (80), so `headline_violations` rejected it and
+/// the whole honest escalation landed as `kind: malformed`. Never reject on
+/// length: the headline is a DERIVED display value, truncated at the LAST
+/// WORD BOUNDARY at or before the character budget (never mid-word,
+/// reserving one character for a trailing ellipsis) rather than the raw
+/// ask verbatim. Text at or under the budget is returned completely
+/// unchanged (no ellipsis appended) — truncation only ever makes the
+/// headline shorter, never alters short text. The untruncated
+/// `specific_ask` is never lost: `draft_from_payload` appends it to
+/// `detail` whenever this function actually shortened it.
+pub fn derive_headline(specific_ask: &str) -> String {
+    let trimmed = specific_ask.trim();
+    if trimmed.chars().count() <= MAX_HEADLINE_CHARS {
+        return trimmed.to_string();
+    }
+    // Reserve one character for the trailing ellipsis.
+    let budget = MAX_HEADLINE_CHARS - 1;
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut head: String = match chars[..budget].iter().rposition(|c| c.is_whitespace()) {
+        Some(i) => chars[..i].iter().collect(),
+        // No word boundary anywhere in the budget (one very long "word") —
+        // hard-cut at the budget rather than produce an empty headline.
+        None => chars[..budget].iter().collect(),
+    };
+    // Trim trailing punctuation/whitespace left dangling by the cut.
+    while matches!(head.chars().last(), Some(c) if c.is_whitespace() || ",.;:!?".contains(c)) {
+        head.pop();
+    }
+    if head.is_empty() {
+        head = chars[..budget].iter().collect();
+    }
+    format!("{head}…")
 }
 
 /// `#` immediately followed by a digit anywhere in the token.
@@ -315,15 +458,22 @@ pub fn validate_escalation(raw: &serde_json::Value) -> EscalationOutcome {
 
     let mut errors = Vec::new();
 
-    // specific_ask: Phase 0 cap plus Amendment A1 headline rules.
-    if params.specific_ask.chars().count() > MAX_SPECIFIC_ASK_CHARS {
-        errors.push(format!(
-            "specific_ask exceeds {} characters",
-            MAX_SPECIFIC_ASK_CHARS
-        ));
-    }
-    for v in headline_violations(&params.specific_ask) {
-        errors.push(format!("specific_ask (headline): {}", v));
+    // specific_ask: Amendment A1 CONTENT rules only (Lane R26c, A25 Q2).
+    // `specific_ask` doubles as the source the headline is DERIVED from
+    // (`derive_headline`, word-boundary truncated to `MAX_HEADLINE_CHARS`
+    // in `draft_from_payload`), so length alone — neither the former
+    // `MAX_SPECIFIC_ASK_CHARS` cap nor `headline_violations`'s length rule
+    // — is a rejection reason here any more; every non-length rule (no
+    // PR/issue numbers, no path/branch tokens, no file counts, no internal
+    // IDs) still is, checked against the FULL text so identifiers can't
+    // hide in the part that would get truncated away.
+    let ask_trimmed = params.specific_ask.trim();
+    if ask_trimmed.is_empty() {
+        errors.push("specific_ask (headline): headline is empty".to_string());
+    } else {
+        for v in headline_content_violations(ask_trimmed) {
+            errors.push(format!("specific_ask (headline): {}", v));
+        }
     }
 
     if params.why_blocked.trim().is_empty() {
@@ -454,19 +604,112 @@ pub fn map_kind(kind: EscalationKind) -> DecisionKind {
     }
 }
 
+/// Resolve a raw `kind` JSON value to a supported [`EscalationKind`],
+/// coercing anything unrecognized instead of failing validation.
+///
+/// Lane R24a (harness loop, M26 DeepSeek m1
+/// `dschat-select-checks-worker-before-dispatch`): a coordinator's
+/// `escalate{kind: "malformed"}` used to fail `EscalateParams`'s typed
+/// deserialization (not one of the five `EscalationKind` variants), route to
+/// `DecisionKind::Malformed`, and then get rejected a SECOND time by L1's
+/// `decisions::validate_new_decision` — `"malformed"` is not itself a
+/// creatable decisions-table kind (see `sink::SqlDecisionSink::record`'s
+/// doc comment on that exact hand-off). The net effect: an honest escalation
+/// attempt, thrown away by a schema mismatch — `Rejected decision request
+/// (kind 'malformed'): unknown decision kind 'malformed'`, no roadmap, no
+/// recorded escalation, `dag_enforcement.escalated` stayed 0. Coercing the
+/// kind HERE, before typed deserialization ever runs, means an unrecognized
+/// `kind` string always resolves to one of the five real, creatable kinds —
+/// it can no longer reach that dead end on the strength of `kind` alone.
+///
+/// Exact (case-/whitespace-insensitive) matches against the five supported
+/// values pass through unchanged. A short list of synonyms maps to the
+/// closest supported kind; anything else — including a missing, null, or
+/// entirely unrecognized `kind` — falls back to `"information"`, the
+/// broadest bucket and the one every other unresolved ask is closest to in
+/// spirit.
+///
+/// Returns the resolved kind, plus `Some(original)` when the caller's value
+/// was NOT already one of the five supported kinds verbatim — `None` means
+/// nothing was coerced.
+pub fn resolve_kind(raw_kind: Option<&serde_json::Value>) -> (EscalationKind, Option<String>) {
+    let original_display = raw_kind.and_then(|v| match v {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => Some(s.clone()),
+        other => Some(other.to_string()),
+    });
+    let normalized = original_display
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase);
+
+    let kind = match normalized.as_deref() {
+        Some("credential") => EscalationKind::Credential,
+        Some("decision") => EscalationKind::Decision,
+        Some("capability") => EscalationKind::Capability,
+        Some("information") => EscalationKind::Information,
+        Some("approval") => EscalationKind::Approval,
+        // Synonyms mapped to the closest supported kind.
+        Some("question") | Some("clarification") | Some("info") => EscalationKind::Information,
+        Some("choice") | Some("option") => EscalationKind::Decision,
+        Some("blocked") | Some("missing") => EscalationKind::Credential,
+        // Anything else, including a missing/empty/null kind.
+        _ => EscalationKind::Information,
+    };
+
+    let was_verbatim = normalized.as_deref() == Some(kind.as_str());
+    let requested_kind = if was_verbatim {
+        None
+    } else {
+        Some(original_display.unwrap_or_else(|| "(missing)".to_string()))
+    };
+    (kind, requested_kind)
+}
+
 /// Validate a raw payload and produce the typed [`DecisionDraft`].
 ///
 /// Malformed payloads produce a `Malformed` draft carrying the raw payload
-/// and the error list — recorded for human review, never dropped.
+/// and the error list — recorded for human review, never dropped. `kind` is
+/// resolved (and, if necessary, coerced — see [`resolve_kind`]) BEFORE
+/// typed deserialization runs, so an unrecognized `kind` string alone never
+/// produces a `Malformed` draft; only unusable content (missing question
+/// text, invalid options, oversized fields, a headline that leaks
+/// identifiers) does.
 pub fn draft_from_payload(raw: serde_json::Value, source: &DraftSource) -> DecisionDraft {
     let requested_by_display = worker_display_name(source.worker_roster_name.as_deref());
-    match validate_escalation(&raw) {
+    let (resolved_kind, requested_kind) = resolve_kind(raw.get("kind"));
+    let mut normalized = raw.clone();
+    if let Some(obj) = normalized.as_object_mut() {
+        obj.insert(
+            "kind".to_string(),
+            serde_json::Value::String(resolved_kind.as_str().to_string()),
+        );
+    }
+    match validate_escalation(&normalized) {
         EscalationOutcome::Valid(params) => {
             let kind = map_kind(params.kind);
+            let ask_trimmed = params.specific_ask.trim();
+            // Lane R26c (A25 Q2): the headline is DERIVED (word-boundary
+            // truncated to MAX_HEADLINE_CHARS), never `specific_ask`
+            // verbatim — a long-but-valid ask must never fail on length
+            // alone. When truncation actually shortened it, the full ask
+            // survives into `detail` so nothing the caller wrote is lost.
+            let headline = derive_headline(ask_trimmed);
+            let mut detail = params.why_blocked.trim().to_string();
+            if headline != ask_trimmed {
+                detail.push_str(&format!("\n\nFull ask: {ask_trimmed}"));
+            }
+            if let Some(ref rk) = requested_kind {
+                detail.push_str(&format!(
+                    "\n\nrequested_kind: {rk} (coerced to '{}')",
+                    params.kind.as_str()
+                ));
+            }
             DecisionDraft {
                 kind,
-                headline: params.specific_ask.trim().to_string(),
-                detail: params.why_blocked.trim().to_string(),
+                headline,
+                detail,
                 evidence_refs: params.evidence_refs.clone(),
                 options: match kind {
                     // `unwrap_or_default()` would yield an EMPTY choice list —
@@ -485,6 +728,8 @@ pub fn draft_from_payload(raw: serde_json::Value, source: &DraftSource) -> Decis
                 requested_by_display,
                 raw_payload: None,
                 validation_errors: Vec::new(),
+                requested_kind,
+                escalate_kind: params.kind,
             }
         }
         EscalationOutcome::Malformed { errors } => {
@@ -513,6 +758,8 @@ pub fn draft_from_payload(raw: serde_json::Value, source: &DraftSource) -> Decis
                 requested_by_display,
                 raw_payload: Some(raw),
                 validation_errors: errors,
+                requested_kind,
+                escalate_kind: resolved_kind,
             }
         }
     }
@@ -657,6 +904,27 @@ mod tests {
     }
 
     #[test]
+    fn has_resumable_option_matches_only_the_named_ids() {
+        let opts = |id: &str| {
+            vec![EscalationOption {
+                id: id.to_string(),
+                label: "L".to_string(),
+                consequence: "C".to_string(),
+            }]
+        };
+        for id in RESUMABLE_OPTION_IDS {
+            assert!(has_resumable_option(&opts(id)), "expected '{id}' to match");
+        }
+        for id in ["sqlite", "postgres", "resume-manual", "retryable"] {
+            assert!(
+                !has_resumable_option(&opts(id)),
+                "did not expect '{id}' to match"
+            );
+        }
+        assert!(!has_resumable_option(&[]));
+    }
+
+    #[test]
     fn capability_and_malformed_are_always_tier_2() {
         assert_eq!(DecisionKind::RiskGate.minimum_tier(), 2);
         assert_eq!(DecisionKind::Malformed.minimum_tier(), 2);
@@ -734,11 +1002,123 @@ mod tests {
         assert!(headline_violations(&draft.headline).is_empty());
     }
 
+    // ── Lane R24a: unknown/missing kind is coerced, never rejected ──
+
+    /// Repairs the exact M26 defect (harness loop, Lane R24a, DeepSeek m1):
+    /// an otherwise-valid escalation with an unsupported `kind` used to be
+    /// malformed on that basis alone. It must now be recorded as a real,
+    /// answerable decision, with the original value preserved.
     #[test]
-    fn unknown_kind_is_malformed_with_raw_payload() {
+    fn unknown_kind_is_coerced_not_malformed() {
         let mut payload = valid_approval();
-        payload["kind"] = json!("vibes");
-        assert_malformed(payload, "does not match the escalate schema");
+        payload["kind"] = json!("malformed");
+        let draft = draft_from_payload(payload, &source());
+        assert_eq!(
+            draft.kind,
+            DecisionKind::Unblock,
+            "an unrecognized kind must coerce to a real, creatable kind (information -> \
+             Unblock), never fall through to Malformed: {:?}",
+            draft
+        );
+        assert!(draft.validation_errors.is_empty());
+        assert_eq!(draft.requested_kind.as_deref(), Some("malformed"));
+    }
+
+    #[test]
+    fn kind_synonyms_coerce_to_the_documented_target() {
+        let cases = [
+            ("question", EscalationKind::Information),
+            ("clarification", EscalationKind::Information),
+            ("info", EscalationKind::Information),
+            ("choice", EscalationKind::Decision),
+            ("option", EscalationKind::Decision),
+            ("blocked", EscalationKind::Credential),
+            ("missing", EscalationKind::Credential),
+            // Anything not covered falls back to the broadest bucket.
+            ("totally-unrecognized", EscalationKind::Information),
+        ];
+        for (raw, expected) in cases {
+            let (kind, requested) = resolve_kind(Some(&json!(raw)));
+            assert_eq!(kind, expected, "kind for '{raw}'");
+            assert_eq!(
+                requested.as_deref(),
+                Some(raw),
+                "the original value must be preserved as requested_kind for '{raw}'"
+            );
+        }
+    }
+
+    #[test]
+    fn known_kinds_pass_through_unchanged_with_no_requested_kind() {
+        for raw in [
+            "credential",
+            "decision",
+            "capability",
+            "information",
+            "approval",
+        ] {
+            let (kind, requested) = resolve_kind(Some(&json!(raw)));
+            assert_eq!(kind.as_str(), raw);
+            assert_eq!(
+                requested, None,
+                "a verbatim supported kind must not be reported as coerced: {raw}"
+            );
+        }
+    }
+
+    /// Case and surrounding whitespace are cosmetic, not a different kind —
+    /// they must resolve to the same kind AND count as "known, not coerced"
+    /// (no information was actually lost by normalizing them).
+    #[test]
+    fn known_kinds_are_case_and_whitespace_insensitive() {
+        for (raw, expected) in [
+            ("  Approval  ", EscalationKind::Approval),
+            ("CAPABILITY", EscalationKind::Capability),
+        ] {
+            let (kind, requested) = resolve_kind(Some(&json!(raw)));
+            assert_eq!(kind, expected, "kind for '{raw}'");
+            assert_eq!(
+                requested, None,
+                "case/whitespace differences alone must not be reported as coerced: '{raw}'"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_kind_is_coerced_to_information() {
+        let (kind, requested) = resolve_kind(None);
+        assert_eq!(kind, EscalationKind::Information);
+        assert_eq!(requested.as_deref(), Some("(missing)"));
+
+        let (kind, requested) = resolve_kind(Some(&serde_json::Value::Null));
+        assert_eq!(kind, EscalationKind::Information);
+        assert_eq!(requested.as_deref(), Some("(missing)"));
+    }
+
+    /// The decision detail carries `requested_kind` so a human reviewing the
+    /// decision (or reading it back out of the `decisions` table) can see
+    /// exactly what the caller asked for, not just what it was coerced to.
+    #[test]
+    fn coerced_draft_records_requested_kind_in_detail() {
+        let mut payload = valid_approval();
+        payload["kind"] = json!("malformed");
+        let draft = draft_from_payload(payload, &source());
+        assert!(
+            draft.detail.contains("requested_kind: malformed"),
+            "detail must carry the original kind: {}",
+            draft.detail
+        );
+    }
+
+    /// A missing `kind` field is coerced the same way — never `Malformed` on
+    /// that basis alone, as long as the rest of the payload is usable.
+    #[test]
+    fn absent_kind_field_is_coerced_not_malformed() {
+        let mut payload = valid_approval();
+        payload.as_object_mut().unwrap().remove("kind");
+        let draft = draft_from_payload(payload, &source());
+        assert_eq!(draft.kind, DecisionKind::Unblock);
+        assert_eq!(draft.requested_kind.as_deref(), Some("(missing)"));
     }
 
     #[test]
@@ -829,9 +1209,9 @@ mod tests {
 
     #[test]
     fn oversized_fields_are_malformed() {
-        let mut payload = valid_approval();
-        payload["specific_ask"] = json!("x".repeat(141));
-        assert_malformed(payload, "specific_ask exceeds 140");
+        // `specific_ask` length is deliberately NOT here any more (Lane
+        // R26c, A25 Q2): an over-length ask is truncated into the headline,
+        // never rejected — see the "── Lane R26c" test section below.
 
         let mut payload = valid_approval();
         payload["why_blocked"] = json!("x".repeat(2001));
@@ -907,6 +1287,127 @@ mod tests {
             .validation_errors
             .iter()
             .any(|e| e.starts_with("specific_ask (headline):")));
+    }
+
+    // ── Lane R26c (A25 Q2): a long escalation ask is truncated into the
+    // headline, never treated as malformed ──────────────────────────────
+
+    /// Repairs the exact M29 defect: `harness-testfix-inventory-suite-
+    /// green`'s coordinator sent a valid `kind` and an 87-character
+    /// `specific_ask` (under `MAX_SPECIFIC_ASK_CHARS`=140, but over
+    /// `MAX_HEADLINE_CHARS`=80) and got `kind: malformed` back solely
+    /// because `specific_ask` doubled as the headline. Must now validate,
+    /// truncate at a WORD boundary (never mid-word), and keep the full ask.
+    #[test]
+    fn specific_ask_over_80_is_truncated_into_headline_not_rejected() {
+        let ask = "Approve the login page redesign so it can ship before the production freeze window ends";
+        assert_eq!(
+            ask.chars().count(),
+            87,
+            "fixture must be exactly 87 chars for this test to mean what it says"
+        );
+        let mut payload = valid_approval();
+        payload["specific_ask"] = json!(ask);
+        let draft = draft_from_payload(payload, &source());
+
+        assert_ne!(
+            draft.kind,
+            DecisionKind::Malformed,
+            "an over-length-but-otherwise-valid ask must never be malformed: {:?}",
+            draft.validation_errors
+        );
+        assert!(draft.validation_errors.is_empty());
+        assert!(draft.headline.chars().count() <= MAX_HEADLINE_CHARS);
+        assert!(
+            draft.headline.ends_with('…'),
+            "a truncated headline must say so: {}",
+            draft.headline
+        );
+        assert!(
+            headline_violations(&draft.headline).is_empty(),
+            "the derived headline must itself be Amendment-A1-clean: {}",
+            draft.headline
+        );
+        // Word-boundary, not mid-word: the headline (minus the ellipsis)
+        // must be a clean prefix of the full ask, cut exactly at a space.
+        let head = draft.headline.trim_end_matches('…');
+        assert!(
+            ask.starts_with(head),
+            "headline must be a prefix of the full ask: {head:?} vs {ask:?}"
+        );
+        assert_eq!(
+            ask.as_bytes().get(head.len()),
+            Some(&b' '),
+            "must cut at a word boundary, not mid-word: {head:?}"
+        );
+        // The full, untruncated ask is never lost.
+        assert!(
+            draft.detail.contains(ask),
+            "the full ask must survive into detail: {}",
+            draft.detail
+        );
+    }
+
+    /// The character right at the budget must NOT trigger truncation or an
+    /// ellipsis — only text that actually exceeds the budget does.
+    #[test]
+    fn specific_ask_at_exactly_80_is_unchanged() {
+        let ask =
+            "Approve the login page redesign so it can ship before the production freeze ends";
+        assert_eq!(ask.chars().count(), 80, "fixture must be exactly 80 chars");
+        let mut payload = valid_approval();
+        payload["specific_ask"] = json!(ask);
+        let draft = draft_from_payload(payload, &source());
+
+        assert_ne!(draft.kind, DecisionKind::Malformed);
+        assert_eq!(
+            draft.headline, ask,
+            "text at exactly the budget must pass through byte-for-byte, no ellipsis"
+        );
+        assert!(!draft.headline.ends_with('…'));
+        assert!(
+            !draft.detail.contains("Full ask:"),
+            "nothing was truncated, so nothing needs restating in detail"
+        );
+    }
+
+    /// `derive_headline` unit-level: same two shapes, checked directly
+    /// against the function this lane added rather than through the full
+    /// `draft_from_payload` pipeline.
+    #[test]
+    fn derive_headline_truncates_only_when_over_budget() {
+        let short = "Approve the login page redesign";
+        assert_eq!(derive_headline(short), short);
+
+        let long = "x".repeat(200);
+        let derived = derive_headline(&long);
+        assert!(derived.chars().count() <= MAX_HEADLINE_CHARS);
+        assert!(derived.ends_with('…'));
+    }
+
+    /// An empty (or whitespace-only) `specific_ask` is a genuinely unusable
+    /// ask — there is no text to derive ANY headline from — so it must
+    /// still produce the structured "malformed" error, unaffected by this
+    /// lane's length fix.
+    #[test]
+    fn empty_specific_ask_is_still_malformed() {
+        let mut payload = valid_approval();
+        payload["specific_ask"] = json!("   ");
+        assert_malformed(payload, "headline is empty");
+    }
+
+    /// A `specific_ask` well past the old 140-char `MAX_SPECIFIC_ASK_CHARS`
+    /// cap is no longer rejected either — only the derived headline is
+    /// length-bounded; the ask itself is not.
+    #[test]
+    fn specific_ask_past_the_old_140_cap_is_not_rejected() {
+        let ask = "x".repeat(200);
+        let mut payload = valid_approval();
+        payload["specific_ask"] = json!(ask);
+        let draft = draft_from_payload(payload, &source());
+        assert_ne!(draft.kind, DecisionKind::Malformed);
+        assert!(draft.validation_errors.is_empty());
+        assert!(draft.headline.chars().count() <= MAX_HEADLINE_CHARS);
     }
 
     // ── Amendment A2: worker display names ──

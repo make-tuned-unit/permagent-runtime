@@ -25,6 +25,7 @@ pub mod gate_classifier;
 pub mod goal_a2a;
 pub mod goal_context_mcp;
 pub mod goal_engine;
+pub mod harness_watch;
 pub mod inbox_tools;
 pub mod librarian;
 pub mod librarian_adjudicator;
@@ -44,6 +45,7 @@ pub mod publish_sequence;
 pub mod recipe_author;
 pub mod retrospect;
 pub mod review_fanout;
+pub mod reviewer_integrity;
 pub mod role_brief;
 pub mod skills;
 pub mod steward;
@@ -539,7 +541,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: developer::EXTENSION_NAME,
                 display_name: "Developer",
-                description: "Write and edit files (write, edit), execute shell commands (shell), list a directory tree with line counts (tree), search file contents for a summarized, token-efficient view of matches (search), and run the project's build/test checks for a structured PASS/FAIL (verify)",
+                description: "Read files (read), write and edit files (write, edit), execute shell commands (shell), list a directory tree with line counts (tree), search file contents for a summarized, token-efficient view of matches (search), and run the project's build/test checks for a structured PASS/FAIL (verify)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -557,7 +559,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: orchestrator::EXTENSION_NAME,
                 display_name: "Orchestrator",
                 description:
-                    "Orchestrate work across agent sessions: list, view, search/page exact messages, reopen current-user attachments, start, message, and interrupt them (list_sessions, view_session, view_attachment, start_agent, send_message, interrupt_agent); inspect available workers (list_workers, check_worker); plan objectives and dispatch roadmap goals to worker agents, optionally narrowing extensions for an in-process dispatch while refusing that scope for CLI workers (decompose_roadmap, create_roadmap, goal_advance, goal_status, steer_goal, pause_roadmap, resume_roadmap); run a packaged executable skill by name (run_executable_skill); keep durable state across turns and restarts (context_set, context_get, context_list, context_delete); send a structured agent-to-agent message between InProgress goal workers (message_goal); and surface decisions in the Decision Inbox for supervised approval (escalate)",
+                    "Orchestrate work across agent sessions: list, view, search/page exact messages, reopen current-user attachments, start, message, and interrupt them (list_sessions, view_session, view_attachment, start_agent, send_message, interrupt_agent); inspect available workers and the routing roster each worker tier resolves to (list_workers, check_worker, routing_roster); plan objectives and dispatch roadmap goals to worker agents, optionally narrowing extensions for an in-process dispatch while refusing that scope for CLI workers (decompose_roadmap, create_roadmap, goal_advance, goal_status, goal_list, steer_goal, pause_roadmap, resume_roadmap); run a registered skill by name through the approval ladder that gates its commands (skill_run); keep durable state across turns and restarts (context_set, context_get, context_list, context_delete); send a structured agent-to-agent message between InProgress goal workers (message_goal); and surface decisions in the Decision Inbox for supervised approval (escalate)",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
@@ -815,6 +817,26 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(council::CouncilClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            harness_watch::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: harness_watch::EXTENSION_NAME,
+                display_name: "Harness Watch",
+                description:
+                    "Live, read-only view of the coding-harness runs in the user's terminals. harness_runs lists live runs, runs whose terminal stopped heartbeating, and runs that just finished — repo and worktree, phase, age, goals done out of total, how many goals wait on the user, and spend so far including workers. harness_run_status drills into one run, chosen by handle, session or repo fragment (or automatically when exactly one is live): each goal's state, attempt, worker, heartbeat, last tool name, last error, verification verdict, pending gate or review, and landed commit, plus recent activity. harness_attention gathers what those runs are waiting on the user for: open decisions, parked goals, pending gates, and terminals that exited unexpectedly mid-run. Reads this machine's local database only, never message text or file contents",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "When the user asks how the work in their terminals is going, answer from the live record instead of guessing or reading transcripts. These reads never requeue, dispatch or reclaim a goal, so they are safe to call while a terminal is mid-run.",
+                required_secrets: &[],
+                teaching: &[],
+                client_factory: |ctx| {
+                    Box::new(harness_watch::HarnessWatchClient::new(ctx).unwrap())
+                },
             },
         );
 

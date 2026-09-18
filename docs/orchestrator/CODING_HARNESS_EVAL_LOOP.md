@@ -70,6 +70,10 @@ promotion signal.
 
 Use the loop as a training/repair feedback cycle:
 
+0. **M0.5 -- replay slice green before any paid slice.** Before spending
+   anything, run `cargo test -p permagent --lib -j1 -- --ignored
+   replay_slice_smoke` (or, once a real cassette is recorded, `permagent-eval
+   run --cassette <dir> --cassette-mode replay`). See "M0.5" below.
 1. Run a small smoke slice with a hard run and dollar cap.
 2. Inspect the report's first failed gate and per-task evidence.
 3. Change one harness idea (for example routing, recovery, or verification).
@@ -149,6 +153,76 @@ recorded reason, or a distinct recovery action. Attempt, time, token, and dollar
 caps remain hard stops. A P0/P1, authorization boundary, or spend-cap crossing
 is routed to the existing approval system; ordinary deterministic success does
 not manufacture a human gate.
+
+### M0.5 -- replay slice green before any paid slice
+
+A mechanism regression (a rejected approval payload, an orphaning requeue, a
+misfired dead-worker detector) does not need a live model to reproduce -- it
+lives entirely in the coordinator/orchestrator's own control-plane code. Every
+M0-M7 pass before Lane R1 paid a live provider to (re)discover this class of
+defect, at $0.05-$0.27/task and 2-8 minutes per fixture (M8-M11 in this log).
+That cost buys nothing for a defect that would have reproduced against a
+canned model response just as well.
+
+`crates/goose/src/providers/cassette.rs` (Lane R1) adds a `Provider` decorator
+installed at the single factory choke point (`provider_registry.rs`'s
+`ProviderEntry::create`/`create_with_default_model` -- the same choke point
+`SovereignGuardProvider` uses), gated by one env var:
+
+- `PERMAGENT_PROVIDER_CASSETTE=record:<dir>` -- records a real run's provider
+  traffic once, as JSONL, alongside the real call (never changes what the
+  caller sees).
+- `PERMAGENT_PROVIDER_CASSETTE=replay:<dir>` -- replays it. No real provider
+  is constructed at all (no credentials, no network, no spend). A request
+  that does not match a recorded one fails loudly (`<dir>/misses.jsonl`) --
+  a cassette never fabricates a response. The recorded provider's cost tier
+  and data locality are replayed too, so a recorded PAID call still goes
+  through the same reservation/budget/approval mechanics a real paid run
+  would (a cassette with no recorded tier fails closed to paid/cloud).
+
+`permagent-eval run --cassette <dir> [--cassette-mode record|replay]` rides
+the existing A/B-arm environment seam (`RunConfig::arm_env`, applied last)
+to set this on the child `permagent` process -- no new plumbing in
+`runner.rs`/`invocation.rs`. A replay run also waives the API-key preflight
+(`--cassette-mode replay` only): nothing is spent, so nothing needs a
+credential. A `#[ignore]`d library test, `replay_slice_smoke` (`cargo test -p
+permagent --lib -j1 -- --ignored replay_slice_smoke`), records one real
+`handle_decompose_roadmap` call against this file's own deterministic local
+fixture provider and then REPLAYS it through a fresh session, DB and client
+that contain no provider but the cassette -- asserting byte-identical
+proposed goals, an identical roadmap content hash, a real `choice` approval
+decision on both legs, and that root-goal dispatch still fires. In-process,
+on the same test binary the gates already compile -- no separate build, no
+signing, no network. The factory wiring itself (`replay:` never constructing
+a real provider; `record:` still constructing and sovereignty-guarding one)
+is pinned separately and deterministically by `provider_registry.rs`'s own
+unit tests, which need no env var and no process globals.
+
+Run `replay_slice_smoke` by that exact filter. It installs the process-global
+`GOAL_DISPATCH_HOOK` (a `OnceLock`), so it is only reliable in a test process
+where nothing else has claimed that seam -- which the `--ignored
+replay_slice_smoke` filter guarantees, and a `--include-ignored` full-suite
+run does not.
+
+**What this does and does not catch.** A replay slice proves the
+control-plane mechanism (decompose/roadmap/approval/dispatch/verify/
+review/landing state machine) behaves correctly against a FIXED sequence of
+model responses. It cannot catch a defect that only manifests with a
+DIFFERENT model response than the one recorded (a new model quirk, a
+different tool-call shape) -- that is still M0-M7's job, on a live slice.
+Treat a green replay slice as "the mechanism didn't regress," not as "the
+model will solve this fixture" -- those are different claims and this loop
+only ever answers the first for free.
+
+**Recording a real cassette (M12's job, not this lane's).** Run a normal
+`permagent-eval run --cassette <dir> --cassette-mode record --tier <tier>
+--task <id>` against a real fixture and tier once; commit the resulting
+`<dir>/cassette.jsonl` (secrets are stripped before it is written -- see the
+module doc in `cassette.rs` for exactly what is and is not stripped, and its
+documented limitations). From then on, `--cassette-mode replay` reproduces
+that slice for $0 until the harness or the fixture changes shape enough that
+the cassette's keys stop matching -- at which point it fails loud
+(`misses.jsonl`), never silently wrong, and needs re-recording.
 
 ### Measurement surface
 

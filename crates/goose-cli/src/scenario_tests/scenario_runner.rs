@@ -245,6 +245,17 @@ where
             GooseMode::default(),
         )
         .await?;
+    // The progress monitor denies every tool call in a session whose spend it
+    // cannot read, and spend is read per durable budget task. Agent::reply
+    // mints that task only for interactive session types, and a child
+    // inherits its parent's, so this top-level Hidden session would have
+    // none. Without it every replayed tool call came back as "Budget state
+    // unavailable; refusing tool execution", which no recording contains.
+    agent
+        .config
+        .session_manager
+        .begin_budget_task(&session.id)
+        .await?;
 
     agent
         .update_provider(

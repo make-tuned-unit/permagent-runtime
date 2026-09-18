@@ -93,6 +93,12 @@ pub fn render_text(reports: &[TierReport]) -> String {
                 r.duration_secs,
                 if r.harness_timed_out {
                     " (timed out)"
+                } else if r.oracle_timed_out {
+                    // Lane K7: distinct from the harness timing out — the
+                    // harness finished; the oracle's own grading run hit
+                    // its wall-clock ceiling and could not produce a
+                    // trustworthy verdict (reported `errored`, not `fail`).
+                    " (oracle timed out)"
                 } else {
                     ""
                 },
@@ -284,15 +290,60 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                         "cache_read_tokens": r.cost.cache_read_tokens,
                         "cache_write_tokens": r.cost.cache_write_tokens,
                         "cache_hit_rate": r.cost.cache_hit_rate(),
+                        // K18 (`## A45 design` Q3): per-role cost/offset
+                        // accounting for this one task's isolated ledger —
+                        // `null` on a ledger schema/run with no role data,
+                        // never fabricated as zero.
+                        "coordinator_usd": r.cost.coordinator_usd,
+                        "worker_usd": r.cost.worker_usd,
+                        "worker_local_tokens": r.cost.worker_local_tokens,
+                        "worker_offset_usd": r.cost.worker_offset_usd,
                         "duration_secs": r.duration_secs,
                         "harness_exit": r.harness_exit,
                         "harness_timed_out": r.harness_timed_out,
+                        // Lane K7: distinguishes an oracle that could not
+                        // grade (wall-clock ceiling hit, forced `errored`)
+                        // from a real fail/pass — see
+                        // `crate::oracle::outcome_from_run`.
+                        "oracle_exit": r.oracle_exit,
+                        "oracle_timed_out": r.oracle_timed_out,
+                        "oracle_secs": r.oracle_secs,
+                        // Lane K6 / K6-b: the resolved wall-clock ceiling
+                        // THIS task actually ran under (a `--harness-
+                        // timeout-secs` CLI override if given, else
+                        // `max(task cap or driver default, tier floor)`) —
+                        // so `duration_secs`/`harness_timed_out` above can
+                        // be read against the ceiling that produced them,
+                        // not assumed from the task's static default.
+                        "harness_timeout_secs": r.harness_timeout_secs,
                         "note": r.note,
+                        "seed_commit": r.seed_commit,
+                        // Lane R18c (A17 Q6): the G3 tool/DAG-selection
+                        // verdict was computed per task (runner.rs) but
+                        // never reached the report — `null` for every
+                        // non-selection fixture, never fabricated.
+                        "selection_correct": r.selection_correct,
+                        "selection_check_failures": r.selection_check_failures,
                         "signals": {
                             "tool_calls": r.signals.tool_calls,
                             "tool_names": r.signals.tool_names,
+                            // Lane K9: executed vs refused (a denial is the
+                            // protocol working) — see `crate::harness_log`'s
+                            // module docs. `executed_tool_names` is what
+                            // `must_not_call`/`before` now grade against by
+                            // default; `refused_tool_calls` is retained as
+                            // evidence.
+                            "executed_tool_names": r.signals.executed_tool_names,
+                            "refused_tool_calls": r.signals.refused_tool_calls,
                             "rate_limit_events": r.signals.rate_limit_events,
+                            "rate_limit_examples": r.signals.rate_limit_examples,
                             "max_turns_hit": r.signals.max_turns_hit,
+                            // Lane K15: a provider-unavailable marker whose
+                            // own line named a provider OTHER than this
+                            // tier (so it was NOT grounds to override the
+                            // oracle's verdict) — see
+                            // `crate::provider_unavailable`'s module docs.
+                            "provider_unavailable_ignored": r.signals.provider_unavailable_ignored,
                         },
                     })
                 })
@@ -317,12 +368,37 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                     "total_tool_calls": agg.total_tool_calls,
                     "total_rate_limit_events": agg.total_rate_limit_events,
                     "cache_hit_rate": agg.cache_hit_rate,
+                    "dag_selection_pct": agg.dag_selection_pct,
+                    // K18: run-wide per-role cost totals and the local-
+                    // worker "offset" they represent — see `metrics::
+                    // Aggregate`'s field docs.
+                    "coordinator_usd": agg.coordinator_usd,
+                    "worker_usd": agg.worker_usd,
+                    "worker_offset_usd": agg.worker_offset_usd,
                 },
                 "tasks": tasks,
             })
         })
         .collect();
     json!({ "tiers": tiers })
+}
+
+/// G3: the run-wide `dag_selection_pct` — correct tool/DAG selections over
+/// every `category: "selection"` fixture attempted across ALL tiers in this
+/// invocation (not just one). This is what `main.rs`'s `cmd_run` stamps onto
+/// the JSON report's TOP level (alongside `run_id`/`generated_at`), which is
+/// the exact field `permagent-eval graduate` (`graduate.rs::RunFile::
+/// dag_selection_pct`) already reads — see that module's doc for why the
+/// field lives at the top rather than per-tier: a retained grading run
+/// conventionally exercises ONE model/tier, so a single run-wide scalar is
+/// what `graduate` was built to consume. `None` when no tier in this
+/// invocation attempted any selection fixture — never fabricated.
+pub fn overall_dag_selection_pct(reports: &[TierReport]) -> Option<f64> {
+    let all: Vec<TaskResult> = reports
+        .iter()
+        .flat_map(|tr| tr.results.iter().cloned())
+        .collect();
+    crate::metrics::dag_selection_pct(&all)
 }
 
 #[cfg(test)]
@@ -519,6 +595,8 @@ mod tests {
         solved.signals.tool_calls = 4;
         solved.signals.tool_names = vec!["shell".to_string()];
         solved.signals.rate_limit_events = 1;
+        solved.signals.rate_limit_examples =
+            vec!["Z.AI rate limit — waited and retried, and it is still limited.".to_string()];
 
         let mut failed = TaskResult::new(
             "bravo",
@@ -553,6 +631,33 @@ mod tests {
         // pass-rate is over the 2 attempted tasks (1 solved of 2), not 3.
         assert!(text.contains("1/2 solved"), "{text}");
         assert!(text.contains("1 task(s) skipped"), "{text}");
+    }
+
+    /// Lane K7: an oracle-side timeout gets its own marker, distinct from
+    /// `(timed out)` (the harness's own wall-clock ceiling) — a reader
+    /// scanning the per-task lines must be able to tell "the agent's run
+    /// hung" from "the grading run hung" without opening the JSON report.
+    #[test]
+    fn text_report_marks_an_oracle_timeout_distinctly_from_a_harness_timeout() {
+        let mut oracle_timed_out = TaskResult::new(
+            "delta",
+            "classic",
+            OracleOutcome::Errored,
+            CostReading::unknown(),
+        );
+        oracle_timed_out.duration_secs = 5.0;
+        oracle_timed_out.oracle_timed_out = true;
+
+        let tr = TierReport {
+            tier: "sonnet5".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-5".to_string(),
+            pinned_packs: true,
+            results: vec![oracle_timed_out],
+        };
+        let text = render_text(&[tr]);
+        assert!(text.contains("(oracle timed out)"), "{text}");
+        assert!(!text.contains("  (timed out)"), "{text}");
     }
 
     #[test]
@@ -600,10 +705,155 @@ mod tests {
         assert_eq!(alpha["signals"]["tool_calls"], 4);
         assert_eq!(alpha["signals"]["tool_names"][0], "shell");
         assert_eq!(alpha["signals"]["rate_limit_events"], 1);
+        assert_eq!(
+            alpha["signals"]["rate_limit_examples"][0],
+            "Z.AI rate limit — waited and retried, and it is still limited."
+        );
 
         let charlie = &tier["tasks"][2];
         assert_eq!(charlie["oracle"], "not_run");
         assert_eq!(charlie["solved"], false);
         assert_eq!(charlie["cost_usd"], serde_json::Value::Null);
+    }
+
+    // ── G3: dag_selection_pct in the JSON report ────────────────────────
+
+    fn selection_report(tier: &str, verdicts: &[Option<bool>]) -> TierReport {
+        let results = verdicts
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let mut r = TaskResult::new(
+                    format!("select-{i}"),
+                    "selection",
+                    OracleOutcome::Pass,
+                    CostReading::known(0.0, false, 1),
+                );
+                r.selection_correct = *v;
+                r
+            })
+            .collect();
+        TierReport {
+            tier: tier.to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-5".to_string(),
+            pinned_packs: true,
+            results,
+        }
+    }
+
+    #[test]
+    fn json_summary_carries_dag_selection_pct_per_tier() {
+        let tr = selection_report("sonnet5", &[Some(true), Some(false), Some(true)]);
+        let v = render_json(&[tr]);
+        let pct = v["tiers"][0]["summary"]["dag_selection_pct"]
+            .as_f64()
+            .unwrap();
+        assert!((pct - 2.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn json_summary_dag_selection_pct_is_null_with_no_selection_fixtures() {
+        let v = render_json(&[sample()]);
+        assert!(v["tiers"][0]["summary"]["dag_selection_pct"].is_null());
+    }
+
+    #[test]
+    fn overall_dag_selection_pct_combines_every_tier() {
+        let a = selection_report("a", &[Some(true), Some(false)]);
+        let b = selection_report("b", &[Some(true), Some(true)]);
+        // 3 correct of 4 evaluated across both tiers.
+        assert!((overall_dag_selection_pct(&[a, b]).unwrap() - 0.75).abs() < 1e-12);
+    }
+
+    #[test]
+    fn overall_dag_selection_pct_is_none_when_nothing_attempted_a_selection_fixture() {
+        assert_eq!(overall_dag_selection_pct(&[sample()]), None);
+    }
+
+    /// Lane R18c (A17 Q6): `selection_correct` was computed per task
+    /// (`runner.rs`) but never reached the JSON report before this lane —
+    /// a reader had only the tier-wide `dag_selection_pct` and no way to
+    /// see WHICH select-* task(s) failed. Both the bool and its failure
+    /// detail must round-trip into each task's JSON row.
+    #[test]
+    fn json_report_carries_selection_correct_and_failures_per_task() {
+        let mut tr = selection_report("sonnet5", &[Some(true), Some(false)]);
+        tr.results[1].selection_check_failures =
+            vec!["must_call: escalate (never called)".to_string()];
+        let v = render_json(&[tr]);
+        let tasks = &v["tiers"][0]["tasks"];
+        assert_eq!(tasks[0]["selection_correct"], true);
+        assert!(tasks[0]["selection_check_failures"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(tasks[1]["selection_correct"], false);
+        assert_eq!(
+            tasks[1]["selection_check_failures"][0],
+            "must_call: escalate (never called)"
+        );
+    }
+
+    /// A non-selection task's row carries `null`, never a fabricated verdict.
+    #[test]
+    fn json_report_selection_correct_is_null_for_a_non_selection_task() {
+        let v = render_json(&[sample()]);
+        assert!(v["tiers"][0]["tasks"][0]["selection_correct"].is_null());
+    }
+
+    // ── K18: per-role, per-provider cost accounting in the JSON report ─────
+
+    #[test]
+    fn json_report_carries_role_cost_per_task_and_in_summary() {
+        let mut coordinator_only = TaskResult::new(
+            "alpha",
+            "classic",
+            OracleOutcome::Pass,
+            CostReading::known(0.10, false, 1),
+        );
+        coordinator_only.cost.coordinator_usd = Some(0.10);
+
+        let mut with_local_worker = TaskResult::new(
+            "bravo",
+            "classic",
+            OracleOutcome::Pass,
+            CostReading::known(0.02, false, 1),
+        );
+        with_local_worker.cost.coordinator_usd = Some(0.02);
+        with_local_worker.cost.worker_usd = Some(0.0);
+        with_local_worker.cost.worker_local_tokens = Some(1_000);
+        with_local_worker.cost.worker_offset_usd = crate::cost::worker_offset_usd(Some(1_000));
+
+        let tr = TierReport {
+            tier: "local".to_string(),
+            provider: "ollama".to_string(),
+            model: "qwen3".to_string(),
+            pinned_packs: false,
+            results: vec![coordinator_only, with_local_worker],
+        };
+        let v = render_json(&[tr]);
+        let tasks = &v["tiers"][0]["tasks"];
+        assert_eq!(tasks[0]["coordinator_usd"], 0.10);
+        assert!(tasks[0]["worker_usd"].is_null());
+        assert!(tasks[0]["worker_offset_usd"].is_null());
+
+        assert_eq!(tasks[1]["worker_local_tokens"], 1_000);
+        assert!(tasks[1]["worker_offset_usd"].as_f64().unwrap() > 0.0);
+
+        let summary = &v["tiers"][0]["summary"];
+        assert!((summary["coordinator_usd"].as_f64().unwrap() - 0.12).abs() < 1e-9);
+        assert_eq!(summary["worker_usd"], 0.0);
+        assert!(summary["worker_offset_usd"].as_f64().unwrap() > 0.0);
+    }
+
+    #[test]
+    fn json_report_role_cost_is_null_without_role_data() {
+        let v = render_json(&[sample()]);
+        let summary = &v["tiers"][0]["summary"];
+        assert!(summary["coordinator_usd"].is_null());
+        assert!(summary["worker_usd"].is_null());
+        assert!(summary["worker_offset_usd"].is_null());
+        assert!(v["tiers"][0]["tasks"][0]["coordinator_usd"].is_null());
     }
 }

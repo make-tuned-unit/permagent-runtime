@@ -1,13 +1,13 @@
-use super::{parse_frontmatter, Source, SourceKind};
+use super::{orchestrator, parse_frontmatter, Source, SourceKind};
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::platform_extensions::fanout;
 use crate::agents::subagent_handler::{run_subagent_task, OnMessageCallback, SubagentRunParams};
 use crate::agents::subagent_task_config::{TaskConfig, DEFAULT_SUBAGENT_MAX_TURNS};
 use crate::agents::tool_execution::ToolCallContext;
-use crate::agents::AgentRunnerConfig;
+use crate::agents::{AgentRunnerConfig, ExtensionConfig};
 use crate::config::paths::Paths;
-use crate::config::{Config, GooseMode};
+use crate::config::{narrow_extensions_for_agent, Config, GooseMode};
 use crate::providers;
 use crate::recipe::build_recipe::build_recipe_from_template;
 use crate::recipe::local_recipes::load_local_recipe_file;
@@ -100,6 +100,18 @@ struct PreparedChild {
     task_config: TaskConfig,
     routing_receipt: serde_json::Value,
     persona_override: Option<(String, String)>,
+    /// X-dag-1: set when this child's tools were restricted to non-mutating
+    /// ones because the fanning-out session has an active roadmap of its
+    /// own. Prepended to the child's result text so the restriction is
+    /// visible in-band, not only in `_meta`.
+    roadmap_gate_note: Option<String>,
+    /// G5 finding 2: `worker_persona: "reviewer"` (case-insensitive), same
+    /// test `handle_delegate` uses. Drives the fan-out closure's
+    /// snapshot-before/diff-after reviewer-mutation backstop — before this
+    /// field existed, a `delegate_many` child never got that check at all,
+    /// so a coordinator could route a reviewer through the fan-out path to
+    /// bypass X-verify-1 entirely.
+    is_reviewer_persona: bool,
 }
 
 pub struct BackgroundTask {
@@ -616,6 +628,10 @@ impl SummonClient {
             return Err("Delegated tasks cannot spawn further delegations".to_string());
         }
 
+        if let Some(refusal) = self.live_goal_delegate_refusal(&session).await {
+            return Err(refusal);
+        }
+
         // Resolve every child BEFORE any of them runs: a fan-out that fails on
         // child 7's bad parameters after paying for six children is worse than
         // one that refuses up front.
@@ -637,12 +653,17 @@ impl SummonClient {
                 .build_delegate_recipe(&child, session_id, &working_dir)
                 .await
                 .map_err(|e| format!("child {index} ({label}): {e}"))?;
-            let (task_config, routing_receipt) = self
+            let (task_config, routing_receipt, roadmap_gate_note) = self
                 .build_task_config(&child, &recipe, &session)
                 .await
                 .map_err(|e| {
                     format!("child {index} ({label}): failed to build task config: {e}")
                 })?;
+
+            let is_reviewer_persona = child
+                .worker_persona
+                .as_deref()
+                .is_some_and(|p| p.eq_ignore_ascii_case("reviewer"));
 
             prepared.push(PreparedChild {
                 label,
@@ -651,6 +672,8 @@ impl SummonClient {
                 task_config,
                 routing_receipt,
                 persona_override: Self::resolve_worker_persona(child.worker_persona.as_deref()),
+                roadmap_gate_note,
+                is_reviewer_persona,
             });
         }
 
@@ -668,6 +691,7 @@ impl SummonClient {
 
         let session_manager = self.context.session_manager.clone();
         let subscribers = Arc::clone(&self.notification_subscribers);
+        let parent_session_id = session_id.to_string();
         let outcomes = fanout::run_bounded(
             prepared,
             concurrency,
@@ -675,6 +699,7 @@ impl SummonClient {
             move |index, child, token| {
                 let session_manager = session_manager.clone();
                 let subscribers = Arc::clone(&subscribers);
+                let parent_session_id = parent_session_id.clone();
                 async move {
                     let PreparedChild {
                         label,
@@ -683,7 +708,27 @@ impl SummonClient {
                         task_config,
                         routing_receipt,
                         persona_override,
+                        roadmap_gate_note,
+                        is_reviewer_persona,
                     } = child;
+
+                    // G5 finding 2: snapshot the working tree BEFORE this
+                    // child runs when it is a reviewer persona — the exact
+                    // check `handle_delegate` already does for the single-
+                    // call path, now shared via
+                    // `detect_and_record_reviewer_mutation` so a
+                    // `delegate_many` reviewer child cannot route around it.
+                    let reviewer_snapshot_dir = working_dir.clone();
+                    let reviewer_before_snapshot = if is_reviewer_persona {
+                        Some(
+                            crate::agents::platform_extensions::reviewer_integrity::snapshot(
+                                &reviewer_snapshot_dir,
+                            )
+                            .await,
+                        )
+                    } else {
+                        None
+                    };
 
                     let subagent_session = match session_manager
                         .create_session(
@@ -704,6 +749,10 @@ impl SummonClient {
                         }
                     };
                     let subagent_id = subagent_session.id.clone();
+                    // Lane R63c: counted per child actually spawned, not per
+                    // child resolved (a later child's bad parameters refuse
+                    // the whole fan-out before any of them runs).
+                    record_delegate_dispatch(&routing_receipt);
 
                     let (notif_tx, notif_rx) =
                         tokio::sync::mpsc::unbounded_channel::<ServerNotification>();
@@ -740,8 +789,32 @@ impl SummonClient {
                     })
                     .await;
 
+                    // G5 finding 2: the subagent has now run to completion —
+                    // diff the post-run snapshot against the pre-run one
+                    // captured above (if any) and record the mutation
+                    // receipt, exactly what `handle_delegate` does for the
+                    // single-call path, via the SAME shared helper.
+                    let mutated_paths = if let Some(before) = &reviewer_before_snapshot {
+                        Self::detect_and_record_reviewer_mutation(
+                            &session_manager,
+                            &parent_session_id,
+                            &reviewer_snapshot_dir,
+                            before,
+                            &subagent_id,
+                        )
+                        .await
+                    } else {
+                        None
+                    };
+
                     let (status, text) = match result {
-                        Ok(text) => (fanout::ChildStatus::Ok, text),
+                        Ok(text) => {
+                            let text = match &roadmap_gate_note {
+                                Some(note) => format!("{note}\n\n{text}"),
+                                None => text,
+                            };
+                            (fanout::ChildStatus::Ok, text)
+                        }
                         Err(e) if token.is_cancelled() => {
                             (fanout::ChildStatus::Cancelled, format!("cancelled: {e}"))
                         }
@@ -749,6 +822,17 @@ impl SummonClient {
                             fanout::ChildStatus::Failed,
                             format!("delegation failed: {e}"),
                         ),
+                    };
+                    // A mutation voids the verdict regardless of whether the
+                    // child's own call succeeded or errored (same rule as
+                    // the single `delegate` path) — the aggregate `status`
+                    // is left as-is (matching `handle_delegate`, which
+                    // returns `CallToolResult::success` even for a voided
+                    // reviewer), and only the returned text carries the void
+                    // signal a coordinator actually reads.
+                    let text = match &mutated_paths {
+                        Some(paths) => crate::after_turn::reviewer_mutation_void_text(paths, &text),
+                        None => text,
                     };
                     fanout::ChildOutcome {
                         index,
@@ -1254,6 +1338,20 @@ impl SummonClient {
         }
     }
 
+    // DAG-enforcement gap recorded, not fixed (harness loop R3,
+    // HARNESS_LOOP_LOG.md "Lane M2 report" Defect 3): `delegate` dispatches a
+    // real subagent unconditionally -- it does not require, and cannot
+    // check, an approved `orchestrator` roadmap node the way
+    // `create_roadmap` requires an answered Decision Inbox approval (see
+    // `orchestrator::handle_create_roadmap`). A coordinator that gives up on
+    // the roadmap pipeline can call this directly and it will dispatch real,
+    // unreviewed work -- observed live in Lane M2's one PASS
+    // (`harness-editapply-duplicate-discount-blocks`): 7 failed
+    // `decompose_roadmap` attempts, one denied direct `edit`, then
+    // `delegate source: codex` succeeded immediately with no roadmap ever
+    // created. Whether `delegate` should also require an approved roadmap
+    // node, or stays a deliberate escape hatch for mechanical sub-tasks, is
+    // a design decision for the user -- not picked unilaterally here.
     async fn handle_delegate(
         &self,
         session_id: &str,
@@ -1281,6 +1379,10 @@ impl SummonClient {
             return Err("Delegated tasks cannot spawn further delegations".to_string());
         }
 
+        if let Some(refusal) = self.live_goal_delegate_refusal(&session).await {
+            return Err(refusal);
+        }
+
         if params.r#async {
             let (content, task_id) = self.handle_async_delegate(session_id, params).await?;
             let mut meta = Meta::new();
@@ -1296,10 +1398,45 @@ impl SummonClient {
             .build_delegate_recipe(&params, session_id, &working_dir)
             .await?;
 
-        let (task_config, routing_receipt) = self
+        let (task_config, routing_receipt, roadmap_gate_note) = self
             .build_task_config(&params, &recipe, &session)
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
+
+        // Lane R36b: captured now, before `task_config` moves into the spawn
+        // below, so a `worker_persona: "reviewer"` sub-session that fails
+        // with a provider-unavailable-class error can retry once on the
+        // author's own (provider, model) pair — same extensions/max_turns,
+        // only the provider swapped (`TaskConfig` IS the existing profile/
+        // override mechanism, never a new spawn path). Cheap even when
+        // unused (an `Arc` clone plus a small extension list).
+        let dispatch_provider_id = task_config.provider.get_name().to_string();
+        let dispatch_model_id = task_config.provider.get_model_config().model_name.clone();
+        let task_config_for_retry = task_config.clone();
+
+        // X-verify-1: a `worker_persona: "reviewer"` subagent is supposed to
+        // be READ-ONLY (F2/H1's tool-allowlist restriction), but Lane A2's
+        // live evidence showed a reviewer subagent calling `edit` anyway, and
+        // Lane G's review found the reviewer still keeps `shell` — a tool
+        // allowlist alone is not proof. Snapshot the working tree now, before
+        // the subagent runs at all, so it can be compared against the
+        // post-run snapshot below regardless of which tool the mutation went
+        // through.
+        let is_reviewer_persona = params
+            .worker_persona
+            .as_deref()
+            .is_some_and(|p| p.eq_ignore_ascii_case("reviewer"));
+        let reviewer_snapshot_dir = working_dir.clone();
+        let reviewer_before_snapshot = if is_reviewer_persona {
+            Some(
+                crate::agents::platform_extensions::reviewer_integrity::snapshot(
+                    &reviewer_snapshot_dir,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
 
         let persona_override = Self::resolve_worker_persona(params.worker_persona.as_deref());
         info!(
@@ -1320,60 +1457,171 @@ impl SummonClient {
             crate::agents::GoosePlatform::GooseCli,
         );
 
-        let subagent_session = self
-            .context
-            .session_manager
-            .create_session_with_parent(
-                Some(session_id),
+        // Lane R63c: this child is about to run a model — count it on
+        // `receipt cost_routing` with the audit `resolve_provider` computed.
+        record_delegate_dispatch(&routing_receipt);
+        let (result, subagent_session_id) = self
+            .dispatch_subagent_once(
+                agent_config.clone(),
+                recipe.clone(),
+                task_config,
+                session_id,
+                working_dir.clone(),
+                cancellation_token.clone(),
+                persona_override.clone(),
+            )
+            .await?;
+
+        // Lane R36b: closes the gap R36a's call-site audit flagged — this
+        // real sub-session had no breaker check and no fallback at all when
+        // its own completion call failed (the M33 record's second,
+        // unrecovered `CreditsExhausted` hit, ~70-100s into a run with no
+        // paired "escalating" line). One retry, on the author's own
+        // (provider, model) pair, through the SAME `dispatch_subagent_once`
+        // spawn path above — never a new one.
+        let (result, subagent_session_id) = if is_reviewer_persona {
+            self.retry_reviewer_dispatch_if_unavailable(
+                result,
+                subagent_session_id,
+                session_id,
+                &session,
+                &dispatch_provider_id,
+                &dispatch_model_id,
+                task_config_for_retry,
+                agent_config,
+                recipe,
                 working_dir,
-                "Delegated task".to_string(),
-                SessionType::SubAgent,
-                GooseMode::Auto,
+                cancellation_token,
+                persona_override,
             )
             .await
-            .map_err(|e| format!("Failed to create subagent session: {}", e))?;
-
-        let (notif_tx, notif_rx) = tokio::sync::mpsc::unbounded_channel::<ServerNotification>();
-        Self::spawn_notification_bridge(
-            notif_rx,
-            Arc::clone(&self.notification_subscribers),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-
-        let subagent_session_id = subagent_session.id.clone();
-
-        let result = run_subagent_task(SubagentRunParams {
-            config: agent_config,
-            recipe,
-            task_config,
-            return_last_only: true,
-            session_id: subagent_session.id,
-            cancellation_token: Some(cancellation_token),
-            on_message: None,
-            notification_tx: Some(notif_tx),
-            persona_override,
-        })
-        .await;
+        } else {
+            (result, subagent_session_id)
+        };
 
         let mut meta = Meta::new();
         meta.0.insert(
             "subagent_session_id".to_string(),
-            serde_json::Value::String(subagent_session_id),
+            serde_json::Value::String(subagent_session_id.clone()),
         );
         // The routing receipt travels with the result so a reader can say which
         // model this subagent's tokens were billed to, and why it was that one.
         meta.0.insert("model_routing".to_string(), routing_receipt);
 
-        match result {
+        // X-verify-1: the subagent has now run to completion — compare the
+        // post-run snapshot against the pre-run one captured above. A
+        // difference here is independent of whatever tool the reviewer used
+        // (the F2 allowlist restriction, or its absence, is irrelevant to
+        // this check) and independent of what the reviewer's own text
+        // claims. G5 finding 2: this is now the SAME shared helper
+        // `handle_delegate_many`'s fan-out closure calls, so the two
+        // reviewer-dispatch paths cannot drift apart again.
+        let mutated_paths = if let Some(before) = &reviewer_before_snapshot {
+            Self::detect_and_record_reviewer_mutation(
+                &self.context.session_manager,
+                session_id,
+                &reviewer_snapshot_dir,
+                before,
+                &subagent_session_id,
+            )
+            .await
+        } else {
+            None
+        };
+
+        // (b) A mutation voids the verdict regardless of whether the
+        // subagent's own call succeeded or errored — either way its text
+        // must not be trusted — so first collapse `result` to one text
+        // string (keeping whether it was originally an error), then decide.
+        // X-dag-1 kept: a restricted delegate must say so in the text a
+        // model actually reads — the routing receipt above only ever rode in
+        // `_meta`, which is exactly why the earlier `model_routing` note was
+        // invisible to the coordinator in live transcripts (Lane S/T
+        // evidence). The roadmap-gate note is prepended first, on the
+        // success path only, so a subsequent X-verify-1 void (below) still
+        // covers it.
+        let (original_ok, original_text) = match result {
             Ok(text) => {
+                let text = match &roadmap_gate_note {
+                    Some(note) => format!("{note}\n\n{text}"),
+                    None => text,
+                };
+                (true, text)
+            }
+            Err(e) => (false, format!("Delegation failed: {}", e)),
+        };
+
+        match &mutated_paths {
+            // (c) The mutated paths must be visible in the returned result
+            // text, on top of the receipt already recorded above.
+            Some(paths) => {
+                let text = crate::after_turn::reviewer_mutation_void_text(paths, &original_text);
                 Ok(CallToolResult::success(vec![Content::text(text)]).with_meta(Some(meta)))
             }
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "Delegation failed: {}",
-                e
-            ))])
-            .with_meta(Some(meta))),
+            None if original_ok => {
+                Ok(CallToolResult::success(vec![Content::text(original_text)])
+                    .with_meta(Some(meta)))
+            }
+            None => {
+                Ok(CallToolResult::error(vec![Content::text(original_text)]).with_meta(Some(meta)))
+            }
         }
+    }
+
+    /// G5 finding 2: diff a reviewer-persona child's pre-run tree snapshot
+    /// against a fresh post-run snapshot of the same working directory and,
+    /// if anything changed, record the mutation receipt on the PARENT
+    /// session. This is the ONE place that decides what "the reviewer
+    /// mutated the tree" means and how it gets recorded — shared by
+    /// `handle_delegate` (the single-call reviewer path X-verify-1
+    /// originally wired this into) and `handle_delegate_many`'s fan-out
+    /// closure (which had no such backstop at all before this fix, so a
+    /// coordinator could route a `worker_persona: "reviewer"` child through
+    /// `delegate_many` to bypass X-verify-1 entirely). Returns the mutated
+    /// paths (`None` for an empty diff) so the caller can void the child's
+    /// own result text via `after_turn::reviewer_mutation_void_text`.
+    async fn detect_and_record_reviewer_mutation(
+        session_manager: &crate::session::SessionManager,
+        parent_session_id: &str,
+        working_dir: &Path,
+        before: &crate::agents::platform_extensions::reviewer_integrity::TreeSnapshot,
+        subagent_session_id: &str,
+    ) -> Option<Vec<String>> {
+        let after =
+            crate::agents::platform_extensions::reviewer_integrity::snapshot(working_dir).await;
+        let paths = crate::agents::platform_extensions::reviewer_integrity::diff(before, &after);
+        if paths.is_empty() {
+            return None;
+        }
+        crate::receipts::record_once(
+            "verification_integrity",
+            "reviewer_mutations",
+            subagent_session_id,
+        );
+        tracing::warn!(
+            target: "permagentd::brain",
+            paths = ?paths,
+            subagent_session_id = %subagent_session_id,
+            "reviewer subagent mutated the working tree; voiding its verdict"
+        );
+        // Record a receipt on the PARENT session — best-effort: a failure to
+        // persist it must never block returning the (still correctly
+        // voided) result to the caller.
+        if let Err(e) = session_manager
+            .record_reviewer_mutation(
+                parent_session_id,
+                paths.clone(),
+                Some(subagent_session_id.to_string()),
+            )
+            .await
+        {
+            tracing::warn!(
+                target: "permagentd::brain",
+                error = %e,
+                "failed to record the reviewer-mutation receipt on the session (non-fatal)"
+            );
+        }
+        Some(paths)
     }
 
     /// Resolve worker_persona key to a (block, display_name) tuple.
@@ -1398,6 +1646,358 @@ impl SummonClient {
             let primary = &config.primary;
             Some((primary.system_prompt_block(), primary.display_name()))
         }
+    }
+
+    /// The `developer` extension's own tool names, minus whatever
+    /// `tool_inspection::requires_dispatched_coding_worker` calls a mutation —
+    /// the broader set `CodingDagInspector` already denies the top-level
+    /// coordinator for (write tools ∪ `shell`/`bash`/`execute_command`/
+    /// `run_command`/`terminal`), not just `after_turn::is_mutating_tool_name`'s
+    /// named write tools. Derived from the extension's real tool surface (not
+    /// a second hand-kept list), so a new read-only developer tool is granted
+    /// automatically and a new mutating (or shell-shaped) one is withheld
+    /// automatically.
+    ///
+    /// R50a: widened from `is_mutating_tool_name` to close H2 (see
+    /// `restrict_reviewer_tools`'s doc comment below) — `shell` used to
+    /// survive this filter untouched, so every caller of
+    /// `restrict_to_non_mutating` (the reviewer persona, and a gated
+    /// `delegate`/`delegate_many`/`start_agent` child) kept full shell
+    /// access. The `verify` tool (deterministic test/build/lint execution)
+    /// remains available, so a scoped session can still run checks without
+    /// raw shell.
+    fn non_mutating_developer_tools() -> Vec<String> {
+        super::developer::DeveloperClient::get_tools()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .filter(|name| !crate::tool_inspection::requires_dispatched_coding_worker(name))
+            .collect()
+    }
+
+    /// F2: scope the `developer` extension in `extensions` to read-only tools
+    /// when the child recipe's worker persona is (case-insensitively) the
+    /// literal `reviewer` roster key — the same key `resolve_worker_persona`
+    /// and the default roster (`agent_identity::default_roster`) use for the
+    /// one persona the recipe documents as read-only. Every other extension
+    /// (including `analyze`, which the recipe already grants the reviewer) is
+    /// left untouched, and a non-reviewer persona is a no-op.
+    ///
+    /// This reuses the SAME allowlist mechanism (`ExtensionConfig::
+    /// available_tools` / `is_tool_available`) the extension manager already
+    /// enforces on every tool dispatch — no new enforcement path, just a new
+    /// caller of the existing one.
+    ///
+    /// G-1 (Lane G review): this used to match ONLY `ExtensionConfig::
+    /// Platform`, but the real `permagent-coding` recipe declares `developer`
+    /// as `type: builtin` (`permagent-coding.yaml`), which deserializes to
+    /// `ExtensionConfig::Builtin` (`recipe_extension_adapter.rs`,
+    /// `extension.rs:190`) — a variant that was never covered here, so live
+    /// this was a no-op and the reviewer kept full `write`/`edit`. Now uses
+    /// `ExtensionConfig::available_tools_mut()`, which covers every variant
+    /// that carries an allowlist (matching `is_tool_available`'s own arms),
+    /// so a future extension-config shape is included automatically rather
+    /// than needing a matching update here.
+    ///
+    /// H2 (harness loop "A47 analysis"): CLOSED. The reviewer used to keep
+    /// `shell` (needed to run verify/tests) with no read-only enforcement on
+    /// it at all — a reviewer could mutate the tree via `sed -i`,
+    /// redirection, `rm`, or `git commit`/`checkout --` through it, and the
+    /// same gap let a `delegate`/`delegate_many`/`start_agent` child under
+    /// the coding recipe run `shell` unrestricted too (A47: MiniCPM p5's
+    /// `[subagent:2]` wrote the passing file via a `shell` heredoc after
+    /// every `write`/`edit` call on it was denied). `restrict_to_non_mutating`
+    /// now filters on `tool_inspection::requires_dispatched_coding_worker`'s
+    /// broader set (write tools ∪ shell/bash/execute_command/run_command/
+    /// terminal — the same set `CodingDagInspector` denies the top-level
+    /// coordinator for), so `shell` no longer survives this scoping for the
+    /// reviewer OR a gated delegate/start_agent child. The `verify` tool
+    /// (deterministic test/build/lint execution, not raw shell) remains
+    /// available, so read-only sessions can still run checks. A dispatched
+    /// goal worker (`dispatch_goal_fn`'s `GOAL_WORKER_EXTENSION_KEYS` path)
+    /// never calls `restrict_to_non_mutating` and keeps shell, since that is
+    /// the one path that legitimately owns a reviewed, dispatched goal card.
+    fn restrict_reviewer_tools(worker_persona: Option<&str>, extensions: &mut [ExtensionConfig]) {
+        let is_reviewer = worker_persona.is_some_and(|p| p.eq_ignore_ascii_case("reviewer"));
+        if !is_reviewer {
+            return;
+        }
+        Self::restrict_to_non_mutating(extensions);
+    }
+
+    /// X-dag-1 (harness loop, coding-harness excellence iteration): the same
+    /// mechanism `restrict_reviewer_tools` uses, generalised so other
+    /// callers — `restrict_delegate_for_active_roadmap` below, and
+    /// `orchestrator::scoped_child_session_extensions_fn` (R50a) — can scope
+    /// a NON-reviewer child down to non-mutating tools too, rather than
+    /// growing a second, parallel allowlist implementation.
+    ///
+    /// Returns `true` when `extensions` carried a `developer` extension that
+    /// previously exposed a tool this call just removed (i.e. this scoping
+    /// was not a no-op) — callers on a GATED path (a delegate/start_agent
+    /// child escaping an active roadmap, not the always-scoped reviewer
+    /// persona) use this to record a `bypass_attempts` receipt and a
+    /// `child_mutation_denied` trace, matching what `CodingDagInspector`
+    /// already records for the coordinator's own denied calls.
+    pub(crate) fn restrict_to_non_mutating(extensions: &mut [ExtensionConfig]) -> bool {
+        let allowed = Self::non_mutating_developer_tools();
+        debug_assert!(
+            !allowed.is_empty(),
+            "an empty available_tools list means EVERY tool is available \
+             (ExtensionConfig::is_tool_available's own definition) — the \
+             non-mutating allowlist must never be empty, or scoping becomes a \
+             no-op the opposite way"
+        );
+        // Defensive fail-closed fallback: an empty `available_tools` reads as
+        // "every tool available" to `is_tool_available` — the exact opposite
+        // of what this function exists to do. If `non_mutating_developer_
+        // tools` ever legitimately returns nothing (e.g. every developer
+        // tool becomes "mutating"), hand out a list that matches no real
+        // tool name instead of an empty one, so the caller loses `developer`
+        // entirely rather than silently regaining full access to it.
+        const NO_SAFE_TOOLS_SENTINEL: &str = "__no_read_only_developer_tools_available__";
+        let mut removed_a_denied_tool = false;
+        for ext in extensions.iter_mut() {
+            if ext.name() == super::developer::EXTENSION_NAME {
+                if let Some(available_tools) = ext.available_tools_mut() {
+                    let had_denied_tool = available_tools.is_empty()
+                        || available_tools.iter().any(|name| {
+                            crate::tool_inspection::requires_dispatched_coding_worker(name)
+                        });
+                    if had_denied_tool {
+                        removed_a_denied_tool = true;
+                    }
+                    *available_tools = if allowed.is_empty() {
+                        vec![NO_SAFE_TOOLS_SENTINEL.to_string()]
+                    } else {
+                        allowed.clone()
+                    };
+                }
+            }
+        }
+        removed_a_denied_tool
+    }
+
+    /// X-dag-1: while a roadmap THIS session created (`create_roadmap`,
+    /// stamping `metadata_json.created_by_session_id` — see
+    /// `cards::goal_cards_created_by_session`) still has open work, a
+    /// coordinator's `delegate` call must not be usable to run mutating
+    /// tools. Dispatching a root goal (`goal_advance`/the auto-dispatch nudge)
+    /// is the sanctioned path for real edits once a roadmap exists; a
+    /// coordinator that gives up on the DAG dance and calls `delegate`
+    /// directly must not get a side door around it — Lane R's Defect 3 /
+    /// Lane M3's Defect M3-3, where the ungated `delegate` call was the ONLY
+    /// path that landed real work in the whole slice, entirely bypassing the
+    /// roadmap it had just been denied for.
+    ///
+    /// A no-op for:
+    ///   - an explicit `worker_persona: "reviewer"` — already read-only via
+    ///     `restrict_reviewer_tools` above; scoping it a second time here
+    ///     would be redundant, not a behavior change, but skipping it keeps
+    ///     "today's behaviour" for that persona legible as ONE code path.
+    ///   - a `SessionType::SubAgent` session — `handle_delegate` already
+    ///     refuses these outright ("Delegated tasks cannot spawn further
+    ///     delegations"), so a goal worker dispatched via the hook can never
+    ///     reach this function at all; checked again here so this gate's own
+    ///     correctness does not silently depend on staying downstream of
+    ///     that unrelated refusal.
+    ///   - an ordinary session with no active roadmap of its own and no
+    ///     coding-harness identity — nothing to bypass.
+    ///
+    /// Harness loop, Lane Y10c (A15 Q3): "active roadmap" was too narrow a
+    /// window. M15 fx04's coordinator called `delegate` at 02:00:30.513 and
+    /// minted its roadmap at 02:00:46.097 — 15 s LATER. With no cards yet
+    /// attributed to the session, `session_has_an_active_roadmap` is false
+    /// and this gate was a no-op, so a coding-harness coordinator could get a
+    /// worker holding `write`/`edit` simply by delegating BEFORE
+    /// `create_roadmap`. X-dag-1 closed "inside an active roadmap"; "before
+    /// the roadmap exists" stayed open.
+    ///
+    /// So the gate now fires on EITHER identity: a top-level coding-harness
+    /// coordinator (the identical
+    /// [`is_top_level_coding_harness`](crate::tool_inspection::is_top_level_coding_harness)
+    /// predicate `CodingDagInspector` and `NoRoadmapGuard` use — that session
+    /// never mutates, roadmap or not, so there is no window at all), or any
+    /// session with an active roadmap (unchanged). The identity check is
+    /// first because it costs no query.
+    ///
+    /// Read-only delegates are still allowed: this strips the MUTATING tools
+    /// (`restrict_to_non_mutating`), it does not refuse the call — fx04's own
+    /// `analyze`/`search` scope audit would pass through untouched.
+    ///
+    /// R27b (harness loop, "A26 analysis" section 1 Q2/Q3): the identity/
+    /// state check above — EITHER identity, both windows — is pulled out to
+    /// this standalone associated function so `orchestrator.rs`'s
+    /// `start_agent`/`send_message` handlers (harness loop lever 3: "scope
+    /// start_agent/send_message targets to the lean coding profile ...
+    /// matching what restrict_delegate_for_active_roadmap already does for
+    /// delegate") can share the EXACT same gate rather than growing a
+    /// second, parallel predicate that could quietly drift from this one on
+    /// WHEN to fire. `restrict_delegate_for_active_roadmap` below is now a
+    /// thin wrapper around this — same conditions, same messages, unchanged
+    /// behavior; the full rationale above (Lane R/M3, Y10c) still applies.
+    ///
+    /// Returns `Ok(None)` when nothing should be restricted; `Ok(Some(why))`
+    /// with a human-readable reason fragment (no trailing punctuation, meant
+    /// to be embedded in a caller's own sentence) otherwise.
+    pub(crate) async fn active_coding_roadmap_gate_reason(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session: &crate::session::Session,
+        worker_persona: Option<&str>,
+    ) -> Result<Option<&'static str>, String> {
+        let is_reviewer = worker_persona.is_some_and(|p| p.eq_ignore_ascii_case("reviewer"));
+        if is_reviewer || session.session_type == SessionType::SubAgent {
+            return Ok(None);
+        }
+
+        let recipe_title = session.recipe.as_ref().map(|recipe| recipe.title.as_str());
+        if crate::tool_inspection::is_top_level_coding_harness(
+            recipe_title,
+            session.parent_session_id.as_deref(),
+        ) {
+            return Ok(Some(
+                "this session is the coding-harness coordinator, which plans and dispatches \
+                 rather than edits — decompose the work with `create_roadmap` and dispatch its \
+                 goals with `goal_advance` (action: dispatch)",
+            ));
+        }
+
+        let cards = crate::cards::goal_cards_created_by_session(pool, &session.id).await?;
+        if !crate::cards::session_has_an_active_roadmap(&cards) {
+            return Ok(None);
+        }
+        Ok(Some(
+            "this session has an active roadmap of its own — dispatch its goals with \
+             `goal_advance` (action: dispatch) instead of editing directly through a \
+             delegated worker",
+        ))
+    }
+
+    /// Lane R63c: refuse `delegate`/`delegate_many` for a top-level coding
+    /// coordinator while one of its own goals is live (InProgress or Review).
+    ///
+    /// M47 r63 s5: the headless DeepSeek coordinator polled its running goal
+    /// with `goal_status` ×2 and `view_session` ×2, then spent a whole child
+    /// session through `delegate` on the same work (five turns, ~300k input
+    /// tokens). While a goal is live its worker and the goal's own review gate
+    /// own that work; a delegate child only duplicates it. The refusal names
+    /// the goal and the resolution (inspect with `goal_status`/`view_session`,
+    /// or wait for review) and goes out on the ordinary refused-call path (the
+    /// handler's `Err`, surfaced as a tool error). Counted as a
+    /// `dag_enforcement` `bypass_attempts` — the same informational counter
+    /// the coordinator's other denied calls use.
+    ///
+    /// Narrow by construction: interactive sessions, dispatched workers and
+    /// sub-agents are untouched (`is_top_level_coding_harness`), and once the
+    /// goal leaves InProgress/Review (Complete, Failed, Blocked, ...) delegate
+    /// is available again. An unreadable store fails OPEN, like
+    /// `restrict_delegate_for_active_roadmap`: this is a cost/protocol guard,
+    /// not a safety boundary.
+    async fn live_goal_delegate_refusal(
+        &self,
+        session: &crate::session::Session,
+    ) -> Option<String> {
+        if session.session_type == SessionType::SubAgent {
+            return None;
+        }
+        let recipe_title = session.recipe.as_ref().map(|recipe| recipe.title.as_str());
+        if !crate::tool_inspection::is_top_level_coding_harness(
+            recipe_title,
+            session.parent_session_id.as_deref(),
+        ) {
+            return None;
+        }
+        let pool = self.context.session_manager.pool_clone().await.ok()?;
+        let cards = match crate::cards::goal_cards_created_by_session(&pool, &session.id).await {
+            Ok(cards) => cards,
+            Err(error) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    session_id = %session.id,
+                    %error,
+                    "live-goal delegate gate could not read goal cards; not refusing"
+                );
+                return None;
+            }
+        };
+        let refusal = live_goal_refusal(&cards)?;
+        crate::receipts::record("dag_enforcement", "bypass_attempts");
+        tracing::info!(
+            target: "permagentd::brain",
+            session_id = %session.id,
+            "delegate_refused_live_goal"
+        );
+        Some(refusal)
+    }
+
+    /// Restricts `extensions` (see `restrict_to_non_mutating`) when
+    /// `active_coding_roadmap_gate_reason` (above — the shared gate) fires
+    /// for `session`; otherwise a no-op. The rationale for WHEN it fires
+    /// lives on that function now; this keeps the WHAT — strip mutating
+    /// developer tools AND (R46a) narrow the extension SET itself, record
+    /// the bypass-attempt receipt, return an explanatory note — that is
+    /// specific to `delegate`.
+    ///
+    /// R46a (harness loop, "A43 analysis" levers 1/3): before this lane,
+    /// the mutating-tools strip above was the ONLY narrowing a gated
+    /// `delegate`/`delegate_many` call got — the spawned sub-session still
+    /// inherited every OTHER extension whole (`analyze`/`summon`/
+    /// `deliberate`/`extensionmanager`, plus `orchestrator`'s full >20-tool
+    /// surface), a 145-tool/~150KB-schema/~34.9k-token-minimum session that
+    /// overflows any ≤32k-context tier before a single instruction token —
+    /// reproducing, on this code path, the exact defect R30a already fixed
+    /// for `goal_advance` dispatch. `extensions` is narrowed to
+    /// `orchestrator::GOAL_WORKER_EXTENSION_KEYS` (`developer` + a
+    /// per-tool-cut `orchestrator`, via `orchestrator::
+    /// narrow_goal_worker_orchestrator_tools`) — the SAME lean worker
+    /// profile R30a's dispatched goal worker gets, since a `delegate`
+    /// child under an active roadmap is doing the identical job (edit code,
+    /// report back), not planning or delegating further. Gated on the exact
+    /// same condition as the mutating-tools strip, so the two can never
+    /// disagree about WHEN to narrow — only a WIDER base list ever shrinks;
+    /// nothing is ever added.
+    async fn restrict_delegate_for_active_roadmap(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session: &crate::session::Session,
+        worker_persona: Option<&str>,
+        extensions: &mut Vec<ExtensionConfig>,
+    ) -> Result<Option<String>, String> {
+        let Some(why) =
+            Self::active_coding_roadmap_gate_reason(pool, session, worker_persona).await?
+        else {
+            return Ok(None);
+        };
+
+        let lean_worker_grants: Vec<String> = orchestrator::GOAL_WORKER_EXTENSION_KEYS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        *extensions = narrow_extensions_for_agent(
+            std::mem::take(extensions),
+            Some(lean_worker_grants.as_slice()),
+        );
+        orchestrator::narrow_goal_worker_orchestrator_tools(extensions);
+
+        // R50a: `restrict_to_non_mutating` now reports whether it actually
+        // removed a tool this child had (write/edit/... OR shell/bash/
+        // execute_command/run_command/terminal — H2's own gap) — this is a
+        // GATED narrowing (the child is escaping an active roadmap or a
+        // top-level coordinator identity), so a real removal is counted as a
+        // bypass attempt via the same `dag_enforcement`/`bypass_attempts`
+        // counter `CodingDagInspector` uses for the coordinator's own denied
+        // calls, and traced as `child_mutation_denied` for the same reason.
+        if Self::restrict_to_non_mutating(extensions) {
+            crate::receipts::record("dag_enforcement", "bypass_attempts");
+            tracing::info!(
+                target: "permagentd::brain",
+                session_id = %session.id,
+                worker_persona = ?worker_persona,
+                "child_mutation_denied"
+            );
+        }
+        Ok(Some(format!(
+            "Note: this delegate call was restricted to a lean, non-mutating tool set because \
+             {why}."
+        )))
     }
 
     /// Instructions a worker cannot act on.
@@ -1484,6 +2084,22 @@ impl SummonClient {
         session_id: &str,
         working_dir: &Path,
     ) -> Result<Recipe, String> {
+        // E4: `source: "reviewer"` alongside `worker_persona: "reviewer"` (or
+        // any other persona named twice this way) is not a real `source` — a
+        // worker persona key is not, in general, a recipe/agent source at
+        // all, and `worker_persona` already carries everything `source` would
+        // have added. Observed 2/2 producing a total silent no-op: no
+        // subagent, no visible error, the model narrating its own "reviewer
+        // unavailable" excuse. Treat it as persona-only — exactly as if
+        // `source` had never been set — rather than resolving (or failing to
+        // resolve) the persona key as a source.
+        let source_names_the_persona = match (&params.source, &params.worker_persona) {
+            (Some(source), Some(persona)) => source.eq_ignore_ascii_case(persona),
+            _ => false,
+        };
+        if source_names_the_persona {
+            return self.build_adhoc_recipe(params);
+        }
         if let Some(source_name) = &params.source {
             self.build_source_recipe(source_name, params, session_id, working_dir)
                 .await
@@ -1675,7 +2291,7 @@ impl SummonClient {
         params: &DelegateParams,
         recipe: &Recipe,
         session: &crate::session::Session,
-    ) -> Result<(TaskConfig, serde_json::Value), anyhow::Error> {
+    ) -> Result<(TaskConfig, serde_json::Value, Option<String>), anyhow::Error> {
         let (provider, routing_receipt) = self.resolve_provider(params, recipe, session).await?;
 
         let mut extensions = EnabledExtensionsState::extensions_or_default(
@@ -1690,6 +2306,37 @@ impl SummonClient {
                 extensions.retain(|ext| filter.contains(&ext.name()));
             }
         }
+
+        // F2: the recipe promises the `reviewer` persona is "scoped READ-ONLY
+        // (developer + analyze, no editing)" (`permagent-coding.yaml`), but
+        // until now that was a prompt-only claim — nothing stopped the
+        // delegated recipe's `developer` extension from exposing `write`/
+        // `edit`. Observed live (HARNESS_LOOP_LOG.md, Lane A2): a reviewer
+        // subagent called `edit` on `src/cache.rs` and the change shipped in
+        // the graded artifact. Enforce it below the prompt.
+        Self::restrict_reviewer_tools(params.worker_persona.as_deref(), &mut extensions);
+
+        // X-dag-1: close the `delegate` side door around an active roadmap.
+        // Best-effort: `pool_clone()` only fails when the storage layer
+        // cannot be reached at all — a condition that would also break
+        // `create_roadmap`/`goal_advance` themselves, not something this
+        // check alone can meaningfully guard against. Rather than turn every
+        // delegate into a hard failure over an unrelated DB outage, an
+        // unreachable pool leaves this call unrestricted; the roadmap system
+        // itself (goal-transition guard, worktree isolation) remains the
+        // primary boundary this is defense-in-depth for, not a replacement
+        // for it.
+        let roadmap_gate_note = match self.context.session_manager.pool_clone().await {
+            Ok(pool) => Self::restrict_delegate_for_active_roadmap(
+                &pool,
+                session,
+                params.worker_persona.as_deref(),
+                &mut extensions,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?,
+            Err(_) => None,
+        };
 
         let max_turns = params
             .max_turns
@@ -1707,7 +2354,226 @@ impl SummonClient {
         let task_config = TaskConfig::new(provider, &session.id, &session.working_dir, extensions)
             .with_max_turns(Some(max_turns));
 
-        Ok((task_config, routing_receipt))
+        Ok((task_config, routing_receipt, roadmap_gate_note))
+    }
+
+    /// Run ONE real subagent dispatch — the fresh subagent session,
+    /// notification bridge, and `run_subagent_task` call `handle_delegate`
+    /// always ran inline — extracted (Lane R36b) so the reviewer-persona
+    /// breaker retry below calls the SAME spawn path a second time rather
+    /// than inventing a new one. Session-creation failure is folded into the
+    /// `Result` (instead of the caller's own `?`) so a retry attempt's
+    /// creation failure just reads as "this attempt failed", not a second
+    /// hard abort of the whole delegate call.
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_subagent_once(
+        &self,
+        agent_config: AgentRunnerConfig,
+        recipe: Recipe,
+        task_config: TaskConfig,
+        session_id: &str,
+        working_dir: PathBuf,
+        cancellation_token: CancellationToken,
+        persona_override: Option<(String, String)>,
+    ) -> Result<(Result<String, anyhow::Error>, String), String> {
+        let subagent_session = self
+            .context
+            .session_manager
+            .create_session_with_parent(
+                Some(session_id),
+                working_dir,
+                "Delegated task".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .map_err(|e| format!("Failed to create subagent session: {}", e))?;
+
+        let (notif_tx, notif_rx) = tokio::sync::mpsc::unbounded_channel::<ServerNotification>();
+        Self::spawn_notification_bridge(
+            notif_rx,
+            Arc::clone(&self.notification_subscribers),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+
+        let subagent_session_id = subagent_session.id.clone();
+
+        let result = run_subagent_task(SubagentRunParams {
+            config: agent_config,
+            recipe,
+            task_config,
+            return_last_only: true,
+            session_id: subagent_session.id,
+            cancellation_token: Some(cancellation_token),
+            on_message: None,
+            notification_tx: Some(notif_tx),
+            persona_override,
+        })
+        .await;
+
+        Ok((result, subagent_session_id))
+    }
+
+    /// Lane R36b: after a `worker_persona: "reviewer"` sub-session's real
+    /// dispatch fails, decide (pure `cost_router::reviewer_retry_target`)
+    /// whether the failure is provider-unavailable-class and a different
+    /// session model exists to retry on; if so, open this session's breaker
+    /// — so a LATER reviewer/planner call in the same session skips the
+    /// same dead provider outright (R36a's `provider_circuit`) — and run
+    /// ONE retry through [`Self::dispatch_subagent_once`], on the author's
+    /// own (provider, model) pair, reusing `task_config`'s existing
+    /// extensions/max_turns via `retry_task_config_base.clone()` with only
+    /// the provider swapped (the existing profile/override mechanism, never
+    /// a new spawn path).
+    ///
+    /// The G-lane independence rule is honored honestly, never by skipping:
+    /// a retry on the author's own model IS the mutating session's model,
+    /// so it is recorded via the SAME `reviewer_not_independent` receipt
+    /// counter the ordinary same-family dispatch fallback already uses (the
+    /// warning-driven branch in [`Self::resolve_provider`] does not fire for
+    /// this RUNTIME retry — that check only sees the SELECTION-time
+    /// dispatch, which already ran and picked the now-failed provider).
+    ///
+    /// If no retry is attempted, or the retry itself fails, the original
+    /// failure and session id are returned unchanged and a `reviewer_
+    /// unreachable` line is logged for the audit trail. That failure still
+    /// surfaces to the caller as an errored delegate result — this
+    /// deliberately does NOT try to make the goal read as reviewed:
+    /// `after_turn::ReviewerMandate`'s own `ReviewerLastOutcome::Empty`
+    /// handling already never treats a failed/empty delegate call as a
+    /// completed review, which is what keeps this goal from being counted
+    /// as reviewed.
+    #[allow(clippy::too_many_arguments)]
+    async fn retry_reviewer_dispatch_if_unavailable(
+        &self,
+        result: Result<String, anyhow::Error>,
+        subagent_session_id: String,
+        session_id: &str,
+        session: &crate::session::Session,
+        failed_provider: &str,
+        failed_model: &str,
+        retry_task_config_base: TaskConfig,
+        agent_config: AgentRunnerConfig,
+        recipe: Recipe,
+        working_dir: PathBuf,
+        cancellation_token: CancellationToken,
+        persona_override: Option<(String, String)>,
+    ) -> (Result<String, anyhow::Error>, String) {
+        // Captured as an owned `String` up front (rather than holding a
+        // borrow of `result` across the whole function) so `result` stays
+        // free to move into every early-return below without fighting the
+        // borrow checker.
+        let error_text = match &result {
+            Ok(_) => return (result, subagent_session_id),
+            Err(e) => e.to_string(),
+        };
+        let author = session
+            .provider_name
+            .as_deref()
+            .zip(session.model_config.as_ref().map(|m| m.model_name.as_str()));
+        let Some((class, fallback)) = crate::cost_router::reviewer_retry_target(
+            failed_provider,
+            failed_model,
+            &error_text,
+            author,
+        ) else {
+            tracing::warn!(
+                target: "permagentd::brain",
+                session_id = %session_id,
+                provider = %failed_provider,
+                "reviewer_unreachable: the independent reviewer sub-session failed with no \
+                 retry target ({}); the review did not happen this turn",
+                error_text,
+            );
+            return (result, subagent_session_id);
+        };
+
+        if crate::cost_router::provider_circuit::open(session_id, failed_provider, class) {
+            tracing::info!(
+                target: "permagentd::brain",
+                provider = %failed_provider,
+                reason = %class,
+                "provider_circuit_open provider={} reason={}",
+                failed_provider,
+                class,
+            );
+        }
+        // The fallback is definitionally the author's own (provider,
+        // model) — the G-lane independence rule says NEVER skip the review
+        // over this, only report it honestly.
+        crate::receipts::record("verification_integrity", "reviewer_not_independent");
+
+        let model_config = match crate::model::ModelConfig::new(&fallback.model)
+            .map(|c| c.with_canonical_limits(&fallback.provider))
+        {
+            Ok(c) => c,
+            Err(build_err) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    session_id = %session_id,
+                    "reviewer_unreachable: could not build the fallback reviewer model config \
+                     ({}); the review did not happen this turn",
+                    build_err,
+                );
+                return (result, subagent_session_id);
+            }
+        };
+        let fallback_provider =
+            match providers::create(&fallback.provider, model_config, Vec::new()).await {
+                Ok(p) => p,
+                Err(create_err) => {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        session_id = %session_id,
+                        "reviewer_unreachable: could not create the fallback reviewer provider \
+                         {}/{} ({}); the review did not happen this turn",
+                        fallback.provider,
+                        fallback.model,
+                        create_err,
+                    );
+                    return (result, subagent_session_id);
+                }
+            };
+
+        let mut retry_task_config = retry_task_config_base;
+        retry_task_config.provider = fallback_provider;
+
+        match self
+            .dispatch_subagent_once(
+                agent_config,
+                recipe,
+                retry_task_config,
+                session_id,
+                working_dir,
+                cancellation_token,
+                persona_override,
+            )
+            .await
+        {
+            Ok((retry_result, retry_subagent_session_id)) => {
+                if let Err(retry_err) = &retry_result {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        session_id = %session_id,
+                        subagent_session_id = %retry_subagent_session_id,
+                        "reviewer_unreachable: the session-tier fallback reviewer also failed \
+                         ({}); the review did not happen this turn",
+                        retry_err,
+                    );
+                }
+                (retry_result, retry_subagent_session_id)
+            }
+            Err(create_err) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    session_id = %session_id,
+                    "reviewer_unreachable: could not spawn the session-tier fallback reviewer \
+                     ({}); the review did not happen this turn",
+                    create_err,
+                );
+                (result, subagent_session_id)
+            }
+        }
     }
 
     /// The workflow role a delegate's worker persona plays, for cost routing.
@@ -1717,6 +2583,52 @@ impl SummonClient {
         let key = worker_persona?;
         let config = crate::config::agent_identity::load_agent_config();
         config.workers.get(key).and_then(|w| w.routing_role())
+    }
+
+    /// Lane R63c: the `receipt cost_routing` audit for one delegate child, from
+    /// the live pins — the same `PERMAGENT_ROLE_*`/`PERMAGENT_PACK_*` reads
+    /// `delegate_routing_live` makes (cheap config reads), handed to the pure
+    /// [`delegate_audit_targets`] + `cost_router::audit_delegate_dispatch`.
+    fn delegate_cost_audit(
+        role: Option<crate::cost_router::WorkflowRole>,
+        review_inputs: Option<&ReviewAuditInputs>,
+        session: &crate::session::Session,
+        actual: (&str, &str),
+    ) -> crate::cost_router::DelegateCostAudit {
+        let role_pin = role.and_then(crate::cost_router::role_model);
+        let pack_pin = role
+            .and_then(crate::cost_router::pack_role_for_workflow_role)
+            .and_then(crate::cost_router::pack_pin)
+            .map(crate::cost_router::pack_to_role_model);
+        let session_pair = session
+            .provider_name
+            .as_deref()
+            .zip(session.model_config.as_ref().map(|m| m.model_name.as_str()))
+            .filter(|(p, m)| !p.is_empty() && !m.is_empty())
+            .map(|(provider, model)| crate::cost_router::RoleModel {
+                provider: provider.to_string(),
+                model: model.to_string(),
+            });
+        let targets =
+            delegate_audit_targets(role_pin, pack_pin, review_inputs.cloned(), session_pair);
+        let mut audit = crate::cost_router::audit_delegate_dispatch(
+            actual,
+            targets.pin.as_ref(),
+            targets.pin_exception.as_ref(),
+            targets.reference.as_ref(),
+            &crate::cost_router::routing_matrix::nominal_call_cost,
+        );
+        audit.cheapest_capable &= review_floor_holds(actual, review_inputs, &targets);
+        tracing::info!(
+            target: "permagentd::brain",
+            role = role.map(|r| r.as_str()).unwrap_or("none"),
+            provider = actual.0,
+            model = actual.1,
+            cheapest_capable = audit.cheapest_capable,
+            pack_honored = audit.pack_honored,
+            "delegate cost_routing audit",
+        );
+        audit
     }
 
     /// The spend band that gates a delegate ESCALATION.
@@ -1744,6 +2656,144 @@ impl SummonClient {
             )
             .band,
         )
+    }
+
+    /// X-cost-2 (HARNESS_LOOP_LOG.md "Lane A report" Defect 1a / "Lane E
+    /// report" E3): fetch the live inputs and hand them to
+    /// [`crate::cost_router::resolve_actual_review_dispatch`] — the SAME
+    /// decision function `after_turn::ReviewerMandate::assess` calls to
+    /// predict what this dispatch will do (so the mandate's injected
+    /// "honesty" text and this REAL dispatch can never drift apart again).
+    ///
+    /// `routing` is the ordinary `delegate_routing_live` result already
+    /// computed for the Review role (role pin → `Role::Hard` pack pin →
+    /// gated escalation → session). When `routing.source` is `RolePin`, the
+    /// operator's `PERMAGENT_ROLE_REVIEW_*` mapping already resolved this
+    /// correctly and wins unconditionally. For every OTHER source
+    /// (`PackPin`/`Escalated`/`Session` — none of them review-aware, since
+    /// `PackPin` here means `Role::Hard`'s pin), review's OWN dispatch
+    /// precedence takes over: a dedicated `PERMAGENT_PACK_REVIEW_*` pin,
+    /// else cross-family escalation to the objectively assigned reviewer
+    /// (Lane N3, `orchestrator::assign_delegate_reviewer` →
+    /// `recommend::assign_reviewer`; before it Lane R63c's size-only
+    /// cheapest pick, and before that the derived map's strongest REVIEW
+    /// entry), else the ordinary chain's answer honestly labeled same-family.
+    ///
+    /// Lane R63c: returns the dispatch together with the dedicated review pin
+    /// and the cross-family candidate it was decided against, so the
+    /// `receipt cost_routing` audit judges the child by the SAME inputs.
+    async fn resolve_review_dispatch(
+        &self,
+        session: &crate::session::Session,
+        routing: &crate::cost_router::DelegateRouting,
+        spend: Option<crate::cost_router::BudgetBand>,
+    ) -> ReviewDispatchResolution {
+        let author_provider = session.provider_name.as_deref();
+        let author_model = session.model_config.as_ref().map(|m| m.model_name.as_str());
+        let routing_is_role_pin = routing.source == crate::cost_router::DelegateSource::RolePin;
+        // The dedicated review pin / cross-family candidate / spend band are
+        // only fetched when they can change the answer — a `RolePin` source
+        // already resolved correctly and `resolve_actual_review_dispatch`
+        // passes it straight through, so a pinned dispatch must not pay for
+        // an answer it will not use.
+        let (review_pin, assignment, cross_family_candidate, review_spend) = if routing_is_role_pin
+        {
+            (None, None, None, None)
+        } else {
+            let review_pin =
+                crate::cost_router::review_pack_pin().map(crate::cost_router::pack_to_role_model);
+            // Lane R63c (M47 r63 s5): the cross-family escalation target is
+            // never the derived map's REVIEW entry (ranked by strength first,
+            // so `claude-fable-5`). Lane N3 (M48 r64 s5, ruling 2026-09-17):
+            // nor is it sized by `git diff HEAD` in this directory, which reads
+            // 0 after an auto-land. It is the objective assignment for THIS
+            // review — complexity from the goal's trunk-relative diff and its
+            // enumerated call sites, then `recommend::assign_reviewer`'s floor
+            // and proportional price rule. `after_turn::ReviewerMandate::assess`
+            // calls the same `assign_delegate_reviewer`, so its prediction
+            // cannot drift.
+            let assignment = if review_pin.is_none() {
+                let available = crate::cost_router::discover_available_models_async().await;
+                let pool = self.context.session_manager.pool_clone().await.ok();
+                Some(
+                    crate::agents::platform_extensions::orchestrator::assign_delegate_reviewer(
+                        pool.as_ref(),
+                        session,
+                        author_provider.zip(author_model),
+                        &available,
+                    )
+                    .await,
+                )
+            } else {
+                None
+            };
+            let cross_family_candidate = assignment
+                .as_ref()
+                .and_then(|a| a.assignment.pick_role_model());
+            // Review's cross-family escalation is not behind the general
+            // `PERMAGENT_DELEGATE_ALLOW_ESCALATION` knob (review's whole
+            // value IS the cross-family check), so its spend band is read
+            // regardless of whether ordinary escalation is enabled — reusing
+            // `spend` when the caller already fetched it (escalation on)
+            // avoids a second DB round trip.
+            let review_spend = if spend.is_some() {
+                spend
+            } else {
+                self.escalation_spend_band(session).await
+            };
+            (review_pin, assignment, cross_family_candidate, review_spend)
+        };
+        let dispatch = crate::cost_router::resolve_actual_review_dispatch(
+            routing_is_role_pin,
+            routing.role_model.clone(),
+            author_provider.zip(author_model),
+            review_pin.clone(),
+            cross_family_candidate.clone(),
+            &|p| crate::cost_router::is_provider_configured(p),
+            review_spend,
+        );
+        tracing::info!(
+            target: "permagentd::brain",
+            role = "review",
+            cross_family = dispatch.warning.is_none(),
+            provider = dispatch
+                .role_model
+                .as_ref()
+                .map(|rm| rm.provider.as_str())
+                .unwrap_or_else(|| author_provider.unwrap_or("session")),
+            model = dispatch
+                .role_model
+                .as_ref()
+                .map(|rm| rm.model.as_str())
+                .unwrap_or_else(|| author_model.unwrap_or("session")),
+            "review dispatch resolved",
+        );
+        // Lane N3: the assignment goes on the goal card under review through
+        // the goal gate's own writer (no-op without a goal).
+        if let Some(live) = assignment.as_ref() {
+            if let Ok(pool) = self.context.session_manager.pool_clone().await {
+                let selected_source = if dispatch.role_model.is_some()
+                    && dispatch.role_model == cross_family_candidate
+                {
+                    "assigned"
+                } else {
+                    "review_dispatch"
+                };
+                crate::agents::platform_extensions::orchestrator::record_delegate_reviewer_assignment(
+                    &pool,
+                    live,
+                    dispatch.role_model.as_ref(),
+                    selected_source,
+                )
+                .await;
+            }
+        }
+        ReviewDispatchResolution {
+            dispatch,
+            review_pin,
+            cross_family_candidate,
+            review_floor: assignment.as_ref().map(|a| a.assignment.floor),
+        }
     }
 
     async fn resolve_provider(
@@ -1792,27 +2842,59 @@ impl SummonClient {
         let role_model = routing.role_model.clone().map(|rm| (rm, routing.source));
 
         // The review gate's cross-vendor routing sits HERE for the `reviewer`
-        // persona: `reviewer_dispatch` composes `reviewer_routing` with the
-        // author's (session) pair. It slots the SAME REVIEW-role model the block
-        // above resolved — hand-configured first, else the derived best fit —
-        // (neither ⇒ `None` ⇒ the review inherits the session model exactly as
-        // before), so the (provider, model) outcome and its provenance are
-        // unchanged — what it adds is the diversity warning, logged below on the
-        // channel the target reconciliation already uses.
-        let review_dispatch = (role == Some(crate::cost_router::WorkflowRole::Review)).then(|| {
-            crate::cost_router::reviewer_dispatch(
-                session.provider_name.as_deref(),
-                session.model_config.as_ref().map(|m| m.model_name.as_str()),
-                role_model.as_ref().map(|(rm, _)| rm.clone()),
-            )
-        });
+        // persona. X-cost-2: `resolve_review_dispatch` reuses the operator's
+        // `PERMAGENT_ROLE_REVIEW_*` pin unchanged (when that is what
+        // `routing` resolved to), but for every other source it now runs
+        // review's OWN dispatch precedence instead of blindly slotting
+        // whatever `Role::Hard`'s pack pin produced — a HARD pin no longer
+        // silently swallows review's cross-family requirement.
+        //
+        // Lane R36b: this is the REAL dispatch seam R36a's call-site audit
+        // flagged as the one best/fast-over-session path its breaker never
+        // reached — `apply_breaker_to_review_dispatch` skips a resolved
+        // reviewer provider this session's breaker already has open (a
+        // prior billing/auth/outage-class failure anywhere else this same
+        // session) straight to the author's own pair, honestly labeled
+        // not-independent, rather than dispatching a second doomed call at
+        // the same dead account.
+        let mut review_audit_inputs: Option<ReviewAuditInputs> = None;
+        let review_dispatch = if role == Some(crate::cost_router::WorkflowRole::Review) {
+            let ReviewDispatchResolution {
+                dispatch,
+                review_pin,
+                cross_family_candidate,
+                review_floor,
+            } = self.resolve_review_dispatch(session, &routing, spend).await;
+            review_audit_inputs = Some(ReviewAuditInputs {
+                review_pack_pin: review_pin,
+                cross_family: cross_family_candidate,
+                review_floor,
+            });
+            // A clean author pair, not `session_pair` above — that one
+            // substitutes the placeholder string "the session model" when
+            // `model_config` is unset (fine for `delegate_routing_live`'s
+            // own purposes), which must never leak into a real fallback
+            // `RoleModel`. Mirrors `resolve_review_dispatch`'s own
+            // `author_provider`/`author_model` construction exactly.
+            let author_pair = session
+                .provider_name
+                .as_deref()
+                .zip(session.model_config.as_ref().map(|m| m.model_name.as_str()));
+            Some(crate::cost_router::apply_breaker_to_review_dispatch(
+                dispatch,
+                author_pair,
+                &|p| crate::cost_router::provider_circuit::reason_if_open(&session.id, p),
+            ))
+        } else {
+            None
+        };
         let role_model = match &review_dispatch {
-            // `reviewer_dispatch` passes a configured/derived pick through
-            // unchanged and yields `None` for none, so the source travels with it.
-            Some(dispatch) => dispatch
-                .role_model
-                .clone()
-                .and_then(|rm| role_model.as_ref().map(|(_, source)| (rm, *source))),
+            // The resolved (provider, model) may be genuinely NEW here (a
+            // dedicated review pin, or a cross-family escalation) rather
+            // than whatever `routing` produced for the generic role, so this
+            // is taken directly rather than gated on `role_model` already
+            // being `Some` — `routing.source` still labels the receipt.
+            Some(dispatch) => dispatch.role_model.clone().map(|rm| (rm, routing.source)),
             None => role_model,
         };
         // The routing receipt (#1090's pattern): one line naming the model and
@@ -1898,6 +2980,7 @@ impl SummonClient {
                 Some(rm) => rm.provider == target.provider,
             };
             if !explicit_override && target_matches {
+                crate::receipts::record("verification_integrity", "reviewer_not_independent");
                 tracing::warn!(target: "permagentd::brain", "review gate: {}", warning);
             }
         }
@@ -1974,7 +3057,7 @@ impl SummonClient {
         } else {
             "session"
         };
-        let routing_receipt = resolved_routing_receipt(
+        let mut routing_receipt = resolved_routing_receipt(
             &routing,
             requested_provider,
             requested_model,
@@ -1982,6 +3065,20 @@ impl SummonClient {
             &effective_model,
             effective_source,
         );
+        // Lane R63c: judge THIS child for `receipt cost_routing` against the
+        // same pins/candidates that routed it, on its EFFECTIVE target (so an
+        // explicit per-call model is counted too, never invisible). Recorded
+        // on the process-wide counters only when the child is actually spawned
+        // (`record_delegate_dispatch`), not here.
+        let audit = Self::delegate_cost_audit(
+            role,
+            review_audit_inputs.as_ref(),
+            session,
+            (effective_provider.as_str(), effective_model.as_str()),
+        );
+        if let Some(object) = routing_receipt.as_object_mut() {
+            object.insert("cost_audit".to_string(), serde_json::json!(audit));
+        }
 
         // Live cache guard (#730): a cache-heavy role (orchestrate/edit) routed by
         // the role map to a provider without prompt caching forfeits the
@@ -2116,7 +3213,7 @@ impl SummonClient {
             .build_delegate_recipe(&params, session_id, &working_dir)
             .await?;
 
-        let (task_config, routing_receipt) = self
+        let (task_config, routing_receipt, roadmap_gate_note) = self
             .build_task_config(&params, &recipe, &session)
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
@@ -2156,6 +3253,8 @@ impl SummonClient {
             .map_err(|e| format!("Failed to create subagent session: {}", e))?;
 
         let task_id = subagent_session.id.clone();
+        // Lane R63c: a background delegate child is a dispatch too.
+        record_delegate_dispatch(&routing_receipt);
 
         let turns = Arc::new(AtomicU32::new(0));
         let last_activity = Arc::new(AtomicU64::new(current_epoch_millis()));
@@ -2213,7 +3312,10 @@ impl SummonClient {
 
         // The routing receipt on the start line: a background delegate spends money
         // on a model the caller never named, so the caller is told which one.
-        let content = vec![Content::text(format!(
+        // X-dag-1: the roadmap-gate note (when present) rides the same
+        // visible line, since this task's own result text is not seen until
+        // `load(source: ...)` returns it later.
+        let mut ack = format!(
             "Task {} started in background: \"{}\"\n\
              {}\n\
              Continue with other work. When you need the result, use load(source: \"{}\").",
@@ -2224,7 +3326,11 @@ impl SummonClient {
                 .and_then(|v| v.as_str())
                 .unwrap_or("routing receipt unavailable"),
             task_id
-        ))];
+        );
+        if let Some(note) = &roadmap_gate_note {
+            ack = format!("{note}\n\n{ack}");
+        }
+        let content = vec![Content::text(ack)];
         Ok((content, task_id))
     }
 }
@@ -2406,6 +3512,178 @@ fn resolve_subagent_model(
     subagent_env: Option<String>,
 ) -> Option<String> {
     param.or(recipe).or(role).or(subagent_env)
+}
+
+/// Lane R63c: the refusal text for a coordinator `delegate` while one of its
+/// goals is live — `None` when no goal is InProgress or Review. Pure over the
+/// same [`crate::cards::SessionGoalCard`] read the X-dag-1 gate uses.
+fn live_goal_refusal(cards: &[crate::cards::SessionGoalCard]) -> Option<String> {
+    let live = cards
+        .iter()
+        .find(|card| matches!(card.state_binding.as_str(), "in_progress" | "review"))?;
+    Some(format!(
+        "delegate refused: goal {} is running; use goal_status or view_session to inspect \
+         it, or wait for review. Its worker and the goal's own review gate already own \
+         that work, so a delegated child would only duplicate it (and spend a session). \
+         Delegate is available again once the goal leaves InProgress/Review.",
+        live.card_id
+    ))
+}
+
+/// Lane R63c: count one spawned delegate child on `receipt cost_routing`, from
+/// the `cost_audit` [`SummonClient::resolve_provider`] attached to its routing
+/// receipt. A receipt without one (never produced by `resolve_provider`) is
+/// not guessed at — it is traced and left uncounted.
+fn record_delegate_dispatch(routing_receipt: &serde_json::Value) {
+    let audit = routing_receipt.get("cost_audit");
+    let flag = |key: &str| {
+        audit
+            .and_then(|a| a.get(key))
+            .and_then(serde_json::Value::as_bool)
+    };
+    let provider = routing_receipt
+        .get("provider")
+        .and_then(serde_json::Value::as_str);
+    match (flag("cheapest_capable"), flag("pack_honored"), provider) {
+        (Some(cheapest_capable), Some(pack_honored), Some(provider)) => {
+            crate::cost_router::routing_receipt::record_delegate_dispatch(
+                crate::cost_router::DelegateCostAudit {
+                    cheapest_capable,
+                    pack_honored,
+                },
+                provider,
+            );
+        }
+        _ => tracing::warn!(
+            target: "permagentd::brain",
+            "delegate child spawned without a cost_audit on its routing receipt; not counted"
+        ),
+    }
+}
+
+/// Lane R63c: the (pin, pin exception, cheapest-capable reference) a delegate
+/// child is audited against — pure, so the receipt judgement is tested without
+/// a provider or a database.
+///
+/// - REVIEW (`review` is `Some`): a dedicated pin (`PERMAGENT_ROLE_REVIEW_*`, else
+///   `PERMAGENT_PACK_REVIEW_*`) is both the pin and the reference. Otherwise
+///   the pin is the `Role::Hard` pack pin review maps through, with the
+///   cheapest cross-family reviewer as its one permitted exception (X-cost-2:
+///   the review gate requires independence, and on a single-model tier the
+///   HARD pin IS the author's family); the reference is that cheapest
+///   cross-family reviewer, else the HARD pin, else the session pair.
+/// - Every other role (or none): the pin is the role pin, else the pack pin;
+///   the reference is that pin, else the operator's session pair (level 6 —
+///   escalation is opt-in, so anything pricier than it was a choice).
+fn delegate_audit_targets(
+    role_pin: Option<crate::cost_router::RoleModel>,
+    pack_pin: Option<crate::cost_router::RoleModel>,
+    review: Option<ReviewAuditInputs>,
+    session_pair: Option<crate::cost_router::RoleModel>,
+) -> DelegateAuditTargets {
+    match review {
+        Some(ReviewAuditInputs {
+            review_pack_pin,
+            cross_family,
+            ..
+        }) => {
+            if let Some(dedicated) = role_pin.or(review_pack_pin) {
+                return DelegateAuditTargets {
+                    pin: Some(dedicated.clone()),
+                    pin_exception: None,
+                    reference: Some(dedicated),
+                };
+            }
+            let reference = cross_family
+                .clone()
+                .or_else(|| pack_pin.clone())
+                .or(session_pair);
+            DelegateAuditTargets {
+                pin: pack_pin,
+                pin_exception: cross_family,
+                reference,
+            }
+        }
+        None => {
+            let pin = role_pin.or(pack_pin);
+            let reference = pin.clone().or(session_pair);
+            DelegateAuditTargets {
+                pin,
+                pin_exception: None,
+                reference,
+            }
+        }
+    }
+}
+
+/// Lane R63c: the review role's own routing inputs, carried from
+/// [`SummonClient::resolve_review_dispatch`] to the receipt audit.
+#[derive(Debug, Clone, PartialEq)]
+struct ReviewAuditInputs {
+    /// The dedicated `PERMAGENT_PACK_REVIEW_*` pin, when one was read.
+    review_pack_pin: Option<crate::cost_router::RoleModel>,
+    /// The objectively assigned cross-family reviewer (Lane N3,
+    /// `recommend::assign_reviewer`), when one was computed.
+    cross_family: Option<crate::cost_router::RoleModel>,
+    /// Lane N3: that assignment's review-complexity floor.
+    review_floor: Option<f64>,
+}
+
+/// Lane N3: the review half of the `cheapest_capable` judgement.
+///
+/// With no dedicated review pin, the audit's reference is the assigned
+/// reviewer, so a child on that pick is cheapest-capable by definition: the
+/// assignment IS the objective cheapest model clearing this review's
+/// complexity floor (ruling 2026-09-17). `audit_delegate_dispatch` also
+/// accepts anything no pricier than the reference, which for review would
+/// count a cheaper model that falls below the floor (an explicit per-call
+/// `model: claude-haiku-4-5` on a complex review) as capable. This closes that:
+/// a child that is not the reference must clear the floor on its
+/// knowledge-base strength (an unrated model is unproven). Every other case
+/// (non-review, a dedicated pin, no assignment) is left to the pure audit.
+fn review_floor_holds(
+    actual: (&str, &str),
+    review: Option<&ReviewAuditInputs>,
+    targets: &DelegateAuditTargets,
+) -> bool {
+    let Some(ReviewAuditInputs {
+        cross_family: Some(assigned),
+        review_floor: Some(floor),
+        ..
+    }) = review
+    else {
+        return true;
+    };
+    if targets.reference.as_ref() != Some(assigned) {
+        return true;
+    }
+    let is_assigned = assigned.provider.eq_ignore_ascii_case(actual.0)
+        && assigned.model.eq_ignore_ascii_case(actual.1);
+    is_assigned
+        || crate::cost_router::knowledge::lookup(actual.0, actual.1)
+            .is_some_and(|k| k.orchestration_strength >= *floor)
+}
+
+/// Lane R63c: what a delegate child is audited against (see
+/// [`delegate_audit_targets`] and `cost_router::audit_delegate_dispatch`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DelegateAuditTargets {
+    pin: Option<crate::cost_router::RoleModel>,
+    pin_exception: Option<crate::cost_router::RoleModel>,
+    reference: Option<crate::cost_router::RoleModel>,
+}
+
+/// Lane R63c: what [`SummonClient::resolve_review_dispatch`] decided, plus the
+/// inputs it decided against — reused by the `receipt cost_routing` audit.
+struct ReviewDispatchResolution {
+    dispatch: crate::cost_router::ReviewerDispatch,
+    /// The dedicated `PERMAGENT_PACK_REVIEW_*` pin, when one was read.
+    review_pin: Option<crate::cost_router::RoleModel>,
+    /// The objectively assigned cross-family reviewer (Lane N3), when one was
+    /// computed.
+    cross_family_candidate: Option<crate::cost_router::RoleModel>,
+    /// Lane N3: that assignment's review-complexity floor.
+    review_floor: Option<f64>,
 }
 
 /// Preserve the existing role-router summary while attaching the final,
@@ -2595,6 +3873,658 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
+    /// Build the same shape `build_task_config` sees: a `developer` platform
+    /// extension with no restriction yet, plus one unrelated extension that
+    /// must never be touched by reviewer scoping.
+    fn sample_extensions() -> Vec<ExtensionConfig> {
+        vec![
+            ExtensionConfig::Platform {
+                name: crate::agents::platform_extensions::developer::EXTENSION_NAME.to_string(),
+                description: "".to_string(),
+                display_name: None,
+                bundled: None,
+                available_tools: Vec::new(),
+            },
+            ExtensionConfig::Platform {
+                name: "analyze".to_string(),
+                description: "".to_string(),
+                display_name: None,
+                bundled: None,
+                available_tools: Vec::new(),
+            },
+        ]
+    }
+
+    fn developer_available_tools(extensions: &[ExtensionConfig]) -> &[String] {
+        extensions
+            .iter()
+            .find(|ext| ext.name() == crate::agents::platform_extensions::developer::EXTENSION_NAME)
+            .expect("developer extension must be present")
+            .available_tools()
+    }
+
+    /// F2 (Lane A2 evidence: a `worker_persona: reviewer` subagent called
+    /// `edit` on `src/cache.rs` and the change shipped). `restrict_reviewer_tools`
+    /// must scope `developer` down to read-only tools for the literal
+    /// `reviewer` persona, and must not touch any other extension.
+    ///
+    /// R50a (H2 closure): `shell` moved from "must keep" to "must not be
+    /// granted" — the reviewer used to keep unrestricted shell (the
+    /// documented H2 residual); `verify` (deterministic check execution)
+    /// remains so the reviewer can still run tests without raw shell.
+    #[test]
+    fn restrict_reviewer_tools_scopes_developer_to_read_only_for_the_reviewer_persona() {
+        let mut extensions = sample_extensions();
+
+        SummonClient::restrict_reviewer_tools(Some("reviewer"), &mut extensions);
+
+        let allowed = developer_available_tools(&extensions);
+        assert!(!allowed.is_empty(), "reviewer must get a real allowlist");
+        for mutating in ["write", "edit", "shell"] {
+            assert!(
+                !allowed.iter().any(|t| t == mutating),
+                "reviewer must not be granted '{mutating}', got: {allowed:?}"
+            );
+        }
+        for read_only in ["read", "tree", "search", "verify"] {
+            assert!(
+                allowed.iter().any(|t| t == read_only),
+                "reviewer must keep '{read_only}', got: {allowed:?}"
+            );
+        }
+
+        // Case-insensitive, matching `resolve_worker_persona`'s own lookup.
+        let mut extensions_upper = sample_extensions();
+        SummonClient::restrict_reviewer_tools(Some("Reviewer"), &mut extensions_upper);
+        assert!(!developer_available_tools(&extensions_upper).is_empty());
+
+        // Untouched: the `analyze` extension the recipe already grants the
+        // reviewer must stay unrestricted (empty allowlist == every tool).
+        let analyze = extensions
+            .iter()
+            .find(|ext| ext.name() == "analyze")
+            .unwrap();
+        assert!(analyze.available_tools().is_empty());
+    }
+
+    /// G-1 (Lane G review, CRITICAL): the test above builds its own
+    /// `ExtensionConfig::Platform` fixture, but the REAL `permagent-coding`
+    /// recipe declares `developer` as `type: builtin`
+    /// (`permagent-coding.yaml:171-172`), which the crate's own
+    /// `#[serde(tag = "type")]` deserializer turns into
+    /// `ExtensionConfig::Builtin` (`recipe_extension_adapter.rs`,
+    /// `extension.rs:190`) — a variant `restrict_reviewer_tools` never
+    /// matched before this fix, so live the allowlist was never applied and
+    /// a reviewer subagent kept full `write`/`edit` (Lane A2's live
+    /// evidence: "a reviewer subagent called `edit` on src/cache.rs and the
+    /// change shipped"). This builds the extension list by parsing the
+    /// actual shipped recipe file — the same shape `build_task_config`
+    /// really produces — not a hand-built fixture, so a regression back to
+    /// covering only one `ExtensionConfig` variant fails here even if the
+    /// `Platform`-shaped test above still passes.
+    #[test]
+    fn restrict_reviewer_tools_scopes_the_real_recipes_builtin_developer_extension() {
+        const RECIPE_YAML: &str =
+            include_str!("../../../../goose-cli/src/recipes/builtin/permagent-coding.yaml");
+        let recipe: crate::recipe::Recipe =
+            serde_yaml::from_str(RECIPE_YAML).expect("the shipped recipe must parse as YAML");
+        let mut extensions = recipe
+            .extensions
+            .expect("permagent-coding.yaml declares an extensions list");
+
+        let developer = extensions
+            .iter()
+            .find(|ext| ext.name() == crate::agents::platform_extensions::developer::EXTENSION_NAME)
+            .expect("the recipe must declare the developer extension");
+        assert!(
+            matches!(developer, ExtensionConfig::Builtin { .. }),
+            "the recipe's `type: builtin` developer entry must deserialize to \
+             ExtensionConfig::Builtin, not {developer:?} — if the recipe's \
+             shape ever changes, restrict_reviewer_tools's coverage needs to \
+             change with it"
+        );
+
+        SummonClient::restrict_reviewer_tools(Some("reviewer"), &mut extensions);
+
+        let allowed = developer_available_tools(&extensions);
+        assert!(
+            !allowed.is_empty(),
+            "reviewer must get a real allowlist on the recipe's own builtin \
+             developer extension"
+        );
+        for mutating in ["write", "edit", "apply_patch", "shell"] {
+            assert!(
+                !allowed.iter().any(|t| t == mutating),
+                "reviewer must not be granted '{mutating}' on the real recipe's \
+                 builtin developer extension, got: {allowed:?}"
+            );
+        }
+        for read_only in ["read", "tree", "search", "verify"] {
+            assert!(
+                allowed.iter().any(|t| t == read_only),
+                "reviewer must keep '{read_only}', got: {allowed:?}"
+            );
+        }
+    }
+
+    /// A non-reviewer persona (or no persona at all) must be a complete no-op:
+    /// this is scoping for one specific documented persona, not a general
+    /// tool restriction.
+    #[test]
+    fn restrict_reviewer_tools_is_a_no_op_for_a_non_reviewer_persona() {
+        for persona in [Some("permagent"), Some("debugger"), None] {
+            let mut extensions = sample_extensions();
+            SummonClient::restrict_reviewer_tools(persona, &mut extensions);
+            assert!(
+                developer_available_tools(&extensions).is_empty(),
+                "persona {persona:?} must leave developer's tools unrestricted"
+            );
+        }
+    }
+
+    // ── X-dag-1: `delegate` may not bypass an active roadmap ────────────────
+
+    /// A throwaway `SessionManager` + a real ready-goal card attributed to
+    /// `session.id` — the exact shape `create_roadmap` leaves behind for a
+    /// session whose root goal has not been dispatched yet. Returns the
+    /// manager (kept alive for the pool), the coordinator's own session, and
+    /// the created card id.
+    async fn active_roadmap_fixture(
+        session_type: SessionType,
+    ) -> (
+        TempDir,
+        Arc<crate::session::SessionManager>,
+        crate::session::Session,
+        String,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "x-dag-1-fixture".to_string(),
+                session_type,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+        crate::cards::seed_goal_columns(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let ready_column: String = sqlx::query_scalar(
+            "SELECT id FROM board_columns WHERE project_id = ? AND state_binding = 'ready'",
+        )
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let card_id = uuid::Uuid::now_v7().to_string();
+        sqlx::query(
+            "INSERT INTO cards (id, project_id, card_type, title, description, column_id, \
+                                 position, created_by, metadata_json) \
+             VALUES (?, ?, 'goal', 'root goal', '', ?, 0, 'user', ?)",
+        )
+        .bind(&card_id)
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .bind(&ready_column)
+        .bind(
+            serde_json::json!({
+                "depends_on": [],
+                "created_by_session_id": session.id,
+            })
+            .to_string(),
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        (tmp, sm, session, card_id)
+    }
+
+    /// X-dag-1's headline case: a coordinator session whose own roadmap has
+    /// a root goal sitting Ready, never dispatched, must have `delegate`
+    /// restricted to non-mutating tools — the exact side door Lane M3's
+    /// Defect M3-3 found (`delegate` was the ONLY path that landed real
+    /// work, entirely bypassing the roadmap).
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn a_coordinator_delegate_with_an_active_roadmap_is_restricted_to_non_mutating_tools() {
+        let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::User).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            note.is_some(),
+            "a restricted delegate must return a note explaining why"
+        );
+        let allowed = developer_available_tools(&extensions);
+        for mutating in ["write", "edit", "apply_patch"] {
+            assert!(
+                !allowed.iter().any(|t| t == mutating),
+                "must not be granted '{mutating}', got: {allowed:?}"
+            );
+        }
+    }
+
+    /// No active roadmap (no cards ever attributed to this session) → no
+    /// restriction, no note, extensions untouched — "unchanged" per the
+    /// brief's own test spec.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn a_coordinator_delegate_with_no_active_roadmap_is_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "no-roadmap-fixture".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        assert!(note.is_none());
+        assert!(
+            developer_available_tools(&extensions).is_empty(),
+            "no active roadmap must leave developer's tools unrestricted (empty == every tool)"
+        );
+    }
+
+    /// Y10c (A15 Q3): M15 fx04's coordinator called `delegate` 15 SECONDS
+    /// before it minted its roadmap. With no cards yet attributed to the
+    /// session the old `session_has_an_active_roadmap` predicate was false and
+    /// this gate was a no-op — so a coding-harness coordinator could get a
+    /// worker holding `write`/`edit` just by delegating first. The identity
+    /// itself now closes that window.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn a_coding_harness_coordinator_with_no_roadmap_yet_is_still_restricted() {
+        let tmp = TempDir::new().unwrap();
+        let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
+        let mut session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "pre-roadmap-coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        // Deliberately NO cards: this is the 15-second window before
+        // `create_roadmap`.
+        session.recipe = Some(
+            Recipe::builder()
+                .version("1.0.0")
+                .title(crate::tool_inspection::CODING_HARNESS_RECIPE_TITLE)
+                .description("coding harness")
+                .prompt("plan and dispatch")
+                .build()
+                .unwrap(),
+        );
+        assert!(session.parent_session_id.is_none(), "top-level by fixture");
+
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        let note = note.expect("a restricted delegate must say why");
+        assert!(
+            note.contains("coding-harness coordinator"),
+            "the note must name the identity that restricted it, got {note:?}"
+        );
+        let allowed = developer_available_tools(&extensions);
+        // R50a (H2 closure): `shell` joins the denied set here — it used to
+        // survive this restriction (see `non_mutating_developer_tools`'s
+        // doc comment).
+        for mutating in ["write", "edit", "apply_patch", "shell"] {
+            assert!(
+                !allowed.iter().any(|t| t == mutating),
+                "must not be granted '{mutating}', got: {allowed:?}"
+            );
+        }
+        // Read-only sources stay available — the gate strips mutation, it does
+        // not refuse the delegate (fx04's own `analyze` scope audit).
+        for readonly in ["search", "read"] {
+            assert!(
+                allowed.iter().any(|t| t == readonly),
+                "a read-only '{readonly}' must survive the restriction, got: {allowed:?}"
+            );
+        }
+    }
+
+    /// The identity is TOP-LEVEL: a coding-harness session with a parent is a
+    /// dispatched worker, the thing that MAY edit. Same boundary
+    /// `CodingDagInspector`/`NoRoadmapGuard` draw.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn a_coding_harness_session_with_a_parent_is_not_restricted_by_identity() {
+        let tmp = TempDir::new().unwrap();
+        let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
+        let mut session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "child-coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        session.recipe = Some(
+            Recipe::builder()
+                .version("1.0.0")
+                .title(crate::tool_inspection::CODING_HARNESS_RECIPE_TITLE)
+                .description("coding harness")
+                .prompt("plan and dispatch")
+                .build()
+                .unwrap(),
+        );
+        session.parent_session_id = Some("parent-session".to_string());
+
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        assert!(note.is_none());
+        assert!(
+            developer_available_tools(&extensions).is_empty(),
+            "a dispatched worker keeps every tool (empty == unrestricted)"
+        );
+    }
+
+    /// A goal-WORKER session (`SessionType::SubAgent`, the shape
+    /// `dispatch_goal_fn`/the auto-dispatch hook creates) must never be
+    /// restricted by this gate, even if (hypothetically) it were attributed
+    /// its own active-roadmap cards — `handle_delegate` already refuses
+    /// SubAgent callers outright, and this gate must not depend on staying
+    /// downstream of that refusal to be correct.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn a_goal_worker_session_is_unaffected_by_the_active_roadmap_gate() {
+        let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::SubAgent).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        assert!(note.is_none());
+        assert!(developer_available_tools(&extensions).is_empty());
+    }
+
+    /// An explicit `worker_persona: "reviewer"` keeps today's behaviour: this
+    /// gate is a no-op (the persona is already read-only via
+    /// `restrict_reviewer_tools`), even while a roadmap is active.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn an_explicit_reviewer_persona_is_unaffected_by_the_active_roadmap_gate() {
+        let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::User).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            Some("reviewer"),
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            note.is_none(),
+            "the reviewer persona is handled by restrict_reviewer_tools, not this gate"
+        );
+    }
+
+    // ── R46a: delegate/delegate_many get R30a's lean worker profile ─────────
+
+    /// A fixture beyond `sample_extensions()`: adds `orchestrator` (with a
+    /// full multi-tool surface, standing in for its real >20-tool roster)
+    /// plus `extensionmanager`, mirroring the extras "A43 analysis" lever 1
+    /// named as still leaking through to a `delegate` child before this
+    /// lane — R27b's own `r27b_lean_profile_plus_unrelated_extras` fixture
+    /// does the analogous thing for `start_agent`/`send_message`.
+    fn sample_extensions_with_orchestrator_and_extras() -> Vec<ExtensionConfig> {
+        let mut extensions = sample_extensions();
+        extensions.push(ExtensionConfig::Platform {
+            name: orchestrator::EXTENSION_NAME.to_string(),
+            description: "".to_string(),
+            display_name: None,
+            bundled: None,
+            available_tools: vec![
+                "escalate".to_string(),
+                "message_goal".to_string(),
+                "start_agent".to_string(),
+                "create_roadmap".to_string(),
+            ],
+        });
+        extensions.push(ExtensionConfig::Platform {
+            name: "extensionmanager".to_string(),
+            description: "".to_string(),
+            display_name: None,
+            bundled: None,
+            available_tools: Vec::new(),
+        });
+        extensions
+    }
+
+    /// R46a headline case (implements "A43 analysis" lever 1): a `delegate`
+    /// call gated by an active roadmap must narrow the child's extension SET
+    /// down to exactly `orchestrator::GOAL_WORKER_EXTENSION_KEYS` — R30a's
+    /// lean worker profile — not just strip mutating tools out of whatever
+    /// full roster it started from. A drift guard against R30a's own
+    /// constants, mirroring R27b's own
+    /// `scoped_child_session_extensions_fn_narrows_to_the_lean_coding_
+    /// profile_for_the_top_level_coordinator`.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn a_gated_delegate_narrows_the_extension_set_to_r30as_lean_worker_profile() {
+        let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::User).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions_with_orchestrator_and_extras();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+        assert!(note.is_some());
+
+        let names: HashSet<String> = extensions.iter().map(|ext| ext.name()).collect();
+        let expected: HashSet<String> = orchestrator::GOAL_WORKER_EXTENSION_KEYS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            names, expected,
+            "a gated delegate child must get exactly GOAL_WORKER_EXTENSION_KEYS (developer + \
+             orchestrator), no analyze/extensionmanager/etc, got: {names:?}"
+        );
+
+        let orchestrator_ext = extensions
+            .iter()
+            .find(|ext| ext.name() == orchestrator::EXTENSION_NAME)
+            .expect("orchestrator must survive in the lean worker profile");
+        let allowed_tools: HashSet<&str> = orchestrator_ext
+            .available_tools()
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let expected_tools: HashSet<&str> = orchestrator::GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(
+            allowed_tools, expected_tools,
+            "orchestrator's own tool surface must be cut to \
+             GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST (escalate + message_goal), not the full \
+             roster it started with, got: {allowed_tools:?}"
+        );
+
+        // R50a (H2 closure): `developer` survives set-narrowing above, but
+        // its OWN tools must also be non-mutating AND shell-free — a
+        // delegate child without a dispatched goal card must not be able to
+        // reach `write`/`edit` OR `shell`/`bash`/`execute_command`/
+        // `run_command`/`terminal`.
+        let developer_ext = extensions
+            .iter()
+            .find(|ext| ext.name() == crate::agents::platform_extensions::developer::EXTENSION_NAME)
+            .expect("developer must survive narrowing to GOAL_WORKER_EXTENSION_KEYS");
+        let developer_tools: HashSet<&str> = developer_ext
+            .available_tools()
+            .iter()
+            .map(String::as_str)
+            .collect();
+        for denied in ["write", "edit", "shell"] {
+            assert!(
+                !developer_tools.contains(denied),
+                "a gated delegate child must not keep '{denied}', got: {developer_tools:?}"
+            );
+        }
+        assert!(
+            developer_tools.contains("read") && developer_tools.contains("verify"),
+            "read-only developer tools (including verify, for running checks without raw \
+             shell) must still be available, got: {developer_tools:?}"
+        );
+    }
+
+    /// R50a (H2 closure, "A47 analysis"): the smallest repair the analysis
+    /// names — a gated delegate child whose pre-narrowed `developer` tools
+    /// would have included `shell` (even with no `write`/`edit` at all, the
+    /// exact MiniCPM p5 shape: both denied at the top level, `shell` still
+    /// reached one level down) must be counted as a `bypass_attempts`
+    /// receipt, not a pass — the same counter `CodingDagInspector` uses for
+    /// the coordinator's own denied calls, so the qualification gate's
+    /// `dag_enforcement` record sees this escape attempt even though it
+    /// never reaches the coordinator-only inspector.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn a_gated_delegate_childs_denied_shell_call_counts_as_a_bypass_attempt() {
+        crate::receipts::begin_run();
+        let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::User).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions_with_orchestrator_and_extras();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+        assert!(note.is_some());
+
+        let line = crate::receipts::snapshot().lines()[0].clone();
+        crate::receipts::end_run();
+        assert!(
+            line.contains("bypass_attempts=1"),
+            "a gated delegate child that would have kept shell/write must count as exactly \
+             one bypass attempt: {line}"
+        );
+        assert!(
+            line.contains("bypass_passes=0"),
+            "a denied tool is a bypass ATTEMPT, never a bypass_passes count: {line}"
+        );
+    }
+
+    /// Without an active roadmap the gate is a no-op — per the brief's own
+    /// spec, the extension SET must stay completely unchanged, not just the
+    /// mutating-tools strip: `extensionmanager`/`orchestrator`'s full tool
+    /// surface must both survive untouched.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn an_ungated_delegate_leaves_the_extension_set_completely_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "no-roadmap-fixture-r46a".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+        let before = sample_extensions_with_orchestrator_and_extras();
+        let mut extensions = before.clone();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        assert!(note.is_none());
+        let before_names: HashSet<String> = before.iter().map(|ext| ext.name()).collect();
+        let after_names: HashSet<String> = extensions.iter().map(|ext| ext.name()).collect();
+        assert_eq!(
+            before_names, after_names,
+            "no active roadmap must leave the extension SET untouched, got: {after_names:?}"
+        );
+        let orchestrator_ext = extensions
+            .iter()
+            .find(|ext| ext.name() == orchestrator::EXTENSION_NAME)
+            .expect("orchestrator must still be present, ungated");
+        assert_eq!(
+            orchestrator_ext.available_tools().len(),
+            4,
+            "orchestrator's own tool surface must be untouched when the gate never fires"
+        );
+    }
+
     /// The live call that started this: a whole background subagent spun up on
     /// the word "placeholder".
     #[test]
@@ -2620,6 +4550,7 @@ mod tests {
     }
 
     /// A real task must still get through, including a short but specific one.
+    #[serial_test::serial(receipts_global_registry)]
     #[test]
     fn a_real_task_is_delegated() {
         for task in [
@@ -2656,6 +4587,79 @@ mod tests {
             .expect_err("ad-hoc placeholder instructions must be refused");
         assert!(error.contains("placeholder text"), "{error}");
         assert!(error.contains("Nothing was started"), "{error}");
+    }
+
+    /// E4, pinned two ways: `source` equal to the same key as
+    /// `worker_persona` is treated as persona-only (the ad-hoc path, using
+    /// the caller's own instructions), and a genuinely unknown, unrelated
+    /// `source` still yields a visible error.
+    ///
+    /// Before this repair, the failing assertion here was:
+    /// `.expect("source naming the same persona must not fail the delegate call")`
+    /// — `build_delegate_recipe` took the `source` branch, called
+    /// `resolve_source(session_id, "reviewer", working_dir)` against a fresh
+    /// temp dir with no `reviewer` agent file registered, and returned
+    /// `Err("Source 'reviewer' not found")` instead of ever building a
+    /// recipe — the same silent-failure shape Lane A observed live (2/2): no
+    /// subagent spawned, and in the real harness no visible error text
+    /// either, with the model narrating its own "reviewer unavailable"
+    /// excuse.
+    #[tokio::test]
+    async fn source_naming_the_same_persona_is_treated_as_persona_only() {
+        let ext = SummonClient::new(create_test_context()).unwrap();
+        let dir = TempDir::new().unwrap();
+        let params = DelegateParams {
+            instructions: Some("Look for regressions in the diff".to_string()),
+            source: Some("reviewer".to_string()),
+            worker_persona: Some("reviewer".to_string()),
+            ..Default::default()
+        };
+        let recipe = ext
+            .build_delegate_recipe(&params, "fake-session-e4", dir.path())
+            .await
+            .expect("source naming the same persona must not fail the delegate call");
+        assert_eq!(
+            recipe.prompt.as_deref(),
+            Some("Look for regressions in the diff"),
+            "the ad-hoc path must use the caller's own instructions"
+        );
+    }
+
+    /// Case-insensitive: `source: "Reviewer"` / `worker_persona: "reviewer"`.
+    #[tokio::test]
+    async fn source_naming_the_persona_case_insensitively_is_also_persona_only() {
+        let ext = SummonClient::new(create_test_context()).unwrap();
+        let dir = TempDir::new().unwrap();
+        let params = DelegateParams {
+            instructions: Some("Look for regressions in the diff".to_string()),
+            source: Some("Reviewer".to_string()),
+            worker_persona: Some("reviewer".to_string()),
+            ..Default::default()
+        };
+        assert!(ext
+            .build_delegate_recipe(&params, "fake-session-e4", dir.path())
+            .await
+            .is_ok());
+    }
+
+    /// Regression pin: a genuinely unknown, unrelated `source` must still
+    /// surface a visible error — the repair narrows the special case to
+    /// `source == worker_persona`; it must not swallow real "not found"
+    /// errors.
+    #[tokio::test]
+    async fn an_unrelated_unknown_source_still_yields_a_visible_error() {
+        let ext = SummonClient::new(create_test_context()).unwrap();
+        let dir = TempDir::new().unwrap();
+        let params = DelegateParams {
+            instructions: Some("do the thing".to_string()),
+            source: Some("definitely-bogus-source-xyz".to_string()),
+            ..Default::default()
+        };
+        let error = ext
+            .build_delegate_recipe(&params, "fake-session-e4", dir.path())
+            .await
+            .expect_err("an unknown source must surface a visible error");
+        assert!(error.contains("not found"), "{error}");
     }
 
     fn create_test_context() -> PlatformExtensionContext {
@@ -2770,7 +4774,8 @@ mod tests {
         // Prove the negative directly: the pack default model is NEVER produced by
         // the precedence when nothing configures the role.
         let pack_default = crate::cost_router::packs::ModelPacks::default().hard.model;
-        assert_eq!(pack_default.as_str(), "claude-opus-4-8"); // the baked pack exists…
+        // Lane N2: the HARD pack default is derived from configured models, not a
+        // vendor constant, so only the negative property is asserted.
         assert_ne!(
             resolve_subagent_model(None, None, None, s("user-env-default")),
             Some(pack_default),
@@ -3187,6 +5192,7 @@ You review code."#;
         assert!(result.is_error.unwrap_or(false));
     }
 
+    #[serial_test::serial(receipts_global_registry)]
     #[tokio::test]
     async fn delegate_many_refuses_more_children_than_the_cap() {
         // Resolution happens before any child runs, so a fan-out that is too
@@ -3211,6 +5217,7 @@ You review code."#;
         assert!(err.contains("at most"), "{err}");
     }
 
+    #[serial_test::serial(receipts_global_registry)]
     #[tokio::test]
     async fn delegate_many_refuses_an_empty_fan_out() {
         let client = SummonClient::new(create_test_context()).unwrap();
@@ -3225,6 +5232,152 @@ You review code."#;
         assert!(err.contains("at least one child"), "{err}");
     }
 
+    // ── G5 finding 2: reviewer mutation detection in `delegate_many` ────────
+    //
+    // `handle_delegate_many` fans a child out through `run_subagent_task`,
+    // which needs a real model provider — there is no in-process fake for it
+    // in this crate's unit tests (the same constraint X-verify-1's own tests
+    // worked within: it pinned `reviewer_integrity::{snapshot,diff}` and
+    // `after_turn::reviewer_mutation_void_text` directly rather than driving
+    // a full `handle_delegate` call end to end). So these tests pin the
+    // extracted helper `detect_and_record_reviewer_mutation` directly — the
+    // EXACT function both `handle_delegate` and `handle_delegate_many`'s
+    // fan-out closure now call — proving the fan-out path has the identical
+    // detection-and-receipt behavior the single-call path already had.
+    // Before this fix, no equivalent of this function was reachable from
+    // `handle_delegate_many` at all: a reviewer-persona child's mutation
+    // went completely undetected there.
+
+    fn reviewer_git_repo() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["-c", "init.defaultBranch=main", "init", "-q"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "test"]);
+        fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "--no-gpg-sign", "-qm", "init"]);
+        dir
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn delegate_many_reviewer_mutation_is_detected_and_voids_via_the_shared_helper() {
+        let repo = reviewer_git_repo();
+        let before =
+            crate::agents::platform_extensions::reviewer_integrity::snapshot(repo.path()).await;
+
+        // Simulate what a reviewer-persona child in `delegate_many`'s
+        // fan-out did during its run: edit a tracked file instead of only
+        // reviewing it.
+        fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+
+        let temp_dir = TempDir::new().unwrap();
+        let session_manager = crate::session::SessionManager::new(temp_dir.path().to_path_buf());
+        let parent = session_manager
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        let mutated = SummonClient::detect_and_record_reviewer_mutation(
+            &session_manager,
+            &parent.id,
+            repo.path(),
+            &before,
+            "delegate-many-child-1",
+        )
+        .await;
+
+        assert_eq!(
+            mutated,
+            Some(vec!["a.txt".to_string()]),
+            "delegate_many's reviewer child must be caught by the same detector as \
+             handle_delegate's single-call path"
+        );
+
+        let text = crate::after_turn::reviewer_mutation_void_text(
+            mutated.as_deref().unwrap(),
+            "VERDICT: APPROVE",
+        );
+        assert!(
+            text.contains("a.txt"),
+            "the voided text must name the mutated path: {text}"
+        );
+        assert!(
+            text.starts_with(crate::after_turn::REVIEWER_MUTATION_VOID_PREFIX),
+            "the void sentinel must be the first line of the returned text: {text}"
+        );
+
+        let reloaded = session_manager
+            .get_session(&parent.id, false)
+            .await
+            .unwrap();
+        let receipts = crate::session::reviewer_mutation_receipts(&reloaded.extension_data);
+        assert_eq!(
+            receipts.len(),
+            1,
+            "the receipt must land on the PARENT session"
+        );
+        assert_eq!(receipts[0].paths, vec!["a.txt".to_string()]);
+        assert_eq!(
+            receipts[0].subagent_session_id.as_deref(),
+            Some("delegate-many-child-1")
+        );
+    }
+
+    #[serial_test::serial(receipts_global_registry)]
+    #[tokio::test]
+    async fn delegate_many_reviewer_with_a_clean_tree_is_not_voided() {
+        let repo = reviewer_git_repo();
+        let before =
+            crate::agents::platform_extensions::reviewer_integrity::snapshot(repo.path()).await;
+        // No mutation this time — a genuine, read-only review.
+
+        let temp_dir = TempDir::new().unwrap();
+        let session_manager = crate::session::SessionManager::new(temp_dir.path().to_path_buf());
+        let parent = session_manager
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        let mutated = SummonClient::detect_and_record_reviewer_mutation(
+            &session_manager,
+            &parent.id,
+            repo.path(),
+            &before,
+            "delegate-many-child-2",
+        )
+        .await;
+
+        assert_eq!(mutated, None, "a clean reviewer child must never be voided");
+        let reloaded = session_manager
+            .get_session(&parent.id, false)
+            .await
+            .unwrap();
+        assert!(
+            crate::session::reviewer_mutation_receipts(&reloaded.extension_data).is_empty(),
+            "no receipt may be recorded when nothing changed"
+        );
+    }
+
+    #[serial_test::serial(receipts_global_registry)]
     #[test]
     fn a_child_carries_the_same_routing_knobs_as_a_single_delegate() {
         // The per-child provider/model must survive parsing, because they are
@@ -3291,6 +5444,7 @@ You review code."#;
         assert!(desc.len() <= 43 && desc.ends_with("..."));
     }
 
+    #[serial_test::serial(receipts_global_registry)]
     #[test]
     fn test_validate_delegate_params_rejects_zero_max_turns() {
         let context = create_test_context();
@@ -3305,6 +5459,7 @@ You review code."#;
         assert_eq!(result, Err("'max_turns' must be at least 1".to_string()));
     }
 
+    #[serial_test::serial(receipts_global_registry)]
     #[test]
     fn test_validate_delegate_params_accepts_positive_max_turns() {
         let context = create_test_context();
@@ -3593,5 +5748,654 @@ You review code."#;
             .lock()
             .await
             .contains_key("20260204_1"));
+    }
+
+    // ── Lane R63c (M47 r63 s5): delegate cost routing, receipts, live goals ──
+
+    const R63_AUTHOR: (&str, &str) = ("custom_deepseek", "deepseek-chat");
+
+    /// The s5 roster: the DeepSeek tier plus the Anthropic line an
+    /// `ANTHROPIC_API_KEY` puts in the pool.
+    fn r63_available() -> Vec<crate::cost_router::AvailableModel> {
+        use crate::cost_router::AvailableModel;
+        vec![
+            AvailableModel::new(R63_AUTHOR.0, R63_AUTHOR.1),
+            AvailableModel::new("anthropic", "claude-fable-5"),
+            AvailableModel::new("anthropic", "claude-sonnet-5"),
+            AvailableModel::new("anthropic", "claude-haiku-4-5-20251001"),
+        ]
+    }
+
+    fn r63_rm(provider: &str, model: &str) -> crate::cost_router::RoleModel {
+        crate::cost_router::RoleModel {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    /// Every routing key this lane reads, set to the `dschat` tier's shape
+    /// (`pack`: every `PERMAGENT_PACK_{EDIT,HARD,MECHANICAL,LOCAL}_*` pinned to
+    /// DeepSeek) or cleared (`None`), with no role pins, no dedicated review
+    /// pack pin (unless `review` sets one) and escalation off. ONE
+    /// `lock_env` call: its mutex is not re-entrant, so a second nested lock
+    /// in the same test would deadlock.
+    fn r63_env(
+        pack: Option<(&'static str, &'static str)>,
+        review: Option<(&'static str, &'static str)>,
+    ) -> env_lock::EnvGuard<'static> {
+        use crate::cost_router::packs::*;
+        let provider = pack.map(|(p, _)| p);
+        let model = pack.map(|(_, m)| m);
+        env_lock::lock_env([
+            (KEY_EDIT_PROVIDER, provider),
+            (KEY_EDIT_MODEL, model),
+            (KEY_HARD_PROVIDER, provider),
+            (KEY_HARD_MODEL, model),
+            (KEY_MECHANICAL_PROVIDER, provider),
+            (KEY_MECHANICAL_MODEL, model),
+            (KEY_LOCAL_PROVIDER, provider),
+            (KEY_LOCAL_MODEL, model),
+            (KEY_REVIEW_PROVIDER, review.map(|(p, _)| p)),
+            (KEY_REVIEW_MODEL, review.map(|(_, m)| m)),
+            ("PERMAGENT_ROLE_REVIEW_PROVIDER", None),
+            ("PERMAGENT_ROLE_REVIEW_MODEL", None),
+            ("PERMAGENT_ROLE_EDIT_PROVIDER", None),
+            ("PERMAGENT_ROLE_EDIT_MODEL", None),
+            (crate::cost_router::KEY_ALLOW_ESCALATION, None),
+        ])
+    }
+
+    /// The reviewer delegate's real resolution chain, minus the provider
+    /// construction and the git/DB measurement: `delegate_routing` (role pin →
+    /// pack pin → escalation → session), then review's own precedence with the
+    /// SAME cross-family candidate `resolve_review_dispatch` now computes
+    /// (Lane N3: `recommend::assign_reviewer` over the measured facts).
+    fn r63_review_dispatch(
+        derived: &crate::cost_router::DerivedRoleMap,
+        facts: crate::cost_router::recommend::ReviewFacts,
+    ) -> (
+        crate::cost_router::DelegateRouting,
+        Option<crate::cost_router::RoleModel>,
+        Option<crate::cost_router::RoleModel>,
+        crate::cost_router::ReviewerDispatch,
+    ) {
+        use crate::cost_router as cr;
+        let routing = cr::delegate_routing(
+            Some(cr::WorkflowRole::Review),
+            derived,
+            Some(cr::BudgetBand::Ok),
+            Some(R63_AUTHOR),
+        );
+        let review_pin = cr::review_pack_pin().map(cr::pack_to_role_model);
+        let candidate = if review_pin.is_none() {
+            cr::recommend::assign_reviewer(facts, Some(R63_AUTHOR), &r63_available())
+                .pick_role_model()
+        } else {
+            None
+        };
+        let dispatch = cr::resolve_actual_review_dispatch(
+            routing.source == cr::DelegateSource::RolePin,
+            routing.role_model.clone(),
+            Some(R63_AUTHOR),
+            review_pin.clone(),
+            candidate.clone(),
+            &|_: &str| true,
+            Some(cr::BudgetBand::Ok),
+        );
+        (routing, review_pin, candidate, dispatch)
+    }
+
+    /// A one-line change's review facts.
+    fn r63_one_line() -> crate::cost_router::recommend::ReviewFacts {
+        crate::cost_router::recommend::ReviewFacts {
+            changed_lines: 1,
+            ..Default::default()
+        }
+    }
+
+    /// Pinned packs: an ordinary role delegate lands on the pin even with the
+    /// derived map offering the frontier row, and the reviewer delegate —
+    /// which keeps its cross-family requirement over the HARD pin — escalates
+    /// to the CHEAPEST capable cross-family model, never `claude-fable-5`.
+    #[test]
+    fn r63c_a_delegate_under_pinned_packs_resolves_to_the_pin_and_a_reviewer_to_the_cheapest_cross_family(
+    ) {
+        use crate::cost_router as cr;
+        let _g = r63_env(Some(R63_AUTHOR), None);
+        let derived = cr::derive_role_map(&r63_available());
+
+        let edit = cr::delegate_routing(
+            Some(cr::WorkflowRole::Edit),
+            &derived,
+            Some(cr::BudgetBand::Ok),
+            Some(R63_AUTHOR),
+        );
+        assert_eq!(edit.source, cr::DelegateSource::PackPin);
+        assert_eq!(edit.role_model, Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1)));
+
+        let (routing, review_pin, candidate, dispatch) =
+            r63_review_dispatch(&derived, r63_one_line());
+        assert_eq!(routing.source, cr::DelegateSource::PackPin, "HARD pin read");
+        assert!(review_pin.is_none());
+        let target = dispatch
+            .role_model
+            .clone()
+            .expect("a cross-family reviewer");
+        assert_eq!(Some(target.clone()), candidate);
+        assert_ne!(target.model, "claude-fable-5", "the s5 defect: {target:?}");
+        assert_ne!(cr::family_of(&target.provider, &target.model), "deepseek");
+        if let Some((strongest, _)) = derived.get(cr::WorkflowRole::Review) {
+            let cost = |rm: &cr::RoleModel| {
+                cr::routing_matrix::nominal_call_cost(&rm.provider, &rm.model)
+                    .unwrap_or(f64::INFINITY)
+            };
+            assert!(
+                cost(&target) <= cost(strongest),
+                "the dispatch must never cost more than the derived strongest REVIEW \
+                 entry ({strongest:?}); got {target:?}"
+            );
+        }
+
+        // Receipt audit for that same child: cheapest and pack-honoured.
+        let session_pair = Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1));
+        let targets = delegate_audit_targets(
+            None,
+            routing.role_model.clone(),
+            Some(ReviewAuditInputs {
+                review_pack_pin: review_pin.clone(),
+                cross_family: candidate.clone(),
+                review_floor: None,
+            }),
+            session_pair.clone(),
+        );
+        let audit = cr::audit_delegate_dispatch(
+            (target.provider.as_str(), target.model.as_str()),
+            targets.pin.as_ref(),
+            targets.pin_exception.as_ref(),
+            targets.reference.as_ref(),
+            &cr::routing_matrix::nominal_call_cost,
+        );
+        assert!(audit.cheapest_capable && audit.pack_honored, "{audit:?}");
+
+        // The s5 child as it actually ran: neither.
+        let s5 = cr::audit_delegate_dispatch(
+            ("anthropic", "claude-fable-5"),
+            targets.pin.as_ref(),
+            targets.pin_exception.as_ref(),
+            targets.reference.as_ref(),
+            &cr::routing_matrix::nominal_call_cost,
+        );
+        assert!(!s5.cheapest_capable, "{s5:?}");
+        assert!(!s5.pack_honored, "{s5:?}");
+    }
+
+    /// A DEDICATED review pin is operator intent: the reviewer delegate runs
+    /// on it (honestly same-family when it is), and it is the audit's pin and
+    /// reference.
+    #[test]
+    fn r63c_a_dedicated_review_pack_pin_is_honoured_by_the_reviewer_delegate() {
+        use crate::cost_router as cr;
+        let _g = r63_env(Some(R63_AUTHOR), Some(("anthropic", "claude-sonnet-5")));
+        let derived = cr::derive_role_map(&r63_available());
+        let (routing, review_pin, candidate, dispatch) =
+            r63_review_dispatch(&derived, r63_one_line());
+        let pinned = r63_rm("anthropic", "claude-sonnet-5");
+        assert_eq!(review_pin, Some(pinned.clone()));
+        assert_eq!(dispatch.role_model, Some(pinned.clone()));
+        let targets = delegate_audit_targets(
+            None,
+            routing.role_model.clone(),
+            Some(ReviewAuditInputs {
+                review_pack_pin: review_pin,
+                cross_family: candidate,
+                review_floor: None,
+            }),
+            Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1)),
+        );
+        assert_eq!(
+            targets,
+            DelegateAuditTargets {
+                pin: Some(pinned.clone()),
+                pin_exception: None,
+                reference: Some(pinned),
+            }
+        );
+    }
+
+    /// Nothing pinned: a role delegate stays on the operator's session model
+    /// (escalation is opt-in) — never the planner/frontier row the derived
+    /// map offers — and the reviewer delegate picks the cheapest capable
+    /// cross-family model, not the strongest.
+    #[test]
+    fn r63c_a_delegate_without_pins_picks_the_cheapest_capable_not_the_planner_model() {
+        use crate::cost_router as cr;
+        let _g = r63_env(None, None);
+        let derived = cr::derive_role_map(&r63_available());
+        let planner = derived
+            .get(cr::WorkflowRole::Orchestrate)
+            .map(|(rm, _)| rm.clone());
+
+        for role in [cr::WorkflowRole::Edit, cr::WorkflowRole::Orchestrate] {
+            let routing = cr::delegate_routing(
+                Some(role),
+                &derived,
+                Some(cr::BudgetBand::Ok),
+                Some(R63_AUTHOR),
+            );
+            assert_eq!(routing.source, cr::DelegateSource::Session, "{role:?}");
+            assert_eq!(routing.role_model, None, "inherits the session pair");
+        }
+
+        let (_routing, _pin, candidate, dispatch) = r63_review_dispatch(&derived, r63_one_line());
+        let target = dispatch.role_model.expect("a cross-family reviewer");
+        assert_eq!(Some(target.clone()), candidate);
+        assert_ne!(Some(target.clone()), planner, "never the planner model");
+        assert_ne!(target.model, "claude-fable-5");
+    }
+
+    // ── Lane N3 (M48 r64 s5): the reviewer delegate's objective assignment ──
+
+    /// The r64 s5 change as the delegate now measures it (trunk-relative):
+    /// `quoteShipping` gains `packageType`, and its four call sites change.
+    const N3_S5_DIFF: &str = "diff --git a/src/shipping/quote.ts b/src/shipping/quote.ts\n\
+--- a/src/shipping/quote.ts\n\
++++ b/src/shipping/quote.ts\n\
+@@ -1,3 +1,4 @@\n\
+-export function quoteShipping(weightKg: number, zone: Zone): number {\n\
++export function quoteShipping(weightKg: number, zone: Zone, packageType: PackageType): number {\n\
+diff --git a/src/checkout/checkout.ts b/src/checkout/checkout.ts\n\
+--- a/src/checkout/checkout.ts\n\
++++ b/src/checkout/checkout.ts\n\
+@@ -2 +2 @@\n\
+-  return quoteShipping(order.weightKg, order.zone);\n\
++  return quoteShipping(order.weightKg, order.zone, order.packageType);\n\
+diff --git a/src/cart/cartSummary.ts b/src/cart/cartSummary.ts\n\
+--- a/src/cart/cartSummary.ts\n\
++++ b/src/cart/cartSummary.ts\n\
+@@ -2 +2 @@\n\
+-  return quoteShipping(order.weightKg, order.zone);\n\
++  return quoteShipping(order.weightKg, order.zone, order.packageType);\n\
+diff --git a/src/api/quoteHandler.ts b/src/api/quoteHandler.ts\n\
+--- a/src/api/quoteHandler.ts\n\
++++ b/src/api/quoteHandler.ts\n\
+@@ -2 +2 @@\n\
+-  return quoteShipping(order.weightKg, order.zone);\n\
++  return quoteShipping(order.weightKg, order.zone, order.packageType);\n\
+diff --git a/src/admin/manualQuote.ts b/src/admin/manualQuote.ts\n\
+--- a/src/admin/manualQuote.ts\n\
++++ b/src/admin/manualQuote.ts\n\
+@@ -2 +2 @@\n\
+-  return quoteShipping(weightKg, zone);\n\
++  return quoteShipping(weightKg, zone, \"standard\");\n";
+
+    /// A one-line comment typo fix.
+    const N3_TYPO_DIFF: &str = "diff --git a/src/pager.rs b/src/pager.rs\n\
+--- a/src/pager.rs\n\
++++ b/src/pager.rs\n\
+@@ -1 +1 @@\n\
+-// Retruns the last page.\n\
++// Returns the last page.\n";
+
+    /// `delegate_cost_audit`'s composition for a review child: the pure audit,
+    /// then the review floor.
+    fn n3_judge(
+        actual: (&str, &str),
+        inputs: &ReviewAuditInputs,
+        targets: &DelegateAuditTargets,
+    ) -> crate::cost_router::DelegateCostAudit {
+        let mut audit = crate::cost_router::audit_delegate_dispatch(
+            actual,
+            targets.pin.as_ref(),
+            targets.pin_exception.as_ref(),
+            targets.reference.as_ref(),
+            &crate::cost_router::routing_matrix::nominal_call_cost,
+        );
+        audit.cheapest_capable &= review_floor_holds(actual, Some(inputs), targets);
+        audit
+    }
+
+    /// The r64 s5 shape on the `dschat` tier: a signature change with four
+    /// call sites is COMPLEX (floor 0.80), so the delegate reviewer is the
+    /// cheapest cross-family model clearing 0.80 (`claude-sonnet-5`), not
+    /// `claude-haiku-4-5` (0.63). The receipt audit counts that assigned
+    /// reviewer as cheapest-capable and pack-honoured; a haiku child on the
+    /// same review is not capable, and a fable child is not cheapest.
+    #[test]
+    fn n3_a_complex_review_is_assigned_a_capable_reviewer_and_the_audit_accepts_it() {
+        use crate::cost_router as cr;
+        use cr::recommend::{assess_review_complexity, ReviewComplexity, ReviewFacts};
+        let _g = r63_env(Some(R63_AUTHOR), None);
+        let derived = cr::derive_role_map(&r63_available());
+        let facts = ReviewFacts::from_diff(N3_S5_DIFF, 4);
+        let verdict = assess_review_complexity(&facts);
+        assert_eq!(verdict.complexity, ReviewComplexity::Complex, "{verdict:?}");
+        assert_eq!(verdict.floor, 0.80);
+
+        let (routing, review_pin, candidate, dispatch) = r63_review_dispatch(&derived, facts);
+        let target = dispatch
+            .role_model
+            .clone()
+            .expect("a cross-family reviewer");
+        assert_eq!(Some(target.clone()), candidate);
+        assert!(!target.model.starts_with("claude-haiku"), "{target:?}");
+        assert_eq!(target, r63_rm("anthropic", "claude-sonnet-5"));
+
+        let inputs = ReviewAuditInputs {
+            review_pack_pin: review_pin,
+            cross_family: candidate,
+            review_floor: Some(verdict.floor),
+        };
+        let targets = delegate_audit_targets(
+            None,
+            routing.role_model.clone(),
+            Some(inputs.clone()),
+            Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1)),
+        );
+        let assigned = n3_judge(("anthropic", "claude-sonnet-5"), &inputs, &targets);
+        assert!(
+            assigned.cheapest_capable && assigned.pack_honored,
+            "{assigned:?}"
+        );
+        let haiku = n3_judge(
+            ("anthropic", "claude-haiku-4-5-20251001"),
+            &inputs,
+            &targets,
+        );
+        assert!(
+            !haiku.cheapest_capable,
+            "below the complex floor: {haiku:?}"
+        );
+        let fable = n3_judge(("anthropic", "claude-fable-5"), &inputs, &targets);
+        assert!(
+            !fable.cheapest_capable,
+            "pricier than the assignment: {fable:?}"
+        );
+    }
+
+    /// A one-line typo is ROUTINE (floor 0.60): the cheapest cross-family
+    /// model clearing it, and the audit counts it cheapest-capable.
+    #[test]
+    fn n3_a_one_line_typo_review_is_assigned_the_cheapest_clearing_model() {
+        use crate::cost_router as cr;
+        use cr::recommend::{assess_review_complexity, ReviewComplexity, ReviewFacts};
+        let _g = r63_env(Some(R63_AUTHOR), None);
+        let derived = cr::derive_role_map(&r63_available());
+        let facts = ReviewFacts::from_diff(N3_TYPO_DIFF, 0);
+        let verdict = assess_review_complexity(&facts);
+        assert_eq!(verdict.complexity, ReviewComplexity::Routine, "{verdict:?}");
+
+        let (routing, review_pin, candidate, dispatch) = r63_review_dispatch(&derived, facts);
+        let haiku = r63_rm("anthropic", "claude-haiku-4-5-20251001");
+        assert_eq!(dispatch.role_model, Some(haiku.clone()));
+
+        let inputs = ReviewAuditInputs {
+            review_pack_pin: review_pin,
+            cross_family: candidate,
+            review_floor: Some(verdict.floor),
+        };
+        let targets = delegate_audit_targets(
+            None,
+            routing.role_model,
+            Some(inputs.clone()),
+            Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1)),
+        );
+        let audit = n3_judge(
+            (haiku.provider.as_str(), haiku.model.as_str()),
+            &inputs,
+            &targets,
+        );
+        assert!(audit.cheapest_capable && audit.pack_honored, "{audit:?}");
+    }
+
+    /// A dedicated `PERMAGENT_PACK_REVIEW_*` pin still wins over a COMPLEX
+    /// assignment: no assignment is made, the pin is dispatched, and the
+    /// audit judges the child against the pin.
+    #[test]
+    fn n3_a_dedicated_review_pack_pin_still_wins_over_a_complex_assignment() {
+        use crate::cost_router as cr;
+        let _g = r63_env(
+            Some(R63_AUTHOR),
+            Some(("anthropic", "claude-haiku-4-5-20251001")),
+        );
+        let derived = cr::derive_role_map(&r63_available());
+        let facts = cr::recommend::ReviewFacts::from_diff(N3_S5_DIFF, 4);
+        let (routing, review_pin, candidate, dispatch) = r63_review_dispatch(&derived, facts);
+        let pinned = r63_rm("anthropic", "claude-haiku-4-5-20251001");
+        assert_eq!(candidate, None, "a pinned review is not assigned");
+        assert_eq!(dispatch.role_model, Some(pinned.clone()));
+
+        let inputs = ReviewAuditInputs {
+            review_pack_pin: review_pin,
+            cross_family: candidate,
+            review_floor: None,
+        };
+        let targets = delegate_audit_targets(
+            None,
+            routing.role_model,
+            Some(inputs.clone()),
+            Some(r63_rm(R63_AUTHOR.0, R63_AUTHOR.1)),
+        );
+        let audit = n3_judge(
+            ("anthropic", "claude-haiku-4-5-20251001"),
+            &inputs,
+            &targets,
+        );
+        assert!(audit.cheapest_capable && audit.pack_honored, "{audit:?}");
+    }
+
+    /// A `PERMAGENT_ROLE_REVIEW_*` pin still wins over a COMPLEX assignment.
+    #[test]
+    fn n3_a_review_role_pin_still_wins_over_a_complex_assignment() {
+        use crate::cost_router as cr;
+        use crate::cost_router::packs::*;
+        let (p, m) = R63_AUTHOR;
+        let _g = env_lock::lock_env([
+            (KEY_EDIT_PROVIDER, Some(p)),
+            (KEY_EDIT_MODEL, Some(m)),
+            (KEY_HARD_PROVIDER, Some(p)),
+            (KEY_HARD_MODEL, Some(m)),
+            (KEY_MECHANICAL_PROVIDER, Some(p)),
+            (KEY_MECHANICAL_MODEL, Some(m)),
+            (KEY_LOCAL_PROVIDER, Some(p)),
+            (KEY_LOCAL_MODEL, Some(m)),
+            (KEY_REVIEW_PROVIDER, None),
+            (KEY_REVIEW_MODEL, None),
+            ("PERMAGENT_ROLE_REVIEW_PROVIDER", Some("anthropic")),
+            (
+                "PERMAGENT_ROLE_REVIEW_MODEL",
+                Some("claude-haiku-4-5-20251001"),
+            ),
+            ("PERMAGENT_ROLE_EDIT_PROVIDER", None),
+            ("PERMAGENT_ROLE_EDIT_MODEL", None),
+            (crate::cost_router::KEY_ALLOW_ESCALATION, None),
+        ]);
+        let derived = cr::derive_role_map(&r63_available());
+        let facts = cr::recommend::ReviewFacts::from_diff(N3_S5_DIFF, 4);
+        let (routing, _review_pin, _candidate, dispatch) = r63_review_dispatch(&derived, facts);
+        assert_eq!(routing.source, cr::DelegateSource::RolePin);
+        assert_eq!(
+            dispatch.role_model,
+            Some(r63_rm("anthropic", "claude-haiku-4-5-20251001"))
+        );
+    }
+
+    /// The receipt: a delegate child's routing receipt carries its audit, and
+    /// spawning it counts one dispatch — a non-pinned expensive child is
+    /// neither cheapest-capable nor pack-honoured on the printed line.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn r63c_a_spawned_delegate_child_is_counted_on_receipt_cost_routing() {
+        use crate::cost_router::routing_receipt;
+        routing_receipt::reset();
+        let receipt = serde_json::json!({
+            "provider": "anthropic",
+            "model": "claude-fable-5",
+            "cost_audit": {"cheapest_capable": false, "pack_honored": false},
+        });
+        record_delegate_dispatch(&receipt);
+        let after = routing_receipt::snapshot();
+        assert!(after.dispatches >= 1, "{after:?}");
+        assert!(after.cheapest_capable < after.dispatches, "{after:?}");
+        assert!(after.pack_honored < after.dispatches, "{after:?}");
+        assert!(after.routed_cloud >= 1, "{after:?}");
+
+        // No audit ⇒ not guessed at, not counted.
+        let before = routing_receipt::snapshot();
+        record_delegate_dispatch(&serde_json::json!({"provider": "anthropic"}));
+        assert_eq!(routing_receipt::snapshot().dispatches, before.dispatches);
+        routing_receipt::reset();
+    }
+
+    #[test]
+    fn r63c_live_goal_refusal_fires_only_for_in_progress_or_review() {
+        let card = |state: &str| crate::cards::SessionGoalCard {
+            card_id: format!("goal-{state}"),
+            title: "t".to_string(),
+            state_binding: state.to_string(),
+            is_root: true,
+            has_worker_session: true,
+        };
+        for state in [
+            "ready",
+            "complete",
+            "cancelled",
+            "failed",
+            "blocked",
+            "triage",
+        ] {
+            assert_eq!(live_goal_refusal(&[card(state)]), None, "{state}");
+        }
+        for state in ["in_progress", "review"] {
+            let refusal = live_goal_refusal(&[card("complete"), card(state)])
+                .unwrap_or_else(|| panic!("{state} must refuse"));
+            assert!(
+                refusal.contains(&format!("goal goal-{state} is running")),
+                "{refusal}"
+            );
+            assert!(refusal.contains("goal_status or view_session"), "{refusal}");
+            assert!(refusal.contains("wait for review"), "{refusal}");
+        }
+    }
+
+    /// Move the fixture's goal card into the column bound to `state`.
+    async fn r63_move_card(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, state: &str) {
+        sqlx::query(
+            "UPDATE cards SET column_id = (SELECT id FROM board_columns \
+             WHERE project_id = ? AND state_binding = ?) WHERE id = ?",
+        )
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .bind(state)
+        .bind(card_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn r63_coding_recipe() -> Recipe {
+        Recipe::builder()
+            .version("1.0.0")
+            .title(crate::tool_inspection::CODING_HARNESS_RECIPE_TITLE)
+            .description("coding harness")
+            .prompt("plan and dispatch")
+            .build()
+            .unwrap()
+    }
+
+    /// The s5 behaviour, end to end through the real `delegate` handler: a
+    /// headless top-level coding coordinator whose goal is InProgress gets a
+    /// refused call naming the goal and the resolution, before any recipe,
+    /// provider or child session is built. Once the goal completes, the gate
+    /// no longer fires.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn r63c_a_coordinator_delegate_while_its_goal_is_in_progress_is_refused() {
+        let (_tmp, sm, session, card_id) = active_roadmap_fixture(SessionType::User).await;
+        let pool = sm.pool_clone().await.unwrap();
+        r63_move_card(&pool, &card_id, "in_progress").await;
+        sm.update(&session.id)
+            .recipe(Some(r63_coding_recipe()))
+            .apply()
+            .await
+            .unwrap();
+        let client = SummonClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        })
+        .unwrap();
+
+        let args = serde_json::json!({
+            "instructions": "Check how the coupon trim worker is getting on and report back."
+        });
+        let error = client
+            .handle_delegate(
+                &session.id,
+                args.as_object().cloned(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("a live goal must refuse the coordinator's delegate");
+        assert!(
+            error.contains(&format!("goal {card_id} is running")),
+            "{error}"
+        );
+        assert!(error.contains("goal_status or view_session"), "{error}");
+
+        let many = serde_json::json!({"tasks": [{"instructions":
+            "Check how the coupon trim worker is getting on and report back."}]});
+        let error = client
+            .handle_delegate_many(
+                &session.id,
+                many.as_object().cloned(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("delegate_many is gated identically");
+        assert!(error.contains("is running"), "{error}");
+
+        let persisted = sm.get_session(&session.id, false).await.unwrap();
+        r63_move_card(&pool, &card_id, "review").await;
+        assert!(client
+            .live_goal_delegate_refusal(&persisted)
+            .await
+            .is_some());
+        // A card cannot enter `complete` without an answered approve decision
+        // (trg_goal_complete_guard), and the pure `live_goal_refusal` test
+        // above already covers `complete`; here any non-running state proves
+        // the handler releases the gate once the goal stops running.
+        r63_move_card(&pool, &card_id, "ready").await;
+        assert!(
+            client
+                .live_goal_delegate_refusal(&persisted)
+                .await
+                .is_none(),
+            "a goal that is no longer running releases the gate"
+        );
+    }
+
+    /// Interactive (non-coding-harness) sessions, and a coding-harness session
+    /// with a parent (a dispatched worker), are untouched even with a live goal.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn r63c_interactive_sessions_and_workers_are_not_gated_by_a_live_goal() {
+        let (_tmp, sm, session, card_id) = active_roadmap_fixture(SessionType::User).await;
+        let pool = sm.pool_clone().await.unwrap();
+        r63_move_card(&pool, &card_id, "in_progress").await;
+        let client = SummonClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        })
+        .unwrap();
+
+        // Interactive: no coding-harness recipe.
+        assert!(session.recipe.is_none());
+        assert!(client.live_goal_delegate_refusal(&session).await.is_none());
+
+        // A coding-harness session WITH a parent is a worker, not the coordinator.
+        let mut worker = session.clone();
+        worker.recipe = Some(r63_coding_recipe());
+        worker.parent_session_id = Some("coordinator-1".to_string());
+        assert!(client.live_goal_delegate_refusal(&worker).await.is_none());
     }
 }

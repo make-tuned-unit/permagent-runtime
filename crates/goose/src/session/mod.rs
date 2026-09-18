@@ -6,6 +6,7 @@ pub mod extension_data;
 pub mod session_manager;
 pub mod spectral_schema;
 pub mod thread_manager;
+pub mod turn_timing;
 
 pub use budget_projection::{
     BillingEvidence, BudgetProjection, BudgetScopeProjection, CapTriplet, ProjectionBand,
@@ -17,12 +18,18 @@ pub use diagnostics::{
 };
 pub use extension_data::{EnabledExtensionsState, ExtensionData, ExtensionState, TodoState};
 pub use session_manager::{
-    budget_task_id, goal_id, ChildSessionCost, CostLedgerRow, CostReservationOutcome, CostTier,
-    LastCall, ParentSessionCost, ScheduleSessionSummary, Session, SessionInsights, SessionManager,
-    SessionSummary, SessionType, SessionUpdateBuilder, BUDGET_TASK_EXTENSION_NAME,
-    BUDGET_TASK_EXTENSION_VERSION, GOAL_ID_EXTENSION_NAME, GOAL_ID_EXTENSION_VERSION,
+    budget_task_id, goal_id, reviewer_mutation_receipts, ChildSessionCost, CostLedgerRow,
+    CostReservationOutcome, CostTier, LastCall, ParentSessionCost, ReviewerMutationReceipt,
+    ScheduleSessionSummary, Session, SessionInsights, SessionManager, SessionSummary, SessionType,
+    SessionUpdateBuilder, BUDGET_TASK_EXTENSION_NAME, BUDGET_TASK_EXTENSION_VERSION,
+    GOAL_ID_EXTENSION_NAME, GOAL_ID_EXTENSION_VERSION, REVIEWER_MUTATION_EXTENSION_NAME,
+    REVIEWER_MUTATION_EXTENSION_VERSION,
 };
 pub use thread_manager::{Thread, ThreadManager, ThreadMetadata};
+pub use turn_timing::{
+    compute_rollup, format_harness_overhead_line, format_harness_overhead_line_with_attempts,
+    AttemptContext, SessionTimingRollup, ToolCallTiming, TurnTiming, TurnTimingRecorder,
+};
 
 /// Inherited only by a child CLI process launched for an existing session.
 /// The value is always an existing durable session id; callers must leave it

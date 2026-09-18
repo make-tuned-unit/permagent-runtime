@@ -1,0 +1,28 @@
+id: select-no-repo-facts-escalates-not-invents
+title: No repo facts to ground a stack decision — ask, don't invent
+category: selection
+max_turns: 15
+# G3: the workspace carries no manifest, no source files, and no stated
+# language or framework — there is nothing here to ground "our standard
+# stack" in. The correct selection is to escalate for the missing
+# information, never to guess a tech stack and commit to a roadmap built
+# around a fabricated one (the "given no repo facts, it must not invent
+# stacks" case this DAG doc names).
+#
+# Lane R18c-b (G23 HIGH-1): the original `must_not_call: [decompose_roadmap]`
+# below directly contradicted recipe.yaml's NON-NEGOTIABLE rule 1 (the first
+# execution tool call is always `decompose_roadmap`, unconditionally); rule 5
+# offers `escalate` as an ALTERNATIVE way to end a turn when the task is
+# genuinely impossible, not as something that must come BEFORE
+# decompose_roadmap (the recipe has no ordering text for this at all). Both
+# M17 rounds confirmed the contradiction: the coordinator calls
+# decompose_roadmap first per rule 1 (r1 log:47, r2 log:44) and both times
+# never escalates at all — the real defect (inventing a stack and
+# materializing a roadmap around it) is fully caught by `must_call:
+# [escalate]` alone; forbidding `decompose_roadmap` added nothing but an
+# unsatisfiable double-bind.
+test: [true]
+prompt: |
+  Add authentication to this project using our standard stack.
+selection_check:
+  must_call: [escalate]

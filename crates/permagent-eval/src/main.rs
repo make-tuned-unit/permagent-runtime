@@ -4,11 +4,23 @@
 //!
 //! Subcommands:
 //! - `run`      — execute tasks under the given tier(s) and print/write a report.
+//! - `ab`       — run the suite twice under two configurations at ONE tier and
+//!   report the paired delta, with the 30-run honesty guard enforced.
+//! - `report`   — re-render a saved `ab` result file (no models are called).
+//! - `knobs`    — list the harness knobs that are A/B-able from the environment.
+//! - `tier0`    — the $0 offline harness-loop metrics against a scripted mock
+//!   model on loopback (no provider is contacted, nothing is spent).
 //! - `plan`     — print the exact `permagent run` invocations without executing
 //!   (safe anywhere; no models are called).
 //! - `list`     — list the bundled tasks.
 //! - `validate` — load and validate every task spec.
 //! - `qualify`  — validate retained held-out evidence and emit a scorecard.
+//! - `regrade`  — re-grade a report file's pre-K15 `errored: provider
+//!   unavailable` verdicts from its already-paid-for run directories (no
+//!   models are called, nothing is spent).
+//! - `graduate` — fold retained run reports into the capability directory's
+//!   durable per-role evidence (D1, `docs/orchestrator/
+//!   CODING_HARNESS_ROLE_GRADUATION_DAG.md` G2).
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -18,17 +30,36 @@ use permagent_eval::{
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+// NOTE: deliberately NOT `use std::process::Command;` — this file already
+// declares its own CLI `enum Command` (the clap subcommand enum below), and
+// importing the std type shadows/conflicts with every `Command::Variant`
+// reference. New code that needs to spawn a process must fully-qualify
+// `std::process::Command`.
 
+use permagent_eval::ab::{self, AbReport, ArmConfig, Knob};
 use permagent_eval::cost::LedgerCostReader;
+use permagent_eval::graduate::{
+    default_directory_path, describe_change, graduate_runs_into_directory, GraduateRequest,
+    WorkflowRole,
+};
 use permagent_eval::invocation::build_invocation;
-use permagent_eval::qualification::QualificationInput;
-use permagent_eval::report::{render_json, render_markdown, render_text, TierReport};
+use permagent_eval::metrics::TaskResult;
+use permagent_eval::provider_unavailable;
+use permagent_eval::qualification::{
+    build_run_qualification_record, build_token_verdict,
+    qualification_input_with_token_comparisons, BinaryProvenance, CapabilityVerdict,
+    QualificationInput, RunQualificationRecord, TokenComparisons,
+};
+use permagent_eval::report::{
+    overall_dag_selection_pct, render_json, render_markdown, render_text, TierReport,
+};
 use permagent_eval::runner::{
     run_tier, BudgetTracker, Deps, RunConfig, SubprocessHarnessRunner, SubprocessOracleRunner,
     SubprocessRecipeSource,
 };
 use permagent_eval::task::{load_task_set, select_tasks, Task};
 use permagent_eval::tier::Tier;
+use permagent_eval::tier0;
 
 /// The task set bundled with this crate (used when `--tasks-dir` is omitted).
 const DEFAULT_TASKS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tasks");
@@ -48,6 +79,16 @@ struct Cli {
 enum Command {
     /// Run the task set under one or more tiers and report results.
     Run(RunArgs),
+    /// Paired A/B: run the task set under two configurations at ONE tier,
+    /// N repeats each, and report the delta with the honesty guard enforced.
+    Ab(AbArgs),
+    /// Re-render a saved `ab` result file. Calls no models.
+    Report(ReportArgs),
+    /// List the harness knobs that can be A/B'd from the environment.
+    Knobs,
+    /// Tier 0: the $0 offline harness-loop metrics against a scripted mock
+    /// model on loopback. No provider is contacted and nothing is spent.
+    Tier0(Tier0Args),
     /// Print the constructed harness invocations without running them.
     Plan(PlanArgs),
     /// List the bundled tasks.
@@ -56,6 +97,14 @@ enum Command {
     Validate(TasksDirArg),
     /// Validate retained held-out evidence and emit its derived scorecard.
     Qualify(QualifyArgs),
+    /// K16: re-grade pre-K15 `errored: provider unavailable` tasks against
+    /// K15's own-provider rule, from an existing `--record`'s run
+    /// directories — no models are called, nothing is spent.
+    Regrade(RegradeArgs),
+    /// D1: fold retained run reports into the capability directory's
+    /// durable per-role evidence (`docs/orchestrator/
+    /// CODING_HARNESS_ROLE_GRADUATION_DAG.md` G2).
+    Graduate(GraduateArgs),
     /// Inventory production provider/process dispatch seams without running a model.
     DispatchInventory(DispatchInventoryArgs),
     /// Inspect or advance the master program manifest. The existing Permagent
@@ -171,13 +220,139 @@ struct ProgramReopenArgs {
 
 #[derive(Args, Debug)]
 struct QualifyArgs {
-    /// JSON evidence file produced by the outer evaluation DAG. Use `-` for stdin.
-    #[arg(long, value_name = "FILE")]
-    input: PathBuf,
+    /// JSON evidence file produced by the outer evaluation DAG: the abstract
+    /// `QualificationInput` shape (already classified per area). Use `-` for
+    /// stdin. Mutually exclusive with `--record`.
+    #[arg(long, value_name = "FILE", conflicts_with = "records")]
+    input: Option<PathBuf>,
+
+    /// One or more per-invocation qualification records — the `<out>.qual.json`
+    /// sidecar `run`/`ab` write alongside their own `--out` — to fold into the
+    /// nine tracked areas before validating. Repeatable; each file may hold
+    /// one record or a JSON array of them (`run` writes one per tier, `ab`
+    /// one per arm). Requires `--heldout-task` (at least one): which tasks are
+    /// held-out is a policy decision the raw records do not carry.
+    #[arg(long = "record", value_name = "FILE")]
+    records: Vec<PathBuf>,
+
+    /// Locked token baseline; must contain exactly one qualification record.
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "records",
+        conflicts_with = "input"
+    )]
+    token_baseline: Option<PathBuf>,
+
+    /// Passing token reference records; repeatable, accepts objects or arrays.
+    #[arg(
+        long = "reference-record",
+        value_name = "FILE",
+        requires = "records",
+        conflicts_with = "input"
+    )]
+    reference_records: Vec<PathBuf>,
+
+    /// Task id(s) used while optimizing a candidate (pairs with `--record`).
+    #[arg(long = "optimizer-task", value_name = "ID")]
+    optimizer_tasks: Vec<String>,
+
+    /// Held-out task id(s) (pairs with `--record`); at least one is required
+    /// when `--record` is used.
+    #[arg(long = "heldout-task", value_name = "ID", requires = "records")]
+    heldout_tasks: Vec<String>,
+
+    /// Benchmark version label recorded on the derived `QualificationInput`
+    /// when building it from `--record` files (ignored with `--input`, which
+    /// already carries its own).
+    #[arg(long, value_name = "LABEL", default_value = "eval-records-v1")]
+    benchmark_version: String,
 
     /// Also write the derived scorecard to this file.
     #[arg(long, value_name = "FILE")]
     out: Option<PathBuf>,
+}
+
+/// K16: re-grade a report file's pre-K15 `errored: provider unavailable`
+/// verdicts, from the run directories the original invocation already paid
+/// for. See `cmd_regrade`'s doc for the full rule.
+#[derive(Args, Debug)]
+struct RegradeArgs {
+    /// A report JSON file written by `run --format json --out FILE` (the
+    /// `tiers[].tasks[]` shape `report::render_json` produces). Never
+    /// modified.
+    #[arg(long, value_name = "FILE")]
+    record: PathBuf,
+
+    /// The `--runs-dir` scratch directory the original `run` invocation used
+    /// (must have been run with `--keep`, or otherwise still hold its
+    /// `<tier>-<task_id>-<nanos>-<n>` run directories).
+    #[arg(long, value_name = "DIR")]
+    runs_dir: PathBuf,
+
+    /// The `tiers[].tier` name (in --record) to re-grade.
+    #[arg(long, value_name = "NAME")]
+    tier: String,
+
+    /// Where to write the regraded record. A sibling `<out>.qual.json` is
+    /// also written when `<record>.qual.json` exists (see `cmd_regrade`'s
+    /// doc). Never the same path as --record.
+    #[arg(long, value_name = "FILE")]
+    out: PathBuf,
+}
+
+#[derive(Args, Debug)]
+struct GraduateArgs {
+    /// One or more retained run report JSON files, as written by
+    /// `permagent-eval run --format json --out FILE` (repeatable; passed in
+    /// the order the streak should be evaluated, oldest first, when the
+    /// files don't carry their own `generated_at`). When `FILE.qual.json`
+    /// (the sidecar every `run`/`ab` invocation also writes) exists next to
+    /// `FILE`, it is read INSTEAD of `FILE` for that run — see
+    /// `permagent_eval::graduate`'s module doc's "What counts as the
+    /// record" section; a qual.json-sourced run requires `--snapshot-date`
+    /// since the sidecar carries no `generated_at`.
+    #[arg(long = "run", value_name = "FILE", required = true)]
+    runs: Vec<PathBuf>,
+
+    /// Provider id, required only when a run record doesn't carry one.
+    #[arg(long)]
+    provider: Option<String>,
+
+    /// Model string, required only when a run record doesn't carry one.
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Workflow role this evidence applies to: orchestrate (alias: hard),
+    /// edit, mechanical, review, or local. Defaults to `orchestrate` (a
+    /// `permagent-eval run --tier` invocation drives the harness's full
+    /// main loop end-to-end on each task) unless --worker is given.
+    #[arg(long)]
+    role: Option<String>,
+
+    /// This run represents worker-role (not coordinator) fixtures; role
+    /// defaults to `edit` when --role is omitted (routing_matrix::
+    /// capability_for_category's own doc: "EDIT ... is the evidence every
+    /// fixture capability here ultimately measures").
+    #[arg(long)]
+    worker: bool,
+
+    /// Fallback date (YYYY-MM-DD) for a run record with no `generated_at`.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    snapshot_date: Option<String>,
+
+    /// Capability directory JSON file to read and update. Defaults to the
+    /// same path the running harness uses
+    /// (`permagent_eval::graduate::default_directory_path`, which mirrors
+    /// `crates/goose/src/cost_router/capability_directory.rs`'s
+    /// `CapabilityDirectory::default_path` by hand — see `graduate.rs`'s
+    /// module doc for why this crate cannot call that function directly).
+    #[arg(long, value_name = "FILE")]
+    directory: Option<PathBuf>,
+
+    /// Print the resulting card diff without writing anything.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Args, Debug)]
@@ -291,7 +466,10 @@ struct RunArgs {
     )]
     format: String,
 
-    /// Also write the report to this file.
+    /// Also write the report to this file. Also writes a sibling
+    /// `<FILE>.qual.json` qualification record (task ids, fixture revision,
+    /// binary provenance, provider/model/pins, and per-task evidence) that
+    /// `permagent-eval qualify --record` folds into the nine tracked areas.
     #[arg(long, value_name = "FILE")]
     out: Option<PathBuf>,
 
@@ -328,6 +506,185 @@ struct RunArgs {
     /// fail) and excluded from pass-rate. Omit for no cap (default: unlimited).
     #[arg(long, value_name = "USD")]
     budget_usd: Option<f64>,
+
+    /// Lane R1 (harness improvement loop): run against a provider-traffic
+    /// cassette instead of a live model. Sets `PERMAGENT_PROVIDER_CASSETTE`
+    /// on the child `permagent` process (same mechanism as an A/B arm env
+    /// var, `RunConfig::arm_env`, applied last so it always wins) to
+    /// `<cassette-mode>:<DIR>`. In `replay` mode (the default) the harness
+    /// binary never constructs a real provider or spends anything for calls
+    /// this cassette covers -- see `crates/goose/src/providers/cassette.rs`.
+    /// Record one first with `--cassette-mode record`.
+    #[arg(long, value_name = "DIR")]
+    cassette: Option<PathBuf>,
+
+    /// Whether `--cassette` records real provider traffic or replays a
+    /// previously recorded one. Ignored without `--cassette`.
+    #[arg(
+        long,
+        value_parser = clap::builder::PossibleValuesParser::new(["record", "replay"]),
+        default_value = "replay"
+    )]
+    cassette_mode: String,
+
+    /// Lane K6 / K6-b: override the harness wall-clock ceiling (seconds) for
+    /// EVERY task in this invocation, beating both a task's own
+    /// `harness_timeout_secs:` in `task.yaml` AND the tier's own floor (see
+    /// `Tier::harness_timeout_secs`) — the tier floor already raises the
+    /// ceiling automatically for a slow provider (zai's glm47/glm53 default
+    /// to a 900s floor), so this flag is for pinning an EXACT ceiling on
+    /// one invocation, not the routine way to give a slow tier more room.
+    /// The resolved value is retained on every task's
+    /// `harness_timeout_secs` in the report/`.qual.json` record, so latency
+    /// evidence stays honest about which ceiling this run actually used.
+    #[arg(long, value_name = "N")]
+    harness_timeout_secs: Option<u64>,
+}
+
+/// `ab` — the paired comparison.
+///
+/// Exactly ONE tier is allowed: a delta measured across two models measures the
+/// models, not the harness (see `docs/design/HARNESS_BENCH_RESEARCH.md` §1.5 on
+/// holding a weak model constant).
+#[derive(Args, Debug)]
+struct AbArgs {
+    #[command(flatten)]
+    tiers: TierSelection,
+
+    #[command(flatten)]
+    tasks_dir: TasksDirArg,
+
+    /// Only run these task ids (repeatable). Omit to run all.
+    #[arg(long = "task", value_name = "ID")]
+    tasks: Vec<String>,
+
+    /// The `permagent` binary to invoke (name on PATH or an absolute path).
+    #[arg(long, default_value = "permagent")]
+    permagent_bin: String,
+
+    /// Where per-run scratch directories are created.
+    #[arg(long, value_name = "DIR")]
+    runs_dir: Option<PathBuf>,
+
+    /// Keep scratch directories after each run (for debugging).
+    #[arg(long)]
+    keep: bool,
+
+    /// Proceed even if a tier's API-key environment variable is absent.
+    #[arg(long)]
+    allow_missing_keys: bool,
+
+    /// Let the child `permagent` process read the OS keychain for provider
+    /// secrets, instead of forcing it to read them from file/env only. See
+    /// `run --help` for the full explanation.
+    #[arg(long)]
+    use_keyring: bool,
+
+    /// Stop launching further tasks once measured spend (summed from the
+    /// ledger, across both arms of this comparison) exceeds this many
+    /// dollars. Already-collected results are still reported in full;
+    /// remaining tasks are recorded as a distinct not-run state (not a fail)
+    /// and excluded from pass-rate. Omit for no cap (default: unlimited).
+    #[arg(long, value_name = "USD")]
+    budget_usd: Option<f64>,
+
+    /// A registry knob to compare off-vs-on (`permagent-eval knobs` lists them).
+    /// Mutually exclusive with --a-env/--b-env.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["a_env", "b_env"])]
+    knob: Option<String>,
+
+    /// Ad-hoc control-arm environment, `KEY=VALUE` (repeatable).
+    #[arg(long = "a-env", value_name = "KEY=VALUE")]
+    a_env: Vec<String>,
+
+    /// Ad-hoc treatment-arm environment, `KEY=VALUE` (repeatable).
+    #[arg(long = "b-env", value_name = "KEY=VALUE")]
+    b_env: Vec<String>,
+
+    /// Label for the control arm (A).
+    #[arg(long, value_name = "LABEL", default_value = "baseline")]
+    baseline: String,
+
+    /// Label for the treatment arm (B).
+    #[arg(long = "candidate", value_name = "LABEL", default_value = "candidate")]
+    candidate: String,
+
+    /// How many times to run the whole suite per arm. The honesty guard needs
+    /// 30 runs in the smaller arm, so on the bundled fixture suite that is
+    /// `--repeats 2`; anything less reports INCONCLUSIVE by construction.
+    #[arg(long, default_value_t = 1, value_name = "N")]
+    repeats: usize,
+
+    /// Where to write the machine-readable result (JSON). Defaults to a
+    /// timestamped file under the runs directory; the path is always
+    /// printed. Also writes a sibling `<FILE>.qual.json` qualification
+    /// record per arm (task ids, fixture revision, binary provenance,
+    /// provider/model/pins, and per-task evidence) that `permagent-eval
+    /// qualify --record` folds into the nine tracked areas.
+    #[arg(long, value_name = "FILE")]
+    out: Option<PathBuf>,
+
+    /// Print the two arms and the planned invocation count, then exit WITHOUT
+    /// running anything or spending anything.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Exit non-zero when the run does not earn a directional verdict (i.e. the
+    /// sample is under the honesty threshold). For CI, where an inconclusive
+    /// A/B is a failed measurement rather than a result.
+    #[arg(long)]
+    require_conclusive: bool,
+
+    /// Lane K6 / K6-b: override the harness wall-clock ceiling (seconds) for
+    /// EVERY task in both arms of this comparison. See `run --help`'s
+    /// `--harness-timeout-secs` for the full resolution and why it exists.
+    #[arg(long, value_name = "N")]
+    harness_timeout_secs: Option<u64>,
+}
+
+/// `tier0` — the $0 loop metrics.
+#[derive(Args, Debug)]
+struct Tier0Args {
+    /// The `permagent` binary to drive (name on PATH or an absolute path).
+    #[arg(long, default_value = "permagent")]
+    permagent_bin: String,
+
+    /// Only run these scenario ids (repeatable). Omit to run all.
+    #[arg(long = "scenario", value_name = "ID")]
+    scenarios: Vec<String>,
+
+    /// Where per-scenario scratch directories are created (kept, so a failed
+    /// scenario's harness log survives for inspection).
+    #[arg(long, value_name = "DIR")]
+    work_dir: Option<PathBuf>,
+
+    /// Also write the machine-readable result here.
+    #[arg(long, value_name = "FILE")]
+    out: Option<PathBuf>,
+
+    /// List the scenarios and what each measures, then exit without running.
+    #[arg(long)]
+    list: bool,
+
+    /// Exit non-zero if any scenario fails (the CI posture).
+    #[arg(long)]
+    fail_on_regression: bool,
+}
+
+#[derive(Args, Debug)]
+struct ReportArgs {
+    /// A result file written by `ab`.
+    #[arg(value_name = "FILE")]
+    file: PathBuf,
+
+    /// Output format: `md` re-renders the table, `json` re-emits the parsed
+    /// file (a round-trip check that the file is well-formed).
+    #[arg(
+        long,
+        value_parser = clap::builder::PossibleValuesParser::new(["md", "json"]),
+        default_value = "md"
+    )]
+    format: String,
 }
 
 #[derive(Args, Debug)]
@@ -364,10 +721,16 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => cmd_run(args),
+        Command::Ab(args) => cmd_ab(args),
+        Command::Report(args) => cmd_report(args),
+        Command::Knobs => cmd_knobs(),
+        Command::Tier0(args) => cmd_tier0(args),
         Command::Plan(args) => cmd_plan(args),
         Command::List(arg) => cmd_list(&resolve_tasks_dir(&arg)),
         Command::Validate(arg) => cmd_validate(&resolve_tasks_dir(&arg)),
         Command::Qualify(args) => cmd_qualify(args),
+        Command::Regrade(args) => cmd_regrade(args),
+        Command::Graduate(args) => cmd_graduate(args),
         Command::DispatchInventory(args) => cmd_dispatch_inventory(args),
         Command::Program { command } => cmd_program(command),
     }
@@ -789,26 +1152,82 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     result
 }
 
+/// Read one `--record` file's qualification record(s). Each file may hold a
+/// single [`RunQualificationRecord`] object (what `run`/`ab` write for one
+/// tier/arm) or a JSON array of them (what `run` writes when it ran more
+/// than one tier in a single invocation) — tried in that order so either
+/// shape round-trips.
+fn read_qualification_records(path: &Path) -> Result<Vec<RunQualificationRecord>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading qualification record {}", path.display()))?;
+    if let Ok(many) = serde_json::from_str::<Vec<RunQualificationRecord>>(&raw) {
+        return Ok(many);
+    }
+    let one: RunQualificationRecord = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "{} is neither a qualification record nor an array of them",
+            path.display()
+        )
+    })?;
+    Ok(vec![one])
+}
+
 fn cmd_qualify(args: QualifyArgs) -> Result<()> {
-    let raw = if args.input == Path::new("-") {
-        let mut raw = String::new();
-        std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw)
-            .context("reading qualification evidence from stdin")?;
-        raw
+    let input: QualificationInput = if !args.records.is_empty() {
+        if args.heldout_tasks.is_empty() {
+            bail!(
+                "--record requires at least one --heldout-task: the held-out/optimizer split \
+                 is a policy decision, not something a raw run record carries"
+            );
+        }
+        let mut records = Vec::new();
+        for path in &args.records {
+            records.extend(read_qualification_records(path)?);
+        }
+        let baseline = args
+            .token_baseline
+            .as_deref()
+            .map(read_qualification_records)
+            .transpose()?;
+        if baseline.as_ref().is_some_and(|records| records.len() != 1) {
+            bail!("--token-baseline requires exactly one locked qualification record");
+        }
+        let mut references = Vec::new();
+        for path in &args.reference_records {
+            references.extend(read_qualification_records(path)?);
+        }
+        qualification_input_with_token_comparisons(
+            &records,
+            args.benchmark_version.clone(),
+            args.optimizer_tasks.clone(),
+            args.heldout_tasks.clone(),
+            &TokenComparisons {
+                baseline: baseline.as_ref().and_then(|records| records.first()),
+                references: &references,
+            },
+        )
     } else {
-        std::fs::read_to_string(&args.input).with_context(|| {
+        let path = args
+            .input
+            .as_deref()
+            .context("either --input or --record is required")?;
+        let raw = if path == Path::new("-") {
+            let mut raw = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw)
+                .context("reading qualification evidence from stdin")?;
+            raw
+        } else {
+            std::fs::read_to_string(path).with_context(|| {
+                format!("reading qualification evidence from {}", path.display())
+            })?
+        };
+        serde_json::from_str(&raw).with_context(|| {
             format!(
-                "reading qualification evidence from {}",
-                args.input.display()
+                "parsing qualification evidence JSON from {}",
+                path.display()
             )
         })?
     };
-    let input: QualificationInput = serde_json::from_str(&raw).with_context(|| {
-        format!(
-            "parsing qualification evidence JSON from {}",
-            args.input.display()
-        )
-    })?;
     let report = permagent_eval::qualify(&input).context("validating qualification evidence")?;
     let rendered = serde_json::to_string_pretty(&report)?;
     println!("{rendered}");
@@ -816,6 +1235,67 @@ fn cmd_qualify(args: QualifyArgs) -> Result<()> {
         std::fs::write(path, format!("{rendered}\n"))
             .with_context(|| format!("writing scorecard to {}", path.display()))?;
         eprintln!("scorecard written to {}", path.display());
+    }
+    Ok(())
+}
+
+/// Resolve the target role from `--role`/`--worker` (see [`GraduateArgs`]'s
+/// doc for the precedence). Never guesses beyond that documented default.
+fn resolve_graduate_role(args: &GraduateArgs) -> Result<WorkflowRole> {
+    if let Some(tag) = &args.role {
+        return WorkflowRole::from_tag(tag).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown role '{}' — expected one of: orchestrate (alias: hard), edit, \
+                 mechanical, review, local",
+                tag
+            )
+        });
+    }
+    if args.worker {
+        return Ok(WorkflowRole::Edit);
+    }
+    Ok(WorkflowRole::Orchestrate)
+}
+
+/// Thin CLI wrapper over the library entry point
+/// [`permagent_eval::graduate::graduate_runs_into_directory`]: resolve the
+/// `--role`/`--worker` flags and the default directory path (both
+/// CLI-specific), delegate the real read/compute/write work, then print the
+/// before/after summary. Kept thin deliberately — the read/compute/write
+/// core lives in the library so it is reachable from OUTSIDE this crate too
+/// (see that function's doc for why: `crates/goose`'s cross-crate
+/// schema-drift test).
+fn cmd_graduate(args: GraduateArgs) -> Result<()> {
+    let role = resolve_graduate_role(&args)?;
+    let directory_path = match &args.directory {
+        Some(p) => p.clone(),
+        None => default_directory_path()?,
+    };
+    let outcome = graduate_runs_into_directory(&GraduateRequest {
+        runs: &args.runs,
+        provider: args.provider.as_deref(),
+        model: args.model.as_deref(),
+        role,
+        snapshot_date: args.snapshot_date.as_deref(),
+        directory_path: &directory_path,
+        dry_run: args.dry_run,
+    })?;
+
+    let summary = describe_change(
+        &outcome.provider,
+        &outcome.model,
+        outcome.role,
+        outcome.before.as_ref(),
+        &outcome.after,
+    );
+    println!("{summary}");
+    for (run_id, source) in &outcome.run_sources {
+        println!("  evidence: {run_id} <- {}", source.as_str());
+    }
+    if outcome.written {
+        println!("\nWrote {}", directory_path.display());
+    } else {
+        println!("\n(dry run — nothing written)");
     }
     Ok(())
 }
@@ -886,6 +1366,70 @@ fn cmd_plan(args: PlanArgs) -> Result<()> {
     Ok(())
 }
 
+/// Add `run_id`/`generated_at` to a `render_json` report's top-level object
+/// — pure so it is unit-tested without shelling out to the harness (see
+/// `cmd_run`'s call site for why this is additive envelope metadata rather
+/// than a `report.rs` change).
+fn stamp_json_envelope(
+    mut value: serde_json::Value,
+    run_id: &str,
+    generated_at: chrono::DateTime<chrono::Utc>,
+) -> serde_json::Value {
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("run_id".to_string(), serde_json::json!(run_id));
+        obj.insert(
+            "generated_at".to_string(),
+            serde_json::json!(generated_at.to_rfc3339()),
+        );
+    }
+    value
+}
+
+/// G3 (`docs/orchestrator/CODING_HARNESS_ROLE_GRADUATION_DAG.md`): add the
+/// run-wide `dag_selection_pct` to a `render_json` report's top-level object
+/// — the exact field `permagent-eval graduate`'s `RunFile::dag_selection_pct`
+/// already reads (`graduate.rs`), populated for real once this run attempted
+/// at least one `category: "selection"` fixture. Kept as its own small
+/// function (rather than folded into `stamp_json_envelope`) so that
+/// function's own D2 contract/tests are untouched — see its call site in
+/// `cmd_run`.
+fn stamp_dag_selection_pct(mut value: serde_json::Value, pct: Option<f64>) -> serde_json::Value {
+    if let (Some(obj), Some(p)) = (value.as_object_mut(), pct) {
+        obj.insert("dag_selection_pct".to_string(), serde_json::json!(p));
+    }
+    value
+}
+
+/// The env var name the harness under test reads to install a provider
+/// cassette. Mirrors `crate::providers::cassette::
+/// PERMAGENT_PROVIDER_CASSETTE_ENV` in the `permagent` crate — this binary
+/// deliberately does not depend on that crate, so the name is duplicated
+/// here and pinned by `cassette_arg_becomes_the_provider_cassette_env_var`.
+const PERMAGENT_PROVIDER_CASSETTE_ENV: &str = "PERMAGENT_PROVIDER_CASSETTE";
+
+/// Lane R1: `--cassette <dir>` rides the SAME "arm env wins last" seam
+/// `runner::run_task` already gives an A/B arm ([`RunConfig::arm_env`],
+/// applied after the invocation's own defaults — runner.rs's
+/// `inv.envs.extend(cfg.arm_env...)`), so a plain `run` needs no new
+/// plumbing in `runner.rs`/`invocation.rs` to reach the child `permagent`
+/// process. Empty without `--cassette`, so a normal run is byte-for-byte
+/// unchanged.
+fn cassette_arm_env(cassette: Option<&Path>, mode: &str) -> Vec<(String, String)> {
+    match cassette {
+        Some(dir) => vec![(
+            PERMAGENT_PROVIDER_CASSETTE_ENV.to_string(),
+            format!("{}:{}", mode, dir.display()),
+        )],
+        None => Vec::new(),
+    }
+}
+
+/// Whether this run will be served entirely from a cassette — i.e. no real
+/// provider is constructed, nothing is spent, and no credential is needed.
+fn cassette_is_replaying(cassette: Option<&Path>, mode: &str) -> bool {
+    cassette.is_some() && mode == "replay"
+}
+
 fn cmd_run(args: RunArgs) -> Result<()> {
     let tiers = args.tiers.resolve()?;
     let tasks_dir = resolve_tasks_dir(&args.tasks_dir);
@@ -894,7 +1438,19 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         bail!("no tasks to run in {}", tasks_dir.display());
     }
 
-    preflight_keys(&tiers, args.allow_missing_keys)?;
+    // Lane R1: a `replay` run never constructs a real provider at all (see
+    // `crates/goose/src/providers/cassette.rs`), so a tier's API key is not
+    // required for it. Demanding one would make the free replay slice
+    // impossible on a machine with no credentials — which is exactly the
+    // machine M0.5 ("replay slice green before any paid slice") exists to
+    // serve. A `record` run DOES call the real provider and still needs its
+    // key, so the bypass is deliberately narrow.
+    let replaying = cassette_is_replaying(args.cassette.as_deref(), &args.cassette_mode);
+    preflight_keys(
+        &tiers,
+        args.allow_missing_keys || replaying,
+        args.use_keyring,
+    )?;
     if !binary_resolves(&args.permagent_bin) {
         eprintln!(
             "warning: harness binary {:?} not found on PATH — runs will error. \
@@ -913,11 +1469,15 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         .runs_dir
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join("permagent-eval-runs"));
+    let arm_env = cassette_arm_env(args.cassette.as_deref(), &args.cassette_mode);
     let cfg = RunConfig {
         permagent_bin,
         runs_root,
         keep: args.keep,
         use_keyring: args.use_keyring,
+        arm_env,
+        harness_timeout_secs: args.harness_timeout_secs,
+        ..Default::default()
     };
     let harness = SubprocessHarnessRunner;
     let oracle = SubprocessOracleRunner;
@@ -974,8 +1534,20 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         }
     }
 
+    // D2 (`docs/orchestrator/CODING_HARNESS_ROLE_GRADUATION_DAG.md` G2): stamp
+    // a run identity + timestamp onto the JSON report ONLY — `render_json`
+    // itself (report.rs, shared by every format and by its own tests) stays
+    // untouched; this is additive envelope metadata `permagent-eval
+    // graduate` (D1) reads to avoid needing --provider/--model/
+    // --snapshot-date flags on a fresh run.
+    let generated_at = chrono::Utc::now();
+    let run_id = format!("run-{}", generated_at.format("%Y%m%dT%H%M%SZ"));
     let rendered = match args.format.as_str() {
-        "json" => serde_json::to_string_pretty(&render_json(&reports))?,
+        "json" => {
+            let value = stamp_json_envelope(render_json(&reports), &run_id, generated_at);
+            let value = stamp_dag_selection_pct(value, overall_dag_selection_pct(&reports));
+            serde_json::to_string_pretty(&value)?
+        }
         "md" => render_markdown(&reports),
         _ => render_text(&reports),
     };
@@ -984,6 +1556,13 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         std::fs::write(path, &rendered)
             .with_context(|| format!("writing report to {}", path.display()))?;
         eprintln!("report written to {}", path.display());
+
+        // X-obs-1: every run that writes a report also writes the sibling
+        // qualification record `permagent-eval qualify --record` reads.
+        let qual_path = qualification_sibling_path(path);
+        let records = build_qualification_records(&tasks_dir, &cfg.permagent_bin, &reports);
+        write_qualification_records(&qual_path, &records)?;
+        eprintln!("qualification record written to {}", qual_path.display());
     }
 
     // Gate the exit code on the pass-rate threshold, if one was given. The report
@@ -994,6 +1573,888 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             bail!("best tier pass-rate {best_pct:.1}% is below --fail-under {want_pct:.1}%");
         }
     }
+    Ok(())
+}
+
+fn cmd_knobs() -> Result<()> {
+    println!("Harness knobs that can be A/B'd from the environment:\n");
+    for k in ab::KNOBS {
+        println!("  {}", k.name);
+        println!("    {}", k.summary);
+        println!("    shipped default: {}", k.shipped_default);
+        println!(
+            "    A: {}   B: {}",
+            render_env_pairs(k.off),
+            render_env_pairs(k.on)
+        );
+        println!();
+    }
+    println!(
+        "Anything not listed can still be compared with `ab --a-env KEY=VALUE --b-env KEY=VALUE`.\n\
+         Note: keys read through the config layer parse their value as JSON, so a boolean must be\n\
+         spelled `true`/`false` — `1` silently falls back to the default and both arms become the\n\
+         same configuration."
+    );
+    Ok(())
+}
+
+fn render_env_pairs(kv: &[(&str, &str)]) -> String {
+    kv.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Resolve the two arms from either a registry knob or the ad-hoc
+/// `--a-env`/`--b-env` pairs. Pure over the parsed args so it is unit-tested.
+fn resolve_arms(args: &AbArgs) -> Result<(ArmConfig, ArmConfig, Option<&'static Knob>)> {
+    if let Some(name) = &args.knob {
+        let k = ab::knob(name).with_context(|| {
+            format!(
+                "unknown knob {name:?}; known knobs are: {}",
+                ab::knob_names().join(", ")
+            )
+        })?;
+        let mut a = k.control_arm();
+        let mut b = k.treatment_arm();
+        a.label = format!("{} ({})", args.baseline, a.label);
+        b.label = format!("{} ({})", args.candidate, b.label);
+        return Ok((a, b, Some(k)));
+    }
+    if args.a_env.is_empty() && args.b_env.is_empty() {
+        bail!(
+            "nothing to compare: pass --knob <name> (see `permagent-eval knobs`) or \
+             --a-env/--b-env KEY=VALUE"
+        );
+    }
+    let mut a = ArmConfig::new(args.baseline.clone());
+    for kv in &args.a_env {
+        a = a.with_env_kv(kv)?;
+    }
+    let mut b = ArmConfig::new(args.candidate.clone());
+    for kv in &args.b_env {
+        b = b.with_env_kv(kv)?;
+    }
+    if a.env == b.env {
+        bail!(
+            "arm A and arm B have identical environments — this would compare a configuration \
+             against itself and report a delta that is pure noise"
+        );
+    }
+    // A variable set on only ONE side is a trap: the other arm silently
+    // inherits whatever the operator's shell (or the harness default) happens
+    // to be, so the comparison is not controlled.
+    let a_keys: Vec<&str> = a.env.iter().map(|(k, _)| k.as_str()).collect();
+    let b_keys: Vec<&str> = b.env.iter().map(|(k, _)| k.as_str()).collect();
+    for k in a_keys.iter().chain(b_keys.iter()) {
+        if !a_keys.contains(k) || !b_keys.contains(k) {
+            eprintln!(
+                "warning: {k} is set on only one arm; the other arm inherits the ambient \
+                 default, so the comparison is not fully controlled. Pin it on both sides."
+            );
+        }
+    }
+    Ok((a, b, None))
+}
+
+// --- X-obs-1: the qualification record every `run`/`ab` invocation writes
+// alongside its own `--out` -------------------------------------------------
+
+/// The sibling qualification-record path for a report/result file: `<out>` +
+/// `.qual.json` appended (never a replaced extension), so `report.json`
+/// becomes `report.json.qual.json` and `report.md` becomes
+/// `report.md.qual.json`.
+fn qualification_sibling_path(out: &Path) -> PathBuf {
+    let mut name = out.as_os_str().to_os_string();
+    name.push(".qual.json");
+    PathBuf::from(name)
+}
+
+/// The git hash of the most recent commit that touched `tasks_dir` — the
+/// "fixture revision" a qualification record pins task evidence to. `None`
+/// when `tasks_dir` is not inside a git repository, `git` is not on `PATH`,
+/// or the command otherwise fails (a fresh checkout with no commits yet,
+/// for instance). Never a fabricated placeholder: an absent revision must
+/// read as missing evidence, not as "revision zero".
+fn fixture_revision(tasks_dir: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(tasks_dir)
+        .args(["log", "-1", "--format=%H", "--", "."])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha)
+    }
+}
+
+/// The harness binary's own `--version` output, trimmed. `None` when the
+/// binary cannot be run or prints nothing — never an empty-string default
+/// that could be misread as "no version" rather than "unknown".
+fn detect_binary_version(bin_path: &str) -> Option<String> {
+    let output = std::process::Command::new(bin_path)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// The first git-sha-shaped (40 hex characters) token found via `strings` on
+/// the binary — a best-effort provenance signal for a binary built without
+/// `--version` embedding one. `None` when `strings` is unavailable, the
+/// binary cannot be read, or no such token appears.
+fn detect_binary_git_sha(bin_path: &str) -> Option<String> {
+    static SHA_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\b[0-9a-f]{40}\b").expect("valid regex"));
+    let output = std::process::Command::new("strings")
+        .arg(bin_path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    SHA_RE.find(&text).map(|m| m.as_str().to_string())
+}
+
+/// A short, unique id for one `run`/`ab` invocation's retained qualification
+/// record(s), so re-running the same tier/arm never collides in a directory
+/// that accumulates records over time.
+fn qualification_run_stamp() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+/// Build one [`RunQualificationRecord`] per tier report from a `run`
+/// invocation, sharing the one `fixture_revision`/binary provenance lookup
+/// across every tier (they all ran the same fixtures against the same
+/// binary).
+fn build_qualification_records(
+    tasks_dir: &Path,
+    bin_path: &str,
+    reports: &[TierReport],
+) -> Vec<RunQualificationRecord> {
+    let fixture_revision = fixture_revision(tasks_dir);
+    let binary = BinaryProvenance {
+        path: bin_path.to_string(),
+        version: detect_binary_version(bin_path),
+        git_sha: detect_binary_git_sha(bin_path),
+    };
+    let stamp = qualification_run_stamp();
+    reports
+        .iter()
+        .map(|tr| {
+            let mut record = build_run_qualification_record(
+                format!("run-{stamp}-{}", tr.tier),
+                fixture_revision.clone(),
+                binary.clone(),
+                tr.provider.clone(),
+                tr.model.clone(),
+                tr.pinned_packs,
+                &tr.results,
+            );
+            record.capability_verdict = capability_verdict(
+                &record,
+                &tr.tier,
+                &tr.results,
+                chrono::Utc::now().date_naive(),
+            );
+            record
+        })
+        .collect()
+}
+
+/// Reuse graduation's per-run rule; the scorecard owns the trailing streak.
+/// Missing smoke/selection measurements stay absent, not failed or graduated.
+fn capability_verdict(
+    record: &RunQualificationRecord,
+    tier: &str,
+    results: &[TaskResult],
+    today: chrono::NaiveDate,
+) -> Option<CapabilityVerdict> {
+    use permagent_eval::graduate::{
+        build_run_evidence_from_qual_json, compute_role_evidence, run_qualifies,
+        DEFAULT_ORCHESTRATE_SMOKE_TASK_ID,
+    };
+
+    let mut run = build_run_evidence_from_qual_json(
+        record,
+        Path::new("retained qualification record"),
+        Some(&today.to_string()),
+        Some(DEFAULT_ORCHESTRATE_SMOKE_TASK_ID),
+    )
+    .ok()?;
+    // A/B repeats must all pass the smoke, not just its first occurrence.
+    let smoke: Vec<_> = results
+        .iter()
+        .filter(|r| r.task_id == DEFAULT_ORCHESTRATE_SMOKE_TASK_ID)
+        .collect();
+    run.smoke_passed_this_run = (!smoke.is_empty()).then(|| smoke.iter().all(|r| r.solved));
+    run.smoke_passed_this_run?;
+    run.dag_selection_pct = permagent_eval::metrics::dag_selection_pct(results);
+    run.dag_selection_pct?;
+    let role = compute_role_evidence(None, std::slice::from_ref(&run), today).ok()?;
+    Some(CapabilityVerdict {
+        tier: tier.to_string(),
+        graduated: run_qualifies(&run),
+        smoke_passed: role.smoke_passed,
+        micro_suite_pass_pct: role.micro_suite_pass_pct,
+        dag_selection_pct: role.dag_selection_pct,
+    })
+}
+
+/// Write one or more qualification records as a JSON array to `path`,
+/// creating its parent directory if needed (mirrors [`write_ab_result`]).
+fn write_qualification_records(path: &Path, records: &[RunQualificationRecord]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+    }
+    let json = serde_json::to_string_pretty(records)?;
+    std::fs::write(path, json)
+        .with_context(|| format!("writing qualification record to {}", path.display()))
+}
+
+/// Default result-file path: stable prefix, unique suffix, under the runs dir.
+fn default_ab_out(runs_root: &Path, tier: &str, knob: Option<&Knob>) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let knob = knob.map(|k| k.name).unwrap_or("adhoc");
+    runs_root.join(format!("ab-{tier}-{knob}-{stamp}.json"))
+}
+
+/// `ab` holds the model constant by construction. Two tiers would make the
+/// delta a model comparison wearing a harness comparison's clothes.
+fn single_tier(tiers: &[Tier]) -> Result<&Tier> {
+    match tiers {
+        [one] => Ok(one),
+        many => bail!(
+            "`ab` compares two CONFIGURATIONS at one model tier, but {} tiers were selected \
+             ({}). A delta measured across two models measures the models, not the harness — \
+             pass exactly one --tier (or one --provider/--model pair).",
+            many.len(),
+            many.iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// `ab`'s runs directory, defaulting the same way `run`'s does.
+fn ab_runs_root(args: &AbArgs) -> PathBuf {
+    args.runs_dir
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join("permagent-eval-runs"))
+}
+
+/// The base [`RunConfig`] for an `ab` arm — no arm applied yet. Mirrors
+/// `cmd_run`'s own construction, including the relative-`--permagent-bin`
+/// resolution fix (a caller-supplied relative path must be resolved against
+/// the operator's cwd, since every task changes the child's cwd to its
+/// isolated workspace).
+fn ab_run_config(args: &AbArgs) -> RunConfig {
+    RunConfig {
+        permagent_bin: resolved_binary(&args.permagent_bin),
+        runs_root: ab_runs_root(args),
+        keep: args.keep,
+        use_keyring: args.use_keyring,
+        harness_timeout_secs: args.harness_timeout_secs,
+        ..Default::default()
+    }
+}
+
+fn cmd_ab(args: AbArgs) -> Result<()> {
+    let tiers = args.tiers.resolve()?;
+    let tier = single_tier(&tiers)?;
+    if args.repeats == 0 {
+        bail!("--repeats must be at least 1");
+    }
+
+    let tasks_dir = resolve_tasks_dir(&args.tasks_dir);
+    let tasks: Vec<Task> = select_tasks(load_task_set(&tasks_dir)?, &args.tasks)?;
+    if tasks.is_empty() {
+        bail!("no tasks to run in {}", tasks_dir.display());
+    }
+    let (arm_a, arm_b, knob) = resolve_arms(&args)?;
+
+    let runs_root = ab_runs_root(&args);
+    let out_path = args
+        .out
+        .clone()
+        .unwrap_or_else(|| default_ab_out(&runs_root, &tier.name, knob));
+
+    // Say what this will cost in invocations BEFORE anything is launched — an
+    // A/B is 2×N×fixtures runs, which is easy to under-estimate by a factor of
+    // ten when reaching for `--repeats`.
+    let invocations = 2 * args.repeats * tasks.len();
+    eprintln!(
+        "==> ab @ tier {} ({} {}) — {} fixture(s) × {} repeat(s) × 2 arms = {} harness invocation(s)",
+        tier.name,
+        tier.provider,
+        tier.model,
+        tasks.len(),
+        args.repeats,
+        invocations
+    );
+    eprintln!("    A: {}  [{}]", arm_a.label, render_arm_env(&arm_a));
+    eprintln!("    B: {}  [{}]", arm_b.label, render_arm_env(&arm_b));
+    let requirement = permagent_eval::ab::SampleRequirement::compute(
+        tasks.len(),
+        args.repeats,
+        args.repeats * tasks.len(),
+    );
+    if !requirement.is_met() {
+        eprintln!(
+            "    NOTE: this sample cannot produce a verdict — {}",
+            requirement.what_it_would_take()
+        );
+    }
+    if args.dry_run {
+        eprintln!("--dry-run: nothing was executed and nothing was spent.");
+        eprintln!("result file would be: {}", out_path.display());
+        return Ok(());
+    }
+
+    preflight_keys(&tiers, args.allow_missing_keys, args.use_keyring)?;
+    if !binary_resolves(&args.permagent_bin) {
+        eprintln!(
+            "warning: harness binary {:?} not found on PATH — runs will error. \
+             Pass --permagent-bin <path> or build/install it first.",
+            args.permagent_bin
+        );
+    }
+
+    let harness = SubprocessHarnessRunner;
+    let oracle = SubprocessOracleRunner;
+    let cost = LedgerCostReader;
+    let recipe = SubprocessRecipeSource;
+    let deps = Deps {
+        harness: &harness,
+        oracle: &oracle,
+        cost: &cost,
+        recipe: &recipe,
+    };
+    // One tracker across BOTH arms: `--budget-usd` caps the comparison, not
+    // each side of it. A cap that stopped arm B alone would silently produce a
+    // lopsided sample, which the honesty guard would then have to catch.
+    let mut budget = match args.budget_usd {
+        Some(cap) => BudgetTracker::with_cap(cap),
+        None => BudgetTracker::unlimited(),
+    };
+
+    let mut a_results: Vec<TaskResult> = Vec::new();
+    let mut b_results: Vec<TaskResult> = Vec::new();
+    // Interleave the arms by repeat rather than running A to completion first:
+    // provider latency, rate limits and model-side drift are time-varying, and
+    // an A-then-B ordering would charge all of that to arm B.
+    for rep in 1..=args.repeats {
+        for (label, arm, sink) in [
+            (&arm_a.label, &arm_a, &mut a_results),
+            (&arm_b.label, &arm_b, &mut b_results),
+        ] {
+            eprintln!("--> repeat {}/{} · arm {}", rep, args.repeats, label);
+            let mut cfg = ab_run_config(&args);
+            cfg.arm_env = arm.env.clone();
+            cfg.arm_unset = arm.unset.clone();
+            let results = run_tier(&tasks, tier, &cfg, &deps, &mut budget);
+            for r in &results {
+                eprintln!(
+                    "    {:<6} {:<22} {}",
+                    match r.oracle {
+                        permagent_eval::oracle::OracleOutcome::NotRun => "SKIP",
+                        _ if r.solved => "PASS",
+                        _ => "FAIL",
+                    },
+                    r.task_id,
+                    permagent_eval::report::fmt_usd(r.cost.usd)
+                );
+            }
+            sink.extend(results);
+        }
+        if let Some(msg) = budget.take_stop_message() {
+            eprintln!("{msg}");
+        }
+    }
+
+    let report = AbReport::build(
+        tier,
+        knob,
+        args.repeats,
+        tasks.len(),
+        &arm_a,
+        &a_results,
+        &arm_b,
+        &b_results,
+    );
+    write_ab_result(&out_path, &report)?;
+    println!("{}", ab::render_markdown(&report));
+    println!("result file: {}", out_path.display());
+
+    // X-obs-1: one qualification record per arm, sibling to the result file.
+    let qual_path = qualification_sibling_path(&out_path);
+    let bin_path = resolved_binary(&args.permagent_bin);
+    let fixture_revision = fixture_revision(&tasks_dir);
+    let binary = BinaryProvenance {
+        path: bin_path.clone(),
+        version: detect_binary_version(&bin_path),
+        git_sha: detect_binary_git_sha(&bin_path),
+    };
+    let stamp = qualification_run_stamp();
+    let mut records = vec![
+        build_run_qualification_record(
+            format!("ab-{stamp}-{}", arm_a.label),
+            fixture_revision.clone(),
+            binary.clone(),
+            tier.provider.clone(),
+            tier.model.clone(),
+            tier.pin_packs,
+            &a_results,
+        ),
+        build_run_qualification_record(
+            format!("ab-{stamp}-{}", arm_b.label),
+            fixture_revision,
+            binary,
+            tier.provider.clone(),
+            tier.model.clone(),
+            tier.pin_packs,
+            &b_results,
+        ),
+    ];
+    for (record, results) in records.iter_mut().zip([&a_results, &b_results]) {
+        record.capability_verdict =
+            capability_verdict(record, &tier.name, results, chrono::Utc::now().date_naive());
+    }
+    records[1].token_verdict = build_token_verdict(&report, &records[0], &records[1]);
+    write_qualification_records(&qual_path, &records)?;
+    println!("qualification record: {}", qual_path.display());
+
+    if args.require_conclusive && !report.verdict.is_conclusive() {
+        bail!(
+            "--require-conclusive: the run earned no verdict. {}",
+            report.requirement.what_it_would_take()
+        );
+    }
+    Ok(())
+}
+
+fn render_arm_env(arm: &ArmConfig) -> String {
+    if arm.is_empty() {
+        return "no overrides".to_string();
+    }
+    let mut parts: Vec<String> = arm.unset.iter().map(|n| format!("-{n}")).collect();
+    parts.extend(arm.env.iter().map(|(k, v)| format!("{k}={v}")));
+    parts.join(" ")
+}
+
+fn write_ab_result(path: &Path, report: &AbReport) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+    }
+    let json = serde_json::to_string_pretty(report)?;
+    std::fs::write(path, json).with_context(|| format!("writing result to {}", path.display()))
+}
+
+/// Pick the requested scenarios, erroring on an id that does not exist rather
+/// than silently running a smaller suite than the operator asked for.
+fn select_scenarios(wanted: &[String]) -> Result<Vec<tier0::Tier0Scenario>> {
+    let all = tier0::scenarios();
+    if wanted.is_empty() {
+        return Ok(all);
+    }
+    let known: Vec<&str> = all.iter().map(|s| s.id).collect();
+    let mut out = Vec::new();
+    for id in wanted {
+        let s = all.iter().find(|s| s.id == id).with_context(|| {
+            format!(
+                "unknown tier-0 scenario {id:?}; known scenarios are: {}",
+                known.join(", ")
+            )
+        })?;
+        out.push(s.clone());
+    }
+    Ok(out)
+}
+
+fn cmd_tier0(args: Tier0Args) -> Result<()> {
+    let selected = select_scenarios(&args.scenarios)?;
+    if args.list {
+        println!("Tier 0 scenarios ($0 — a scripted model on loopback, no provider contacted):\n");
+        for s in &selected {
+            println!("  {}", s.id);
+            println!("    {}", s.measures);
+            if !s.env.is_empty() {
+                println!("    env: {}", render_env_pairs(s.env));
+            }
+            println!();
+        }
+        return Ok(());
+    }
+
+    let work_root = args
+        .work_dir
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join("permagent-eval-tier0"));
+    if !binary_resolves(&args.permagent_bin) {
+        eprintln!(
+            "warning: harness binary {:?} not found on PATH — every scenario will error. \
+             Pass --permagent-bin <path> or build it first.",
+            args.permagent_bin
+        );
+    }
+    eprintln!(
+        "==> tier0 — {} scenario(s) against a scripted stub model; nothing is spent",
+        selected.len()
+    );
+
+    let report = tier0::run_all(&selected, &args.permagent_bin, &work_root)?;
+    println!("{}", tier0::render_markdown(&report));
+    if let Some(path) = &args.out {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        std::fs::write(path, serde_json::to_string_pretty(&report)?)
+            .with_context(|| format!("writing {}", path.display()))?;
+        println!("result file: {}", path.display());
+    }
+    eprintln!("scratch kept under {}", work_root.display());
+
+    if args.fail_on_regression && !report.all_passed() {
+        let failed: Vec<&str> = report
+            .scenarios
+            .iter()
+            .filter(|s| !s.passed)
+            .map(|s| s.id.as_str())
+            .collect();
+        bail!("tier-0 scenario(s) failed: {}", failed.join(", "));
+    }
+    Ok(())
+}
+
+fn cmd_report(args: ReportArgs) -> Result<()> {
+    let text = std::fs::read_to_string(&args.file)
+        .with_context(|| format!("reading {}", args.file.display()))?;
+    let report: AbReport = serde_json::from_str(&text).with_context(|| {
+        format!(
+            "{} is not a `{}` result file",
+            args.file.display(),
+            permagent_eval::ab::AB_SCHEMA
+        )
+    })?;
+    if report.schema != permagent_eval::ab::AB_SCHEMA {
+        bail!(
+            "{} declares schema {:?}, but this build reads {:?}",
+            args.file.display(),
+            report.schema,
+            permagent_eval::ab::AB_SCHEMA
+        );
+    }
+    match args.format.as_str() {
+        "json" => println!("{}", serde_json::to_string_pretty(&report)?),
+        _ => println!("{}", ab::render_markdown(&report)),
+    }
+    Ok(())
+}
+
+// --- K16: re-grade pre-K15 `errored: provider unavailable` verdicts from an
+// existing --record's already-paid-for run directories --------------------
+
+/// Find one task's run directory under `runs_dir`, matching
+/// `crate::runner::run_task`'s own `"{tier}-{task_id}-{nanos}-{n}"` naming
+/// (`run_dir = cfg.runs_root.join(format!("{}-{}-{}", tier.name,
+/// task.spec.id, unique_stamp()))`, where `unique_stamp()` is
+/// `"{nanos}-{n}"`). Matched by EXACT prefix equality after stripping the
+/// trailing `-<nanos>-<n>` — a plain substring/suffix check would
+/// mismatch when one task id is itself a suffix of another (e.g. a
+/// `...-roadmap` task against a `...-skips-roadmap` one). "Newest" (Lane K16
+/// brief) is the directory with the largest embedded nanosecond timestamp,
+/// so a re-run of the same task under the same `--runs-dir` always wins over
+/// an older attempt.
+fn find_run_dir(runs_dir: &Path, tier_name: &str, task_id: &str) -> Result<Option<PathBuf>> {
+    static RUN_DIR_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"^(.+)-(\d+)-(\d+)$").expect("valid regex"));
+    let wanted = format!("{tier_name}-{task_id}");
+    let entries = match fs::read_dir(runs_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(None),
+    };
+    let mut best: Option<(u128, PathBuf)> = None;
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(caps) = RUN_DIR_RE.captures(name) else {
+            continue;
+        };
+        if &caps[1] != wanted.as_str() {
+            continue;
+        }
+        let nanos: u128 = caps[2].parse().unwrap_or(0);
+        if best.as_ref().is_none_or(|(n, _)| nanos > *n) {
+            best = Some((nanos, entry.path()));
+        }
+    }
+    Ok(best.map(|(_, path)| path))
+}
+
+/// K15's own rule (`crate::provider_unavailable::classify_in_run`), applied
+/// to one task's run directory: `<run_dir>/logs/harness.log` (missing is not
+/// an error — an empty log, like `runner::run_task`'s own
+/// `unwrap_or_default()`) plus every `<run_dir>/data/logs/llm_request.*
+/// .jsonl`.
+fn regrade_classify(run_dir: &Path, tier_provider: &str) -> provider_unavailable::Classification {
+    let harness_log_text =
+        fs::read_to_string(run_dir.join("logs").join("harness.log")).unwrap_or_default();
+    let data_root = run_dir.join("data");
+    provider_unavailable::classify_in_run(tier_provider, &harness_log_text, &data_root)
+}
+
+/// `permagent-eval regrade`: for a `--record` report JSON's `--tier` entry,
+/// re-grade every `oracle: "errored"` task whose run directory (under
+/// `--runs-dir`) shows, under K15's `classify_in_run`, that its
+/// provider-unavailable evidence does NOT name the tier's own provider and
+/// is not a terminal exit — i.e. K15 would never have forced it to
+/// `errored` in the first place. Such a task is re-graded from its own
+/// `oracle_exit` (`0` -> `pass`, anything else -> `fail`), `solved` is set to
+/// match, `note` is cleared, `signals.provider_unavailable_ignored` is set
+/// from the classification's ignored-marker count, and a `regraded: {rule:
+/// "K15", from: "errored"}` marker is appended so a report reader can see
+/// this task's grade was derived, not originally measured. A task whose
+/// evidence DOES name the tier's provider (or is terminal) is left
+/// `errored`, unchanged — K15 would still force it today.
+///
+/// Never touches `--record` (or its `--runs-dir` evidence): the regraded
+/// record — with its tier's `summary.solved`/`pass_rate`/
+/// `dollars_per_solved` recomputed from the new verdicts (`total_cost_usd`
+/// and every other cost figure are left exactly as measured; nothing here
+/// re-derives spend) — is written to `--out`. When `<record>.qual.json`
+/// exists (the sidecar every `run` invocation already writes alongside its
+/// own `--out`, via `write_qualification_records` — reused here verbatim,
+/// "the same serializer"), the matching provider's
+/// `TaskQualificationEvidence` entries are patched the same way (`result`,
+/// `errored`, `provider_error`) and the whole array is written to
+/// `<out>.qual.json`, so `qualify --record <out>.qual.json` reads the
+/// regraded verdicts.
+fn cmd_regrade(args: RegradeArgs) -> Result<()> {
+    let raw = fs::read_to_string(&args.record)
+        .with_context(|| format!("reading record {}", args.record.display()))?;
+    let mut value: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing record {}", args.record.display()))?;
+
+    let tiers = value
+        .get_mut("tiers")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| anyhow::anyhow!("{} has no `tiers` array", args.record.display()))?;
+
+    let mut matched_tier = false;
+    let mut tier_provider = String::new();
+    let mut examined = 0usize;
+    let mut promoted_pass = 0usize;
+    let mut promoted_fail = 0usize;
+    let mut kept_errored = 0usize;
+    // Every task actually regraded here (never one left `errored`), keyed by
+    // task id — reused for the `.qual.json` pass below so the SAME verdict
+    // is applied there without re-running `classify_in_run`'s file scan.
+    let mut regrades: std::collections::HashMap<String, (&'static str, usize)> =
+        std::collections::HashMap::new();
+
+    for tier_value in tiers.iter_mut() {
+        if tier_value.get("tier").and_then(|v| v.as_str()) != Some(args.tier.as_str()) {
+            continue;
+        }
+        matched_tier = true;
+        tier_provider = tier_value
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("tier {:?} entry has no `provider`", args.tier))?
+            .to_string();
+
+        let tasks = tier_value
+            .get_mut("tasks")
+            .and_then(|v| v.as_array_mut())
+            .ok_or_else(|| anyhow::anyhow!("tier {:?} entry has no `tasks` array", args.tier))?;
+
+        for task in tasks.iter_mut() {
+            if task.get("oracle").and_then(|v| v.as_str()) != Some("errored") {
+                continue;
+            }
+            examined += 1;
+            let task_id = task
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("task in {:?} is missing task_id", args.tier))?
+                .to_string();
+            let Some(run_dir) = find_run_dir(&args.runs_dir, &args.tier, &task_id)? else {
+                eprintln!(
+                    "warning: no run dir for task {task_id:?} under {} — leaving errored",
+                    args.runs_dir.display()
+                );
+                kept_errored += 1;
+                continue;
+            };
+            let classification = regrade_classify(&run_dir, &tier_provider);
+            if classification.unavailable {
+                kept_errored += 1;
+                continue;
+            }
+            let oracle_exit = task.get("oracle_exit").and_then(|v| v.as_i64());
+            let new_oracle = if oracle_exit == Some(0) {
+                "pass"
+            } else {
+                "fail"
+            };
+            if new_oracle == "pass" {
+                promoted_pass += 1;
+            } else {
+                promoted_fail += 1;
+            }
+            regrades.insert(task_id.clone(), (new_oracle, classification.ignored_count));
+            let obj = task
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("task {task_id:?} is not a JSON object"))?;
+            obj.insert("oracle".to_string(), serde_json::json!(new_oracle));
+            obj.insert(
+                "solved".to_string(),
+                serde_json::json!(new_oracle == "pass"),
+            );
+            obj.insert("note".to_string(), serde_json::Value::Null);
+            if let Some(signals) = obj.get_mut("signals").and_then(|v| v.as_object_mut()) {
+                signals.insert(
+                    "provider_unavailable_ignored".to_string(),
+                    serde_json::json!(classification.ignored_count),
+                );
+            }
+            obj.insert(
+                "regraded".to_string(),
+                serde_json::json!({ "rule": "K15", "from": "errored" }),
+            );
+        }
+
+        // Recompute only what depends on the new verdicts. `total_cost_usd`
+        // (and every other cost figure) is left exactly as measured — K16
+        // re-grades PAST verdicts from evidence already on disk, it never
+        // re-derives spend.
+        let solved = tasks
+            .iter()
+            .filter(|t| t.get("solved").and_then(|v| v.as_bool()) == Some(true))
+            .count();
+        let attempted = tasks
+            .iter()
+            .filter(|t| t.get("oracle").and_then(|v| v.as_str()) != Some("not_run"))
+            .count();
+        let pass_rate = if attempted == 0 {
+            0.0
+        } else {
+            solved as f64 / attempted as f64
+        };
+        if let Some(summary) = tier_value
+            .get_mut("summary")
+            .and_then(|v| v.as_object_mut())
+        {
+            summary.insert("solved".to_string(), serde_json::json!(solved));
+            summary.insert("pass_rate".to_string(), serde_json::json!(pass_rate));
+            let total_cost_usd = summary.get("total_cost_usd").and_then(|v| v.as_f64());
+            let dollars_per_solved = if solved == 0 {
+                None
+            } else {
+                total_cost_usd.map(|t| t / solved as f64)
+            };
+            summary.insert(
+                "dollars_per_solved".to_string(),
+                dollars_per_solved.map_or(serde_json::Value::Null, |v| serde_json::json!(v)),
+            );
+        }
+    }
+
+    if !matched_tier {
+        bail!(
+            "no tier named {:?} found in {} (see `tiers[].tier`)",
+            args.tier,
+            args.record.display()
+        );
+    }
+    if args.out == args.record {
+        bail!("--out must not be the same path as --record");
+    }
+
+    if let Some(parent) = args.out.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+    }
+    fs::write(&args.out, serde_json::to_string_pretty(&value)?)
+        .with_context(|| format!("writing regraded record to {}", args.out.display()))?;
+
+    // Companion .qual.json: patch the SAME result/errored/provider_error
+    // fields on the sidecar `run` already wrote next to --record (never
+    // rebuilt from scratch — it carries provenance/signal fields, e.g.
+    // `harness_overhead`/`landed_goals`/`dag_enforcement`, that the report
+    // JSON `--record` never serializes at all).
+    let input_qual_path = qualification_sibling_path(&args.record);
+    let qual_out_path = if input_qual_path.is_file() {
+        let mut records = read_qualification_records(&input_qual_path)?;
+        for record in records.iter_mut().filter(|r| r.provider == tier_provider) {
+            for task in record.tasks.iter_mut() {
+                if !task.errored {
+                    continue;
+                }
+                let Some((new_oracle, _ignored_count)) = regrades.get(task.task_id.as_str()) else {
+                    continue;
+                };
+                task.result = (*new_oracle).to_string();
+                task.errored = false;
+                task.provider_error = None;
+            }
+            record.provider_unavailable = record.tasks.iter().any(|t| t.provider_error.is_some());
+        }
+        let out_qual_path = qualification_sibling_path(&args.out);
+        write_qualification_records(&out_qual_path, &records)?;
+        Some(out_qual_path)
+    } else {
+        None
+    };
+
+    eprintln!(
+        "regrade[{}]: {examined} errored task(s) examined -> {promoted_pass} promoted to pass, \
+         {promoted_fail} promoted to fail, {kept_errored} left errored; wrote {}{}",
+        args.tier,
+        args.out.display(),
+        qual_out_path
+            .map(|p| format!(", {}", p.display()))
+            .unwrap_or_default()
+    );
     Ok(())
 }
 
@@ -1020,8 +2481,16 @@ fn fail_under_violation(reports: &[TierReport], threshold_pct: f64) -> Result<Op
 /// Error (unless allowed) when a selected tier needs an API key that is not set.
 /// A set-but-empty (or whitespace-only) value counts as missing — it would only
 /// send an empty credential and fail deeper in the harness.
-fn preflight_keys(tiers: &[Tier], allow_missing: bool) -> Result<()> {
-    preflight_keys_with(tiers, allow_missing, |k| std::env::var(k).ok())
+fn preflight_keys(tiers: &[Tier], allow_missing: bool, use_keyring: bool) -> Result<()> {
+    // With `--use-keyring` the CHILD reads secrets from the OS keychain, so this
+    // process's environment is not where the credential lives and its absence
+    // proves nothing. Erroring on it forced `--allow-missing-keys` on every
+    // keychain-only provider, which then also silenced the case this check
+    // exists for: a genuinely absent key, which otherwise fails 68 times in a
+    // row instead of once up front.
+    preflight_keys_with(tiers, allow_missing || use_keyring, |k| {
+        std::env::var(k).ok()
+    })
 }
 
 /// Testable core of [`preflight_keys`]: `lookup` supplies each env var's value so
@@ -1042,7 +2511,9 @@ fn preflight_keys_with(
         }
         if allow_missing {
             eprintln!(
-                "warning: tier {} needs {} but it is not set (continuing)",
+                "note: tier {} declares {}, which is not in this process's environment. \
+                 The child reads the OS keychain, so this is expected for a keychain-only \
+                 provider — but if the credential is missing there too, every run will fail.",
                 tier.name, key
             );
         } else {
@@ -1084,7 +2555,6 @@ fn resolved_binary(bin: &str) -> String {
 mod tests {
     use super::*;
     use permagent_eval::cost::CostReading;
-    use permagent_eval::metrics::TaskResult;
     use permagent_eval::oracle::OracleOutcome;
 
     #[test]
@@ -1118,6 +2588,24 @@ mod tests {
             pinned_packs: true,
             results,
         }
+    }
+
+    /// Regression: `--use-keyring` means the CHILD reads the OS keychain, so this
+    /// process's environment is not where the credential lives. Erroring on its
+    /// absence forced `--allow-missing-keys` onto every keychain-only provider,
+    /// which then also silenced the genuinely-missing case this check exists for
+    /// — turning one clear failure up front into 68 identical failures.
+    #[test]
+    fn preflight_accepts_a_keychain_only_provider_but_still_catches_a_truly_absent_key() {
+        let tiers = vec![Tier::builtin("dschat").expect("dschat is a built-in tier")];
+        let absent = |_: &str| None;
+
+        // Without the keyring the absence is decisive: fail once, up front.
+        assert!(preflight_keys_with(&tiers, false, absent).is_err());
+
+        // The keyring makes the environment non-authoritative, so this proceeds
+        // and the child resolves the credential itself.
+        assert!(preflight_keys_with(&tiers, true, absent).is_ok());
     }
 
     // --- Nit 1: preflight rejects a set-but-empty key -----------------------
@@ -1225,6 +2713,365 @@ mod tests {
         assert_eq!(args.budget_usd, Some(12.50));
     }
 
+    // --- Lane R1: `--cassette`/`--cassette-mode` parse, default, and wire
+    // into `RunConfig.arm_env` exactly like an A/B arm knob -------------
+
+    #[test]
+    fn cassette_defaults_off_and_replay_mode() {
+        let cli = Cli::try_parse_from(["permagent-eval", "run", "--tier", "local"]).unwrap();
+        let Command::Run(args) = cli.command else {
+            panic!("expected Run");
+        };
+        assert_eq!(args.cassette, None);
+        assert_eq!(args.cassette_mode, "replay");
+    }
+
+    #[test]
+    fn cassette_flag_parses_dir_and_mode() {
+        let cli = Cli::try_parse_from([
+            "permagent-eval",
+            "run",
+            "--tier",
+            "local",
+            "--cassette",
+            "/tmp/my-cassette",
+            "--cassette-mode",
+            "record",
+        ])
+        .unwrap();
+        let Command::Run(args) = cli.command else {
+            panic!("expected Run");
+        };
+        assert_eq!(args.cassette, Some(PathBuf::from("/tmp/my-cassette")));
+        assert_eq!(args.cassette_mode, "record");
+    }
+
+    #[test]
+    fn cassette_mode_rejects_unknown_value() {
+        let result = Cli::try_parse_from([
+            "permagent-eval",
+            "run",
+            "--tier",
+            "local",
+            "--cassette",
+            "/tmp/x",
+            "--cassette-mode",
+            "playback",
+        ]);
+        assert!(
+            result.is_err(),
+            "an unknown cassette mode must be rejected at parse time"
+        );
+    }
+
+    #[test]
+    fn cassette_arg_becomes_the_provider_cassette_env_var() {
+        // Pins the exact seam `cmd_run` uses -- `RunConfig.arm_env`, applied
+        // LAST over both the invocation's own defaults and the inherited
+        // environment (runner.rs: "The arm's knobs go on LAST so they
+        // outrank the invocation's own defaults... as well as the inherited
+        // environment"). This is the same seam an A/B arm's `--a-env`/
+        // `--b-env` already rides, so `--cassette` needs no new plumbing in
+        // `runner.rs`/`invocation.rs`.
+        assert_eq!(
+            cassette_arm_env(Some(Path::new("/tmp/fx03-cassette")), "replay"),
+            vec![(
+                "PERMAGENT_PROVIDER_CASSETTE".to_string(),
+                "replay:/tmp/fx03-cassette".to_string()
+            )]
+        );
+        assert_eq!(
+            cassette_arm_env(Some(Path::new("/tmp/fx03-cassette")), "record"),
+            vec![(
+                "PERMAGENT_PROVIDER_CASSETTE".to_string(),
+                "record:/tmp/fx03-cassette".to_string()
+            )]
+        );
+    }
+
+    /// No `--cassette` must leave the arm environment EMPTY, so an ordinary
+    /// run is byte-for-byte what it was before this lane — the same "unset
+    /// means never reached" discipline the provider side keeps.
+    #[test]
+    fn no_cassette_arg_leaves_the_arm_environment_untouched() {
+        assert!(cassette_arm_env(None, "replay").is_empty());
+        assert!(cassette_arm_env(None, "record").is_empty());
+    }
+
+    /// Only `replay` may skip the API-key preflight: a `record` run really
+    /// does call the paid provider and must still be refused without a key.
+    #[test]
+    fn only_replay_waives_the_api_key_preflight() {
+        let dir = PathBuf::from("/tmp/fx03-cassette");
+        assert!(cassette_is_replaying(Some(dir.as_path()), "replay"));
+        assert!(!cassette_is_replaying(Some(dir.as_path()), "record"));
+        assert!(!cassette_is_replaying(None, "replay"));
+    }
+
+    // --- `ab`: arg parsing, arm resolution, honesty guard, reporting -------
+
+    fn ab_args(argv: &[&str]) -> AbArgs {
+        let mut full = vec!["permagent-eval", "ab"];
+        full.extend_from_slice(argv);
+        let cli = Cli::try_parse_from(full).expect("args should parse");
+        let Command::Ab(args) = cli.command else {
+            panic!("expected Ab");
+        };
+        args
+    }
+
+    #[test]
+    fn ab_parses_a_knob_run_with_repeats_and_defaults_to_one_repeat() {
+        let a = ab_args(&["--tier", "haiku", "--knob", "repo-map", "--repeats", "4"]);
+        assert_eq!(a.knob.as_deref(), Some("repo-map"));
+        assert_eq!(a.repeats, 4);
+        assert!(!a.dry_run);
+        assert!(!a.require_conclusive);
+        assert_eq!(a.baseline, "baseline");
+        assert_eq!(a.candidate, "candidate");
+        assert_eq!(
+            ab_args(&["--tier", "haiku", "--knob", "repo-map"]).repeats,
+            1
+        );
+    }
+
+    #[test]
+    fn ab_refuses_a_knob_mixed_with_ad_hoc_env() {
+        // clap-level conflict: the two ways of defining an arm are exclusive,
+        // so a run can never half-apply both.
+        assert!(Cli::try_parse_from([
+            "permagent-eval",
+            "ab",
+            "--tier",
+            "haiku",
+            "--knob",
+            "repo-map",
+            "--a-env",
+            "X=1",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn ab_holds_the_model_constant_by_refusing_more_than_one_tier() {
+        let tiers = vec![
+            Tier::builtin("haiku").unwrap(),
+            Tier::builtin("sonnet").unwrap(),
+        ];
+        let err = single_tier(&tiers).unwrap_err().to_string();
+        assert!(err.contains("measures the models"), "{err}");
+        assert!(single_tier(&tiers[..1]).is_ok());
+    }
+
+    #[test]
+    fn resolve_arms_expands_a_registry_knob_into_two_labelled_arms() {
+        let args = ab_args(&["--tier", "haiku", "--knob", "premature-done-guard"]);
+        let (a, b, knob) = resolve_arms(&args).unwrap();
+        assert_eq!(knob.unwrap().name, "premature-done-guard");
+        assert_eq!(
+            a.env,
+            vec![("PERMAGENT_AFTER_TURN_HOLD".into(), "0".into())]
+        );
+        assert_eq!(
+            b.env,
+            vec![("PERMAGENT_AFTER_TURN_HOLD".into(), "1".into())]
+        );
+        assert!(a.label.contains("baseline") && a.label.contains("off"));
+        assert!(b.label.contains("candidate") && b.label.contains("on"));
+    }
+
+    #[test]
+    fn resolve_arms_rejects_an_unknown_knob_and_names_the_real_ones() {
+        let args = ab_args(&["--tier", "haiku", "--knob", "turbo-mode"]);
+        let err = format!("{:#}", resolve_arms(&args).unwrap_err());
+        assert!(err.contains("unknown knob"), "{err}");
+        assert!(
+            err.contains("repo-map"),
+            "the error must list what IS valid: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_arms_refuses_to_compare_a_configuration_against_itself() {
+        let args = ab_args(&["--tier", "haiku", "--a-env", "X=1", "--b-env", "X=1"]);
+        let err = format!("{:#}", resolve_arms(&args).unwrap_err());
+        assert!(err.contains("against itself"), "{err}");
+    }
+
+    #[test]
+    fn resolve_arms_requires_something_to_compare() {
+        let args = ab_args(&["--tier", "haiku"]);
+        let err = format!("{:#}", resolve_arms(&args).unwrap_err());
+        assert!(err.contains("nothing to compare"), "{err}");
+    }
+
+    #[test]
+    fn resolve_arms_accepts_ad_hoc_env_pairs_and_rejects_malformed_ones() {
+        let args = ab_args(&[
+            "--tier",
+            "haiku",
+            "--a-env",
+            "GOOSE_TEMPERATURE=0",
+            "--b-env",
+            "GOOSE_TEMPERATURE=1",
+        ]);
+        let (a, b, knob) = resolve_arms(&args).unwrap();
+        assert!(knob.is_none());
+        assert_eq!(a.env[0].1, "0");
+        assert_eq!(b.env[0].1, "1");
+
+        let bad = ab_args(&["--tier", "haiku", "--a-env", "NOEQUALS"]);
+        assert!(resolve_arms(&bad).is_err());
+    }
+
+    /// The whole point of the lane: a saved result renders without the run
+    /// that produced it, and a file that is not one is refused rather than
+    /// half-rendered.
+    #[test]
+    fn report_renders_a_saved_result_and_rejects_a_foreign_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tier = Tier::builtin("haiku").unwrap();
+        let results: Vec<TaskResult> = (0..3)
+            .map(|i| {
+                TaskResult::new(
+                    format!("t{i}"),
+                    "classic",
+                    OracleOutcome::Pass,
+                    CostReading::known(0.01, false, 1),
+                )
+            })
+            .collect();
+        let arm_a = ArmConfig::new("a");
+        let arm_b = ArmConfig::new("b");
+        let report = AbReport::build(&tier, None, 1, 3, &arm_a, &results, &arm_b, &results);
+
+        let path = tmp.path().join("nested").join("ab.json");
+        write_ab_result(&path, &report).unwrap();
+        assert!(path.exists(), "the parent directory must be created");
+        cmd_report(ReportArgs {
+            file: path.clone(),
+            format: "md".to_string(),
+        })
+        .unwrap();
+
+        // A file that parses as JSON but is not an AB result is refused.
+        let foreign = tmp.path().join("other.json");
+        std::fs::write(&foreign, "{\"tiers\":[]}").unwrap();
+        let err = format!(
+            "{:#}",
+            cmd_report(ReportArgs {
+                file: foreign,
+                format: "md".to_string(),
+            })
+            .unwrap_err()
+        );
+        assert!(err.contains("result file"), "{err}");
+    }
+
+    /// A result file whose schema string is from another version must be
+    /// refused outright rather than rendered with fields silently missing.
+    #[test]
+    fn report_refuses_a_result_file_from_another_schema_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tier = Tier::builtin("haiku").unwrap();
+        let mut report = AbReport::build(
+            &tier,
+            None,
+            1,
+            0,
+            &ArmConfig::new("a"),
+            &[],
+            &ArmConfig::new("b"),
+            &[],
+        );
+        report.schema = "permagent-eval/ab-result@99".to_string();
+        let path = tmp.path().join("future.json");
+        write_ab_result(&path, &report).unwrap();
+        let err = format!(
+            "{:#}",
+            cmd_report(ReportArgs {
+                file: path,
+                format: "md".to_string(),
+            })
+            .unwrap_err()
+        );
+        assert!(err.contains("@99"), "{err}");
+    }
+
+    #[test]
+    fn knobs_listing_renders_every_registry_entry() {
+        cmd_knobs().unwrap();
+        for k in permagent_eval::ab::KNOBS {
+            assert!(!render_env_pairs(k.off).is_empty(), "{}", k.name);
+            assert!(!render_env_pairs(k.on).is_empty(), "{}", k.name);
+        }
+    }
+
+    #[test]
+    fn the_default_result_path_is_unique_per_tier_and_knob() {
+        let root = Path::new("/tmp/runs");
+        let p = default_ab_out(root, "haiku", permagent_eval::ab::knob("repo-map"));
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("ab-haiku-repo-map-"), "{name}");
+        assert!(name.ends_with(".json"), "{name}");
+        let adhoc = default_ab_out(root, "haiku", None);
+        assert!(
+            adhoc.to_string_lossy().contains("-adhoc-"),
+            "{}",
+            adhoc.display()
+        );
+    }
+
+    // --- `tier0` -----------------------------------------------------------
+
+    #[test]
+    fn tier0_selects_every_scenario_by_default_and_names_unknown_ids() {
+        assert_eq!(
+            select_scenarios(&[]).unwrap().len(),
+            tier0::scenarios().len()
+        );
+        let one = select_scenarios(&["tool-result-pruning".to_string()]).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].id, "tool-result-pruning");
+
+        let err = format!(
+            "{:#}",
+            select_scenarios(&["not-a-scenario".to_string()]).unwrap_err()
+        );
+        assert!(err.contains("unknown tier-0 scenario"), "{err}");
+        assert!(
+            err.contains("tool-result-pruning"),
+            "the error must list what IS valid: {err}"
+        );
+    }
+
+    #[test]
+    fn tier0_args_default_to_the_permagent_binary_and_no_ci_gate() {
+        let cli = Cli::try_parse_from(["permagent-eval", "tier0"]).unwrap();
+        let Command::Tier0(args) = cli.command else {
+            panic!("expected Tier0");
+        };
+        assert_eq!(args.permagent_bin, "permagent");
+        assert!(args.scenarios.is_empty());
+        assert!(!args.fail_on_regression);
+        assert!(!args.list);
+    }
+
+    /// `--list` must be side-effect free: it is the one Tier-0 path that runs
+    /// with no binary present, so it must not try to spawn anything.
+    #[test]
+    fn tier0_list_runs_without_a_harness_binary() {
+        cmd_tier0(Tier0Args {
+            permagent_bin: "/nonexistent/permagent".to_string(),
+            scenarios: vec![],
+            work_dir: None,
+            out: None,
+            list: true,
+            fail_on_regression: true,
+        })
+        .unwrap();
+    }
+
     #[test]
     fn qualify_subcommand_requires_input_and_accepts_output() {
         let cli = Cli::try_parse_from([
@@ -1239,8 +3086,156 @@ mod tests {
         let Command::Qualify(args) = cli.command else {
             panic!("expected Qualify");
         };
-        assert_eq!(args.input, PathBuf::from("evidence.json"));
+        assert_eq!(args.input, Some(PathBuf::from("evidence.json")));
         assert_eq!(args.out, Some(PathBuf::from("scorecard.json")));
+        assert!(args.records.is_empty());
+    }
+
+    #[test]
+    fn qualify_accepts_token_flags_only_with_records() {
+        let cli = Cli::try_parse_from([
+            "permagent-eval",
+            "qualify",
+            "--record",
+            "run.qual.json",
+            "--heldout-task",
+            "fizzbuzz",
+            "--token-baseline",
+            "locked.qual.json",
+            "--reference-record",
+            "ref-a.qual.json",
+            "--reference-record",
+            "ref-b.qual.json",
+        ])
+        .unwrap();
+        let Command::Qualify(args) = cli.command else {
+            panic!("expected Qualify");
+        };
+        assert_eq!(args.token_baseline, Some(PathBuf::from("locked.qual.json")));
+        assert_eq!(args.reference_records.len(), 2);
+        assert!(Cli::try_parse_from([
+            "permagent-eval",
+            "qualify",
+            "--input",
+            "abstract.json",
+            "--token-baseline",
+            "locked.qual.json",
+        ])
+        .is_err());
+    }
+
+    fn capability_test_record(results: &[TaskResult]) -> RunQualificationRecord {
+        build_run_qualification_record(
+            "capability-test",
+            None,
+            BinaryProvenance {
+                path: "unused".to_string(),
+                version: None,
+                git_sha: None,
+            },
+            "test-provider",
+            "test-model",
+            true,
+            results,
+        )
+    }
+
+    #[test]
+    fn capability_builder_reuses_per_run_graduation_and_requires_measurements() {
+        use permagent_eval::cost::CostReading;
+        use permagent_eval::oracle::OracleOutcome;
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 11).unwrap();
+        let smoke = TaskResult::new(
+            "fizzbuzz",
+            "classic",
+            OracleOutcome::Pass,
+            CostReading::unknown(),
+        );
+        let mut selection = TaskResult::new(
+            "select-dag",
+            "selection",
+            OracleOutcome::Pass,
+            CostReading::unknown(),
+        );
+        selection.selection_correct = Some(true);
+        let mut results = vec![smoke, selection];
+        let record = capability_test_record(&results);
+        let verdict = capability_verdict(&record, "test-tier", &results, today).unwrap();
+        assert!(verdict.graduated);
+        assert_eq!(verdict.tier, "test-tier");
+        assert_eq!(verdict.micro_suite_pass_pct, Some(1.0));
+        assert_eq!(verdict.dag_selection_pct, Some(1.0));
+        results[1].selection_correct = Some(false);
+        let record = capability_test_record(&results);
+        assert!(
+            !capability_verdict(&record, "test-tier", &results, today)
+                .unwrap()
+                .graduated
+        );
+        results[1].selection_correct = None;
+        let record = capability_test_record(&results);
+        assert!(capability_verdict(&record, "test-tier", &results, today).is_none());
+        results.remove(0);
+        results[0].selection_correct = Some(true);
+        let record = capability_test_record(&results);
+        assert!(capability_verdict(&record, "test-tier", &results, today).is_none());
+    }
+
+    #[test]
+    fn qualify_command_uses_locked_token_baseline_without_rewriting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let record_path = dir.path().join("runs.qual.json");
+        let baseline_path = dir.path().join("locked.qual.json");
+        let out = dir.path().join("scorecard.json");
+        let mut task = TaskResult::new(
+            "fizzbuzz",
+            "classic",
+            permagent_eval::oracle::OracleOutcome::Pass,
+            permagent_eval::cost::CostReading::unknown(),
+        );
+        task.cost.input_tokens = Some(80);
+        let record = capability_test_record(&[task]);
+        let records: Vec<_> = (0..3)
+            .map(|i| {
+                let mut copy = record.clone();
+                copy.run_id = format!("r{i}");
+                copy
+            })
+            .collect();
+        let mut baseline = record;
+        baseline.input_tokens_per_solved_median = Some(100.0);
+        let locked_bytes = serde_json::to_vec(&baseline).unwrap();
+        std::fs::write(&record_path, serde_json::to_vec(&records).unwrap()).unwrap();
+        std::fs::write(&baseline_path, &locked_bytes).unwrap();
+        cmd_qualify(QualifyArgs {
+            records: vec![record_path],
+            heldout_tasks: vec!["fizzbuzz".to_string()],
+            token_baseline: Some(baseline_path.clone()),
+            ..qualify_args(Some(out.clone()))
+        })
+        .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out).unwrap()).unwrap();
+        assert_eq!(report["areas"]["token_efficiency"]["rating"], "Excellent");
+        assert_eq!(std::fs::read(baseline_path).unwrap(), locked_bytes);
+    }
+
+    /// The default `QualifyArgs` this test module reuses for both the
+    /// `--input` and `--record` paths — filling in the new X-obs-1 fields
+    /// with their empty/default values so each test only sets what it cares
+    /// about.
+    fn qualify_args(out: Option<PathBuf>) -> QualifyArgs {
+        QualifyArgs {
+            input: None,
+            records: Vec::new(),
+            token_baseline: None,
+            reference_records: Vec::new(),
+            optimizer_tasks: Vec::new(),
+            heldout_tasks: Vec::new(),
+            benchmark_version: "eval-records-v1".to_string(),
+            out,
+        }
     }
 
     #[test]
@@ -1256,14 +3251,74 @@ mod tests {
         });
         std::fs::write(&input, serde_json::to_vec(&evidence).unwrap()).unwrap();
         cmd_qualify(QualifyArgs {
-            input,
-            out: Some(out.clone()),
+            input: Some(input),
+            ..qualify_args(Some(out.clone()))
         })
         .unwrap();
         let report: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(out).unwrap()).unwrap();
         assert_eq!(report["overall"], "Unrated");
         assert_eq!(report["heldout_passed"], false);
+    }
+
+    #[test]
+    fn qualify_command_requires_either_input_or_record() {
+        let err = format!("{:#}", cmd_qualify(qualify_args(None)).unwrap_err());
+        assert!(err.contains("--input or --record"), "{err}");
+    }
+
+    #[test]
+    fn qualify_command_folds_run_records_into_the_nine_areas() {
+        let dir = tempfile::tempdir().unwrap();
+        let record_path = dir.path().join("run.qual.json");
+        let out = dir.path().join("scorecard.json");
+        let record = build_run_qualification_record(
+            "r0",
+            Some("deadbeef".to_string()),
+            BinaryProvenance {
+                path: "/opt/permagent".to_string(),
+                version: Some("1.0.0".to_string()),
+                git_sha: Some("cafebabecafebabecafebabecafebabecafebabe".to_string()),
+            },
+            "anthropic",
+            "claude-sonnet-5",
+            true,
+            &[permagent_eval::metrics::TaskResult::new(
+                "held-1",
+                "classic",
+                permagent_eval::oracle::OracleOutcome::Pass,
+                permagent_eval::cost::CostReading::known(0.1, false, 1),
+            )],
+        );
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+        cmd_qualify(QualifyArgs {
+            records: vec![record_path],
+            heldout_tasks: vec!["held-1".to_string()],
+            ..qualify_args(Some(out.clone()))
+        })
+        .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out).unwrap()).unwrap();
+        // A single retained record cannot reach a three-run streak, but the
+        // area map must still be rendered for all nine names.
+        assert_eq!(report["areas"].as_object().unwrap().len(), 9);
+        assert_eq!(report["areas"]["observability"]["rating"], "Unrated");
+    }
+
+    #[test]
+    fn qualify_command_requires_heldout_task_with_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let record_path = dir.path().join("run.qual.json");
+        std::fs::write(&record_path, "{}").unwrap();
+        let err = format!(
+            "{:#}",
+            cmd_qualify(QualifyArgs {
+                records: vec![record_path],
+                ..qualify_args(None)
+            })
+            .unwrap_err()
+        );
+        assert!(err.contains("--heldout-task"), "{err}");
     }
 
     #[test]
@@ -1545,5 +3600,499 @@ nodes:
             permagent_eval::ProgramNodeStatus::Planned
         );
         assert_eq!(fs::read_to_string(&manifest).unwrap(), raw);
+    }
+
+    // ── D2: JSON envelope stamping ─────────────────────────────────────────
+
+    #[test]
+    fn stamp_json_envelope_adds_run_id_and_generated_at_without_touching_other_fields() {
+        let base = serde_json::json!({"tiers": []});
+        let when = chrono::DateTime::parse_from_rfc3339("2026-09-09T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let stamped = stamp_json_envelope(base, "run-20260909T100000Z", when);
+        assert_eq!(stamped["run_id"], "run-20260909T100000Z");
+        assert_eq!(stamped["generated_at"], "2026-09-09T10:00:00+00:00");
+        assert_eq!(stamped["tiers"], serde_json::json!([]));
+    }
+
+    // ── G3: dag_selection_pct envelope stamping ─────────────────────────────
+
+    #[test]
+    fn stamp_dag_selection_pct_inserts_the_field_when_some() {
+        let base = serde_json::json!({"tiers": []});
+        let stamped = stamp_dag_selection_pct(base, Some(0.97));
+        assert!((stamped["dag_selection_pct"].as_f64().unwrap() - 0.97).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stamp_dag_selection_pct_omits_the_field_when_none() {
+        let base = serde_json::json!({"tiers": []});
+        let stamped = stamp_dag_selection_pct(base, None);
+        assert!(
+            stamped
+                .as_object()
+                .unwrap()
+                .get("dag_selection_pct")
+                .is_none(),
+            "must not fabricate a value when no selection fixture ran: {stamped}"
+        );
+    }
+
+    // ── D1/D4: `graduate` subcommand ────────────────────────────────────────
+
+    #[test]
+    fn graduate_subcommand_parses_run_provider_model_role_and_dry_run() {
+        let cli = Cli::try_parse_from([
+            "permagent-eval",
+            "graduate",
+            "--run",
+            "a.json",
+            "--run",
+            "b.json",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-sonnet-5",
+            "--role",
+            "edit",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Command::Graduate(args) = cli.command else {
+            panic!("expected Graduate");
+        };
+        assert_eq!(
+            args.runs,
+            vec![PathBuf::from("a.json"), PathBuf::from("b.json")]
+        );
+        assert_eq!(args.provider.as_deref(), Some("anthropic"));
+        assert_eq!(args.role.as_deref(), Some("edit"));
+        assert!(args.dry_run);
+    }
+
+    /// A retained run report shaped exactly like `render_json`'s output plus
+    /// the additive `generated_at`/`dag_selection_pct` fields, with the
+    /// fizzbuzz smoke solved and a high pass rate — a qualifying run for the
+    /// default ORCHESTRATE role.
+    fn qualifying_run_json(day: u32, pass: bool) -> serde_json::Value {
+        serde_json::json!({
+            "generated_at": format!("2026-09-{day:02}T00:00:00Z"),
+            "dag_selection_pct": if pass { 0.97 } else { 0.5 },
+            "tiers": [{
+                "tier": "sonnet5",
+                "provider": "anthropic",
+                "model": "claude-sonnet-5",
+                "pinned_packs": true,
+                "summary": {
+                    "attempted": 10,
+                    "solved": if pass { 9 } else { 5 },
+                    "total_cost_usd": 0.42,
+                    "median_duration_secs": 12.0,
+                },
+                "tasks": [{"task_id": "fizzbuzz", "solved": pass}],
+            }],
+        })
+    }
+
+    #[test]
+    fn cmd_graduate_dry_run_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory_path = dir.path().join("capability_directory.json");
+        let mut runs = Vec::new();
+        for day in 1..=3 {
+            let path = dir.path().join(format!("run{day}.json"));
+            fs::write(
+                &path,
+                serde_json::to_vec(&qualifying_run_json(day, true)).unwrap(),
+            )
+            .unwrap();
+            runs.push(path);
+        }
+        cmd_graduate(GraduateArgs {
+            runs,
+            provider: None,
+            model: None,
+            role: None,
+            worker: false,
+            snapshot_date: None,
+            directory: Some(directory_path.clone()),
+            dry_run: true,
+        })
+        .unwrap();
+        assert!(
+            !directory_path.exists(),
+            "dry-run must not write the directory file"
+        );
+    }
+
+    #[test]
+    fn cmd_graduate_three_qualifying_runs_graduate_the_orchestrate_role() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory_path = dir.path().join("capability_directory.json");
+        let mut runs = Vec::new();
+        for day in 1..=3 {
+            let path = dir.path().join(format!("run{day}.json"));
+            fs::write(
+                &path,
+                serde_json::to_vec(&qualifying_run_json(day, true)).unwrap(),
+            )
+            .unwrap();
+            runs.push(path);
+        }
+        cmd_graduate(GraduateArgs {
+            runs,
+            provider: None,
+            model: None,
+            role: None,
+            worker: false,
+            snapshot_date: None,
+            directory: Some(directory_path.clone()),
+            dry_run: false,
+        })
+        .unwrap();
+
+        let saved = permagent_eval::graduate::load_directory_json(&directory_path)
+            .expect("cmd_graduate must have written the directory");
+        let evidence = permagent_eval::graduate::existing_role_evidence(
+            &saved,
+            "anthropic",
+            "claude-sonnet-5",
+            WorkflowRole::Orchestrate,
+        )
+        .expect("the graded role must exist");
+        assert!(evidence.graduated, "three qualifying runs must graduate");
+        assert_eq!(evidence.evidence_run_ids.len(), 3);
+        assert!((evidence.micro_suite_pass_pct.unwrap() - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cmd_graduate_two_qualifying_runs_do_not_graduate() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory_path = dir.path().join("capability_directory.json");
+        let mut runs = Vec::new();
+        for day in 1..=2 {
+            let path = dir.path().join(format!("run{day}.json"));
+            fs::write(
+                &path,
+                serde_json::to_vec(&qualifying_run_json(day, true)).unwrap(),
+            )
+            .unwrap();
+            runs.push(path);
+        }
+        cmd_graduate(GraduateArgs {
+            runs,
+            provider: None,
+            model: None,
+            role: None,
+            worker: false,
+            snapshot_date: None,
+            directory: Some(directory_path.clone()),
+            dry_run: false,
+        })
+        .unwrap();
+        let saved = permagent_eval::graduate::load_directory_json(&directory_path).unwrap();
+        let evidence = permagent_eval::graduate::existing_role_evidence(
+            &saved,
+            "anthropic",
+            "claude-sonnet-5",
+            WorkflowRole::Orchestrate,
+        )
+        .unwrap();
+        assert!(!evidence.graduated);
+    }
+
+    #[test]
+    fn cmd_graduate_refuses_a_run_with_no_provider_model_and_no_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.json");
+        let raw = serde_json::json!({
+            "generated_at": "2026-09-01T00:00:00Z",
+            "tiers": [{
+                "summary": {"attempted": 1, "solved": 1},
+                "tasks": [{"task_id": "fizzbuzz", "solved": true}],
+            }],
+        });
+        fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+        let err = cmd_graduate(GraduateArgs {
+            runs: vec![path],
+            provider: None,
+            model: None,
+            role: None,
+            worker: false,
+            snapshot_date: None,
+            directory: Some(dir.path().join("capability_directory.json")),
+            dry_run: false,
+        })
+        .expect_err("missing provider/model with no flags must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("never guessed"), "{msg}");
+    }
+
+    // --- K16: `regrade` ----------------------------------------------------
+
+    const REGRADE_ANTHROPIC_CREDIT_LINE: &str =
+        "Planner decomposition failed (LLM decomposition failed: complete_fast \
+         physical attempt failed: Credits exhausted: Your credit balance is too \
+         low to access the Anthropic API. Please go to Plans & Billing to upgrade \
+         or purchase credits.); escalating to default provider";
+
+    const REGRADE_DEEPSEEK_CREDIT_LINE: &str =
+        "deepseek request failed: credits exhausted, please recharge your account";
+
+    /// Build one `<runs_dir>/<tier>-<task_id>-<nanos>-0` run directory with a
+    /// harness log and (optionally) one `llm_request.0.jsonl`, mirroring
+    /// `runner::run_task`'s own layout closely enough for `find_run_dir`/
+    /// `classify_in_run` to read it.
+    fn regrade_write_run_dir(
+        runs_dir: &Path,
+        tier: &str,
+        task_id: &str,
+        nanos: u64,
+        harness_log: &str,
+        llm_log: Option<&str>,
+    ) -> PathBuf {
+        let dir = runs_dir.join(format!("{tier}-{task_id}-{nanos}-0"));
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::create_dir_all(dir.join("data").join("logs")).unwrap();
+        std::fs::write(dir.join("logs").join("harness.log"), harness_log).unwrap();
+        if let Some(text) = llm_log {
+            std::fs::write(
+                dir.join("data").join("logs").join("llm_request.0.jsonl"),
+                text,
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    /// One `errored: "provider unavailable"` task, `render_json`-shaped, as
+    /// the pre-K15 driver would have written it.
+    fn regrade_errored_task_json(task_id: &str, oracle_exit: i64) -> serde_json::Value {
+        serde_json::json!({
+            "task_id": task_id,
+            "category": "classic",
+            "solved": false,
+            "oracle": "errored",
+            "cost_usd": 0.01,
+            "cost_estimated": false,
+            "ledger_rows": 1,
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "cache_hit_rate": null,
+            "duration_secs": 1.0,
+            "harness_exit": 0,
+            "harness_timed_out": false,
+            "oracle_exit": oracle_exit,
+            "oracle_timed_out": false,
+            "oracle_secs": 0.1,
+            "harness_timeout_secs": 900,
+            "note": "provider unavailable: credits exhausted",
+            "seed_commit": null,
+            "selection_correct": null,
+            "selection_check_failures": [],
+            "signals": {
+                "tool_calls": 1,
+                "tool_names": [],
+                "executed_tool_names": [],
+                "refused_tool_calls": [],
+                "rate_limit_events": 0,
+                "rate_limit_examples": [],
+                "max_turns_hit": false,
+                "provider_unavailable_ignored": 1,
+            },
+        })
+    }
+
+    fn regrade_record_json(tasks: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({
+            "tiers": [{
+                "tier": "dschat",
+                "provider": "custom_deepseek",
+                "model": "deepseek-chat",
+                "pinned_packs": true,
+                "summary": {
+                    "total": tasks.len(),
+                    "attempted": tasks.len(),
+                    "not_run": 0,
+                    "solved": 0,
+                    "pass_rate": 0.0,
+                    "dollars_per_solved": null,
+                    "median_cost_per_task": 0.01,
+                    "total_cost_usd": 0.03,
+                    "any_cost_unknown": false,
+                    "any_estimated": false,
+                    "median_duration_secs": 1.0,
+                    "total_tool_calls": tasks.len(),
+                    "total_rate_limit_events": 0,
+                    "cache_hit_rate": null,
+                    "dag_selection_pct": null,
+                },
+                "tasks": tasks,
+            }],
+            "run_id": "run-test-dschat",
+            "generated_at": "2026-01-01T00:00:00Z",
+        })
+    }
+
+    /// The Lane K16 brief's three-task contract: a non-tier-provider marker
+    /// with `oracle_exit: 0` promotes to `pass`, a marker naming the tier's
+    /// own provider stays `errored`, and a non-tier-provider marker with a
+    /// nonzero `oracle_exit` promotes to `fail`.
+    #[test]
+    fn regrade_applies_the_k15_rule_from_existing_run_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs_dir = dir.path().join("runs");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+
+        regrade_write_run_dir(
+            &runs_dir,
+            "dschat",
+            "t-pass",
+            1,
+            "",
+            Some(REGRADE_ANTHROPIC_CREDIT_LINE),
+        );
+        regrade_write_run_dir(
+            &runs_dir,
+            "dschat",
+            "t-stays-errored",
+            2,
+            "",
+            Some(REGRADE_DEEPSEEK_CREDIT_LINE),
+        );
+        regrade_write_run_dir(
+            &runs_dir,
+            "dschat",
+            "t-fail",
+            3,
+            "",
+            Some(REGRADE_ANTHROPIC_CREDIT_LINE),
+        );
+
+        let record = regrade_record_json(vec![
+            regrade_errored_task_json("t-pass", 0),
+            regrade_errored_task_json("t-stays-errored", 1),
+            regrade_errored_task_json("t-fail", 1),
+        ]);
+        let record_path = dir.path().join("m.json");
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+
+        let out_path = dir.path().join("m-regraded.json");
+        cmd_regrade(RegradeArgs {
+            record: record_path,
+            runs_dir,
+            tier: "dschat".to_string(),
+            out: out_path.clone(),
+        })
+        .unwrap();
+
+        let regraded: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
+        let tasks = regraded["tiers"][0]["tasks"].as_array().unwrap();
+        let by_id = |id: &str| tasks.iter().find(|t| t["task_id"] == id).unwrap();
+
+        let pass = by_id("t-pass");
+        assert_eq!(pass["oracle"], "pass");
+        assert_eq!(pass["solved"], true);
+        assert!(pass["note"].is_null());
+        assert_eq!(pass["signals"]["provider_unavailable_ignored"], 1);
+        assert_eq!(pass["regraded"]["rule"], "K15");
+        assert_eq!(pass["regraded"]["from"], "errored");
+
+        let stays = by_id("t-stays-errored");
+        assert_eq!(stays["oracle"], "errored");
+        assert_eq!(stays["solved"], false);
+        assert!(stays.get("regraded").is_none());
+
+        let fail = by_id("t-fail");
+        assert_eq!(fail["oracle"], "fail");
+        assert_eq!(fail["solved"], false);
+        assert_eq!(fail["regraded"]["rule"], "K15");
+
+        // Summary: 1 of 3 solved, cost untouched.
+        let summary = &regraded["tiers"][0]["summary"];
+        assert_eq!(summary["solved"], 1);
+        assert_eq!(summary["attempted"], 3);
+        assert!((summary["pass_rate"].as_f64().unwrap() - (1.0 / 3.0)).abs() < 1e-12);
+        assert_eq!(summary["total_cost_usd"], 0.03);
+        assert!((summary["dollars_per_solved"].as_f64().unwrap() - 0.03).abs() < 1e-12);
+
+        // The input record is never touched.
+        let original: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("m.json")).unwrap())
+                .unwrap();
+        assert_eq!(original["tiers"][0]["tasks"][0]["oracle"], "errored");
+    }
+
+    #[test]
+    fn regrade_patches_the_companion_qual_json_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs_dir = dir.path().join("runs");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        regrade_write_run_dir(
+            &runs_dir,
+            "dschat",
+            "t-pass",
+            1,
+            "",
+            Some(REGRADE_ANTHROPIC_CREDIT_LINE),
+        );
+
+        let record = regrade_record_json(vec![regrade_errored_task_json("t-pass", 0)]);
+        let record_path = dir.path().join("m.json");
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+
+        // The sidecar `run` would have written alongside it — same shape as
+        // `build_run_qualification_record` produces for one errored task.
+        let qual_record = build_run_qualification_record(
+            "run-test-dschat",
+            None,
+            BinaryProvenance {
+                path: "unused".to_string(),
+                version: None,
+                git_sha: None,
+            },
+            "custom_deepseek",
+            "deepseek-chat",
+            true,
+            &[permagent_eval::metrics::TaskResult {
+                provider_error: Some("credits exhausted".to_string()),
+                ..permagent_eval::metrics::TaskResult::new(
+                    "t-pass",
+                    "classic",
+                    permagent_eval::oracle::OracleOutcome::Errored,
+                    permagent_eval::cost::CostReading::known(0.01, false, 1),
+                )
+            }],
+        );
+        assert!(qual_record.provider_unavailable);
+        std::fs::write(
+            qualification_sibling_path(&record_path),
+            serde_json::to_vec(&vec![qual_record]).unwrap(),
+        )
+        .unwrap();
+
+        let out_path = dir.path().join("m-regraded.json");
+        cmd_regrade(RegradeArgs {
+            record: record_path,
+            runs_dir,
+            tier: "dschat".to_string(),
+            out: out_path.clone(),
+        })
+        .unwrap();
+
+        let qual_out = qualification_sibling_path(&out_path);
+        assert!(qual_out.is_file(), "companion .qual.json was not written");
+        let records: Vec<RunQualificationRecord> =
+            serde_json::from_str(&std::fs::read_to_string(&qual_out).unwrap()).unwrap();
+        assert_eq!(records.len(), 1);
+        let task = &records[0].tasks[0];
+        assert_eq!(task.result, "pass");
+        assert!(!task.errored);
+        assert!(task.provider_error.is_none());
+        assert!(!records[0].provider_unavailable);
     }
 }

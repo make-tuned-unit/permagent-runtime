@@ -23,6 +23,57 @@ pub const ACTOR_JESSE: &str = "jesse";
 pub const ACTOR_HENRY: &str = "henry-policy";
 pub const ACTOR_SYSTEM: &str = "system";
 
+/// Attribution for a `roadmap_create` choice decision that was answered
+/// automatically because the calling session is an unattended
+/// `GooseMode::Auto` launch, not a human (harness R1 repair,
+/// HARNESS_LOOP_LOG.md "Lane M2 report" Defect 1). The coding-harness
+/// recipe's own contract says "in unattended/auto mode, the operator's
+/// launch is approval to call `create_roadmap` immediately" — but no human
+/// exists in a headless session to answer the Decision Inbox item the
+/// approval gate requires, so `create_roadmap` could never succeed there.
+///
+/// This actor is deliberately NOT in [`VALID_ACTORS`]: it must never be
+/// usable through the general [`answer_decision`]/[`answer_decision_as_session`]
+/// family (the chat `answer_decisions` tool, an HTTP principal, etc), only
+/// through the single-purpose [`auto_approve_roadmap_launch`] below, which is
+/// itself scoped to `roadmap_create` choice decisions only. The consumer of
+/// this attribution (`materialize_roadmap_transaction_with_budget` in
+/// `orchestrator.rs`) accepts it only when the session calling
+/// `create_roadmap` is *itself* running `GooseMode::Auto` at that moment —
+/// so a decision auto-answered inside one Auto session can never be replayed
+/// or presented for consumption by an interactive Approve/Chat session.
+pub const ACTOR_AUTO_LAUNCH: &str = "auto-mode-launch";
+
+/// Attribution for a reservation/spend-authorization `choice` gate answered
+/// automatically by an unattended headless `HeadlessDispatchPolicy` run
+/// (harness R2 repair, Lane D1, from Lane F8 forensics 2026-09-10: fx01
+/// stalled behind exactly this gate with no auto-answer path). Distinct from
+/// [`ACTOR_AUTO_LAUNCH`] on purpose — a spend authorization is a materially
+/// different kind of unattended decision than "launch the roadmap I already
+/// approved by starting this session" (it moves real dollars, is answered
+/// only after a fresh, self-contained budget check inside
+/// [`auto_approve_reservation_gate`], and needs its own line in an audit
+/// trail rather than being folded into the launch actor's).
+///
+/// Deliberately NOT in [`VALID_ACTORS`], same reasoning as
+/// [`ACTOR_AUTO_LAUNCH`]: usable only through
+/// [`auto_approve_reservation_gate`] or the bounded orchestrator escalation
+/// policy, never through the general
+/// [`answer_decision`]/[`answer_decision_as_session`] family.
+pub const ACTOR_HEADLESS_POLICY: &str = "headless_policy";
+
+/// Attribution for the audit-only `decision_audit` rows `orchestrator.rs`'s
+/// `maybe_salvage_committed_work` writes for every outcome (attempted,
+/// landed, or any skipped/refused/failed reason) — Lane R22c: an
+/// offline analysis could not tell a salvage attempt happened at all when it
+/// correctly declined (the breadcrumb was card metadata only, never the
+/// audit log). Same shape as [`ACTOR_HEADLESS_POLICY`]: no real
+/// `decisions.id` exists at most of these call sites, so a synthetic,
+/// goal-scoped decision id stands in; this actor never answers a decision
+/// through [`answer_decision`]/[`answer_decision_as_session`], only writes
+/// audit rows directly, so it is deliberately NOT in [`VALID_ACTORS`].
+pub const ACTOR_SALVAGE_POLICY: &str = "salvage_policy";
+
 const VALID_ACTORS: &[&str] = &[ACTOR_JESSE, ACTOR_HENRY, ACTOR_SYSTEM];
 // `edit` = approve-with-edits: an acceptance that ALSO carries a revised draft
 // in `answer_input` (the original lives in `payload.draft`). The delta is
@@ -178,6 +229,19 @@ pub struct ApproveReviewPayload {
     /// Result of the completion check, if one ran.
     #[serde(default)]
     pub completion_check: Option<String>,
+    /// The coordinator session dispatching this goal under a headless Auto
+    /// policy with landing switched on (harness loop, Lane V2 — the user's
+    /// ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1
+    /// landing → option 3"). Stamped only by `orchestrator::handle_goal_completion`
+    /// when it files this decision under a headless auto-land policy; binds
+    /// an eventual `ACTOR_AUTO_LAUNCH` answer to the exact session it was
+    /// minted for, reusing R2's `RoadmapApprovalPayload::minting_session_id`
+    /// binding rather than forking it. `#[serde(default)]` keeps every
+    /// pre-existing `approve_review` payload (minted before this field
+    /// existed) parseable; a human's `ACTOR_JESSE`/`ACTOR_HENRY` answer never
+    /// reads this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minting_session_id: Option<String>,
 }
 
 /// Why a goal is blocked (`kind='unblock'`).
@@ -236,6 +300,44 @@ pub struct ChoicePayload {
     /// wire-compatible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roadmap_approval: Option<RoadmapApprovalPayload>,
+    /// R2 (harness loop, Lane D1): set only by
+    /// `cost_router::budget::reservation_gate_decision_request`. Typed
+    /// rather than smuggled through `detail`'s prose (same reasoning as
+    /// [`CheckApprovalPayload`]'s own doc comment) — the headless
+    /// auto-answer path (`auto_approve_reservation_gate`) needs the real
+    /// settlement numbers to decide whether the request is still within
+    /// budget, not a sentence written for a human to read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation_gate: Option<ReservationGatePayload>,
+}
+
+/// The settlement evidence behind one reservation/spend-authorization gate:
+/// what was already settled, what is currently held by in-flight calls, what
+/// this specific call is asking to reserve, and the GATE-band ceiling that
+/// firing this decision crossed. `scope` is kept as a plain string
+/// (`"task"`/`"session"`, [`crate::cost_router::budget::BudgetScope::word`]'s
+/// output) rather than that enum type directly, so this module never has to
+/// import a type from `cost_router` just to describe one field — `decisions`
+/// stays the lower layer `cost_router::budget` already depends on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReservationGatePayload {
+    pub scope: String,
+    pub settled_usd: f64,
+    pub held_usd: f64,
+    pub requested_usd: f64,
+    pub ceiling_usd: f64,
+    /// I1 (harness loop, 2026-09-10, from M10's forensics): the session that
+    /// hit this gate directly, WITHOUT going through a goal card — set only
+    /// for the coordinator's own provider calls (`goal_id(&session.
+    /// extension_data)` is `None` for those; a dispatched worker's gate
+    /// always carries a `goal_id` instead and leaves this `None`). Lets
+    /// [`find_open_reservation_gate_decision_for_session`] dedupe a
+    /// goal-less gate decision the same way [`find_open_decision_for_goal`]
+    /// dedupes a goal-scoped one. `#[serde(default)]` + skip-when-absent
+    /// keeps every pre-existing reservation-gate payload wire-compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requesting_session_id: Option<String>,
 }
 
 /// The Tier-2 card's subject: one command the approval ladder refused to run.
@@ -268,6 +370,29 @@ pub struct CheckApprovalPayload {
     pub tier: String,
     /// Which project's ladder this decision updates.
     pub project_id: String,
+    /// The `skills.id` this card is about, when it was filed by `skill_run`
+    /// rather than a goal's completion check. Together with [`inputs_hash`]
+    /// this is the exact (skill, inputs) pair the card names — the X-skill
+    /// DAG's "bound to the exact (skill id, inputs hash)" requirement.
+    /// `#[serde(default)]` + skip-when-absent keeps every pre-existing
+    /// check_approval payload (filed by a goal's completion-check gate)
+    /// parsing and byte-identical on the wire.
+    ///
+    /// [`inputs_hash`]: CheckApprovalPayload::inputs_hash
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_id: Option<String>,
+    /// sha256 of the canonical `inputs` JSON `skill_run` was called with.
+    /// Present iff `skill_id` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inputs_hash: Option<String>,
+    /// The session that minted this card, when it was filed by `skill_run`.
+    /// Only [`auto_approve_skill_run`] reads it, and only to refuse consuming
+    /// a card some other session opened — the same binding
+    /// [`RoadmapApprovalPayload::minting_session_id`] uses for the same
+    /// reason. A human answering through the ordinary Decision Inbox ignores
+    /// this field entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minting_session_id: Option<String>,
 }
 
 /// The exact roadmap content a human is being asked to approve. The hash is
@@ -277,6 +402,50 @@ pub struct CheckApprovalPayload {
 #[serde(deny_unknown_fields)]
 pub struct RoadmapApprovalPayload {
     pub proposal_hash: String,
+    /// The id of the session that minted this proposal (the session
+    /// `decompose_roadmap` was called from). R2 repair (harness loop, Lane
+    /// G3 finding 3): recorded unconditionally so an `ACTOR_AUTO_LAUNCH`
+    /// answer can be bound to the exact session that minted it, not merely
+    /// to "some session in `GooseMode::Auto`" — a second, unrelated Auto
+    /// session in the same project must not be able to consume a proof it
+    /// never asked for. `ACTOR_JESSE` answers ignore this field entirely: a
+    /// human approval is not scoped to the decomposing session. `#[serde(default)]`
+    /// keeps every pre-existing payload (minted before this field existed)
+    /// parseable, with the effect that an old auto-launch proof is treated
+    /// as unbound to any session and can never satisfy the new check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minting_session_id: Option<String>,
+    /// The planner + worker routing receipt (D2, 2026-09-09 ruling): who
+    /// planned this roadmap, why, and which model each other role currently
+    /// routes to. Purely informational — no code path reads it back to
+    /// authorise anything, so it rides on the same `#[serde(default)]` +
+    /// skip-when-absent discipline as `minting_session_id` above. Harness
+    /// loop Lane Z6 repair (M7 P0): `orchestrator.rs`'s roadmap-creation
+    /// receipt (Lane Z3, D2) has embedded `planner`/`workers` in this exact
+    /// object since `e88d23fd`, but this struct never declared them —
+    /// `deny_unknown_fields` rejected every such payload as `kind='malformed'`
+    /// before any goal card could be created, on 10/10 M7 fixtures. Adding
+    /// them here (rather than dropping them from the call site) keeps the
+    /// receipt on the record a human approver actually reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner: Option<PlannerReceipt>,
+    /// Comma-separated `role=provider/model` routing for the non-planner
+    /// workflow roles, same receipt and same reasoning as `planner` above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workers: Option<String>,
+}
+
+/// Who planned a roadmap and why — the `planner` field of
+/// [`RoadmapApprovalPayload`]. Mirrors the shape `orchestrator.rs`'s
+/// roadmap-creation receipt builds; kept a plain `{model, reason}` struct
+/// (not a reuse of `cost_router::PlannerReason`) so this wire type has no
+/// dependency on `cost_router`'s internals and stays stable if that enum's
+/// variants change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlannerReceipt {
+    pub model: String,
+    pub reason: String,
 }
 
 /// The concrete repo object a Steward git-health `risk_gate` targets
@@ -1662,6 +1831,62 @@ pub async fn find_open_decision_for_goal(
     Ok(row.as_ref().map(row_to_decision))
 }
 
+/// Find an open [`PROPOSAL_CHECK_APPROVAL`] decision filed by `skill_run` for
+/// the exact (skill, inputs) pair, to avoid filing a duplicate card every time
+/// a caller retries a still-parked skill. Skill-run decisions carry no
+/// `goal_id` (unlike a goal's completion-check gate), so the dedupe key lives
+/// in the payload instead of the `goal_id` column [`find_open_decision_for_goal`]
+/// uses.
+pub async fn find_open_decision_for_skill(
+    pool: &Pool<Sqlite>,
+    skill_id: &str,
+    inputs_hash: &str,
+) -> Result<Option<Decision>, String> {
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM decisions \
+         WHERE kind = 'choice' AND status = 'open' \
+           AND json_extract(payload_json, '$.proposal') = ? \
+           AND json_extract(payload_json, '$.check_approval.skill_id') = ? \
+           AND json_extract(payload_json, '$.check_approval.inputs_hash') = ? \
+         ORDER BY created_at DESC LIMIT 1",
+        DECISION_COLUMNS
+    )))
+    .bind(PROPOSAL_CHECK_APPROVAL)
+    .bind(skill_id)
+    .bind(inputs_hash)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.as_ref().map(row_to_decision))
+}
+
+/// I1 (harness loop, 2026-09-10, from M10's forensics): find an open
+/// reservation-gate `choice` decision for a session that has no `goal_id` —
+/// the coordinator's own provider calls, never a dispatched worker's (those
+/// always carry a real `goal_id` and dedupe through
+/// [`find_open_decision_for_goal`] instead). Same "avoid filing a duplicate
+/// card every time a caller retries" purpose as
+/// [`find_open_decision_for_skill`], keyed on
+/// [`ReservationGatePayload::requesting_session_id`] since a goal-less
+/// decision has no `goal_id` column value to match on.
+pub async fn find_open_reservation_gate_decision_for_session(
+    pool: &Pool<Sqlite>,
+    session_id: &str,
+) -> Result<Option<Decision>, String> {
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM decisions \
+         WHERE kind = 'choice' AND status = 'open' AND goal_id IS NULL \
+           AND json_extract(payload_json, '$.reservation_gate.requesting_session_id') = ? \
+         ORDER BY created_at DESC LIMIT 1",
+        DECISION_COLUMNS
+    )))
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.as_ref().map(row_to_decision))
+}
+
 /// Mark every open decision for a goal as `superseded` (#490). Used when a goal
 /// is cancelled: any pending approve_review / unblock item is moot, so it leaves
 /// the inbox rather than lingering against a terminal goal. Returns the number
@@ -2045,6 +2270,14 @@ pub struct DecisionProof {
     tier: i64,
     answer: String,
     acted_by: String,
+    /// Harness loop, Lane V2: `approve_review`'s `minting_session_id`
+    /// (`ApproveReviewPayload`), read straight off the raw payload rather
+    /// than a full typed deserialize — mirrors how the roadmap-approval
+    /// binding (Lane R2) reads its own `minting_session_id` from
+    /// `payload_json` rather than trusting a second strict parse. `None` for
+    /// every decision kind that doesn't carry this field, and for every
+    /// `approve_review` payload minted before this field existed.
+    minting_session_id: Option<String>,
 }
 
 impl DecisionProof {
@@ -2063,6 +2296,11 @@ impl DecisionProof {
             tier: decision.tier,
             answer: decision.answer.clone()?,
             acted_by: decision.acted_by.clone()?,
+            minting_session_id: decision
+                .payload
+                .get("minting_session_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
         })
     }
 
@@ -2083,6 +2321,9 @@ impl DecisionProof {
     }
     pub fn acted_by(&self) -> &str {
         &self.acted_by
+    }
+    pub fn minting_session_id(&self) -> Option<&str> {
+        self.minting_session_id.as_deref()
     }
 }
 
@@ -2204,6 +2445,618 @@ pub async fn answer_decision_as_session(
         Some(answering_session_id),
     )
     .await
+}
+
+/// Auto-answer a JUST-CREATED `roadmap_create` choice decision on behalf of
+/// an unattended `GooseMode::Auto` launch (harness R1 repair). Deliberately a
+/// separate, narrower code path from [`answer_decision_as_session`] and the
+/// rest of the `answer_decision*` family — it does not touch [`VALID_ACTORS`]
+/// or the tier gate those share, so [`ACTOR_AUTO_LAUNCH`] remains permanently
+/// unusable through the general answer path (the chat `answer_decisions`
+/// tool, any HTTP principal). This function:
+///   - only accepts a `choice` decision whose payload names
+///     [`PROPOSAL_ROADMAP_CREATE`] and offers an `approve-roadmap` option;
+///   - only accepts a decision that is still `open` (no re-answering);
+///   - always answers `choice` / `approve-roadmap`, always attributes to
+///     [`ACTOR_AUTO_LAUNCH`] — there is no caller-supplied answer or actor to
+///     forge.
+///
+/// The caller (`handle_decompose_roadmap` in `orchestrator.rs`) must check
+/// the calling session's `GooseMode` is `Auto` before calling this at all;
+/// `create_roadmap`'s consumer independently re-checks that the session
+/// *presenting* an `ACTOR_AUTO_LAUNCH`-answered decision for consumption is
+/// itself running `GooseMode::Auto` at that moment, so an auto-launch answer
+/// minted in one Auto session can never be replayed by, or handed to, an
+/// interactive Approve/Chat session.
+pub async fn auto_approve_roadmap_launch(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+) -> Result<(Decision, DecisionProof), AnswerError> {
+    let decision = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+    if decision.status != "open" {
+        return Err(AnswerError::AlreadyResolved(decision.status));
+    }
+    if decision.kind != "choice" {
+        return Err(AnswerError::Invalid(
+            "auto-launch approval only applies to 'choice' decisions".to_string(),
+        ));
+    }
+    let payload: ChoicePayload = serde_json::from_value(decision.payload.clone())
+        .map_err(|e| AnswerError::Db(format!("stored choice payload unreadable: {}", e)))?;
+    if payload.proposal.as_deref() != Some(PROPOSAL_ROADMAP_CREATE) {
+        return Err(AnswerError::Invalid(
+            "auto-launch approval only applies to roadmap_create proposals".to_string(),
+        ));
+    }
+    if !payload.options.iter().any(|o| o.id == "approve-roadmap") {
+        return Err(AnswerError::Invalid(
+            "decision does not offer an 'approve-roadmap' option".to_string(),
+        ));
+    }
+
+    let resolved_at = now_timestamp();
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    // Atomic open -> answered, same shape as answer_decision_inner's update:
+    // zero rows affected means we lost a race (e.g. a human answered first).
+    let result = sqlx::query(
+        "UPDATE decisions SET status = 'answered', answer = 'choice', answer_note = ?, \
+         answer_choice_id = 'approve-roadmap', answer_input = NULL, acted_by = ?, resolved_at = ?, \
+         staged_answer_json = NULL \
+         WHERE id = ? AND status = 'open'",
+    )
+    .bind("Pre-approved: unattended auto-mode launch")
+    .bind(ACTOR_AUTO_LAUNCH)
+    .bind(&resolved_at)
+    .bind(decision_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AnswerError::Db(e.to_string()))?;
+    if result.rows_affected() == 0 {
+        return Err(AnswerError::AlreadyResolved("answered".to_string()));
+    }
+
+    append_audit_tx_with_principal(
+        &mut tx,
+        decision_id,
+        decision.goal_id.as_deref(),
+        ACTOR_AUTO_LAUNCH,
+        decision.tier,
+        "choice",
+        decision
+            .payload
+            .get("evidence_digest")
+            .and_then(|v| v.as_str()),
+        None,
+    )
+    .await
+    .map_err(AnswerError::Db)?;
+
+    if let Some(claim_key) = effect_outbox_claim_key(decision_id, &decision.kind) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO effect_outbox
+             (id, claim_key, kind, decision_id, payload_json, status)
+             VALUES (?, ?, ?, ?, '{}', 'pending')",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(claim_key)
+        .bind(&decision.kind)
+        .bind(decision_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    crate::events::emit(crate::events::decision_resolved(
+        decision_id,
+        &decision.kind,
+        "choice",
+        ACTOR_AUTO_LAUNCH,
+        decision.tier,
+    ));
+
+    let updated = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+
+    let proof = DecisionProof {
+        decision_id: decision_id.to_string(),
+        kind: decision.kind.clone(),
+        goal_id: decision.goal_id.clone(),
+        tier: decision.tier,
+        answer: "choice".to_string(),
+        acted_by: ACTOR_AUTO_LAUNCH.to_string(),
+        // Not carried at this level for the roadmap-approval proof: R2's
+        // minting-session binding is enforced separately, from the raw
+        // `roadmap_approval.minting_session_id` payload field
+        // (`orchestrator::materialize_roadmap_transaction_with_budget`), not
+        // through `DecisionProof`. Lane V2 reuses that binding for landing
+        // via this field instead, so it stays `None` here.
+        minting_session_id: None,
+    };
+
+    Ok((updated, proof))
+}
+
+/// Auto-answer a JUST-CREATED reservation/spend-authorization `choice` gate
+/// on behalf of an unattended headless `HeadlessDispatchPolicy` run (harness
+/// R2 repair, Lane D1, from Lane F8 forensics 2026-09-10 — fx01 stalled
+/// behind exactly this decision, `cost_router::budget::reservation_gate_decision_request`,
+/// with no auto-answer path at all: only `roadmap_create` and
+/// `approve_review` had one). Same single-use, session-attributed shape as
+/// [`auto_approve_roadmap_launch`]/[`auto_approve_headless_goal_review`], but
+/// narrower still — this is the one `choice` shape allowed to auto-answer
+/// with anything other than a hardcoded literal, because the correct answer
+/// depends on real dollar arithmetic, not merely on the decision's kind.
+///
+/// Scope, in order (never a generic "answer everything"):
+///   - only a `choice` decision that is still `open`;
+///   - only when its payload carries [`ReservationGatePayload`] — set
+///     EXCLUSIVELY by `reservation_gate_decision_request`, so an unrelated
+///     `choice` decision that happens to reuse the same three option ids can
+///     never match this path;
+///   - only when the payload offers a `to_completion` option;
+///   - only when the SAME settled + held + requested total the gate itself
+///     was built from is still under the run's own HARD ceiling for that
+///     scope, read fresh from [`crate::cost_router::budget::load_budget_config`]
+///     — never a caller-supplied number, so nothing upstream of this
+///     function can talk it into answering past budget. `NeedsGate` (the
+///     origin of every decision this function will ever see) only ever
+///     fires strictly BETWEEN the softer GATE threshold and the HARD one —
+///     a total at or past HARD is `Refused`, a different, non-`choice`
+///     failure this function never sees — so this really is "still within
+///     the run's remaining authorized budget", not a rubber stamp.
+///
+/// Always answers `choice` / [`crate::cost_router::budget::GATE_OPTION_TO_COMPLETION`]
+/// ("lift the gate for this run") — never `increment` (raises a ceiling) or
+/// `stop` (halts work): both are decisions only a human should make.
+/// Attributes to [`ACTOR_HEADLESS_POLICY`] — a distinct actor from
+/// [`ACTOR_AUTO_LAUNCH`], also excluded from [`VALID_ACTORS`] — so a spend
+/// authorization auto-answer is never confused with, or reachable through
+/// the same forgery-proof path as, a launch/review auto-answer in the audit
+/// trail.
+pub async fn auto_approve_reservation_gate(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+) -> Result<(Decision, DecisionProof), AnswerError> {
+    let decision = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+    if decision.status != "open" {
+        return Err(AnswerError::AlreadyResolved(decision.status));
+    }
+    if decision.kind != "choice" {
+        return Err(AnswerError::Invalid(
+            "reservation-gate auto-answer only applies to 'choice' decisions".to_string(),
+        ));
+    }
+    let payload: ChoicePayload = serde_json::from_value(decision.payload.clone())
+        .map_err(|e| AnswerError::Db(format!("stored choice payload unreadable: {}", e)))?;
+    let Some(gate) = payload.reservation_gate.as_ref() else {
+        return Err(AnswerError::Invalid(
+            "reservation-gate auto-answer only applies to decisions carrying a \
+             reservation_gate payload"
+                .to_string(),
+        ));
+    };
+    if !payload
+        .options
+        .iter()
+        .any(|o| o.id == crate::cost_router::budget::GATE_OPTION_TO_COMPLETION)
+    {
+        return Err(AnswerError::Invalid(
+            "decision does not offer a 'to_completion' option".to_string(),
+        ));
+    }
+
+    let cfg = crate::cost_router::budget::load_budget_config();
+    let hard = match gate.scope.as_str() {
+        "task" => cfg.task.hard,
+        "session" => cfg.session.hard,
+        other => {
+            return Err(AnswerError::Invalid(format!(
+                "reservation-gate payload has an unrecognised scope '{other}'"
+            )));
+        }
+    };
+    let projected_total = gate.settled_usd + gate.held_usd + gate.requested_usd;
+    if !(projected_total.is_finite() && projected_total < hard) {
+        return Err(AnswerError::Invalid(format!(
+            "reservation-gate auto-answer refused: settled ${:.2} + held ${:.2} + requested \
+             ${:.2} = ${:.2} would reach or exceed the ${:.2} {} hard ceiling",
+            gate.settled_usd, gate.held_usd, gate.requested_usd, projected_total, hard, gate.scope
+        )));
+    }
+
+    let resolved_at = now_timestamp();
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    // Atomic open -> answered, same shape as `auto_approve_roadmap_launch`'s
+    // update: zero rows affected means we lost a race (e.g. a human answered
+    // first).
+    let result = sqlx::query(
+        "UPDATE decisions SET status = 'answered', answer = 'choice', answer_note = ?, \
+         answer_choice_id = ?, answer_input = NULL, acted_by = ?, resolved_at = ?, \
+         staged_answer_json = NULL \
+         WHERE id = ? AND status = 'open'",
+    )
+    .bind(format!(
+        "Auto-answered by headless policy: settled ${:.2} + held ${:.2} + requested ${:.2} \
+         is within the ${:.2} {} hard ceiling",
+        gate.settled_usd, gate.held_usd, gate.requested_usd, hard, gate.scope
+    ))
+    .bind(crate::cost_router::budget::GATE_OPTION_TO_COMPLETION)
+    .bind(ACTOR_HEADLESS_POLICY)
+    .bind(&resolved_at)
+    .bind(decision_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AnswerError::Db(e.to_string()))?;
+    if result.rows_affected() == 0 {
+        return Err(AnswerError::AlreadyResolved("answered".to_string()));
+    }
+
+    append_audit_tx_with_principal(
+        &mut tx,
+        decision_id,
+        decision.goal_id.as_deref(),
+        ACTOR_HEADLESS_POLICY,
+        decision.tier,
+        "choice",
+        None,
+        None,
+    )
+    .await
+    .map_err(AnswerError::Db)?;
+
+    if let Some(claim_key) = effect_outbox_claim_key(decision_id, &decision.kind) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO effect_outbox
+             (id, claim_key, kind, decision_id, payload_json, status)
+             VALUES (?, ?, ?, ?, '{}', 'pending')",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(claim_key)
+        .bind(&decision.kind)
+        .bind(decision_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    crate::events::emit(crate::events::decision_resolved(
+        decision_id,
+        &decision.kind,
+        "choice",
+        ACTOR_HEADLESS_POLICY,
+        decision.tier,
+    ));
+
+    let updated = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+
+    let proof = DecisionProof {
+        decision_id: decision_id.to_string(),
+        kind: decision.kind.clone(),
+        goal_id: decision.goal_id.clone(),
+        tier: decision.tier,
+        answer: "choice".to_string(),
+        acted_by: ACTOR_HEADLESS_POLICY.to_string(),
+        minting_session_id: None,
+    };
+
+    Ok((updated, proof))
+}
+
+/// Auto-answer a JUST-CREATED `approve_review` decision on behalf of an
+/// unattended headless Auto goal completion (harness loop, Lane V / V1) —
+/// the landing counterpart to [`auto_approve_roadmap_launch`] above, same
+/// [`ACTOR_AUTO_LAUNCH`] pattern and the same reasons for being a separate,
+/// narrower path rather than a fork of [`answer_decision_inner`]: it does not
+/// touch [`VALID_ACTORS`] or the tier gate, so `ACTOR_AUTO_LAUNCH` stays
+/// permanently unusable through the general answer path (the chat
+/// `answer_decisions` tool, any HTTP principal).
+///
+/// This function only answers the decision — it does NOT decide whether the
+/// goal deserves to land. That judgement belongs entirely to the caller
+/// (`orchestrator.rs`'s `auto_land_headless_goal`, which only reaches this
+/// after confirming the goal's worker session produced a durable verifier
+/// pass and recording it on the card), and it is re-checked independently, a
+/// second time, once the caller applies the effect this decision authorises:
+/// `decisions_effects::apply_decision_effect`'s `approve_review` arm reads
+/// `approve_review_verification_status` itself (G4) before it will call
+/// `goal_landing::land`. A bug in the caller's judgement can make this
+/// function answer a decision it should not have; it can never, by itself,
+/// make anything land.
+///
+/// Accepts only a still-`open` `approve_review` decision belonging to the
+/// exact `goal_id` given — a decision for a different goal, a decision of
+/// any other kind, or one already resolved (by a human, or a prior call), is
+/// rejected rather than answered.
+pub async fn auto_approve_headless_goal_review(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+    goal_id: &str,
+) -> Result<(Decision, DecisionProof), AnswerError> {
+    let decision = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+    if decision.status != "open" {
+        return Err(AnswerError::AlreadyResolved(decision.status));
+    }
+    if decision.kind != "approve_review" {
+        return Err(AnswerError::Invalid(
+            "headless auto-land only applies to approve_review decisions".to_string(),
+        ));
+    }
+    if decision.goal_id.as_deref() != Some(goal_id) {
+        return Err(AnswerError::Invalid(
+            "decision does not belong to the given goal".to_string(),
+        ));
+    }
+
+    let resolved_at = now_timestamp();
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    // Atomic open -> answered, same shape as answer_decision_inner's update:
+    // zero rows affected means we lost a race (e.g. a human answered first).
+    let result = sqlx::query(
+        "UPDATE decisions SET status = 'answered', answer = 'approve', answer_note = ?, \
+         answer_choice_id = NULL, answer_input = NULL, acted_by = ?, resolved_at = ?, \
+         staged_answer_json = NULL \
+         WHERE id = ? AND status = 'open'",
+    )
+    .bind("Pre-approved: unattended headless Auto landing — durable verifier pass confirmed")
+    .bind(ACTOR_AUTO_LAUNCH)
+    .bind(&resolved_at)
+    .bind(decision_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AnswerError::Db(e.to_string()))?;
+    if result.rows_affected() == 0 {
+        return Err(AnswerError::AlreadyResolved("answered".to_string()));
+    }
+
+    append_audit_tx_with_principal(
+        &mut tx,
+        decision_id,
+        decision.goal_id.as_deref(),
+        ACTOR_AUTO_LAUNCH,
+        decision.tier,
+        "approve",
+        decision
+            .payload
+            .get("evidence_digest")
+            .and_then(|v| v.as_str()),
+        None,
+    )
+    .await
+    .map_err(AnswerError::Db)?;
+
+    if let Some(claim_key) = effect_outbox_claim_key(decision_id, &decision.kind) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO effect_outbox
+             (id, claim_key, kind, decision_id, payload_json, status)
+             VALUES (?, ?, ?, ?, '{}', 'pending')",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(claim_key)
+        .bind(&decision.kind)
+        .bind(decision_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    crate::events::emit(crate::events::decision_resolved(
+        decision_id,
+        &decision.kind,
+        "approve",
+        ACTOR_AUTO_LAUNCH,
+        decision.tier,
+    ));
+
+    let updated = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+
+    let proof = DecisionProof {
+        decision_id: decision_id.to_string(),
+        kind: decision.kind.clone(),
+        goal_id: decision.goal_id.clone(),
+        tier: decision.tier,
+        answer: "approve".to_string(),
+        acted_by: ACTOR_AUTO_LAUNCH.to_string(),
+        // Lane V2: carry whatever `orchestrator::handle_goal_completion`
+        // stamped into this decision's payload at creation time (the
+        // coordinator session dispatching under a headless auto-land
+        // policy), the same way `DecisionProof::from_answered_row` reads it
+        // — `goal_transition::check_proof`'s Tier-1 arm compares this against
+        // the caller's own `calling_session_id` before ever accepting
+        // `ACTOR_AUTO_LAUNCH`.
+        minting_session_id: updated
+            .payload
+            .get("minting_session_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    };
+
+    Ok((updated, proof))
+}
+
+/// Auto-answer a JUST-CREATED [`PROPOSAL_CHECK_APPROVAL`] card on behalf of an
+/// unattended `GooseMode::Auto` `skill_run` call (X-skill DAG, S3), gated by
+/// the caller behind an explicit policy switch that defaults OFF
+/// (`skill_run::HEADLESS_SKILL_RUN_ENV`) — same `ACTOR_AUTO_LAUNCH` pattern as
+/// [`auto_approve_roadmap_launch`] and [`auto_approve_headless_goal_review`]
+/// above, and the same reasons for being a separate, narrower path rather than
+/// a fork of [`answer_decision_inner`]: it does not touch [`VALID_ACTORS`] or
+/// the tier gate those share, so `ACTOR_AUTO_LAUNCH` remains permanently
+/// unusable through the general answer path.
+///
+/// Three checks beyond "still open": the decision must be a `choice` naming
+/// [`PROPOSAL_CHECK_APPROVAL`], its `check_approval.minting_session_id` must
+/// equal `session_id` — a decision `skill_run` opened in one session can never
+/// be auto-consumed by another, whether that is a forged call, a replay, or
+/// simply a second unattended session in the same project (the same binding
+/// [`RoadmapApprovalPayload::minting_session_id`] enforces) — and the card
+/// must actually offer [`CHECK_APPROVAL_ONCE`]. The answer is always
+/// "approve once": an unattended session can spend a single-use grant on the
+/// exact command it already showed the card, never widen the project
+/// allowlist — that stays a human-only act, same as everywhere else in this
+/// ladder.
+///
+/// Deliberately does **not** enqueue the generic `check_approval` effect
+/// (unlike the two functions above): `skill_run` consumes the returned
+/// [`DecisionProof`] by executing the command directly in the same call, so
+/// there is nothing left for the async effect drain to apply — enqueuing it
+/// anyway would only leave a redundant, never-spent `grant_once` sitting in
+/// the project's ladder state.
+pub async fn auto_approve_skill_run(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+    session_id: &str,
+) -> Result<(Decision, DecisionProof), AnswerError> {
+    let decision = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+    if decision.status != "open" {
+        return Err(AnswerError::AlreadyResolved(decision.status));
+    }
+    if decision.kind != "choice" {
+        return Err(AnswerError::Invalid(
+            "auto-launch approval only applies to 'choice' decisions".to_string(),
+        ));
+    }
+    let payload: ChoicePayload = serde_json::from_value(decision.payload.clone())
+        .map_err(|e| AnswerError::Db(format!("stored choice payload unreadable: {}", e)))?;
+    if payload.proposal.as_deref() != Some(PROPOSAL_CHECK_APPROVAL) {
+        return Err(AnswerError::Invalid(
+            "auto-launch skill approval only applies to check_approval proposals".to_string(),
+        ));
+    }
+    let Some(subject) = payload.check_approval.as_ref() else {
+        return Err(AnswerError::Invalid(
+            "check_approval decision carries no subject to approve".to_string(),
+        ));
+    };
+    if subject.minting_session_id.as_deref() != Some(session_id) {
+        return Err(AnswerError::Forbidden(
+            "this card was opened by a different session — an unattended approval cannot cross \
+             sessions"
+                .to_string(),
+        ));
+    }
+    if !payload.options.iter().any(|o| o.id == CHECK_APPROVAL_ONCE) {
+        return Err(AnswerError::Invalid(
+            "decision does not offer an approve-once option".to_string(),
+        ));
+    }
+
+    let resolved_at = now_timestamp();
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    // Atomic open -> answered, same shape as the other auto-launch answers:
+    // zero rows affected means we lost a race (e.g. a human answered first),
+    // or this exact proof is being replayed against an already-resolved card.
+    let result = sqlx::query(
+        "UPDATE decisions SET status = 'answered', answer = 'choice', answer_note = ?, \
+         answer_choice_id = ?, answer_input = NULL, acted_by = ?, resolved_at = ?, \
+         staged_answer_json = NULL \
+         WHERE id = ? AND status = 'open'",
+    )
+    .bind("Pre-approved: unattended auto-mode skill_run")
+    .bind(CHECK_APPROVAL_ONCE)
+    .bind(ACTOR_AUTO_LAUNCH)
+    .bind(&resolved_at)
+    .bind(decision_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AnswerError::Db(e.to_string()))?;
+    if result.rows_affected() == 0 {
+        return Err(AnswerError::AlreadyResolved("answered".to_string()));
+    }
+
+    append_audit_tx_with_principal(
+        &mut tx,
+        decision_id,
+        decision.goal_id.as_deref(),
+        ACTOR_AUTO_LAUNCH,
+        decision.tier,
+        "choice",
+        None,
+        None,
+    )
+    .await
+    .map_err(AnswerError::Db)?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    crate::events::emit(crate::events::decision_resolved(
+        decision_id,
+        &decision.kind,
+        "choice",
+        ACTOR_AUTO_LAUNCH,
+        decision.tier,
+    ));
+
+    let updated = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+
+    let proof = DecisionProof {
+        decision_id: decision_id.to_string(),
+        kind: decision.kind.clone(),
+        goal_id: decision.goal_id.clone(),
+        tier: decision.tier,
+        answer: "choice".to_string(),
+        acted_by: ACTOR_AUTO_LAUNCH.to_string(),
+        // The exact session this proof was already checked against above
+        // (`subject.minting_session_id == Some(session_id)`) — `skill_run`
+        // consumes this proof directly in the same call, so there is no
+        // second call site that needs to re-derive it from the raw payload
+        // the way `from_answered_row` does.
+        minting_session_id: Some(session_id.to_string()),
+    };
+
+    Ok((updated, proof))
 }
 
 /// Does `haystack` mention `needle` anywhere as a string, key, or substring of
@@ -2484,6 +3337,15 @@ async fn answer_decision_inner(
         tier: decision.tier,
         answer: answer.answer.clone(),
         acted_by: acted_by.to_string(),
+        // The general answer path can never produce `ACTOR_AUTO_LAUNCH`
+        // (`VALID_ACTORS` excludes it), so `check_proof`'s minting-session
+        // binding never consults this for a proof minted here — populated
+        // for consistency with `from_answered_row` regardless.
+        minting_session_id: updated
+            .payload
+            .get("minting_session_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
     };
 
     Ok((updated, proof))
@@ -2844,6 +3706,49 @@ mod tests {
         );
         assert!(d.payload.get("error").is_some());
         assert!(d.payload.get("raw").is_some());
+    }
+
+    // ── Z6 (harness loop M7 P0): RoadmapApprovalPayload back-compat ──
+    //
+    // Direct struct-level pins, independent of the orchestrator's own
+    // builder-function test (`orchestrator::tests::
+    // roadmap_approval_payload_from_the_real_builder_is_not_malformed`,
+    // which exercises the exact call site through `create_decision`). These
+    // two confirm the schema itself, at both ends: an old payload minted
+    // before `planner`/`workers` existed must still parse, and it must not
+    // silently gain the new fields as `Some(..)` out of nowhere.
+
+    #[test]
+    fn roadmap_approval_payload_without_receipt_still_parses() {
+        // The exact shape every payload had before Z3's D2 receipt landed —
+        // and the exact shape this file's own `roadmap_choice_decision` test
+        // helper (below) has hand-written since before this bug existed,
+        // which is *why* that helper never caught it.
+        let v = serde_json::json!({"proposal_hash": "deadbeef"});
+        let payload: RoadmapApprovalPayload = serde_json::from_value(v)
+            .expect("a pre-Z3 roadmap_approval payload must still deserialize");
+        assert_eq!(payload.proposal_hash, "deadbeef");
+        assert!(payload.minting_session_id.is_none());
+        assert!(payload.planner.is_none());
+        assert!(payload.workers.is_none());
+    }
+
+    #[test]
+    fn roadmap_approval_payload_with_receipt_round_trips() {
+        let v = serde_json::json!({
+            "proposal_hash": "deadbeef",
+            "minting_session_id": "sess-1",
+            "planner": {"model": "zai/glm-4.7", "reason": "only candidate"},
+            "workers": "code_edit=zai/glm-4.7"
+        });
+        let payload: RoadmapApprovalPayload =
+            serde_json::from_value(v).expect("the current call site's shape must deserialize");
+        assert_eq!(payload.proposal_hash, "deadbeef");
+        assert_eq!(payload.minting_session_id.as_deref(), Some("sess-1"));
+        let planner = payload.planner.expect("planner must be present");
+        assert_eq!(planner.model, "zai/glm-4.7");
+        assert_eq!(planner.reason, "only candidate");
+        assert_eq!(payload.workers.as_deref(), Some("code_edit=zai/glm-4.7"));
     }
 
     fn valid_file_to_project() -> NewDecision {
@@ -3540,6 +4445,439 @@ mod tests {
         assert_eq!(answered.status, "answered");
         assert_eq!(proof.acted_by(), ACTOR_JESSE);
         assert_eq!(proof.tier(), 2);
+    }
+
+    // ── R1: auto-mode launch roadmap approval (harness loop) ──
+
+    fn roadmap_choice_decision(project_id: &str, hash: &str) -> NewDecision {
+        NewDecision {
+            kind: "choice".to_string(),
+            project_id: Some(project_id.to_string()),
+            headline: Some("Approve this roadmap?".to_string()),
+            detail: Some("Approve exact roadmap".to_string()),
+            payload: serde_json::json!({
+                "question": "Create this exact roadmap?",
+                "options": [
+                    {"id": "approve-roadmap", "label": "Approve and begin"},
+                    {"id": "reject-roadmap", "label": "Reject"}
+                ],
+                "proposal": PROPOSAL_ROADMAP_CREATE,
+                "roadmap_approval": {"proposal_hash": hash}
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_approve_roadmap_launch_answers_a_pending_proposal_unattended() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            roadmap_choice_decision(PERSONAL_PROJECT_ID, "deadbeef"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(d.status, "open");
+        assert!(
+            d.acted_by.is_none(),
+            "no one has answered this decision yet"
+        );
+
+        let (answered, proof) = auto_approve_roadmap_launch(&pool, &d.id).await.unwrap();
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.answer.as_deref(), Some("choice"));
+        assert_eq!(
+            answered.answer_choice_id.as_deref(),
+            Some("approve-roadmap")
+        );
+        assert_eq!(
+            answered.acted_by.as_deref(),
+            Some(ACTOR_AUTO_LAUNCH),
+            "auto-launch approval must attribute to the auto-launch actor, never a human"
+        );
+        assert_eq!(proof.acted_by(), ACTOR_AUTO_LAUNCH);
+        assert_eq!(proof.answer(), "choice");
+    }
+
+    #[tokio::test]
+    async fn auto_approve_roadmap_launch_is_scoped_to_roadmap_create_choices_only() {
+        let pool = test_pool().await;
+        // Not a 'choice' decision at all.
+        let d = create_decision(&pool, valid_unblock()).await.unwrap();
+        let err = auto_approve_roadmap_launch(&pool, &d.id).await.unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
+
+        // A 'choice' decision that isn't a roadmap_create proposal.
+        let other_choice = NewDecision {
+            kind: "choice".to_string(),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("Pick a color".to_string()),
+            detail: Some("Just a plain choice".to_string()),
+            payload: serde_json::json!({
+                "question": "Which color?",
+                "options": [
+                    {"id": "red", "label": "Red"},
+                    {"id": "blue", "label": "Blue"}
+                ]
+            }),
+            ..Default::default()
+        };
+        let d = create_decision(&pool, other_choice).await.unwrap();
+        let err = auto_approve_roadmap_launch(&pool, &d.id).await.unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn auto_approve_roadmap_launch_cannot_answer_an_already_resolved_decision() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            roadmap_choice_decision(PERSONAL_PROJECT_ID, "deadbeef"),
+        )
+        .await
+        .unwrap();
+        auto_approve_roadmap_launch(&pool, &d.id).await.unwrap();
+        let err = auto_approve_roadmap_launch(&pool, &d.id).await.unwrap_err();
+        assert!(matches!(err, AnswerError::AlreadyResolved(_)));
+    }
+
+    /// Defense in depth: ACTOR_AUTO_LAUNCH must remain permanently unusable
+    /// through the general answer path (the chat `answer_decisions` tool, any
+    /// HTTP principal) -- only `auto_approve_roadmap_launch` may mint it.
+    #[tokio::test]
+    async fn actor_auto_launch_is_rejected_by_the_general_answer_path() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            roadmap_choice_decision(PERSONAL_PROJECT_ID, "deadbeef"),
+        )
+        .await
+        .unwrap();
+        let ans = DecisionAnswer {
+            answer: "choice".to_string(),
+            choice_id: Some("approve-roadmap".to_string()),
+            ..Default::default()
+        };
+        let err = answer_decision(&pool, &d.id, &ans, ACTOR_AUTO_LAUNCH)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::Invalid(_)),
+            "ACTOR_AUTO_LAUNCH must not be a valid actor for the general answer path: {:?}",
+            err
+        );
+    }
+
+    // ── R2: headless auto-answer for the reservation/spend-authorization
+    // gate (harness loop, Lane D1, from Lane F8 forensics) ──
+
+    fn reservation_gate_choice_decision(
+        scope: &str,
+        settled_usd: f64,
+        held_usd: f64,
+        requested_usd: f64,
+        ceiling_usd: f64,
+    ) -> NewDecision {
+        NewDecision {
+            kind: "choice".to_string(),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some(format!("{scope} budget authorization needs approval")),
+            detail: Some("Provider authorization is paused".to_string()),
+            payload: serde_json::json!({
+                "question": "Approve this provider authorization?",
+                "options": [
+                    {"id": "increment", "label": "Add to the budget and continue"},
+                    {"id": "to_completion", "label": "Continue to completion"},
+                    {"id": "stop", "label": "Stop now and keep all changes"}
+                ],
+                "default": "stop",
+                "reservation_gate": {
+                    "scope": scope,
+                    "settled_usd": settled_usd,
+                    "held_usd": held_usd,
+                    "requested_usd": requested_usd,
+                    "ceiling_usd": ceiling_usd,
+                }
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// R2 (harness loop, Lane D1, from Lane F8 forensics 2026-09-10): fx01
+    /// stalled behind exactly this decision shape forever — no auto-answer
+    /// path existed at all before this fix. Settled $0.09 + held $0.29 +
+    /// requested $0.29 = $0.67, well under the default $10 task hard
+    /// ceiling ([`crate::cost_router::budget::BudgetConfig::default`]) — a
+    /// genuinely affordable request must be answered `to_completion`
+    /// headlessly, never left open. Pre-fix, `auto_approve_reservation_gate`
+    /// does not exist and this test fails to compile.
+    #[tokio::test]
+    async fn auto_approve_reservation_gate_answers_to_completion_within_budget() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            reservation_gate_choice_decision("task", 0.09, 0.29, 0.29, 5.0),
+        )
+        .await
+        .unwrap();
+        assert_eq!(d.status, "open");
+        assert!(
+            d.acted_by.is_none(),
+            "no one has answered this decision yet"
+        );
+
+        let (answered, proof) = auto_approve_reservation_gate(&pool, &d.id).await.unwrap();
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.answer.as_deref(), Some("choice"));
+        assert_eq!(
+            answered.answer_choice_id.as_deref(),
+            Some(crate::cost_router::budget::GATE_OPTION_TO_COMPLETION),
+            "an affordable request must lift the gate, never 'stop' or 'increment'"
+        );
+        assert_eq!(
+            answered.acted_by.as_deref(),
+            Some(ACTOR_HEADLESS_POLICY),
+            "must attribute to the headless-policy actor, never a human or the launch actor"
+        );
+        assert_eq!(proof.acted_by(), ACTOR_HEADLESS_POLICY);
+        assert_eq!(proof.answer(), "choice");
+    }
+
+    /// The other half of R2's pinning test: a request that would reach or
+    /// exceed the run's own hard ceiling must NOT be auto-answered — the
+    /// decision stays open for a human, exactly as before this fix. Settled
+    /// $9.50 + held $0.30 + requested $0.30 = $10.10, at/over the default
+    /// $10 task hard ceiling.
+    #[tokio::test]
+    async fn auto_approve_reservation_gate_refuses_when_it_would_exceed_budget() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            reservation_gate_choice_decision("task", 9.50, 0.30, 0.30, 5.0),
+        )
+        .await
+        .unwrap();
+
+        let err = auto_approve_reservation_gate(&pool, &d.id)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::Invalid(_)),
+            "must refuse rather than auto-answer past the hard ceiling: {:?}",
+            err
+        );
+
+        let still_open = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(
+            still_open.status, "open",
+            "a refused auto-answer must never mutate the decision"
+        );
+    }
+
+    /// Shape-scoping (never a generic "answer everything"): a `choice`
+    /// decision that reuses the exact same three option ids but carries no
+    /// `reservation_gate` payload — e.g. the historical settled-spend gate
+    /// ([`crate::cost_router::budget::gate_choice_payload`]), or an
+    /// unrelated hand-authored choice — must be rejected, not answered.
+    #[tokio::test]
+    async fn auto_approve_reservation_gate_is_scoped_to_the_reservation_gate_payload_only() {
+        let pool = test_pool().await;
+        let other_choice = NewDecision {
+            kind: "choice".to_string(),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("session budget authorization needs approval".to_string()),
+            detail: Some("looks the part, but carries no reservation_gate payload".to_string()),
+            payload: serde_json::json!({
+                "question": "Approve?",
+                "options": [
+                    {"id": "increment", "label": "Add to the budget and continue"},
+                    {"id": "to_completion", "label": "Continue to completion"},
+                    {"id": "stop", "label": "Stop now and keep all changes"}
+                ],
+                "default": "stop"
+            }),
+            ..Default::default()
+        };
+        let d = create_decision(&pool, other_choice).await.unwrap();
+        let err = auto_approve_reservation_gate(&pool, &d.id)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
+
+        // Not a 'choice' decision at all.
+        let d2 = create_decision(&pool, valid_unblock()).await.unwrap();
+        let err2 = auto_approve_reservation_gate(&pool, &d2.id)
+            .await
+            .unwrap_err();
+        assert!(matches!(err2, AnswerError::Invalid(_)));
+    }
+
+    /// Defense in depth, same as `actor_auto_launch_is_rejected_by_the_general_answer_path`:
+    /// [`ACTOR_HEADLESS_POLICY`] must remain permanently unusable through the
+    /// general answer path.
+    #[tokio::test]
+    async fn actor_headless_policy_is_rejected_by_the_general_answer_path() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            reservation_gate_choice_decision("task", 0.09, 0.29, 0.29, 5.0),
+        )
+        .await
+        .unwrap();
+        let ans = DecisionAnswer {
+            answer: "choice".to_string(),
+            choice_id: Some(crate::cost_router::budget::GATE_OPTION_TO_COMPLETION.to_string()),
+            ..Default::default()
+        };
+        let err = answer_decision(&pool, &d.id, &ans, ACTOR_HEADLESS_POLICY)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::Invalid(_)),
+            "ACTOR_HEADLESS_POLICY must not be a valid actor for the general answer path: {:?}",
+            err
+        );
+    }
+
+    /// A real goal card in Review (`create_decision`'s `goal_id` FK is
+    /// best-effort — it silently drops any `goal_id` that names no existing
+    /// card, per its own doc comment — so a fabricated id would never
+    /// actually round-trip onto the decision) plus the matching
+    /// `approve_review` decision request. Returns (`request`, `goal_id`).
+    async fn approve_review_decision_for_real_goal(pool: &Pool<Sqlite>) -> (NewDecision, String) {
+        crate::cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = crate::cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let card = crate::cards::create_card(
+            pool,
+            crate::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "V1 auto-land test goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({})),
+            },
+        )
+        .await
+        .unwrap();
+        let goal_id = card.id.clone();
+        (
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal_id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Review the finished work on the test goal".to_string()),
+                detail: Some("evidence: the worker's own verify tool call passed".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+            goal_id,
+        )
+    }
+
+    /// Harness loop, Lane V (V1) — the landing counterpart to
+    /// `auto_approve_roadmap_launch_answers_a_pending_proposal_unattended`
+    /// above: a freshly-filed `approve_review` decision can be answered with
+    /// no human ever touching the Decision Inbox.
+    #[tokio::test]
+    async fn auto_approve_headless_goal_review_answers_a_pending_review_unattended() {
+        let pool = test_pool().await;
+        let (req, goal_id) = approve_review_decision_for_real_goal(&pool).await;
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(d.status, "open");
+        assert!(
+            d.acted_by.is_none(),
+            "no one has answered this decision yet"
+        );
+
+        let (answered, proof) = auto_approve_headless_goal_review(&pool, &d.id, &goal_id)
+            .await
+            .unwrap();
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.answer.as_deref(), Some("approve"));
+        assert_eq!(
+            answered.acted_by.as_deref(),
+            Some(ACTOR_AUTO_LAUNCH),
+            "auto-land approval must attribute to the auto-launch actor, never a human"
+        );
+        assert_eq!(proof.acted_by(), ACTOR_AUTO_LAUNCH);
+        assert_eq!(proof.answer(), "approve");
+    }
+
+    #[tokio::test]
+    async fn auto_approve_headless_goal_review_is_scoped_to_approve_review_decisions_for_the_given_goal(
+    ) {
+        let pool = test_pool().await;
+        // Not an 'approve_review' decision at all.
+        let d = create_decision(&pool, valid_unblock()).await.unwrap();
+        let err = auto_approve_headless_goal_review(&pool, &d.id, "goal-1")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
+
+        // An 'approve_review' decision, but for a DIFFERENT goal than the one
+        // the caller claims to be landing — must never be answerable by
+        // naming the wrong goal.
+        let (req, goal_id) = approve_review_decision_for_real_goal(&pool).await;
+        let d = create_decision(&pool, req).await.unwrap();
+        let err = auto_approve_headless_goal_review(&pool, &d.id, "some-other-goal-id")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
+        let unchanged = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(
+            unchanged.status, "open",
+            "a mismatched goal_id must never answer the decision"
+        );
+        // The genuinely matching goal_id still works — proves the rejection
+        // above was the mismatch, not something else about the fixture.
+        auto_approve_headless_goal_review(&pool, &d.id, &goal_id)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn auto_approve_headless_goal_review_cannot_answer_an_already_resolved_decision() {
+        let pool = test_pool().await;
+        let (req, goal_id) = approve_review_decision_for_real_goal(&pool).await;
+        let d = create_decision(&pool, req).await.unwrap();
+        auto_approve_headless_goal_review(&pool, &d.id, &goal_id)
+            .await
+            .unwrap();
+        let err = auto_approve_headless_goal_review(&pool, &d.id, &goal_id)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AnswerError::AlreadyResolved(_)));
+    }
+
+    /// Defense in depth, mirroring
+    /// `actor_auto_launch_is_rejected_by_the_general_answer_path` for the
+    /// `approve_review` kind specifically: `ACTOR_AUTO_LAUNCH` stays
+    /// permanently unusable through the general answer path regardless of
+    /// which decision kind is targeted.
+    #[tokio::test]
+    async fn actor_auto_launch_is_rejected_by_the_general_answer_path_for_approve_review() {
+        let pool = test_pool().await;
+        let (req, _goal_id) = approve_review_decision_for_real_goal(&pool).await;
+        let d = create_decision(&pool, req).await.unwrap();
+        let ans = DecisionAnswer {
+            answer: "approve".to_string(),
+            ..Default::default()
+        };
+        let err = answer_decision(&pool, &d.id, &ans, ACTOR_AUTO_LAUNCH)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::Invalid(_)),
+            "ACTOR_AUTO_LAUNCH must not be a valid actor for the general answer path: {:?}",
+            err
+        );
     }
 
     #[tokio::test]

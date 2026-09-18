@@ -9,7 +9,7 @@ use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::ToolCallContext;
 use anyhow::Result;
 use async_trait::async_trait;
-use edit::{EditTools, FileEditParams, FileWriteParams};
+use edit::{EditTools, FileEditParams, FileReadParams, FileWriteParams};
 use indoc::indoc;
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
@@ -47,9 +47,9 @@ fn developer_instructions() -> &'static str {
 
             For editing software, prefer the flow of using tree to understand the codebase structure
             and file sizes. When you need to search, use the search tool - it returns summarized,
-            token-efficient matches grouped by file and respects .gitignore. Then use type or
-            Get-Content to gather the context you need, always reading before editing. Use write and
-            edit to efficiently make changes. Test and verify as appropriate.
+            token-efficient matches grouped by file and respects .gitignore. Then use read to gather
+            the context you need, always reading before editing. Use write and edit to efficiently
+            make changes. Test and verify as appropriate.
         "}
     } else {
         indoc! {"
@@ -63,7 +63,7 @@ fn developer_instructions() -> &'static str {
             For editing software, prefer the flow of using tree to understand the codebase structure
             and file sizes. When you need to search, use the search tool - it returns summarized,
             token-efficient matches grouped by file and respects .gitignore (drop to rg via shell for
-            raw matches). Then use cat or sed to gather the context you need, always reading before
+            raw matches). Then use read to gather the context you need, always reading before
             editing. Use write and edit to efficiently make changes. Test and verify as appropriate.
         "}
     }
@@ -104,6 +104,18 @@ impl DeveloperClient {
 
     pub(crate) fn get_tools() -> Vec<Tool> {
         vec![
+            Tool::new(
+                "read".to_string(),
+                "Read a file as text. Optional `start_line`/`end_line` (1-based, inclusive) page through large files; an unpaged read is capped with a truncation notice. Refuses directories and an empty path. A binary file gets a short notice instead of raw bytes.".to_string(),
+                Self::schema::<FileReadParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Read".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            )),
             Tool::new(
                 "write".to_string(),
                 "Create a new file or overwrite an existing file. Creates parent directories if needed. The written file is read back and verified against the intended content before success is reported.".to_string(),
@@ -152,7 +164,12 @@ impl DeveloperClient {
             )),
             Tool::new(
                 "tree".to_string(),
-                "List a directory tree with line counts. Traversal respects .gitignore rules.".to_string(),
+                "List a directory tree with line counts. Traversal respects .gitignore rules \
+                 and always skips .git/node_modules/target-style directories. Defaults to the \
+                 working directory (path empty or \"/\"); tree lists only under the workspace \
+                 root to keep output small - use shell or read_file for other paths. Output is capped (default depth 4, up to 400 entries) with a trailing \
+                 truncation note - pass depth/limit or a subpath for more."
+                    .to_string(),
                 Self::schema::<TreeParams>(),
             )
             .annotate(ToolAnnotations::from_raw(
@@ -176,7 +193,7 @@ impl DeveloperClient {
             )),
             Tool::new(
                 "verify".to_string(),
-                "Run this project's checks and get a structured PASS/FAIL. Auto-detection is change-scoped: documentation-only changes run deterministic `git diff --check` without a Rust build; narrow Rust changes run impacted Cargo package/target checks; a workspace-wide `cargo test --workspace --all-targets` is available only with explicit `scope: \"integration\"`. Other project markers use their package build/test scripts and run fail-fast. On failure it returns the failing command, its exit code, and the FULL captured errors (not a truncated tail) so you can fix them, then re-verify. When an AUTO-DETECTED test check reports that it collected no tests at all (pytest exit 5; jest/vitest exiting 1 with \"no test files found\"), that is NO CHECKS, not FAIL - a fresh scaffold with no tests yet is empty, not broken. An explicit `command` is never reinterpreted this way; its exit code is reported as-is. Use this to verify your work before declaring a task done. Params: command (optional - an explicit check command to run instead of auto-detecting); path (dir to verify, default working dir); scope (optional: auto, docs, rust, integration); risk (optional: low, standard, high); timeout_secs (per-check, default 600; 0 disables). There is no built-in retry counter: repeated identical failures are bounded by the runaway-loop guard (nudge at 2, escalate at 3), so if focused fixes don't clear it, stop and ask the user.".to_string(),
+                "Run this project's checks and get a structured PASS/FAIL. Auto-detection is change-scoped: documentation-only changes run deterministic `git diff --check` without a Rust build; narrow Rust changes run impacted Cargo package/target checks; a workspace-wide `cargo test --workspace --all-targets` is available only with explicit `scope: \"integration\"`. Other project markers use their package build/test scripts and run fail-fast. On failure it returns the failing command, its exit code, and the FULL captured errors (not a truncated tail) so you can fix them, then re-verify. When an AUTO-DETECTED test check reports that it collected no tests at all (pytest exit 5; jest/vitest exiting 1 with \"no test files found\"), that is NO CHECKS, not FAIL - a fresh scaffold with no tests yet is empty, not broken. An explicit `command` is never reinterpreted this way; its exit code is reported as-is. Use this to verify your work before declaring a task done. Params: command (optional - an explicit check command to run instead of auto-detecting); path (dir to verify, default working dir); scope (optional: auto, docs, rust, integration); risk (optional: low, standard, high); timeout_secs (per-check, default 600; 0 disables); acceptance_criteria (optional - this goal's acceptance criteria; when the only check available would otherwise be a syntax-only smoke check or NO CHECKS, pass them so mechanically-checkable ones - a file existing, a function/class being defined, a command exiting 0 - run as real checks instead; you do not have to pass this yourself when running as a dispatched goal worker - verify already loads your goal's own acceptance criteria automatically in that case, but passing it explicitly always works too and is required outside a goal-worker session). There is no built-in retry counter: repeated identical failures are bounded by the runaway-loop guard (nudge at 2, escalate at 3), so if focused fixes don't clear it, stop and ask the user.".to_string(),
                 Self::schema::<VerifyParams>(),
             )
             .annotate(ToolAnnotations::from_raw(
@@ -218,6 +235,13 @@ impl McpClientTrait for DeveloperClient {
                 Ok(params) => Ok(self.shell_tool.shell_with_cwd(params, working_dir).await),
                 Err(error) => Ok(ShellTool::error_result(&format!("Error: {error}"), None)),
             },
+            "read" => match Self::parse_args::<FileReadParams>(arguments) {
+                Ok(params) => Ok(self.edit_tools.file_read_with_cwd(params, working_dir)),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             "write" => match Self::parse_args::<FileWriteParams>(arguments) {
                 Ok(params) => Ok(self.edit_tools.file_write_with_cwd(params, working_dir)),
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
@@ -247,7 +271,10 @@ impl McpClientTrait for DeveloperClient {
                 .with_priority(0.0)])),
             },
             "verify" => match Self::parse_args::<VerifyParams>(arguments) {
-                Ok(params) => Ok(self.verify_tool.verify_with_cwd(params, working_dir).await),
+                Ok(params) => Ok(self
+                    .verify_tool
+                    .verify_with_cwd(params, working_dir, Some(ctx.session_id.as_str()))
+                    .await),
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
                     "Error: {error}"
                 ))
@@ -282,7 +309,7 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["write", "edit", "shell", "tree", "search", "verify"]
+            vec!["read", "write", "edit", "shell", "tree", "search", "verify"]
         );
     }
 
@@ -345,6 +372,48 @@ mod tests {
             fs::read_to_string(cwd.join("notes.txt")).unwrap(),
             "updated line"
         );
+    }
+
+    // ── F1: `read` is wired end to end, not just a name in the tool surface ──
+    //
+    // Observed live (HARNESS_LOOP_LOG.md, Lane A2): glm-4.7 called a tool
+    // literally named `read` 11 times across 8 tasks and got `-32002: Tool
+    // 'read' not found` every time, because `get_tools()`/`call_tool` never
+    // registered one. `developer_tools_are_flat` pins the name is now listed;
+    // this pins the dispatch actually reads a real file through it.
+    #[tokio::test]
+    async fn developer_client_dispatches_read_with_working_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = DeveloperClient::new(test_context(temp.path().join("sessions"))).unwrap();
+        let cwd = temp.path().join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(cwd.join("notes.txt"), "line1\nline2\nline3").unwrap();
+
+        let ctx = ToolCallContext::new("session".to_owned(), Some(cwd.clone()), None);
+
+        let full = client
+            .call_tool(
+                &ctx,
+                "read",
+                Some(object!({ "path": "notes.txt" })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(full.is_error, Some(false));
+        assert_eq!(first_text(&full), "line1\nline2\nline3");
+
+        let ranged = client
+            .call_tool(
+                &ctx,
+                "read",
+                Some(object!({ "path": "notes.txt", "start_line": 2, "end_line": 2 })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ranged.is_error, Some(false));
+        assert_eq!(first_text(&ranged), "line2\n");
     }
 
     #[cfg(not(windows))]

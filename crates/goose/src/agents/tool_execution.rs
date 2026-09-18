@@ -122,6 +122,10 @@ impl Agent {
                         session_id = %session.id,
                         "headless session: approval-required tool auto-denied (recorded skip)"
                     );
+                    // R18a: a headless auto-deny is a correct BLOCK, not a
+                    // bypass — never touches jail_bypasses/approval_bypasses/
+                    // unapproved_skill_runs.
+                    crate::receipts::record("safety_and_trust", "adversary_blocks");
                     if let Some(response) = request_to_response_map.get_mut(&request.id) {
                         response.add_tool_response_with_metadata(
                             request.id.clone(),
@@ -157,15 +161,62 @@ impl Agent {
                 // confirmation back to `confirmation_rx` below via
                 // ToolConfirmationRouter::deliver, unblocking this parked await.
                 // Best-effort — a failure here leaves the legacy action_required path
-                // (yielded just below) intact and never breaks the turn.
-                self.create_tool_approval_decision(
-                    &request.id,
-                    &tool_name,
-                    serde_json::Value::Object(tool_call.arguments.clone().unwrap_or_default()),
-                    security_message.as_deref(),
-                    &session.id,
-                )
-                .await;
+                // (yielded just below) intact and never breaks the turn. Returns
+                // whether a card was actually filed — see the fail-closed check below.
+                let card_filed = self
+                    .create_tool_approval_decision(
+                        &request.id,
+                        &tool_name,
+                        serde_json::Value::Object(tool_call.arguments.clone().unwrap_or_default()),
+                        security_message.as_deref(),
+                        &session.id,
+                    )
+                    .await;
+
+                // R29a: fail closed instead of hanging. The legacy
+                // action_required path below only ever gets answered by a
+                // human reading the live stream — `session.session_type.
+                // is_interactive()` is the single source of truth for that
+                // (see its own doc comment). When this session is not
+                // interactive AND no Decision-Inbox card was filed, nothing
+                // in the system can ever deliver a confirmation:
+                // `confirmation_rx.await` would park until the goal's
+                // external wall-clock cap kills the whole run (traced in
+                // HARNESS_LOOP_LOG.md's A28 analysis, miss 2). Deny
+                // immediately instead, with a tool error the model can act
+                // on, and drop the router registration rather than await it
+                // — `ToolConfirmationRouter::register`/`has_live_waiter`
+                // prune a closed receiver on their own, so dropping `rx`
+                // here leaks nothing.
+                if !session.session_type.is_interactive() && !card_filed {
+                    tracing::warn!(
+                        tool_name = %tool_call.name,
+                        tool_request_id = %request.id,
+                        session_id = %session.id,
+                        "approval-required tool call has no reachable approver (not interactive, \
+                         no inbox card) — denied instead of parked"
+                    );
+                    crate::receipts::record("safety_and_trust", "adversary_blocks");
+                    drop(confirmation_rx);
+                    if let Some(response) = request_to_response_map.get_mut(&request.id) {
+                        let reason = security_message
+                            .as_deref()
+                            .map(|m| format!(": {m}"))
+                            .unwrap_or_default();
+                        response.add_tool_response_with_metadata(
+                            request.id.clone(),
+                            Ok(CallToolResult::error(vec![Content::text(format!(
+                                "This tool call was blocked by the security scanner{reason}. \
+                                 No approver is reachable for this session, so it was NOT run. \
+                                 Rewrite the command without the flagged pattern and retry, or \
+                                 if that is not possible, clearly explain what could not be done \
+                                 and stop."
+                            ))])),
+                            request.metadata.as_ref(),
+                        );
+                    }
+                    continue;
+                }
 
                 let action_required_msg = Message::assistant()
                     .with_action_required(
@@ -263,6 +314,12 @@ impl Agent {
     /// suspended on (see `goose-server` `routes::decisions::deliver_tool_confirmation`).
     /// Best-effort: any failure is logged and the turn proceeds on the legacy
     /// `/action-required` path, so this never breaks a turn.
+    ///
+    /// Returns whether a card was actually filed. `handle_approval_tool_requests`
+    /// uses this (R29a) to decide whether awaiting the confirmation is safe:
+    /// `false` means nothing in the Decision Inbox can ever answer this
+    /// request, so the caller must not await unless the legacy interactive
+    /// path can (`session.session_type.is_interactive()`).
     async fn create_tool_approval_decision(
         &self,
         request_id: &str,
@@ -270,7 +327,7 @@ impl Agent {
         arguments: serde_json::Value,
         security_message: Option<&str>,
         session_id: &str,
-    ) {
+    ) -> bool {
         use crate::decisions::{
             create_decision, NewDecision, ToolApprovalPayload, MAX_HEADLINE_CHARS,
         };
@@ -285,7 +342,7 @@ impl Agent {
                 "tool-approval decision skipped for request {}: headless agent",
                 request_id
             );
-            return;
+            return false;
         }
         if !crate::decisions::process_serves_inbox() {
             // This process does not serve the Decision Inbox answer path
@@ -299,7 +356,7 @@ impl Agent {
                 "tool-approval decision skipped for request {}: process does not serve the inbox",
                 request_id
             );
-            return;
+            return false;
         }
 
         let pool = match self.config.session_manager.pool_clone().await {
@@ -310,7 +367,7 @@ impl Agent {
                     request_id,
                     e
                 );
-                return;
+                return false;
             }
         };
 
@@ -357,11 +414,11 @@ impl Agent {
                     request_id,
                     e
                 );
-                return;
+                return false;
             }
         };
 
-        if let Err(e) = create_decision(
+        match create_decision(
             &pool,
             NewDecision {
                 kind: "tool_approval".to_string(),
@@ -373,11 +430,15 @@ impl Agent {
         )
         .await
         {
-            tracing::warn!(
-                "tool-approval decision create failed for request {}: {}",
-                request_id,
-                e
-            );
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(
+                    "tool-approval decision create failed for request {}: {}",
+                    request_id,
+                    e
+                );
+                false
+            }
         }
     }
 
@@ -691,6 +752,7 @@ mod tests {
     /// action_required and without any confirmation being delivered), no
     /// decision row, no dispatched tool.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn headless_core_park_auto_denies_without_parking_or_filing() {
         let tmp = tempfile::tempdir().unwrap();
         let (agent, session, pool) = park_test_agent(&tmp, GooseMode::Approve).await;
@@ -809,6 +871,85 @@ mod tests {
             recorded
         );
         assert!(tool_futures.is_empty());
+    }
+
+    /// R29a fail-closed defense: a session that is neither headless-marked
+    /// nor interactive (`SessionType::SubAgent`, the CLI-population gap this
+    /// lane targets — `process_serves_inbox()` is unset in this test binary
+    /// per the module's own INVARIANT, so no card can be filed) must be
+    /// denied immediately instead of parking on `confirmation_rx.await`.
+    /// Wrapped in a timeout: before this lane's fix the awaited channel
+    /// would never resolve and this test would hang until the timeout
+    /// fired, failing loudly instead of the silent goal-timeout hang traced
+    /// in HARNESS_LOOP_LOG.md's A28 analysis (miss 2).
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn non_interactive_non_headless_core_park_denies_without_awaiting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let agent = Agent::with_config(AgentRunnerConfig::new(
+            Arc::clone(&session_manager),
+            PermissionManager::instance(),
+            None,
+            GooseMode::Approve,
+            true,
+            GoosePlatform::GooseCli,
+        ));
+        // Deliberately left non-headless: this proves the general fail-closed
+        // check on its own merits, independent of the R29a dispatch-site
+        // fixes that now mark every unattended runner headless up front.
+        let session = session_manager
+            .create_session(
+                tmp.path().to_path_buf(),
+                "non-interactive test".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Approve,
+            )
+            .await
+            .expect("create session");
+        let pool = session_manager.pool_clone().await.expect("pool");
+
+        let request = approval_tool_request("req-no-channel", "write_file");
+        let mut tool_futures = Vec::new();
+        let mut response_map = HashMap::new();
+        response_map.insert(
+            "req-no-channel".to_string(),
+            Message::user().with_generated_id(),
+        );
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut stream = agent.handle_approval_tool_requests(
+                std::slice::from_ref(&request),
+                &mut tool_futures,
+                &mut response_map,
+                None,
+                &session,
+                &[],
+            );
+            stream.try_next().await.expect("stream")
+        })
+        .await
+        .expect("must resolve without hanging — no channel means no await");
+
+        assert!(
+            outcome.is_none(),
+            "no reachable approver must not yield an action_required park"
+        );
+        assert!(
+            tool_futures.is_empty(),
+            "denied tool must not be dispatched"
+        );
+        let recorded =
+            tool_response_text(response_map.get("req-no-channel").expect("response entry"));
+        assert!(
+            recorded.contains("blocked by the security scanner"),
+            "denial must explain why to the model: {}",
+            recorded
+        );
+        assert!(
+            !open_decision_exists(&pool, "req-no-channel").await,
+            "an unreachable card must never be filed"
+        );
     }
 
     /// Headless provider park: the bridge answers the provider's own oneshot

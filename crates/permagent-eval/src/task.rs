@@ -41,6 +41,8 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+use crate::selection::SelectionCheck;
+
 /// The default recipe: the built-in Permagent coding harness (#719), resolved by
 /// `permagent run --recipe permagent-coding`.
 pub const DEFAULT_RECIPE: &str = "permagent-coding";
@@ -101,7 +103,22 @@ pub struct TaskSpec {
     /// the workspace (e.g. Node graders that load deliverables by `file://` URL).
     #[serde(default)]
     pub deliverables: Vec<String>,
+
+    /// G3 (`docs/orchestrator/CODING_HARNESS_ROLE_GRADUATION_DAG.md`): the
+    /// expected tool/DAG decision for a `category: "selection"` fixture —
+    /// see [`crate::selection::SelectionCheck`]. Required when `category` is
+    /// `"selection"` and rejected everywhere else ([`TaskSpec::validate`]),
+    /// so a fixture cannot silently ship in the "selection" bucket without a
+    /// real, falsifiable check, nor carry a dead check under an unrelated
+    /// category.
+    #[serde(default)]
+    pub selection_check: Option<SelectionCheck>,
 }
+
+/// The `category` value that opts a fixture into G3's tool/DAG-selection
+/// grading (`dag_selection_pct`) instead of ordinary code-correctness
+/// grading. See [`crate::selection`].
+pub const SELECTION_CATEGORY: &str = "selection";
 
 impl TaskSpec {
     /// Parse a spec from YAML text (does not validate directory coupling).
@@ -144,13 +161,88 @@ impl TaskSpec {
                 self.id
             );
         }
+        match (&self.selection_check, self.category == SELECTION_CATEGORY) {
+            (None, true) => bail!(
+                "task {:?}: category \"{SELECTION_CATEGORY}\" requires a selection_check",
+                self.id
+            ),
+            (Some(_), false) => bail!(
+                "task {:?}: selection_check is only valid for category \"{SELECTION_CATEGORY}\" \
+                 (got {:?})",
+                self.id,
+                self.category
+            ),
+            (Some(check), true) if check.is_vacuous() => bail!(
+                "task {:?}: selection_check declares no rules (must_call/must_not_call/before \
+                 are all empty) — every run would vacuously pass it",
+                self.id
+            ),
+            _ => {}
+        }
         Ok(())
     }
 
-    /// The effective harness timeout, applying the default when unset.
+    /// The effective harness timeout, applying the default when unset. Does
+    /// NOT consider a [`crate::tier::Tier`]'s own default or a
+    /// `--harness-timeout-secs` CLI override — see
+    /// [`Self::resolved_harness_timeout_secs`] for the full Lane K6
+    /// precedence the runner actually uses.
     pub fn harness_timeout_secs(&self) -> u64 {
         self.harness_timeout_secs
             .unwrap_or(DEFAULT_HARNESS_TIMEOUT_SECS)
+    }
+
+    /// Lane K6 / K6-b: resolve the harness wall-clock ceiling for one run of
+    /// this task under `tier`:
+    ///
+    /// 1. `cli_override` — `--harness-timeout-secs <N>`, a deliberate
+    ///    measurement knob for ONE invocation that beats everything else.
+    /// 2. Otherwise, if `tier` declares its own
+    ///    [`crate::tier::Tier::harness_timeout_secs`] (e.g. the zai tiers,
+    ///    `glm47`/`glm53`, default to 900s — see `Tier::builtin`), the
+    ///    result is `max(task cap or DEFAULT_HARNESS_TIMEOUT_SECS, tier
+    ///    value)` — the tier value is a FLOOR, not an override, so it never
+    ///    shortens a task that already asked for MORE time than the tier's
+    ///    default.
+    /// 3. Otherwise, this task's own [`Self::harness_timeout_secs`] override
+    ///    from `task.yaml`, or [`DEFAULT_HARNESS_TIMEOUT_SECS`] if unset.
+    ///
+    /// Lane K6-b rationale: a fixture's `harness_timeout_secs:` encodes "a
+    /// competent harness finishes within N s on a fast model" — it is a
+    /// per-fixture correctness/complexity budget, not a claim about every
+    /// provider's speed. A per-tier FLOOR scales that budget for a provider
+    /// whose normal solved-task walls run 3-5x longer, without having to
+    /// rewrite every fixture's cap; the ceiling actually used is still
+    /// retained in the record (see `crate::metrics::TaskResult::
+    /// harness_timeout_secs`) so latency evidence stays honest about which
+    /// ceiling applied. Lane K6's original precedence (task cap always beat
+    /// the tier default, so a slow tier needed an explicit
+    /// `--harness-timeout-secs` to lift a fixture's own cap) is superseded
+    /// by this floor semantics.
+    ///
+    /// Evidence (Lane K6, `HARNESS_LOOP_LOG.md`): zai glm-4.7 rounds z2/z3 on
+    /// M19 failed `harness-loc-refund-cents-drift` and
+    /// `harness-refactor-shipping-quote-signature` by hitting the driver's
+    /// flat 600s per-task ceiling (`harness_timed_out=true` at 600.3s),
+    /// while zai's own solved-task walls on this suite run 150-440s and it
+    /// solved `loc-refund` in 526s under isolation — the per-task 600s cap
+    /// on those two fixtures was sized for faster tiers, not zai; under
+    /// K6-b's floor, both now run under `max(600, 900) = 900`.
+    pub fn resolved_harness_timeout_secs(
+        &self,
+        tier: &crate::tier::Tier,
+        cli_override: Option<u64>,
+    ) -> u64 {
+        if let Some(cli) = cli_override {
+            return cli;
+        }
+        let task_or_default = self
+            .harness_timeout_secs
+            .unwrap_or(DEFAULT_HARNESS_TIMEOUT_SECS);
+        match tier.harness_timeout_secs {
+            Some(tier_floor) => task_or_default.max(tier_floor),
+            None => task_or_default,
+        }
     }
 
     /// The effective oracle timeout, applying the default when unset.
@@ -185,6 +277,19 @@ impl Task {
 
     pub fn has_oracle(&self) -> bool {
         self.oracle_dir().is_dir()
+    }
+
+    /// Lane K8: the fixture's optional `seed/harness_state.json` — a
+    /// project (and optionally a paused roadmap + goal cards) to insert
+    /// into the run's isolated SQLite store after the driver's normal
+    /// seeding and before the harness starts, so a `category: "selection"`
+    /// fixture whose prose depends on pre-existing coordinator-visible
+    /// state (a paused roadmap, a Ready goal card) is actually
+    /// satisfiable — see [`crate::seed_state`]. `None` when the fixture
+    /// ships no such file (the common case, and unchanged behavior).
+    pub fn seed_state_path(&self) -> Option<PathBuf> {
+        let path = self.dir.join("seed").join("harness_state.json");
+        path.is_file().then_some(path)
     }
 
     /// Enforce the oracle import discipline (see the module docs): every Python
@@ -490,6 +595,85 @@ mod tests {
         assert_eq!(spec.max_turns, Some(12));
     }
 
+    // ── Lane K6 / K6-b: resolved_harness_timeout_secs precedence ─────────
+    // CLI override > max(task cap or default, tier floor) > task cap or
+    // default (when the tier declares no floor).
+
+    #[test]
+    fn resolved_timeout_falls_back_to_default_with_no_overrides_anywhere() {
+        let spec = TaskSpec::from_yaml(minimal_yaml()).unwrap();
+        let tier = crate::tier::Tier::custom("adhoc", "prov", "model");
+        assert_eq!(tier.harness_timeout_secs, None);
+        assert_eq!(
+            spec.resolved_harness_timeout_secs(&tier, None),
+            DEFAULT_HARNESS_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn resolved_timeout_applies_the_tier_default_when_the_task_has_none() {
+        let spec = TaskSpec::from_yaml(minimal_yaml()).unwrap();
+        let tier = crate::tier::Tier::builtin("glm47").unwrap();
+        assert_eq!(tier.harness_timeout_secs, Some(900));
+        assert_eq!(spec.resolved_harness_timeout_secs(&tier, None), 900);
+    }
+
+    /// Lane K6-b: the tier's 900s floor beats a TIGHTER task cap (600s) —
+    /// `max(600, 900) = 900`. This is the exact case the Lane K6 evidence
+    /// found (zai's z2/z3 rounds on M19 hit the driver's flat 600s ceiling
+    /// on two fixtures whose task.yaml caps them tighter than zai needs).
+    #[test]
+    fn resolved_timeout_tier_floor_beats_a_tighter_task_cap() {
+        let yaml = "id: t1\ntitle: T\nprompt: p\ntest: [x]\nharness_timeout_secs: 600\n";
+        let spec = TaskSpec::from_yaml(yaml).unwrap();
+        let tier = crate::tier::Tier::builtin("glm47").unwrap();
+        assert_eq!(spec.resolved_harness_timeout_secs(&tier, None), 900);
+    }
+
+    /// Lane K6-b: a task cap LOOSER than the tier's floor is left alone —
+    /// `max(1200, 900) = 1200`. The tier value is a floor, never a
+    /// shortening override.
+    #[test]
+    fn resolved_timeout_a_looser_task_cap_beats_the_tier_floor() {
+        let yaml = "id: t1\ntitle: T\nprompt: p\ntest: [x]\nharness_timeout_secs: 1200\n";
+        let spec = TaskSpec::from_yaml(yaml).unwrap();
+        let tier = crate::tier::Tier::builtin("glm47").unwrap();
+        assert_eq!(spec.resolved_harness_timeout_secs(&tier, None), 1200);
+    }
+
+    /// The `--harness-timeout-secs` CLI override still beats both the
+    /// task's own cap AND the tier's floor.
+    #[test]
+    fn resolved_timeout_cli_override_beats_both_task_cap_and_tier_floor() {
+        let yaml = "id: t1\ntitle: T\nprompt: p\ntest: [x]\nharness_timeout_secs: 600\n";
+        let spec = TaskSpec::from_yaml(yaml).unwrap();
+        let tier = crate::tier::Tier::builtin("glm47").unwrap();
+        assert_eq!(spec.resolved_harness_timeout_secs(&tier, Some(700)), 700);
+    }
+
+    /// With no tier floor declared (`dschat` — DeepSeek's own walls on this
+    /// suite run comfortably under the flat default, so it gets none), the
+    /// task's own cap (or the driver default) applies unchanged.
+    #[test]
+    fn resolved_timeout_with_no_tier_floor_the_task_cap_applies() {
+        let yaml = "id: t1\ntitle: T\nprompt: p\ntest: [x]\nharness_timeout_secs: 600\n";
+        let spec = TaskSpec::from_yaml(yaml).unwrap();
+        let tier = crate::tier::Tier::builtin("dschat").unwrap();
+        assert_eq!(tier.harness_timeout_secs, None);
+        assert_eq!(spec.resolved_harness_timeout_secs(&tier, None), 600);
+    }
+
+    #[test]
+    fn resolved_timeout_dschat_is_unaffected_by_the_zai_tier_default() {
+        let spec = TaskSpec::from_yaml(minimal_yaml()).unwrap();
+        let tier = crate::tier::Tier::builtin("dschat").unwrap();
+        assert_eq!(tier.harness_timeout_secs, None);
+        assert_eq!(
+            spec.resolved_harness_timeout_secs(&tier, None),
+            DEFAULT_HARNESS_TIMEOUT_SECS
+        );
+    }
+
     #[test]
     fn rejects_empty_prompt() {
         let yaml = "id: t1\ntitle: T\nprompt: '   '\ntest: [x]\n";
@@ -508,6 +692,47 @@ mod tests {
         assert!(TaskSpec::from_yaml(yaml).is_err());
     }
 
+    // ── G3: selection_check / category coupling ─────────────────────────
+
+    #[test]
+    fn selection_category_without_a_selection_check_is_rejected() {
+        let yaml = "id: t1\ntitle: T\ncategory: selection\nprompt: p\ntest: [x]\n";
+        let err = TaskSpec::from_yaml(yaml).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("requires a selection_check"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_selection_check_outside_the_selection_category_is_rejected() {
+        let yaml = "id: t1\ntitle: T\ncategory: classic\nprompt: p\ntest: [x]\n\
+                    selection_check:\n  must_call: [verify]\n";
+        let err = TaskSpec::from_yaml(yaml).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("only valid for category"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_vacuous_selection_check_is_rejected() {
+        let yaml = "id: t1\ntitle: T\ncategory: selection\nprompt: p\ntest: [x]\n\
+                    selection_check: {}\n";
+        let err = TaskSpec::from_yaml(yaml).unwrap_err();
+        assert!(format!("{err:#}").contains("no rules"), "{err:#}");
+    }
+
+    #[test]
+    fn a_well_formed_selection_fixture_parses() {
+        let yaml = "id: t1\ntitle: T\ncategory: selection\nprompt: p\ntest: [true]\n\
+                    selection_check:\n  must_call: [verify]\n  must_not_call: [shell]\n";
+        let spec = TaskSpec::from_yaml(yaml).unwrap();
+        let check = spec.selection_check.expect("selection_check must parse");
+        assert_eq!(check.must_call, vec!["verify".to_string()]);
+        assert_eq!(check.must_not_call, vec!["shell".to_string()]);
+    }
+
     #[test]
     fn load_task_requires_id_matches_dir() {
         let tmp = tempfile::tempdir().unwrap();
@@ -519,6 +744,42 @@ mod tests {
         )
         .unwrap();
         assert!(load_task(&dir).is_err());
+    }
+
+    // ── Lane K8: seed_state_path ──────────────────────────────────────────
+
+    #[test]
+    fn seed_state_path_is_none_without_a_seed_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("task.yaml"),
+            "id: demo\ntitle: T\nprompt: p\ntest: [x]\n",
+        )
+        .unwrap();
+        let task = load_task(&dir).unwrap();
+        assert_eq!(task.seed_state_path(), None);
+    }
+
+    #[test]
+    fn seed_state_path_is_some_when_seed_harness_state_json_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("task.yaml"),
+            "id: demo\ntitle: T\nprompt: p\ntest: [x]\n",
+        )
+        .unwrap();
+        let seed_dir = dir.join("seed");
+        std::fs::create_dir_all(&seed_dir).unwrap();
+        std::fs::write(seed_dir.join("harness_state.json"), "{}").unwrap();
+        let task = load_task(&dir).unwrap();
+        assert_eq!(
+            task.seed_state_path(),
+            Some(seed_dir.join("harness_state.json"))
+        );
     }
 
     #[test]
@@ -721,6 +982,45 @@ mod tests {
             t.validate_oracle_imports().unwrap_or_else(|e| {
                 panic!("bundled task {} violates discipline: {e:#}", t.spec.id)
             });
+        }
+    }
+
+    #[test]
+    fn r51a_worker_dispatch_fixtures_seed_a_real_workspace_not_an_empty_one() {
+        // Lane R51a (HARNESS_LOOP_LOG.md "Lane R51a"): M39's
+        // verification_integrity gate failed on both these fixtures with
+        // goals=1, review_reached=0 -- their dispatched worker's checkout
+        // was a bare, empty seed commit (K8/K12 only ever seeded the DB
+        // card via seed/harness_state.json, never a workspace/). With
+        // nothing to rename/add-to and no test to run, the worker can
+        // never earn a genuine (non-vacuous) `verify` PASS, so
+        // `maybe_hold_review` can never Allow -> the goal is stuck
+        // Hold/requeue or an honest stuck escalation, and review is never
+        // reached. Pin that both fixtures now ship a real, non-empty
+        // workspace/ so a future edit can't silently regress this back to
+        // empty.
+        let tasks_dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tasks"));
+        let tasks = load_task_set(tasks_dir).expect("bundled task set must load");
+        for id in [
+            "select-checks-worker-before-dispatch",
+            "select-existing-roadmap-resumes-not-redecomposes",
+        ] {
+            let task = tasks
+                .iter()
+                .find(|t| t.spec.id == id)
+                .unwrap_or_else(|| panic!("bundled task set must contain {id}"));
+            assert!(
+                task.has_workspace(),
+                "{id} must seed a workspace/ directory for its dispatched worker"
+            );
+            let files: Vec<_> = std::fs::read_dir(task.workspace_dir())
+                .unwrap_or_else(|e| panic!("reading {id}'s workspace/: {e}"))
+                .filter_map(|e| e.ok())
+                .collect();
+            assert!(
+                !files.is_empty(),
+                "{id}'s workspace/ directory must not be empty"
+            );
         }
     }
 

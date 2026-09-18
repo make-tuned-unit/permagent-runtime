@@ -808,11 +808,18 @@ mod tests {
                 include_str!(
                     "../../../docs/orchestrator/VOICE_UX_RELIABILITY_MASTER_PROGRAM_DAG.yaml"
                 ),
-                vec!["v6_rebuild_device_e2e"],
+                vec!["v3b_partial_stt_producer"],
             ),
             (
                 include_str!("../../../docs/orchestrator/PERMAGENT_IMPROVEMENT_PORTFOLIO_DAG.yaml"),
-                vec!["coding_harness_program", "voice_reliability_program"],
+                vec![
+                    "coding_harness_program",
+                    "voice_reliability_program",
+                    "companion_program",
+                    "spectral_learning_program",
+                    "world_program",
+                    "suite_polish_program",
+                ],
             ),
         ];
         let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

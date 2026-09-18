@@ -41,6 +41,70 @@ fn post_json(uri: &str, body: serde_json::Value) -> Request<Body> {
     request
 }
 
+fn git_in(root: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .expect("git must be on PATH for this test");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// R49a: a real trunk on `main` plus a real LINKED worktree on `goal/run-1`
+/// one commit ahead of it — the shape `land_approved_goal`
+/// (`decisions_effects.rs`) actually needs, and the shape production always
+/// hands it. Every genuine worker success writes `dispatch_evidence` from a
+/// `GoalEvidence` value (`goal_engine.rs`) whose `worktree_path` field is a
+/// plain, non-optional `String` — never absent — via
+/// `cards::set_goal_dispatch_evidence(&tracker_pool, &tracker_card_id, v)`
+/// at `orchestrator.rs`'s dispatch-teardown handler (the real
+/// `handle_goal_completion` producer this test's fixture claims to mirror).
+/// Returns (trunk dir, worktrees dir, worktree path, baseline sha, head sha)
+/// — both TempDirs must outlive the test.
+fn landable_goal_repo() -> (tempfile::TempDir, tempfile::TempDir, String, String, String) {
+    let trunk = tempfile::tempdir().unwrap();
+    let root = trunk.path();
+    git_in(root, &["init", "-b", "main"]);
+    git_in(root, &["config", "user.email", "test@example.com"]);
+    git_in(root, &["config", "user.name", "Test"]);
+    std::fs::write(root.join("README.md"), "base\n").unwrap();
+    git_in(root, &["add", "-A"]);
+    git_in(root, &["commit", "-m", "base"]);
+    let baseline = git_in(root, &["rev-parse", "HEAD"]);
+    git_in(root, &["checkout", "-b", "goal/run-1"]);
+    std::fs::write(root.join("work.txt"), "the goal's work\n").unwrap();
+    git_in(root, &["add", "-A"]);
+    git_in(root, &["commit", "-m", "the work"]);
+    let head = git_in(root, &["rev-parse", "HEAD"]);
+    git_in(root, &["checkout", "main"]);
+
+    let worktrees = tempfile::tempdir().unwrap();
+    let worktree_path = worktrees.path().join("run-1");
+    git_in(
+        root,
+        &[
+            "worktree",
+            "add",
+            worktree_path.to_str().unwrap(),
+            "goal/run-1",
+        ],
+    );
+
+    (
+        trunk,
+        worktrees,
+        worktree_path.to_string_lossy().into_owned(),
+        baseline,
+        head,
+    )
+}
+
 // One test per integration binary (own process): PERMAGENT_PATH_ROOT and the
 // startup singletons are per-process, so #[serial] had nothing to serialize
 // against here — it was a no-op (superseding #695). The real flake was a
@@ -67,6 +131,34 @@ async fn decision_lifecycle_through_router() {
 
     // ── 2. Seed a goal in Review with its approve_review decision (what
     //       handle_goal_completion produces on worker success) ──
+    //
+    // R49a (root cause): this fixture used to seed `dispatch_evidence` as
+    // just `{"verdict": {"status": "pass"}}` — no `commits`, no
+    // `worktree_path`, no real git anywhere. That is not the shape a real
+    // router-driven approval ever carries: every genuine worker success
+    // writes `dispatch_evidence` from a `GoalEvidence` value
+    // (`goal_engine.rs`) whose `worktree_path` is a plain, non-optional
+    // `String`, via `cards::set_goal_dispatch_evidence` at
+    // `orchestrator.rs`'s dispatch-teardown handler — the exact producer
+    // this fixture's own comment claims to mirror. With no worktree hint,
+    // `land_approved_goal` (`decisions_effects.rs`) could not even reach
+    // its trunk-relative fallback (R43a/R43a-b) and refused with
+    // `reason=no_evidence`, parking a goal the router had just approved.
+    // Give it a real trunk + a real linked worktree one commit ahead, the
+    // shape land_approved_goal actually needs and production always hands
+    // it.
+    let (trunk, _worktrees, worktree_path, baseline, head) = landable_goal_repo();
+    permagent::projects::update_project(
+        &pool,
+        PERSONAL_PROJECT_ID,
+        permagent::projects::UpdateProject {
+            root_path: Some(Some(trunk.path().to_string_lossy().into_owned())),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
     cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
         .await
         .unwrap();
@@ -85,12 +177,34 @@ async fn decision_lifecycle_through_router() {
             created_by: None,
             metadata_json: Some(serde_json::json!({
                 "attempt_count": 1,
-                "goal_state": "review"
+                "goal_state": "review",
+                // approve_review_verification_status (decisions_effects.rs)
+                // treats missing evidence as "pending", never an implicit
+                // pass (56cee825) — an approve_review decision only clears
+                // the router's answer boundary once the verifier recorded a
+                // "pass" verdict here, the same shape
+                // handle_goal_completion/set_goal_dispatch_evidence writes.
+                "dispatch_evidence": {
+                    "worktree_path": worktree_path,
+                    "baseline_commit": baseline,
+                    "head_commit": head,
+                    "commits": [format!("{head} the work")],
+                    "verdict": {"status": "pass"},
+                }
             })),
         },
     )
     .await
     .unwrap();
+    // Pin the precondition the router answer boundary enforces: a missing
+    // verdict reads as "pending", never an implicit pass, and the fixture
+    // above must satisfy it or step 4 below gets a false 409.
+    assert_eq!(
+        permagent::decisions_effects::approve_review_verification_status(&pool, &goal.id)
+            .await
+            .unwrap(),
+        "pass"
+    );
     let decision = decisions::create_decision(
         &pool,
         NewDecision {
@@ -135,7 +249,19 @@ async fn decision_lifecycle_through_router() {
     assert_eq!(v["decision"]["status"], "answered");
     assert_eq!(v["decision"]["acted_by"], "jesse");
     assert_eq!(v["decision"]["answer"], "approve");
-    assert_eq!(v["effect"], "goal approved: Review → Complete");
+    // R49a: `land_approved_goal` always reports what it did, appended after
+    // a semicolon (`decisions_effects.rs`'s `apply_decision_effect`) — a
+    // bare "goal approved: Review → Complete" with no suffix can only mean
+    // landing was never reached at all. This fixture's approval must
+    // actually land the goal's real, already-committed work onto trunk.
+    assert!(
+        v["effect"]
+            .as_str()
+            .unwrap()
+            .starts_with("goal approved: Review → Complete; landed:"),
+        "the router approve path must land the goal, not park it: {}",
+        v
+    );
     assert!(v["effectError"].is_null(), "effect must succeed: {}", v);
 
     // The goal actually completed.
@@ -145,6 +271,27 @@ async fn decision_lifecycle_through_router() {
         .unwrap()
         .unwrap();
     assert_eq!(col.state_binding.as_deref(), Some("complete"));
+
+    // Pin the corrected landing behaviour directly: the persisted outcome
+    // says "landed" (not merely that the card moved to Complete — R43a-c
+    // exists precisely because those two things used to diverge), and the
+    // trunk really did fast-forward onto the worktree's head commit.
+    let landing = card
+        .metadata_json
+        .pointer("/dispatch_evidence/landing")
+        .expect("a successful router-driven approval must persist a landing outcome");
+    assert_eq!(
+        landing.get("outcome").and_then(|v| v.as_str()),
+        Some("landed"),
+        "router approve → land_approved_goal must actually land already-committed, \
+         reviewed work rather than refuse it: {}",
+        landing
+    );
+    assert_eq!(
+        git_in(trunk.path(), &["rev-parse", "HEAD"]),
+        head,
+        "the trunk must fast-forward onto the goal's real head commit"
+    );
 
     // ── 5. Answering again races out: 409 Conflict ──
     let resp = app

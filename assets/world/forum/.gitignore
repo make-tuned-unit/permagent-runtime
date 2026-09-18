@@ -1,0 +1,11 @@
+# Reproducible CC0 downloads: see scripts/unreal/acquire_environment.py.
+third-party/
+
+# Derived from scripts/blender/build_solar_forum.py on every build — 8 MB and
+# 19 MB of binary that does not belong in git history. The Unreal pipeline
+# reads the FBX from disk; regenerate both with the builder. See
+# docs/design/solar-forum/README.md.
+solar-forum.blend
+solar-forum.fbx
+# Blender's rolling backup of a .blend save.
+*.blend1

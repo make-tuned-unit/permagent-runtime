@@ -134,15 +134,29 @@ mod tests {
                 project_id: Some(permagent::projects::PERSONAL_PROJECT_ID.to_string()),
                 headline: Some("Allow a shell command to run".to_string()),
                 detail: Some("cc_shell: rm -rf ./build".to_string()),
+                // Harness loop Lane Z6: this payload used to carry an
+                // unrecognized "summary" field and omit the required
+                // `description`/`requested_by` fields `RiskGatePayload`
+                // (deny_unknown_fields) needs — so `create_decision` was
+                // silently storing this as `kind='malformed'` the whole
+                // time, and the assertion below still passed (malformed rows
+                // are tier-2 fail-closed too), hiding it. Fixed to a real,
+                // valid `risk_gate` payload so `assert_eq!(d.tier, 2)` below
+                // is actually exercising the risk_gate path it claims to.
                 payload: serde_json::json!({
                     "action_class": "cc_shell",
-                    "summary": "remove the build directory",
+                    "description": "remove the build directory",
+                    "requested_by": "voice",
                 }),
                 ..Default::default()
             },
         )
         .await
         .unwrap();
+        assert_eq!(
+            d.kind, "risk_gate",
+            "payload must validate, not fall back to malformed"
+        );
         assert_eq!(d.tier, 2, "sanity: the tier voice used to be able to clear");
 
         let spoken = stage_spoken_verdict(&pool, &d.id, "approve").await.unwrap();

@@ -49,6 +49,20 @@ pub fn map_provider_name(provider: &str) -> &str {
         "gemini_oauth" => "google",
         "zhipu" => "zhipuai",
         "novita" => "novita-ai",
+        // I1 (harness loop, 2026-09-10, from M10's forensics): "zai-org" is
+        // the org-qualified spelling some surfaces report for Z.AI's hosted
+        // models, but `canonical_models.json` never carries it as a bare
+        // top-level provider (only nested under a third-party host's own id,
+        // e.g. `siliconflow/zai-org/GLM-4.7`) — aliased to "zai", which the
+        // registry DOES price directly (`zai/glm-4.7` at $0.60/$2.20 per
+        // Mtok), so a call configured under this spelling resolves real
+        // pricing instead of missing the registry and falling to the global
+        // worst-case constant. Deliberately NOT "zai-coding-plan" (the
+        // subscription-plan auth mode): that spelling already has its OWN
+        // registry row with its own ($0, subscription-included) pricing, so
+        // aliasing it here would silently rewrite it onto "zai"'s metered
+        // rate — see `zai_coding_plan_keeps_its_own_subscription_pricing`.
+        "zai-org" => "zai",
         _ => provider,
     }
 }
@@ -562,5 +576,44 @@ mod tests {
         assert_eq!(pricing.input, Some(1.4));
         assert_eq!(pricing.output, Some(4.4));
         assert!(!is_estimated);
+    }
+
+    /// I1 pin (harness loop, 2026-09-10, from M10's forensics): `"zai-org"`
+    /// carries no bare top-level entry in `canonical_models.json` (only
+    /// nested under a third-party host's own id), but is now aliased to
+    /// `"zai"` — a real, priced row — via `map_provider_name`. Pre-fix,
+    /// `map_to_canonical_model("zai-org", "glm-4.7", r)` returned `None`
+    /// and the reservation bound fell through to the global worst case.
+    #[test]
+    fn zai_org_alias_resolves_to_the_real_zai_canonical_row() {
+        let r = super::super::CanonicalModelRegistry::bundled().unwrap();
+        assert_eq!(
+            map_to_canonical_model("zai-org", "glm-4.7", r),
+            Some("zai/glm-4.7".to_string())
+        );
+        let pricing = super::super::maybe_get_pricing("zai-org", "glm-4.7")
+            .expect("the zai-org alias must resolve real zai pricing");
+        assert_eq!(pricing.input, Some(0.60));
+        assert_eq!(pricing.output, Some(2.20));
+    }
+
+    /// I1 pin: `"zai-coding-plan"` (the subscription-plan auth mode) is
+    /// deliberately NOT aliased — it already carries its own registry row
+    /// with its own ($0, subscription-included) pricing
+    /// (`"zai-coding-plan/glm-4.7"`), and this proves the alias table did
+    /// not silently redirect it onto `"zai"`'s metered $0.60/$2.20 rate,
+    /// which would overbill a subscription session that owes nothing
+    /// per call.
+    #[test]
+    fn zai_coding_plan_keeps_its_own_subscription_pricing() {
+        let r = super::super::CanonicalModelRegistry::bundled().unwrap();
+        assert_eq!(
+            map_to_canonical_model("zai-coding-plan", "glm-4.7", r),
+            Some("zai-coding-plan/glm-4.7".to_string())
+        );
+        let pricing = super::super::maybe_get_pricing("zai-coding-plan", "glm-4.7")
+            .expect("zai-coding-plan must resolve its own registry row");
+        assert_eq!(pricing.input, Some(0.0));
+        assert_eq!(pricing.output, Some(0.0));
     }
 }

@@ -67,9 +67,14 @@ use super::role_map::RoleModel;
 /// Why a derived entry was chosen — carried into the routing receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Provenance {
-    /// Whether the model clears the role's capability floor. Always `true` for an
-    /// entry in the map (an under-floor role is not derived) — kept explicit so
-    /// the receipt states it rather than implies it.
+    /// Whether the model clears the role's capability floor by the static KB
+    /// heuristic. `true` for every ordinarily-derived entry (an under-floor
+    /// role is not derived on the heuristic alone). `false` is possible for
+    /// two evidence-overridden picks — Orchestrate's `planner()` and, since
+    /// G7 finding F4, any worker role — where a card GRADUATED for that role
+    /// is admitted despite failing the KB floor; kept explicit (computed,
+    /// never hardcoded) so the receipt states the real situation rather than
+    /// implying "floor met" for a pick that only cleared on evidence.
     pub floor_met: bool,
     /// How the model resolved to its knowledge-base row: exact / alias (same
     /// weights) / family estimate (an Ollama-tagged variant scored by its family).
@@ -162,31 +167,169 @@ fn realize(
 /// Pure: derive the best-fit map from the models the user has. Only roles whose
 /// recommendation names a concrete model that clears the role's floor are
 /// entered; each is keyed to an id actually in `available`.
+///
+/// `WorkflowRole::Orchestrate` is a special case (the 2026-09-09 "plan on the
+/// strongest, work on the cheapest graduated" ruling, `capability_directory`
+/// D2): it is NOT picked by [`recommend_from_available`]'s cheapest-that-
+/// clears-the-floor family of ranks — it is picked by
+/// [`super::capability_directory::CapabilityDirectory::planner`], which is
+/// built from the SAME `available` models so the directory and this map can
+/// never disagree. Every other role keeps the existing cheapest-that-clears
+/// rule, with one addition: a role whose evidence shows a sub-[`super::
+/// capability_directory::MICRO_SUITE_PASS_FLOOR`] micro-suite pass rate is
+/// EXCLUDED from that role even though the KB heuristic would otherwise admit
+/// it — evidence beats the heuristic in both directions.
 pub fn derive_role_map(available: &[AvailableModel]) -> DerivedRoleMap {
+    let directory =
+        super::capability_directory::CapabilityDirectory::build_with_persisted(available, None);
+    derive_role_map_from_directory(available, &directory)
+}
+
+/// The pure core of [`derive_role_map`], parameterized on an already-built
+/// [`super::capability_directory::CapabilityDirectory`] — so a caller that HAS
+/// persisted graduation evidence (the IO wrapper, [`derived_role_map`], via
+/// [`super::capability_directory::CapabilityDirectory::build`]) can have that
+/// evidence actually reach routing, while [`derive_role_map`] itself stays a
+/// pure, no-IO, KB-only convenience for tests and any caller with no
+/// evidence to merge. Both entry points share this ONE selection logic — the
+/// directory and the routing can never disagree.
+pub fn derive_role_map_from_directory(
+    available: &[AvailableModel],
+    directory: &super::capability_directory::CapabilityDirectory,
+) -> DerivedRoleMap {
     let rec = recommend_from_available(available);
     let mut map = DerivedRoleMap::empty();
+
+    if let Some((rm, _reason)) = directory.planner() {
+        // `_reason` (Strongest / CostTieBreak / OnlyCandidate) is surfaced by
+        // the roadmap-creation receipt in `orchestrator.rs`, not by the
+        // generic per-goal `Provenance` this map carries for every role.
+        if let Some((model, confidence)) = realize(available, &rm.provider, &rm.model) {
+            let picked_card = directory
+                .cards
+                .iter()
+                .find(|c| c.provider == rm.provider && c.model == rm.model);
+            let cost_hint = picked_card
+                .map(|c| c.blended_cost_per_mtok())
+                .unwrap_or(0.0);
+            // Ordinarily the planner only ever picks a floor-clearer, so this
+            // is `true` in every case the current (no-evidence-pipeline) build
+            // can produce; computed rather than hardcoded so a future
+            // graduated-but-below-floor pick (real evidence beating the KB
+            // heuristic) still reports its provenance honestly.
+            let floor_met = picked_card
+                .map(|c| {
+                    c.strengths.orchestration
+                        >= WorkflowRole::Orchestrate
+                            .capability_floor()
+                            .orchestration_min
+                })
+                .unwrap_or(true);
+            map.by_role.insert(
+                WorkflowRole::Orchestrate,
+                RoleModel {
+                    provider: rm.provider,
+                    model,
+                },
+            );
+            map.provenance.insert(
+                WorkflowRole::Orchestrate,
+                Provenance {
+                    floor_met,
+                    confidence,
+                    cost_hint,
+                },
+            );
+        }
+    }
+
     for r in rec.recommendations {
-        if r.provider.is_empty() || r.model.is_empty() || !r.floor_met {
+        if r.role == WorkflowRole::Orchestrate {
+            continue; // handled above by the planner
+        }
+        if r.provider.is_empty() || r.model.is_empty() {
             continue;
         }
-        let Some((model, confidence)) = realize(available, &r.provider, &r.model) else {
+        if r.floor_met {
+            if let Some(card) = directory
+                .cards
+                .iter()
+                .find(|c| c.provider == r.provider && c.model == r.model)
+            {
+                if super::capability_directory::evidence_excludes_role(card, r.role) {
+                    continue;
+                }
+            }
+            let Some((model, confidence)) = realize(available, &r.provider, &r.model) else {
+                continue;
+            };
+            map.by_role.insert(
+                r.role,
+                RoleModel {
+                    provider: r.provider.clone(),
+                    model,
+                },
+            );
+            map.provenance.insert(
+                r.role,
+                Provenance {
+                    floor_met: true,
+                    confidence,
+                    cost_hint: r.blended_cost_per_mtok,
+                },
+            );
             continue;
-        };
-        map.by_role.insert(
-            r.role,
-            RoleModel {
-                provider: r.provider.clone(),
-                model,
-            },
-        );
-        map.provenance.insert(
-            r.role,
-            Provenance {
-                floor_met: r.floor_met,
-                confidence,
-                cost_hint: r.blended_cost_per_mtok,
-            },
-        );
+        }
+
+        // G7 finding F4 (admit direction — D2's "evidence beats the KB
+        // heuristic in both directions" rule, previously only implemented
+        // for the exclude direction above and for Orchestrate's `planner()`):
+        // the KB heuristic alone rejects this role, but a card carrying
+        // GRADUATED evidence for it must still be admitted even though its
+        // static knowledge-base strength is below the floor. `graduated()`
+        // is only constructible once the pass-rate floor is actually
+        // cleared (`validate_graduation`, G7 finding F3), and
+        // `evidence_excludes_role` is checked too as defense-in-depth
+        // against a grandfathered/stale record — so this can never admit a
+        // model the evidence itself would exclude. Ties broken by cost,
+        // among the models the user actually has (`available`, via
+        // `realize`).
+        if let Some(evidenced) = directory
+            .cards
+            .iter()
+            .filter(|c| {
+                c.role(r.role).map(|e| e.graduated()).unwrap_or(false)
+                    && !super::capability_directory::evidence_excludes_role(c, r.role)
+            })
+            .min_by(|a, b| {
+                a.blended_cost_per_mtok()
+                    .total_cmp(&b.blended_cost_per_mtok())
+                    .then_with(|| a.provider.cmp(&b.provider))
+                    .then_with(|| a.model.cmp(&b.model))
+            })
+        {
+            let Some((model, confidence)) =
+                realize(available, &evidenced.provider, &evidenced.model)
+            else {
+                continue;
+            };
+            map.by_role.insert(
+                r.role,
+                RoleModel {
+                    provider: evidenced.provider.clone(),
+                    model,
+                },
+            );
+            map.provenance.insert(
+                r.role,
+                Provenance {
+                    // Honest: the KB floor is NOT met — evidence overrode it.
+                    floor_met: false,
+                    confidence,
+                    cost_hint: evidenced.blended_cost_per_mtok(),
+                },
+            );
+        }
     }
     map
 }
@@ -206,15 +349,62 @@ fn cached() -> Option<Arc<DerivedRoleMap>> {
     (at.elapsed() < DERIVED_ROLE_MAP_TTL).then(|| map.clone())
 }
 
-/// The live derived map — discovery (keyed providers + installed local models,
-/// bounded Ollama probe) → recommender → [`derive_role_map`] — cached for
-/// [`DERIVED_ROLE_MAP_TTL`]. Concurrent cache misses may derive twice; harmless.
+/// A second process-wide cache, same TTL and same invalidation trigger as
+/// [`CACHE`] above, for callers that need the [`super::capability_directory::
+/// CapabilityDirectory`] itself rather than the derived role→model map — e.g.
+/// the planner-route resolver, which also needs `CapabilityDirectory::explain`/
+/// `pin_clears_orchestrate_floor`. Kept separate from `CACHE` (rather than
+/// having `derived_role_map` read it back out of the `DerivedRoleMap`) so
+/// neither caller depends on the other's shape.
+static DIRECTORY_CACHE: RwLock<
+    Option<(
+        Instant,
+        Arc<super::capability_directory::CapabilityDirectory>,
+    )>,
+> = RwLock::new(None);
+
+fn cached_directory() -> Option<Arc<super::capability_directory::CapabilityDirectory>> {
+    let guard = DIRECTORY_CACHE.read().ok()?;
+    let (at, dir) = guard.as_ref()?;
+    (at.elapsed() < DERIVED_ROLE_MAP_TTL).then(|| dir.clone())
+}
+
+/// The live capability directory — discovery (keyed providers + installed
+/// local models, bounded Ollama probe) → [`super::capability_directory::
+/// CapabilityDirectory::build`] — cached for [`DERIVED_ROLE_MAP_TTL`] and
+/// invalidated by the SAME [`invalidate_derived_role_map`] call sites as the
+/// derived map, so the two caches can never disagree about "the roster
+/// changed." `derived_role_map` also builds from this cache, so within one
+/// TTL window a burst of callers (roadmap decomposition's planner-route
+/// resolver AND worker dispatch) shares one live probe, not one each.
+pub async fn cached_capability_directory() -> Arc<super::capability_directory::CapabilityDirectory>
+{
+    if let Some(dir) = cached_directory() {
+        return dir;
+    }
+    let available = discover_available_models_async().await;
+    let directory = Arc::new(super::capability_directory::CapabilityDirectory::build(
+        &available,
+    ));
+    if let Ok(mut guard) = DIRECTORY_CACHE.write() {
+        *guard = Some((Instant::now(), directory.clone()));
+    }
+    directory
+}
+
+/// The live derived map — the shared [`cached_capability_directory`] (keyed
+/// providers + installed local models, bounded Ollama probe, KB seeded and
+/// merged with any PERSISTED graduation evidence) → [`derive_role_map_from_directory`]
+/// — cached for [`DERIVED_ROLE_MAP_TTL`]. This is the ONLY entry point that
+/// sees persisted evidence; [`derive_role_map`] stays pure/KB-only. Concurrent
+/// cache misses may derive twice; harmless.
 pub async fn derived_role_map() -> Arc<DerivedRoleMap> {
     if let Some(map) = cached() {
         return map;
     }
     let available = discover_available_models_async().await;
-    let map = Arc::new(derive_role_map(&available));
+    let directory = cached_capability_directory().await;
+    let map = Arc::new(derive_role_map_from_directory(&available, &directory));
     if let Ok(mut guard) = CACHE.write() {
         *guard = Some((Instant::now(), map.clone()));
     }
@@ -224,8 +414,13 @@ pub async fn derived_role_map() -> Arc<DerivedRoleMap> {
 /// Drop the cached map so the next dispatch re-derives. Called from the config
 /// write paths that change availability or the hand-configured roles; the TTL
 /// covers writes that bypass them (e.g. a key exported into the environment).
+/// Also drops [`DIRECTORY_CACHE`] — the two caches are invalidated together so
+/// they can never disagree about "the roster changed."
 pub fn invalidate_derived_role_map() {
     if let Ok(mut guard) = CACHE.write() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = DIRECTORY_CACHE.write() {
         *guard = None;
     }
 }
@@ -259,6 +454,11 @@ pub enum RoleSource {
     Configured,
     /// The recommender-derived best-fit map (this module).
     Derived,
+    /// An explicit `PERMAGENT_PACK_*` pin, consulted only by a HEADLESS
+    /// dispatch's `resolve_dispatch_role_model` (X-cost-1) — a daemon
+    /// dispatch's `role_model_or_derived` never produces this variant, since
+    /// it does not consult the pack pins at all.
+    PackPin,
 }
 
 impl RoleSource {
@@ -266,6 +466,7 @@ impl RoleSource {
         match self {
             RoleSource::Configured => "configured",
             RoleSource::Derived => "derived",
+            RoleSource::PackPin => "pack_pin",
         }
     }
 }
@@ -312,6 +513,13 @@ pub fn model_routing_receipt(
                 "summary": summary,
             })
         }
+        Some((rm, RoleSource::PackPin)) => serde_json::json!({
+            "role": role.as_str(),
+            "provider": rm.provider,
+            "model": rm.model,
+            "source": RoleSource::PackPin.as_str(),
+            "summary": "pack pin (PERMAGENT_PACK_*, headless dispatch — X-cost-1)",
+        }),
         None => serde_json::json!({
             "role": role.as_str(),
             "source": "session",
@@ -536,6 +744,39 @@ mod tests {
         assert!(cached().is_none());
     }
 
+    /// G7 finding F5 (perf): `resolve_planner_route` must reuse a short-TTL
+    /// cache for the `CapabilityDirectory` instead of probing Ollama and
+    /// rebuilding the directory on every call. Pre-fix, no such cache
+    /// existed for the directory at all (`resolve_planner_route` called
+    /// `discover_available_models_async` + `CapabilityDirectory::build`
+    /// inline, unconditionally, on every call — this test's pre-fix
+    /// equivalent would find no `DIRECTORY_CACHE` to seed and no
+    /// `cached_directory`/`cached_capability_directory` to exercise, since
+    /// they did not exist). Same pattern as `cache_invalidation_drops_the_map`:
+    /// seed the cache directly (no live discovery), then confirm both the
+    /// hit path and `invalidate_derived_role_map` (the ONE invalidation
+    /// trigger both caches must share) apply to it too.
+    #[test]
+    fn directory_cache_hits_until_invalidated_alongside_the_role_map_cache() {
+        let seeded = Arc::new(super::super::capability_directory::CapabilityDirectory::build(&[]));
+        if let Ok(mut g) = DIRECTORY_CACHE.write() {
+            *g = Some((Instant::now(), seeded.clone()));
+        }
+        let hit = cached_directory().expect("a freshly seeded entry must be a cache hit");
+        assert!(
+            Arc::ptr_eq(&hit, &seeded),
+            "a cache hit must return the SAME directory, not rebuild one"
+        );
+
+        // The shared invalidation trigger must drop this cache too, not just
+        // the role-map cache.
+        invalidate_derived_role_map();
+        assert!(
+            cached_directory().is_none(),
+            "invalidate_derived_role_map must also drop the directory cache"
+        );
+    }
+
     /// The interactive main loop's model path never consults the derived map:
     /// only the three delegated-work seams (goal dispatch, escalation, summon)
     /// reference it. Grep-based over the sources so a future edit that reaches
@@ -590,5 +831,149 @@ mod tests {
                 p.display()
             );
         }
+    }
+
+    // ── D2: workers keep the existing cheapest-clearing-floor rule ──────────
+
+    /// Only ORCHESTRATE changed (planner rule). Every other role still picks
+    /// the cheapest model that clears ITS floor, exactly as before — a
+    /// stronger, dearer model must NOT win MECHANICAL just because the
+    /// directory now exists.
+    #[test]
+    fn workers_stay_cheapest_clearing_floor() {
+        let available = vec![
+            am("anthropic", "claude-opus-4-8"), // strongest, dearest
+            am("ollama", "qwen3-coder"),        // $0, clears the mechanical floor
+        ];
+        let map = derive_role_map(&available);
+        let (mech, _) = map
+            .get(WorkflowRole::Mechanical)
+            .expect("mechanical must derive something");
+        assert_eq!(
+            mech.provider, "ollama",
+            "MECHANICAL must still be the cheapest floor-clearer, not the strongest model"
+        );
+        // ORCHESTRATE, meanwhile, is the planner's pick (strongest above the
+        // floor) — qwen3-coder (0.55) never clears the 0.80 floor, so Opus
+        // wins there, proving the two roles now use genuinely different rules.
+        let (orch, _) = map
+            .get(WorkflowRole::Orchestrate)
+            .expect("orchestrate must derive something");
+        assert_eq!(orch.provider, "anthropic");
+        assert_eq!(orch.model, "claude-opus-4-8");
+    }
+
+    /// D2's evidence-excludes-a-role rule, wired end to end: a role whose
+    /// persisted evidence shows a sub-80% micro-suite pass rate is excluded
+    /// from the derived map even though the KB heuristic alone would admit
+    /// it. `derive_role_map` itself stays pure (no persisted-file IO), so
+    /// this drives it through `CapabilityDirectory::build_with_persisted`
+    /// directly to prove the filter is really wired, not just unit-tested in
+    /// isolation.
+    #[test]
+    fn evidence_below_80pct_excludes_role_end_to_end() {
+        use super::super::capability_directory::{CapabilityDirectory, RoleEvidence};
+        // gpt-5.6 clears the MECHANICAL floor on the KB heuristic alone.
+        let available = vec![am("openai", "gpt-5.6")];
+        let baseline = derive_role_map(&available);
+        assert!(
+            baseline.get(WorkflowRole::Mechanical).is_some(),
+            "test premise: gpt-5.6 clears the mechanical floor without evidence"
+        );
+
+        // Build a directory carrying evidence that gpt-5.6 FAILS the
+        // mechanical micro-suite (< 80%), then drive it through the SAME
+        // selection core `derived_role_map()` (the IO wrapper) uses —
+        // `derive_role_map_from_directory` — to prove the exclusion is really
+        // wired into routing, not just true of the pure filter function.
+        let today = chrono::Utc::now().date_naive();
+        let mut seeded = CapabilityDirectory::build_with_persisted(&available, None);
+        for card in seeded.cards.iter_mut() {
+            if card.provider == "openai" && card.model == "gpt-5.6" {
+                card.roles.insert(
+                    WorkflowRole::Mechanical.as_str().to_string(),
+                    RoleEvidence::new(
+                        false,
+                        true,
+                        Some(0.40),
+                        Some(0.90),
+                        vec![],
+                        None,
+                        None,
+                        None,
+                        today,
+                    )
+                    .unwrap(),
+                );
+            }
+        }
+        let with_evidence = derive_role_map_from_directory(&available, &seeded);
+        assert!(
+            with_evidence.get(WorkflowRole::Mechanical).is_none(),
+            "sub-80% mechanical evidence must EXCLUDE the role from the derived map, \
+             even though the KB heuristic alone would have admitted it"
+        );
+    }
+
+    /// G7 finding F4: D2's "evidence beats the KB heuristic in both
+    /// directions" rule, the ADMIT half, wired end to end for a worker role.
+    /// `gpt-5.6`'s edit-format reliability (0.950) is below EDIT's floor
+    /// (0.97, `EDIT_RELIABILITY_FLOOR`) — the KB heuristic alone rejects it.
+    /// Pre-fix, `derive_role_map_from_directory` skipped any role recommendation
+    /// with `!r.floor_met` outright, so a model GRADUATED for that role by
+    /// real evidence was still excluded from routing; only Orchestrate's
+    /// `planner()` had an admit-by-evidence path.
+    #[test]
+    fn evidence_graduated_admits_a_below_kb_floor_worker_role_end_to_end() {
+        use super::super::capability_directory::{CapabilityDirectory, RoleEvidence};
+        let available = vec![am("openai", "gpt-5.6")];
+
+        // Test premise: without evidence, gpt-5.6 does NOT clear EDIT's floor.
+        let baseline = derive_role_map(&available);
+        assert!(
+            baseline.get(WorkflowRole::Edit).is_none(),
+            "test premise: gpt-5.6's edit-format reliability (0.950) must not clear \
+             the 0.97 EDIT floor on the KB heuristic alone"
+        );
+
+        let today = chrono::Utc::now().date_naive();
+        let mut seeded = CapabilityDirectory::build_with_persisted(&available, None);
+        for card in seeded.cards.iter_mut() {
+            if card.provider == "openai" && card.model == "gpt-5.6" {
+                card.roles.insert(
+                    WorkflowRole::Edit.as_str().to_string(),
+                    RoleEvidence::new(
+                        true, // graduated
+                        true,
+                        Some(0.92),
+                        None,
+                        vec!["run-1".to_string()],
+                        None,
+                        None,
+                        Some(today),
+                        today,
+                    )
+                    .unwrap(),
+                );
+            }
+        }
+        let with_evidence = derive_role_map_from_directory(&available, &seeded);
+        let (rm, prov) = with_evidence
+            .get(WorkflowRole::Edit)
+            .expect("EDIT graduated by evidence must be admitted despite the KB floor miss");
+        assert_eq!(rm.provider, "openai");
+        assert_eq!(rm.model, "gpt-5.6");
+        assert!(
+            !prov.floor_met,
+            "provenance must honestly report the KB floor was NOT met — evidence overrode it"
+        );
+
+        // Negative control: the SAME model with no evidence for EDIT stays excluded.
+        let unrated = CapabilityDirectory::build_with_persisted(&available, None);
+        let without_evidence = derive_role_map_from_directory(&available, &unrated);
+        assert!(
+            without_evidence.get(WorkflowRole::Edit).is_none(),
+            "without graduated evidence, the KB floor miss must still exclude the role"
+        );
     }
 }

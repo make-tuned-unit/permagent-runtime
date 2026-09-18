@@ -64,6 +64,17 @@ pub struct VerificationObservation {
     pub command: Option<String>,
     pub verdict: Option<String>,
     pub evidence: Option<String>,
+    /// X-verify-2: when `verdict` is `"pass"`, why the pass does not count as
+    /// real coverage — a syntax-only smoke check (`py_compile`/`node
+    /// --check`, see [`Check::smoke_only`]), a "nothing to verify yet"
+    /// no-checks pass, or a real check that nonetheless reported zero
+    /// tests/assertions (see [`zero_test_marker`]). `None` for a pass that
+    /// genuinely exercised something, and always `None` for a non-pass
+    /// verdict. `#[serde(default)]` so an observation built before this field
+    /// existed (a hand-built test fixture included) deserializes as `None` —
+    /// a genuine pass — rather than failing to parse.
+    #[serde(default)]
+    pub vacuous_reason: Option<String>,
 }
 
 /// Return true only for a successful, structured verifier observation.
@@ -84,6 +95,56 @@ pub fn is_authoritative_pass(result: &CallToolResult) -> bool {
     };
     observation.kind == VERIFICATION_OBSERVATION_KIND
         && observation.verdict.as_deref() == Some("pass")
+}
+
+/// X-verify-2: why an authoritative PASS does not count as real coverage, if
+/// any reason applies (see [`VerificationObservation::vacuous_reason`]).
+/// `None` for a result that is not an authoritative pass at all (a failure is
+/// never "vacuous" — it is just a failure, and is handled by ordinary
+/// verify-loop logic) and for a genuine, non-vacuous pass.
+pub fn vacuous_pass_reason(result: &CallToolResult) -> Option<String> {
+    if !is_authoritative_pass(result) {
+        return None;
+    }
+    let value = result.structured_content.as_ref()?;
+    let observation: VerificationObservation = serde_json::from_value(value.clone()).ok()?;
+    observation.vacuous_reason
+}
+
+/// G5 finding 1: the ONE predicate that means "this verify result is real
+/// evidence a completion gate may act on" — an authoritative pass (see
+/// [`is_authoritative_pass`]) that is ALSO not vacuous (see
+/// [`vacuous_pass_reason`]). `messages_have_successful_verify`
+/// (`orchestrator.rs`) is the sole caller and, through it, both
+/// `maybe_hold_review` (the Review-transition gate) and
+/// `auto_land_headless_goal` (the unattended landing path) — a smoke-only or
+/// zero-tests pass must refuse both exactly as if verify had never run at
+/// all, never just one of them.
+pub fn is_genuine_pass(result: &CallToolResult) -> bool {
+    is_authoritative_pass(result) && vacuous_pass_reason(result).is_none()
+}
+
+/// Lane R62b-3 (coordinator ruling on A61 miss 2): record what an evidence
+/// reader did with one vacuous verify PASS. `credited` records
+/// `verification_integrity.vacuous_passes`, the gated count of vacuous passes
+/// accepted as verify evidence. Otherwise it records `vacuous_refused`, which
+/// is observability only. Before this, `pass_result` counted `vacuous_passes`
+/// for every vacuous PASS the tool RETURNED, so a harness that correctly
+/// refused one (s3 named-check, msg 32-33 refused at msg 43/57) still failed
+/// verification integrity. Counted once per `session_id` and tool-call id, so
+/// the several readers that judge the same transcript (the after-turn guard,
+/// the hold review, the headless landing gate) count one pass once.
+pub fn record_vacuous_pass_judgement(session_id: &str, call_id: &str, credited: bool) {
+    let key = if credited {
+        "vacuous_passes"
+    } else {
+        "vacuous_refused"
+    };
+    crate::receipts::record_once(
+        "verification_integrity",
+        key,
+        &format!("{session_id}\n{call_id}"),
+    );
 }
 
 /// The verification boundary requested by the caller. `Auto` is deliberately
@@ -203,6 +264,26 @@ pub struct VerifyParams {
     /// omitted, tracked and untracked git changes under `path` are inspected.
     #[serde(alias = "files", alias = "changed_files")]
     pub changed_paths: Option<Vec<String>>,
+    /// R21c: this goal's acceptance criteria, when known — pass them along so
+    /// a project with no detectable test suite is not stuck with a
+    /// syntax-only smoke check (or an honest NO CHECKS) as its only possible
+    /// verdict. When the checks this tool would otherwise run are all smoke
+    /// (or there are none at all), verify tries to compile each criterion
+    /// into a small, mechanically-run probe: a plain file-existence claim
+    /// ("`fizzbuzz.py` exists"), a function/class-definition claim ("defines
+    /// a function named fizzbuzz"), or a backtick-quoted command's exit code
+    /// ("`pytest -k smoke` exits 0"). A synthesized probe runs as a REAL
+    /// check and can genuinely pass or fail; a criterion that matches none of
+    /// these closed shapes is left alone — never approximated. See
+    /// [`synthesize_probe_checks`].
+    ///
+    /// R21c-b: omitting this is FINE inside a dispatched goal worker session
+    /// — a cheap model will not reliably think to pass it itself, so
+    /// `verify_with_cwd` loads the calling session's own bound goal card's
+    /// acceptance criteria automatically when this is `None`. See
+    /// [`load_bound_goal_acceptance_criteria`].
+    #[serde(alias = "acceptance_criteria_text")]
+    pub acceptance_criteria: Option<Vec<String>>,
 }
 
 /// How a check is executed: either a resolved program + args run directly (no
@@ -210,9 +291,59 @@ pub struct VerifyParams {
 /// command string run through the platform shell (the explicit-`command` path).
 #[derive(Debug, Clone, PartialEq)]
 enum Exec {
-    Direct { program: String, args: Vec<String> },
+    Direct {
+        program: String,
+        args: Vec<String>,
+    },
     Shell(String),
-    Markdown { files: Vec<PathBuf> },
+    Markdown {
+        files: Vec<PathBuf>,
+    },
+    /// R21c: an acceptance-criterion probe, evaluated in-process (or, for
+    /// [`ProbeKind::CommandExitsZero`], by delegating to the ordinary
+    /// `Shell` path) rather than treated as its own subprocess shape. See
+    /// [`run_probe_check`].
+    Probe(ProbeKind),
+}
+
+/// R21c: a mechanically-checkable condition synthesized from one acceptance
+/// criterion. A small, CLOSED, documented set — extending it means adding a
+/// variant here, never a best-effort string match at a call site. Never
+/// constructed for a criterion this module cannot check for real; see
+/// [`synthesize_probe_checks`].
+#[derive(Debug, Clone, PartialEq)]
+enum ProbeKind {
+    /// A file exists at this path, relative to the verification root.
+    FileExists(String),
+    /// A function/class of this name is defined. `file`, when known (R21b's
+    /// structured `probe:symbol_defined path=… symbol=… kind=…` grammar
+    /// names it explicitly), narrows the search to exactly that file —
+    /// otherwise every top-level file in the verification directory is
+    /// scanned. See [`find_symbol_definition_in_file`] /
+    /// [`find_symbol_definition`].
+    SymbolDefined {
+        symbol: String,
+        kind: SymbolKind,
+        file: Option<String>,
+    },
+    /// Running this command (through the platform shell) exits 0.
+    CommandExitsZero(String),
+}
+
+/// The kind of symbol a [`ProbeKind::SymbolDefined`] probe looks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymbolKind {
+    Function,
+    Class,
+}
+
+impl SymbolKind {
+    fn label(self) -> &'static str {
+        match self {
+            SymbolKind::Function => "function",
+            SymbolKind::Class => "class",
+        }
+    }
 }
 
 /// One check command to run: a human label plus how to execute it.
@@ -220,6 +351,13 @@ enum Exec {
 struct Check {
     label: String,
     exec: Exec,
+    /// X-verify-2: true only for a syntax-only smoke check
+    /// (`py_compile`/`node --check`, see [`manifestless_checks`]) that never
+    /// actually executes the code under test. `false` for every ordinary
+    /// constructor below — set via [`Check::smoke_only`] at the two call sites
+    /// that build one, so a check's "did this run real tests" status is
+    /// explicit at construction rather than sniffed from its label text.
+    is_smoke: bool,
 }
 
 impl Check {
@@ -241,6 +379,7 @@ impl Check {
                 program: program.to_string(),
                 args,
             },
+            is_smoke: false,
         }
     }
 
@@ -249,6 +388,7 @@ impl Check {
         Self {
             label: command.to_string(),
             exec: Exec::Shell(command.to_string()),
+            is_smoke: false,
         }
     }
 
@@ -256,7 +396,27 @@ impl Check {
         Self {
             label: "bounded markdown hygiene checks".to_string(),
             exec: Exec::Markdown { files },
+            is_smoke: false,
         }
+    }
+
+    /// R21c: a probe synthesized from an acceptance criterion (see
+    /// [`synthesize_probe_checks`]). Deliberately NOT smoke-only: a probe
+    /// mechanically checks something the criterion actually asked for (a
+    /// file's presence, a symbol's definition, a command's exit code), so a
+    /// pass here is real coverage, not a stand-in for it.
+    fn probe(label: String, kind: ProbeKind) -> Self {
+        Self {
+            label,
+            exec: Exec::Probe(kind),
+            is_smoke: false,
+        }
+    }
+
+    /// Mark this check as a syntax-only smoke (see [`Check::is_smoke`]).
+    fn smoke_only(mut self) -> Self {
+        self.is_smoke = true;
+        self
     }
 
     /// The program whose absence would make this check unrunnable.
@@ -273,6 +433,12 @@ impl Check {
                 .unwrap_or("shell")
                 .to_string(),
             Exec::Markdown { .. } => "markdown checker".to_string(),
+            Exec::Probe(ProbeKind::CommandExitsZero(command)) => command
+                .split_whitespace()
+                .next()
+                .unwrap_or("shell")
+                .to_string(),
+            Exec::Probe(_) => "verify's probe checker".to_string(),
         }
     }
 }
@@ -289,7 +455,13 @@ enum DetectOutcome {
 
 /// The outcome of running one check.
 enum CheckOutcome {
-    Passed,
+    /// X-verify-2: carries the check's combined stdout+stderr even on
+    /// success — previously discarded, which made it impossible to tell a
+    /// real test pass from one that reported running zero tests
+    /// (`zero_test_marker` inspects this).
+    Passed {
+        output: String,
+    },
     Failed {
         exit_code: Option<i32>,
         output: String,
@@ -299,19 +471,70 @@ enum CheckOutcome {
     SpawnError(String),
 }
 
-pub struct VerifyTool;
+pub struct VerifyTool {
+    /// Lane R62b: the same login-shell PATH source the `shell` tool uses
+    /// ([`super::shell::shared_login_path`]), so every check runs with the
+    /// child environment the worker's own shell commands get.
+    #[cfg(not(windows))]
+    login_path: std::sync::Arc<super::shell::LoginPath>,
+}
 
 impl VerifyTool {
     pub fn new() -> Self {
-        Self
+        Self {
+            #[cfg(not(windows))]
+            login_path: super::shell::shared_login_path(),
+        }
     }
 
+    /// A tool whose checks run with exactly this login-shell PATH.
+    #[cfg(all(test, not(windows)))]
+    fn with_login_path(login_path: Option<&str>) -> Self {
+        Self {
+            login_path: std::sync::Arc::new(super::shell::LoginPath::resolved(
+                login_path.map(str::to_string),
+            )),
+        }
+    }
+
+    /// R21c-b: `session_id` is the CALLING session (the worker's own session,
+    /// not a goal card id) — when `params.acceptance_criteria` is absent AND
+    /// this session is a live, in-process goal worker (see
+    /// [`load_bound_goal_acceptance_criteria`]), its bound goal card's own
+    /// acceptance criteria are loaded and probed instead. `None` (an
+    /// interactive session, a best-of-N candidate, or a session this process
+    /// never dispatched as a goal worker) behaves exactly as before this
+    /// lane: no criteria unless the caller supplies them explicitly.
     pub async fn verify_with_cwd(
         &self,
         params: VerifyParams,
         working_dir: Option<&Path>,
+        session_id: Option<&str>,
     ) -> CallToolResult {
         let base_dir = resolve_dir(working_dir, params.path.as_deref());
+
+        // Lane R64a: resolved before detection (not after, as before this
+        // lane) so auto-detection's own Python-test-runner probe
+        // ([`pytest_importable`]) can use the SAME login-shell PATH a check
+        // actually runs with, exactly like [`super::shell::child_process_env`]
+        // already does for the checks themselves (R62b).
+        #[cfg(not(windows))]
+        let login_path = self.login_path.get().await;
+        #[cfg(not(windows))]
+        let login_path = login_path.as_deref();
+        #[cfg(windows)]
+        let login_path: Option<&str> = None;
+
+        // R35b: set only when detection left nothing but a syntax-only smoke
+        // check AND no acceptance-criteria probe could stand in for a real
+        // one — the sole remaining path that used to score a smoke-only run
+        // as a `pass_result` (and increment `vacuous_passes`). Carries the
+        // honest [`no_real_checks_reason`] text so the run loop below can
+        // report [`NO_CHECKS_VERDICT`] instead of a fabricated PASS, while a
+        // genuine smoke FAILURE (a real syntax error) still surfaces as
+        // `fail_result` exactly as before — this flag is only consulted on
+        // the success path.
+        let mut smoke_without_real_check: Option<String> = None;
 
         // An explicit command overrides detection; otherwise detect the checks.
         let checks = match params.command.as_deref().map(str::trim) {
@@ -321,26 +544,101 @@ impl VerifyTool {
                 );
             }
             Some(command) => vec![Check::shell(command)],
-            None => match select_checks(
-                &base_dir,
-                params.scope.unwrap_or(VerificationScope::Auto),
-                params.risk.unwrap_or(VerificationRisk::Standard),
-                params.changed_paths.as_deref(),
-            ) {
-                Ok(DetectOutcome::Checks(checks)) => checks,
-                // A recognized project with nothing to verify yet is not a failure.
-                Ok(DetectOutcome::NoChecksConfigured(note)) => return no_checks_result(&note),
-                Err(message) => return error_result(&message),
-            },
+            None => {
+                let outcome = select_checks_with_login_path(
+                    &base_dir,
+                    params.scope.unwrap_or(VerificationScope::Auto),
+                    params.risk.unwrap_or(VerificationRisk::Standard),
+                    params.changed_paths.as_deref(),
+                    login_path,
+                );
+                // R21c-b: acceptance criteria are only ever CONSULTED when
+                // detection would otherwise leave nothing genuine to run —
+                // an all-smoke `Checks` outcome or `NoChecksConfigured` —
+                // so the (possibly DB-backed, see
+                // `load_bound_goal_acceptance_criteria`) load only happens
+                // on that path, never on every ordinary auto-detected
+                // `cargo test`/`npm test`/etc. call.
+                let would_use_criteria = matches!(
+                    outcome,
+                    Ok(DetectOutcome::NoChecksConfigured(_))
+                ) || matches!(&outcome, Ok(DetectOutcome::Checks(checks)) if checks.iter().all(|c| c.is_smoke));
+                let loaded_criteria: Vec<String> =
+                    if would_use_criteria && params.acceptance_criteria.is_none() {
+                        match session_id {
+                            Some(session_id) => load_bound_goal_acceptance_criteria(session_id)
+                                .await
+                                .unwrap_or_default(),
+                            None => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    };
+                let criteria: &[String] = params
+                    .acceptance_criteria
+                    .as_deref()
+                    .unwrap_or(&loaded_criteria);
+                match outcome {
+                    Ok(DetectOutcome::Checks(checks)) => {
+                        // R21c: a syntax-only smoke check is the only
+                        // coverage a manifestless single-file project gets
+                        // today (X-verify-2) — the code is never actually
+                        // executed, so this pass is always vacuous. If the
+                        // acceptance criteria (explicit, or R21c-b's bound-
+                        // goal fallback) carry conditions this tool can
+                        // check mechanically, run THOSE as real checks
+                        // instead — a probe is strictly more informative
+                        // than "the file parses", so it replaces the smoke
+                        // check rather than merely joining it.
+                        if checks.iter().all(|check| check.is_smoke) {
+                            let probes = synthesize_probe_checks(&base_dir, criteria);
+                            if probes.is_empty() {
+                                // R35b: a smoke-only run is never scored as a
+                                // PASS — run it anyway (a real syntax error
+                                // must still surface as `fail_result` below),
+                                // but a *successful* smoke check now reports
+                                // honest `NO_CHECKS_VERDICT` instead of
+                                // `pass_result`'s fabricated PASS.
+                                smoke_without_real_check =
+                                    Some(no_real_checks_reason(criteria.len()));
+                                checks
+                            } else {
+                                probes
+                            }
+                        } else {
+                            checks
+                        }
+                    }
+                    // A recognized project with nothing to verify yet is not
+                    // a failure — but prefer running mechanically-checkable
+                    // acceptance criteria as real checks over an honest, but
+                    // uninformative, NO CHECKS.
+                    Ok(DetectOutcome::NoChecksConfigured(note)) => {
+                        let probes = synthesize_probe_checks(&base_dir, criteria);
+                        if probes.is_empty() {
+                            return no_checks_result(&note);
+                        }
+                        probes
+                    }
+                    Err(message) => return error_result(&message),
+                }
+            }
         };
 
         let timeout_secs = params.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
 
         // Fail-fast: run checks in order, returning the first failure with its
         // full errors (you can't meaningfully test what won't build).
+        // X-verify-2: each check's own (successful) output is kept so
+        // `pass_result` can tell a real test pass from one that reports zero
+        // tests ran.
+        let mut passed_outputs: Vec<String> = Vec::with_capacity(checks.len());
         for check in &checks {
-            match run_check(check, &base_dir, timeout_secs).await {
-                CheckOutcome::Passed => continue,
+            match run_check(check, &base_dir, timeout_secs, login_path).await {
+                CheckOutcome::Passed { output } => {
+                    passed_outputs.push(output);
+                    continue;
+                }
                 CheckOutcome::Failed { exit_code, output } => {
                     // pytest exits 5 when it collected no tests — a fresh scaffold
                     // with no tests yet, not a real failure. Treat as no-checks so
@@ -360,6 +658,14 @@ impl VerifyTool {
                              found\") — there are no tests to run yet.",
                             check.label
                         ));
+                    }
+                    // The program that ran (e.g. `python3`, `node`) was found and
+                    // started, but a package it tried to import/require is not
+                    // installed for THAT interpreter — a dependency-provisioning
+                    // gap, not a defect in the code under test. See
+                    // `missing_import_dependency`.
+                    if let Some(dep) = missing_import_dependency(&output) {
+                        return environment_dependency_result(check, exit_code, &output, &dep);
                     }
                     return fail_result(check, exit_code, &output);
                 }
@@ -384,8 +690,32 @@ impl VerifyTool {
             }
         }
 
-        pass_result(&checks)
+        // R35b: every check that ran passed. A smoke-only run with no
+        // acceptance-criteria probe to back it up is never reported as a
+        // PASS (see `smoke_without_real_check` above) — report the honest
+        // `NO_CHECKS_VERDICT` instead. Every other outcome (a real check
+        // passed, or a probe stood in for the smoke check) is an unchanged,
+        // genuine `pass_result`.
+        match smoke_without_real_check {
+            Some(reason) => no_checks_result(&reason),
+            None => pass_result(&checks, &passed_outputs, &base_dir),
+        }
     }
+}
+
+/// R35b: the honest verdict text for "detection left nothing but a
+/// syntax-only smoke check, and none of the `unparsed` supplied acceptance
+/// criteria (explicit, or R21c-b's bound-goal fallback) compiled into a
+/// mechanically-checkable probe" — the sole remaining path that used to let
+/// `pass_result` score a smoke-only run as a PASS (X-verify-2/R21c/A32 root
+/// cause 2). `unparsed` is `0` when no criteria were supplied at all (still
+/// honestly "nothing to run"), matching [`NO_CHECKS_VERDICT`]'s own contract:
+/// neither a pass nor a fail, just an honest account of what was tried.
+fn no_real_checks_reason(unparsed: usize) -> String {
+    format!(
+        "no executable checks derived from the supplied criteria ({unparsed} unparsed); run \
+         the test suite or name a check"
+    )
 }
 
 impl Default for VerifyTool {
@@ -414,13 +744,75 @@ fn resolve_dir(working_dir: Option<&Path>, path: Option<&str>) -> PathBuf {
     }
 }
 
+/// R21c-b: when a worker calls `verify` without `acceptance_criteria`, load
+/// its bound goal card's own criteria so a cheap model — which will not
+/// reliably think to pass the param itself — still gets probe checks for a
+/// manifestless goal. Cheap and correct-by-construction for every NON-goal
+/// caller: [`crate::agents::platform_extensions::orchestrator::
+/// live_goal_worker_card_for_session`] is an in-memory registry lookup
+/// (`GOAL_WORKERS`, populated at dispatch by `register_goal_worker`) that
+/// returns `None` immediately for an interactive session, a best-of-N
+/// candidate, or any session this PROCESS never dispatched as a goal worker
+/// — no DB round trip happens unless this really is a live goal worker.
+/// `None` on any failure (no bound card, DB unavailable, card gone, no
+/// criteria on the card) — this is a best-effort enrichment, never a reason
+/// to fail or change `verify`'s behavior; the caller falls back to today's
+/// unenriched detection exactly as if this function did not exist.
+async fn load_bound_goal_acceptance_criteria(session_id: &str) -> Option<Vec<String>> {
+    let card_id =
+        crate::agents::platform_extensions::orchestrator::live_goal_worker_card_for_session(
+            session_id,
+        )?;
+    let pool = crate::session::SessionManager::instance()
+        .pool_clone()
+        .await
+        .ok()?;
+    let card = match crate::cards::get_card(&pool, &card_id).await {
+        Ok(Some(card)) => card,
+        _ => return None,
+    };
+    let criteria: Vec<String> = card
+        .metadata_json
+        .get("acceptance_criteria")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if criteria.is_empty() {
+        None
+    } else {
+        Some(criteria)
+    }
+}
+
 // --- detection (pure over the directory's marker files) ---------------------
 
-/// Detect the ordered check command(s) for the project rooted at `dir`.
+/// Detect the ordered check command(s) for the project rooted at `dir`, with
+/// no login-shell PATH available. Equivalent to
+/// [`detect_checks_with_login_path`] with `login_path: None` — every caller
+/// outside this module's own tests only ever needs labels
+/// ([`detect_check_labels`]), never a real run, so `None` here changes
+/// nothing they observe.
+fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
+    detect_checks_with_login_path(dir, None)
+}
+
+/// Lane R64a: the same detection [`detect_checks`] always did, plus the
+/// login-shell PATH so the manifestless-Python branch can probe for a real
+/// test runner ([`pytest_importable`]) on the SAME `python3` a check would
+/// actually run under (R62b: `verify`'s own child processes already get this
+/// PATH via [`super::shell::child_process_env`] — this lane extends it to
+/// detection's own probing, not just execution).
 /// Precedence is language-native first (unambiguous), then a Makefile fallback.
 /// Returns an actionable `Err` when nothing runnable is found so the caller can
 /// surface it instead of silently doing nothing.
-fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
+fn detect_checks_with_login_path(
+    dir: &Path,
+    login_path: Option<&str>,
+) -> Result<DetectOutcome, String> {
     if dir.join("Cargo.toml").exists() {
         // `cargo test` compiles first, so it catches build errors and test
         // failures in one command.
@@ -438,9 +830,17 @@ fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
     if dir.join("package.json").exists() {
         return node_checks(dir);
     }
+    // A Python project marker alone is not evidence pytest is the test
+    // runner — `requirements.txt`/`setup.py`/etc. exist on plenty of Python
+    // projects that use `unittest`, a bespoke runner, or nothing yet.
+    // Confidently proposing pytest anyway is how a bare-assert test module
+    // with a `sys.exit()` at import time (a real shape seen live) ends in a
+    // 40-line pytest INTERNALERROR instead of an actionable result. Only
+    // commit to pytest when the project actually declares it.
     if PYTHON_MARKERS
         .iter()
         .any(|marker| dir.join(marker).exists())
+        && has_pytest_marker(dir)
     {
         return Ok(DetectOutcome::Checks(vec![Check::direct("pytest", &[])]));
     }
@@ -450,6 +850,22 @@ fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
             &[target.as_str()],
         )]));
     }
+    // Manifestless shapes: no Cargo/go/npm/Python/Makefile marker at all (or a
+    // Python marker with no pytest evidence), but a single runnable file or an
+    // obviously-a-test file is sitting right there. Run THAT, directly, with
+    // the right runtime — never guess at a framework that might not even be
+    // installed, and never require a manifest just to run one script.
+    match manifestless_checks(dir, login_path) {
+        Ok(Some(checks)) => return Ok(DetectOutcome::Checks(checks)),
+        Ok(None) => {}
+        // Lane R64a: a manifestless Python test file that DEFINES tests but
+        // has no runner, and for which neither `pytest` nor a usable
+        // `unittest.TestCase` runner is available — report this honestly as
+        // NO CHECKS rather than falling back to the vacuous plain-script run
+        // R62b-2 had to flag after the fact (dschat r63 s6
+        // `select-named-check-uses-verify-tool`).
+        Err(reason) => return Ok(DetectOutcome::NoChecksConfigured(reason)),
+    }
     Err(
         "Could not detect the project type (looked for Cargo.toml, go.mod, \
          package.json, a Python project marker, or a Makefile with a test/check \
@@ -458,15 +874,211 @@ fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
     )
 }
 
+/// The ordered check-command labels `detect_checks` would run for `dir`
+/// (e.g. `["cargo test"]`), exposed for callers outside this module that need
+/// to ground a claim in what this repo can actually verify (Z1, harness loop
+/// Round C — `decompose_roadmap`'s acceptance criteria previously referenced
+/// a command or file this repo does not have; see
+/// `orchestrator::RepoFacts`). Deliberately the same detector `verify` itself
+/// runs, so the two surfaces cannot drift apart. Empty when nothing could be
+/// detected — the caller decides how to degrade, never guesses a command
+/// here.
+pub(crate) fn detect_check_labels(dir: &Path) -> Vec<String> {
+    match detect_checks(dir) {
+        Ok(DetectOutcome::Checks(checks)) => checks.into_iter().map(|c| c.label).collect(),
+        Ok(DetectOutcome::NoChecksConfigured(_)) | Err(_) => Vec::new(),
+    }
+}
+
+/// True when the project actually declares pytest as its test runner:
+/// `pytest.ini`, a `[tool.pytest...]` table in `pyproject.toml`, or a
+/// `conftest.py` anywhere at the root. A bare Python marker
+/// (`requirements.txt`, `setup.py`, ...) is not enough on its own.
+fn has_pytest_marker(dir: &Path) -> bool {
+    if dir.join("pytest.ini").exists() || dir.join("conftest.py").exists() {
+        return true;
+    }
+    std::fs::read_to_string(dir.join("pyproject.toml"))
+        .map(|content| content.contains("[tool.pytest"))
+        .unwrap_or(false)
+}
+
+/// A file name that is obviously a test/check file by naming convention,
+/// independent of any manifest: `test_*.py`, `*_test.py`, `check.*`,
+/// `test*.mjs`, or anything with a `.test.` segment (`foo.test.js`).
+fn is_test_like_filename(name: &str) -> bool {
+    if name.starts_with("check.") {
+        return true;
+    }
+    if name.ends_with(".py") {
+        return name.starts_with("test_") || name.ends_with("_test.py");
+    }
+    if name.starts_with("test") && name.ends_with(".mjs") {
+        return true;
+    }
+    name.contains(".test.")
+}
+
+/// The path (relative to `dir` when possible) of the first manifestless test
+/// file found: preferring a `tests/` directory's own matches, falling back to
+/// the project root. Entries are sorted so the result is deterministic.
+fn find_manifestless_test_file(dir: &Path) -> Option<PathBuf> {
+    let matches_in = |scan_dir: &Path| -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(scan_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.is_file()
+                            && path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(is_test_like_filename)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        found.sort();
+        found
+    };
+
+    let tests_dir = dir.join("tests");
+    let candidates = if tests_dir.is_dir() {
+        matches_in(&tests_dir)
+    } else {
+        Vec::new()
+    };
+    let candidates = if candidates.is_empty() {
+        matches_in(dir)
+    } else {
+        candidates
+    };
+    candidates.into_iter().next()
+}
+
+/// `path` made relative to `dir` for a clean, non-absolute check label —
+/// falls back to the path as given when it is not actually under `dir`.
+fn relative_to(dir: &Path, path: &Path) -> String {
+    path.strip_prefix(dir)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The direct-run command for a manifestless file, chosen by extension.
+/// `Ok(None)` for an extension with no safe default runtime (the caller falls
+/// back to the single-file heuristics below). `Err` only for a `.py` file
+/// that is pytest-style (see [`python_test_file_check`]) but has no runner
+/// this machine can actually execute — the caller reports that honestly
+/// rather than falling back to a script run that would silently pass without
+/// running a single test (Lane R64a).
+fn direct_run_check(
+    dir: &Path,
+    path: &Path,
+    login_path: Option<&str>,
+) -> Result<Option<Check>, String> {
+    let rel = relative_to(dir, path);
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("py") => python_test_file_check(dir, &rel, login_path).map(Some),
+        Some("mjs") | Some("js") => Ok(Some(Check::direct_owned("node", vec![rel]))),
+        _ => Ok(None),
+    }
+}
+
+/// Every file directly in `dir` (non-recursive) whose extension is `ext`.
+fn files_with_extension(dir: &Path, ext: &str) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.is_file() && path.extension().and_then(|e| e.to_str()) == Some(ext)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The manifestless-project fallback: no Cargo/go/npm/Python/Makefile check
+/// applies, but the directory shape still has something obviously runnable.
+/// Tried in order: (a) a `tests/`-dir or test-named file, run directly; (b) a
+/// single lone `.py` file, syntax-smoke-checked (never run — it might not be
+/// a script meant to execute cleanly on its own); (c) a single lone `.mjs`/
+/// `.js` file, syntax-checked the same way. `Ok(None)` when none of these
+/// shapes match, so the caller's actionable "could not detect" error still
+/// fires. `Err` when (a) found a pytest-style test file with no runner this
+/// machine can execute (Lane R64a; see [`direct_run_check`]) — never silently
+/// falls through to a script run that would pass without running a test.
+fn manifestless_checks(dir: &Path, login_path: Option<&str>) -> Result<Option<Vec<Check>>, String> {
+    if let Some(test_file) = find_manifestless_test_file(dir) {
+        if let Some(check) = direct_run_check(dir, &test_file, login_path)? {
+            return Ok(Some(vec![check]));
+        }
+    }
+
+    let py_files = files_with_extension(dir, "py");
+    if py_files.len() == 1 {
+        let rel = relative_to(dir, &py_files[0]);
+        // X-verify-2: `py_compile` only parses the file — it never executes a
+        // line of it, so a PASS here must never be reported (or trusted by a
+        // consumer) as if real tests ran.
+        return Ok(Some(vec![Check::direct_owned(
+            "python3",
+            vec!["-m".to_string(), "py_compile".to_string(), rel],
+        )
+        .smoke_only()]));
+    }
+
+    let js_files: Vec<PathBuf> = files_with_extension(dir, "mjs")
+        .into_iter()
+        .chain(files_with_extension(dir, "js"))
+        .collect();
+    if js_files.len() == 1 {
+        let rel = relative_to(dir, &js_files[0]);
+        // X-verify-2: `node --check` is the JS equivalent of `py_compile` —
+        // syntax-only, never executed.
+        return Ok(Some(vec![Check::direct_owned(
+            "node",
+            vec!["--check".to_string(), rel],
+        )
+        .smoke_only()]));
+    }
+
+    Ok(None)
+}
+
 /// Select checks for the current change set. This is intentionally separate
 /// from marker-file detection: the latter remains a useful pure fallback and
 /// its language behavior is stable, while the generic tool must not turn a
 /// docs-only or narrow Rust edit into a workspace build.
+///
+/// Test-only entry point with no login-shell PATH available — equivalent to
+/// [`select_checks_with_login_path`] with `login_path: None`, which is
+/// exactly the login PATH lane R62b's tests already fix it to (the cell is
+/// never initialized in a test build; see
+/// [`super::shell::shared_login_path`]).
+#[cfg(test)]
 fn select_checks(
     dir: &Path,
     scope: VerificationScope,
     risk: VerificationRisk,
     supplied_changes: Option<&[String]>,
+) -> Result<DetectOutcome, String> {
+    select_checks_with_login_path(dir, scope, risk, supplied_changes, None)
+}
+
+/// Lane R64a: the same selection [`select_checks`] always did, plus the
+/// login-shell PATH ([`super::shell::child_process_env`]'s source, R62b) so
+/// the manifestless-Python branch's runner probe ([`pytest_importable`]) sees
+/// the same `python3` a check actually runs with.
+fn select_checks_with_login_path(
+    dir: &Path,
+    scope: VerificationScope,
+    risk: VerificationRisk,
+    supplied_changes: Option<&[String]>,
+    login_path: Option<&str>,
 ) -> Result<DetectOutcome, String> {
     if scope == VerificationScope::Integration {
         if !dir.join("Cargo.toml").is_file() {
@@ -480,10 +1092,14 @@ fn select_checks(
         )]));
     }
 
+    let mut git_context = None;
     let changes = match supplied_changes {
         Some(paths) => normalize_supplied_changes(dir, paths)?,
         None => match git_changes_under(dir) {
-            Some(changes) => changes,
+            Some(changes) => {
+                git_context = Some((changes.root, changes.relative_dir));
+                changes.paths
+            }
             None if dir.join("Cargo.toml").is_file() => {
                 return Ok(DetectOutcome::NoChecksConfigured(
                     "could not determine the changed files, so no Cargo check is inferred; pass an "
@@ -491,9 +1107,14 @@ fn select_checks(
                         + "explicit command or provide `changed_paths`",
                 ));
             }
-            None => return detect_checks(dir),
+            None => return detect_checks_with_login_path(dir, login_path),
         },
     };
+    tracing::debug!(
+        ?changes,
+        supplied = supplied_changes.is_some(),
+        "verify initial change set"
+    );
     if changes.is_empty() {
         return Ok(DetectOutcome::NoChecksConfigured(
             "no changed files were found under this verification path — no scoped check is safe to infer"
@@ -532,9 +1153,29 @@ fn select_checks(
             // projects. A Cargo marker alone is not permission to run a broad
             // test when the changed set is unrelated to Rust.
             if dir.join("Cargo.toml").is_file() {
+                if let Some((root, relative_dir)) = git_context {
+                    let committed = changes_since_branch_fork_point(&root, &relative_dir);
+                    if let Some(committed) = committed {
+                        let mut union = changes;
+                        union.extend(committed);
+                        union.sort();
+                        union.dedup();
+                        tracing::debug!(?union, "verify using working-tree and fork-point union");
+                        // Retry scoped selection on recognized paths in the union.
+                        // Unmapped paths must not hide committed Rust work, nor
+                        // authorize a workspace-wide check. Never filter by name.
+                        let rust_paths: Vec<_> = union
+                            .into_iter()
+                            .filter(|path| is_rust_path(path))
+                            .collect();
+                        if !rust_paths.is_empty() {
+                            return narrow_rust_checks(dir, &rust_paths);
+                        }
+                    }
+                }
                 return Ok(DetectOutcome::NoChecksConfigured("the changed files are not Rust, so no Cargo check is inferred; use the matching project check or an explicit command".to_string()));
             }
-            detect_checks(dir)
+            detect_checks_with_login_path(dir, login_path)
         }
         VerificationScope::Docs => unreachable!("handled before scope dispatch"),
         VerificationScope::Integration => unreachable!(),
@@ -642,9 +1283,16 @@ fn normalize_supplied_changes(dir: &Path, paths: &[String]) -> Result<Vec<String
     Ok(normalized)
 }
 
+struct GitChanges {
+    root: PathBuf,
+    relative_dir: PathBuf,
+    paths: Vec<String>,
+}
+
 /// Resolve the repository root and return tracked/untracked paths below `dir`.
+/// Retain the resolved context for a later fork-point fallback.
 /// A failure is surfaced rather than falling back to a broad Cargo command.
-fn git_changes_under(dir: &Path) -> Option<Vec<String>> {
+fn git_changes_under(dir: &Path) -> Option<GitChanges> {
     let root = std::process::Command::new("git")
         .args(["-C", dir.to_str()?, "rev-parse", "--show-toplevel"])
         .output()
@@ -691,6 +1339,187 @@ fn git_changes_under(dir: &Path) -> Option<Vec<String>> {
         .collect::<Vec<_>>();
     paths.sort();
     paths.dedup();
+    // Y10e: `diff HEAD` + `ls-files --others` describes the WORKING TREE, so
+    // the instant a goal worker commits its work the change set goes empty and
+    // `select_checks` answers "no changed files were found under this
+    // verification path" — M15 fx05, fx08, fx09 and fx10 each burned a turn on
+    // exactly that, having just committed on their `goal/<session>` branch.
+    // The work is not gone, it is one commit down. Only in that case (nothing
+    // uncommitted to describe, so today's answer is a useless NO CHECKS) widen
+    // the base to this branch's fork point. See [`branch_fork_point`].
+    if paths.is_empty() {
+        if let Some(committed) = changes_since_branch_fork_point(&root, &relative_dir) {
+            tracing::debug!(
+                ?committed,
+                "verify using fork-point diff for empty working tree"
+            );
+            paths = committed;
+        }
+    }
+    Some(GitChanges {
+        root,
+        relative_dir,
+        paths,
+    })
+}
+
+/// Run `git -C root <args>` and return its stdout, or `None` on any failure.
+fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8(output.stdout).ok()
+}
+
+/// The local branch this repo's goal work eventually lands on, detected
+/// without any card/DB context — `verify.rs` runs as a tool inside the
+/// worktree only, and every `goal/<run-id>` branch (see
+/// `goal_engine::goal_branch_name`) forks from this one, directly or
+/// through a chain of redispatch attempts. Tried in order: the remote's own
+/// recorded default branch (`refs/remotes/origin/HEAD`, set by `git remote
+/// set-head`/a fresh clone), then the conventional local names `main` and
+/// `master`. `None` when nothing matches, letting [`branch_fork_point`]
+/// fall back to its pre-R54a approximation below.
+pub(crate) fn detect_trunk_branch(root: &Path) -> Option<String> {
+    if let Some(sym) = git_stdout(
+        root,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    ) {
+        let sym = sym.trim();
+        if !sym.is_empty() {
+            return Some(sym.to_string());
+        }
+    }
+    for candidate in ["main", "master"] {
+        let refname = format!("refs/heads/{candidate}");
+        if git_stdout(root, &["rev-parse", "--verify", "--quiet", &refname]).is_some() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Y10e: the commit this branch forked from.
+///
+/// This is what "the work this goal branch has done" means once the worker has
+/// committed: a goal worktree checks out `goal/<session>` off the trunk, so the
+/// trunk's own tip is reachable from some other ref and every commit the worker
+/// made is not.
+///
+/// R54a (A51 analysis, "branch_fork_point"): prefer a TRUNK-relative fork
+/// point — `git merge-base <trunk> HEAD` — over the old `--exclude`-based
+/// approximation below whenever [`detect_trunk_branch`] can name the trunk.
+/// The old walk treats ANY other local/remote branch as "already covering"
+/// HEAD's commits, including this SAME goal's own prior-attempt sibling
+/// branches (`goal/<run-id>` — Y16b mints a fresh one per redispatch and
+/// never deletes the last one's), so a redispatched goal whose final
+/// attempt makes only a small/no-op commit on top of real earlier progress
+/// sees its own earlier commits treated as "covered by
+/// goal/<earlier-session>" and narrows to just that last commit — the A51
+/// Run 2 defect (verified diff = the empty checkpoint commit → NO CHECKS →
+/// an unverified reviewer hallucinated a rejection of complete work).
+/// `merge-base(trunk, HEAD)` sidesteps the ambiguity entirely: it is the
+/// point this branch actually diverged from the project's landing branch,
+/// unaffected by how many sibling attempt branches happen to still exist.
+///
+/// Falls back to the original `--exclude`-based walk only when no trunk can
+/// be named (no remote configured and no local `main`/`master`) — itself
+/// narrowed by this lane to also `--exclude=goal/*`: every `goal/<run-id>`
+/// branch is, by the repo's own naming convention, ALWAYS a goal-attempt
+/// branch (this goal's own prior attempts, or another goal's) and never a
+/// long-lived integration branch, so none of them can legitimately be
+/// "already covering" this branch's commits either. Deliberately narrow in
+/// both paths — `None` on a detached HEAD (no branch to scope to), on a
+/// branch with no unique commits (nothing was committed here), and when the
+/// fork point would be a root commit with nothing to diff against.
+fn branch_fork_point(root: &Path) -> Option<String> {
+    let branch = git_stdout(root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = branch.trim();
+    if branch.is_empty() || branch == "HEAD" {
+        return None;
+    }
+
+    if let Some(trunk) = detect_trunk_branch(root) {
+        if trunk != branch {
+            if let Some(base) = git_stdout(root, &["merge-base", &trunk, "HEAD"]) {
+                let base = base.trim().to_string();
+                if !base.is_empty() {
+                    return Some(base);
+                }
+            }
+        }
+    }
+
+    // `--exclude` is matched against the ref name with the `refs/heads/`
+    // prefix ALREADY STRIPPED when it feeds `--branches`, so the pattern is
+    // the bare branch name. Spelled `refs/heads/<branch>` it matches nothing,
+    // `--branches` re-includes this branch, every commit on it is excluded by
+    // `--not`, and the walk returns empty — no fork point, no fallback.
+    // `--exclude` patterns accumulate and apply to the `--branches`/
+    // `--remotes` glob that follows, so `goal/*` drops every goal-attempt
+    // branch from consideration alongside this branch itself.
+    let exclude_self = format!("--exclude={branch}");
+    let unique = git_stdout(
+        root,
+        &[
+            "rev-list",
+            "HEAD",
+            "--not",
+            &exclude_self,
+            "--exclude=goal/*",
+            "--branches",
+            "--remotes",
+        ],
+    )?;
+    // `rfind`, not `last()`: `rev-list` prints newest first, so the oldest
+    // unique commit is the last non-empty line. Walking from the back is what
+    // clippy's `double_ended_iterator_last` / `filter_next` pair insists on;
+    // the element chosen is identical.
+    let oldest = unique
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())?;
+    // A root commit has no parent: `rev-parse --verify` fails and we stop,
+    // rather than diffing the whole history and calling it a scoped check.
+    let parent = format!("{oldest}^");
+    let sha = git_stdout(root, &["rev-parse", "--verify", "--quiet", &parent])?;
+    let sha = sha.trim().to_string();
+    if sha.is_empty() {
+        return None;
+    }
+    Some(sha)
+}
+
+/// The paths changed since [`branch_fork_point`], filtered to `relative_dir`
+/// exactly as the working-tree scan is. `None` when there is no fork point to
+/// measure from, so the caller keeps its existing (empty) answer.
+fn changes_since_branch_fork_point(root: &Path, relative_dir: &Path) -> Option<Vec<String>> {
+    let base = branch_fork_point(root)?;
+    let text = git_stdout(root, &["diff", "--name-only", &base])?;
+    let mut paths = text
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .filter(|path| {
+            let path = Path::new(path);
+            relative_dir.as_os_str().is_empty() || path.starts_with(relative_dir)
+        })
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return None;
+    }
     Some(paths)
 }
 
@@ -903,6 +1732,47 @@ fn is_no_test_files_found(check: &Check, exit_code: Option<i32>, output: &str) -
     lower.contains("no tests found") || lower.contains("no test files found")
 }
 
+/// Matches a check's failure output against the handful of standard ways an
+/// interpreter/runtime reports "I started fine, but a package you asked me to
+/// import/require is not installed for me" — as opposed to a defect in the
+/// code under test. Two Python shapes both occur in the wild for the exact
+/// same underlying gap and must both be caught:
+/// - `python3 -m X` when `X` isn't importable prints
+///   `<interpreter path>: No module named X` (no exception, no quotes).
+/// - code that does `import X` prints a traceback ending
+///   `ModuleNotFoundError: No module named 'X'` (quoted).
+///
+/// Node's `require`/`import` resolution failure and Ruby's `LoadError` follow
+/// the same "found the runtime, not the package" shape and are cheap to cover
+/// alongside Python since `verify` already special-cases pytest/jest/vitest
+/// elsewhere in this file. Captures the missing package name for the hint.
+static MISSING_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?m)No module named '?([\w][\w.\-]*)'?|Cannot find module '([^']+)'|cannot load such file -- (\S+)"#,
+    )
+    .unwrap()
+});
+
+/// Returns the missing package/module name when `output` looks like a check
+/// failed because the interpreter/runtime that ran it could not IMPORT a
+/// dependency — see [`MISSING_IMPORT_RE`] — distinct from
+/// [`CheckOutcome::ToolMissing`] (the executable itself was never found on
+/// PATH, e.g. no `pytest` binary at all: that case already gets its own clear
+/// "install it" message in `verify_with_cwd`). This is the sibling gap: the
+/// interpreter (e.g. `python3`) IS on PATH and DID run, but a package it
+/// tried to import is missing for that specific interpreter — often because a
+/// machine has more than one `python3` and only one of them has the package.
+/// A model that treats this as an ordinary test failure and starts editing
+/// application code to "fix" it is chasing an environment gap, not a bug.
+fn missing_import_dependency(output: &str) -> Option<String> {
+    let caps = MISSING_IMPORT_RE.captures(output)?;
+    caps.iter()
+        .skip(1)
+        .flatten()
+        .next()
+        .map(|m| m.as_str().to_string())
+}
+
 /// Package manager implied by the lockfile present (npm is the default).
 fn detect_node_package_manager(dir: &Path) -> &'static str {
     if dir.join("pnpm-lock.yaml").exists() {
@@ -965,10 +1835,17 @@ fn makefile_check_target(dir: &Path) -> Option<String> {
 
 // --- execution --------------------------------------------------------------
 
-async fn run_check(check: &Check, dir: &Path, timeout_secs: u64) -> CheckOutcome {
-    if let Exec::Markdown { files } = &check.exec {
-        return run_markdown_checks(files, timeout_secs).await;
-    }
+/// The process a `Direct` or `Shell` check spawns (`None` for the in-process
+/// markdown and probe checks). Lane R62b: the child gets
+/// [`super::shell::child_process_env`], the same environment the `shell` tool
+/// gives the worker's commands. Before this, checks inherited the process
+/// PATH, so `python3` could resolve to a different interpreter than the one
+/// the worker had just used successfully in its shell.
+fn check_command(
+    check: &Check,
+    dir: &Path,
+    login_path: Option<&str>,
+) -> Option<tokio::process::Command> {
     let mut command = match &check.exec {
         Exec::Direct { program, args } => {
             let mut command = tokio::process::Command::new(program);
@@ -976,10 +1853,30 @@ async fn run_check(check: &Check, dir: &Path, timeout_secs: u64) -> CheckOutcome
             command
         }
         Exec::Shell(command_line) => shell_command(command_line),
-        Exec::Markdown { .. } => unreachable!("markdown checks return before spawning a process"),
+        Exec::Markdown { .. } | Exec::Probe(_) => return None,
     };
     command
         .current_dir(dir)
+        .envs(super::shell::child_process_env(Some(dir), login_path));
+    Some(command)
+}
+
+async fn run_check(
+    check: &Check,
+    dir: &Path,
+    timeout_secs: u64,
+    login_path: Option<&str>,
+) -> CheckOutcome {
+    if let Exec::Markdown { files } = &check.exec {
+        return run_markdown_checks(files, timeout_secs).await;
+    }
+    if let Exec::Probe(kind) = &check.exec {
+        return run_probe_check(kind, dir, timeout_secs, login_path).await;
+    }
+    let Some(mut command) = check_command(check, dir, login_path) else {
+        unreachable!("markdown and probe checks return before spawning a process");
+    };
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1014,7 +1911,9 @@ async fn run_check(check: &Check, dir: &Path, timeout_secs: u64) -> CheckOutcome
     };
 
     if output.status.success() {
-        CheckOutcome::Passed
+        CheckOutcome::Passed {
+            output: combine_streams(&output.stdout, &output.stderr),
+        }
     } else {
         CheckOutcome::Failed {
             exit_code: output.status.code(),
@@ -1115,13 +2014,775 @@ async fn run_markdown_checks(files: &[PathBuf], timeout_secs: u64) -> CheckOutco
         }
     }
     if findings.is_empty() {
-        CheckOutcome::Passed
+        CheckOutcome::Passed {
+            output: String::new(),
+        }
     } else {
         CheckOutcome::Failed {
             exit_code: Some(1),
             output: findings.join("\n"),
         }
     }
+}
+
+// ── R21c: acceptance-criteria probe checks ──────────────────────────────────
+//
+// When `select_checks` can offer nothing but a syntax-only smoke check (or
+// nothing at all), the only way `verify` can produce a GENUINE, non-vacuous
+// pass for a manifestless project is to check something the acceptance
+// criteria actually asked for. This mirrors the file_exists/command_exit_zero
+// vocabulary `orchestrator::checks_from_acceptance` already compiles from
+// acceptance criteria for a different purpose (crediting a sibling goal's
+// committed diff) — evaluated locally here for the same reason that code is
+// evaluated locally there: this crate has no dependency on goose-server's
+// `verification::checks`. `SymbolDefined` is new: neither that vocabulary nor
+// checks.rs has a "does this symbol exist" check today, and the fizzbuzz-
+// shaped defect this lane fixes needs exactly that.
+
+/// Validate a probe-supplied path before any filesystem access (R44a/#A39):
+/// reject an absolute path outright (a probe only ever checks inside the goal
+/// worktree — the compiler that seeds these paths is supposed to have
+/// relativised or dropped an absolute one already, but a probe must never
+/// trust that and fall back to a silent host filesystem lookup) and reject
+/// any path that could escape the worktree via `..` or another non-plain
+/// component, mirroring the same guard [`normalize_supplied_changes`] already
+/// applies to caller-supplied changed-file paths. Does not require the target
+/// to exist — `FileExists` probes a path that may legitimately be absent —
+/// so this only joins and validates, it never canonicalizes the candidate.
+fn safe_probe_path(dir: &Path, rel_path: &str) -> Result<PathBuf, String> {
+    let supplied = Path::new(rel_path);
+    if supplied.is_absolute() {
+        return Err(
+            "is an absolute path — a probe can only check paths inside the goal worktree, \
+             not the host filesystem"
+                .to_string(),
+        );
+    }
+    if supplied
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(
+            "must be relative and cannot contain parent-directory traversal (`..`)".to_string(),
+        );
+    }
+    Ok(dir.join(supplied))
+}
+
+/// Run one synthesized probe. `FileExists`/`SymbolDefined` are plain,
+/// synchronous filesystem reads — cheap enough not to need the timeout.
+/// `CommandExitsZero` delegates to the ordinary `Shell` path (same spawn,
+/// timeout, and output-capture behavior as any other check) rather than
+/// duplicating it.
+async fn run_probe_check(
+    kind: &ProbeKind,
+    dir: &Path,
+    timeout_secs: u64,
+    login_path: Option<&str>,
+) -> CheckOutcome {
+    match kind {
+        ProbeKind::FileExists(rel_path) => {
+            let full_path = match safe_probe_path(dir, rel_path) {
+                Ok(full_path) => full_path,
+                Err(reason) => {
+                    return CheckOutcome::SpawnError(format!(
+                        "PROBE: cannot check `{rel_path}`: {reason}"
+                    ));
+                }
+            };
+            if full_path.is_file() {
+                CheckOutcome::Passed {
+                    output: format!("PROBE: `{rel_path}` exists."),
+                }
+            } else {
+                CheckOutcome::Failed {
+                    exit_code: None,
+                    output: format!(
+                        "PROBE: `{rel_path}` does not exist under `{}`.",
+                        dir.display()
+                    ),
+                }
+            }
+        }
+        ProbeKind::SymbolDefined { symbol, kind, file } => {
+            let found = match file {
+                Some(file) => {
+                    if let Err(reason) = safe_probe_path(dir, file) {
+                        return CheckOutcome::SpawnError(format!(
+                            "PROBE: cannot check `{file}`: {reason}"
+                        ));
+                    }
+                    find_symbol_definition_in_file(dir, file, symbol, *kind)
+                }
+                None => find_symbol_definition(dir, symbol, *kind),
+            };
+            match found {
+                Some(location) => CheckOutcome::Passed {
+                    output: format!(
+                        "PROBE: {} `{symbol}` is defined at {location}.",
+                        kind.label()
+                    ),
+                },
+                None => CheckOutcome::Failed {
+                    exit_code: None,
+                    output: match file {
+                        Some(file) => format!(
+                            "PROBE: no {} named `{symbol}` was found in `{file}`.",
+                            kind.label()
+                        ),
+                        None => format!(
+                            "PROBE: no {} named `{symbol}` was found in the scanned source \
+                             files under `{}`.",
+                            kind.label(),
+                            dir.display()
+                        ),
+                    },
+                },
+            }
+        }
+        ProbeKind::CommandExitsZero(command_line) => {
+            // `run_check` -> `run_probe_check` -> `run_check` is a genuine
+            // async cycle (a probe may resolve to an ordinary shell check),
+            // so this edge must be boxed or the future would be infinitely
+            // sized (E0733). One `Box::pin` anywhere in the cycle is enough;
+            // put it here, on the rarer probe path, rather than taxing every
+            // ordinary check.
+            Box::pin(run_check(
+                &Check::shell(command_line),
+                dir,
+                timeout_secs,
+                login_path,
+            ))
+            .await
+        }
+    }
+}
+
+/// Bounded, best-effort symbol lookup (X-verify-3): a small, documented set of
+/// per-language regexes for function/class definitions, scanned over the
+/// verification directory's TOP-LEVEL files only — the same non-recursive
+/// scope [`manifestless_checks`] itself uses, because the shape this probe
+/// exists for is a small, manifestless scaffold, not a full repository walk.
+/// Returns the first `relative/path:line` match, or `None`. A probe that
+/// finds nothing here FAILS rather than being silently skipped: the scan
+/// scope is part of what the probe mechanically checked, not a reason to call
+/// the criterion unverifiable.
+fn find_symbol_definition(dir: &Path, symbol: &str, kind: SymbolKind) -> Option<String> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect();
+    files.sort();
+    for path in files {
+        // A file whose extension has no pattern for `kind` is skipped, not a
+        // reason to abandon the whole scan — `?` here would incorrectly bail
+        // out of the entire function on the first unrecognized-extension
+        // file (e.g. a README.md sorting before the actual source file).
+        let Some(pattern) = symbol_pattern(&path, symbol, kind) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (line_number, line) in text.lines().enumerate() {
+            if pattern.is_match(line) {
+                return Some(format!("{}:{}", relative_to(dir, &path), line_number + 1));
+            }
+        }
+    }
+    None
+}
+
+/// The same lookup as [`find_symbol_definition`], but scoped to exactly one
+/// named file (R21b's structured `probe:symbol_defined path=… symbol=…
+/// kind=…` grammar names the file explicitly, so there is no need to guess
+/// via a directory scan — and no risk of matching a same-named symbol in an
+/// unrelated file).
+fn find_symbol_definition_in_file(
+    dir: &Path,
+    file: &str,
+    symbol: &str,
+    kind: SymbolKind,
+) -> Option<String> {
+    let path = dir.join(file);
+    let pattern = symbol_pattern(&path, symbol, kind)?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    for (line_number, line) in text.lines().enumerate() {
+        if pattern.is_match(line) {
+            return Some(format!("{file}:{}", line_number + 1));
+        }
+    }
+    None
+}
+
+/// The per-language definition pattern for `symbol`, or `None` when the
+/// file's extension has no recognized pattern for `kind` — the caller then
+/// simply moves to the next file rather than matching a wrong language's
+/// syntax.
+fn symbol_pattern(path: &Path, symbol: &str, kind: SymbolKind) -> Option<Regex> {
+    let escaped = regex::escape(symbol);
+    let ext = path.extension().and_then(|e| e.to_str())?;
+    let pattern = match (ext, kind) {
+        ("py", SymbolKind::Function) => format!(r"^\s*(?:async\s+)?def\s+{escaped}\s*\("),
+        ("py", SymbolKind::Class) => format!(r"^\s*class\s+{escaped}\s*[:\(]"),
+        ("js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx", SymbolKind::Function) => format!(
+            r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s+{escaped}\s*\(|^\s*(?:export\s+)?(?:const|let|var)\s+{escaped}\s*=\s*(?:async\s*)?(?:\(|function\b)"
+        ),
+        ("js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx", SymbolKind::Class) => {
+            format!(r"^\s*(?:export\s+)?(?:default\s+)?class\s+{escaped}\b")
+        }
+        ("rs", SymbolKind::Function) => {
+            format!(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+{escaped}\s*[<(]")
+        }
+        ("rs", SymbolKind::Class) => {
+            format!(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum|trait)\s+{escaped}\b")
+        }
+        ("go", SymbolKind::Function) => format!(r"^\s*func\s+(?:\([^)]*\)\s*)?{escaped}\s*\("),
+        ("go", SymbolKind::Class) => format!(r"^\s*type\s+{escaped}\s+struct\b"),
+        ("rb", SymbolKind::Function) => format!(r"^\s*def\s+(?:self\.)?{escaped}\b"),
+        ("rb", SymbolKind::Class) => format!(r"^\s*class\s+{escaped}\b"),
+        _ => return None,
+    };
+    Regex::new(&pattern).ok()
+}
+
+/// The marker `orchestrator::decompose_roadmap` prefixes a criterion with
+/// when no repo check command grounds it — stripped, when present, before
+/// probe matching so both the raw criterion and the marked form work.
+const UNVERIFIED_MARKER_PREFIX: &str =
+    "UNVERIFIED (no detected check command in this repo) — kept for human review: ";
+
+/// "`<path>` exists" / "<path> exists" — a plain file-existence claim.
+static FILE_EXISTS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)`?([\w./-]+\.[A-Za-z0-9_]{1,10})`?\s+exists\b").unwrap());
+
+/// "`<command>` exits 0" / "`<command>` exits with code 2".
+static COMMAND_EXIT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)`([^`]{1,300})`\s+exits?(?:\s+with)?(?:\s+code)?\s+([0-9]{1,3})\b").unwrap()
+});
+
+/// "`<command>` exits 0 and prints exactly [the] N ... lines". This more
+/// specific shape must be tried before [`COMMAND_EXIT_RE`] so verification
+/// checks the observable output too, rather than stopping at the exit code.
+static COMMAND_EXACT_LINES_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)`([^`]{1,300})`\s+exits?(?:\s+with)?(?:\s+code)?\s+0\s+and\s+prints?\s+exactly\s+(?:the\s+)?([0-9]{1,4})\b[^.]*\blines?\b",
+    )
+    .unwrap()
+});
+
+/// "defines a function named X" / "defines class X" / "function X is defined".
+static SYMBOL_DEFINED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\bdefines?\s+(?:a\s+)?(function|method|class)\s+(?:named\s+|called\s+)?`?(\w+)`?\b|\b(function|method|class)\s+(?:named\s+|called\s+)?`?(\w+)`?\s+is\s+defined\b",
+    )
+    .unwrap()
+});
+
+fn file_exists_probe(text: &str) -> Option<Check> {
+    let caps = FILE_EXISTS_RE.captures(text)?;
+    let path = caps.get(1)?.as_str().to_string();
+    Some(Check::probe(
+        format!("acceptance criterion: `{path}` exists"),
+        ProbeKind::FileExists(path),
+    ))
+}
+
+fn command_exit_probe(text: &str) -> Option<Check> {
+    let caps = COMMAND_EXIT_RE.captures(text)?;
+    let command = caps.get(1)?.as_str().trim().to_string();
+    let expected: u16 = caps.get(2)?.as_str().parse().ok()?;
+    if command.is_empty() {
+        return None;
+    }
+    let probe_command = if expected == 0 {
+        command.clone()
+    } else {
+        format!("( {command} ); _permagent_status=$?; test \"$_permagent_status\" -eq {expected}")
+    };
+    Some(Check::probe(
+        format!("acceptance criterion: `{command}` exits {expected}"),
+        ProbeKind::CommandExitsZero(probe_command),
+    ))
+}
+
+fn command_exact_lines_probe(text: &str) -> Option<Check> {
+    let caps = COMMAND_EXACT_LINES_RE.captures(text)?;
+    let command = caps.get(1)?.as_str().trim().to_string();
+    let expected: u16 = caps.get(2)?.as_str().parse().ok()?;
+    if command.is_empty() {
+        return None;
+    }
+    let probe_command = format!(
+        "_permagent_output=$({command}); _permagent_status=$?; \
+         test \"$_permagent_status\" -eq 0 && \
+         if [ -z \"$_permagent_output\" ]; then _permagent_lines=0; \
+         else _permagent_lines=$(printf '%s\\n' \"$_permagent_output\" | wc -l | tr -d ' '); fi; \
+         test \"$_permagent_lines\" -eq {expected}"
+    );
+    Some(Check::probe(
+        format!("acceptance criterion: `{command}` prints exactly {expected} lines"),
+        ProbeKind::CommandExitsZero(probe_command),
+    ))
+}
+
+fn symbol_defined_probe(text: &str) -> Option<Check> {
+    let caps = SYMBOL_DEFINED_RE.captures(text)?;
+    let (kind_word, symbol) = match (caps.get(1), caps.get(2), caps.get(3), caps.get(4)) {
+        (Some(k), Some(s), _, _) => (k.as_str(), s.as_str()),
+        (_, _, Some(k), Some(s)) => (k.as_str(), s.as_str()),
+        _ => return None,
+    };
+    let kind = if kind_word.eq_ignore_ascii_case("class") {
+        SymbolKind::Class
+    } else {
+        SymbolKind::Function
+    };
+    Some(Check::probe(
+        format!(
+            "acceptance criterion: {} `{symbol}` is defined",
+            kind.label()
+        ),
+        ProbeKind::SymbolDefined {
+            symbol: symbol.to_string(),
+            kind,
+            file: None,
+        },
+    ))
+}
+
+/// R35b (A32 root cause 2): "calling `f(args)` returns `value`" / "`f(args)`
+/// == `value`" — the shape a model most often writes for a manifestless
+/// single-file goal. Backtick-delimited on both sides so the call expression
+/// and the expected value are unambiguous.
+static CALL_RETURNS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)`([A-Za-z_][\w.]*\([^()`]*\))`\s*(?:returns?|==)\s*`([^`]*)`").unwrap()
+});
+
+/// The same shape without backticks: "f(args) should return value", or
+/// plainly "f(args) returns value" — the exact `"fizzbuzz(3) returns
+/// 'Fizz'"` text A32 root cause 2 traced as the freeform criterion that fell
+/// through to a vacuous smoke-only PASS.
+static CALL_RETURNS_BARE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b([A-Za-z_][\w.]*\([^()\n]*\))\s+(?:should\s+return|returns?)\s+(.+)$")
+        .unwrap()
+});
+
+/// A single, flat call expression — no nested calls or parens in the
+/// argument list. [`call_returns_probe`] rejects anything else rather than
+/// risk splicing something unexpected into the synthesized Python check.
+static CALL_EXPR_SHAPE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z_][\w.]*\([^()]*\)$").unwrap());
+
+/// "running `<cmd>` prints `<text>`" / "running `<cmd>` outputs `<text>`".
+static RUN_STDOUT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)running\s+`([^`]{1,300})`\s+(?:prints?|outputs?)\s+`([^`]*)`").unwrap()
+});
+
+/// Normalize a captured value token into valid Python source: an
+/// already-quoted string, `True`/`False`/`None`, a list/tuple literal, or a
+/// number are used as-is; a bare word or phrase (the common unquoted-string
+/// shape, e.g. "returns Fizz") is wrapped as a Python string literal via
+/// Rust's `Debug` formatting — close enough to Python string-literal syntax
+/// for the plain ASCII text these criteria are written in. Anything else
+/// (unrecognized punctuation, characters that would make the shape
+/// ambiguous) is rejected rather than guessed at.
+fn python_literal_for_value(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('\'') || trimmed.starts_with('"') {
+        return Some(trimmed.to_string());
+    }
+    if trimmed == "True" || trimmed == "False" || trimmed == "None" {
+        return Some(trimmed.to_string());
+    }
+    if (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        || (trimmed.starts_with('(') && trimmed.ends_with(')'))
+    {
+        return Some(trimmed.to_string());
+    }
+    let digits = trimmed.trim_start_matches(['-', '+']);
+    if !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && digits.chars().any(|c| c.is_ascii_digit())
+    {
+        return Some(trimmed.to_string());
+    }
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ' ')
+    {
+        return Some(format!("{trimmed:?}"));
+    }
+    None
+}
+
+/// Wrap `text` as one POSIX shell single-quoted argument, safe regardless of
+/// its contents (quotes, `$`, backticks, newlines): the standard
+/// close-quote/escaped-quote/reopen-quote technique. Used to embed
+/// criterion-supplied text into a generated `ProbeKind::CommandExitsZero`
+/// command without needing to reason about shell metacharacters in that text.
+fn shell_single_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// The primary language(s) [`call_returns_probe`]/[`node_call_returns_probe`]
+/// may safely synthesize a real execution probe for, detected from the same
+/// marker files [`detect_checks`] already keys off. R54a (A51 analysis,
+/// "call_returns_probe"): `call_returns_probe` used to compile a Python
+/// `exec`/assert script for ANY repo whose criterion text merely looked
+/// call-shaped, including a TypeScript-only fixture with no `.py` file
+/// anywhere — a guaranteed `NameError`, for any model, forever. Checked in
+/// the same precedence [`detect_checks`] uses (Cargo.toml, then a JS/TS
+/// marker, then a Python marker or a bare top-level `.py` file — the exact
+/// manifestless shape [`call_returns_probe`] was written for and that carries
+/// no `pyproject.toml`/`setup.py` of its own).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeLanguage {
+    Python,
+    JavaScript,
+    Rust,
+    Other,
+}
+
+fn detect_probe_language(dir: &Path) -> ProbeLanguage {
+    if dir.join("Cargo.toml").exists() {
+        return ProbeLanguage::Rust;
+    }
+    if dir.join("package.json").exists() || dir.join("tsconfig.json").exists() {
+        return ProbeLanguage::JavaScript;
+    }
+    if PYTHON_MARKERS
+        .iter()
+        .any(|marker| dir.join(marker).exists())
+        || has_top_level_py_file(dir)
+    {
+        return ProbeLanguage::Python;
+    }
+    ProbeLanguage::Other
+}
+
+/// A bare top-level `.py` file with no `pyproject.toml`/`setup.py` of its
+/// own — the manifestless single-file shape A32 root cause 2 motivated
+/// [`call_returns_probe`] for in the first place, which none of
+/// [`PYTHON_MARKERS`] would otherwise catch.
+fn has_top_level_py_file(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("py"))
+}
+
+/// Parse "calling `f(args)` returns `value`" / "`f(args)` == `value`" (see
+/// [`CALL_RETURNS_RE`]) or "f(args) returns value" / "f(args) should return
+/// value" (see [`CALL_RETURNS_BARE_RE`]) into `(call_expression,
+/// expected_value_text)`. Shared by every per-language call/return probe
+/// below so the two closed text shapes are parsed exactly once.
+fn call_returns_captures(text: &str) -> Option<(String, String)> {
+    if let Some(caps) = CALL_RETURNS_RE.captures(text) {
+        return Some((
+            caps.get(1)?.as_str().trim().to_string(),
+            caps.get(2)?.as_str().trim().to_string(),
+        ));
+    }
+    let caps = CALL_RETURNS_BARE_RE.captures(text)?;
+    Some((
+        caps.get(1)?.as_str().trim().to_string(),
+        caps.get(2)?
+            .as_str()
+            .trim()
+            .trim_end_matches(['.', '!'])
+            .trim()
+            .to_string(),
+    ))
+}
+
+/// R35b: "calling `f(args)` returns `value`" (see [`CALL_RETURNS_RE`]) or
+/// "f(args) should return value" (see [`CALL_RETURNS_BARE_RE`]) becomes a
+/// [`ProbeKind::CommandExitsZero`] that `exec`s every top-level `.py` file in
+/// the verification directory (the same manifestless, non-recursive scope
+/// [`manifestless_checks`]/[`find_symbol_definition`] already use) and
+/// asserts the call's actual result equals the expected value — real
+/// execution, not a syntax-only smoke check.
+///
+/// R54a: gated on [`detect_probe_language`] returning `Python` — `None`
+/// immediately otherwise, so a JS/TS/Rust/undetected repo never gets a
+/// Python script compiled against it (see [`node_call_returns_probe`] for
+/// the JS/TS counterpart). `None` also when the call expression isn't a
+/// single flat call ([`CALL_EXPR_SHAPE_RE`]) or the value doesn't normalize
+/// into valid Python source ([`python_literal_for_value`]) — left honestly
+/// unverified rather than approximated, same as every other probe shape.
+fn call_returns_probe(dir: &Path, text: &str) -> Option<Check> {
+    if detect_probe_language(dir) != ProbeLanguage::Python {
+        return None;
+    }
+    let (expr, value_raw) = call_returns_captures(text)?;
+    if !CALL_EXPR_SHAPE_RE.is_match(&expr) {
+        return None;
+    }
+    let value_literal = python_literal_for_value(&value_raw)?;
+    let script = format!(
+        "import glob\nfor _f in sorted(glob.glob('*.py')):\n    exec(open(_f).read())\n\
+         _actual = {expr}\n_expected = {value_literal}\nassert _actual == _expected, \
+         f\"expected {{_expected!r}}, got {{_actual!r}}\"\n"
+    );
+    let command = format!("python3 -c {}", shell_single_quote(&script));
+    Some(Check::probe(
+        format!("acceptance criterion: `{expr}` returns `{value_raw}`"),
+        ProbeKind::CommandExitsZero(command),
+    ))
+}
+
+/// Normalize a captured value token into valid JS source — the same closed
+/// shapes [`python_literal_for_value`] accepts, spelled with JS's own
+/// literal keywords (`true`/`false`/`null` rather than
+/// `True`/`False`/`None`); a bare word/phrase is still wrapped via Rust's
+/// `Debug` formatting, which produces a double-quoted string valid in both
+/// languages for the plain ASCII text these criteria are written in.
+fn js_literal_for_value(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('\'') || trimmed.starts_with('"') {
+        return Some(trimmed.to_string());
+    }
+    if trimmed == "true" || trimmed == "false" || trimmed == "null" {
+        return Some(trimmed.to_string());
+    }
+    if (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        || (trimmed.starts_with('{') && trimmed.ends_with('}'))
+    {
+        return Some(trimmed.to_string());
+    }
+    let digits = trimmed.trim_start_matches(['-', '+']);
+    if !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && digits.chars().any(|c| c.is_ascii_digit())
+    {
+        return Some(trimmed.to_string());
+    }
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ' ')
+    {
+        return Some(format!("{trimmed:?}"));
+    }
+    None
+}
+
+/// R54a: the JS/TS counterpart to [`call_returns_probe`], gated the same way
+/// ([`detect_probe_language`] must return `JavaScript`) but additionally
+/// requiring the call's function name to resolve to a REAL, locatable
+/// top-level definition ([`find_symbol_definition`], the same lookup
+/// [`symbol_defined_probe`] already trusts) in a plain `.js`/`.mjs`/`.cjs`
+/// file specifically — a `.ts`/`.tsx` source cannot be `require()`d by a
+/// bare `node -e` without a compiler, and guessing at one would risk
+/// exactly the wrong-language guaranteed failure this lane exists to
+/// prevent. `None` (criterion left honestly UNVERIFIED, its marker intact)
+/// whenever any of that doesn't hold — never approximated, same closed-set
+/// discipline as every other probe shape.
+fn node_call_returns_probe(dir: &Path, text: &str) -> Option<Check> {
+    if detect_probe_language(dir) != ProbeLanguage::JavaScript {
+        return None;
+    }
+    let (expr, value_raw) = call_returns_captures(text)?;
+    if !CALL_EXPR_SHAPE_RE.is_match(&expr) {
+        return None;
+    }
+    let fn_name = expr.split('(').next()?.trim();
+    if fn_name.is_empty()
+        || !fn_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    {
+        return None;
+    }
+    let location = find_symbol_definition(dir, fn_name, SymbolKind::Function)?;
+    let file = location.split(':').next()?.to_string();
+    if !matches!(
+        Path::new(&file).extension().and_then(|e| e.to_str()),
+        Some("js" | "mjs" | "cjs")
+    ) {
+        return None;
+    }
+    let value_literal = js_literal_for_value(&value_raw)?;
+    let script = format!(
+        "const _m = require('./{file}');\n\
+         const {fn_name} = (typeof _m === 'function') ? _m : \
+         ((_m && typeof _m.{fn_name} === 'function') ? _m.{fn_name} : undefined);\n\
+         if (typeof {fn_name} !== 'function') {{ \
+         throw new Error('{fn_name} is not an exported function of {file}'); }}\n\
+         const _actual = {expr};\nconst _expected = {value_literal};\n\
+         if (JSON.stringify(_actual) !== JSON.stringify(_expected)) {{ \
+         throw new Error('expected ' + JSON.stringify(_expected) + ', got ' + \
+         JSON.stringify(_actual)); }}\n"
+    );
+    let command = format!("node -e {}", shell_single_quote(&script));
+    Some(Check::probe(
+        format!("acceptance criterion: `{expr}` returns `{value_raw}`"),
+        ProbeKind::CommandExitsZero(command),
+    ))
+}
+
+/// R35b: "running `<cmd>` prints `<text>`" / "running `<cmd>` outputs
+/// `<text>`" (see [`RUN_STDOUT_RE`]) becomes a [`ProbeKind::CommandExitsZero`]
+/// that pipes the command's real output through `grep -qF` for the expected
+/// text — reuses the existing `CommandExitsZero` → `Shell` delegation
+/// ([`run_probe_check`]) exactly like [`command_exit_probe`] does, just with
+/// a synthesized pipeline instead of the criterion's own command verbatim.
+/// `cmd` is spliced in unescaped, same trust boundary as
+/// [`command_exit_probe`]'s own backtick-delimited command text; `text` is
+/// shell-quoted via [`shell_single_quote`] so it is matched literally
+/// regardless of its contents.
+fn run_stdout_probe(text: &str) -> Option<Check> {
+    let caps = RUN_STDOUT_RE.captures(text)?;
+    let cmd = caps.get(1)?.as_str().trim().to_string();
+    let expected = caps.get(2)?.as_str();
+    if cmd.is_empty() || expected.is_empty() {
+        return None;
+    }
+    let command = format!("{cmd} | grep -qF -- {}", shell_single_quote(expected));
+    Some(Check::probe(
+        format!("acceptance criterion: `{cmd}` prints `{expected}`"),
+        ProbeKind::CommandExitsZero(command),
+    ))
+}
+
+/// R21b's structured probe-check grammar (`orchestrator::{
+/// PROBE_FILE_EXISTS_PREFIX, PROBE_SYMBOL_DEFINED_PREFIX,
+/// PROBE_COMMAND_PREFIX}` — the sole producer, `rewrite_ungrounded_named_
+/// criteria`'s no-detected-check fallback), parsed here as plain TEXT
+/// rather than by importing R21b's Rust types: the two lanes land on
+/// separate branches and are not always merged together, so the wire
+/// format (not a shared Rust type) is the contract.
+///
+/// ```text
+/// probe:file_exists path=<path>
+/// probe:symbol_defined path=<path> symbol=<name> kind=<function|method|class>
+/// probe:command cmd="<command>"
+/// ```
+///
+/// optionally followed by `" — "` (space, em dash, space) plus the original
+/// criterion text, which is informational only and ignored here.
+fn structured_probe(text: &str) -> Option<Check> {
+    let marker = text.split(" — ").next().unwrap_or(text).trim();
+    if let Some(rest) = marker.strip_prefix("probe:file_exists") {
+        let path = probe_kv(rest, "path")?;
+        return Some(Check::probe(
+            format!("acceptance criterion: `{path}` exists"),
+            ProbeKind::FileExists(path),
+        ));
+    }
+    if let Some(rest) = marker.strip_prefix("probe:symbol_defined") {
+        let path = probe_kv(rest, "path")?;
+        let symbol = probe_kv(rest, "symbol")?;
+        let kind_word = probe_kv(rest, "kind")?;
+        let kind = if kind_word.eq_ignore_ascii_case("class") {
+            SymbolKind::Class
+        } else {
+            SymbolKind::Function
+        };
+        return Some(Check::probe(
+            format!(
+                "acceptance criterion: {} `{symbol}` is defined in `{path}`",
+                kind.label()
+            ),
+            ProbeKind::SymbolDefined {
+                symbol,
+                kind,
+                file: Some(path),
+            },
+        ));
+    }
+    if let Some(rest) = marker.strip_prefix("probe:command") {
+        let cmd = probe_quoted_kv(rest, "cmd")?;
+        if cmd.trim().is_empty() {
+            return None;
+        }
+        return Some(Check::probe(
+            format!("acceptance criterion: `{cmd}` exits 0"),
+            ProbeKind::CommandExitsZero(cmd),
+        ));
+    }
+    None
+}
+
+/// Extract `key=<token>` (ends at the next whitespace, or the end of the
+/// string) from a `probe:*` grammar tail. `None` when the key is absent or
+/// its value is empty.
+// Boundary-safe by construction: `start` is `str::find`'s match index plus the
+// marker's own byte length (the marker's end boundary), and `end` comes from a
+// `find` on the remainder or its `len()`. No index can split a UTF-8 character.
+#[allow(clippy::string_slice)]
+fn probe_kv(text: &str, key: &str) -> Option<String> {
+    let marker = format!("{key}=");
+    let start = text.find(&marker)? + marker.len();
+    let rest = &text[start..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let value = &rest[..end];
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+/// Extract `key="<value>"` (double-quoted, may itself contain whitespace)
+/// from a `probe:*` grammar tail.
+// Boundary-safe by construction: `start` is `str::find`'s match index plus the
+// marker's own byte length (the marker's end boundary), and `end` comes from a
+// `find` on the remainder or its `len()`. No index can split a UTF-8 character.
+#[allow(clippy::string_slice)]
+fn probe_quoted_kv(text: &str, key: &str) -> Option<String> {
+    let marker = format!("{key}=\"");
+    let start = text.find(&marker)? + marker.len();
+    let rest = &text[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Compile ONE criterion into a probe check, trying each closed shape in
+/// order — R21b's structured `probe:*` marker first (unambiguous when
+/// present), then the free-text heuristics. `None` when the criterion
+/// matches none of them — left honestly unverified, never approximated.
+///
+/// R54a: `dir` is the verification directory, threaded through so
+/// [`call_returns_probe`]/[`node_call_returns_probe`] can gate themselves on
+/// [`detect_probe_language`] — the other shapes here (`file_exists`,
+/// `command_exit`, `symbol_defined`, `run_stdout`, the structured `probe:*`
+/// grammar) are language-agnostic and ignore it.
+fn probe_for_criterion(dir: &Path, criterion: &str) -> Option<Check> {
+    let text = criterion
+        .strip_prefix(UNVERIFIED_MARKER_PREFIX)
+        .unwrap_or(criterion)
+        .trim();
+    structured_probe(text)
+        .or_else(|| file_exists_probe(text))
+        .or_else(|| command_exact_lines_probe(text))
+        .or_else(|| command_exit_probe(text))
+        .or_else(|| symbol_defined_probe(text))
+        .or_else(|| call_returns_probe(dir, text))
+        .or_else(|| node_call_returns_probe(dir, text))
+        .or_else(|| run_stdout_probe(text))
+}
+
+/// Synthesize probe checks for every criterion that mechanically supports
+/// one; every other criterion is silently dropped (not fabricated as a
+/// check). See the module comment above for why this is a separate, local
+/// implementation from `orchestrator::checks_from_acceptance` rather than a
+/// shared one.
+fn synthesize_probe_checks(dir: &Path, criteria: &[String]) -> Vec<Check> {
+    criteria
+        .iter()
+        .filter_map(|criterion| probe_for_criterion(dir, criterion))
+        .collect()
 }
 
 #[cfg(not(windows))]
@@ -1199,24 +2860,626 @@ fn observation(
     command: Option<&str>,
     verdict: Option<&str>,
     evidence: Option<&str>,
+    vacuous_reason: Option<&str>,
 ) -> CallToolResult {
     result.structured_content = Some(json!({
         "kind": VERIFICATION_OBSERVATION_KIND,
         "command": command,
         "verdict": verdict,
         "evidence": evidence,
+        "vacuous_reason": vacuous_reason,
     }));
     result
 }
 
-fn pass_result(checks: &[Check]) -> CallToolResult {
+/// X-verify-2: a "the test command ran but exercised nothing" marker across a
+/// small, curated set of common runners. Anchored with `\b` so a real "120
+/// passed"/"20 passed" can never falsely match "0 passed". Intentionally
+/// narrow — a false negative here (a genuine zero-test run using different
+/// wording) only misses a vacuous pass, while a false positive would block a
+/// real, useful one; the same conservative bias `after_turn::changed_lines`/
+/// `changed_paths` document for their own leniency.
+static ZERO_TESTS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(\b0 passed\b|\bno tests ran\b|\bno test files\b|\bran 0 tests\b|\bcollected 0 items\b|\b0 examples, 0 failures\b)",
+    )
+    .unwrap()
+});
+
+/// Return the matched "zero tests" marker text, if the combined check output
+/// contains one. See [`ZERO_TESTS_RE`].
+fn zero_test_marker(output: &str) -> Option<String> {
+    ZERO_TESTS_RE.find(output).map(|m| m.as_str().to_string())
+}
+
+/// Y10a: the counter-marker to [`ZERO_TESTS_RE`] — "at least one test actually
+/// ran here". `cargo test` prints one `test result:` block PER TARGET, so a
+/// crate whose real tests all pass still emits an empty doc-test block beside
+/// them:
+///
+/// ```text
+/// running 6 tests ... test result: ok. 6 passed; 0 failed; ...
+///    Doc-tests bench_rs
+/// running 0 tests ... test result: ok. 0 passed; 0 failed; ...
+/// ```
+///
+/// [`ZERO_TESTS_RE`] scans the whole joined output, so it matched that trailing
+/// `0 passed` and judged every multi-target `cargo test` vacuous. A non-zero
+/// pass count (or a `running N tests` header with N > 0) anywhere in the SAME
+/// output proves the run exercised something, which makes the zero marker a
+/// sibling target rather than an empty run. Same conservative bias the
+/// [`ZERO_TESTS_RE`] comment declares: missing a vacuous pass costs a great
+/// deal less than blocking a real one.
+static NONZERO_TESTS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(\b[1-9]\d* passed\b|\brunning [1-9]\d* tests?\b)").unwrap());
+
+/// Return the matched "at least one test ran" marker text, if the combined
+/// check output contains one. See [`NONZERO_TESTS_RE`].
+fn nonzero_test_marker(output: &str) -> Option<String> {
+    NONZERO_TESTS_RE
+        .find(output)
+        .map(|m| m.as_str().to_string())
+}
+
+/// Lane R62b-2: a Python test definition — a `def test*(` function or method,
+/// or a class deriving from a `TestCase`.
+static PYTHON_TEST_DEFINITION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)^[ \t]*(?:async[ \t]+)?def[ \t]+test\w*[ \t]*\(|^[ \t]*class[ \t]+\w+[ \t]*\([^)]*\bTestCase\b",
+    )
+    .unwrap()
+});
+
+/// Lane R62b-2: anything that makes running a Python file as a script actually
+/// run its tests — a `__main__` guard (whatever it calls), `unittest.main`,
+/// `pytest.main`, or an unindented, module-level call to a `test*` function.
+/// Deliberately broad: a file that matches is never flagged.
+static PYTHON_TEST_RUNNER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)__main__|\bunittest\.main\b|\bpytest\.main\b|^test\w*[ \t]*\(").unwrap()
+});
+
+/// Lane R62b-2: unittest's own count line (`Ran 3 tests in 0.001s`), which
+/// [`NONZERO_TESTS_RE`] does not cover.
+static RAN_TESTS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bran [1-9]\d* tests?\b").unwrap());
+
+/// Lane R64a: a `class Foo(...TestCase...):` definition specifically —
+/// [`PYTHON_TEST_DEFINITION_RE`] also matches a bare `def test_x():`
+/// function, which `python3 -m unittest <module>` cannot discover on its own
+/// (unittest only collects test METHODS on a `TestCase` subclass), so
+/// auto-detection's `unittest` fallback needs this narrower match.
+static PYTHON_TESTCASE_CLASS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^[ \t]*class[ \t]+\w+[ \t]*\([^)]*\bTestCase\b").unwrap());
+
+/// Lane R64a: true when `source` defines Python tests
+/// ([`PYTHON_TEST_DEFINITION_RE`]) but has no runner invocation
+/// ([`PYTHON_TEST_RUNNER_RE`]) — the shape that makes `python3 <file>` exit 0
+/// without running a single test. Shared by [`uninvoked_python_tests_reason`]
+/// (which flags this shape AFTER a check has already run one) and
+/// [`python_test_file_check`] (which steers auto-detection AROUND it before
+/// any check runs at all) so the two can never define "pytest-style" any
+/// differently from each other.
+fn is_pytest_style_without_runner(source: &str) -> bool {
+    PYTHON_TEST_DEFINITION_RE.is_match(source) && !PYTHON_TEST_RUNNER_RE.is_match(source)
+}
+
+/// Lane R64a: `rel` (e.g. `test_calc.py`, `tests/test_calc.py`) as the dotted
+/// module path `python3 -m unittest <module>` expects — the `.py` extension
+/// dropped and path separators replaced with `.`, matching Python's own
+/// import syntax for a package-relative module.
+fn python_module_name(rel: &str) -> String {
+    let without_ext = rel.strip_suffix(".py").unwrap_or(rel);
+    without_ext.replace(['/', '\\'], ".")
+}
+
+/// Lane R64a: true when `python3 -m pytest --version` succeeds using the SAME
+/// environment a check `verify` actually runs a Python file under
+/// ([`super::shell::child_process_env`], the login-shell PATH lane R62b
+/// introduced) — never the current process's own bare PATH, which A61 bug B
+/// already showed can resolve a DIFFERENT `python3` than the worker's own
+/// shell used. A brief, synchronous probe: `detect_checks` already shells out
+/// to `git` synchronously on this same path (see `git_changes_under`), so one
+/// more short-lived child process here is consistent with the rest of
+/// detection, not a new async concern, and detection runs once per `verify`
+/// call rather than in a hot loop.
+fn pytest_importable(dir: &Path, login_path: Option<&str>) -> bool {
+    std::process::Command::new("python3")
+        .args(["-m", "pytest", "--version"])
+        .current_dir(dir)
+        .envs(super::shell::child_process_env(Some(dir), login_path))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Lane R64a (defect in Lane R62b-2's fix; dschat r63 s6
+/// `select-named-check-uses-verify-tool`): auto-detection used to select a
+/// bare `python3 <file>.py` for a manifestless pytest-style test file — one
+/// that only DEFINES `test*`/`TestCase` tests with no runner invocation (see
+/// [`is_pytest_style_without_runner`]) — which R62b-2 then correctly flagged,
+/// AFTER the check had already run, as a vacuous pass that exercised zero
+/// tests. That flag alone did not fix anything: auto-detection kept
+/// reselecting the same vacuous check on every subsequent `verify` call, so
+/// the worker (who had independently worked out the correct fix) could never
+/// get `verify` itself to confirm it, and the goal ran out its wall-clock
+/// budget stuck on a held vacuous pass.
+///
+/// Steer around the shape at SELECTION time instead of only detecting it
+/// after the fact: choose a real test runner up front. `pytest` wins when it
+/// is importable for the interpreter `verify` would actually run under
+/// ([`pytest_importable`]); `unittest` is the fallback, and only for a file
+/// that defines a `unittest.TestCase` (a bare `def test_add():` with no
+/// class is not discoverable by `python3 -m unittest` on its own). `Err` when
+/// the file is pytest-style but neither runner is available — the caller
+/// reports that honestly (NO CHECKS) rather than falling back to the vacuous
+/// plain-script run.
+fn python_test_file_check(
+    dir: &Path,
+    rel: &str,
+    login_path: Option<&str>,
+) -> Result<Check, String> {
+    let source = std::fs::read_to_string(dir.join(rel)).unwrap_or_default();
+    if !is_pytest_style_without_runner(&source) {
+        // Already has a `__main__` guard, `unittest.main()`, `pytest.main()`,
+        // or a module-level `test*()` call — `python3 <file>` runs the tests
+        // for real, exactly as before this lane.
+        return Ok(Check::direct_owned("python3", vec![rel.to_string()]));
+    }
+    if pytest_importable(dir, login_path) {
+        return Ok(Check::direct_owned(
+            "python3",
+            vec!["-m".to_string(), "pytest".to_string(), rel.to_string()],
+        ));
+    }
+    if PYTHON_TESTCASE_CLASS_RE.is_match(&source) {
+        return Ok(Check::direct_owned(
+            "python3",
+            vec![
+                "-m".to_string(),
+                "unittest".to_string(),
+                python_module_name(rel),
+            ],
+        ));
+    }
+    Err(format!(
+        "`{rel}` defines tests but has no runner, and neither `pytest` nor a usable \
+         `unittest.TestCase` runner is available for the `python3` on PATH"
+    ))
+}
+
+/// Lane R62b-2: the `.py` file a check runs as a plain script
+/// (`python3 test_calc.py`, direct or as a two-word shell command), if that is
+/// all the check does. Anything more elaborate (flags, `-m`, pipes, `&&`) is
+/// not a bare script run and returns `None`.
+fn python_script_target(check: &Check) -> Option<&str> {
+    let (program, script) = match &check.exec {
+        Exec::Direct { program, args } => match args.as_slice() {
+            [script] => (program.as_str(), script.as_str()),
+            _ => return None,
+        },
+        Exec::Shell(command_line) => {
+            let mut words = command_line.split_whitespace();
+            match (words.next(), words.next(), words.next()) {
+                (Some(program), Some(script), None) => (program, script),
+                _ => return None,
+            }
+        }
+        Exec::Markdown { .. } | Exec::Probe(_) => return None,
+    };
+    let is_python = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("python"));
+    (is_python && script.ends_with(".py") && !script.starts_with('-')).then_some(script)
+}
+
+/// Lane R62b-2 (A61 miss 2, latent): the "genuine" pass credited in 10 of 11
+/// `select-named-check-uses-verify-tool` runs was `python3 test_calc.py` on a
+/// pytest-style file. The file only DEFINES `test_add` and never calls it, so
+/// running it as a script imports the module and exits 0 without running a
+/// single test, and prints no zero-tests marker either. Flag a python script
+/// check whose target file defines tests but has no runner invocation
+/// ([`PYTHON_TEST_RUNNER_RE`]), when its own output shows no test count. A
+/// file that runs its tests from a `__main__` guard is never flagged, and an
+/// unreadable file is left alone.
+fn uninvoked_python_tests_reason(check: &Check, output: &str, dir: &Path) -> Option<String> {
+    let script = python_script_target(check)?;
+    if nonzero_test_marker(output).is_some() || RAN_TESTS_RE.is_match(output) {
+        return None;
+    }
+    let source = std::fs::read_to_string(dir.join(script)).ok()?;
+    if !is_pytest_style_without_runner(&source) {
+        return None;
+    }
+    // Lane R64a: name `verify`'s own `command` parameter and give the exact
+    // value to pass — the R63 s6 `select-named-check-uses-verify-tool`
+    // worker worked out the fix itself (`python3 -m pytest test_calc.py`)
+    // but had no way to make `verify` run it, and kept calling `verify`
+    // plain while auto-detection kept re-selecting this vacuous script run.
+    Some(format!(
+        "`{label}` ran `{script}` as a plain script, but that file only defines tests (no \
+         `if __name__ == \"__main__\"` runner, `unittest.main()` or `pytest.main()`), so it \
+         exited 0 without running any test — call `verify` again with the `command` parameter \
+         set to `python3 -m pytest {script}`",
+        label = check.label,
+    ))
+}
+
+/// Lane R65b: how one top-level segment of a shell command line joins to the
+/// segment before it — the operators [`split_shell_segments`] splits on.
+/// `Seq` covers both `;` and a newline: both hand the shell's exit status to
+/// whatever runs next, exactly the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellConnector {
+    And,
+    Or,
+    Seq,
+}
+
+/// Lane R65b: one top-level command segment of a shell command line, as
+/// [`split_shell_segments`] finds it. `connector_before` is the operator
+/// joining this segment to the previous one (`None` for the first segment).
+#[derive(Debug, Clone, PartialEq)]
+struct ShellSegment {
+    connector_before: Option<ShellConnector>,
+    text: String,
+}
+
+/// Lane R65b: split `command` into the top-level segments a POSIX shell
+/// would sequence — on `;`, a newline, `&&`, or `||` — WITHOUT treating any
+/// such character found inside a single- or double-quoted string as a
+/// separator (so `echo "a || b"` is one segment, not three). Deliberately
+/// not a full shell grammar (no subshells, no `$(...)`, no backslash
+/// escaping outside quotes): it exists only to let the exit-status-masking
+/// checks below see how a check's command is SEQUENCED.
+fn split_shell_segments(command: &str) -> Vec<ShellSegment> {
+    fn push_segment(
+        segments: &mut Vec<ShellSegment>,
+        current: &mut String,
+        connector: Option<ShellConnector>,
+    ) {
+        segments.push(ShellSegment {
+            connector_before: connector,
+            text: current.trim().to_string(),
+        });
+        current.clear();
+    }
+
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut pending_connector: Option<ShellConnector> = None;
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            current.push(c);
+            if q == '"' && c == '\\' {
+                // An escaped character inside a double-quoted string (e.g.
+                // `\"`) never ends the string early.
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+                continue;
+            }
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                current.push(c);
+            }
+            '\n' | ';' => {
+                push_segment(&mut segments, &mut current, pending_connector.take());
+                pending_connector = Some(ShellConnector::Seq);
+            }
+            '&' if chars.peek() == Some(&'&') => {
+                chars.next();
+                push_segment(&mut segments, &mut current, pending_connector.take());
+                pending_connector = Some(ShellConnector::And);
+            }
+            '|' if chars.peek() == Some(&'|') => {
+                chars.next();
+                push_segment(&mut segments, &mut current, pending_connector.take());
+                pending_connector = Some(ShellConnector::Or);
+            }
+            _ => current.push(c),
+        }
+    }
+    push_segment(&mut segments, &mut current, pending_connector.take());
+    segments.retain(|segment| !segment.text.is_empty());
+    segments
+}
+
+/// Lane R65b: split one [`ShellSegment`]'s text into words the way a POSIX
+/// shell would — just enough to read a command's program name and its first
+/// argument for [`shell_word_always_succeeds`], not a full shell grammar.
+/// Quotes are consumed as delimiters (their contents survive, unquoted).
+fn shell_words(segment: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut chars = segment.chars();
+
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            if q == '"' && c == '\\' {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+                continue;
+            }
+            if c == q {
+                quote = None;
+            } else {
+                current.push(c);
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                in_word = true;
+            }
+            c if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut current));
+                    in_word = false;
+                }
+            }
+            _ => {
+                current.push(c);
+                in_word = true;
+            }
+        }
+    }
+    if in_word {
+        words.push(current);
+    }
+    words
+}
+
+/// Lane R65b: true when a shell segment's OWN exit status can never be
+/// anything but success, regardless of what it does — the shape used to mask
+/// a real check's failure (`|| true`, `|| :`, `|| exit 0`, `|| echo …`, a
+/// trailing `; true`/`; echo …`/`; printf …`, or the `node -e '…'` one-liner
+/// the r65 s1 fixture used as a fake "no runner" stand-in). Deliberately
+/// narrow: `exit` only counts with a literal `0` argument (bare `exit`
+/// forwards `$?`, and `exit 1` is a legitimate FAILING fallback), and no
+/// other program name is treated as unconditionally successful.
+fn shell_word_always_succeeds(words: &[String]) -> bool {
+    match words.first().map(String::as_str) {
+        Some("true") | Some(":") | Some("echo") | Some("printf") => true,
+        Some("exit") => words.get(1).map(String::as_str) == Some("0"),
+        Some("node") => words.get(1).map(String::as_str) == Some("-e"),
+        _ => false,
+    }
+}
+
+/// Lane R65b: render `segments` with every index in `masked` (and its
+/// connector) removed — the "mask stripped" command [`exit_masking_reason`]
+/// suggests running directly instead of the swallowed check.
+fn render_segments_without(
+    segments: &[ShellSegment],
+    masked: &std::collections::BTreeSet<usize>,
+) -> String {
+    let mut out = String::new();
+    for (index, segment) in segments.iter().enumerate() {
+        if masked.contains(&index) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(match segment.connector_before {
+                Some(ShellConnector::And) => " && ",
+                Some(ShellConnector::Or) => " || ",
+                Some(ShellConnector::Seq) => "; ",
+                None => " ",
+            });
+        }
+        out.push_str(&segment.text);
+    }
+    out
+}
+
+/// Lane R65b: the final vacuous-reason text for an exit-status-masking
+/// command — always names the offending `fragment`, and when a concrete
+/// mask-stripped command is available (R64a's own style: a vacuous reason
+/// that names the exact fix rather than describing it), suggests calling
+/// `verify` again with it as the `command` parameter instead of the generic
+/// "run the test command directly".
+fn masking_reason_text(fragment: &str, suggested_command: Option<&str>) -> String {
+    let tail = match suggested_command.map(str::trim) {
+        Some(command) if !command.is_empty() => {
+            format!("call `verify` again with the `command` parameter set to `{command}`")
+        }
+        _ => "run the test command directly".to_string(),
+    };
+    format!(
+        "the check command masks its own exit status (`{fragment}`), so a PASS proves nothing; \
+         {tail}"
+    )
+}
+
+/// Lane R65b: `set +e` turns off the shell's default fail-fast behavior for
+/// everything after it; without some later `$?`-checking propagation (an
+/// `exit $?`, an `... $? ... || exit 1`, or similar), the script's own exit
+/// status ends up being whatever its LAST command happened to return — the
+/// same trap as [`exit_masking_reason`]'s trailing-command case, just spelled
+/// with `set` instead of `;`. Deliberately loose about what counts as
+/// "propagation": anything mentioning `$?` after the `set +e` is taken as
+/// evidence the script means to check it, since a false negative here (an
+/// undetected genuine propagation) is the safe direction — see this module's
+/// standing bias toward missing a vacuous pass over blocking a real one.
+fn set_minus_e_masking_reason(segments: &[ShellSegment]) -> Option<String> {
+    let set_index = segments.iter().position(|segment| {
+        let words = shell_words(&segment.text);
+        words.first().map(String::as_str) == Some("set") && words.iter().any(|word| word == "+e")
+    })?;
+    let propagated = segments[set_index + 1..]
+        .iter()
+        .any(|segment| segment.text.contains("$?"));
+    if propagated {
+        return None;
+    }
+    Some(masking_reason_text("set +e", None))
+}
+
+/// Lane R65b (M49 r65 s1, fixture `harness-refactor-shipping-quote-signature`):
+/// a check command whose own exit status structurally CANNOT reflect whether
+/// the real test/build step it wraps passed or failed. Evidence: the
+/// worker's "passing" verify command was of the form `<real test command> ||
+/// true; node -e 'console.log("no runner")'` — that exits 0 no matter what
+/// the real command did, because a `||` fallback that always succeeds
+/// swallows its failure AND the trailing `; node -e …` makes the shell's
+/// final exit status come from a command that never ran anything at all. The
+/// existing vacuous-pass checks never caught this: they inspect the check's
+/// OUTPUT for test-count markers, but a masked exit status can accompany
+/// output that looks perfectly innocent (or empty). This one instead reads
+/// the command's TEXT with a small shell-aware tokenizer
+/// ([`split_shell_segments`]) that respects quoting.
+///
+/// Flags, in order: (1) a `||` fallback whose right-hand side always
+/// succeeds ([`shell_word_always_succeeds`]) — `|| true`, `|| :`, `|| exit
+/// 0`, `|| echo …`; (2) a trailing unconditional command after a `;`/newline
+/// that always succeeds, since a shell's own exit status is always the LAST
+/// command's; (3) [`set_minus_e_masking_reason`]. Deliberately does NOT flag
+/// an ordinary chain (`cmd1 && cmd2`, `cd dir && pytest`), a pipeline
+/// (`set -o pipefail` or not), or a `||` fallback that itself FAILS (`||
+/// exit 1`, `|| false`) — none of those hide a failing exit code.
+fn exit_masking_reason(command: &str) -> Option<String> {
+    let segments = split_shell_segments(command);
+    if segments.len() < 2 {
+        return set_minus_e_masking_reason(&segments);
+    }
+
+    let mut masked = std::collections::BTreeSet::new();
+    for (index, segment) in segments.iter().enumerate() {
+        if segment.connector_before == Some(ShellConnector::Or)
+            && shell_word_always_succeeds(&shell_words(&segment.text))
+        {
+            masked.insert(index);
+        }
+    }
+    let last_index = segments.len() - 1;
+    let last = &segments[last_index];
+    if last.connector_before == Some(ShellConnector::Seq)
+        && shell_word_always_succeeds(&shell_words(&last.text))
+    {
+        masked.insert(last_index);
+    }
+
+    if masked.is_empty() {
+        return set_minus_e_masking_reason(&segments);
+    }
+
+    let fragment: String = masked
+        .iter()
+        .map(|&index| {
+            let segment = &segments[index];
+            match segment.connector_before {
+                Some(ShellConnector::And) => format!("&& {}", segment.text),
+                Some(ShellConnector::Or) => format!("|| {}", segment.text),
+                Some(ShellConnector::Seq) => format!("; {}", segment.text),
+                None => segment.text.clone(),
+            }
+        })
+        .collect();
+    let suggestion = render_segments_without(&segments, &masked);
+    Some(masking_reason_text(&fragment, Some(&suggestion)))
+}
+
+/// Lane R65b: [`exit_masking_reason`] applied to every check whose `exec` is
+/// [`Exec::Shell`] — today, exactly the explicit-`command` path
+/// ([`VerifyTool::verify_with_cwd`]). A [`Check::direct`] check never goes
+/// through a shell at all, so `||`/`;`/`&&` in its arguments are inert
+/// literal text, not operators, and can never mask anything; a
+/// [`Check::probe`] auto-detected acceptance-criterion check only builds an
+/// `Exec::Shell` check TEMPORARILY, inside [`run_probe_check`]'s own
+/// delegation to run it, so its `Exec::Probe(ProbeKind::CommandExitsZero)`
+/// form here is out of scope for this lane.
+fn exit_status_masking_reason(checks: &[Check]) -> Option<String> {
+    checks.iter().find_map(|check| match &check.exec {
+        Exec::Shell(command) => exit_masking_reason(command),
+        _ => None,
+    })
+}
+
+/// X-verify-2: why a set of PASSED checks does not count as real coverage, if
+/// any reason applies. Checked in order: (1) Lane R65b: a check's own command
+/// TEXT masks its exit status ([`exit_status_masking_reason`]) — checked
+/// before output-shape inspection because a masked exit code can accompany
+/// output that looks perfectly ordinary; (2) every check that ran was a
+/// syntax-only smoke ([`Check::is_smoke`]) — the code was never executed at
+/// all; (3) the combined output of the checks that actually ran contains a
+/// recognized "zero tests" marker ([`ZERO_TESTS_RE`]) AND no counter-marker
+/// ([`NONZERO_TESTS_RE`]) proving some other target in the same output did run
+/// tests — a real test command that nonetheless collected/ran nothing; (4)
+/// Lane R62b-2: a check ran a Python test file as a plain script that never
+/// invokes its tests ([`uninvoked_python_tests_reason`]). `dir` is the
+/// directory the checks ran in. `None` when none applies: a genuine pass.
+fn vacuous_pass_reason_for_checks(
+    checks: &[Check],
+    outputs: &[String],
+    dir: &Path,
+) -> Option<String> {
+    if let Some(reason) = exit_status_masking_reason(checks) {
+        return Some(reason);
+    }
+    if !checks.is_empty() && checks.iter().all(|check| check.is_smoke) {
+        return Some(
+            "only a syntax-only smoke check ran (e.g. `py_compile`/`node --check`) — the code \
+             was never executed, so this is not a test pass"
+                .to_string(),
+        );
+    }
+    let combined = outputs.join("\n");
+    // Y10a: a non-zero pass count anywhere in the same output means tests DID
+    // run, so any "0 passed" beside it belongs to a sibling target (cargo's
+    // doc-tests) and this pass is not vacuous. See [`NONZERO_TESTS_RE`].
+    if nonzero_test_marker(&combined).is_some() {
+        return None;
+    }
+    if let Some(marker) = zero_test_marker(&combined) {
+        return Some(format!(
+            "the check's own output reports zero tests ran (\"{marker}\")"
+        ));
+    }
+    checks
+        .iter()
+        .zip(outputs)
+        .find_map(|(check, output)| uninvoked_python_tests_reason(check, output, dir))
+}
+
+fn pass_result(checks: &[Check], outputs: &[String], dir: &Path) -> CallToolResult {
     let labels: Vec<&str> = checks.iter().map(|check| check.label.as_str()).collect();
-    let message = format!("PASS - all checks passed: {}.", labels.join(", "));
+    // Lane R62b-3: no receipt here. Returning a vacuous PASS is not crediting
+    // it; the evidence readers record the judgement
+    // (`record_vacuous_pass_judgement`).
+    let vacuous_reason = vacuous_pass_reason_for_checks(checks, outputs, dir);
+    // Lane R64a: a vacuous reason used to live only in `structured_content`
+    // (read by the orchestrator machinery deciding whether to CREDIT this
+    // pass) — the worker calling `verify` never saw it in the tool's own
+    // visible text, so it had no way to learn from `verify` itself that its
+    // pass did not count, or what to run instead. Fold it into the message.
+    let message = match &vacuous_reason {
+        Some(reason) => format!(
+            "PASS - all checks passed: {}. This is not real test evidence: {reason}.",
+            labels.join(", ")
+        ),
+        None => format!("PASS - all checks passed: {}.", labels.join(", ")),
+    };
     observation(
         CallToolResult::success(vec![Content::text(message.clone()).with_priority(0.0)]),
         Some(&labels.join(", ")),
         Some("pass"),
         Some(&message),
+        vacuous_reason.as_deref(),
     )
 }
 
@@ -1243,6 +3506,50 @@ fn fail_result(check: &Check, exit_code: Option<i32>, output: &str) -> CallToolR
         Some(&check.label),
         Some("fail"),
         Some(&body),
+        None,
+    )
+}
+
+/// A check failed because the interpreter/runtime it ran under could not
+/// IMPORT a dependency (see [`missing_import_dependency`]) — reported as its
+/// own ENVIRONMENT class, distinct from [`fail_result`]'s generic "FAIL", so
+/// the model does not spend its bounded fix-and-reverify attempts editing
+/// application code for a gap that editing code cannot close. Still
+/// `CallToolResult::error` (so `is_error` is set and the existing runaway-loop
+/// guard still bounds a genuinely stuck run) — only the message and the
+/// `verdict` tag change.
+fn environment_dependency_result(
+    check: &Check,
+    exit_code: Option<i32>,
+    output: &str,
+    missing: &str,
+) -> CallToolResult {
+    let code = match exit_code {
+        Some(code) => code.to_string(),
+        None => "killed".to_string(),
+    };
+    let body = clamp_output(&normalize(output));
+    let message = format!(
+        "ENVIRONMENT - `{label}` failed (exit {code}), but not because of a defect in the \
+         code under test: the interpreter/runtime it ran under could not import `{missing}`.\n\n\
+         {body}\n\n\
+         This is a missing dependency for THIS interpreter/runtime, not a bug to fix by \
+         editing application code — a machine can have more than one interpreter (e.g. \
+         several `python3`s) where only some have `{missing}` installed. To resolve it: \
+         install `{missing}` for the interpreter this check actually used (e.g. \
+         `python3 -m pip install {missing}`, `npm install {missing}`, or the project's own \
+         package manager), point the project at its existing virtualenv/lockfile if it has \
+         one, or pass `verify` an explicit `command` that runs the check with an interpreter \
+         that already has `{missing}`. Do not add or change application code to work around \
+         a missing test dependency. Then run verify again.",
+        label = check.label,
+    );
+    observation(
+        CallToolResult::error(vec![Content::text(message).with_priority(0.0)]),
+        Some(&check.label),
+        Some("environment"),
+        Some(&body),
+        None,
     )
 }
 
@@ -1252,13 +3559,35 @@ fn error_result(message: &str) -> CallToolResult {
         None,
         Some("error"),
         Some(message),
+        None,
     )
 }
 
+/// R21c: the verdict [`no_checks_result`] reports — deliberately NEITHER
+/// `"pass"` NOR `"fail"`. Zero checks ran, so there is nothing to grade;
+/// claiming `"pass"` (as this used to) was itself the defect (M23 dschat: a
+/// fizzbuzz-shaped goal with no detectable test suite got a `PASS` from
+/// verify and a `vacuous_passes` count against it — verify CLAIMED a pass
+/// with nothing run, when the honest answer was that nothing COULD run).
+/// `is_authoritative_pass` reads only `verdict == "pass"`, so this verdict is
+/// never mistaken for one — no consumer needs to special-case it.
+pub const NO_CHECKS_VERDICT: &str = "no_checks";
+
 /// A "no checks configured" outcome: the project type was recognized but has
-/// nothing runnable to verify yet (a fresh scaffold, a placeholder-only test, or
-/// pytest collecting nothing). This is NOT a failure — it is a clean success, so
-/// neither the loop guard nor the model treats it as a phantom failure to chase.
+/// nothing runnable to verify yet (a fresh scaffold, a placeholder-only test,
+/// or pytest collecting nothing) — and no acceptance-criteria probe could
+/// stand in for a real check (see [`synthesize_probe_checks`]). This is NOT a
+/// failure, so neither the loop guard nor the model treats it as a phantom
+/// failure to chase — but as of R21c it is also, honestly, NOT a pass:
+/// [`NO_CHECKS_VERDICT`] reports plainly that zero checks ran, rather than
+/// dressing that up as a `"pass"` a consumer might trust. Because
+/// `is_authoritative_pass` requires `verdict == "pass"`, this result now
+/// automatically reads as "no verify evidence" to every consumer that
+/// predicate feeds (`after_turn::scan_verify_positions`,
+/// `orchestrator::scan_verify_evidence`) — the done-claim path treats
+/// it exactly like an unverified edit, which still routes to Review for the
+/// cross-family reviewer to inspect, rather than auto-landing on an
+/// unearned green.
 fn no_checks_result(reason: &str) -> CallToolResult {
     let message = format!(
         "NO CHECKS - {reason} Nothing to verify yet. Add tests or a build/test script and run \
@@ -1267,8 +3596,9 @@ fn no_checks_result(reason: &str) -> CallToolResult {
     observation(
         CallToolResult::success(vec![Content::text(message.clone()).with_priority(0.0)]),
         None,
-        Some("pass"),
+        Some(NO_CHECKS_VERDICT),
         Some(&message),
+        None,
     )
 }
 
@@ -1287,7 +3617,11 @@ mod tests {
 
     #[test]
     fn verifier_results_carry_authoritative_structured_observations() {
-        let result = pass_result(&[Check::direct("cargo", &["test"])]);
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &["test result: ok. 3 passed; 0 failed; 0 ignored".to_string()],
+            Path::new("."),
+        );
         let observation: VerificationObservation =
             serde_json::from_value(result.structured_content.unwrap()).unwrap();
         assert_eq!(observation.kind, VERIFICATION_OBSERVATION_KIND);
@@ -1297,6 +3631,10 @@ mod tests {
             .evidence
             .as_deref()
             .is_some_and(|e| e.contains("PASS")));
+        assert_eq!(
+            observation.vacuous_reason, None,
+            "a real pass with 3 tests run must not be flagged vacuous"
+        );
 
         let failed = fail_result(
             &Check::direct("cargo", &["test"]),
@@ -1310,12 +3648,676 @@ mod tests {
         assert_eq!(observation.evidence.as_deref(), Some("error: test failed"));
     }
 
+    // ── X-verify-2: vacuous passes ─────────────────────────────────────────
+
+    /// The gap this closes: a pass whose only check was a syntax-only smoke
+    /// (`py_compile`) used to be indistinguishable, on the wire, from a real
+    /// test pass — `is_authoritative_pass` (and every consumer that trusted
+    /// it, e.g. `after_turn::scan_verify_positions`) would advance past it.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn a_smoke_only_pass_is_authoritative_but_flagged_vacuous() {
+        let result = pass_result(
+            &[Check::direct_owned(
+                "python3",
+                vec![
+                    "-m".to_string(),
+                    "py_compile".to_string(),
+                    "a.py".to_string(),
+                ],
+            )
+            .smoke_only()],
+            &[String::new()],
+            Path::new("."),
+        );
+        assert!(
+            is_authoritative_pass(&result),
+            "a smoke check still reports a real, structured pass"
+        );
+        let reason = vacuous_pass_reason(&result);
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("smoke")),
+            "expected a smoke-labelled vacuous reason, got {reason:?}"
+        );
+    }
+
+    /// R21c: `no_checks_result` used to report `verdict: "pass"` with a
+    /// vacuous reason attached — an authoritative pass by
+    /// `is_authoritative_pass`'s own definition, just one flagged vacuous.
+    /// That was the defect (M23 dschat fizzbuzz): verify CLAIMING a pass with
+    /// zero checks run. It is now neither a pass nor a fail — see
+    /// [`NO_CHECKS_VERDICT`].
+    #[test]
+    fn a_no_checks_result_honestly_reports_neither_pass_nor_fail() {
+        let result = no_checks_result("nothing to run yet.");
+        assert!(
+            !is_authoritative_pass(&result),
+            "zero checks ran — this must never read as an authoritative pass"
+        );
+        assert!(
+            !is_genuine_pass(&result),
+            "and therefore never as a genuine one either"
+        );
+        assert_eq!(
+            vacuous_pass_reason(&result),
+            None,
+            "a vacuous pass is verify CLAIMING a pass with nothing run — NO CHECKS never claims \
+             a pass at all, so it must not be counted as one"
+        );
+        let observation: VerificationObservation =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(observation.verdict.as_deref(), Some(NO_CHECKS_VERDICT));
+        assert_eq!(
+            observation.vacuous_reason, None,
+            "vacuous_reason is defined only for a verdict of pass"
+        );
+        // NOT a failure either — the loop guard and the model must not chase
+        // a phantom failure on a fresh scaffold.
+        assert_eq!(result.is_error, Some(false));
+    }
+
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn a_real_test_run_reporting_zero_tests_is_vacuous() {
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &["test result: ok. 0 passed; 0 failed; 0 ignored".to_string()],
+            Path::new("."),
+        );
+        assert!(is_authoritative_pass(&result));
+        let reason = vacuous_pass_reason(&result);
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("zero tests")),
+            "expected a zero-tests vacuous reason, got {reason:?}"
+        );
+    }
+
+    #[test]
+    fn a_real_multi_test_run_is_not_vacuous() {
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &["test result: ok. 120 passed; 0 failed; 0 ignored".to_string()],
+            Path::new("."),
+        );
+        assert_eq!(
+            vacuous_pass_reason(&result),
+            None,
+            "'120 passed' must never be misread as '0 passed'"
+        );
+    }
+
+    // ── Y10a: the multi-target counter-marker ──────────────────────────────
+
+    /// The M15 regression this closes, verbatim from the fx10 worker's own
+    /// `cargo test` output: a crate with six real passing tests and an empty
+    /// doc-test target. `ZERO_TESTS_RE` matched the doc-test block's
+    /// `0 passed`, so verify stamped `vacuous` on a genuine pass, the goal was
+    /// held, and fx03/fx10 (and zai fx01) failed on it.
+    #[test]
+    fn a_cargo_run_with_an_empty_doc_test_target_is_not_vacuous() {
+        let output = "\
+running 6 tests
+test coupons::tests::trims ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+   Doc-tests bench_rs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+";
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &[output.to_string()],
+            Path::new("."),
+        );
+        assert!(is_authoritative_pass(&result));
+        assert_eq!(
+            vacuous_pass_reason(&result),
+            None,
+            "6 real passing tests beside an empty doc-test target is a genuine pass"
+        );
+        assert!(
+            is_genuine_pass(&result),
+            "the goal engine must be able to land this verdict"
+        );
+    }
+
+    /// The other half of the same regression: with nothing but zero-count
+    /// blocks, the marker must still fire.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn a_cargo_run_with_only_empty_targets_is_still_vacuous() {
+        let output = "\
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+   Doc-tests bench_rs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+";
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &[output.to_string()],
+            Path::new("."),
+        );
+        let reason = vacuous_pass_reason(&result);
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("zero tests")),
+            "an all-empty cargo run is still vacuous, got {reason:?}"
+        );
+    }
+
+    /// Separate checks, separate output strings: the counter-marker is scanned
+    /// over the same joined output the zero marker is, so a real `cargo test`
+    /// beside a clippy run that happens to print `0 passed` still counts.
+    #[test]
+    fn the_counter_marker_is_scanned_across_all_check_outputs() {
+        let result = pass_result(
+            &[
+                Check::direct("cargo", &["test"]),
+                Check::direct("cargo", &["test", "--doc"]),
+            ],
+            &[
+                "test result: ok. 6 passed; 0 failed; 0 ignored".to_string(),
+                "test result: ok. 0 passed; 0 failed; 0 ignored".to_string(),
+            ],
+            Path::new("."),
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+    }
+
+    /// pytest and jest keep their existing behaviour in both directions: a
+    /// genuine run is not vacuous, an empty collection still is.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn pytest_and_jest_equivalents_are_unchanged_by_the_counter_marker() {
+        for genuine in [
+            "===== 12 passed, 1 skipped in 0.42s =====",
+            "Tests:       3 passed, 3 total\nSnapshots:   0 total",
+        ] {
+            let result = pass_result(
+                &[Check::direct("pytest", &["-q"])],
+                &[genuine.to_string()],
+                Path::new("."),
+            );
+            assert_eq!(
+                vacuous_pass_reason(&result),
+                None,
+                "a genuine run must not be vacuous: {genuine:?}"
+            );
+        }
+        for empty in [
+            "collected 0 items\n\n===== no tests ran in 0.01s =====",
+            "No tests found, exiting with code 0\nNo test files",
+            "===== 0 passed in 0.01s =====",
+        ] {
+            let result = pass_result(
+                &[Check::direct("pytest", &["-q"])],
+                &[empty.to_string()],
+                Path::new("."),
+            );
+            assert!(
+                vacuous_pass_reason(&result).is_some(),
+                "an empty run must stay vacuous: {empty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonzero_marker_matches_only_real_counts() {
+        for text in [
+            "test result: ok. 6 passed; 0 failed",
+            "running 6 tests",
+            "running 1 test",
+            "12 passed, 1 skipped",
+        ] {
+            assert!(
+                nonzero_test_marker(text).is_some(),
+                "expected a counter-marker in {text:?}"
+            );
+        }
+        for text in [
+            "test result: ok. 0 passed; 0 failed",
+            "running 0 tests",
+            "collected 0 items",
+            "no tests ran",
+        ] {
+            assert!(
+                nonzero_test_marker(text).is_none(),
+                "must not claim tests ran in {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failing_result_is_never_reported_as_vacuous() {
+        // Vacuousness is a property of a PASS; a failure is handled by the
+        // ordinary verify-loop guard and must not also be flagged vacuous.
+        let failed = fail_result(&Check::direct("cargo", &["test"]), Some(1), "0 passed");
+        assert!(!is_authoritative_pass(&failed));
+        assert_eq!(vacuous_pass_reason(&failed), None);
+    }
+
+    // ── G5 finding 1: the shared genuine-pass predicate ─────────────────────
+
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn is_genuine_pass_rejects_a_smoke_only_pass() {
+        let result = pass_result(
+            &[Check::direct_owned(
+                "python3",
+                vec![
+                    "-m".to_string(),
+                    "py_compile".to_string(),
+                    "a.py".to_string(),
+                ],
+            )
+            .smoke_only()],
+            &[String::new()],
+            Path::new("."),
+        );
+        assert!(
+            is_authoritative_pass(&result),
+            "the underlying wire result is still an authoritative pass"
+        );
+        assert!(
+            !is_genuine_pass(&result),
+            "a smoke-only pass must never read as a genuine, actionable pass"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn is_genuine_pass_rejects_a_zero_tests_pass() {
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &["test result: ok. 0 passed; 0 failed; 0 ignored".to_string()],
+            Path::new("."),
+        );
+        assert!(!is_genuine_pass(&result));
+    }
+
+    #[test]
+    fn is_genuine_pass_accepts_a_real_multi_test_pass() {
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &["test result: ok. 120 passed; 0 failed; 0 ignored".to_string()],
+            Path::new("."),
+        );
+        assert!(is_genuine_pass(&result));
+    }
+
+    #[test]
+    fn is_genuine_pass_rejects_a_failure() {
+        let failed = fail_result(&Check::direct("cargo", &["test"]), Some(1), "boom");
+        assert!(!is_genuine_pass(&failed));
+    }
+
+    #[test]
+    fn zero_tests_marker_matches_common_runner_phrasings() {
+        for text in [
+            "test result: ok. 0 passed; 0 failed; 0 ignored",
+            "No tests ran in 0.01s",
+            "no test files",
+            "Ran 0 tests in 0.000s",
+            "collected 0 items",
+            "0 examples, 0 failures",
+        ] {
+            assert!(
+                zero_test_marker(text).is_some(),
+                "expected a match in {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_tests_marker_does_not_false_positive_on_a_larger_count() {
+        for text in [
+            "test result: ok. 120 passed; 0 failed",
+            "20 passed, 1 failed",
+            "ran 10 tests",
+        ] {
+            assert!(
+                zero_test_marker(text).is_none(),
+                "must not match a non-zero count in {text:?}"
+            );
+        }
+    }
+
+    // ── Y10e: a committed goal branch still has a change set ───────────────
+
+    /// `git -C dir <args>`, panicking with the real stderr so a fixture that
+    /// fails to build says why.
+    fn git_y10e(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git must be on PATH for this test");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A repo seeded exactly like a bench fixture: one commit on `main`, then
+    /// a `goal/<session>` branch carrying the worker's committed change and a
+    /// CLEAN working tree — the state every M15 worker was in when it called
+    /// `verify` right after committing.
+    fn y10e_committed_goal_branch() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        // Canonicalize: `git rev-parse --show-toplevel` resolves symlinks
+        // (/var → /private/var on macOS) and `git_changes_under` compares the
+        // two, so the fixture must hand back the resolved path.
+        let dir = tmp.path().canonicalize().unwrap();
+        let dir = dir.as_path();
+        git_y10e(dir, &["init", "-b", "main"]);
+        git_y10e(dir, &["config", "user.email", "t@example.com"]);
+        git_y10e(dir, &["config", "user.name", "T"]);
+        git_y10e(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"fx\"\n").unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "seed"]);
+
+        git_y10e(dir, &["checkout", "-b", "goal/session-1"]);
+        std::fs::write(dir.join("src/coupons.rs"), "pub fn trim() {}\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "worker: add coupons"]);
+        let resolved = dir.to_path_buf();
+        (tmp, resolved)
+    }
+
+    /// The M15 regression: with the work COMMITTED the working tree is clean,
+    /// so `diff HEAD` + `ls-files --others` return nothing and verify answered
+    /// "no changed files were found under this verification path". fx05, fx08,
+    /// fx09 and fx10 each burned a turn on it. The branch's fork point still
+    /// knows what this goal changed.
+    #[test]
+    fn a_committed_goal_branch_still_reports_its_changed_files() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        let dir = dir.as_path();
+
+        assert_eq!(
+            git_y10e(dir, &["status", "--porcelain"]),
+            "",
+            "the fixture's working tree must be clean, or it proves nothing"
+        );
+
+        let changes = git_changes_under(dir).expect("the repo resolves").paths;
+        assert_eq!(
+            changes,
+            vec!["src/coupons.rs".to_string()],
+            "a committed goal branch must still describe what it changed"
+        );
+    }
+
+    /// The narrowing that follows: because the change set is no longer empty,
+    /// `select_checks` infers a real scoped Rust check instead of NO CHECKS.
+    #[test]
+    fn a_committed_goal_branch_infers_a_real_check_instead_of_no_checks() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        let outcome = select_checks(
+            dir.as_path(),
+            VerificationScope::Auto,
+            VerificationRisk::Low,
+            None,
+        )
+        .expect("auto scope must not error on an all-Rust change set");
+        match outcome {
+            DetectOutcome::Checks(checks) => assert!(
+                checks.iter().any(|check| check.label.starts_with("cargo ")),
+                "expected a Cargo check, got {:?}",
+                checks.iter().map(|c| &c.label).collect::<Vec<_>>()
+            ),
+            other => panic!("expected runnable checks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_checks_uses_fork_point_with_only_untracked_non_rust_files() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        std::fs::write(dir.join("runner.sh"), "exit 0\n").unwrap();
+        std::fs::create_dir(dir.join("scratch")).unwrap();
+        std::fs::write(dir.join("scratch/result.json"), "{}\n").unwrap();
+        assert_eq!(
+            git_changes_under(&dir).unwrap().paths,
+            vec!["runner.sh".to_string(), "scratch/result.json".to_string()]
+        );
+        assert_eq!(
+            select_checks(&dir, VerificationScope::Auto, VerificationRisk::Low, None).unwrap(),
+            DetectOutcome::Checks(vec![Check::direct("cargo", &["test", "-p", "fx"])])
+        );
+        // Explicit caller scope remains authoritative even on this branch.
+        let supplied = ["runner.sh".to_string()];
+        assert!(matches!(
+            select_checks(
+                &dir,
+                VerificationScope::Auto,
+                VerificationRisk::Low,
+                Some(&supplied),
+            )
+            .unwrap(),
+            DetectOutcome::NoChecksConfigured(_)
+        ));
+    }
+
+    #[test]
+    fn select_checks_uses_fork_point_with_docs_and_script_only() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+        git_y10e(&dir, &["add", "src/lib.rs"]);
+        git_y10e(&dir, &["commit", "-m", "worker: update lib"]);
+        std::fs::write(dir.join("README.md"), "# Fixture\n").unwrap();
+        std::fs::write(dir.join("oracle_check.sh"), "exit 0\n").unwrap();
+        assert_eq!(
+            git_changes_under(&dir).unwrap().paths,
+            vec!["README.md".to_string(), "oracle_check.sh".to_string()]
+        );
+        assert_eq!(
+            select_checks(&dir, VerificationScope::Auto, VerificationRisk::Low, None).unwrap(),
+            DetectOutcome::Checks(vec![Check::direct("cargo", &["test", "-p", "fx"])])
+        );
+    }
+
+    #[test]
+    fn git_changes_retains_subdirectory_context_for_fork_point() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        std::fs::write(dir.join("src/oracle_check.sh"), "exit 0\n").unwrap();
+        let changes = git_changes_under(&dir.join("src")).unwrap();
+        assert_eq!(changes.root, dir);
+        assert_eq!(changes.relative_dir, PathBuf::from("src"));
+        assert_eq!(changes.paths, vec!["src/oracle_check.sh".to_string()]);
+        assert_eq!(
+            changes_since_branch_fork_point(&changes.root, &changes.relative_dir),
+            Some(vec!["src/coupons.rs".to_string()])
+        );
+    }
+
+    #[test]
+    fn select_checks_keeps_untracked_new_rust_source() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        std::fs::write(dir.join("src/new.rs"), "pub fn new() {}\n").unwrap();
+        assert_eq!(
+            git_changes_under(&dir).unwrap().paths,
+            vec!["src/new.rs".to_string()]
+        );
+        assert_eq!(
+            select_checks(&dir, VerificationScope::Auto, VerificationRisk::Low, None).unwrap(),
+            DetectOutcome::Checks(vec![Check::direct("cargo", &["test", "-p", "fx"])])
+        );
+    }
+
+    #[test]
+    fn select_checks_with_no_changes_anywhere_still_has_no_checks() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        git_y10e(&dir, &["checkout", "main"]);
+        assert_eq!(git_changes_under(&dir).unwrap().paths, Vec::<String>::new());
+        assert!(matches!(
+            select_checks(&dir, VerificationScope::Auto, VerificationRisk::Low, None).unwrap(),
+            DetectOutcome::NoChecksConfigured(reason) if reason.contains("no changed files")
+        ));
+        std::fs::write(dir.join("runner.sh"), "exit 0\n").unwrap();
+        assert!(matches!(
+            select_checks(&dir, VerificationScope::Auto, VerificationRisk::Low, None).unwrap(),
+            DetectOutcome::NoChecksConfigured(reason) if reason.contains("not Rust")
+        ));
+    }
+
+    /// The fallback must stay a FALLBACK: while there is uncommitted work, the
+    /// working tree is still the answer — widening to the fork point there
+    /// would silently broaden every ordinary verify call.
+    #[test]
+    fn uncommitted_work_still_wins_over_the_fork_point() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        let dir = dir.as_path();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+
+        let changes = git_changes_under(dir).expect("the repo resolves").paths;
+        assert_eq!(
+            changes,
+            vec!["src/lib.rs".to_string()],
+            "with a dirty tree the working-tree scan must be untouched by Y10e"
+        );
+    }
+
+    /// A branch with nothing unique to it (the trunk itself, clean) has no
+    /// fork point to widen to, and must keep answering "nothing changed"
+    /// rather than diffing its whole history.
+    #[test]
+    fn a_clean_trunk_has_no_fork_point_to_widen_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        let dir = dir.as_path();
+        git_y10e(dir, &["init", "-b", "main"]);
+        git_y10e(dir, &["config", "user.email", "t@example.com"]);
+        git_y10e(dir, &["config", "user.name", "T"]);
+        git_y10e(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.rs"), "// seed\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "seed"]);
+
+        assert!(
+            branch_fork_point(dir).is_none(),
+            "a single root commit has no parent to diff against"
+        );
+        assert_eq!(git_changes_under(dir).unwrap().paths, Vec::<String>::new());
+    }
+
+    /// R54a (A51 analysis, "branch_fork_point"): the A51 Run 2 defect,
+    /// reproduced directly. A goal redispatched twice leaves BOTH prior
+    /// attempts' `goal/<session>` branches alive (Y16b never deletes them),
+    /// each a parent of the next; the final attempt's only new commit is an
+    /// empty checkpoint. Before this lane, `--branches` counted
+    /// `goal/s1`/`goal/s2` as "already covering" their own commits, so the
+    /// verified diff narrowed to just the empty checkpoint (`git_changes_
+    /// under` reporting no changed files at all). After it, the fork point
+    /// is measured against trunk (`main`) via `merge-base`, so the diff
+    /// spans every commit since trunk — both real attempts' work, not just
+    /// the last one's no-op commit.
+    #[test]
+    fn fork_point_spans_every_commit_since_trunk_despite_live_sibling_attempt_branches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        let dir = dir.as_path();
+        git_y10e(dir, &["init", "-b", "main"]);
+        git_y10e(dir, &["config", "user.email", "t@example.com"]);
+        git_y10e(dir, &["config", "user.name", "T"]);
+        git_y10e(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.rs"), "// seed\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "seed"]);
+        let seed = git_y10e(dir, &["rev-parse", "HEAD"]).trim().to_string();
+
+        // Attempt 1, still alive as `goal/s1`.
+        git_y10e(dir, &["checkout", "-q", "-b", "goal/s1"]);
+        std::fs::write(dir.join("b.rs"), "pub fn one() {}\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "attempt 1"]);
+
+        // Attempt 2, redispatched from attempt 1's tip, still alive as `goal/s2`.
+        git_y10e(dir, &["checkout", "-q", "-b", "goal/s2"]);
+        std::fs::write(dir.join("c.rs"), "pub fn two() {}\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "attempt 2"]);
+
+        // Attempt 3, the current goal worktree: an empty checkpoint commit
+        // on top of real earlier progress.
+        git_y10e(dir, &["checkout", "-q", "-b", "goal/s3"]);
+        git_y10e(dir, &["commit", "--allow-empty", "-m", "checkpoint"]);
+
+        assert_eq!(
+            branch_fork_point(dir).as_deref(),
+            Some(seed.as_str()),
+            "the fork point must be trunk-relative (merge-base with main), \
+             not narrowed by goal/s1 and goal/s2 still existing"
+        );
+        let mut changed = changes_since_branch_fork_point(dir, Path::new("")).unwrap();
+        changed.sort();
+        assert_eq!(
+            changed,
+            vec!["b.rs".to_string(), "c.rs".to_string()],
+            "the verified diff must span every commit since trunk, not just \
+             attempt 3's empty checkpoint"
+        );
+        assert_eq!(
+            git_changes_under(dir).unwrap().paths,
+            vec!["b.rs".to_string(), "c.rs".to_string()],
+            "select_checks must see both attempts' real work, never NO CHECKS"
+        );
+    }
+
     /// Unwrap a detection that must have produced runnable checks.
     fn checks_of(dir: &Path) -> Vec<Check> {
         match detect_checks(dir) {
             Ok(DetectOutcome::Checks(checks)) => checks,
             other => panic!("expected runnable checks, got {other:?}"),
         }
+    }
+
+    /// Lane R64a: like [`checks_of`], but with a login-shell PATH — for
+    /// exercising [`pytest_importable`]'s probe deterministically against a
+    /// fake `python3` on a temp-dir PATH, never the real ambient environment
+    /// (whether this machine happens to have `pytest` installed must not
+    /// change what a unit test asserts).
+    #[cfg(not(windows))]
+    fn checks_of_with_login_path(dir: &Path, login_path: &str) -> Vec<Check> {
+        match detect_checks_with_login_path(dir, Some(login_path)) {
+            Ok(DetectOutcome::Checks(checks)) => checks,
+            other => panic!("expected runnable checks, got {other:?}"),
+        }
+    }
+
+    /// Lane R64a: a fake `python3` on its own temp-dir `bin/`, returned as a
+    /// login-shell PATH string — deterministic, no process-global state, and
+    /// independent of whether pytest is actually installed on the machine
+    /// running this test. `pytest_version_exit` is the exit code the fake
+    /// gives `python3 -m pytest --version` (0 = importable, non-zero = not);
+    /// every other invocation exits 0 and does nothing, since only the
+    /// availability probe ever runs during detection.
+    #[cfg(not(windows))]
+    fn fake_python3_login_path(root: &Path, pytest_version_exit: u8) -> String {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"-m\" ] && [ \"$2\" = \"pytest\" ]; then\n  exit {pytest_version_exit}\nfi\nexit 0\n"
+        );
+        let bin_path = bin_dir.join("python3");
+        std::fs::write(&bin_path, script).unwrap();
+        let mut perms = std::fs::metadata(&bin_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin_path, perms).unwrap();
+        bin_dir.to_string_lossy().into_owned()
     }
 
     // ── Detection → the correct check command ──
@@ -1337,6 +4339,19 @@ mod tests {
             checks_of(dir.path()),
             vec![Check::direct("cargo", &["test"])]
         );
+    }
+
+    #[test]
+    fn detect_check_labels_matches_detect_checks_for_rust() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
+        assert_eq!(detect_check_labels(dir.path()), vec!["cargo test"]);
+    }
+
+    #[test]
+    fn detect_check_labels_is_empty_for_an_undetectable_project() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_check_labels(dir.path()).is_empty());
     }
 
     #[test]
@@ -1466,8 +4481,10 @@ mod tests {
                     scope: Some(VerificationScope::Docs),
                     risk: Some(VerificationRisk::Low),
                     changed_paths: Some(vec!["notes.md".to_string()]),
+                    acceptance_criteria: None,
                 },
                 Some(dir.path()),
+                None,
             )
             .await;
         assert_eq!(result.is_error, Some(true));
@@ -1531,15 +4548,55 @@ mod tests {
     }
 
     #[test]
-    fn detects_python_pytest_from_any_marker() {
-        for marker in ["pyproject.toml", "setup.py", "requirements.txt", "tox.ini"] {
+    fn detects_python_pytest_only_when_a_pytest_marker_also_exists() {
+        // A Python marker on its own is not evidence of pytest (see
+        // `python_marker_alone_does_not_propose_pytest` below) — pytest is only
+        // proposed once the project also declares it one of the three ways.
+        for (python_marker, pytest_marker, pytest_content) in [
+            ("requirements.txt", "pytest.ini", ""),
+            ("setup.py", "conftest.py", ""),
+            ("tox.ini", "pyproject.toml", "[tool.pytest.ini_options]\n"),
+        ] {
             let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join(marker), "").unwrap();
+            std::fs::write(dir.path().join(python_marker), "").unwrap();
+            std::fs::write(dir.path().join(pytest_marker), pytest_content).unwrap();
             assert_eq!(
                 checks_of(dir.path()),
                 vec![Check::direct("pytest", &[])],
-                "marker {marker} should map to pytest"
+                "marker {python_marker} + {pytest_marker} should map to pytest"
             );
+        }
+    }
+
+    /// F3(d): `requirements.txt`/`setup.py`/etc. establish "this is a Python
+    /// project", not "this project uses pytest" — plenty of Python projects
+    /// use `unittest`, a bespoke runner, or nothing yet. Confidently running
+    /// pytest anyway is how a bare-assert test module with a `sys.exit()` at
+    /// import time ends in an INTERNALERROR instead of an actionable result
+    /// (see `HARNESS_LOOP_LOG.md`'s `harness-testfix-inventory-suite-green`
+    /// evidence). Before this fix every one of these markers alone mapped
+    /// straight to `pytest`.
+    #[test]
+    fn python_marker_alone_does_not_propose_pytest() {
+        // Some of these markers (`setup.py`) are ALSO the only `.py` file in
+        // the directory, so the manifestless single-file fallback (b) can
+        // legitimately still return a `py_compile` syntax-smoke check — the
+        // invariant under test is narrower than "always errors": pytest must
+        // never be the answer without real evidence it is configured.
+        for marker in ["pyproject.toml", "setup.py", "requirements.txt", "tox.ini"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(marker), "").unwrap();
+            match detect_checks(dir.path()) {
+                Err(error) => assert!(
+                    !error.to_ascii_lowercase().contains("pytest"),
+                    "marker {marker} alone must not propose pytest, got: {error}"
+                ),
+                Ok(DetectOutcome::Checks(checks)) => assert!(
+                    !checks.iter().any(|c| c.label.contains("pytest")),
+                    "marker {marker} alone must not propose pytest, got: {checks:?}"
+                ),
+                Ok(other) => panic!("unexpected outcome for marker {marker}: {other:?}"),
+            }
         }
     }
 
@@ -1572,6 +4629,177 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Makefile"), "build:\n\tgo build\n").unwrap();
         assert!(detect_checks(dir.path()).is_err());
+    }
+
+    // ── F3: manifestless shapes (no Cargo/go/npm/Python/Makefile marker) ──
+    //
+    // Live evidence (HARNESS_LOOP_LOG.md, Lane A2): a lone `.py` script, a
+    // vanilla `.mjs`+`.html` workspace, and a `tests/test_inventory.py` with no
+    // package manifest at all each wasted a turn on "Could not detect the
+    // project type ... Pass an explicit `command`" before this fix.
+
+    #[test]
+    fn manifestless_test_file_in_a_tests_dir_runs_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        let tests_dir = dir.path().join("tests");
+        std::fs::create_dir(&tests_dir).unwrap();
+        std::fs::write(tests_dir.join("test_inventory.py"), "assert 1 + 1 == 2\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("python3", &["tests/test_inventory.py"])]
+        );
+    }
+
+    #[test]
+    fn manifestless_test_file_at_the_root_runs_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test_inventory.py"), "assert True\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("python3", &["test_inventory.py"])]
+        );
+    }
+
+    #[test]
+    fn manifestless_check_dot_star_file_runs_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("check.py"), "assert True\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("python3", &["check.py"])]
+        );
+    }
+
+    #[test]
+    fn manifestless_test_mjs_runs_directly_with_node() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test.mjs"), "console.log('ok');\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("node", &["test.mjs"])]
+        );
+    }
+
+    #[test]
+    fn manifestless_dot_test_dot_file_runs_directly_with_node() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("logfilter.test.js"), "console.log('ok');\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("node", &["logfilter.test.js"])]
+        );
+    }
+
+    #[test]
+    fn manifestless_single_py_file_gets_an_honestly_named_syntax_smoke() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fizzbuzz.py"), "def fizzbuzz(): pass\n").unwrap();
+        let checks = checks_of(dir.path());
+        assert_eq!(
+            checks,
+            vec![Check::direct("python3", &["-m", "py_compile", "fizzbuzz.py"]).smoke_only()]
+        );
+        // Honest about what it is: a syntax check, never described as a test run.
+        assert!(checks[0].label.contains("py_compile"));
+        // X-verify-2: and never SCORED as one either.
+        assert!(checks[0].is_smoke);
+    }
+
+    #[test]
+    fn manifestless_single_mjs_file_gets_a_node_check() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.mjs"), "export const x = 1;\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("node", &["--check", "app.mjs"]).smoke_only()]
+        );
+    }
+
+    #[test]
+    fn manifestless_single_js_file_gets_a_node_check() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.js"), "const x = 1;\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("node", &["--check", "app.js"]).smoke_only()]
+        );
+    }
+
+    #[test]
+    fn manifestless_shapes_never_propose_pytest_for_a_bare_assert_script() {
+        // The exact live crash this guards against: `python3 -m pytest` on a
+        // plain-assert test file with a `sys.exit()` at import time produced a
+        // 40-line INTERNALERROR. The manifestless path must never choose a
+        // framework — only ever a direct interpreter invocation.
+        let dir = tempfile::tempdir().unwrap();
+        let tests_dir = dir.path().join("tests");
+        std::fs::create_dir(&tests_dir).unwrap();
+        std::fs::write(
+            tests_dir.join("test_inventory.py"),
+            "import sys\nassert 1 == 1\nsys.exit(0)\n",
+        )
+        .unwrap();
+        let checks = checks_of(dir.path());
+        assert_eq!(checks.len(), 1);
+        assert!(
+            !checks[0].label.contains("pytest"),
+            "must never propose pytest for a manifestless test file, got: {:?}",
+            checks[0]
+        );
+    }
+
+    #[test]
+    fn ambiguous_manifestless_shape_with_multiple_py_files_is_still_not_detected() {
+        // More than one lone `.py` file with none of them test-named is not a
+        // safe single-file guess — this must fall through to the same
+        // actionable error as before, not pick one arbitrarily.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.py"), "x = 1\n").unwrap();
+        std::fs::write(dir.path().join("b.py"), "y = 2\n").unwrap();
+        assert!(detect_checks(dir.path()).is_err());
+    }
+
+    /// Regression guard for the F3 change: a real manifest still wins outright
+    /// and is never diverted into the new manifestless fallback, even when the
+    /// manifestless heuristics would also technically match something in the
+    /// same directory (e.g. a `.py` file living next to a `Cargo.toml`).
+    #[test]
+    fn existing_manifest_detections_are_unchanged_by_the_manifestless_fallback() {
+        let cargo_dir = tempfile::tempdir().unwrap();
+        std::fs::write(cargo_dir.path().join("Cargo.toml"), "[package]\nname=\"x\"").unwrap();
+        std::fs::write(cargo_dir.path().join("stray.py"), "x = 1\n").unwrap();
+        assert_eq!(
+            checks_of(cargo_dir.path()),
+            vec![Check::direct("cargo", &["test"])]
+        );
+
+        let go_dir = tempfile::tempdir().unwrap();
+        std::fs::write(go_dir.path().join("go.mod"), "module x\n").unwrap();
+        assert_eq!(
+            checks_of(go_dir.path()),
+            vec![
+                Check::direct("go", &["build", "./..."]),
+                Check::direct("go", &["test", "./..."]),
+            ]
+        );
+
+        let node_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            node_dir.path().join("package.json"),
+            r#"{"scripts":{"test":"jest"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            checks_of(node_dir.path()),
+            vec![Check::direct("npm", &["run", "test"])]
+        );
+
+        let make_dir = tempfile::tempdir().unwrap();
+        std::fs::write(make_dir.path().join("Makefile"), "test:\n\techo hi\n").unwrap();
+        assert_eq!(
+            checks_of(make_dir.path()),
+            vec![Check::direct("make", &["test"])]
+        );
     }
 
     #[test]
@@ -1734,8 +4962,10 @@ mod tests {
                     scope: None,
                     risk: None,
                     changed_paths: None,
+                    acceptance_criteria: None,
                 },
                 Some(dir.path()),
+                None,
             )
             .await;
         // NOT a failure — is_error must be unset/false so the loop guard and the
@@ -1780,6 +5010,104 @@ mod tests {
         assert!(text.contains("E0425"), "the real compiler error survives");
     }
 
+    // ── Missing-dependency environment classification (R18h) ──
+
+    #[test]
+    fn missing_import_dependency_catches_python_dash_m_style() {
+        // `python3 -m X` when X isn't importable: no exception, no quotes,
+        // just `<interpreter>: No module named X` — the shape actually seen
+        // reproducing harness-cli-argparse-log-filter's persistent failure.
+        let out = "/opt/homebrew/opt/python@3.14/bin/python3.14: No module named pytest";
+        assert_eq!(missing_import_dependency(out).as_deref(), Some("pytest"));
+    }
+
+    #[test]
+    fn missing_import_dependency_catches_python_traceback_style() {
+        let out = "Traceback (most recent call last):\n  File \"tests/test_x.py\", line 5, in <module>\n    import pytest\nModuleNotFoundError: No module named 'pytest'";
+        assert_eq!(missing_import_dependency(out).as_deref(), Some("pytest"));
+    }
+
+    #[test]
+    fn missing_import_dependency_catches_node_and_ruby() {
+        assert_eq!(
+            missing_import_dependency(
+                "Error: Cannot find module 'lodash'\nRequire stack:\n- /a/b.js"
+            )
+            .as_deref(),
+            Some("lodash")
+        );
+        assert_eq!(
+            missing_import_dependency(
+                "x.rb:1:in `require': cannot load such file -- nokogiri (LoadError)"
+            )
+            .as_deref(),
+            Some("nokogiri")
+        );
+    }
+
+    #[test]
+    fn missing_import_dependency_does_not_flag_an_ordinary_test_failure() {
+        assert_eq!(
+            missing_import_dependency("AssertionError: expected 2, got 3"),
+            None
+        );
+        assert_eq!(
+            missing_import_dependency("error[E0425]: cannot find value `x` in this scope"),
+            None
+        );
+    }
+
+    #[test]
+    fn environment_dependency_result_labels_the_gap_and_hints_a_fix_not_a_code_edit() {
+        let check = Check::direct("pytest", &[]);
+        let output = "/opt/homebrew/opt/python@3.14/bin/python3.14: No module named pytest";
+        let result = environment_dependency_result(&check, Some(1), output, "pytest");
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "still is_error for the loop guard"
+        );
+        let text = text_of(&result);
+        assert!(
+            text.starts_with("ENVIRONMENT"),
+            "labeled distinctly from FAIL: {text}"
+        );
+        assert!(
+            text.contains("pip install pytest"),
+            "gives a concrete remediation: {text}"
+        );
+        assert!(
+            text.contains("more than one interpreter"),
+            "explains the multi-interpreter trap: {text}"
+        );
+        assert!(
+            text.contains("Do not add or change application code"),
+            "tells the model not to chase this as a code bug: {text}"
+        );
+        let observation: VerificationObservation =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(observation.verdict.as_deref(), Some("environment"));
+    }
+
+    #[test]
+    fn a_check_failure_with_a_missing_import_routes_to_environment_not_fail() {
+        // Same failure shape as `fail_result_carries_the_real_errors` above,
+        // but with output indicating a missing dependency instead of a real
+        // code defect — the dispatch loop in `verify_with_cwd` must not
+        // report this as a generic FAIL.
+        let output = "/opt/homebrew/opt/python@3.14/bin/python3.14: No module named pytest";
+        assert!(missing_import_dependency(output).is_some());
+        let check = Check::direct("pytest", &[]);
+        let env_result = environment_dependency_result(&check, Some(1), output, "pytest");
+        let generic_fail = fail_result(&check, Some(1), output);
+        let fail_result_text = text_of(&generic_fail);
+        let env_result_text = text_of(&env_result);
+        assert_ne!(
+            env_result_text, fail_result_text,
+            "the environment-classified message must differ from the generic FAIL message"
+        );
+    }
+
     #[test]
     fn combine_streams_is_deterministic_stdout_then_stderr() {
         assert_eq!(combine_streams(b"out", b"err"), "out\nerr");
@@ -1792,10 +5120,14 @@ mod tests {
 
     #[test]
     fn pass_result_is_a_clean_success() {
-        let result = pass_result(&[
-            Check::direct("go", &["build", "./..."]),
-            Check::direct("go", &["test", "./..."]),
-        ]);
+        let result = pass_result(
+            &[
+                Check::direct("go", &["build", "./..."]),
+                Check::direct("go", &["test", "./..."]),
+            ],
+            &[String::new(), "ok  \tpkg\t0.003s".to_string()],
+            Path::new("."),
+        );
         assert_eq!(result.is_error, Some(false));
         let text = text_of(&result);
         assert!(text.starts_with("PASS"));
@@ -1858,6 +5190,10 @@ mod tests {
             result_hash,
             is_error: true,
             is_mutating: is_mutating(name),
+            is_guard_block: false,
+            // R52a: this fixture models a plain verify failure, not the
+            // AC-validation retry gate.
+            is_ac_validation_error: false,
         };
 
         // Two prior identical failures (same normalized output → same hash),
@@ -1973,8 +5309,10 @@ mod tests {
                     scope: None,
                     risk: None,
                     changed_paths: None,
+                    acceptance_criteria: None,
                 },
                 Some(dir.path()),
+                None,
             )
             .await;
         assert_eq!(result.is_error, Some(true));
@@ -1994,8 +5332,10 @@ mod tests {
                     scope: None,
                     risk: None,
                     changed_paths: None,
+                    acceptance_criteria: None,
                 },
                 Some(dir.path()),
+                None,
             )
             .await;
         assert_eq!(result.is_error, Some(true));
@@ -2019,8 +5359,10 @@ mod tests {
                     scope: None,
                     risk: None,
                     changed_paths: None,
+                    acceptance_criteria: None,
                 },
                 Some(dir.path()),
+                None,
             )
             .await;
         assert_eq!(result.is_error, Some(false));
@@ -2041,8 +5383,10 @@ mod tests {
                     scope: None,
                     risk: None,
                     changed_paths: None,
+                    acceptance_criteria: None,
                 },
                 Some(dir.path()),
+                None,
             )
             .await;
         assert_eq!(result.is_error, Some(true));
@@ -2051,5 +5395,1353 @@ mod tests {
         assert!(text.contains("exit 1"));
         assert!(text.contains("EARLY_MARKER"), "stdout captured");
         assert!(text.contains("LATE_MARKER"), "stderr captured");
+    }
+
+    // ── R21c: acceptance-criteria probe checks ──────────────────────────────
+
+    /// `VerifyParams` with only `acceptance_criteria` set — every other field
+    /// at its auto-detect default, mirroring the plain literals above.
+    fn params_with_criteria(criteria: &[&str]) -> VerifyParams {
+        VerifyParams {
+            command: None,
+            path: None,
+            timeout_secs: Some(30),
+            scope: None,
+            risk: None,
+            changed_paths: None,
+            acceptance_criteria: Some(criteria.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    /// An empty directory with no language marker at all
+    /// (`detect_probe_language` reports `Other`) — fine for every probe
+    /// shape that doesn't consult the language gate.
+    fn no_language_dir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    /// A directory `detect_probe_language` reports as `Python`: a bare
+    /// top-level `.py` file, the exact manifestless shape A32 root cause 2
+    /// motivated `call_returns_probe` for.
+    fn python_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("fizzbuzz.py"),
+            "def fizzbuzz(n):\n    return n\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn file_exists_criterion_compiles_to_a_probe() {
+        let dir = no_language_dir();
+        let check = probe_for_criterion(dir.path(), "fizzbuzz.py exists").unwrap();
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::FileExists("fizzbuzz.py".to_string()))
+        );
+        assert!(!check.is_smoke);
+    }
+
+    #[test]
+    fn file_exists_criterion_strips_the_unverified_marker() {
+        let dir = no_language_dir();
+        let marked = format!("{UNVERIFIED_MARKER_PREFIX}fizzbuzz.py exists");
+        let check = probe_for_criterion(dir.path(), &marked).unwrap();
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::FileExists("fizzbuzz.py".to_string()))
+        );
+    }
+
+    #[test]
+    fn function_definition_criterion_compiles_to_a_probe() {
+        let dir = no_language_dir();
+        let check = probe_for_criterion(dir.path(), "defines a function named fizzbuzz").unwrap();
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::SymbolDefined {
+                symbol: "fizzbuzz".to_string(),
+                kind: SymbolKind::Function,
+                file: None,
+            })
+        );
+    }
+
+    #[test]
+    fn class_definition_criterion_compiles_to_a_probe() {
+        let dir = no_language_dir();
+        let check = probe_for_criterion(dir.path(), "class FizzBuzzer is defined").unwrap();
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::SymbolDefined {
+                symbol: "FizzBuzzer".to_string(),
+                kind: SymbolKind::Class,
+                file: None,
+            })
+        );
+    }
+
+    #[test]
+    fn command_exit_criterion_compiles_to_a_probe() {
+        let dir = no_language_dir();
+        let check = probe_for_criterion(dir.path(), "`pytest -k smoke` exits 0").unwrap();
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::CommandExitsZero("pytest -k smoke".to_string()))
+        );
+    }
+
+    #[test]
+    fn expected_nonzero_exit_criterion_compiles_to_a_real_status_probe() {
+        let dir = no_language_dir();
+        let check = probe_for_criterion(
+            dir.path(),
+            "`python3 -m logfilter sample.log --level bogus` exits with code 2",
+        )
+        .unwrap();
+        let Exec::Probe(ProbeKind::CommandExitsZero(command)) = &check.exec else {
+            panic!("expected a CommandExitsZero wrapper, got {:?}", check.exec);
+        };
+        assert!(command.contains("python3 -m logfilter sample.log --level bogus"));
+        assert!(command.contains("_permagent_status=$?"));
+        assert!(command.contains("-eq 2"));
+        assert_eq!(
+            check.label,
+            "acceptance criterion: `python3 -m logfilter sample.log --level bogus` exits 2"
+        );
+    }
+
+    #[test]
+    fn exact_output_line_count_criterion_checks_status_and_line_count() {
+        let dir = no_language_dir();
+        let check = probe_for_criterion(
+            dir.path(),
+            "`python3 -m logfilter sample_logs/app.log --level INFO` exits 0 and prints exactly the 2 INFO lines",
+        )
+        .unwrap();
+        let Exec::Probe(ProbeKind::CommandExitsZero(command)) = &check.exec else {
+            panic!("expected a CommandExitsZero wrapper, got {:?}", check.exec);
+        };
+        assert!(command.contains("python3 -m logfilter sample_logs/app.log --level INFO"));
+        assert!(command.contains("_permagent_status=$?"));
+        assert!(command.contains("_permagent_lines"));
+        assert!(command.contains("-eq 2"));
+        assert_eq!(
+            check.label,
+            "acceptance criterion: `python3 -m logfilter sample_logs/app.log --level INFO` prints exactly 2 lines"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn expected_exit_and_line_count_probes_execute_the_observable_contract() {
+        let dir = no_language_dir();
+        let nonzero = probe_for_criterion(dir.path(), "`sh -c 'exit 2'` exits 2").unwrap();
+        let Exec::Probe(nonzero) = nonzero.exec else {
+            panic!("expected a probe");
+        };
+        assert!(matches!(
+            run_probe_check(&nonzero, dir.path(), 5, None).await,
+            CheckOutcome::Passed { .. }
+        ));
+
+        let lines = probe_for_criterion(
+            dir.path(),
+            "`printf 'alpha\\nbeta\\n'` exits 0 and prints exactly 2 lines",
+        )
+        .unwrap();
+        let Exec::Probe(lines) = lines.exec else {
+            panic!("expected a probe");
+        };
+        assert!(matches!(
+            run_probe_check(&lines, dir.path(), 5, None).await,
+            CheckOutcome::Passed { .. }
+        ));
+    }
+
+    // ── R35b: call/return and run/stdout-contains probe shapes ──────────────
+    // ── R54a: language-gated — see the `call_returns_probe`/
+    //    `node_call_returns_probe` tests below for the JS/TS/Python split ──
+
+    /// A32 root cause 2's exact motivating text: no backticks, plain
+    /// "returns", a quoted string value — this is the specific freeform
+    /// criterion that used to fall through to a vacuous smoke-only PASS.
+    /// R54a: only synthesizes for a repo `detect_probe_language` reports as
+    /// Python — probe as before, now on an explicitly Python-shaped dir.
+    #[test]
+    fn call_returns_criterion_bare_compiles_to_a_probe() {
+        let dir = python_dir();
+        let check = probe_for_criterion(dir.path(), "fizzbuzz(3) returns 'Fizz'").unwrap();
+        assert!(!check.is_smoke);
+        let Exec::Probe(ProbeKind::CommandExitsZero(command)) = &check.exec else {
+            panic!("expected a CommandExitsZero probe, got {:?}", check.exec);
+        };
+        assert!(command.starts_with("python3 -c "), "got: {command}");
+        assert!(command.contains("fizzbuzz(3)"), "got: {command}");
+        assert!(command.contains("Fizz"), "got: {command}");
+        assert_eq!(
+            check.label,
+            "acceptance criterion: `fizzbuzz(3)` returns `'Fizz'`"
+        );
+    }
+
+    /// The backtick-delimited "==" phrasing, and an unquoted bare-word value
+    /// (the common unquoted-string shape, e.g. "returns FizzBuzz") which
+    /// `python_literal_for_value` must wrap into a valid Python string
+    /// literal rather than treat as a bare (undefined) identifier.
+    #[test]
+    fn call_returns_criterion_with_backticks_and_bare_value_compiles_to_a_probe() {
+        let dir = python_dir();
+        let check = probe_for_criterion(dir.path(), "`fizzbuzz(15)` == `FizzBuzz`").unwrap();
+        let Exec::Probe(ProbeKind::CommandExitsZero(command)) = &check.exec else {
+            panic!("expected a CommandExitsZero probe, got {:?}", check.exec);
+        };
+        assert!(command.contains("fizzbuzz(15)"), "got: {command}");
+        assert!(command.contains(r#""FizzBuzz""#), "got: {command}");
+    }
+
+    /// R54a (A51 analysis, "call_returns_probe"): the exact defect — a
+    /// TypeScript-only repo with the same call/return criterion text must
+    /// NEVER get a Python probe compiled against it (a guaranteed
+    /// `NameError`, for any model, forever). The named function is placed at
+    /// the repo's top level (in `find_symbol_definition`'s scan scope) and
+    /// genuinely defined there, so this pins the REAL reason no probe is
+    /// synthesized: the `.ts` source can't be `require()`d by a bare `node
+    /// -e` without a compiler (see `node_call_returns_probe`'s own doc
+    /// comment) — not merely that the file wasn't found. The criterion falls
+    /// through exactly as it did before any probe grammar existed: marker
+    /// intact, left for NO_CHECKS/R43b-c to handle.
+    #[test]
+    fn typescript_repo_call_returns_criterion_synthesizes_no_python_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tsconfig.json"), "{}").unwrap();
+        std::fs::write(
+            dir.path().join("pricing.ts"),
+            "export function computeGoldDiscount(cents: number): number {\n  \
+             return Math.min(Math.round(cents * 0.2), 5000);\n}\n",
+        )
+        .unwrap();
+        assert_eq!(detect_probe_language(dir.path()), ProbeLanguage::JavaScript);
+        assert!(
+            find_symbol_definition(dir.path(), "computeGoldDiscount", SymbolKind::Function)
+                .is_some(),
+            "the function must be genuinely locatable, so the TS extension is what blocks it"
+        );
+        let marked =
+            format!("{UNVERIFIED_MARKER_PREFIX}computeGoldDiscount(100_000) returns 20_000");
+        assert!(
+            probe_for_criterion(dir.path(), &marked).is_none(),
+            "a TS-only repo must never get a wrong-language probe compiled for it"
+        );
+    }
+
+    /// R54a: the JS counterpart — a repo `detect_probe_language` reports as
+    /// JavaScript, with the named function actually defined (and locatable
+    /// via `find_symbol_definition`) in a plain, requireable `.js` file,
+    /// synthesizes a real `node -e` probe instead of leaving the criterion
+    /// unverified.
+    #[test]
+    fn javascript_repo_call_returns_criterion_compiles_to_a_node_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"fx"}"#).unwrap();
+        std::fs::write(
+            dir.path().join("math.js"),
+            "function computeDouble(n) {\n  return n * 2;\n}\n\
+             module.exports = { computeDouble };\n",
+        )
+        .unwrap();
+        assert_eq!(detect_probe_language(dir.path()), ProbeLanguage::JavaScript);
+        let check = probe_for_criterion(dir.path(), "computeDouble(21) returns 42").unwrap();
+        assert!(!check.is_smoke);
+        let Exec::Probe(ProbeKind::CommandExitsZero(command)) = &check.exec else {
+            panic!("expected a CommandExitsZero probe, got {:?}", check.exec);
+        };
+        assert!(command.starts_with("node -e "), "got: {command}");
+        assert!(command.contains("computeDouble(21)"), "got: {command}");
+        assert!(command.contains("require("), "got: {command}");
+        assert!(command.contains("math.js"), "got: {command}");
+        assert!(command.contains("42"), "got: {command}");
+        assert_eq!(
+            check.label,
+            "acceptance criterion: `computeDouble(21)` returns `42`"
+        );
+    }
+
+    /// The closed-set contract, narrowed to this shape: text that merely
+    /// LOOKS call-shaped but names no return/equality phrasing must never be
+    /// approximated into a probe.
+    #[test]
+    fn call_returns_criterion_without_a_return_phrase_synthesizes_no_probe() {
+        let dir = python_dir();
+        assert!(probe_for_criterion(dir.path(), "fizzbuzz(3) is nice").is_none());
+        assert!(probe_for_criterion(dir.path(), "the fizzbuzz function is well tested").is_none());
+    }
+
+    /// "running `<cmd>` prints/outputs `<text>`" compiles to a real
+    /// `CommandExitsZero` probe that pipes the command's own output through
+    /// `grep -qF` for the expected text.
+    #[test]
+    fn run_stdout_criterion_compiles_to_a_probe() {
+        let dir = no_language_dir();
+        let check = probe_for_criterion(
+            dir.path(),
+            "running `python3 main.py` prints `Hello, world!`",
+        )
+        .unwrap();
+        assert!(!check.is_smoke);
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::CommandExitsZero(
+                "python3 main.py | grep -qF -- 'Hello, world!'".to_string()
+            ))
+        );
+        assert_eq!(
+            check.label,
+            "acceptance criterion: `python3 main.py` prints `Hello, world!`"
+        );
+
+        let check =
+            probe_for_criterion(dir.path(), "running `node app.js` outputs `ready`").unwrap();
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::CommandExitsZero(
+                "node app.js | grep -qF -- 'ready'".to_string()
+            ))
+        );
+    }
+
+    /// The closed-set contract, narrowed to this shape: prose that describes
+    /// running something without the backtick-delimited `<cmd>`/`<text>`
+    /// shape is left honestly unverified, never guessed at.
+    #[test]
+    fn run_stdout_criterion_without_backticks_synthesizes_no_probe() {
+        let dir = no_language_dir();
+        assert!(probe_for_criterion(dir.path(), "running main.py prints Hello").is_none());
+        assert!(probe_for_criterion(dir.path(), "the program prints a greeting").is_none());
+    }
+
+    /// The closed-set contract, root-cause level: freeform criteria the
+    /// probe grammar cannot parse must never be silently approximated —
+    /// verified at the `verify_with_cwd` level (never a smoke-only PASS) by
+    /// `unparseable_acceptance_criteria_reports_no_checks_not_a_smoke_pass`.
+    #[test]
+    fn an_unmechanical_criterion_synthesizes_no_probe_even_when_call_shaped() {
+        let dir = python_dir();
+        assert!(synthesize_probe_checks(
+            dir.path(),
+            &[
+                "the output feels right".to_string(),
+                "fizzbuzz(3) is basically Fizz".to_string(),
+            ]
+        )
+        .is_empty());
+    }
+
+    /// The closed-set contract: a criterion that names no file, no command,
+    /// and no symbol is left completely alone — never approximated into a
+    /// check that would silently fabricate a verdict.
+    #[test]
+    fn an_unmechanical_criterion_synthesizes_no_probe() {
+        let dir = no_language_dir();
+        assert!(probe_for_criterion(dir.path(), "the design feels polished").is_none());
+        assert!(probe_for_criterion(dir.path(), "the API is intuitive to use").is_none());
+        assert_eq!(
+            synthesize_probe_checks(
+                dir.path(),
+                &[
+                    "the design feels polished".to_string(),
+                    "fizzbuzz.py exists".to_string(),
+                ]
+            )
+            .len(),
+            1,
+            "only the mechanically-checkable criterion becomes a probe"
+        );
+    }
+
+    #[test]
+    fn find_symbol_definition_locates_a_present_python_function() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("fizzbuzz.py"),
+            "def fizzbuzz(n):\n    return n\n",
+        )
+        .unwrap();
+        let found = find_symbol_definition(dir.path(), "fizzbuzz", SymbolKind::Function);
+        assert_eq!(found.as_deref(), Some("fizzbuzz.py:1"));
+    }
+
+    #[test]
+    fn find_symbol_definition_reports_none_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("fizzbuzz.py"),
+            "def other(n):\n    return n\n",
+        )
+        .unwrap();
+        assert_eq!(
+            find_symbol_definition(dir.path(), "fizzbuzz", SymbolKind::Function),
+            None
+        );
+    }
+
+    /// The M23 dschat defect this lane fixes, reproduced end to end: a
+    /// manifestless single `.py` file (`manifestless_single_py_file_gets_an_
+    /// honestly_named_syntax_smoke` above) with acceptance criteria that
+    /// actually hold gets a GENUINE, non-vacuous pass — not the smoke-only
+    /// vacuous pass the tool used to report.
+    #[tokio::test]
+    async fn fizzbuzz_shaped_goal_with_matching_acceptance_criteria_is_genuinely_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("fizzbuzz.py"),
+            "def fizzbuzz(n):\n    return str(n)\n",
+        )
+        .unwrap();
+        let result = VerifyTool::new()
+            .verify_with_cwd(
+                params_with_criteria(&["fizzbuzz.py exists", "defines a function named fizzbuzz"]),
+                Some(dir.path()),
+                None,
+            )
+            .await;
+        assert_eq!(result.is_error, Some(false));
+        assert!(
+            is_genuine_pass(&result),
+            "a real file-exists probe plus a real symbol-defined probe must not be vacuous"
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+    }
+
+    /// The mirror case: the criterion is mechanically checkable but FALSE —
+    /// verify must report a genuine, actionable FAIL, never a fabricated pass.
+    #[tokio::test]
+    async fn fizzbuzz_shaped_goal_with_an_unmet_acceptance_criterion_fails_honestly() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("fizzbuzz.py"),
+            "def other(n):\n    return n\n",
+        )
+        .unwrap();
+        let result = VerifyTool::new()
+            .verify_with_cwd(
+                params_with_criteria(&["defines a function named fizzbuzz"]),
+                Some(dir.path()),
+                None,
+            )
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        let text = text_of(&result);
+        assert!(text.starts_with("FAIL"), "got: {text}");
+        assert!(text.contains("fizzbuzz"), "got: {text}");
+    }
+
+    /// R35b: no acceptance criteria at all, and the code is syntactically
+    /// valid — this used to be `pass_result`'s smoke-only vacuous PASS
+    /// (`vacuous_passes` incremented for genuinely correct, uninspected
+    /// code). A smoke-only run is never scored as a PASS any more: this now
+    /// reports the honest `NO_CHECKS_VERDICT`, exactly like a project with no
+    /// detectable checks at all — neither a pass nor a fail, and
+    /// `vacuous_passes` is not touched (see
+    /// `zero_checks_never_increments_the_vacuous_passes_receipt`).
+    #[tokio::test]
+    async fn fizzbuzz_shaped_goal_with_no_acceptance_criteria_reports_no_checks_not_a_smoke_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fizzbuzz.py"), "def fizzbuzz(n): pass\n").unwrap();
+        let result = VerifyTool::new()
+            .verify_with_cwd(
+                VerifyParams {
+                    command: None,
+                    path: None,
+                    timeout_secs: Some(30),
+                    scope: None,
+                    risk: None,
+                    changed_paths: None,
+                    acceptance_criteria: None,
+                },
+                Some(dir.path()),
+                None,
+            )
+            .await;
+        assert!(
+            !is_authoritative_pass(&result),
+            "smoke-only is never a PASS"
+        );
+        assert!(!is_genuine_pass(&result));
+        assert_eq!(vacuous_pass_reason(&result), None);
+        let text = text_of(&result).to_string();
+        let observation: VerificationObservation =
+            serde_json::from_value(result.structured_content.unwrap()).unwrap();
+        assert_eq!(observation.verdict.as_deref(), Some(NO_CHECKS_VERDICT));
+        assert!(
+            text.contains("no executable checks derived from the supplied criteria (0 unparsed)"),
+            "got: {text}"
+        );
+    }
+
+    /// R35b (A32 root cause 2): the ORIGINAL M23 dschat defect — freeform
+    /// criteria the probe grammar cannot parse. This used to fall through to
+    /// the smoke-only vacuous PASS (`vacuous_passes` incremented even though
+    /// nothing was genuinely checked); it must now report `NO_CHECKS_VERDICT`
+    /// naming how many criteria were unparsed, and never increment
+    /// `vacuous_passes` — driven through the real global receipts registry
+    /// (same pattern as
+    /// `zero_checks_never_increments_the_vacuous_passes_receipt`) so a future
+    /// refactor that routes this path back through `pass_result` would be
+    /// caught here.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn unparseable_acceptance_criteria_reports_no_checks_not_a_smoke_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fizzbuzz.py"), "def fizzbuzz(n): pass\n").unwrap();
+        crate::receipts::begin_run();
+        let before = crate::receipts::snapshot().lines();
+        let result = VerifyTool::new()
+            .verify_with_cwd(
+                params_with_criteria(&["the output feels right", "fizzbuzz(3) is basically Fizz"]),
+                Some(dir.path()),
+                None,
+            )
+            .await;
+        let after = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+        assert!(
+            !is_authoritative_pass(&result),
+            "smoke-only is never a PASS"
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+        let text = text_of(&result);
+        assert!(
+            text.contains("no executable checks derived from the supplied criteria (2 unparsed)"),
+            "got: {text}"
+        );
+        assert_eq!(
+            before[1], after[1],
+            "an unparseable-criteria NO CHECKS result must not move the verification_integrity \
+             line"
+        );
+        assert!(after[1].contains("vacuous_passes=0"), "got: {}", after[1]);
+    }
+
+    /// A criterion mechanically checkable but with no repo checks at all
+    /// (`NoChecksConfigured`, not just an all-smoke `Checks`): the probe still
+    /// runs as a real check rather than falling back to an honest-but-useless
+    /// NO CHECKS.
+    #[tokio::test]
+    async fn no_checks_configured_still_prefers_a_matching_acceptance_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        std::fs::write(dir.path().join("README.md"), "notes\n").unwrap();
+        let mut params = params_with_criteria(&["README.md exists"]);
+        params.scope = Some(VerificationScope::Auto);
+        params.changed_paths = Some(vec!["README.md".to_string()]);
+        let result = VerifyTool::new()
+            .verify_with_cwd(params, Some(dir.path()), None)
+            .await;
+        assert_eq!(result.is_error, Some(false));
+        assert!(
+            is_genuine_pass(&result),
+            "a matching file-exists probe must stand in for NO CHECKS"
+        );
+    }
+
+    // ── R44a/#A39: a probe must never join an absolute or `..`-escaping path
+    // straight into the host filesystem ─────────────────────────────────────
+
+    #[test]
+    fn safe_probe_path_accepts_a_normal_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = safe_probe_path(dir.path(), "src/lib.rs").unwrap();
+        assert_eq!(resolved, dir.path().join("src/lib.rs"));
+    }
+
+    #[test]
+    fn safe_probe_path_rejects_an_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(safe_probe_path(dir.path(), "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn safe_probe_path_rejects_a_parent_dir_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(safe_probe_path(dir.path(), "../outside.txt").is_err());
+        assert!(safe_probe_path(dir.path(), "sub/../../outside.txt").is_err());
+    }
+
+    #[tokio::test]
+    async fn file_exists_probe_with_absolute_path_is_unusable_not_a_host_lookup() {
+        // Even a path that genuinely exists on the host must never be looked
+        // up directly — an absolute probe path is always a harness bug (the
+        // acceptance-criteria compiler should have relativised or dropped
+        // it), never a real check to run against the goal worktree.
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = run_probe_check(
+            &ProbeKind::FileExists("/etc/hosts".to_string()),
+            dir.path(),
+            5,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(outcome, CheckOutcome::SpawnError(_)),
+            "an absolute probe path must be reported unusable, not PASS or FAIL"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_exists_probe_with_parent_dir_escape_is_unusable() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = run_probe_check(
+            &ProbeKind::FileExists("../outside.txt".to_string()),
+            dir.path(),
+            5,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(outcome, CheckOutcome::SpawnError(_)),
+            "a `..`-escaping probe path must be reported unusable, not PASS or FAIL"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_exists_probe_with_a_normal_relative_path_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fizzbuzz.py"), "print(1)\n").unwrap();
+        let found = run_probe_check(
+            &ProbeKind::FileExists("fizzbuzz.py".to_string()),
+            dir.path(),
+            5,
+            None,
+        )
+        .await;
+        assert!(matches!(found, CheckOutcome::Passed { .. }));
+
+        let missing = run_probe_check(
+            &ProbeKind::FileExists("missing.py".to_string()),
+            dir.path(),
+            5,
+            None,
+        )
+        .await;
+        assert!(matches!(missing, CheckOutcome::Failed { .. }));
+    }
+
+    // ── R21c-b: structured `probe:*` marker parsing ─────────────────────────
+
+    #[test]
+    fn structured_probe_parses_a_file_exists_marker() {
+        let dir = no_language_dir();
+        let check = probe_for_criterion(dir.path(), "probe:file_exists path=fizzbuzz.py").unwrap();
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::FileExists("fizzbuzz.py".to_string()))
+        );
+    }
+
+    #[test]
+    fn structured_probe_parses_a_symbol_defined_marker_with_its_named_file() {
+        let dir = no_language_dir();
+        let check = probe_for_criterion(
+            dir.path(),
+            "probe:symbol_defined path=fizzbuzz.py symbol=fizzbuzz kind=function",
+        )
+        .unwrap();
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::SymbolDefined {
+                symbol: "fizzbuzz".to_string(),
+                kind: SymbolKind::Function,
+                file: Some("fizzbuzz.py".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn structured_probe_parses_a_command_marker() {
+        let dir = no_language_dir();
+        let check =
+            probe_for_criterion(dir.path(), "probe:command cmd=\"pytest -k smoke\"").unwrap();
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::CommandExitsZero("pytest -k smoke".to_string()))
+        );
+    }
+
+    /// R21b's `render()` appends `" — <original criterion>"` after the
+    /// marker; that trailing text must never confuse the parser (e.g. a
+    /// stray `path=` inside the human-readable original text must not win
+    /// over the real one before the dash).
+    #[test]
+    fn structured_probe_ignores_text_after_the_original_criterion_separator() {
+        let dir = no_language_dir();
+        let check = probe_for_criterion(
+            dir.path(),
+            "probe:file_exists path=fizzbuzz.py — fizzbuzz.py exists in the repo",
+        )
+        .unwrap();
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::FileExists("fizzbuzz.py".to_string()))
+        );
+    }
+
+    #[test]
+    fn structured_probe_takes_priority_over_the_free_text_heuristics() {
+        // Would ALSO match `symbol_defined_probe`'s free-text heuristic if
+        // the structured marker were not tried first — pin that the
+        // structured, unambiguous form wins.
+        let dir = no_language_dir();
+        let check = probe_for_criterion(
+            dir.path(),
+            "probe:file_exists path=fizzbuzz.py — defines a function named x",
+        )
+        .unwrap();
+        assert_eq!(
+            check.exec,
+            Exec::Probe(ProbeKind::FileExists("fizzbuzz.py".to_string()))
+        );
+    }
+
+    // ── R21c-b: verify loads the bound goal card's own criteria ─────────────
+
+    /// The coordinator's ask: a cheap model dispatched as a goal worker will
+    /// not reliably pass `acceptance_criteria` itself, so when it omits the
+    /// param entirely, `verify` must find its OWN bound goal card (via the
+    /// same in-process `GOAL_WORKERS` registry `interrupt_agent`/`goal_status`
+    /// already use) and probe that card's real acceptance criteria.
+    ///
+    /// Drives the real global `SessionManager::instance()` singleton (the
+    /// same pool `load_bound_goal_acceptance_criteria` reads in production),
+    /// matching the pattern `orchestrator.rs`'s own
+    /// `goal_status_reports_a_registered_goal_worker_as_alive_and_leaves_it_alone`
+    /// test uses for the identical registry. `#[serial(goal_workers)]` for
+    /// the same reason that test carries it: `GOAL_WORKERS` is process-global.
+    #[tokio::test]
+    #[serial_test::serial(goal_workers)]
+    async fn goal_worker_session_with_no_param_loads_the_bound_cards_criteria() {
+        use crate::agents::platform_extensions::goal_engine;
+        use crate::agents::platform_extensions::orchestrator;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("fizzbuzz.py"),
+            "def fizzbuzz(n):\n    return str(n)\n",
+        )
+        .unwrap();
+
+        let pool = crate::session::SessionManager::instance()
+            .pool_clone()
+            .await
+            .unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: format!("r21c-b-test-{}", uuid::Uuid::new_v4()),
+                slug: None,
+                description: None,
+                root_path: None,
+                site_url: None,
+                repo_url: None,
+                notes: None,
+                tags: None,
+            },
+        )
+        .await
+        .unwrap();
+        let card = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "fizzbuzz".to_string(),
+                description: Some(String::new()),
+                card_type: Some("goal".to_string()),
+                column_id: None,
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "acceptance_criteria": [
+                        "fizzbuzz.py exists",
+                        "defines a function named fizzbuzz",
+                    ],
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let session_id = format!("r21c-b-goal-session-{}", uuid::Uuid::new_v4());
+        orchestrator::register_goal_worker(
+            &card.id,
+            &session_id,
+            goal_engine::GoalKill::None,
+            None,
+        );
+
+        let result = VerifyTool::new()
+            .verify_with_cwd(
+                VerifyParams {
+                    command: None,
+                    path: None,
+                    timeout_secs: Some(30),
+                    scope: None,
+                    risk: None,
+                    changed_paths: None,
+                    acceptance_criteria: None,
+                },
+                Some(dir.path()),
+                Some(session_id.as_str()),
+            )
+            .await;
+
+        // Drop the registry entry before any assertion can panic and skip it.
+        orchestrator::take_goal_worker(&card.id);
+
+        assert_eq!(result.is_error, Some(false));
+        assert!(
+            is_genuine_pass(&result),
+            "the bound goal card's own acceptance criteria should have been loaded and \
+             probed, producing a genuine pass instead of the smoke-only vacuous one"
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+    }
+
+    /// The mirror case: a session id that is NOT a registered goal worker
+    /// (an interactive session, or simply a session this process never
+    /// dispatched) must behave exactly as before this lane for CRITERIA
+    /// LOADING — no criteria loaded. As of R35b the resulting smoke-only run
+    /// is no longer scored as a vacuous PASS (see
+    /// `fizzbuzz_shaped_goal_with_no_acceptance_criteria_reports_no_checks_not_a_smoke_pass`);
+    /// it now honestly reports `NO_CHECKS_VERDICT`.
+    #[tokio::test]
+    #[serial_test::serial(goal_workers)]
+    async fn non_goal_worker_session_with_no_param_is_unchanged() {
+        use crate::agents::platform_extensions::orchestrator;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fizzbuzz.py"), "def fizzbuzz(n): pass\n").unwrap();
+
+        let session_id = format!("r21c-b-non-goal-session-{}", uuid::Uuid::new_v4());
+        // Not registered in GOAL_WORKERS at all — confirm that up front so a
+        // stale entry from another test can never make this a false pass.
+        assert_eq!(
+            orchestrator::live_goal_worker_card_for_session(&session_id),
+            None
+        );
+
+        let result = VerifyTool::new()
+            .verify_with_cwd(
+                VerifyParams {
+                    command: None,
+                    path: None,
+                    timeout_secs: Some(30),
+                    scope: None,
+                    risk: None,
+                    changed_paths: None,
+                    acceptance_criteria: None,
+                },
+                Some(dir.path()),
+                Some(session_id.as_str()),
+            )
+            .await;
+
+        assert!(
+            !is_authoritative_pass(&result),
+            "smoke-only is never a PASS"
+        );
+        assert!(!is_genuine_pass(&result));
+        assert_eq!(
+            vacuous_pass_reason(&result),
+            None,
+            "a non-goal-worker session must never have criteria synthesized for it"
+        );
+        let text = text_of(&result);
+        assert!(
+            text.contains("no executable checks derived from the supplied criteria (0 unparsed)"),
+            "got: {text}"
+        );
+    }
+
+    /// R21c's headline receipt fix: zero checks — and no acceptance-criteria
+    /// probe available to stand in for one — must never increment
+    /// `vacuous_passes`. Lane R62b-3: no result builder in this module records
+    /// it any more (see `record_vacuous_pass_judgement`); this test still
+    /// exercises the real global registry end to end (the same pattern
+    /// `receipts.rs`'s own sidecar tests use) so a regression is caught here.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn zero_checks_never_increments_the_vacuous_passes_receipt() {
+        crate::receipts::begin_run();
+        let before = crate::receipts::snapshot().lines();
+        let _ = no_checks_result("nothing to run yet.");
+        let after = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+        assert_eq!(
+            before[1], after[1],
+            "an honest NO CHECKS result must not move the verification_integrity line"
+        );
+        assert!(after[1].contains("vacuous_passes=0"), "got: {}", after[1]);
+    }
+
+    /// Lane R62b (A61 bug B): a check `verify` spawns gets exactly the child
+    /// environment the `shell` tool gives the worker's commands — the same
+    /// login-shell PATH and the same goal-worktree git config — whether it is
+    /// an auto-detected direct check or an explicit shell command.
+    #[test]
+    fn check_command_gets_the_same_child_env_as_the_shell_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let login = "/r62b/login-shell/bin:/usr/bin:/bin";
+        let env_of = |command: &tokio::process::Command| {
+            command
+                .as_std()
+                .get_envs()
+                .map(|(key, value)| (key.to_owned(), value.map(|v| v.to_owned())))
+                .collect::<Vec<_>>()
+        };
+        let shell = super::super::shell::build_shell_command(
+            "python3 -m pytest -q",
+            Some(dir.path()),
+            Some(login),
+        );
+        for check in [
+            Check::direct("python3", &["test_calc.py"]),
+            Check::shell("python3 -m pytest -q"),
+        ] {
+            let command = check_command(&check, dir.path(), Some(login)).expect("a spawned check");
+            assert_eq!(env_of(&command), env_of(&shell), "{}", check.label);
+            assert!(
+                env_of(&command).contains(&("PATH".into(), Some(login.into()))),
+                "{}",
+                check.label
+            );
+        }
+        assert!(check_command(&Check::markdown(Vec::new()), dir.path(), Some(login)).is_none());
+    }
+
+    /// Lane R62b: end to end through `VerifyTool` — the check really runs
+    /// with the tool's login-shell PATH, not the process PATH.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn verify_runs_checks_on_the_login_shell_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let login = "/r62b-login-shell/bin:/usr/bin:/bin";
+        let result = VerifyTool::with_login_path(Some(login))
+            .verify_with_cwd(
+                VerifyParams {
+                    command: Some("echo \"PATH=$PATH\"; exit 3".to_string()),
+                    path: None,
+                    timeout_secs: Some(30),
+                    scope: None,
+                    risk: None,
+                    changed_paths: None,
+                    acceptance_criteria: None,
+                },
+                Some(dir.path()),
+                None,
+            )
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        let text = text_of(&result);
+        assert!(text.contains(&format!("PATH={login}")), "got: {text}");
+    }
+
+    /// Lane R62b-2 (A61 miss 2): the named-check fixture's `test_calc.py`,
+    /// verbatim — pytest-style, defines `test_add`, never calls it.
+    const PYTEST_STYLE_TEST_CALC: &str =
+        "from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n";
+
+    /// Lane R62b-2: running a pytest-style file as a plain script exits 0
+    /// without running a test. That pass is vacuous, whether the script run
+    /// was auto-detected (direct) or given as an explicit two-word command.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn a_python_test_file_run_as_a_script_without_a_runner_is_vacuous() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test_calc.py"), PYTEST_STYLE_TEST_CALC).unwrap();
+        for check in [
+            Check::direct("python3", &["test_calc.py"]),
+            Check::shell("python3 test_calc.py"),
+            Check::shell("/usr/bin/python3 test_calc.py"),
+        ] {
+            let result = pass_result(
+                std::slice::from_ref(&check),
+                &["(no output)".to_string()],
+                dir.path(),
+            );
+            assert!(is_authoritative_pass(&result), "{}", check.label);
+            assert!(!is_genuine_pass(&result), "{}", check.label);
+            let reason = vacuous_pass_reason(&result).expect("vacuous");
+            assert!(reason.contains("only defines tests"), "got: {reason}");
+            assert!(
+                reason.contains("python3 -m pytest test_calc.py"),
+                "got: {reason}"
+            );
+            // Lane R64a: the worker sees this in `verify`'s own VISIBLE tool
+            // text (not just `structured_content`), named against the real
+            // `command` parameter and the real file name.
+            let text = text_of(&result);
+            assert!(
+                text.contains("`command`") && text.contains("python3 -m pytest test_calc.py"),
+                "got: {text}"
+            );
+        }
+
+        // A unittest.TestCase with no runner is the same shape.
+        std::fs::write(
+            dir.path().join("test_case.py"),
+            "import unittest\n\nclass TestAdd(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(1, 1)\n",
+        )
+        .unwrap();
+        let result = pass_result(
+            &[Check::direct("python3", &["test_case.py"])],
+            &["(no output)".to_string()],
+            dir.path(),
+        );
+        assert!(vacuous_pass_reason(&result).is_some());
+    }
+
+    /// Lane R62b-2: kept narrow. A file that calls its own tests, a plain
+    /// script with no test definitions, output that shows a test count, and
+    /// a real test runner command are all still genuine passes.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn python_script_checks_that_really_run_tests_stay_genuine() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = [
+            // The failing-test fixture's own shape: a `__main__` guard.
+            (
+                "test_guard.py",
+                "def test_checkout():\n    assert True\n\n\nif __name__ == \"__main__\":\n    test_checkout()\n    print(\"ok\")\n",
+            ),
+            (
+                "test_unittest_main.py",
+                "import unittest\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        pass\n\nunittest.main()\n",
+            ),
+            (
+                "test_top_level_call.py",
+                "def test_add():\n    assert 1 + 1 == 2\n\ntest_add()\n",
+            ),
+            ("test_plain_asserts.py", "assert 1 + 1 == 2\n"),
+        ];
+        for (name, source) in files {
+            std::fs::write(dir.path().join(name), source).unwrap();
+            let result = pass_result(
+                &[Check::direct("python3", &[name])],
+                &["ok".to_string()],
+                dir.path(),
+            );
+            assert_eq!(vacuous_pass_reason(&result), None, "{name}");
+        }
+
+        std::fs::write(dir.path().join("test_calc.py"), PYTEST_STYLE_TEST_CALC).unwrap();
+        // The script's own output proves tests ran.
+        let result = pass_result(
+            &[Check::direct("python3", &["test_calc.py"])],
+            &["...\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK".to_string()],
+            dir.path(),
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+        // A real runner is not a plain script run.
+        let result = pass_result(
+            &[Check::shell("python3 -m pytest test_calc.py")],
+            &["===== 1 passed in 0.01s =====".to_string()],
+            dir.path(),
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+    }
+
+    /// Lane R64a (fixes the Lane R62b-2 defect, dschat r63 s6
+    /// `select-named-check-uses-verify-tool`): auto-detection used to pick
+    /// `python3 test_calc.py` for this exact fixture shape — a manifestless
+    /// pytest-style test file with no runner — which then only ever produced
+    /// the vacuous pass R62b-2 had to flag after the fact. Auto-detection
+    /// must now select a real runner up front: `python3 -m pytest
+    /// test_calc.py` when pytest is importable for the interpreter `verify`
+    /// would actually run under.
+    #[cfg(not(windows))]
+    #[test]
+    fn auto_detect_selects_pytest_for_a_pytest_style_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("calc.py"),
+            "def add(a, b):\n    return a + b\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("test_calc.py"), PYTEST_STYLE_TEST_CALC).unwrap();
+        let login_path = fake_python3_login_path(dir.path(), 0);
+        assert_eq!(
+            checks_of_with_login_path(dir.path(), &login_path),
+            vec![Check::direct_owned(
+                "python3",
+                vec![
+                    "-m".to_string(),
+                    "pytest".to_string(),
+                    "test_calc.py".to_string(),
+                ],
+            )]
+        );
+    }
+
+    /// Lane R64a: a manifestless test file that already invokes its own
+    /// tests (a `__main__` guard here) is not pytest-style-without-a-runner
+    /// ([`is_pytest_style_without_runner`]) — auto-detection must keep the
+    /// plain `python3 <file>` run exactly as before this lane, and must never
+    /// even probe for pytest to make that call.
+    #[test]
+    fn auto_detect_keeps_plain_script_run_when_file_has_a_runner() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("test_guard.py"),
+            "def test_checkout():\n    assert True\n\n\nif __name__ == \"__main__\":\n    test_checkout()\n",
+        )
+        .unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("python3", &["test_guard.py"])]
+        );
+    }
+
+    /// Lane R64a: pytest unavailable but the file defines a
+    /// `unittest.TestCase` — fall back to `python3 -m unittest <module>`,
+    /// which CAN discover a `TestCase`'s test methods on its own (unlike a
+    /// bare `def test_add():`).
+    #[cfg(not(windows))]
+    #[test]
+    fn auto_detect_falls_back_to_unittest_when_pytest_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("test_case.py"),
+            "import unittest\n\nclass TestAdd(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(1, 1)\n",
+        )
+        .unwrap();
+        let login_path = fake_python3_login_path(dir.path(), 1);
+        assert_eq!(
+            checks_of_with_login_path(dir.path(), &login_path),
+            vec![Check::direct_owned(
+                "python3",
+                vec![
+                    "-m".to_string(),
+                    "unittest".to_string(),
+                    "test_case".to_string(),
+                ],
+            )]
+        );
+    }
+
+    /// Lane R64a: pytest unavailable, and the file only defines a bare
+    /// `def test_add():` (not runnable by `python3 -m unittest` either) — no
+    /// safe way to actually run the tests exists, so detection must report
+    /// this honestly as NO CHECKS rather than falling back to the vacuous
+    /// plain-script run.
+    #[cfg(not(windows))]
+    #[test]
+    fn auto_detect_reports_no_checks_when_no_python_runner_is_available() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test_calc.py"), PYTEST_STYLE_TEST_CALC).unwrap();
+        let login_path = fake_python3_login_path(dir.path(), 1);
+        match detect_checks_with_login_path(dir.path(), Some(&login_path)) {
+            Ok(DetectOutcome::NoChecksConfigured(reason)) => {
+                assert!(reason.contains("pytest"), "got: {reason}");
+                assert!(reason.contains("unittest"), "got: {reason}");
+            }
+            other => panic!("expected honest NO CHECKS, got {other:?}"),
+        }
+    }
+
+    /// Lane R62b-3: returning a vacuous PASS is not crediting it. The verify
+    /// tool's own result builder must not move either vacuous counter.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn returning_a_vacuous_pass_does_not_move_the_verification_integrity_receipt() {
+        crate::receipts::begin_run();
+        let before = crate::receipts::snapshot().lines();
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &["test result: ok. 0 passed; 0 failed; 0 ignored".to_string()],
+            Path::new("."),
+        );
+        let after = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+        assert!(vacuous_pass_reason(&result).is_some());
+        assert_eq!(before[1], after[1]);
+        assert!(
+            after[1].contains("vacuous_passes=0") && after[1].ends_with("vacuous_refused=0"),
+            "got: {}",
+            after[1]
+        );
+    }
+
+    /// Lane R62b-3: a refused vacuous pass counts `vacuous_refused` and leaves
+    /// the gated `vacuous_passes` at 0, once per session and call however
+    /// many readers judge it. A credited one counts `vacuous_passes`.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn vacuous_pass_judgements_split_refused_from_credited() {
+        crate::receipts::begin_run();
+        record_vacuous_pass_judgement("worker-1", "call-a", false);
+        record_vacuous_pass_judgement("worker-1", "call-a", false);
+        let refused = crate::receipts::snapshot().lines();
+        record_vacuous_pass_judgement("worker-1", "call-b", true);
+        let credited = crate::receipts::snapshot().lines();
+        crate::receipts::end_run();
+        assert!(
+            refused[1].contains("vacuous_passes=0") && refused[1].ends_with("vacuous_refused=1"),
+            "got: {}",
+            refused[1]
+        );
+        assert!(
+            credited[1].contains("vacuous_passes=1") && credited[1].ends_with("vacuous_refused=1"),
+            "got: {}",
+            credited[1]
+        );
+    }
+
+    /// Lane R65b (M49 r65 s1): a `||` fallback that always succeeds swallows
+    /// whatever the real check's exit status would have been.
+    #[test]
+    fn or_fallback_that_always_succeeds_is_vacuous() {
+        let dir = tempfile::tempdir().unwrap();
+        for fallback in ["true", ":", "exit 0", "echo done"] {
+            let command = format!("pytest -q || {fallback}");
+            let result = pass_result(&[Check::shell(&command)], &["ok".to_string()], dir.path());
+            let reason = vacuous_pass_reason(&result)
+                .unwrap_or_else(|| panic!("expected `{command}` to be vacuous"));
+            assert!(
+                reason.contains("masks its own exit status"),
+                "got: {reason}"
+            );
+            assert!(reason.contains(&format!("|| {fallback}")), "got: {reason}");
+        }
+    }
+
+    /// Lane R65b: a shell's own exit status is always its LAST command's, so
+    /// an always-succeeding tail after `;` (or a newline) masks whatever ran
+    /// before it, exactly as the r65 s1 fixture's `node -e 'console.log(…)'`
+    /// tail did.
+    #[test]
+    fn trailing_unconditional_command_after_separator_is_vacuous() {
+        let dir = tempfile::tempdir().unwrap();
+        for tail in [
+            "true",
+            "echo done",
+            "exit 0",
+            "node -e 'console.log(1)'",
+            "printf ok",
+        ] {
+            let command = format!("pytest -q; {tail}");
+            let result = pass_result(&[Check::shell(&command)], &["ok".to_string()], dir.path());
+            let reason = vacuous_pass_reason(&result)
+                .unwrap_or_else(|| panic!("expected `{command}` to be vacuous"));
+            assert!(
+                reason.contains("masks its own exit status"),
+                "got: {reason}"
+            );
+        }
+        // The same trailing shape over a newline instead of `;`.
+        let result = pass_result(
+            &[Check::shell("pytest -q\ntrue")],
+            &["ok".to_string()],
+            dir.path(),
+        );
+        assert!(vacuous_pass_reason(&result).is_some());
+    }
+
+    /// Lane R65b: `set +e` with no later `$?`-checking propagation leaves the
+    /// script's exit status entirely up to whatever ran last.
+    #[test]
+    fn set_plus_e_without_later_propagation_is_vacuous() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = pass_result(
+            &[Check::shell("set +e\npytest -q")],
+            &["ok".to_string()],
+            dir.path(),
+        );
+        let reason = vacuous_pass_reason(&result).expect("vacuous");
+        assert!(reason.contains("set +e"), "got: {reason}");
+    }
+
+    /// Lane R65b: `set +e` followed by an explicit `$?` check propagates the
+    /// real status, so this is not masking.
+    #[test]
+    fn set_plus_e_with_later_exit_status_check_is_genuine() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = pass_result(
+            &[Check::shell("set +e\npytest -q\nexit $?")],
+            &["1 passed".to_string()],
+            dir.path(),
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+    }
+
+    /// Lane R65b: ordinary chains, a pipeline, and a `||` fallback that
+    /// itself FAILS never hide a failing exit code, so none of these are
+    /// masking.
+    #[test]
+    fn ordinary_chains_and_failing_fallbacks_stay_genuine() {
+        let dir = tempfile::tempdir().unwrap();
+        for command in [
+            "pytest -q && echo done",
+            "cd subdir && pytest -q",
+            "set -o pipefail && cargo test | tee out.log",
+            "pytest -q || exit 1",
+            "pytest -q || false",
+        ] {
+            let result = pass_result(
+                &[Check::shell(command)],
+                &["1 passed".to_string()],
+                dir.path(),
+            );
+            assert_eq!(
+                vacuous_pass_reason(&result),
+                None,
+                "`{command}` must not be flagged as masking"
+            );
+        }
+    }
+
+    /// Lane R65b: a `||` or `;` that appears only INSIDE a quoted string is
+    /// not a shell operator and must never be mistaken for one.
+    #[test]
+    fn quoted_operators_inside_a_string_are_not_shell_operators() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = pass_result(
+            &[Check::shell("pytest -q && echo \"a || b; c\"")],
+            &["1 passed".to_string()],
+            dir.path(),
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+    }
+
+    /// Lane R65b (M49 r65 s1, fixture `harness-refactor-shipping-quote-signature`):
+    /// the worker's "passing" verify command, verbatim in shape — a real
+    /// test command whose failure is swallowed by `|| true`, then a trailing
+    /// `node -e 'console.log("no runner")'` that always succeeds and whose
+    /// exit status is therefore all `verify` actually saw. Also checks the
+    /// suggested fix names the mask-stripped command directly (R64a's own
+    /// style), not just a generic "run it yourself".
+    #[test]
+    fn r65_s1_command_is_vacuous_with_a_mask_stripped_suggestion() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_command = "npm test --silent";
+        let command = format!("{real_command} || true; node -e 'console.log(\"no runner\")'");
+        let result = pass_result(
+            &[Check::shell(&command)],
+            &["(no output)".to_string()],
+            dir.path(),
+        );
+        assert!(is_authoritative_pass(&result));
+        assert!(!is_genuine_pass(&result));
+        let reason = vacuous_pass_reason(&result).expect("vacuous");
+        assert!(
+            reason.contains("masks its own exit status"),
+            "got: {reason}"
+        );
+        assert!(reason.contains("|| true"), "got: {reason}");
+        assert!(reason.contains("node -e"), "got: {reason}");
+        assert!(
+            reason.contains(&format!("set to `{real_command}`")),
+            "got: {reason}"
+        );
     }
 }

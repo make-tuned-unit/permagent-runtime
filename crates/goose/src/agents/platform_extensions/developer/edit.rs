@@ -11,11 +11,11 @@ const NO_MATCH_PREVIEW_LINES: usize = 20;
 /// Cap on how many differing lines the no-match diff renders.
 const MAX_DIFF_LINES: usize = 20;
 
-/// Default cap on an UNPAGED `file_read` (no `line`/`limit` given): return at
-/// most this many lines. Mirrors the shell tool's 2000-line clamp — a single
-/// unpaged read of a huge file (a lockfile, a bundle) would otherwise blow a
-/// small local model's context in one shot. Explicit `line`/`limit` args page
-/// through anything and bypass this cap.
+/// Default cap on an UNPAGED `read` (no `start_line`/`end_line` given): return
+/// at most this many lines. Mirrors the shell tool's 2000-line clamp — a
+/// single unpaged read of a huge file (a lockfile, a bundle) would otherwise
+/// blow a small local model's context in one shot. Explicit `start_line`/
+/// `end_line` args page through anything and bypass this cap.
 const DEFAULT_READ_MAX_LINES: usize = 2000;
 /// Companion byte cap for an unpaged read — binds first for a file that is few
 /// lines but enormous (e.g. a minified one-line bundle).
@@ -23,13 +23,15 @@ const DEFAULT_READ_MAX_BYTES: usize = 100_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FileReadParams {
-    /// Absolute path to the file to read.
+    /// Path to the file to read.
     pub path: String,
-    /// Line number to start reading from (1-based).
+    /// First line to read, 1-based inclusive. Defaults to the start of the file.
     #[schemars(range(min = 1))]
-    pub line: Option<u32>,
-    /// Maximum number of lines to read.
-    pub limit: Option<u32>,
+    pub start_line: Option<u32>,
+    /// Last line to read, 1-based inclusive. Defaults to the end of the file
+    /// (subject to the unpaged cap when neither bound is given).
+    #[schemars(range(min = 1))]
+    pub end_line: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -57,26 +59,61 @@ impl EditTools {
         params: FileReadParams,
         working_dir: Option<&Path>,
     ) -> CallToolResult {
+        // Mirrors write's empty-path refusal (see `file_write_with_cwd`): an
+        // empty path resolves to the working directory itself, which would
+        // otherwise surface as a directory-read error about a path the model
+        // never named. Refuse on the argument, before the filesystem.
+        if params.path.trim().is_empty() {
+            return CallToolResult::error(vec![Content::text(
+                "The `path` argument was empty. Pass the file to read, relative to the \
+                 working directory (for example `src/main.rs`).",
+            )
+            .with_priority(0.0)]);
+        }
         let path = resolve_path(&params.path, working_dir);
 
-        match fs::read_to_string(&path) {
-            Ok(content) => {
-                // Explicit line/limit paginates through anything; an unpaged read
-                // is capped (with a paging notice) so one huge file can't flood
-                // the model's context.
-                let body = if params.line.is_none() && params.limit.is_none() {
-                    cap_unpaged(&content)
-                } else {
-                    apply_line_limit(&content, params.line, params.limit)
-                };
-                CallToolResult::success(vec![Content::text(body).with_priority(0.0)])
-            }
-            Err(error) => CallToolResult::error(vec![Content::text(format!(
-                "Failed to read {}: {}",
-                params.path, error
+        if path.is_dir() {
+            return CallToolResult::error(vec![Content::text(format!(
+                "{} is a directory, not a file. Use `tree` to list its contents, or pass the \
+                 path of a specific file to read.",
+                params.path
             ))
-            .with_priority(0.0)]),
+            .with_priority(0.0)]);
         }
+
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return CallToolResult::error(vec![Content::text(format!(
+                    "Failed to read {}: {}",
+                    params.path, error
+                ))
+                .with_priority(0.0)])
+            }
+        };
+
+        let content = match String::from_utf8(bytes) {
+            Ok(content) => content,
+            Err(error) => {
+                let size = error.as_bytes().len();
+                return CallToolResult::success(vec![Content::text(format!(
+                    "{} looks like a binary file ({} bytes) - the read tool only returns text \
+                     content. Use `shell` (e.g. `file {}`) to inspect it.",
+                    params.path, size, params.path
+                ))
+                .with_priority(0.0)]);
+            }
+        };
+
+        // Explicit start_line/end_line paginates through anything; an unpaged
+        // read is capped (with a paging notice) so one huge file can't flood
+        // the model's context.
+        let body = if params.start_line.is_none() && params.end_line.is_none() {
+            cap_unpaged(&content)
+        } else {
+            apply_line_range(&content, params.start_line, params.end_line)
+        };
+        CallToolResult::success(vec![Content::text(body).with_priority(0.0)])
     }
 
     pub fn file_write(&self, params: FileWriteParams) -> CallToolResult {
@@ -744,19 +781,24 @@ fn cap_unpaged(content: &str) -> String {
     )
 }
 
-fn apply_line_limit(content: &str, line: Option<u32>, limit: Option<u32>) -> String {
-    if line.is_none() && limit.is_none() {
+/// `start_line`/`end_line` are both 1-based and INCLUSIVE. Either bound may be
+/// omitted: no `start_line` means from the top, no `end_line` means to EOF.
+fn apply_line_range(content: &str, start_line: Option<u32>, end_line: Option<u32>) -> String {
+    if start_line.is_none() && end_line.is_none() {
         return content.to_string();
     }
     let lines: Vec<&str> = content.split_inclusive('\n').collect();
-    let start = line
+    let start = start_line
         .map(|l| (l as usize).saturating_sub(1))
         .unwrap_or(0)
         .min(lines.len());
-    let end = limit
-        .map(|l| start + l as usize)
+    let end = end_line
+        .map(|l| l as usize)
         .unwrap_or(lines.len())
         .min(lines.len());
+    if end <= start {
+        return String::new();
+    }
     lines[start..end].concat()
 }
 
@@ -832,12 +874,12 @@ mod tests {
 
     #[test_case(None, None, "line1\nline2\nline3" ; "full content")]
     #[test_case(Some(2), None, "line2\nline3" ; "from line 2")]
-    #[test_case(None, Some(2), "line1\nline2\n" ; "limit 2")]
-    #[test_case(Some(2), Some(1), "line2\n" ; "line 2 limit 1")]
+    #[test_case(None, Some(2), "line1\nline2\n" ; "through line 2")]
+    #[test_case(Some(2), Some(2), "line2\n" ; "just line 2")]
     #[test_case(Some(99), None, "" ; "beyond eof")]
-    fn test_apply_line_limit(line: Option<u32>, limit: Option<u32>, expected: &str) {
+    fn test_apply_line_range(start_line: Option<u32>, end_line: Option<u32>, expected: &str) {
         assert_eq!(
-            apply_line_limit("line1\nline2\nline3", line, limit),
+            apply_line_range("line1\nline2\nline3", start_line, end_line),
             expected
         );
     }
@@ -852,8 +894,8 @@ mod tests {
         let result = tools.file_read_with_cwd(
             FileReadParams {
                 path: path.to_string_lossy().to_string(),
-                line: None,
-                limit: None,
+                start_line: None,
+                end_line: None,
             },
             None,
         );
@@ -872,8 +914,8 @@ mod tests {
         let result = tools.file_read_with_cwd(
             FileReadParams {
                 path: path.to_string_lossy().to_string(),
-                line: Some(2),
-                limit: Some(1),
+                start_line: Some(2),
+                end_line: Some(2),
             },
             None,
         );
@@ -896,8 +938,8 @@ mod tests {
         let result = tools.file_read_with_cwd(
             FileReadParams {
                 path: path.to_string_lossy().to_string(),
-                line: None,
-                limit: None,
+                start_line: None,
+                end_line: None,
             },
             None,
         );
@@ -931,8 +973,8 @@ mod tests {
         let result = tools.file_read_with_cwd(
             FileReadParams {
                 path: path.to_string_lossy().to_string(),
-                line: None,
-                limit: None,
+                start_line: None,
+                end_line: None,
             },
             None,
         );
@@ -965,8 +1007,8 @@ mod tests {
         let result = tools.file_read_with_cwd(
             FileReadParams {
                 path: path.to_string_lossy().to_string(),
-                line: None,
-                limit: None,
+                start_line: None,
+                end_line: None,
             },
             None,
         );
@@ -999,8 +1041,8 @@ mod tests {
         let result = tools.file_read_with_cwd(
             FileReadParams {
                 path: path.to_string_lossy().to_string(),
-                line: None,
-                limit: None,
+                start_line: None,
+                end_line: None,
             },
             None,
         );
@@ -1026,8 +1068,8 @@ mod tests {
         let result = tools.file_read_with_cwd(
             FileReadParams {
                 path: path.to_string_lossy().to_string(),
-                line: Some(4900),
-                limit: Some(3),
+                start_line: Some(4900),
+                end_line: Some(4902),
             },
             None,
         );
@@ -1037,6 +1079,99 @@ mod tests {
         assert!(
             !text.contains("[truncated"),
             "explicit-range reads are never capped"
+        );
+    }
+
+    // ── F1: the `read` tool refuses directories, empty paths, and binary ──
+
+    #[test]
+    fn read_refuses_an_empty_path_instead_of_reading_the_directory() {
+        // Mirrors `write_refuses_an_empty_path_instead_of_writing_the_directory`:
+        // an empty path resolves to the working directory itself, which must
+        // be refused on the argument rather than surfacing a confusing
+        // directory-read error.
+        let dir = setup();
+        let tools = EditTools::new();
+
+        let result = tools.file_read_with_cwd(
+            FileReadParams {
+                path: String::new(),
+                start_line: None,
+                end_line: None,
+            },
+            Some(dir.path()),
+        );
+
+        assert!(result.is_error.unwrap_or(false));
+        let text = extract_text(&result);
+        assert!(
+            text.contains("empty"),
+            "must name the empty `path` argument, got: {text}"
+        );
+    }
+
+    #[test]
+    fn read_refuses_a_directory_naming_the_argument() {
+        let dir = setup();
+        let subdir = dir.path().join("src");
+        fs::create_dir(&subdir).unwrap();
+        let tools = EditTools::new();
+
+        let result = tools.file_read_with_cwd(
+            FileReadParams {
+                path: subdir.to_string_lossy().to_string(),
+                start_line: None,
+                end_line: None,
+            },
+            None,
+        );
+
+        assert!(result.is_error.unwrap_or(false));
+        let text = extract_text(&result);
+        assert!(
+            text.contains("directory"),
+            "must name the path as a directory, got: {text}"
+        );
+        // Before this refusal existed, the same case fell through to
+        // `fs::read_to_string` and surfaced the raw OS error instead of an
+        // actionable message — pin that it no longer does.
+        assert!(
+            !text.contains("os error"),
+            "must not leak the raw OS error, got: {text}"
+        );
+        assert!(
+            text.contains("tree"),
+            "must point at the right tool to list a directory, got: {text}"
+        );
+    }
+
+    #[test]
+    fn read_gives_a_short_notice_for_a_binary_file_not_raw_bytes() {
+        let dir = setup();
+        let path = dir.path().join("data.bin");
+        // Invalid UTF-8 bytes — a real binary file would never decode as text.
+        fs::write(&path, [0u8, 159, 146, 150, 0, 1, 2, 3]).unwrap();
+        let tools = EditTools::new();
+
+        let result = tools.file_read_with_cwd(
+            FileReadParams {
+                path: path.to_string_lossy().to_string(),
+                start_line: None,
+                end_line: None,
+            },
+            None,
+        );
+
+        // Not a hard failure — just not raw bytes either.
+        assert!(!result.is_error.unwrap_or(false));
+        let text = extract_text(&result);
+        assert!(
+            text.contains("binary"),
+            "must give a short binary notice, got: {text}"
+        );
+        assert!(
+            !text.contains('\u{0}'),
+            "must never echo raw binary bytes back, got: {text:?}"
         );
     }
 

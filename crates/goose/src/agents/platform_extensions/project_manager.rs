@@ -1970,8 +1970,14 @@ impl ProjectManagerClient {
             // (an empty in-memory map); the temp client's own cache was discarded
             // anyway.
             let probe_cache = crate::config::worker_probe::ProbeCache::new();
-            match super::orchestrator::dispatch_goal_fn(&self.context, &probe_cache, &card.id, None)
-                .await
+            match super::orchestrator::dispatch_goal_fn(
+                &self.context,
+                &probe_cache,
+                &card.id,
+                None,
+                None,
+            )
+            .await
             {
                 Ok(session_id) => {
                     let updated = cards::get_card(&pool, &card.id)

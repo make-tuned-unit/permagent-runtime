@@ -1,7 +1,9 @@
 //! `permagent packs` — the objective model advisor AND the wiring that acts on
 //! it. `recommend` prints the best-fit model per workflow role (no vendor bias);
 //! `apply`/`set` PERSIST a role→model mapping the dispatch path routes by;
-//! `show`/`clear` inspect and revert it.
+//! `show`/`clear` inspect and revert it; `directory` prints the capability
+//! directory (D3, Round C Lane Z3) — the same per-model strengths/billing/
+//! graduation data the planner and worker router now read.
 //!
 //! Persisting NOTHING is the default and a first-class state: with no mapping the
 //! harness stays on the single session model — it never falls back to a built-in
@@ -9,11 +11,32 @@
 //! computed in `permagent::cost_router::recommend`; this is the CLI seam over it.
 
 use anyhow::Result;
+use permagent::config::Config;
 use permagent::cost_router::{
-    clear_role_model, configured_role_models, kb_is_stale, mappings_to_persist,
-    recommend_configured_async, recommend_from_available, set_role_model, AvailableModel,
-    Recommendation, WorkflowRole, KB_SNAPSHOT_DATE,
+    clear_role_model, configured_role_models, derive_role_map_from_directory,
+    discover_available_models_async, kb_is_stale, mappings_to_persist, recommend_configured_async,
+    recommend_from_available, role_model, set_role_model, AvailableModel, CapabilityDirectory,
+    Recommendation, RoleModel, WorkflowRole, KB_SNAPSHOT_DATE,
 };
+
+/// The `ORCHESTRATOR_DECOMPOSITION_*` pin, read the SAME way
+/// `resolve_planner_route` (`orchestrator.rs`) reads it — both provider and
+/// model keys present and non-empty, else `None`. Kept local to this CLI seam
+/// (not exported from `cost_router`) since it is the one back-compat pin name
+/// that isn't a generic `PERMAGENT_ROLE_*` key `role_model` already covers.
+fn decomposition_pin() -> Option<RoleModel> {
+    let config = Config::global();
+    let non_empty = |key: &str| {
+        config
+            .get_param::<String>(key)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let provider = non_empty("ORCHESTRATOR_DECOMPOSITION_PROVIDER")?;
+    let model = non_empty("ORCHESTRATOR_DECOMPOSITION_MODEL")?;
+    Some(RoleModel { provider, model })
+}
 
 pub async fn handle_packs_command(command: PacksCommand) -> Result<()> {
     match command {
@@ -26,7 +49,55 @@ pub async fn handle_packs_command(command: PacksCommand) -> Result<()> {
         } => set_cmd(&role, &provider, &model),
         PacksCommand::Show { json } => show_cmd(json),
         PacksCommand::Clear { role } => clear_cmd(role.as_deref()),
+        PacksCommand::Directory { json, refresh } => directory_cmd(json, refresh).await,
     }
+}
+
+/// `permagent packs directory [--json] [--refresh]` — print the capability
+/// directory. Without `--refresh`: a live build (current config + Ollama
+/// probe, merged with any persisted evidence) rendered as `explain()`, or
+/// with `--json` the raw persisted FILE (so `--json` alone never triggers a
+/// live probe). With `--refresh`: rebuild from current config + Ollama probe,
+/// WRITE the file, then print it.
+async fn directory_cmd(json: bool, refresh: bool) -> Result<()> {
+    if refresh {
+        let dir = CapabilityDirectory::refresh()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to refresh the capability directory: {e}"))?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&dir)?);
+        } else {
+            let available = discover_available_models_async().await;
+            let derived = derive_role_map_from_directory(&available, &dir);
+            println!("{}", dir.explain(&derived, decomposition_pin(), role_model));
+            println!("\nWrote {}", CapabilityDirectory::default_path().display());
+        }
+        return Ok(());
+    }
+
+    if json {
+        match CapabilityDirectory::load_persisted(&CapabilityDirectory::default_path()) {
+            Some(dir) => println!("{}", serde_json::to_string_pretty(&dir)?),
+            None => println!(
+                "{}",
+                serde_json::json!({
+                    "schema": null,
+                    "cards": [],
+                    "note": "no persisted directory yet — run `permagent packs directory --refresh`",
+                })
+            ),
+        }
+        return Ok(());
+    }
+
+    let available = discover_available_models_async().await;
+    let dir = CapabilityDirectory::build(&available);
+    // Use the SAME directory (cards + any persisted evidence) to compute the
+    // "current assignment" section, so the table and the assignment can never
+    // disagree with each other.
+    let derived = derive_role_map_from_directory(&available, &dir);
+    println!("{}", dir.explain(&derived, decomposition_pin(), role_model));
+    Ok(())
 }
 
 /// Parse a `--models provider/model,provider/model` spec into declared models.
@@ -326,6 +397,17 @@ pub enum PacksCommand {
         /// Print the mapping as JSON
         #[arg(long)]
         json: bool,
+    },
+    /// Print the capability directory: per-model billing/cost/strengths,
+    /// per-role graduated/unrated, and the current role assignment with why
+    Directory {
+        /// Print the directory as JSON (without --refresh, prints the last
+        /// persisted file — never triggers a live probe)
+        #[arg(long)]
+        json: bool,
+        /// Rebuild from current config + a live Ollama probe, and persist it
+        #[arg(long)]
+        refresh: bool,
     },
     /// Clear a role's mapping (or all roles), reverting to the single session model
     Clear {

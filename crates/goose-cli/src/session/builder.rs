@@ -271,13 +271,19 @@ async fn offer_extension_debugging_help(
     Ok(())
 }
 
+/// Lane R18f: extensions that failed to register, by label (`cfg.name()`).
+/// Previously `load_extensions` only ever printed a warning and pressed on —
+/// fine for an interactive session where the operator can see the banner and
+/// decide, fatal-by-omission for a headless coding-harness run whose
+/// `orchestrator` extension is the ONLY route to `decompose_roadmap` (see
+/// `build_session`'s `headless_coding_dispatch` block).
 async fn load_extensions(
     agent: Agent,
     extensions_to_load: Vec<(String, ExtensionConfig)>,
     provider_for_debug: Arc<dyn permagent::providers::base::Provider>,
     interactive: bool,
     session_id: &str,
-) -> Arc<Agent> {
+) -> (Arc<Agent>, Vec<String>) {
     let mut set = JoinSet::new();
     let agent_ptr = Arc::new(agent);
 
@@ -323,6 +329,16 @@ async fn load_extensions(
 
     spinner.clear();
 
+    let failed_labels: Vec<String> = offer_debug
+        .iter()
+        .map(|(id, _)| {
+            extensions_to_load
+                .get(*id)
+                .map(|e| e.0.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+
     for (id, err) in offer_debug {
         let label = extensions_to_load
             .get(id)
@@ -349,7 +365,7 @@ async fn load_extensions(
         }
     }
 
-    agent_ptr
+    (agent_ptr, failed_labels)
 }
 
 struct ResolvedProviderConfig {
@@ -371,6 +387,64 @@ fn first_configured(sources: [Option<String>; 5]) -> Option<String> {
         .into_iter()
         .flatten()
         .find(|value| !value.trim().is_empty())
+}
+
+/// Whether `build_session` should install the headless goal-dispatch hook
+/// (harness loop, Lane S / M3-1).
+///
+/// `nudge_dispatch_ready_goals` (`orchestrator.rs`) only ever starts a root
+/// goal's worker through the process-global `GOAL_DISPATCH_HOOK` — the daemon
+/// installs it at startup (`goose-server/src/commands/agent.rs`), but headless
+/// `permagent run` never did, so a coding-harness session's `create_roadmap`
+/// always reported "0 root goal(s) dispatched to workers" and the recipe's
+/// NON-NEGOTIABLE protocol (coordinator presents/creates the roadmap; a
+/// dispatched DAG worker does the actual work) could never complete —
+/// confirmed live in 8/10 of Lane M3's measured fixtures.
+///
+/// Scoped to exactly the coding harness recipe running under `GooseMode::Auto`
+/// — the one launch shape whose NON-NEGOTIABLE protocol requires dispatch to
+/// happen with no human in the loop. An ordinary chat/run session (even one
+/// that happens to load the `orchestrator` extension) must not silently start
+/// spawning real worker subagents the operator never asked to auto-dispatch.
+fn wants_headless_goal_dispatch(coding_harness: bool, goose_mode: GooseMode) -> bool {
+    coding_harness && goose_mode == GooseMode::Auto
+}
+
+/// Lane R18f: does `tools` expose a tool named `base_name`, prefixed or not?
+/// Same base-name match `permagent::after_turn`'s guards use for tool-request
+/// matching (strip everything up to and including the last `__`), so "is
+/// `decompose_roadmap` resolvable" reads identically here and in the guard
+/// that watches for its absence downstream.
+fn tool_list_exposes(tools: &[rmcp::model::Tool], base_name: &str) -> bool {
+    tools
+        .iter()
+        .any(|tool| tool.name.rsplit("__").next().unwrap_or(tool.name.as_ref()) == base_name)
+}
+
+/// Lane R18f: pure retry core of `build_session`'s orchestrator-tool-registration
+/// wait. `probe` is called up to `max_attempts` times, sleeping `retry_delay`
+/// between misses, and returns as soon as one call answers `true`. Extracted
+/// so a test can simulate "found on the Nth attempt" or "never found" with a
+/// synthetic counter instead of a live `Agent`/session — see
+/// `wait_for_tool_*` in this module's test suite.
+async fn wait_for_tool<F, Fut>(
+    max_attempts: u32,
+    retry_delay: std::time::Duration,
+    mut probe: F,
+) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for attempt in 0..max_attempts {
+        if probe().await {
+            return true;
+        }
+        if attempt + 1 < max_attempts {
+            tokio::time::sleep(retry_delay).await;
+        }
+    }
+    false
 }
 
 /// The coding harness's own model route, or `None` when the operator's session
@@ -715,6 +789,29 @@ async fn resolve_session_id(
                 output::render_error(&format!("Could not create session: {}", e));
                 process::exit(1);
             });
+        // `SessionType::Hidden` is deliberately non-interactive
+        // (`is_interactive()` in session_manager.rs gates approval/UX, not
+        // budget accounting), so `Agent::reply` never mints a budget task for
+        // it the way it does for User/Terminal sessions. A child with an
+        // inherited parent already copied the parent's durable task id at
+        // creation (`create_session` in session_manager.rs); a top-level
+        // `--no-session` run has no parent, so without this it has no budget
+        // task identity at all. ProgressMonitor then reads `spend_snapshot`,
+        // gets `MissingTaskIdentity`, and refuses every tool call — this is
+        // the same gate the scenario runner hit and fixed the same way
+        // (scenario_runner.rs, e03e6d4).
+        if inherited_parent.is_none() {
+            session_manager
+                .begin_budget_task(&session.id)
+                .await
+                .unwrap_or_else(|e| {
+                    output::render_error(&format!(
+                        "Could not start a budget task for this session: {}",
+                        e
+                    ));
+                    process::exit(1);
+                });
+        }
         session.id
     } else if session_config.resume {
         if let Some(ref session_id) = session_config.session_id {
@@ -847,7 +944,7 @@ async fn resolve_and_load_extensions(
     provider_for_debug: Arc<dyn permagent::providers::base::Provider>,
     interactive: bool,
     session_id: &str,
-) -> Arc<Agent> {
+) -> (Arc<Agent>, Vec<String>) {
     for warning in permagent::config::get_warnings() {
         eprintln!("{}", style(format!("Warning: {}", warning)).yellow());
     }
@@ -1230,6 +1327,77 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             process::exit(1);
         });
 
+    // Harness loop, Lane S / M3-1: a headless coding-harness Auto-mode launch
+    // has no daemon to install the real goal dispatcher, so root goals a
+    // `create_roadmap` call approves would otherwise sit in Ready forever
+    // (`nudge_dispatch_ready_goals` returns 0 with no hook installed). Install
+    // the SAME production hook the daemon installs at startup
+    // (`install_dispatch_hook`, idempotent — an OnceLock, so a second install
+    // anywhere else in this process is a harmless no-op) so the coordinator's
+    // own `create_roadmap` call can actually dispatch. See
+    // `wants_headless_goal_dispatch`'s doc comment for the scoping rationale.
+    //
+    // Lane R18f: captured once here (before `agent` moves into
+    // `resolve_and_load_extensions` below) and reused after extension
+    // loading to gate the orchestrator-tool-registration check.
+    let headless_coding_dispatch =
+        wants_headless_goal_dispatch(coding_harness, agent.config.goose_mode);
+    if headless_coding_dispatch {
+        // r64 s5: the `cost_routing planner=` receipt names the planner that
+        // physically ANSWERED a decompose call this run, or `none` when no
+        // decompose call happened (a resume-only run). It is set only by
+        // `decompose_roadmap` (orchestrator.rs); seeding it here with the
+        // coordinator claimed a planner nobody asked, and let a decompose
+        // routed elsewhere hide behind it. `permagent-eval` reads `none` as
+        // an explicit value, not an unresolved planner.
+        // R1(b) (harness loop, Lane D1, from Lane F8 forensics): seed the
+        // project this coordinator's own `create_roadmap` will resolve onto
+        // with a real `root_path` before any goal can dispatch, so
+        // `decisions_effects::land_approved_goal`'s ordinary path
+        // (`project.root_path`) works without ever needing R1(a)'s
+        // worktree-git fallback. The eval harness's default `personal`
+        // project (and any project created with no local folder) is seeded
+        // `root_path` NULL (`session/spectral_schema.rs:610`) and nothing
+        // upstream of this ever set it — confirmed identically NULL across
+        // all 5 of Lane F8's measured fixtures. Best-effort: a pool/session
+        // lookup failure here must never block a headless launch.
+        if let Ok(pool) = session_manager.pool_clone().await {
+            if let Ok(session) = session_manager.get_session(&session_id, false).await {
+                permagent::agents::platform_extensions::orchestrator::ensure_headless_project_root_path(
+                    &pool,
+                    &session.working_dir,
+                )
+                .await;
+            }
+        }
+        // Harness loop, Lane T / T1+T2: NOT the daemon's `install_dispatch_hook`
+        // (that closure's context always carries `session: None`, so its
+        // InternalSubagentEngine worker-selection arm hard-fails with
+        // "Extension manager not available" — S1 in HARNESS_LOOP_LOG.md — and
+        // its ranked selection can pick an ExternalCli worker, spawning the
+        // operator's own Claude Code/Codex/Cursor CLI unattended). The CLI's
+        // own installer carries this coordinator session so the hook can
+        // resolve a provider from it and restrict ranked selection to
+        // in-process workers by default.
+        permagent::agents::platform_extensions::orchestrator::install_dispatch_hook_for_headless_session(
+            session_manager.clone(),
+            session_id.clone(),
+        );
+        // Z2-2 (harness loop, coding-harness excellence iteration, Round C,
+        // M6 #3): same idea as the dispatch hook above, for the `escalate`
+        // tool's decision sink. The daemon installs the SQL-backed sink at
+        // `AppState::new`; a headless CLI session never runs that path, so
+        // without this an `escalate` call here recorded into the ephemeral
+        // in-memory default sink — success reported, no `decisions` row ever
+        // existed, no error, the task stalled until the outer cap. Idempotent
+        // (`OnceLock`) — harmless if a daemon in the same process already
+        // installed it.
+        permagent::agents::platform_extensions::orchestrator::install_decision_sink_for_headless_session(
+            &session_manager,
+        )
+        .await;
+    }
+
     if let Some(recipe) = session_config.recipe.clone() {
         if let Err(e) = session_manager
             .update(&session_id)
@@ -1242,7 +1410,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     }
 
     // Extensions are loaded after session creation because we may change directory when resuming
-    let agent_ptr = resolve_and_load_extensions(
+    let (agent_ptr, failed_extensions) = resolve_and_load_extensions(
         agent,
         extensions_for_provider,
         Arc::clone(&provider_for_debug),
@@ -1250,6 +1418,110 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         &session_id,
     )
     .await;
+
+    // Harness loop, Lane R18f (A17 analysis Class 4, HARNESS_LOOP_LOG.md): a
+    // DeepSeek coding-harness round's first `decompose_roadmap` call came
+    // back `-32002: Tool 'decompose_roadmap' not found` even though the
+    // orchestrator extension itself had already finished registering
+    // (`search_available_extensions` reported it loaded) — the tool list a
+    // turn's first dispatch resolves against was not verified before the
+    // turn started. `resolve_and_load_extensions` above already AWAITS every
+    // extension's `add_extension` call, so this is not a missing `.await`;
+    // it is a missing VERIFICATION that the awaited registration actually
+    // produced a resolvable tool set. Scoped to exactly the launch shape
+    // that cannot recover from this the way an interactive session can (ask
+    // the human, retry next message): the headless coding-harness coordinator,
+    // whose NON-NEGOTIABLE first tool call is `decompose_roadmap`.
+    if headless_coding_dispatch {
+        let orchestrator_name =
+            permagent::agents::platform_extensions::orchestrator::EXTENSION_NAME;
+        if failed_extensions
+            .iter()
+            .any(|name| name == orchestrator_name)
+        {
+            // The load genuinely FAILED (not raced) — `load_extensions`
+            // already printed the underlying error to stderr; this is fatal
+            // for a coding-harness run specifically, because there is no
+            // honest way to run the recipe's NON-NEGOTIABLE protocol without
+            // decompose_roadmap/create_roadmap/escalate.
+            tracing::error!(
+                extension = orchestrator_name,
+                "Lane R18f: orchestrator extension failed to load for a headless coding-harness \
+                 session; aborting rather than running a turn that cannot dispatch or escalate"
+            );
+            output::render_error(&format!(
+                "The '{orchestrator_name}' extension failed to load for this headless \
+                 coding-harness session (see the warning above for why). decompose_roadmap, \
+                 create_roadmap and escalate are unavailable, so this run cannot honestly \
+                 follow the coding recipe's protocol. Aborting instead of starting a turn that \
+                 can only end in a -32002 (Lane R18f)."
+            ));
+            process::exit(1);
+        }
+
+        // Bounded wait: `add_extension` completing does not, by itself, prove
+        // the tool this session will dispatch is resolvable — verify it
+        // directly against the same `list_tools` path a turn's first
+        // dispatch uses, retrying briefly in case the registration that
+        // *did* succeed above needs one more tick to be visible.
+        const MAX_ATTEMPTS: u32 = 10;
+        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+        let decompose_roadmap_ready = wait_for_tool(MAX_ATTEMPTS, RETRY_DELAY, || {
+            let agent_ptr = &agent_ptr;
+            let session_id = &session_id;
+            async move {
+                let tools = agent_ptr.list_tools(session_id, None).await;
+                tool_list_exposes(&tools, "decompose_roadmap")
+            }
+        })
+        .await;
+        if !decompose_roadmap_ready {
+            tracing::error!(
+                tool = "decompose_roadmap",
+                extension = orchestrator_name,
+                attempts = MAX_ATTEMPTS,
+                "Lane R18f: decompose_roadmap never became resolvable for a headless \
+                 coding-harness session; aborting rather than starting a turn that would hit \
+                 -32002 on its NON-NEGOTIABLE first tool call"
+            );
+            output::render_error(
+                "decompose_roadmap did not become available for this headless coding-harness \
+                 session after waiting for extension registration to settle. The coordinator's \
+                 first tool call is required to be decompose_roadmap; starting the turn anyway \
+                 would only reproduce the -32002 'tool not found' failure (Lane R18f, A17 \
+                 analysis Class 4).",
+            );
+            process::exit(1);
+        }
+    }
+
+    // Lane R61a: the coding harness's recall is scoped to the repo it works in
+    // (`brain_sync::MemoryScope`). The one way to widen it is to ASK: a
+    // frontend tool, so the call parks in the agent until this CLI's session
+    // loop answers it with the user's terminal decision (or a refusal when
+    // there is no terminal). A failed registration leaves the harness
+    // repo-scoped with no way to widen — the safe direction.
+    if coding_harness {
+        if let Err(error) = agent_ptr
+            .add_extension(
+                ExtensionConfig::Frontend {
+                    name: super::brain_sync::MEMORY_ACCESS_EXTENSION_NAME.to_string(),
+                    description: "Ask the user for memory access beyond this repo".to_string(),
+                    tools: vec![super::brain_sync::memory_access_tool()],
+                    instructions: Some(super::brain_sync::MEMORY_ACCESS_INSTRUCTIONS.to_string()),
+                    bundled: None,
+                    available_tools: Vec::new(),
+                },
+                &session_id,
+            )
+            .await
+        {
+            tracing::warn!(
+                %error,
+                "could not register request_memory_access; memory recall stays repo-scoped"
+            );
+        }
+    }
 
     let edit_mode = config
         .get_param::<String>("EDIT_MODE")
@@ -1270,7 +1542,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // `new_primary_agent` installed that several hundred lines ago.
     let persona_name = agent_ptr.persona_display_name().await;
 
-    let session = CliSession::new(
+    let mut session = CliSession::new(
         Arc::try_unwrap(agent_ptr).unwrap_or_else(|_| panic!("There should be no more references")),
         session_id.clone(),
         debug_mode,
@@ -1282,6 +1554,13 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         coding_harness,
     )
     .await;
+
+    // A coding-harness process announces itself in `harness_process_leases`
+    // for its whole lifetime, so the daemon and other terminals can see it is
+    // live (and notice when it is not). No-op for any other session.
+    session
+        .start_harness_lease(session_config.interactive, recipe.map(|r| r.title.as_str()))
+        .await;
 
     configure_session_prompts(&session, config, &session_config, &session_id).await;
 
@@ -1309,6 +1588,125 @@ mod tests {
 
     fn s(v: &str) -> Option<String> {
         Some(v.to_string())
+    }
+
+    // ── headless goal dispatch (harness loop, Lane S / M3-1) ───────────────
+
+    #[test]
+    fn headless_goal_dispatch_wants_coding_harness_and_auto_mode_together() {
+        assert!(wants_headless_goal_dispatch(true, GooseMode::Auto));
+    }
+
+    #[test]
+    fn headless_goal_dispatch_skips_a_non_coding_harness_session_even_in_auto_mode() {
+        assert!(!wants_headless_goal_dispatch(false, GooseMode::Auto));
+    }
+
+    #[test]
+    fn headless_goal_dispatch_skips_the_coding_harness_outside_auto_mode() {
+        assert!(!wants_headless_goal_dispatch(true, GooseMode::Approve));
+        assert!(!wants_headless_goal_dispatch(true, GooseMode::Chat));
+    }
+
+    /// r64 s5: the session builder never seeds the `cost_routing planner=`
+    /// receipt with the coordinator. Only `decompose_roadmap` sets it, from the
+    /// planner that answered; a run with no decompose call prints
+    /// `planner=none`. A structural, source-text check (like
+    /// `cost_routing_receipt_is_printed_only_after_the_goal_drain` in
+    /// `session/mod.rs`): `build_session`'s error paths call
+    /// `process::exit(1)`, which a unit test must not invoke.
+    #[test]
+    fn cost_routing_planner_is_not_seeded_with_the_coordinator_at_session_start() {
+        let src = include_str!("builder.rs");
+        let body = src.split("\nmod tests {").next().unwrap();
+        assert!(
+            body.contains("if headless_coding_dispatch {"),
+            "the headless coding-harness dispatch gate must still exist"
+        );
+        assert_eq!(
+            body.matches("routing_receipt::set_planner(").count(),
+            0,
+            "the planner receipt is the decompose call's answering planner, never the \
+             coordinator seeded at session start"
+        );
+    }
+
+    // ── orchestrator tool-registration wait (Lane R18f, A17 analysis Class 4) ──
+
+    fn tool_named(name: &str) -> rmcp::model::Tool {
+        rmcp::model::Tool::new(
+            name.to_string(),
+            "test tool".to_string(),
+            rmcp::object!({"type": "object"}),
+        )
+    }
+
+    #[test]
+    fn tool_list_exposes_matches_the_unprefixed_name() {
+        let tools = vec![tool_named("decompose_roadmap")];
+        assert!(tool_list_exposes(&tools, "decompose_roadmap"));
+    }
+
+    #[test]
+    fn tool_list_exposes_matches_the_prefixed_name() {
+        let tools = vec![tool_named("orchestrator__decompose_roadmap")];
+        assert!(tool_list_exposes(&tools, "decompose_roadmap"));
+    }
+
+    #[test]
+    fn tool_list_exposes_is_false_when_the_tool_is_absent() {
+        let tools = vec![
+            tool_named("developer__shell"),
+            tool_named("analyze__search"),
+        ];
+        assert!(!tool_list_exposes(&tools, "decompose_roadmap"));
+    }
+
+    /// The exact Class-4 repair: an extension whose registration is still in
+    /// flight when the first probe runs (as `search_available_extensions`
+    /// showed "loaded" while the tool list was still stale) must not fail the
+    /// session outright — a later probe within the bounded window finds it.
+    #[tokio::test]
+    async fn wait_for_tool_returns_true_once_a_late_probe_finds_it() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let calls_probe = calls.clone();
+        let found = wait_for_tool(5, std::time::Duration::from_millis(0), move || {
+            let calls_probe = calls_probe.clone();
+            async move {
+                let n = calls_probe.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                n >= 3
+            }
+        })
+        .await;
+        assert!(found, "a probe that eventually succeeds must be found");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "must stop retrying as soon as the tool is found, not run all attempts"
+        );
+    }
+
+    /// A permanently missing tool (the extension genuinely failed, or the
+    /// tool was never going to register) must give up after `max_attempts`
+    /// rather than retry forever — this is the branch `build_session` turns
+    /// into the named hard error and `process::exit(1)`.
+    #[tokio::test]
+    async fn wait_for_tool_gives_up_after_max_attempts() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let calls_probe = calls.clone();
+        let found = wait_for_tool(4, std::time::Duration::from_millis(0), move || {
+            let calls_probe = calls_probe.clone();
+            async move {
+                calls_probe.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                false
+            }
+        })
+        .await;
+        assert!(
+            !found,
+            "a permanently missing tool must never be reported found"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
     }
 
     /// REPLACES a source-text grep.
@@ -1732,5 +2130,106 @@ mod tests {
             assert!(without_map.contains("No repo map is in context"));
             assert!(!without_map.contains("starting point"));
         }
+    }
+
+    // ── `--no-session` budget task identity (lane R63a) ────────────────────
+    //
+    // A top-level `permagent run --no-session` creates a `SessionType::Hidden`
+    // session with no parent. `Agent::reply` only mints a budget task for
+    // interactive session types, so before this fix that Hidden session had no
+    // durable task identity at all, and `spend_snapshot` refused with
+    // `MissingTaskIdentity` — which the tool gate (56cee825) reads as "deny
+    // every tool call". These tests exercise `resolve_session_id` directly
+    // against a temp-dir `SessionManager`, without touching the real Agent or
+    // any process-global state.
+
+    // Also serialized on `no_session_parent_env`: `PARENT_SESSION_ID_ENV` is a
+    // process-global var, and without this a concurrently-running inherited-
+    // parent test could set it mid-test, sending this test's session into
+    // `create_session_with_parent` with a parent id from a *different* temp
+    // dir's database — `process::exit(1)`-ing the whole test binary.
+    #[tokio::test]
+    #[serial_test::serial(no_session_parent_env)]
+    async fn top_level_no_session_run_gets_a_durable_budget_task() {
+        std::env::remove_var(permagent::session::PARENT_SESSION_ID_ENV);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session_manager =
+            permagent::session::session_manager::SessionManager::new(temp_dir.path().to_path_buf());
+        let config = SessionBuilderConfig {
+            no_session: true,
+            ..Default::default()
+        };
+
+        let session_id = resolve_session_id(&config, &session_manager, GooseMode::default()).await;
+
+        let pool = session_manager.pool_clone().await.unwrap();
+        let snapshot = permagent::agents::platform_extensions::orchestrator::spend_snapshot(
+            &pool,
+            &session_id,
+        )
+        .await;
+        assert!(
+            !matches!(
+                snapshot,
+                Err(
+                    permagent::agents::platform_extensions::orchestrator::SpendSnapshotError::MissingTaskIdentity(_)
+                )
+            ),
+            "a top-level `--no-session` run must have a durable budget task \
+             identity so tool calls are not refused; spend_snapshot returned \
+             {snapshot:?}"
+        );
+
+        let session = session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        assert!(
+            permagent::session::budget_task_id(&session.extension_data).is_some(),
+            "the Hidden session's extension data must carry a budget_task id"
+        );
+    }
+
+    /// The env var this reads (`PARENT_SESSION_ID_ENV`) is process-global, so
+    /// this test and the one below serialize on the same key to avoid racing
+    /// each other's mutations.
+    #[tokio::test]
+    #[serial_test::serial(no_session_parent_env)]
+    async fn inherited_parent_no_session_run_reuses_the_parents_task() {
+        std::env::remove_var(permagent::session::PARENT_SESSION_ID_ENV);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session_manager =
+            permagent::session::session_manager::SessionManager::new(temp_dir.path().to_path_buf());
+
+        let parent = session_manager
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+        let parent_task = session_manager.begin_budget_task(&parent.id).await.unwrap();
+
+        std::env::set_var(permagent::session::PARENT_SESSION_ID_ENV, &parent.id);
+        let config = SessionBuilderConfig {
+            no_session: true,
+            ..Default::default()
+        };
+        let session_id = resolve_session_id(&config, &session_manager, GooseMode::default()).await;
+        std::env::remove_var(permagent::session::PARENT_SESSION_ID_ENV);
+
+        let child = session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        let child_task = permagent::session::budget_task_id(&child.extension_data);
+        assert_eq!(
+            child_task,
+            Some(parent_task),
+            "a no_session run with an inherited parent must reuse the \
+             parent's budget task, not mint a fresh one"
+        );
     }
 }

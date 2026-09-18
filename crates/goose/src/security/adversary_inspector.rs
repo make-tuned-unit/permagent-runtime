@@ -419,6 +419,7 @@ impl ToolInspector for AdversaryInspector {
                     });
                 }
                 Ok((false, reason)) => {
+                    crate::receipts::record("safety_and_trust", "adversary_blocks");
                     tracing::warn!(
                         tool_request_id = %request.id,
                         reason = %reason,

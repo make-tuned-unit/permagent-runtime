@@ -35,6 +35,40 @@ pub const BUDGET_TASK_EXTENSION_VERSION: &str = "v1";
 pub const GOAL_ID_EXTENSION_NAME: &str = "goal_worker";
 pub const GOAL_ID_EXTENSION_VERSION: &str = "v1";
 
+/// Extension-data key for X-verify-1's reviewer-mutation receipts: durable,
+/// append-only evidence that a `worker_persona: "reviewer"` subagent mutated
+/// the working tree despite its READ-ONLY mandate (F2/H1). Kept on the
+/// PARENT session — the one that issued the `delegate` call — since the
+/// reviewer's own subagent session is throwaway and its record is not
+/// necessarily read again.
+pub const REVIEWER_MUTATION_EXTENSION_NAME: &str = "reviewer_mutation_receipts";
+pub const REVIEWER_MUTATION_EXTENSION_VERSION: &str = "v1";
+
+/// One receipt: the reviewer mutated these paths at this time.
+/// [`SessionManager::record_reviewer_mutation`] APPENDS to the stored list
+/// rather than replacing it, so a session with several delegate rounds keeps
+/// every occurrence rather than only the latest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewerMutationReceipt {
+    pub paths: Vec<String>,
+    pub at: String,
+    #[serde(default)]
+    pub subagent_session_id: Option<String>,
+}
+
+/// Every reviewer-mutation receipt recorded on this session so far, oldest
+/// first. Empty (never an error) for a session with no such receipts,
+/// including one predating this field entirely.
+pub fn reviewer_mutation_receipts(extension_data: &ExtensionData) -> Vec<ReviewerMutationReceipt> {
+    extension_data
+        .get_extension_state(
+            REVIEWER_MUTATION_EXTENSION_NAME,
+            REVIEWER_MUTATION_EXTENSION_VERSION,
+        )
+        .and_then(|v| serde_json::from_value::<Vec<ReviewerMutationReceipt>>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
 pub fn budget_task_id(extension_data: &ExtensionData) -> Option<String> {
     extension_data
         .get_extension_state(BUDGET_TASK_EXTENSION_NAME, BUDGET_TASK_EXTENSION_VERSION)
@@ -208,6 +242,22 @@ pub enum CostReservationOutcome {
     Unknown {
         reason: String,
     },
+}
+
+/// Extension uses the same granted/gate/refused/unknown vocabulary as a hold.
+pub type ExtendOutcome = CostReservationOutcome;
+
+#[derive(Serialize, Deserialize)]
+struct ReservationExtension {
+    attempts: u32,
+    per_attempt_usd: f64,
+    config: crate::cost_router::budget::BudgetConfig,
+}
+
+#[derive(Clone, Copy)]
+enum ReservationRequest {
+    Initial(Option<u32>),
+    Extend(u32),
 }
 
 /// One child's contribution inside a [`ParentSessionCost`] rollup.
@@ -615,6 +665,37 @@ impl SessionManager {
         Ok(task_id)
     }
 
+    /// X-verify-1: append a reviewer-mutation receipt to `id`'s extension
+    /// data and persist it. Read-modify-write, same shape as
+    /// [`begin_budget_task`](Self::begin_budget_task) — every occurrence is
+    /// kept (append, not replace), so a session with several delegate rounds
+    /// retains a full audit trail rather than only the most recent mutation.
+    pub async fn record_reviewer_mutation(
+        &self,
+        id: &str,
+        paths: Vec<String>,
+        subagent_session_id: Option<String>,
+    ) -> Result<()> {
+        let session = self.get_session(id, false).await?;
+        let mut extension_data = session.extension_data;
+        let mut receipts = reviewer_mutation_receipts(&extension_data);
+        receipts.push(ReviewerMutationReceipt {
+            paths,
+            at: Utc::now().to_rfc3339(),
+            subagent_session_id,
+        });
+        extension_data.set_extension_state(
+            REVIEWER_MUTATION_EXTENSION_NAME,
+            REVIEWER_MUTATION_EXTENSION_VERSION,
+            serde_json::to_value(&receipts)?,
+        );
+        self.update(id)
+            .extension_data(extension_data)
+            .apply()
+            .await?;
+        Ok(())
+    }
+
     pub fn update(&self, id: &str) -> SessionUpdateBuilder<'_> {
         SessionUpdateBuilder::new(self, id.to_string())
     }
@@ -628,6 +709,56 @@ impl SessionManager {
     /// transaction. See [`CostLedgerRow`].
     pub async fn append_cost_ledger(&self, row: &CostLedgerRow) -> Result<()> {
         self.storage.append_cost_ledger(row).await
+    }
+
+    /// Attach a turn's wall-clock timing breakdown to its already-settled
+    /// `cost_ledger` row (lane X-lat, coding-harness excellence iteration).
+    ///
+    /// Deliberately a follow-up UPDATE rather than a field on
+    /// [`CostLedgerRow`] carried through the original insert: the ledger row
+    /// is written mid-turn (fail-closed, before more turn work runs, so a
+    /// durable-accounting failure aborts the turn rather than losing spend),
+    /// but two of the timing components — the after-turn hook chain and the
+    /// tool-pair summarization await — only finish LATER in the same turn.
+    /// This call is best-effort observability, not money accounting: a
+    /// failure here must never fail the turn, so callers should log and
+    /// continue rather than propagate. A `call_id` with no matching row
+    /// (a non-turn cost_ledger writer, or a row that failed to insert) is a
+    /// harmless no-op — zero rows affected, no error.
+    pub async fn update_cost_ledger_timing(
+        &self,
+        call_id: &str,
+        timing: &crate::session::turn_timing::TurnTiming,
+    ) -> Result<()> {
+        let timing_json = serde_json::to_string(timing)?;
+        self.storage
+            .update_cost_ledger_timing(call_id, &timing_json)
+            .await
+    }
+
+    /// Session-level per-turn timing rollup (lane X-lat). Reads every
+    /// non-null `cost_ledger.timing_json` for the session, in chronological
+    /// (`ts`) order, and folds them with
+    /// [`crate::session::turn_timing::compute_rollup`]. Rows with no timing
+    /// recorded — pre-instrumentation history, or one of the handful of
+    /// non-turn `cost_ledger` writers (recovery compaction, tool-pair
+    /// summarization, council debate, orchestrator fan-out) — are skipped
+    /// rather than failing the rollup. This is what backs the headless CLI's
+    /// final `harness_overhead ...` line (`format_harness_overhead_line`).
+    pub async fn session_timing_rollup(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::turn_timing::SessionTimingRollup> {
+        let raw = self
+            .storage
+            .cost_ledger_timing_json_for_session(session_id)
+            .await?;
+        let records: Vec<crate::session::turn_timing::TurnTiming> = raw
+            .into_iter()
+            .flatten()
+            .filter_map(|json| serde_json::from_str(&json).ok())
+            .collect();
+        Ok(crate::session::turn_timing::compute_rollup(&records))
     }
 
     /// Append one provider invocation and atomically update both token and
@@ -673,14 +804,233 @@ impl SessionManager {
         config: &crate::cost_router::budget::BudgetConfig,
     ) -> Result<CostReservationOutcome> {
         self.storage
-            .reserve_provider_invocation(
+            .reserve_provider_invocation_inner(
                 invocation_id,
                 session_id,
                 task_id,
                 amount_usd,
                 lease_until,
                 config,
+                ReservationRequest::Initial(None),
             )
+            .await
+    }
+
+    /// Reserve a planner-produced bound and retain immutable extension evidence.
+    pub async fn reserve_bounded_provider_invocation(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        task_id: Option<&str>,
+        bound: crate::cost_router::reservation::ReservationBound,
+        lease_until: &str,
+        config: &crate::cost_router::budget::BudgetConfig,
+    ) -> Result<CostReservationOutcome> {
+        anyhow::ensure!(bound.max_physical_attempts > 0, "invalid reserved attempts");
+        self.storage
+            .reserve_provider_invocation_inner(
+                invocation_id,
+                session_id,
+                task_id,
+                bound.amount_usd,
+                lease_until,
+                config,
+                ReservationRequest::Initial(Some(bound.max_physical_attempts)),
+            )
+            .await
+    }
+
+    /// Extend only a live hold with durable bound/config evidence. Gate grants
+    /// and legacy scalar holds lack that evidence and fail closed. No gate is
+    /// auto-approved here, and settlement still releases the entire same row.
+    pub async fn extend_reservation(
+        &self,
+        invocation_id: &str,
+        additional_attempts: u32,
+    ) -> Result<ExtendOutcome> {
+        anyhow::ensure!(
+            additional_attempts > 0,
+            "extension attempts must be positive"
+        );
+        let pool = self.storage.pool().await?;
+        let row: Option<(String, Option<String>, String, Option<String>)> = sqlx::query_as(
+            "SELECT session_id, task_id, lease_until, extension_json
+             FROM cost_reservations WHERE invocation_id = ?",
+        )
+        .bind(invocation_id)
+        .fetch_optional(pool)
+        .await?;
+        let Some((session_id, task_id, lease, Some(json))) = row else {
+            return Ok(CostReservationOutcome::Unknown {
+                reason: "reservation has no durable extension evidence".to_string(),
+            });
+        };
+        let evidence: ReservationExtension = serde_json::from_str(&json)?;
+        self.storage
+            .reserve_provider_invocation_inner(
+                invocation_id,
+                &session_id,
+                task_id.as_deref(),
+                evidence.per_attempt_usd,
+                &lease,
+                &evidence.config,
+                ReservationRequest::Extend(additional_attempts),
+            )
+            .await
+    }
+
+    /// Directly grant a reservation for an invocation whose gate a headless
+    /// policy has just auto-answered, bypassing `reserve_provider_invocation`'s
+    /// gate/hard threshold math entirely.
+    ///
+    /// E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10):
+    /// `reserve_provider_invocation`'s `NeedsGate` check is pure arithmetic
+    /// over `cost_ledger`/`cost_reservations` totals — answering the
+    /// DECISION changes nothing about those totals, so a plain retry of the
+    /// same call re-trips the identical gate immediately. This lets the
+    /// EXACT invocation that was just authorized skip straight to a
+    /// reservation instead of re-asking the gate for a request that already
+    /// got a yes. Idempotent: an existing reservation for `invocation_id` is
+    /// left untouched and its outcome reported back unchanged (mirrors
+    /// `reserve_provider_invocation`'s own `AlreadyReserved`/`AlreadySettled`
+    /// handling), never double-inserted.
+    ///
+    /// F3 (harness loop, Round F, from Lane G9's HIGH finding): `provider`
+    /// and `model` name the exact call this grant authorizes and are stored
+    /// on the row so a later reuse attempt (`find_pending_gate_grant`/
+    /// `consume_granted_reservation`) can require an exact match before
+    /// treating it as reusable.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn grant_reservation_after_gate_approval(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        task_id: &str,
+        amount_usd: f64,
+        lease_until: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<CostReservationOutcome> {
+        self.storage
+            .grant_reservation_after_gate_approval(
+                invocation_id,
+                session_id,
+                task_id,
+                amount_usd,
+                lease_until,
+                provider,
+                model,
+            )
+            .await
+    }
+
+    /// Default consume window for [`SessionManager::consume_granted_reservation`]
+    /// — F1b's "unconsumed past this TTL, it expires" boundary. Not read
+    /// internally (the TTL is an explicit parameter so tests, and any future
+    /// live caller, can pin an exact value); this is the named default such
+    /// a caller should pass absent a specific reason to choose otherwise.
+    pub const GRANT_CONSUME_TTL_SECS_DEFAULT: i64 = 120;
+
+    /// Consume a reservation minted by
+    /// [`SessionManager::grant_reservation_after_gate_approval`], on behalf
+    /// of a retry from the SAME `session_id`.
+    ///
+    /// F1b (harness loop, Lane F1 2026-09-10, from F10/G8 forensics): E1's
+    /// grant is keyed to the ORIGINAL failed call's `invocation_id`, but
+    /// EVERY provider call mints a fresh `invocation_id`
+    /// (`Uuid::new_v4()` in `agents::agent`'s turn loop) — nothing today
+    /// automatically reuses a grant, which is exactly why F10 traced the
+    /// retried call re-hitting the same gate a second time (fx03/fx04's
+    /// near-total M10 stalls). This is the primitive a caller that DOES know
+    /// which grant to consume (the original invocation_id, e.g. carried on
+    /// the session's own extension data) calls instead of re-running
+    /// `reserve_provider_invocation`'s gate math from scratch. Wiring a real
+    /// caller into the live turn loop is out of this lane's file boundary
+    /// (`agents::agent`/`reply_parts.rs` — E1's own territory this round);
+    /// this closes the primitive and its contract, tested directly.
+    ///
+    /// Returns `Ok(Some(outcome))` when a still-valid grant for this
+    /// `invocation_id` belongs to `session_id` — `Granted`/`AlreadyReserved`/
+    /// `AlreadySettled` per its current row state, exactly as a fresh
+    /// reservation lookup would report. Returns `Ok(None)` — "nothing to
+    /// consume, raise a fresh gate decision" — when no grant exists for this
+    /// invocation_id, it was granted to a DIFFERENT session (never
+    /// consumable across sessions — a grant only authorizes the call it was
+    /// minted for), or it has aged past `consume_ttl_secs` since it was
+    /// granted (its `created_at`, which `grant_reservation_after_gate_
+    /// approval` never rewrites); an expired-but-still-`pending` row is
+    /// released in the same call so it stops counting toward budget for a
+    /// retry that never came, rather than holding it open until its full
+    /// (2-hour) `lease_until`.
+    ///
+    /// F3 (harness loop, Round F, from Lane G9's HIGH and MEDIUM findings):
+    /// `provider`/`model` must exactly match the row's own stored identity
+    /// (`Ok(None)` on any mismatch, same as a wrong-session or expired
+    /// grant — never touched, never reported) — a grant only authorizes the
+    /// call it was minted for, not whatever provider/model the CURRENT call
+    /// happens to be using (H1). A grant already consumed once
+    /// (`reuse_count > 0`) is likewise refused a second time (M1): it
+    /// authorizes exactly one retry of the specific call that got gated,
+    /// not every later call in the session while the row is still
+    /// `pending`.
+    ///
+    /// F3b (from Lane G10's MEDIUM finding): the TTL-staleness check runs
+    /// BEFORE the `reuse_count` refusal, so an already-consumed grant that
+    /// is also past `consume_ttl_secs` is released (and reported as
+    /// `Ok(None)`) rather than refused-but-left-`pending` — a consumed
+    /// grant keeps the same fast 120s self-release as an unconsumed one,
+    /// instead of waiting on the ~8h lease-expiry sweep while it counts
+    /// toward held budget.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn consume_granted_reservation(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        provider: &str,
+        model: &str,
+        consume_ttl_secs: i64,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<CostReservationOutcome>> {
+        self.storage
+            .consume_granted_reservation(
+                invocation_id,
+                session_id,
+                provider,
+                model,
+                consume_ttl_secs,
+                now,
+            )
+            .await
+    }
+
+    /// The `invocation_id` of this session's most recent still-`pending`
+    /// reservation minted by [`SessionManager::grant_reservation_after_gate_approval`]
+    /// (`granted_via_gate = 1`) FOR THIS EXACT `provider`/`model`, if any.
+    ///
+    /// I1 (harness loop, 2026-09-10, wiring F1b's grant-consumption
+    /// primitive into the live turn loop, from F10's forensics): a caller
+    /// about to mint a fresh provider-call `invocation_id` looks this up
+    /// FIRST — an ordinary in-flight reservation (from
+    /// `reserve_provider_invocation`'s own budget check) is never returned
+    /// here, only one this exact session's gate was already headlessly
+    /// auto-answered for. Deliberately does not itself validate/consume the
+    /// grant (no TTL check, no state mutation) — pair with
+    /// [`SessionManager::consume_granted_reservation`] before trusting it.
+    ///
+    /// F3 (harness loop, Round F, from Lane G9's HIGH finding): `provider`/
+    /// `model` are now a hard SQL filter, not merely a caller convention —
+    /// a grant minted for a different provider/model is invisible to this
+    /// lookup, so a provider switch between the gated call and the retry
+    /// mints a fresh invocation_id and re-asks the gate instead of silently
+    /// reusing the OLD call's dollar bound.
+    pub async fn find_pending_gate_grant(
+        &self,
+        session_id: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<Option<String>> {
+        self.storage
+            .find_pending_gate_grant(session_id, provider, model)
             .await
     }
 
@@ -1479,6 +1829,10 @@ impl SessionStorage {
                     // databases already past the numbered ladder receive the
                     // restart/terminal-history store on their first boot.
                     spectral_schema::apply_harness_run_snapshots_schema(&self.pool).await?;
+                    // Harness process leases: version-independent for the same
+                    // reason, so an upgraded database gets the table on its
+                    // first boot.
+                    spectral_schema::apply_harness_process_leases_schema(&self.pool).await?;
                     // v38: first-party analytics events (#23). New table +
                     // index, additive and idempotent.
                     if version < 38 {
@@ -1583,6 +1937,22 @@ impl SessionStorage {
                     // INSERT OR IGNORE, additive and base-independent.
                     if version < 53 {
                         spectral_schema::migrate_v52_to_v53(&self.pool).await?;
+                    }
+                    // v54: cost_ledger.timing_json (coding-harness excellence
+                    // iteration, lane X-lat) — per-turn wall-clock breakdown
+                    // (model/tool/after-turn/context-mgmt) so the harness-
+                    // overhead gate can be measured instead of asserted.
+                    // PRAGMA-guarded ADD COLUMN, additive and base-independent.
+                    if version < 54 {
+                        spectral_schema::migrate_v53_to_v54(&self.pool).await?;
+                    }
+                    // v55: cost_reservations.provider/.model/.reuse_count/
+                    // .reused_by_invocation_id (harness loop, Round F, Lane
+                    // F3, from Lane G9's HIGH/MEDIUM gate-grant-reuse
+                    // findings). PRAGMA-guarded ADD COLUMNs, additive and
+                    // base-independent.
+                    if version < 55 {
+                        spectral_schema::migrate_v54_to_v55(&self.pool).await?;
                     }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
@@ -2106,6 +2476,38 @@ impl SessionStorage {
             .map(|_| ())
     }
 
+    /// Best-effort follow-up write: set `timing_json` on an existing
+    /// `cost_ledger` row. Not transactional with anything else — this is
+    /// diagnostic latency data, not money, and a missing row (a call_id the
+    /// reply loop timed but that never settled a ledger row) is a silent
+    /// no-op rather than an error.
+    async fn update_cost_ledger_timing(&self, call_id: &str, timing_json: &str) -> Result<()> {
+        let pool = self.pool().await?;
+        sqlx::query("UPDATE cost_ledger SET timing_json = ? WHERE call_id = ?")
+            .bind(timing_json)
+            .bind(call_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Every `timing_json` value for a session's `cost_ledger` rows, in
+    /// chronological (`ts`) order. `None` entries are rows with no timing
+    /// recorded (pre-instrumentation, or a non-turn writer).
+    async fn cost_ledger_timing_json_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<Option<String>>> {
+        let pool = self.pool().await?;
+        let rows: Vec<(Option<String>,)> = sqlx::query_as(
+            "SELECT timing_json FROM cost_ledger WHERE session_id = ? ORDER BY ts ASC",
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().map(|(json,)| json).collect())
+    }
+
     // Every argument is a distinct piece of settlement evidence; collapsing them
     // into a struct would only move the same fields behind one more name.
     #[allow(clippy::too_many_arguments)]
@@ -2185,9 +2587,15 @@ impl SessionStorage {
     async fn mark_provider_invocation_unknown(&self, reservation_id: &str) -> Result<bool> {
         let pool = self.pool().await?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        // `unknown_marked_at` records that THIS path concluded the attempt
+        // is over (as opposed to the lease-expiry sweep, which never sets
+        // it) — `reconcile_stale_reservations` uses it to reconcile an
+        // explicit mark immediately while holding a merely lease-expired row
+        // until it clears a grace window (YF1, G6 review, Lane Y-fix
+        // 2026-09-09).
         let result = sqlx::query(
             "UPDATE cost_reservations
-             SET state = 'unknown', updated_at = datetime('now')
+             SET state = 'unknown', updated_at = datetime('now'), unknown_marked_at = datetime('now')
              WHERE reservation_id = ? AND state = 'pending'",
         )
         .bind(reservation_id)
@@ -2197,14 +2605,155 @@ impl SessionStorage {
         Ok(result.rows_affected() == 1)
     }
 
-    async fn reserve_provider_invocation(
+    /// Resolve every stale `unknown`-state reservation belonging to
+    /// `task_id`, inside the caller's already-open transaction.
+    ///
+    /// `mark_provider_invocation_unknown` and the lease-expiry sweep above
+    /// both put a reservation into `unknown` deliberately: at the moment it
+    /// happens, nothing proves whether the provider call it authorized was
+    /// ever billed, so treating it as free (`released`) or as spent
+    /// (`settled`) would both be a guess. But `unknown` had no path back to
+    /// either state, so one ambiguous failure consumed the task's authorization
+    /// forever — not just its budget headroom (which `task_held`/`session_held`
+    /// already account for correctly), but the ability to authorize ANY
+    /// future call under the task, unconditionally (B7, Lane Y1 2026-09-09:
+    /// `regression-trap-lru-cache-evict`/`harness-testfix-inventory-suite-green`/
+    /// `harness-cli-argparse-log-filter`, 3/10 fixtures, all killed by
+    /// `"an expired provider reservation is unresolved"` — traced to
+    /// `handle_decompose_roadmap`'s internal planner completion
+    /// (`orchestrator.rs::run_decomposition` → `AccountedFastCompletion::
+    /// complete_one`, `reply_parts.rs:1339-1407`) failing after a long call
+    /// and marking its own reservation `unknown`; `dispatch_goal_fn` then
+    /// died on the SAME task identity, per `dispatch_budget_task_id`).
+    ///
+    /// By the time a FRESH call is being authorized for this task, ambiguity
+    /// can be resolved with real evidence: a `cost_ledger` row for the stale
+    /// reservation's `invocation_id` (`call_id`) is proof the provider call
+    /// completed and was accounted, so that hold is settled to the ledger's
+    /// own `cost_usd` — the recorded spend is preserved, never dropped, and
+    /// keeps counting toward the task/session ceilings exactly like any other
+    /// settled call. No ledger row means nothing durable proves the call was
+    /// ever billed, so the hold is released — holding it forever recovers no
+    /// spend, it only refuses honest future work.
+    ///
+    /// YF1 (G6 review, Lane Y-fix 2026-09-09): the above is only safe for a
+    /// row `mark_provider_invocation_unknown` put into `unknown` — that path
+    /// runs only once the caller has locally concluded the attempt is over.
+    /// A row the LEASE-EXPIRY sweep alone put into `unknown` proves nothing
+    /// of the sort: the provider call may still be genuinely streaming past
+    /// its lease, and releasing that hold the instant the next call comes in
+    /// hands its budget headroom to someone else while the real spend is
+    /// still in flight — when it later tries to settle,
+    /// `append_cost_ledger_with_usage` would find the hold already
+    /// `released`/re-`unknown` and (pre-YF1) hard-error, dropping the real
+    /// spend on the floor entirely (G6 finding #1). So a merely
+    /// lease-expired row (`unknown_marked_at IS NULL`) is left alone here
+    /// until it has been stale for `RECONCILE_GRACE` — well beyond the
+    /// longest legitimate call, approximating 3x the standard 2h paid-call
+    /// lease used by `reply_parts.rs` — keeping `reserve_provider_invocation`
+    /// fail-closed (refusing new calls under the task) for a bounded window
+    /// instead of releasing on a guess. `append_cost_ledger_with_usage` no
+    /// longer errors on a late settlement either way (see YF1 there): if the
+    /// real spend does land after this reconciliation already ran, it is
+    /// still recorded and still counts toward the ceiling, flagged
+    /// `late_settlement`.
+    async fn reconcile_stale_reservations(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        task_id: &str,
+        now: &str,
+    ) -> Result<()> {
+        let stale: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT reservation_id, invocation_id, unknown_marked_at, lease_until
+             FROM cost_reservations
+             WHERE task_id = ? AND state = 'unknown'",
+        )
+        .bind(task_id)
+        .fetch_all(&mut **tx)
+        .await?;
+
+        let now_dt = chrono::DateTime::parse_from_rfc3339(now)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+        let grace = chrono::Duration::hours(6);
+
+        for (reservation_id, invocation_id, unknown_marked_at, lease_until) in stale {
+            let eligible = if unknown_marked_at.is_some() {
+                // Explicitly marked unknown: the attempt already concluded
+                // locally, so real evidence (or the lack of it) can be
+                // trusted right away.
+                true
+            } else {
+                // Lease-expiry sweep only — hold until well past any
+                // realistic in-flight completion.
+                match (now_dt, chrono::DateTime::parse_from_rfc3339(&lease_until)) {
+                    (Some(now_dt), Ok(lease_until)) => {
+                        now_dt - lease_until.with_timezone(&chrono::Utc) >= grace
+                    }
+                    _ => false,
+                }
+            };
+            if !eligible {
+                continue;
+            }
+            let ledger_cost: Option<f64> =
+                sqlx::query_scalar("SELECT cost_usd FROM cost_ledger WHERE call_id = ?")
+                    .bind(&invocation_id)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            match ledger_cost {
+                Some(cost_usd) => {
+                    sqlx::query(
+                        "UPDATE cost_reservations
+                         SET state = 'settled', settled_cost_usd = ?, updated_at = ?
+                         WHERE reservation_id = ? AND state = 'unknown'",
+                    )
+                    .bind(cost_usd)
+                    .bind(now)
+                    .bind(&reservation_id)
+                    .execute(&mut **tx)
+                    .await?;
+                    tracing::info!(
+                        target: "permagent::cost_router",
+                        reservation_id = %reservation_id,
+                        invocation_id = %invocation_id,
+                        task_id,
+                        settled_cost_usd = cost_usd,
+                        "reconciled a stale unknown provider reservation to settled from its recorded ledger spend"
+                    );
+                }
+                None => {
+                    sqlx::query(
+                        "UPDATE cost_reservations
+                         SET state = 'released', updated_at = ?
+                         WHERE reservation_id = ? AND state = 'unknown'",
+                    )
+                    .bind(now)
+                    .bind(&reservation_id)
+                    .execute(&mut **tx)
+                    .await?;
+                    tracing::info!(
+                        target: "permagent::cost_router",
+                        reservation_id = %reservation_id,
+                        invocation_id = %invocation_id,
+                        task_id,
+                        "reconciled a stale unknown provider reservation to released; no ledger evidence it was ever billed"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn reserve_provider_invocation_inner(
         &self,
         invocation_id: &str,
         session_id: &str,
         task_id: Option<&str>,
-        amount_usd: f64,
+        mut amount_usd: f64,
         lease_until: &str,
         config: &crate::cost_router::budget::BudgetConfig,
+        request: ReservationRequest,
     ) -> Result<CostReservationOutcome> {
         if invocation_id.trim().is_empty() {
             return Err(anyhow::anyhow!("provider invocation id must not be empty"));
@@ -2255,21 +2804,39 @@ impl SessionStorage {
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
         let now = chrono::Utc::now().to_rfc3339();
 
-        // An expired provider call may already have been accepted remotely;
-        // preserve its hold as unknown rather than fabricating free allowance.
-        sqlx::query(
-            "UPDATE cost_reservations SET state = 'unknown', updated_at = ?
-             WHERE state = 'pending' AND lease_until <= ?",
-        )
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
+        let mut extension = match request {
+            ReservationRequest::Initial(Some(attempts)) => Some(ReservationExtension {
+                attempts,
+                per_attempt_usd: amount_usd / f64::from(attempts),
+                config: *config,
+            }),
+            _ => None,
+        };
+        let mut extension_from = None;
+        if matches!(request, ReservationRequest::Initial(_)) {
+            // An expired provider call may already have been accepted remotely;
+            // preserve its hold as unknown rather than fabricating free allowance.
+            sqlx::query(
+                "UPDATE cost_reservations SET state = 'unknown', updated_at = ?
+                 WHERE state = 'pending' AND lease_until <= ?",
+            )
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+
+            // Initial reservations reconcile stale unknown holds (Y1). An
+            // extension must not release its own evidence or mutate on refusal.
+            Self::reconcile_stale_reservations(&mut tx, task_id, &now).await?;
+        }
 
         let reservation_id = format!("invocation:{invocation_id}");
-        if let Some((existing_id, existing_session, existing_task, state)) =
-            sqlx::query_as::<_, (String, String, Option<String>, String)>(
-                "SELECT reservation_id, session_id, task_id, state
+        if let Some((existing_id, existing_session, existing_task, state, amount, json, lease)) =
+            sqlx::query_as::<
+                _,
+                (String, String, Option<String>, String, f64, Option<String>, String),
+            >(
+                "SELECT reservation_id, session_id, task_id, state, amount_usd, extension_json, lease_until
                  FROM cost_reservations WHERE invocation_id = ?",
             )
             .bind(invocation_id)
@@ -2281,24 +2848,51 @@ impl SessionStorage {
                     "provider invocation id is already bound to another budget scope"
                 ));
             }
-            tx.commit().await?;
-            return Ok(match state.as_str() {
-                "pending" => CostReservationOutcome::AlreadyReserved {
-                    reservation_id: existing_id,
-                },
-                "settled" => CostReservationOutcome::AlreadySettled {
-                    reservation_id: existing_id,
-                },
-                "unknown" => CostReservationOutcome::Unknown {
-                    reason: "provider reservation lease expired before settlement".to_string(),
-                },
-                "released" => CostReservationOutcome::Unknown {
-                    reason: "provider invocation reservation was already released".to_string(),
-                },
-                _ => CostReservationOutcome::Unknown {
-                    reason: format!("unrecognized reservation state: {state}"),
-                },
-            });
+            if let ReservationRequest::Extend(additional) = request {
+                anyhow::ensure!(state == "pending" && lease > now, "reservation is not live");
+                let mut evidence: ReservationExtension = serde_json::from_str(
+                    json.as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("missing extension evidence"))?,
+                )?;
+                let to_attempts = evidence
+                    .attempts
+                    .checked_add(additional)
+                    .ok_or_else(|| anyhow::anyhow!("extension attempts overflow"))?;
+                amount_usd = evidence.per_attempt_usd * f64::from(additional);
+                anyhow::ensure!(
+                    evidence.config == *config
+                        && amount_usd.is_finite()
+                        && amount_usd > 0.0
+                        && amount.is_finite()
+                        && amount > 0.0
+                        && (amount + amount_usd).is_finite(),
+                    "invalid extension arithmetic or changed budget evidence"
+                );
+                extension_from = Some((amount, evidence.attempts));
+                evidence.attempts = to_attempts;
+                extension = Some(evidence);
+            } else {
+                tx.commit().await?;
+                return Ok(match state.as_str() {
+                    "pending" => CostReservationOutcome::AlreadyReserved {
+                        reservation_id: existing_id,
+                    },
+                    "settled" => CostReservationOutcome::AlreadySettled {
+                        reservation_id: existing_id,
+                    },
+                    "unknown" => CostReservationOutcome::Unknown {
+                        reason: "provider reservation lease expired before settlement".to_string(),
+                    },
+                    "released" => CostReservationOutcome::Unknown {
+                        reason: "provider invocation reservation was already released".to_string(),
+                    },
+                    _ => CostReservationOutcome::Unknown {
+                        reason: format!("unrecognized reservation state: {state}"),
+                    },
+                });
+            }
+        } else if matches!(request, ReservationRequest::Extend(_)) {
+            return Err(anyhow::anyhow!("reservation disappeared before extension"));
         }
 
         let session_exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
@@ -2446,11 +3040,35 @@ impl SessionStorage {
             });
         }
 
+        if let Some((from_usd, from_attempts)) = extension_from {
+            let evidence = extension
+                .as_ref()
+                .expect("extension evidence was validated");
+            let to_usd = from_usd + amount_usd;
+            sqlx::query(
+                "UPDATE cost_reservations SET amount_usd = ?, extension_json = ?, updated_at = ?
+                 WHERE invocation_id = ? AND state = 'pending'",
+            )
+            .bind(to_usd)
+            .bind(serde_json::to_string(evidence)?)
+            .bind(&now)
+            .bind(invocation_id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            tracing::info!(
+                target: "permagent::cost_router::reservation",
+                invocation_id, from_usd, to_usd, from_attempts,
+                to_attempts = evidence.attempts, "reservation extended"
+            );
+            return Ok(CostReservationOutcome::Granted { reservation_id });
+        }
+
         sqlx::query(
             "INSERT INTO cost_reservations
                 (reservation_id, invocation_id, session_id, task_id, amount_usd,
-                 state, lease_until, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                 state, lease_until, created_at, updated_at, extension_json)
+             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
         )
         .bind(&reservation_id)
         .bind(invocation_id)
@@ -2460,10 +3078,298 @@ impl SessionStorage {
         .bind(lease_until)
         .bind(&now)
         .bind(&now)
+        .bind(extension.as_ref().map(serde_json::to_string).transpose()?)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
         Ok(CostReservationOutcome::Granted { reservation_id })
+    }
+
+    /// See [`SessionManager::grant_reservation_after_gate_approval`].
+    #[allow(clippy::too_many_arguments)]
+    async fn grant_reservation_after_gate_approval(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        task_id: &str,
+        amount_usd: f64,
+        lease_until: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<CostReservationOutcome> {
+        if invocation_id.trim().is_empty() {
+            return Err(anyhow::anyhow!("provider invocation id must not be empty"));
+        }
+        if !amount_usd.is_finite() || amount_usd <= 0.0 {
+            return Err(anyhow::anyhow!(
+                "paid provider reservation must have a finite positive bound"
+            ));
+        }
+        if task_id.trim().is_empty() {
+            return Err(anyhow::anyhow!(
+                "paid provider reservation requires a durable task identity"
+            ));
+        }
+        let lease_parsed = chrono::DateTime::parse_from_rfc3339(lease_until)
+            .map_err(|_| anyhow::anyhow!("provider reservation lease must be RFC3339"))?
+            .with_timezone(&chrono::Utc);
+        if lease_parsed <= chrono::Utc::now() {
+            return Ok(CostReservationOutcome::Unknown {
+                reason: "provider reservation lease is already expired".to_string(),
+            });
+        }
+        let lease_until = lease_parsed.to_rfc3339();
+
+        let pool = self.pool().await?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+        // Idempotent, same shape as `reserve_provider_invocation`'s own
+        // early lookup: never insert twice for one invocation_id.
+        if let Some((existing_id, existing_session, existing_task, state)) =
+            sqlx::query_as::<_, (String, String, Option<String>, String)>(
+                "SELECT reservation_id, session_id, task_id, state
+                 FROM cost_reservations WHERE invocation_id = ?",
+            )
+            .bind(invocation_id)
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            if existing_session != session_id || existing_task.as_deref() != Some(task_id) {
+                return Err(anyhow::anyhow!(
+                    "provider invocation id is already bound to another budget scope"
+                ));
+            }
+            tx.commit().await?;
+            return Ok(match state.as_str() {
+                "pending" => CostReservationOutcome::AlreadyReserved {
+                    reservation_id: existing_id,
+                },
+                "settled" => CostReservationOutcome::AlreadySettled {
+                    reservation_id: existing_id,
+                },
+                "unknown" => CostReservationOutcome::Unknown {
+                    reason: "provider reservation lease expired before settlement".to_string(),
+                },
+                "released" => CostReservationOutcome::Unknown {
+                    reason: "provider invocation reservation was already released".to_string(),
+                },
+                _ => CostReservationOutcome::Unknown {
+                    reason: format!("unrecognized reservation state: {state}"),
+                },
+            });
+        }
+
+        let session_exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if session_exists != 1 {
+            tx.commit().await?;
+            return Ok(CostReservationOutcome::Unknown {
+                reason: format!("session '{session_id}' does not exist"),
+            });
+        }
+
+        let reservation_id = format!("invocation:{invocation_id}");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO cost_reservations
+                (reservation_id, invocation_id, session_id, task_id, amount_usd,
+                 state, lease_until, created_at, updated_at, granted_via_gate,
+                 provider, model)
+             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 1, ?, ?)",
+        )
+        .bind(&reservation_id)
+        .bind(invocation_id)
+        .bind(session_id)
+        .bind(task_id)
+        .bind(amount_usd)
+        .bind(&lease_until)
+        .bind(&now)
+        .bind(&now)
+        .bind(provider)
+        .bind(model)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(CostReservationOutcome::Granted { reservation_id })
+    }
+
+    /// See [`SessionManager::consume_granted_reservation`].
+    #[allow(clippy::too_many_arguments)]
+    async fn consume_granted_reservation(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        provider: &str,
+        model: &str,
+        consume_ttl_secs: i64,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<CostReservationOutcome>> {
+        let pool = self.pool().await?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+        let Some((
+            reservation_id,
+            existing_session,
+            existing_provider,
+            existing_model,
+            state,
+            created_at,
+            reuse_count,
+        )) = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                String,
+                String,
+                i64,
+            ),
+        >(
+            "SELECT reservation_id, session_id, provider, model, state, created_at, reuse_count
+             FROM cost_reservations WHERE invocation_id = ?",
+        )
+        .bind(invocation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        else {
+            // Nothing was ever granted under this invocation_id — the
+            // caller falls through to raising a fresh gate decision.
+            tx.commit().await?;
+            return Ok(None);
+        };
+
+        if existing_session != session_id {
+            // F1b pin: a grant belongs to the session whose failed call it
+            // authorized. A different session retrying (or any other
+            // session) can never consume it — never touched, never reported.
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        // F3 (H1, harness loop, Round F, from Lane G9's HIGH finding): a
+        // grant only authorizes the exact provider/model of the call it was
+        // minted for. A mismatch here is simply "not reusable" — fall
+        // through exactly like a wrong-session grant, never touching the
+        // row, so the caller mints a fresh invocation_id and re-asks the
+        // gate instead of silently reusing the OLD call's dollar bound
+        // under a NEW provider/model.
+        if existing_provider.as_deref() != Some(provider)
+            || existing_model.as_deref() != Some(model)
+        {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        let age_secs = chrono::DateTime::parse_from_rfc3339(&created_at)
+            .map(|dt| (now - dt.with_timezone(&chrono::Utc)).num_seconds())
+            .unwrap_or(i64::MAX);
+        if state == "pending" && age_secs > consume_ttl_secs {
+            // F1b pin: unconsumed past its TTL. Release rather than hold it
+            // open until its full (2-hour) `lease_until` — a stale grant
+            // must stop counting toward budget for a retry that never came
+            // — then report "nothing to consume" so the caller raises a
+            // fresh gate decision instead of trusting a stale yes.
+            sqlx::query(
+                "UPDATE cost_reservations SET state = 'released', updated_at = ?
+                 WHERE reservation_id = ? AND state = 'pending'",
+            )
+            .bind(now.to_rfc3339())
+            .bind(&reservation_id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        // F3 (M1, harness loop, Round F, from Lane G9's MEDIUM finding): a
+        // grant is consumable exactly once — the retry of the specific call
+        // that got gated, not every later call in the session while the row
+        // happens to still be `pending`. Refused the same way a wrong-
+        // session or mismatched-provider grant already is: never touched,
+        // never reported, caller falls through to a fresh gate decision.
+        //
+        // F3b (from Lane G10's MEDIUM finding): this refusal runs AFTER the
+        // TTL-staleness branch above, never before it. Ordered the other
+        // way, a grant consumed once could never take the fast 120s
+        // self-release path again — it would short-circuit here on every
+        // later call and only die via the ~8h lease-expiry + reconcile
+        // sweep, inflating `task_held`/`session_held` the whole time. A
+        // stale grant is released first; only a grant still WITHIN its TTL
+        // is refused-but-left-`pending` for the real in-flight call to
+        // settle.
+        if state == "pending" && reuse_count > 0 {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        if state == "pending" {
+            // F3 (M1): mark this grant consumed so a later call sharing the
+            // same session/provider/model (e.g. a concurrent background
+            // call, or a later turn that finds the row still `pending`
+            // because it has not settled yet) cannot reuse it a second
+            // time — see the `reuse_count > 0` guard above.
+            // `reused_by_invocation_id` is recorded explicitly rather than
+            // assumed equal to this row's own `invocation_id`, even though
+            // today it always is (the design reuses the SAME id for the
+            // retry).
+            sqlx::query(
+                "UPDATE cost_reservations SET reuse_count = reuse_count + 1,
+                 reused_by_invocation_id = ?, updated_at = ?
+                 WHERE reservation_id = ?",
+            )
+            .bind(invocation_id)
+            .bind(now.to_rfc3339())
+            .bind(&reservation_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(match state.as_str() {
+            "pending" => Some(CostReservationOutcome::AlreadyReserved { reservation_id }),
+            "settled" => Some(CostReservationOutcome::AlreadySettled { reservation_id }),
+            "unknown" => Some(CostReservationOutcome::Unknown {
+                reason: "provider reservation lease expired before settlement".to_string(),
+            }),
+            // I1 (harness loop, 2026-09-10, gate fix): a released grant —
+            // whether released by THIS call's own TTL-expiry branch above,
+            // or by an EARLIER call finding it already past TTL — has
+            // nothing left to consume. Idempotent with the TTL-expiry
+            // branch's own `Ok(None)` a few lines up: every subsequent
+            // consume attempt on an expired grant reports the SAME "raise a
+            // fresh gate decision" signal, never a reported `Unknown`
+            // outcome the caller might mistake for something to act on.
+            "released" => None,
+            other => Some(CostReservationOutcome::Unknown {
+                reason: format!("unrecognized reservation state: {other}"),
+            }),
+        })
+    }
+
+    /// See [`SessionManager::find_pending_gate_grant`].
+    async fn find_pending_gate_grant(
+        &self,
+        session_id: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<Option<String>> {
+        let pool = self.pool().await?;
+        let invocation_id: Option<String> = sqlx::query_scalar(
+            "SELECT invocation_id FROM cost_reservations
+             WHERE session_id = ? AND state = 'pending' AND granted_via_gate = 1
+               AND provider = ? AND model = ?
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .bind(provider)
+        .bind(model)
+        .fetch_optional(pool)
+        .await?;
+        Ok(invocation_id)
     }
 
     async fn append_cost_ledger_with_usage(
@@ -2474,6 +3380,14 @@ impl SessionStorage {
     ) -> Result<bool> {
         let pool = self.pool().await?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+        // YF1 (G6 review, Lane Y-fix 2026-09-09): captured outside the `if
+        // let` below so the late-settlement UPDATEs further down can still
+        // see the reservation's state as of this transaction, and know
+        // whether this settlement is "on time" (state was `pending`) or
+        // "late" (the reservation was already reconciled to `unknown` or
+        // `released` before the real spend arrived).
+        let mut reservation_state: Option<String> = None;
 
         if let Some(reservation_id) = reservation_id {
             let Some((
@@ -2526,15 +3440,25 @@ impl SessionStorage {
                     return Ok(false);
                 }
                 "pending" => {}
-                "unknown" => {
-                    return Err(anyhow::anyhow!(
-                        "provider reservation '{reservation_id}' expired before settlement"
-                    ));
-                }
-                "released" => {
-                    return Err(anyhow::anyhow!(
-                        "provider reservation '{reservation_id}' was released"
-                    ));
+                // YF1: a reservation already reconciled away (settled to $0
+                // / released because no ledger evidence existed at the
+                // time) can still have its provider call complete for real
+                // afterward. Erroring here (the pre-YF1 behavior) would
+                // drop that real spend on the floor entirely — the budget
+                // headroom was already given back, and now the actual bill
+                // goes unrecorded too. Instead this settlement is accepted
+                // as a LATE one: recorded in the ledger (flagged
+                // `late_settlement`) so it still counts toward the ceiling,
+                // never silently dropped (G6 finding #1).
+                "unknown" | "released" => {
+                    tracing::info!(
+                        target: "permagent::cost_router",
+                        reservation_id,
+                        state = %state,
+                        call_id = %row.call_id,
+                        cost_usd = row.cost_usd,
+                        "settling a provider call whose reservation was already reconciled away; recording as a late settlement rather than dropping the spend"
+                    );
                 }
                 _ => {
                     return Err(anyhow::anyhow!(
@@ -2542,7 +3466,12 @@ impl SessionStorage {
                     ));
                 }
             }
+            reservation_state = Some(state);
         }
+        let is_late_settlement = matches!(
+            reservation_state.as_deref(),
+            Some("unknown") | Some("released")
+        );
 
         let inserted = sqlx::query(
             "INSERT INTO cost_ledger (
@@ -2550,13 +3479,13 @@ impl SessionStorage {
                 subagent_id, turn_index, provider, model, cost_tier, is_chargeable,
                 is_headless, input_tokens, output_tokens, cache_read_tokens,
                 cache_write_tokens, input_cost, output_cost, cache_read_cost,
-                cache_write_cost, cost_usd, is_estimated
+                cache_write_cost, cost_usd, is_estimated, late_settlement
             ) VALUES (
                 ?, ?, ?, ?, ?, ?,
                 ?, (SELECT COUNT(*) FROM cost_ledger WHERE session_id = ?), ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
-                ?, ?, ?
+                ?, ?, ?, ?
             ) ON CONFLICT(call_id) DO NOTHING",
         )
         .bind(&row.call_id)
@@ -2582,13 +3511,14 @@ impl SessionStorage {
         .bind(row.cache_write_cost)
         .bind(row.cost_usd)
         .bind(row.is_estimated)
+        .bind(is_late_settlement)
         .execute(&mut *tx)
         .await?
         .rows_affected()
             == 1;
 
         if !inserted {
-            if let Some(reservation_id) = reservation_id {
+            if let (Some(reservation_id), Some(from_state)) = (reservation_id, &reservation_state) {
                 let Some((existing_session, existing_task, existing_cost)) =
                     sqlx::query_as::<_, (String, Option<String>, f64)>(
                         "SELECT session_id, task_id, cost_usd FROM cost_ledger WHERE call_id = ?",
@@ -2612,10 +3542,11 @@ impl SessionStorage {
                 sqlx::query(
                     "UPDATE cost_reservations SET state = 'settled',
                         settled_cost_usd = ?, updated_at = datetime('now')
-                     WHERE reservation_id = ? AND state = 'pending'",
+                     WHERE reservation_id = ? AND state = ?",
                 )
                 .bind(row.cost_usd)
                 .bind(reservation_id)
+                .bind(from_state)
                 .execute(&mut *tx)
                 .await?;
             }
@@ -2677,14 +3608,15 @@ impl SessionStorage {
         .execute(&mut *tx)
         .await?;
 
-        if let Some(reservation_id) = reservation_id {
+        if let (Some(reservation_id), Some(from_state)) = (reservation_id, &reservation_state) {
             let settled = sqlx::query(
                 "UPDATE cost_reservations SET state = 'settled',
                     settled_cost_usd = ?, updated_at = datetime('now')
-                 WHERE reservation_id = ? AND state = 'pending'",
+                 WHERE reservation_id = ? AND state = ?",
             )
             .bind(row.cost_usd)
             .bind(reservation_id)
+            .bind(from_state)
             .execute(&mut *tx)
             .await?;
             if settled.rows_affected() != 1 {
@@ -3599,6 +4531,63 @@ mod tests {
             results.push(handle.await.expect("lock-upgrade task panicked"));
         }
         results
+    }
+
+    // ── X-verify-1: reviewer-mutation receipts ──────────────────────────────
+
+    #[tokio::test]
+    async fn reviewer_mutation_receipts_start_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "author".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        assert!(reviewer_mutation_receipts(&session.extension_data).is_empty());
+    }
+
+    #[tokio::test]
+    async fn record_reviewer_mutation_appends_and_persists() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "author".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        sm.record_reviewer_mutation(
+            &session.id,
+            vec!["src/cache.rs".to_string()],
+            Some("sub-1".to_string()),
+        )
+        .await
+        .unwrap();
+        sm.record_reviewer_mutation(&session.id, vec!["src/lib.rs".to_string()], None)
+            .await
+            .unwrap();
+
+        let reloaded = sm.get_session(&session.id, false).await.unwrap();
+        let receipts = reviewer_mutation_receipts(&reloaded.extension_data);
+        assert_eq!(
+            receipts.len(),
+            2,
+            "both receipts must be kept, not overwritten"
+        );
+        assert_eq!(receipts[0].paths, vec!["src/cache.rs".to_string()]);
+        assert_eq!(receipts[0].subagent_session_id.as_deref(), Some("sub-1"));
+        assert_eq!(receipts[1].paths, vec!["src/lib.rs".to_string()]);
+        assert_eq!(receipts[1].subagent_session_id, None);
+        assert!(!receipts[0].at.is_empty());
     }
 
     #[tokio::test]
@@ -5007,6 +5996,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn extend_reservation_checks_ceiling_and_settles_the_enlarged_hold() {
+        use crate::cost_router::plan_reservation_bound;
+        let model = ModelConfig::new("glm-4.7")
+            .unwrap()
+            .with_context_limit(Some(204_800))
+            .with_max_tokens(Some(131_072));
+        let bound = plan_reservation_bound("zai", "glm-4.7", CostTier::PaidApi, &model, 2)
+            .unwrap()
+            .unwrap();
+        let one = bound.amount_usd / 2.0;
+        let ceiling = bound.amount_usd + one + one;
+        for hard in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let session = sm
+                .create_session(
+                    temp.path().to_path_buf(),
+                    "extension".into(),
+                    SessionType::SubAgent,
+                    GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            let task = sm.begin_budget_task(&session.id).await.unwrap();
+            let cfg = reservation_config(10.0, 20.0, ceiling, if hard { ceiling } else { 20.0 });
+            let granted = sm
+                .reserve_bounded_provider_invocation(
+                    "extend",
+                    &session.id,
+                    Some(&task),
+                    bound,
+                    "2099-01-01T00:00:00Z",
+                    &cfg,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(granted, CostReservationOutcome::Granted { .. }));
+            // Evidence survives restart; concurrent extensions cannot overdraw.
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let (a, b) = tokio::join!(
+                sm.extend_reservation("extend", 1),
+                sm.extend_reservation("extend", 1)
+            );
+            let outcomes = [a.unwrap(), b.unwrap()];
+            assert_eq!(
+                outcomes
+                    .iter()
+                    .filter(|o| matches!(o, CostReservationOutcome::Granted { .. }))
+                    .count(),
+                1
+            );
+            assert!(outcomes.iter().any(|o| if hard {
+                matches!(o, CostReservationOutcome::Refused { .. })
+            } else {
+                matches!(o, CostReservationOutcome::NeedsGate { .. })
+            }));
+            let pool = sm.storage().pool().await.unwrap();
+            let (amount, json): (f64, String) = sqlx::query_as(
+                "SELECT amount_usd, extension_json FROM cost_reservations WHERE invocation_id = 'extend'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(amount, bound.amount_usd + one);
+            let evidence: ReservationExtension = serde_json::from_str(&json).unwrap();
+            assert_eq!(evidence.attempts, 3);
+            assert_eq!(evidence.config, cfg);
+            let row = reservation_row(&session.id, &task, "extend", 0.25);
+            assert!(sm
+                .settle_provider_invocation(
+                    "invocation:extend",
+                    &row,
+                    None,
+                    None,
+                    None,
+                    None,
+                    15,
+                    10,
+                    5,
+                )
+                .await
+                .unwrap());
+            let held: f64 = sqlx::query_scalar(
+                "SELECT CAST(COALESCE(SUM(amount_usd), 0) AS REAL) FROM cost_reservations
+                 WHERE state IN ('pending', 'unknown')",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(held, 0.0);
+            let spent: f64 = sqlx::query_scalar("SELECT SUM(cost_usd) FROM cost_ledger")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            assert_eq!(spent, 0.25);
+            assert!(sm.extend_reservation("extend", 1).await.is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn reservation_is_idempotent_across_concurrency_restart_and_settlement() {
         let temp_dir = TempDir::new().unwrap();
         let db_dir = temp_dir.path().to_path_buf();
@@ -5168,6 +6257,494 @@ mod tests {
         assert_eq!(persisted.accumulated_cost_usd, Some(0.25));
     }
 
+    // ── F1b: grant consumption (harness loop, Lane F1 2026-09-10, from
+    // F10/G8 forensics) ──
+
+    /// A grant minted for a session's own failed call is consumable by a
+    /// retry from that SAME session, shortly after — well within the TTL.
+    #[tokio::test]
+    async fn consume_granted_reservation_succeeds_for_the_same_session_within_ttl() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "grant-consume".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+
+        let granted = sm
+            .grant_reservation_after_gate_approval(
+                "invocation-1",
+                &session.id,
+                &task_id,
+                0.30,
+                "2099-01-01T00:00:00Z",
+                "zai",
+                "glm-4.7",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(granted, CostReservationOutcome::Granted { .. }));
+
+        let consumed = sm
+            .consume_granted_reservation(
+                "invocation-1",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                consumed,
+                Some(CostReservationOutcome::AlreadyReserved { .. })
+            ),
+            "the same session's retry must consume the grant: {consumed:?}"
+        );
+    }
+
+    /// A DIFFERENT session can never consume another session's grant — the
+    /// reservation stays exactly as granted, untouched.
+    #[tokio::test]
+    async fn consume_granted_reservation_refuses_a_different_session() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let granting_session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "grant-owner".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let other_session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "not-the-owner".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&granting_session.id).await.unwrap();
+
+        sm.grant_reservation_after_gate_approval(
+            "invocation-2",
+            &granting_session.id,
+            &task_id,
+            0.30,
+            "2099-01-01T00:00:00Z",
+            "zai",
+            "glm-4.7",
+        )
+        .await
+        .unwrap();
+
+        let consumed = sm
+            .consume_granted_reservation(
+                "invocation-2",
+                &other_session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            consumed, None,
+            "a different session must never be able to consume another session's grant"
+        );
+
+        // The grant itself is untouched and still consumable by its own
+        // session — a refused cross-session attempt must not burn it.
+        let consumed_by_owner = sm
+            .consume_granted_reservation(
+                "invocation-2",
+                &granting_session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            consumed_by_owner,
+            Some(CostReservationOutcome::AlreadyReserved { .. })
+        ));
+    }
+
+    /// A grant left unconsumed past its TTL expires: `consume_granted_
+    /// reservation` reports `None` (raise a fresh gate decision) and the
+    /// still-`pending` row is released rather than held open until its full
+    /// 2-hour lease — it must never silently authorize a retry that shows up
+    /// long after the auto-answer that minted it.
+    #[tokio::test]
+    async fn consume_granted_reservation_expires_past_ttl_and_releases_the_hold() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "grant-expire".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+
+        let granted = sm
+            .grant_reservation_after_gate_approval(
+                "invocation-3",
+                &session.id,
+                &task_id,
+                0.30,
+                "2099-01-01T00:00:00Z",
+                "zai",
+                "glm-4.7",
+            )
+            .await
+            .unwrap();
+        let reservation_id = match granted {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            other => panic!("unexpected grant outcome: {other:?}"),
+        };
+
+        // 200s after the grant, well past the 120s TTL.
+        let past_ttl = chrono::Utc::now() + chrono::Duration::seconds(200);
+        let consumed = sm
+            .consume_granted_reservation(
+                "invocation-3",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                past_ttl,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            consumed, None,
+            "a grant unconsumed past its TTL must expire, not silently authorize the retry"
+        );
+
+        let pool = sm.pool_clone().await.unwrap();
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM cost_reservations WHERE reservation_id = ?")
+                .bind(&reservation_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            state, "released",
+            "an expired grant must be released, never left pending forever"
+        );
+
+        // A later consume attempt (even within what would have been the
+        // TTL from now) finds nothing left to consume — the caller's next
+        // gate hit is a genuinely fresh decision, not a replay of the stale
+        // grant.
+        let consumed_again = sm
+            .consume_granted_reservation(
+                "invocation-3",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                past_ttl,
+            )
+            .await
+            .unwrap();
+        assert_eq!(consumed_again, None);
+    }
+
+    /// H1 pin (harness loop, Round F, Lane F3, from Lane G9's HIGH finding):
+    /// a grant minted for one provider/model is invisible to
+    /// `find_pending_gate_grant` for a different provider/model — the
+    /// coordinator/routing machinery's own provider switch between the
+    /// gated call and the retry must never silently reuse the OLD call's
+    /// dollar bound under the NEW provider. The SAME provider/model still
+    /// finds and consumes it normally.
+    #[tokio::test]
+    async fn find_pending_gate_grant_requires_an_exact_provider_model_match() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "grant-provider-mismatch".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+
+        sm.grant_reservation_after_gate_approval(
+            "invocation-4",
+            &session.id,
+            &task_id,
+            0.30,
+            "2099-01-01T00:00:00Z",
+            "zai",
+            "glm-4.7",
+        )
+        .await
+        .unwrap();
+
+        // A different provider (or model) on the next call finds nothing —
+        // this is the "provider switched mid-session" scenario.
+        let mismatched_provider = sm
+            .find_pending_gate_grant(&session.id, "anthropic", "glm-4.7")
+            .await
+            .unwrap();
+        assert_eq!(
+            mismatched_provider, None,
+            "a grant minted for zai/glm-4.7 must not be reusable by a different provider"
+        );
+        let mismatched_model = sm
+            .find_pending_gate_grant(&session.id, "zai", "glm-5.3")
+            .await
+            .unwrap();
+        assert_eq!(
+            mismatched_model, None,
+            "a grant minted for zai/glm-4.7 must not be reusable by a different model"
+        );
+        let mismatched_consume = sm
+            .consume_granted_reservation(
+                "invocation-4",
+                &session.id,
+                "anthropic",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            mismatched_consume, None,
+            "consume must also refuse a provider/model mismatch, defense-in-depth with lookup"
+        );
+
+        // The SAME provider/model still finds and consumes it.
+        let matched = sm
+            .find_pending_gate_grant(&session.id, "zai", "glm-4.7")
+            .await
+            .unwrap();
+        assert_eq!(matched, Some("invocation-4".to_string()));
+        let consumed = sm
+            .consume_granted_reservation(
+                "invocation-4",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                consumed,
+                Some(CostReservationOutcome::AlreadyReserved { .. })
+            ),
+            "the exact same provider/model must still be able to reuse the grant: {consumed:?}"
+        );
+    }
+
+    /// M1 pin (harness loop, Round F, Lane F3, from Lane G9's MEDIUM
+    /// finding): a grant authorizes exactly ONE retry of the specific call
+    /// that got gated. A second attempt to consume the SAME grant — even
+    /// from the same session, same provider/model, well within the TTL —
+    /// must be refused, not silently handed out again.
+    #[tokio::test]
+    async fn consume_granted_reservation_refuses_a_second_reuse_of_the_same_grant() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "grant-reuse-once".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+
+        sm.grant_reservation_after_gate_approval(
+            "invocation-5",
+            &session.id,
+            &task_id,
+            0.30,
+            "2099-01-01T00:00:00Z",
+            "zai",
+            "glm-4.7",
+        )
+        .await
+        .unwrap();
+
+        let first = sm
+            .consume_granted_reservation(
+                "invocation-5",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(first, Some(CostReservationOutcome::AlreadyReserved { .. })),
+            "the first consume must succeed: {first:?}"
+        );
+
+        let second = sm
+            .consume_granted_reservation(
+                "invocation-5",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            second, None,
+            "a second attempt to reuse the same grant must be refused"
+        );
+
+        let pool = sm.pool_clone().await.unwrap();
+        let (reuse_count, reused_by): (i64, Option<String>) = sqlx::query_as(
+            "SELECT reuse_count, reused_by_invocation_id FROM cost_reservations
+             WHERE invocation_id = 'invocation-5'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            reuse_count, 1,
+            "reuse_count must record exactly one consumption"
+        );
+        assert_eq!(reused_by.as_deref(), Some("invocation-5"));
+
+        // The underlying reservation itself is untouched by the refused
+        // second attempt — still pending, not released or corrupted.
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'invocation-5'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "pending");
+    }
+
+    /// F3b pin (harness loop, from Lane G10's MEDIUM finding): the TTL
+    /// self-release must still apply to a grant that was already consumed
+    /// once. A grant with `reuse_count > 0` that is ALSO past its TTL is
+    /// released (and reported as `None`), not refused-but-left-`pending` —
+    /// otherwise the fast 120s recovery path could only ever fire on a
+    /// grant's first consume attempt, and an abandoned consumed grant would
+    /// keep counting toward held budget until the ~8h lease-expiry sweep.
+    #[tokio::test]
+    async fn consume_granted_reservation_releases_a_consumed_grant_past_ttl() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "grant-reuse-then-expire".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+
+        sm.grant_reservation_after_gate_approval(
+            "invocation-6",
+            &session.id,
+            &task_id,
+            0.30,
+            "2099-01-01T00:00:00Z",
+            "zai",
+            "glm-4.7",
+        )
+        .await
+        .unwrap();
+
+        let first = sm
+            .consume_granted_reservation(
+                "invocation-6",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(first, Some(CostReservationOutcome::AlreadyReserved { .. })),
+            "the first consume must succeed: {first:?}"
+        );
+
+        // 200s after the grant, well past the 120s TTL: the retry that
+        // consumed it never settled and never released the row.
+        let past_ttl = chrono::Utc::now() + chrono::Duration::seconds(200);
+        let stale = sm
+            .consume_granted_reservation(
+                "invocation-6",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                past_ttl,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stale, None,
+            "an already-consumed grant past its TTL must report nothing to consume"
+        );
+
+        let pool = sm.pool_clone().await.unwrap();
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'invocation-6'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            state, "released",
+            "the TTL check must run before the reuse refusal, so a stale consumed grant \
+             releases its hold instead of sitting pending until the lease-expiry sweep"
+        );
+
+        // The refusal never double-counts: the row records the single
+        // consumption it actually had.
+        let reuse_count: i64 = sqlx::query_scalar(
+            "SELECT reuse_count FROM cost_reservations WHERE invocation_id = 'invocation-6'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(reuse_count, 1);
+    }
+
     #[tokio::test]
     async fn reservation_scope_is_root_lineage_and_sibling_holds_block() {
         let temp_dir = TempDir::new().unwrap();
@@ -5235,7 +6812,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reservation_requires_task_and_expiry_becomes_unknown() {
+    async fn reservation_requires_task_and_expiry_reconciles_on_next_call() {
         let temp_dir = TempDir::new().unwrap();
         let sm = SessionManager::new(temp_dir.path().to_path_buf());
         let session = sm
@@ -5296,6 +6873,15 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        // B7 (Lane Y1, 2026-09-09): a FRESH invocation for the same task is
+        // no longer refused forever once the earlier lease has expired. The
+        // sweep above turns 'expired-call' unknown, and
+        // `reconcile_stale_reservations` — run at the very start of THIS
+        // `reserve_provider_invocation` call — resolves it (no ledger row
+        // for it, so released) before this call's own authorization is
+        // evaluated, exactly the P0 defect #1 repair: a stalled internal
+        // completion must not permanently block every later provider call
+        // under the same task.
         assert!(matches!(
             sm.reserve_provider_invocation(
                 "after-expiry",
@@ -5307,14 +6893,25 @@ mod tests {
             )
             .await
             .unwrap(),
-            CostReservationOutcome::Unknown { .. }
+            CostReservationOutcome::Granted { .. }
         ));
+        let expired_state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'expired-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            expired_state, "released",
+            "the expired hold must be resolved to a receipt, not stuck unknown"
+        );
     }
 
     /// B6.1: transient failures may retry only within the configured physical
     /// envelope. Pre-dispatch failures release their distinct reservations;
     /// the terminal post-dispatch attempt remains unknown.
     #[tokio::test]
+    #[serial_test::serial(provider_wait_status)]
     async fn b6_bounded_retry_storm_has_distinct_attempts_and_terminal_unknown() {
         use crate::providers::errors::ProviderError;
         use crate::providers::{retry_operation, RetryConfig};
@@ -5413,12 +7010,20 @@ mod tests {
         );
     }
 
-    /// B6.3: a daemon death after authorization must reconcile the durable
-    /// hold on restart. Replaying the physical invocation is not dispatch
-    /// permission, and a fresh invocation remains fail-closed while the
-    /// unknown hold consumes the task allowance.
+    /// B6.3 (updated by B7, Lane Y1 2026-09-09 — see
+    /// `reconcile_stale_reservations`): a daemon death after authorization
+    /// must still refuse to replay the SAME physical invocation once its
+    /// hold is stale — that identity already reached a terminal outcome
+    /// (`released`, once reconciled) and re-authorizing it would be a second,
+    /// unbudgeted dispatch under one invocation id. But a DIFFERENT physical
+    /// invocation under the same task must NOT stay fail-closed forever just
+    /// because an earlier, unrelated call was left ambiguous: on the next
+    /// reservation attempt the stale hold is reconciled (settled to its
+    /// ledger cost if one exists, else released — see
+    /// `reconcile_stale_reservations`) and the fresh invocation is then
+    /// authorized normally against the now-accurate budget.
     #[tokio::test]
-    async fn b6_restart_reconciles_unknown_hold_and_blocks_replay() {
+    async fn b6_restart_reconciles_unknown_hold_and_a_fresh_invocation_succeeds() {
         let temp_dir = TempDir::new().unwrap();
         let db_dir = temp_dir.path().to_path_buf();
         let sm = SessionManager::new(db_dir.clone());
@@ -5468,7 +7073,14 @@ mod tests {
         .await
         .unwrap();
 
-        // The same durable invocation id is now unknown, never a fresh grant.
+        // Replaying the SAME durable invocation id is still refused: by the
+        // time this call runs, the sweep above has already turned it
+        // `unknown` (its lease expired), and `reconcile_stale_reservations`
+        // (run at the very start of THIS SAME `reserve_provider_invocation`
+        // call, before the duplicate-invocation check) resolves it to
+        // `released` — there is no ledger row for 'b6-restart-call', so
+        // there is no evidence to settle. Either way the identical
+        // invocation id must never come back as a fresh `Granted`.
         assert!(matches!(
             reopened
                 .reserve_provider_invocation(
@@ -5484,8 +7096,12 @@ mod tests {
             CostReservationOutcome::Unknown { .. }
         ));
 
-        // A different physical invocation is also refused fail-closed while
-        // the unresolved hold remains budget-consuming after restart.
+        // A DIFFERENT physical invocation now succeeds: reconciliation above
+        // already released the stale hold (B7), so it no longer consumes the
+        // task's authorization budget. This is the fix under test — before
+        // B7 this assertion was `Unknown{..}` forever, which is exactly the
+        // P0 availability bug (`dispatch_goal_fn` dying on the SAME stale
+        // hold via the shared task identity).
         assert!(matches!(
             reopened
                 .reserve_provider_invocation(
@@ -5498,7 +7114,7 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            CostReservationOutcome::Unknown { .. }
+            CostReservationOutcome::Granted { .. }
         ));
 
         let (state, amount): (String, f64) = sqlx::query_as(
@@ -5508,17 +7124,31 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(state, "unknown");
+        assert_eq!(
+            state, "released",
+            "a stale hold with no ledger evidence is released, not left unknown forever"
+        );
         assert!((amount - 0.75).abs() < 1e-12);
+        let fresh_state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'b6-restart-fresh'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(fresh_state, "pending");
         let reservation_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cost_reservations")
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(reservation_count, 1, "replay must not create a second hold");
+        assert_eq!(
+            reservation_count, 2,
+            "one released receipt for the stale hold, one pending row for the fresh grant — replay of the same id must not create a second row"
+        );
 
         let projection = reopened.budget_projection(&session.id, cfg).await.unwrap();
-        assert!((projection.task.unknown_usd.unwrap() - 0.75).abs() < 1e-12);
-        assert!((projection.task.remaining_usd.unwrap() - 0.25).abs() < 1e-12);
+        assert_eq!(projection.task.unknown_usd, Some(0.0));
+        assert!((projection.task.held_usd.unwrap() - 0.10).abs() < 1e-12);
+        assert!((projection.task.remaining_usd.unwrap() - 0.90).abs() < 1e-12);
 
         // B5.5 producer contract: the real restart projection is the shared
         // JSON consumed by downstream event/store/UI tests. Only identities
@@ -5533,6 +7163,484 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(actual, expected, "B5.5 budget projection contract drifted");
+    }
+
+    /// B7 (Lane Y1, 2026-09-09 harness evidence, P0 defect #1): a stale
+    /// `unknown` hold with a matching `cost_ledger` row — proof the provider
+    /// call really was accounted — must be SETTLED to that recorded cost on
+    /// the next reservation attempt for the same task, never silently
+    /// released to zero. The settled amount keeps counting toward the task
+    /// ceiling exactly like any other settled call, so a fresh reservation
+    /// that would push the total over budget is still correctly refused —
+    /// that refusal is the load-bearing proof the recorded spend was
+    /// unblocked, not dropped.
+    #[tokio::test]
+    async fn b7_stale_unknown_hold_with_recorded_ledger_spend_settles_not_drops() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "stale hold with recorded spend".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+
+        // A loose cap for the setup grant only — the ceiling that matters is
+        // enforced on the fresh call below.
+        let loose = reservation_config(5.0, 5.0, 5.0, 5.0);
+        let reservation_id = match sm
+            .reserve_provider_invocation(
+                "b7-recorded-call",
+                &session.id,
+                Some(&task_id),
+                0.95,
+                "2099-01-01T00:00:00Z",
+                &loose,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            other => panic!("setup reservation was not granted: {other:?}"),
+        };
+
+        // Fail-closed path: the provider call's outcome could not be
+        // durably confirmed through the normal settle path, so the hold is
+        // marked unknown...
+        assert!(sm
+            .mark_provider_invocation_unknown(&reservation_id)
+            .await
+            .unwrap());
+        // ...but real spend WAS in fact recorded for it independently (the
+        // durable evidence `reconcile_stale_reservations` looks for).
+        sm.append_cost_ledger(&reservation_row(
+            &session.id,
+            &task_id,
+            "b7-recorded-call",
+            0.95,
+        ))
+        .await
+        .unwrap();
+
+        // A tight cap: 0.95 already-recorded spend plus a 0.10 fresh request
+        // exceeds the 1.00 hard ceiling. If reconciliation dropped the
+        // recorded spend instead of settling it, this fresh call would
+        // wrongly succeed.
+        let tight = reservation_config(0.90, 1.00, 0.90, 1.00);
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "b7-fresh-call",
+                &session.id,
+                Some(&task_id),
+                0.10,
+                "2099-01-01T00:00:00Z",
+                &tight,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Refused { .. }
+        ));
+
+        let pool = sm.pool_clone().await.unwrap();
+        let (state, settled_cost): (String, Option<f64>) = sqlx::query_as(
+            "SELECT state, settled_cost_usd FROM cost_reservations
+             WHERE invocation_id = 'b7-recorded-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            state, "settled",
+            "a hold with a matching ledger row must be settled, not released"
+        );
+        assert!((settled_cost.unwrap() - 0.95).abs() < 1e-12);
+
+        let ledger_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger WHERE task_id = ?")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ledger_rows, 1, "the recorded spend must not be duplicated");
+    }
+
+    /// B7 (Lane Y1, 2026-09-09, P0 defect #1 part (c)): `dispatch_goal_fn`
+    /// dispatches a goal's worker under the SAME durable task identity as
+    /// the coordinator that created the card (`dispatch_budget_task_id`,
+    /// `orchestrator.rs`) — not necessarily the same session lineage. In the
+    /// harness evidence, a stale `unknown` hold left by the coordinator's
+    /// own internal completion (the pattern behind
+    /// `handle_decompose_roadmap`'s planner call,
+    /// `orchestrator.rs::run_decomposition`) then refused the WORKER's very
+    /// first reservation too — card 2's own `last_error` carried the exact
+    /// same `"an expired provider reservation is unresolved"` string,
+    /// proving the refusal reached `dispatch_goal_fn` itself. Reconciliation
+    /// runs at the start of every `reserve_provider_invocation` call for the
+    /// task, regardless of which session makes it, so the worker's
+    /// dispatch reservation now succeeds.
+    #[tokio::test]
+    async fn b7_dispatch_under_shared_task_succeeds_after_coordinator_hold_is_stale() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let coordinator = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&coordinator.id).await.unwrap();
+
+        // A dispatched worker session, unrelated to the coordinator's own
+        // session lineage, bound to the SAME task identity — exactly how
+        // `dispatch_goal_fn` stamps a card's worker.
+        let worker = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "dispatched worker".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        {
+            let mut extension_data = worker.extension_data.clone();
+            extension_data.set_extension_state(
+                crate::session::BUDGET_TASK_EXTENSION_NAME,
+                crate::session::BUDGET_TASK_EXTENSION_VERSION,
+                serde_json::Value::String(task_id.clone()),
+            );
+            sm.update(&worker.id)
+                .extension_data(extension_data)
+                .apply()
+                .await
+                .unwrap();
+        }
+
+        let cfg = reservation_config(0.90, 1.00, 0.90, 1.00);
+
+        // The coordinator's own internal completion (mirroring
+        // `handle_decompose_roadmap`'s planner call) is granted, then fails
+        // in a way that cannot prove whether the provider billed it.
+        let coordinator_reservation = match sm
+            .reserve_provider_invocation(
+                "coordinator-decompose-call",
+                &coordinator.id,
+                Some(&task_id),
+                0.20,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            other => panic!("coordinator setup reservation was not granted: {other:?}"),
+        };
+        assert!(sm
+            .mark_provider_invocation_unknown(&coordinator_reservation)
+            .await
+            .unwrap());
+
+        // Before B7 this died with "an expired provider reservation is
+        // unresolved" — the exact string observed in `dispatch_goal_fn`'s
+        // own card `last_error` in the harness evidence. Now it succeeds:
+        // the stale coordinator hold is reconciled (no ledger row for it, so
+        // released) at the start of THIS call.
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "worker-dispatch-call",
+                &worker.id,
+                Some(&task_id),
+                0.10,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Granted { .. }
+        ));
+    }
+
+    /// YF1 (G6 review, Lane Y-fix 2026-09-09, finding #1): a hold whose
+    /// LEASE merely expired must NOT be released by the very next call's
+    /// reconciliation — the provider call it authorized may still be
+    /// genuinely streaming past its lease. Releasing it immediately (the
+    /// pre-fix behavior) hands its budget headroom to someone else while
+    /// real spend is still in flight; when that spend later tries to
+    /// settle, the pre-fix code hard-errored and dropped it. Until the hold
+    /// has been stale for well beyond the longest legitimate call
+    /// (`RECONCILE_GRACE` in `reconcile_stale_reservations`), it must stay
+    /// `unknown` and keep refusing fresh calls under the same task — bounded
+    /// fail-closed, not indefinite, but never a fast release on a guess.
+    #[tokio::test]
+    async fn yf1_lease_expired_pending_hold_is_not_released_within_grace_window() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "lease expired in flight".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let cfg = reservation_config(10.0, 20.0, 10.0, 20.0);
+
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "yf1-in-flight-call",
+                &session.id,
+                Some(&task_id),
+                1.0,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Granted { .. }
+        ));
+
+        // Simulate the lease-expiry sweep alone (no explicit
+        // `mark_provider_invocation_unknown` call) by backdating the lease
+        // to just a few minutes ago — well within any realistic grace
+        // window, unlike the deep-past ('2000-01-01') lease used by the
+        // other reconciliation tests, which is deliberately far past grace.
+        let pool = sm.pool_clone().await.unwrap();
+        let recent_expiry = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        sqlx::query(
+            "UPDATE cost_reservations SET lease_until = ?
+             WHERE invocation_id = 'yf1-in-flight-call'",
+        )
+        .bind(&recent_expiry)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // A fresh call under the same task triggers both the lease sweep
+        // (pending -> unknown) and reconciliation. Pre-fix, reconciliation
+        // released the hold unconditionally and this call would be
+        // `Granted`. Post-fix, the stale hold is still within its grace
+        // window and must keep refusing.
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "yf1-fresh-call",
+                &session.id,
+                Some(&task_id),
+                1.0,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Unknown { .. }
+        ));
+
+        let (state, unknown_marked_at): (String, Option<String>) = sqlx::query_as(
+            "SELECT state, unknown_marked_at FROM cost_reservations
+             WHERE invocation_id = 'yf1-in-flight-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            state, "unknown",
+            "a merely lease-expired hold must not be released while still within its grace window"
+        );
+        assert!(
+            unknown_marked_at.is_none(),
+            "the lease-expiry sweep must never set unknown_marked_at — only an explicit mark_provider_invocation_unknown call does"
+        );
+    }
+
+    /// YF1 companion: the same lease-expired hold, once it has genuinely
+    /// been stale for longer than any legitimate call could still be
+    /// running, IS reconciled — the grace window is bounded, not
+    /// permanent refusal.
+    #[tokio::test]
+    async fn yf1_lease_expired_pending_hold_reconciles_after_grace_window_elapses() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "lease expired past grace".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let cfg = reservation_config(10.0, 20.0, 10.0, 20.0);
+
+        sm.reserve_provider_invocation(
+            "yf1-long-stale-call",
+            &session.id,
+            Some(&task_id),
+            1.0,
+            "2099-01-01T00:00:00Z",
+            &cfg,
+        )
+        .await
+        .unwrap();
+
+        let pool = sm.pool_clone().await.unwrap();
+        // Well past the 6h grace window (3x the standard 2h paid-call
+        // lease), unlike the 5-minute backdate above.
+        let long_past_expiry = (chrono::Utc::now() - chrono::Duration::hours(7)).to_rfc3339();
+        sqlx::query(
+            "UPDATE cost_reservations SET lease_until = ?
+             WHERE invocation_id = 'yf1-long-stale-call'",
+        )
+        .bind(&long_past_expiry)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "yf1-fresh-after-grace",
+                &session.id,
+                Some(&task_id),
+                1.0,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Granted { .. }
+        ));
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'yf1-long-stale-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "released");
+    }
+
+    /// YF1 (G6 review, Lane Y-fix 2026-09-09, finding #1): a late settlement
+    /// — the provider call for a hold that was ALREADY reconciled away
+    /// (released, no ledger evidence at the time) completing for real
+    /// afterward — must land in the ledger and keep counting toward the
+    /// ceiling, not hard-error and vanish. Pre-fix,
+    /// `append_cost_ledger_with_usage` refused any settlement against a
+    /// `released`/`unknown` reservation; this is the exact "real spend never
+    /// recorded" half of G6 finding #1.
+    #[tokio::test]
+    async fn yf1_late_settlement_after_reconciliation_lands_in_ledger_and_counts() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "late settlement".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let loose = reservation_config(5.0, 5.0, 5.0, 5.0);
+
+        let reservation_id = match sm
+            .reserve_provider_invocation(
+                "yf1-late-call",
+                &session.id,
+                Some(&task_id),
+                0.50,
+                "2099-01-01T00:00:00Z",
+                &loose,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            other => panic!("setup reservation was not granted: {other:?}"),
+        };
+
+        // Deep in the past — well past the grace window — so the next
+        // reservation call reconciles this hold to `released` with no
+        // ledger evidence yet, exactly as the other deep-past tests above.
+        let pool = sm.pool_clone().await.unwrap();
+        sqlx::query(
+            "UPDATE cost_reservations SET lease_until = '2000-01-01T00:00:00Z'
+             WHERE invocation_id = 'yf1-late-call'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sm.reserve_provider_invocation(
+            "yf1-late-trigger",
+            &session.id,
+            Some(&task_id),
+            0.01,
+            "2099-01-01T00:00:00Z",
+            &loose,
+        )
+        .await
+        .unwrap();
+        let pre_settlement_state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'yf1-late-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            pre_settlement_state, "released",
+            "setup: the hold must already be reconciled away before the late settlement arrives"
+        );
+
+        // The provider call actually completes now, well after reconciliation
+        // already ran. Pre-fix this returned Err("... was released").
+        let row = reservation_row(&session.id, &task_id, "yf1-late-call", 0.50);
+        let inserted = sm
+            .settle_provider_invocation(&reservation_id, &row, None, None, None, None, 15, 10, 5)
+            .await
+            .unwrap();
+        assert!(
+            inserted,
+            "the late settlement must be recorded, not dropped"
+        );
+
+        let (cost_usd, late_settlement): (f64, i64) = sqlx::query_as(
+            "SELECT cost_usd, late_settlement FROM cost_ledger WHERE call_id = 'yf1-late-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!((cost_usd - 0.50).abs() < 1e-12);
+        assert_eq!(
+            late_settlement, 1,
+            "a settlement against an already-reconciled reservation must be flagged late_settlement"
+        );
+
+        // And it must count: task spend is now 0.50 (late) + 0.01 (trigger)
+        // = 0.51 against a 0.55 hard ceiling, so a fresh 0.10 request must be
+        // refused — if the late spend had vanished instead, this would
+        // wrongly succeed.
+        let tight = reservation_config(0.50, 0.55, 0.50, 0.55);
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "yf1-post-late-call",
+                &session.id,
+                Some(&task_id),
+                0.10,
+                "2099-01-01T00:00:00Z",
+                &tight,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Refused { .. } | CostReservationOutcome::NeedsGate { .. }
+        ));
     }
 
     /// B6.2: compaction and continuation keep the same durable task identity,

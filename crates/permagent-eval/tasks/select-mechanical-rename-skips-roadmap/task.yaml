@@ -1,0 +1,25 @@
+id: select-mechanical-rename-skips-roadmap
+title: A two-file mechanical rename dispatches instead of hand-editing
+category: selection
+max_turns: 20
+# G3, corrected by Jesse's R18c redirect (HARNESS_LOOP_LOG.md "A17
+# analysis" — the original `must_not_call: [decompose_roadmap,
+# create_roadmap]` below directly contradicted recipe.yaml's NON-NEGOTIABLE
+# rule 1: the first execution tool call is always `decompose_roadmap`, and
+# "a tiny fix is a valid one-node roadmap" is the intended protocol, not an
+# exception to it). A purely mechanical, unambiguous rename across two files
+# is still small and well-specified enough to be a ONE-NODE roadmap — what
+# would actually be wrong here is the coordinator reaching for its own
+# `text_editor`/`shell` and hand-editing `a.py`/`b.py` itself instead of
+# dispatching the edit through the roadmap protocol like every other task.
+# id/title kept as-is (many references point at this fixture id); only the
+# check and its rationale changed.
+test: [bash, check.sh]
+prompt: |
+  Rename the function `old_name` to `new_name` everywhere it is defined or
+  called across `a.py` and `b.py`. It is a purely mechanical rename with no
+  behavior change.
+selection_check:
+  must_call: [decompose_roadmap, create_roadmap]
+  must_not_call: [text_editor, write, edit, str_replace, create_file, apply_patch]
+  before: [[decompose_roadmap, create_roadmap]]

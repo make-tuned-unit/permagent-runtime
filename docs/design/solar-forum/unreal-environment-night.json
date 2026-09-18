@@ -1,0 +1,174 @@
+{
+  "status": "complete",
+  "appearance": "night",
+  "map": "/Game/SolarForum/Maps/ForumNight",
+  "scannedAssets": {
+    "jacaranda_tree": {
+      "heightCm": 1946.8874893188477,
+      "slots": [
+        "jacaranda_tree_branches",
+        "jacaranda_tree_trunk",
+        "jacaranda_tree_leaves"
+      ]
+    },
+    "fern_02": {
+      "heightCm": 42.769469022750854,
+      "slots": [
+        "fern_02"
+      ]
+    },
+    "rock_09": {
+      "heightCm": 3.294884890317917,
+      "slots": [
+        "rock_09"
+      ]
+    }
+  },
+  "environmentActors": 269,
+  "materialAssignments": {
+    "burnished bronze": [
+      "Aged bronze"
+    ],
+    "scannedstone": [
+      "Limestone",
+      "Travertine",
+      "Forum White Sandstone Masonry"
+    ],
+    "basalt": [
+      "Permagent dark stone",
+      "Mesh gate Chitin engraved channel",
+      "Mesh gate Chitin stone"
+    ],
+    "living water": [
+      "Water",
+      "Forum Lagoon Island Shallow Water",
+      "Forum Lagoon Island Shallow Water_001",
+      "Forum Lagoon Island Shallow Water_002",
+      "Forum Lagoon Shallow Teal",
+      "Forum Plunge Pool Dark Water"
+    ],
+    "architectural glass": [
+      "Conservatory glass",
+      "Forum Architectural Glass"
+    ],
+    "original warm timber tone": [
+      "Oiled structural timber",
+      "Forum Oiled Timber Grain",
+      "Forum Harbour Rope",
+      "Forum Oiled Timber",
+      "Forum Quay Rope"
+    ],
+    "scannedrock": [
+      "Weathered coastal rock"
+    ],
+    "waterfall mist": [
+      "Celestial waterfall mist"
+    ],
+    "basalt stratum 0": [
+      "Forum Basalt stratum 0"
+    ],
+    "basalt stratum 1": [
+      "Forum Basalt stratum 1"
+    ],
+    "basalt stratum 2": [
+      "Forum Basalt stratum 2"
+    ],
+    "basalt stratum 3": [
+      "Forum Basalt stratum 3"
+    ],
+    "mossy rock": [
+      "Forum Mossy Coastal Rock"
+    ],
+    "emissive amber strong": [
+      "Forum Brazier Amber Embers",
+      "Forum Harbour Amber",
+      "Forum Island Quay Amber",
+      "Forum Lantern Amber"
+    ],
+    "hologram": [
+      "Forum Hologram"
+    ],
+    "hologram continents": [
+      "Forum Hologram Continents"
+    ],
+    "hologram glass": [
+      "Forum Hologram Glass",
+      "Mesh gate cyan display glass"
+    ],
+    "hologram light cone": [
+      "Forum Hologram Light Cone"
+    ],
+    "emissive cyan": [
+      "Forum Info Display Line"
+    ],
+    "planter moss": [
+      "Forum Planter Moss"
+    ],
+    "sand fabric": [
+      "Forum Sand Fabric"
+    ],
+    "emissive amber": [
+      "Forum Strand Amber",
+      "Forum Warm Window Emission"
+    ],
+    "emissive horizon blue": [
+      "Mesh gate HorizonBlue Inlay"
+    ]
+  },
+  "defaultMaterialSlots": [
+    "Bark",
+    "Terracotta"
+  ],
+  "unmappedForumSlots": [],
+  "resetImportedMaterialSlots": [
+    "Coastal meadow",
+    "Conservatory glass",
+    "Oiled structural timber",
+    "Weathered coastal rock",
+    "Celestial waterfall mist",
+    "Coastal canopy",
+    "Forum Architectural Glass",
+    "Forum Basalt stratum 0",
+    "Forum Basalt stratum 1",
+    "Forum Basalt stratum 2",
+    "Forum Basalt stratum 3",
+    "Forum Mossy Coastal Rock",
+    "Forum Oiled Timber Grain",
+    "Forum White Sandstone Masonry",
+    "Forum Brazier Amber Embers",
+    "Forum Harbour Amber",
+    "Forum Harbour Rope",
+    "Forum Hologram",
+    "Forum Hologram Continents",
+    "Forum Hologram Glass",
+    "Forum Hologram Light Cone",
+    "Forum Info Display Line",
+    "Forum Island Quay Amber",
+    "Forum Lagoon Island Shallow Water",
+    "Forum Lagoon Island Shallow Water_001",
+    "Forum Lagoon Island Shallow Water_002",
+    "Forum Lagoon Shallow Teal",
+    "Forum Lantern Amber",
+    "Forum Oiled Timber",
+    "Forum Planter Moss",
+    "Forum Plunge Pool Dark Water",
+    "Forum Quay Rope",
+    "Forum Sand Fabric",
+    "Forum Strand Amber",
+    "Forum Warm Window Emission",
+    "Mesh gate Chitin engraved channel",
+    "Mesh gate Chitin stone",
+    "Mesh gate HorizonBlue Inlay",
+    "Mesh gate cyan display glass"
+  ],
+  "obsoleteProxySlotsHidden": [],
+  "renderVerified": true,
+  "renderFiles": [
+    "unreal-forum-night.webp",
+    "unreal-walk-night.webp",
+    "unreal-campus-night.webp",
+    "unreal-sovereign-night.webp",
+    "unreal-galaxies-night.webp",
+    "unreal-conservatory-night.webp"
+  ]
+}

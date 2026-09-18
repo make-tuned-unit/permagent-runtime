@@ -3,7 +3,12 @@ title: "available_quantity panics instead of saturating"
 category: model-defaults-rs
 max_turns: 25
 harness_timeout_secs: 600
-oracle_timeout_secs: 180
+# Lane K7: 300s -- a Rust oracle's `cargo test` builds into a fresh per-run
+# CARGO_TARGET_DIR (Lane R18c isolation), so a cold build takes longer than
+# a warm one; 180s was tight enough that the oracle script's own internal
+# alarm (see oracle_check.sh) could fire first and get misread as a real
+# test failure instead of a grading timeout.
+oracle_timeout_secs: 300
 test: [bash, oracle_check.sh]
 # The oracle is a shell script, so the Python/Node import allowlist does
 # not apply; the overlay still makes it untamperable by the agent.

@@ -90,7 +90,12 @@ interface TransitionState {
 }
 
 interface AgentCharacterProps {
+  armorVariant?: 'world' | 'forum';
   identity: AgentIdentity;
+  /** Optional visual motion source for isolated scene layers such as Forum. */
+  motion?: Pick<import('./motion').MotionState, 'x' | 'y' | 'z' | 'heading' | 'walking' | 'strideDistance' | 'engaged'>;
+  /** Resolve peer positions from the same isolated visual layer, when present. */
+  motionForAgent?: (id: string) => Pick<import('./motion').MotionState, 'x' | 'y' | 'z' | 'heading' | 'walking' | 'strideDistance' | 'engaged'> | undefined;
   hudState: AgentHudState;
   hovered: boolean;
   /** Whichever agent id is currently hovered scene-wide (or null) — drives
@@ -103,7 +108,10 @@ interface AgentCharacterProps {
 }
 
 export function AgentCharacterV2({
+  armorVariant = 'world',
   identity,
+  motion: motionOverride,
+  motionForAgent,
   hudState,
   hovered,
   hoveredAgentId,
@@ -129,12 +137,12 @@ export function AgentCharacterV2({
   useEffect(() => {
     let mounted = true;
     setArmor(null);
-    loadBlenderArmor(identity.id).then(
+    loadBlenderArmor(identity.id, armorVariant).then(
       value => { if (mounted) setArmor(value); },
       () => { console.warn('[world] Authored character unavailable; retaining live procedural rig'); },
     );
     return () => { mounted = false; };
-  }, [identity.id]);
+  }, [identity.id, armorVariant]);
 
   const rig = useMemo(
     () =>
@@ -188,7 +196,7 @@ export function AgentCharacterV2({
 
   useFrame((r3f, rawDt) => {
     const g = groupRef.current;
-    const m = getMotion(identity.id);
+    const m = motionOverride ?? motionForAgent?.(identity.id) ?? getMotion(identity.id);
     if (!g || !m) return;
     const dt = Math.min(rawDt, 0.1);
     const t = r3f.clock.elapsedTime;
@@ -293,13 +301,17 @@ export function AgentCharacterV2({
 
     // ── Ambient motion (layered on top of the blended pose) ──
     if (m.walking) {
-      // Walk bob + limb swing.
-      bones.root.position.y += 0.05 * Math.abs(Math.sin(t * 8));
-      const swing = Math.sin(t * 8) * 0.45;
-      bones.thighL.rotateX(swing);
-      bones.thighR.rotateX(-swing);
-      bones.armL.rotateX(-swing * 0.55);
-      bones.armR.rotateX(swing * 0.55);
+      // Forum stride follows distance traveled, so pausing cannot leave feet skating.
+      const cycle = armorVariant === 'forum' ? (m.strideDistance ?? 0) * Math.PI * 2 / 1.05 : t * 8;
+      const swing = Math.sin(cycle) * (armorVariant === 'forum' ? .32 : .45);
+      bones.root.position.y += armorVariant === 'forum' ? .012 * (1 - Math.cos(cycle * 2)) : .05 * Math.abs(Math.sin(cycle));
+      bones.thighL.rotateX(swing);bones.thighR.rotateX(-swing);
+      if(armorVariant === 'forum'){
+        bones.calfL.rotateX(Math.max(0,-Math.sin(cycle))*.42);
+        bones.calfR.rotateX(Math.max(0,Math.sin(cycle))*.42);
+        bones.spine.rotateY(-Math.sin(cycle)*.025);
+      }
+      bones.armL.rotateX(-swing*.55);bones.armR.rotateX(swing*.55);
       g.rotation.z = 0;
     } else if (pose === 'tending') {
       // Unhurried haul/set sway (bible §4): a slow stoop-and-place cadence on the arms,
@@ -351,7 +363,7 @@ export function AgentCharacterV2({
       lookDZ = cam.z - m.z;
       hasLookTarget = true;
     } else if (hoveredId) {
-      const hoveredM = getMotion(hoveredId);
+      const hoveredM = motionForAgent?.(hoveredId) ?? getMotion(hoveredId);
       if (hoveredM) {
         lookDX = hoveredM.x - m.x;
         lookDY = hoveredM.y + HEAD_HEIGHT - headWorldY;
@@ -362,7 +374,7 @@ export function AgentCharacterV2({
       const runtimeStates = getAgentRuntimeStates();
       for (let i = 0; i < runtimeStates.length; i++) {
         if (runtimeStates[i].id !== identity.id && runtimeStates[i].hudState === 'working') {
-          const workerM = getMotion(runtimeStates[i].id);
+          const workerM = motionForAgent?.(runtimeStates[i].id) ?? getMotion(runtimeStates[i].id);
           if (workerM) {
             lookDX = workerM.x - m.x;
             lookDY = workerM.y + HEAD_HEIGHT - headWorldY;
@@ -398,7 +410,7 @@ export function AgentCharacterV2({
       // (0 = body … 1 = code). Scaling rig.root implodes/reforms the whole avatar
       // symmetrically; the code stream + his Agora glyph carry the crossing. The
       // literal per-vertex skinned-mesh shatter is deferred polish (see PR).
-      const emb = 1 - getDissolve(); // 1 fully embodied … 0 fully code
+      const emb = armorVariant === 'forum' ? 1 : 1 - getDissolve(); // 1 fully embodied … 0 fully code
       rig.root.scale.setScalar(Math.max(0.0001, emb));
       rig.root.visible = emb > 0.02;
       // Henry presides — publish his live position so W4 can gather light where he
@@ -512,8 +524,8 @@ export function AgentCharacterV2({
       )}
 
       {/* Always-on small label, camera within 18u only (bible §4) */}
-      {labelOn && !hovered && (
-        <Html position={[0, 2.7, 0]} center distanceFactor={12} style={{ pointerEvents: 'none' }}>
+      {(labelOn || (armorVariant === 'forum' && identity.isHenry)) && !hovered && (
+        <Html position={[0, 2.7, 0]} center distanceFactor={armorVariant === 'forum' && identity.isHenry ? undefined : 12} style={{ pointerEvents: 'none' }}>
           <div
             style={{
               color: `${ENV.marble}B3`,

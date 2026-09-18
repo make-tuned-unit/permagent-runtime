@@ -24,9 +24,28 @@ fn logs_dir() -> PathBuf {
     home.join(".permagent/logs")
 }
 
+/// The config the daemon port is read from.
+///
+/// Resolved through `Paths`, NOT `$HOME`, so a process running under
+/// `PERMAGENT_PATH_ROOT` (every eval run gets a fresh one) reads its own root's
+/// config and never the operator's. Unrooted it is `~/.permagent/config.yaml`,
+/// exactly as before.
 fn config_path() -> PathBuf {
-    let home = dirs::home_dir().expect("could not determine home directory");
-    home.join(".permagent/config.yaml")
+    permagent::config::paths::Paths::in_config_dir("config.yaml")
+}
+
+/// Where the daemon's bearer token lives.
+///
+/// The daemon WRITES it at `Paths::data_dir()/secrets/daemon_token.json`
+/// (`goose-server/src/state.rs`, `load_or_create_daemon_token`) and `permagent
+/// doctor` already reads it there. This reader used to join `$HOME` by hand,
+/// which ignored `PERMAGENT_PATH_ROOT`: an eval run with a fresh root still
+/// picked up the operator's real token, reached the operator's live daemon over
+/// loopback, and `brain_sync` injected the operator's private Brain recall into
+/// the eval model's prompt (and wrote eval turns and spend back into it). Rooted
+/// here, a fresh root holds no token, so every daemon bridge fails closed.
+fn daemon_token_path() -> PathBuf {
+    permagent::config::paths::Paths::in_data_dir("secrets").join("daemon_token.json")
 }
 
 pub fn read_daemon_port() -> u16 {
@@ -51,10 +70,11 @@ pub fn daemon_ws_url() -> Result<String> {
     Ok(format!("ws://127.0.0.1:{}", port))
 }
 
-/// Loads the daemon token from ~/.permagent/secrets/daemon_token.json.
+/// Loads the daemon token from `<path root>/secrets/daemon_token.json`
+/// (`~/.permagent/secrets/daemon_token.json` when no root is set) — see
+/// `daemon_token_path`.
 pub fn load_daemon_token() -> Result<String> {
-    let home = dirs::home_dir().context("could not determine home directory")?;
-    let path = home.join(".permagent/secrets/daemon_token.json");
+    let path = daemon_token_path();
     let contents = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read daemon token from {}", path.display()))?;
     let parsed: serde_json::Value =

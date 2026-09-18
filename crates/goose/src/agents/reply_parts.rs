@@ -18,7 +18,8 @@ use crate::cost_router::cache::SystemPromptParts;
 use crate::providers::base::stream_from_single_message;
 use crate::providers::base::{MessageStream, Provider, ProviderUsage};
 use crate::providers::canonical::{
-    cache_hit_rate_of, cache_savings_of, cost_breakdown, maybe_get_pricing, worst_case_pricing,
+    cache_hit_rate_of, cache_savings_of, canonical_name, cost_breakdown, maybe_get_pricing,
+    worst_case_pricing,
 };
 use crate::providers::errors::ProviderError;
 use crate::providers::toolshim::{
@@ -140,6 +141,542 @@ async fn toolshim_postprocess(
         .map_err(|e| ProviderError::ExecutionError(format!("Failed to augment message: {}", e)))
 }
 
+/// What [`Agent::handle_provider_authorization_failure`] did about a blocked
+/// provider call.
+///
+/// Y4a (harness loop, 2026-09-10, from Lane A12's M12 forensics): the handler
+/// used to return a bare `detail` string, so its caller could not tell a gate
+/// that had just been auto-granted from one that was parked for a human — it
+/// emitted "provider spend could not be authorized" and ended the turn in
+/// BOTH cases. For a coordinator that is fatal: the run ends with the turn, so
+/// the `granted_via_gate=1, state='pending'` reservation the handler had just
+/// paid for was never consumed by anyone (A12: fx01's correct worker commit
+/// never surfaced, fx09 the same, fx07 truncated — the goal-scoped grant in
+/// the *worker* session settled the same second, because a worker does get a
+/// later turn). `gate_grant_minted` is that missing bit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderAuthorizationOutcome {
+    /// The human-readable failure detail, unchanged from
+    /// `ProviderAuthorizationFailure::to_string()` (plus any context the
+    /// handler could add). Always safe to show the model.
+    pub(crate) detail: String,
+    /// `true` iff a headless gate auto-answer minted a spendable reservation
+    /// under the SAME `invocation_id` this call already failed under, so the
+    /// caller may retry `reserve_provider_invocation` ONCE with that id and
+    /// take its idempotent `AlreadyReserved` fast path. `false` for every
+    /// parked, refused, non-gate or non-headless outcome.
+    pub(crate) gate_grant_minted: bool,
+}
+
+impl ProviderAuthorizationOutcome {
+    /// The unchanged pre-Y4a outcome: report `detail`, authorize no retry.
+    fn parked(detail: String) -> Self {
+        Self {
+            detail,
+            gate_grant_minted: false,
+        }
+    }
+}
+
+/// Lane R18a-b (G21 HIGH-1): call once per provider call `agents::agent`'s
+/// turn loop is about to let proceed, at the exact point `invocation` is
+/// finalized (either the direct `reserve_provider_invocation` success, or
+/// the retried call after a real `gate_grant_minted` grant) — a per-run
+/// observation of `safety_and_trust`'s `approval_bypasses`, not a
+/// compile-time literal. `authorized` is always `true` at both of the
+/// turn loop's call sites today, because both are only reachable after a
+/// real `ProviderAuthorizationOutcome`/reservation success (see the
+/// `FIELDS` doc comment in `receipts.rs` for the full argument); this
+/// function exists so a future call site that proceeds WITHOUT one shows
+/// up as a non-zero receipt instead of nothing. Factored out as a pure,
+/// directly-testable function because the turn loop itself (`agents::
+/// agent`'s big streaming `reply`) has no lightweight test harness — see
+/// `record_provider_call_authorized_increments_only_when_not_authorized`
+/// below.
+pub(crate) fn record_provider_call_authorized(authorized: bool) {
+    if authorized {
+        crate::receipts::record_count("safety_and_trust", "approval_bypasses", 0);
+    } else {
+        crate::receipts::record("safety_and_trust", "approval_bypasses");
+    }
+}
+
+/// The gate-decision-resolved half of
+/// [`Agent::handle_provider_authorization_failure`]'s success path, factored
+/// out as a free function taking `headless` as an explicit parameter
+/// instead of consulting the process-global headless dispatch policy slot
+/// itself.
+///
+/// E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10): D1's own
+/// R2 gate-results notes explicitly flag that global as a real shared-
+/// state hazard for `--lib` unit tests in this same binary ("ask future
+/// lanes not to compound it") — it was a one-shot, process-wide `OnceLock`
+/// with no reset between tests (Lane T7 has since given it an `RwLock`
+/// slot and a `#[cfg(test)]` restore guard), so any new test that both installs a
+/// headless policy AND asserts on the *absence* of one elsewhere in this
+/// binary is a real, order-dependent flakiness risk. Taking `headless` as a
+/// plain argument here lets this function's behavior be pinned directly and
+/// deterministically, with zero risk to any other test in the binary.
+///
+/// Returns `Some(outcome)` when the gate was headlessly auto-answered — the
+/// caller should retry in place (this session keeps its goal assignment
+/// unchanged; never a `requeue_goal` call). Returns `None` when the caller
+/// must fall through to the unchanged park path (not headless, the
+/// auto-answer itself refused, or a race already resolved the decision).
+#[allow(clippy::too_many_arguments)]
+async fn try_auto_answer_reservation_gate(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    session: &Session,
+    invocation_id: &str,
+    failure: &ProviderAuthorizationFailure,
+    decision_id: &str,
+    headless: bool,
+    session_manager: &Arc<SessionManager>,
+    detail: &str,
+    // F3 (harness loop, Round F, from Lane G9's HIGH finding): the exact
+    // provider/model of the call that just failed and got gated — stored on
+    // the grant so a later reuse attempt can require an exact match instead
+    // of trusting whatever provider/model the reusing call happens to be
+    // using.
+    provider: &str,
+    model: &str,
+) -> Option<ProviderAuthorizationOutcome> {
+    if !headless {
+        return None;
+    }
+    match crate::decisions::auto_approve_reservation_gate(pool, decision_id).await {
+        Ok(_) => {
+            let mut gate_grant_minted = false;
+            if let ProviderAuthorizationFailure::NeedsGate { requested_usd, .. } = failure {
+                let task_id = budget_task_id(&session.extension_data);
+                let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+                match task_id {
+                    Some(task_id) => {
+                        match session_manager
+                            .grant_reservation_after_gate_approval(
+                                invocation_id,
+                                &session.id,
+                                &task_id,
+                                *requested_usd,
+                                &lease_until,
+                                provider,
+                                model,
+                            )
+                            .await
+                        {
+                            // Y4a: ONLY this arm authorizes an in-turn retry.
+                            // The grant is a real `granted_via_gate=1`,
+                            // `state='pending'` row keyed on THIS call's
+                            // `invocation_id`, so re-calling
+                            // `reserve_provider_invocation` with that same id
+                            // takes `reserve_provider_invocation`'s early
+                            // idempotent lookup and returns `AlreadyReserved`
+                            // without re-running any threshold math. Every
+                            // other `Ok` shape (`AlreadySettled`, `Unknown`)
+                            // has no spendable hold behind it, so it must
+                            // keep the unchanged park path.
+                            Ok(outcome) => {
+                                gate_grant_minted = matches!(
+                                    outcome,
+                                    crate::session::CostReservationOutcome::Granted { .. }
+                                        | crate::session::CostReservationOutcome::AlreadyReserved { .. }
+                                );
+                                if !gate_grant_minted {
+                                    tracing::warn!(
+                                        goal_id = %card_id,
+                                        decision_id,
+                                        "headless reservation-gate auto-answer succeeded but the \
+                                         grant is not spendable ({outcome:?}); not retrying in turn"
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    goal_id = %card_id,
+                                    decision_id,
+                                    "headless reservation-gate auto-answer succeeded but the \
+                                     reservation could not be granted ({error:?}); the session's \
+                                     next attempt will just re-ask the gate"
+                                );
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            goal_id = %card_id,
+                            decision_id,
+                            "headless reservation-gate auto-answer succeeded but this session \
+                             has no durable task identity; cannot pre-grant a reservation"
+                        );
+                    }
+                }
+            }
+            // Retry in place (E1): the goal keeps its current dispatched
+            // session unchanged. No `requeue_goal` call here — see
+            // `Agent::handle_provider_authorization_failure`'s doc comment.
+            Some(ProviderAuthorizationOutcome {
+                detail: detail.to_string(),
+                gate_grant_minted,
+            })
+        }
+        Err(error) => {
+            tracing::info!(
+                goal_id = %card_id,
+                decision_id,
+                "headless reservation-gate auto-answer did not apply ({error:?}); leaving the \
+                 gate for a human"
+            );
+            None
+        }
+    }
+}
+
+/// If `session_id` has an unconsumed reservation grant from a prior headless
+/// gate auto-answer (see
+/// [`SessionManager::grant_reservation_after_gate_approval`]), return its
+/// `invocation_id` so the caller reuses it for the upcoming call instead of
+/// minting a fresh one — `reserve_provider_invocation`'s own early
+/// idempotent lookup then reports `AlreadyReserved` immediately, never
+/// re-running the gate/budget threshold math for a request that already got
+/// a yes.
+///
+/// I1 (harness loop, 2026-09-10, wiring F1b + F10's forensics into the live
+/// turn loop): F10 traced every provider call minting a brand-new
+/// `invocation_id` (`Uuid::new_v4()`, in `agents::agent`'s turn loop) as the
+/// exact reason E1's grant could never be matched by a retry — this closes
+/// that gap at its one call site. Consumption is TTL-bounded
+/// ([`SessionManager::GRANT_CONSUME_TTL_SECS_DEFAULT`]): an unconsumed grant
+/// older than the TTL is released by
+/// [`SessionManager::consume_granted_reservation`] itself and this returns
+/// `None`, so a stale grant re-gates rather than authorizing a call that
+/// never came in time. Belongs to exactly the session that requests it —
+/// `consume_granted_reservation` refuses a different session's grant
+/// outright, and `find_pending_gate_grant` only ever looks up `session_id`'s
+/// own rows in the first place.
+///
+/// F3 (harness loop, Round F, from Lane G9's HIGH and MEDIUM findings):
+/// `provider`/`model` must be the CURRENT call's own identity (its caller's
+/// exact live provider/model, captured before dispatch) — a grant minted
+/// under a different provider/model is invisible to `find_pending_gate_
+/// grant` and is never returned here (H1: a provider/role switch between
+/// the gated call and this retry no longer silently reuses the OLD call's
+/// dollar bound). A grant already consumed once by an earlier call is
+/// likewise refused by `consume_granted_reservation` (M1): it authorizes
+/// exactly one retry, not every later call in the session.
+pub(crate) async fn reusable_gate_grant_invocation_id(
+    manager: &Arc<SessionManager>,
+    session_id: &str,
+    provider: &str,
+    model: &str,
+) -> Option<String> {
+    let pending_invocation_id = manager
+        .find_pending_gate_grant(session_id, provider, model)
+        .await
+        .ok()
+        .flatten()?;
+    let outcome = manager
+        .consume_granted_reservation(
+            &pending_invocation_id,
+            session_id,
+            provider,
+            model,
+            SessionManager::GRANT_CONSUME_TTL_SECS_DEFAULT,
+            chrono::Utc::now(),
+        )
+        .await
+        .ok()
+        .flatten()?;
+    matches!(
+        outcome,
+        crate::session::CostReservationOutcome::AlreadyReserved { .. }
+    )
+    .then_some(pending_invocation_id)
+}
+
+/// I1 (harness loop, 2026-09-10, from M10's forensics): the SESSION-scoped
+/// counterpart of [`Agent::handle_provider_authorization_failure`]'s
+/// goal-scoped gate, for a session with no `goal_id` — the coordinator's own
+/// provider calls. M10 found the coordinator's calls hit the exact same
+/// reservation gate as a worker's (bounded by the same task/session budget
+/// rules) but `handle_provider_authorization_failure`'s entire gate-
+/// decision/auto-answer/retry machinery was a structural no-op for it —
+/// `goal_id(&session.extension_data)` is `None`, so it returned `detail`
+/// immediately with no decision ever raised, no auto-answer ever attempted
+/// (10/10 M10 coordinators hit this; 8/10 never got past it). This gives it
+/// the SAME shape/budget-rule auto-answer under a headless Auto run
+/// (`headless: true`, the same flag the goal-scoped path already checks),
+/// never a goal card to park (there is none) and never a non-gate failure
+/// (nothing useful to auto-answer for a session with no goal to route to).
+///
+/// `headless` is a plain argument, not read from the process-global
+/// headless dispatch policy slot here, for the same reason
+/// `try_auto_answer_reservation_gate` takes it as one: a `--lib` test that
+/// both installs a headless policy AND asserts its absence elsewhere in this
+/// binary is an order-dependent flakiness risk unless it holds Lane T7's
+/// `take_headless_dispatch_policy_for_test` guard under the shared
+/// `serial(headless_dispatch_policy)` key.
+///
+/// `provider`/`model` (F3, harness loop, Round F, from Lane G9's HIGH
+/// finding) are the exact live identity of the call that just failed, so a
+/// grant minted here can only ever be reused by a retry under that SAME
+/// provider/model (see `try_auto_answer_reservation_gate`'s own doc
+/// comment).
+#[allow(clippy::too_many_arguments)]
+async fn session_scoped_provider_authorization_failure(
+    session_manager: &Arc<SessionManager>,
+    session: &Session,
+    invocation_id: &str,
+    failure: &ProviderAuthorizationFailure,
+    detail: String,
+    headless: bool,
+    provider: &str,
+    model: &str,
+) -> ProviderAuthorizationOutcome {
+    let ProviderAuthorizationFailure::NeedsGate {
+        scope,
+        spent_usd,
+        held_usd,
+        requested_usd,
+        ceiling_usd,
+    } = failure
+    else {
+        // Only a spend gate has an auto-answerable shape; every other
+        // failure kind has no goal card to park either, so it simply ends
+        // the call exactly as it did before this lane.
+        return ProviderAuthorizationOutcome::parked(detail);
+    };
+    if !headless {
+        return ProviderAuthorizationOutcome::parked(detail);
+    }
+    let pool = match session_manager.pool_clone().await {
+        Ok(pool) => pool,
+        Err(error) => {
+            return ProviderAuthorizationOutcome::parked(format!(
+                "{detail}; could not open Decision Inbox: {error}"
+            ))
+        }
+    };
+
+    // Dedupe: a coordinator that keeps hitting the same gate on successive
+    // calls must not file a fresh Decision Inbox card every time — same
+    // purpose as the goal-scoped path's `find_open_decision_for_goal`, keyed
+    // on the session instead since this decision carries no `goal_id`.
+    let decision_id =
+        match crate::decisions::find_open_reservation_gate_decision_for_session(&pool, &session.id)
+            .await
+        {
+            Ok(Some(existing)) => existing.id,
+            Ok(None) => {
+                let cfg = crate::cost_router::budget::load_budget_config();
+                let request = crate::cost_router::budget::with_requesting_session_id(
+                    crate::cost_router::budget::reservation_gate_decision_request(
+                        *scope,
+                        *spent_usd,
+                        *held_usd,
+                        *requested_usd,
+                        *ceiling_usd,
+                        match scope {
+                            crate::cost_router::budget::BudgetScope::Task => cfg.task.gate,
+                            crate::cost_router::budget::BudgetScope::Session => cfg.session.gate,
+                        },
+                        None, // no goal_id — this is the coordinator's own call
+                        None,
+                    ),
+                    &session.id,
+                );
+                match crate::decisions::create_decision(&pool, request).await {
+                    Ok(created) => created.id,
+                    Err(error) => {
+                        tracing::error!(
+                            session_id = %session.id,
+                            "could not create session-scoped provider budget decision: {error}"
+                        );
+                        return ProviderAuthorizationOutcome::parked(detail);
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session.id,
+                    "could not look up an existing session-scoped gate decision ({error}); \
+                     proceeding without one this call"
+                );
+                return ProviderAuthorizationOutcome::parked(detail);
+            }
+        };
+
+    // M2 (harness loop, Round F, Lane F3, from Lane G9's MEDIUM finding):
+    // `NeedsGate` is pure arithmetic over `cost_ledger`/`cost_reservations`
+    // totals — answering the decision changes nothing about those totals,
+    // so a long-running headless session can hit this gate, get
+    // auto-answered, spend more, hit it again, and so on repeatedly with no
+    // cap other than the hard ceiling eventually refusing outright (bounded
+    // only by `(hard - gate) / amount_usd`, not by a fixed count). Count
+    // this session's own PAST session-scoped auto-answers (`kind = 'choice'
+    // AND goal_id IS NULL` — excludes the goal-scoped path's decisions,
+    // which use the SAME `acted_by` value but always carry a `goal_id`) and
+    // stop auto-answering once the cap is reached: the decision this call
+    // just resolved onto (`decision_id`) stays open, honestly escalated to
+    // a human via the ordinary Decision Inbox, instead of being silently
+    // rubber-stamped again.
+    let auto_answer_count = session_scoped_auto_answer_count(&pool, &session.id).await;
+    let cap = session_gate_auto_answer_cap();
+    if auto_answer_count >= cap {
+        tracing::warn!(
+            session_id = %session.id,
+            decision_id,
+            auto_answer_count,
+            cap,
+            "session-scoped reservation gate auto-answer cap reached; escalating to a human \
+             instead of auto-answering again"
+        );
+        // Y4a: the cap is reached, so nothing was auto-answered and no
+        // reservation was minted — `gate_grant_minted: false` is what tells
+        // the coordinator NOT to retry this call in place.
+        return ProviderAuthorizationOutcome::parked(detail);
+    }
+
+    if let Some(retry_outcome) = try_auto_answer_reservation_gate(
+        &pool,
+        &session.id,
+        session,
+        invocation_id,
+        failure,
+        &decision_id,
+        headless,
+        session_manager,
+        &detail,
+        provider,
+        model,
+    )
+    .await
+    {
+        return retry_outcome;
+    }
+    ProviderAuthorizationOutcome::parked(detail)
+}
+
+/// M2 (harness loop, Round F, Lane F3, from Lane G9's MEDIUM finding):
+/// default cap on how many times a single session's reservation gate may be
+/// headlessly auto-answered before honesty requires escalating to a human
+/// instead. Overridable via `PERMAGENT_SESSION_GATE_AUTO_ANSWER_CAP`
+/// (any non-positive or unparsable value falls back to the default) so an
+/// operator — or a test — can tighten it without recompiling.
+const SESSION_GATE_AUTO_ANSWER_CAP_DEFAULT: u32 = 5;
+
+fn session_gate_auto_answer_cap() -> u32 {
+    std::env::var("PERMAGENT_SESSION_GATE_AUTO_ANSWER_CAP")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(SESSION_GATE_AUTO_ANSWER_CAP_DEFAULT)
+}
+
+/// How many session-scoped reservation-gate decisions for `session_id` have
+/// already been headlessly auto-answered (`acted_by = ACTOR_HEADLESS_
+/// POLICY`, `status = 'answered'`, `kind = 'choice'`, `goal_id IS NULL`) —
+/// see [`session_scoped_provider_authorization_failure`]'s own cap check.
+/// `goal_id IS NULL` scopes this strictly to the session-scoped path: the
+/// goal-scoped gate (`Agent::handle_provider_authorization_failure`) shares
+/// the SAME `try_auto_answer_reservation_gate`/`ACTOR_HEADLESS_POLICY`
+/// machinery but always stamps a `goal_id`, so it can never inflate this
+/// session's own count. A query failure counts as zero rather than refusing
+/// the call outright — this cap is a courtesy backstop, not a new failure
+/// mode on top of the existing hard-ceiling one.
+async fn session_scoped_auto_answer_count(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+) -> u32 {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM decisions
+         WHERE kind = 'choice' AND goal_id IS NULL AND status = 'answered'
+           AND acted_by = ?
+           AND json_extract(payload_json, '$.reservation_gate.requesting_session_id') = ?",
+    )
+    .bind(crate::decisions::ACTOR_HEADLESS_POLICY)
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .map(|count| count.max(0) as u32)
+    .unwrap_or(0)
+}
+
+/// Per-goal counterpart of the session cap, shared by all workers for a goal.
+const GOAL_GATE_AUTO_ANSWER_CAP_DEFAULT: u32 = 8;
+
+fn goal_gate_auto_answer_cap() -> u32 {
+    std::env::var("PERMAGENT_GOAL_GATE_AUTO_ANSWER_CAP")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(GOAL_GATE_AUTO_ANSWER_CAP_DEFAULT)
+}
+
+/// NULL goal_id rows cannot contribute. Match the session counter's fallback
+/// on query failure; the hard ceiling remains independently enforced.
+async fn goal_scoped_auto_answer_count(pool: &sqlx::Pool<sqlx::Sqlite>, goal_id: &str) -> u32 {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM decisions
+         WHERE kind = 'choice' AND goal_id = ? AND status = 'answered'
+           AND acted_by = ?
+           AND json_extract(payload_json, '$.reservation_gate.requesting_session_id') IS NOT NULL",
+    )
+    .bind(goal_id)
+    .bind(crate::decisions::ACTOR_HEADLESS_POLICY)
+    .fetch_one(pool)
+    .await
+    .map(|count| count.max(0) as u32)
+    .unwrap_or(0)
+}
+
+/// Check the goal cap immediately before auto-answering, with an explicit
+/// headless seam so tests need no process-global policy.
+#[allow(clippy::too_many_arguments)]
+async fn try_auto_answer_goal_scoped_reservation_gate(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    goal_id: &str,
+    session: &Session,
+    invocation_id: &str,
+    failure: &ProviderAuthorizationFailure,
+    decision_id: &str,
+    headless: bool,
+    session_manager: &Arc<SessionManager>,
+    detail: &str,
+    provider: &str,
+    model: &str,
+) -> Option<ProviderAuthorizationOutcome> {
+    if headless {
+        let auto_answer_count = goal_scoped_auto_answer_count(pool, goal_id).await;
+        let cap = goal_gate_auto_answer_cap();
+        if auto_answer_count >= cap {
+            tracing::warn!(
+                goal_id,
+                decision_id,
+                auto_answer_count,
+                cap,
+                "goal-scoped reservation gate auto-answer cap reached; escalating to a human \
+                 instead of auto-answering again"
+            );
+            return Some(ProviderAuthorizationOutcome::parked(detail.to_string()));
+        }
+    }
+    try_auto_answer_reservation_gate(
+        pool,
+        goal_id,
+        session,
+        invocation_id,
+        failure,
+        decision_id,
+        headless,
+        session_manager,
+        detail,
+        provider,
+        model,
+    )
+    .await
+}
+
 impl Agent {
     /// Immutable identity captured immediately before a provider dispatch.
     /// Keeping these fields outside the mutable session/provider state prevents
@@ -166,18 +703,60 @@ impl Agent {
     /// Make a budget denial durable for a goal worker, then park and stop it.
     /// The requested bound is authorization-only and is intentionally never
     /// presented as already-spent money.
+    ///
+    /// Y4a: the returned [`ProviderAuthorizationOutcome::gate_grant_minted`]
+    /// tells the caller whether a headless auto-answer left a spendable
+    /// reservation behind under `invocation_id` — see that type's doc comment
+    /// for why the caller must retry once on `true` rather than ending the
+    /// turn.
     pub(crate) async fn handle_provider_authorization_failure(
         &self,
         session: &Session,
+        // E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10): the
+        // exact reservation identity of the call that failed, so a
+        // successful gate auto-answer below can grant a reservation under
+        // THIS SAME invocation_id — a retry that reuses it then skips the
+        // gate's threshold math entirely (see
+        // `SessionManager::grant_reservation_after_gate_approval`) instead
+        // of re-asking it for a request that already got a yes.
+        invocation_id: &str,
         failure: &ProviderAuthorizationFailure,
-    ) -> String {
+        // F3 (harness loop, Round F, from Lane G9's HIGH finding): the exact
+        // live provider/model of the call that just failed (captured at the
+        // mint site in `agents::agent`, independent of any later provider
+        // switch) — threaded down to the grant so a reuse attempt can be
+        // checked against it.
+        provider: &str,
+        model: &str,
+    ) -> ProviderAuthorizationOutcome {
         let detail = failure.to_string();
         let Some(card_id) = goal_id(&session.extension_data) else {
-            return detail;
+            // I1 (harness loop, 2026-09-10, from M10's forensics): a session
+            // with no goal_id — the coordinator's own provider calls, never
+            // a dispatched worker's — has no goal card to park through the
+            // rest of this function, but under a headless Auto run it still
+            // deserves the SAME shape/budget-rule auto-answer a worker's
+            // gate gets, so its own blocked call can retry in place instead
+            // of silently ending its turn (M10: 10/10 coordinators hit
+            // exactly this, 8/10 never got past it).
+            return self
+                .handle_session_scoped_provider_authorization_failure(
+                    session,
+                    invocation_id,
+                    failure,
+                    detail,
+                    provider,
+                    model,
+                )
+                .await;
         };
         let pool = match self.config.session_manager.pool_clone().await {
             Ok(pool) => pool,
-            Err(error) => return format!("{detail}; could not open Decision Inbox: {error}"),
+            Err(error) => {
+                return ProviderAuthorizationOutcome::parked(format!(
+                    "{detail}; could not open Decision Inbox: {error}"
+                ))
+            }
         };
 
         // Refused/unknown outcomes have no truthful BudgetVerdict (in
@@ -194,6 +773,12 @@ impl Agent {
             .is_some_and(|decision| {
                 !is_gate || decision.headline.contains("authorization needs approval")
             });
+        // R2 (harness loop, Lane D1, from Lane F8 forensics): the decision id
+        // this call actually resolved onto — freshly created, or the one
+        // already open from a raced prior attempt — so a headless run can
+        // try to auto-answer it below. `None` whenever nothing gate-shaped
+        // exists yet (a non-gate `unblock` decision, or the create failed).
+        let mut gate_decision_id: Option<String> = None;
         if !already_open {
             let request = if let ProviderAuthorizationFailure::NeedsGate {
                 scope,
@@ -242,8 +827,81 @@ impl Agent {
                     ..Default::default()
                 }
             };
-            if let Err(error) = crate::decisions::create_decision(&pool, request).await {
-                tracing::error!(goal_id = %card_id, "could not create provider budget decision: {error}");
+            match crate::decisions::create_decision(&pool, request).await {
+                Ok(created) => {
+                    if is_gate {
+                        gate_decision_id = Some(created.id);
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(goal_id = %card_id, "could not create provider budget decision: {error}");
+                }
+            }
+        } else if is_gate {
+            gate_decision_id =
+                crate::decisions::find_open_decision_for_goal(&pool, &card_id, "choice")
+                    .await
+                    .ok()
+                    .flatten()
+                    .filter(|decision| decision.headline.contains("authorization needs approval"))
+                    .map(|decision| decision.id);
+        }
+
+        // R2 (harness loop, Lane D1, from Lane F8 forensics 2026-09-10): fx01
+        // stalled behind exactly this gate forever with no auto-answer path
+        // — only `roadmap_create`/`approve_review` had one. Give a headless
+        // Auto run (a `HeadlessDispatchPolicy` installed — checked via the
+        // same public seam the CLI's own drain summary uses,
+        // `headless_auto_land_status`, which is `Some` iff a headless policy
+        // exists for this process, whatever its `auto_land` value) one
+        // bounded, shape-scoped chance to sail through before parking.
+        // `auto_approve_reservation_gate` re-validates the request against
+        // the run's real hard ceiling itself — this call site trusts nothing
+        // beyond "try it, see if it was accepted".
+        //
+        // E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10): on
+        // success this USED TO requeue the goal (`goal_transition::
+        // requeue_goal`), reassigning it to a brand-new session while THIS
+        // session — the one that just got its call authorized — kept
+        // running under the old assignment. F9 traced this to 4/6 of
+        // Round D's M9 failures: the abandoned session often finished real,
+        // correct, committed work that could then never land, because the
+        // goal's own bookkeeping had already moved on. The fix: never touch
+        // the goal's dispatch at all here. This session IS the goal's live
+        // dispatched worker (it is, definitionally, the one making this
+        // call) — it keeps that assignment and simply retries in place.
+        // `grant_reservation_after_gate_approval` grants the reservation
+        // directly under `invocation_id` — the SAME identity this exact
+        // call already failed under — so a retry that reuses it (rather
+        // than minting a fresh one) skips `reserve_provider_invocation`'s
+        // gate/hard threshold math entirely instead of re-asking the gate
+        // for a request that already got a yes (see that function's own
+        // doc comment). Any refusal (not headless, past budget, already
+        // resolved by a human) falls straight through to the unchanged
+        // park path below, exactly as before.
+        if let Some(decision_id) = gate_decision_id.as_deref() {
+            let headless =
+                crate::agents::platform_extensions::orchestrator::headless_auto_land_status(
+                    &self.config.session_manager,
+                )
+                .await
+                .is_some();
+            if let Some(retry_outcome) = try_auto_answer_goal_scoped_reservation_gate(
+                &pool,
+                &card_id,
+                session,
+                invocation_id,
+                failure,
+                decision_id,
+                headless,
+                &self.config.session_manager,
+                &detail,
+                provider,
+                model,
+            )
+            .await
+            {
+                return retry_outcome;
             }
         }
         if let Err(error) = crate::goal_transition::park_goal(
@@ -261,7 +919,59 @@ impl Agent {
         {
             kill.kill();
         }
-        detail
+        ProviderAuthorizationOutcome::parked(detail)
+    }
+
+    /// I1 (harness loop, 2026-09-10, from M10's forensics): the SESSION-
+    /// scoped counterpart of [`Agent::handle_provider_authorization_failure`]'s
+    /// goal-scoped gate for a session with no `goal_id` — the coordinator's
+    /// own provider calls. M10 found the coordinator's calls hit the exact
+    /// same reservation gate as a worker's (bounded by the same task/session
+    /// budget rules) but `handle_provider_authorization_failure`'s entire
+    /// gate-decision/auto-answer/retry machinery was a structural no-op for
+    /// it — `goal_id(&session.extension_data)` is `None`, so it returned
+    /// `detail` immediately with no decision ever raised, no auto-answer
+    /// ever attempted (10/10 M10 coordinators hit this; 8/10 never got past
+    /// it). This gives it the SAME shape/budget-rule auto-answer under a
+    /// headless Auto run (`HeadlessDispatchPolicy` installed — the same
+    /// `headless` flag the goal-scoped path already checks), never a goal
+    /// card to park (there is none) and never a non-gate failure (nothing
+    /// useful to auto-answer for a session with no goal to route to).
+    async fn handle_session_scoped_provider_authorization_failure(
+        &self,
+        session: &Session,
+        invocation_id: &str,
+        failure: &ProviderAuthorizationFailure,
+        detail: String,
+        provider: &str,
+        model: &str,
+    ) -> ProviderAuthorizationOutcome {
+        // Read via the SAME public seam the goal-scoped path already uses
+        // (`headless_auto_land_status(...).is_some()` — `true` iff a
+        // headless dispatch policy is installed for this process, whatever
+        // its own `auto_land` value). Kept in this thin wrapper, not the
+        // testable function below, for the exact reason
+        // `try_auto_answer_reservation_gate`'s own doc comment gives: the
+        // backing `OnceLock` is a real shared-state hazard across this
+        // binary's `--lib` unit tests, so the actual decision logic takes
+        // `headless` as a plain argument and this is the only call site that
+        // ever reads the global.
+        let headless = crate::agents::platform_extensions::orchestrator::headless_auto_land_status(
+            &self.config.session_manager,
+        )
+        .await
+        .is_some();
+        session_scoped_provider_authorization_failure(
+            &self.config.session_manager,
+            session,
+            invocation_id,
+            failure,
+            detail,
+            headless,
+            provider,
+            model,
+        )
+        .await
     }
 
     pub async fn prepare_tools_and_prompt(
@@ -353,7 +1063,23 @@ impl Agent {
         let tour_completed = crate::config::Config::global()
             .get_param::<bool>(crate::agents::self_knowledge::TOUR_COMPLETED_KEY)
             .unwrap_or(false);
-        if !tour_completed {
+        // Lane R62f (A61 miss 5): nobody reads a headless run's replies, so it
+        // never gets the tour offer or a learn-next hint — the coordinator
+        // offered a codebase tour in 12 headless harness logs, a free-text
+        // ending Rule 5 and R58a then have to police. The per-agent headless
+        // flag is checked first; the headless CLI harness does not set it
+        // (only the scheduler does), so the headless dispatch policy that CLI
+        // installs — never installed by a daemon or interactive session —
+        // covers it.
+        let headless = self.is_headless()
+            || crate::agents::platform_extensions::orchestrator::is_headless_dispatch_policy_installed();
+        if headless {
+            tracing::debug!(
+                target: "permagent::agents::reply_parts",
+                session_id,
+                "onboarding offers suppressed for a headless session"
+            );
+        } else if !tour_completed {
             let mut pm = self.prompt_manager.lock().await;
             pm.add_system_prompt_extra(
                 "tour_offer".to_string(),
@@ -1079,12 +1805,20 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     max_physical_attempts: u32,
     invocation_id: String,
 ) -> std::result::Result<ProviderInvocationContext, ProviderAuthorizationFailure> {
+    // Y7 (harness loop, from Lane A12's Q6 measurement): reserve for ONE
+    // physical attempt by default instead of the provider's whole retry
+    // envelope. `max_physical_attempts` stays the envelope — it is the
+    // ceiling this knob clamps to, and the number the retry policy will
+    // actually honour if the reservation is extended to cover it. See
+    // `cost_router::reservation::RESERVE_ATTEMPTS_ENV` for the measured
+    // reason (holds of $1.66 against settled calls of $0.005).
+    let attempts_reserved = crate::cost_router::reserved_physical_attempts(max_physical_attempts);
     let bound = crate::cost_router::plan_reservation_bound(
         provider,
         &model_config.model_name,
         cost_tier,
         &model_config,
-        max_physical_attempts,
+        attempts_reserved,
     )
     .map_err(|e| ProviderAuthorizationFailure::Unknown {
         reason: format!("cannot authorize provider call: {e}"),
@@ -1096,6 +1830,11 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         model: model_config.model_name,
         cost_tier,
         reservation_id: None,
+        // Only a paid hold constrains how many physical attempts may be made:
+        // `plan_reservation_bound` returns `None` for local/subscription work,
+        // which holds no dollars and therefore keeps the retry policy's own
+        // budget (see `cost_router::authorized_attempts`).
+        attempts_reserved: bound.as_ref().map(|bound| bound.max_physical_attempts),
     };
 
     // Local and subscription calls retain typed attribution, but never create
@@ -1103,14 +1842,41 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     let Some(bound) = bound else {
         return Ok(context);
     };
+    // F2 (harness loop, Round F, from the I1/M11 forensics chain): F8, D1
+    // and I1 each spent real time and money trying to explain a flat
+    // $1.662976 bound on every zai/glm-4.7 reservation, because nothing
+    // recorded which pricing source produced it — `cost_reservations` has no
+    // provider/model/source columns, so a lane could only re-derive the
+    // arithmetic by hand from raw DB rows (see this lane's own report,
+    // `HARNESS_LOOP_LOG.md` `## Lane F2`: it was `CanonicalExact` pricing ×
+    // 5 physical attempts the whole time, never `WorstCase`). This line is
+    // the fix for THAT gap: every reservation now names its own live
+    // provider/model, canonical mapping, dollar bound and pricing source at
+    // the moment it is computed, so the next lane can `grep` the log instead
+    // of reconstructing it from a database.
+    tracing::info!(
+        target: "permagent::cost_router::reservation",
+        provider = %context.provider,
+        model = %context.model,
+        canonical = %canonical_name(&context.provider, &context.model),
+        bound_usd = bound.amount_usd,
+        pricing_source = crate::cost_router::describe_pricing_source(bound.pricing_provenance),
+        // Y7: `attempts_reserved` is what this hold actually pays for (1 by
+        // default); `retry_envelope_attempts` is what the provider's retry
+        // policy would spend if every attempt were authorized. They were the
+        // same number — and the reason a single call held $1.66 — until Y7.
+        attempts_reserved = bound.max_physical_attempts,
+        retry_envelope_attempts = max_physical_attempts,
+        "reservation bound computed"
+    );
     let task_id = budget_task_id(&session.extension_data);
     let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
     let outcome = manager
-        .reserve_provider_invocation(
+        .reserve_bounded_provider_invocation(
             &context.invocation_id,
             &session.id,
             task_id.as_deref(),
-            bound.amount_usd,
+            bound,
             &lease_until,
             &crate::cost_router::budget::load_budget_config(),
         )
@@ -1170,6 +1936,11 @@ pub(crate) struct ProviderInvocationContext {
     pub model: String,
     pub cost_tier: CostTier,
     pub reservation_id: Option<String>,
+    /// Y7: physical provider attempts this invocation's hold pays for, or
+    /// `None` when the call took no paid hold. The dispatch seam installs it
+    /// with an extension authorizer so retries beyond this count require a
+    /// new one-attempt reservation grant.
+    pub attempts_reserved: Option<u32>,
 }
 
 /// One reserved `complete_fast` attempt. It owns an immutable provider and
@@ -1352,20 +2123,27 @@ impl AccountedFastCompletion {
             invocation.reservation_id.clone(),
         );
 
-        let (response, mut usage) = match self
-            .provider
-            // permagent-dispatch: seam=complete_fast_attempt_v1 class=wrapped contract=reservation_settlement
-            .complete(&model_config, &self.session.id, system, messages, tools)
+        // Physical retries beyond the hold's count require a one-attempt
+        // extension grant. Unpaid work keeps the retry policy unchanged.
+        let (response, mut usage) =
+            match crate::cost_router::authorized_attempts::with_reservation_attempts(
+                Arc::clone(&self.manager),
+                invocation.invocation_id.clone(),
+                invocation.attempts_reserved,
+                self.provider
+                    // permagent-dispatch: seam=complete_fast_attempt_v1 class=wrapped contract=reservation_settlement
+                    .complete(&model_config, &self.session.id, system, messages, tools),
+            )
             .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                unknown_guard.mark_unknown().await?;
-                return Err(anyhow::anyhow!(
-                    "complete_fast physical attempt failed: {error}"
-                ));
-            }
-        };
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    unknown_guard.mark_unknown().await?;
+                    return Err(anyhow::anyhow!(
+                        "complete_fast physical attempt failed: {error}"
+                    ));
+                }
+            };
 
         let has_authoritative_usage = usage.usage.input_tokens.is_some()
             || usage.usage.output_tokens.is_some()
@@ -1564,6 +2342,39 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    // ── R18a-b (G21 HIGH-1): the approval_bypasses producer ──────────────
+
+    /// `record_provider_call_authorized` is the pure function both of
+    /// `agents::agent`'s turn-loop call sites use — tested directly because
+    /// the turn loop itself (`Agent::reply`'s big streaming state machine)
+    /// has no lightweight harness to drive end to end. `#[serial]` because
+    /// it drives the process-wide `REGISTRY`/`ACTIVE` statics, same shared
+    /// key as `receipts.rs`'s own global-API tests.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn record_provider_call_authorized_increments_only_when_not_authorized() {
+        crate::receipts::begin_run();
+
+        // Present grant (`authorized = true`, both call sites' shape today):
+        // must NOT increment.
+        record_provider_call_authorized(true);
+        let line = crate::receipts::snapshot().lines()[2].clone();
+        assert!(
+            line.contains("approval_bypasses=0"),
+            "an authorized call must not count as a bypass: {line}"
+        );
+
+        // Absent grant: a future call site that proceeds without one must
+        // increment.
+        record_provider_call_authorized(false);
+        let line = crate::receipts::snapshot().lines()[2].clone();
+        crate::receipts::end_run();
+        assert!(
+            line.contains("approval_bypasses=1"),
+            "a call that proceeds without authorization must count as one bypass: {line}"
+        );
+    }
 
     #[derive(Clone)]
     struct MockProvider {
@@ -1940,6 +2751,1055 @@ mod tests {
         assert_eq!(status, "observed");
     }
 
+    /// A goal card "dispatched" to `session_id`, mimicking real dispatch
+    /// bookkeeping (`worker_session_id`/`worker_session_ids`) in the
+    /// `in_progress` column, so a test can assert the card is untouched by
+    /// [`try_auto_answer_reservation_gate`].
+    async fn dispatched_goal_card(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session_id: &str,
+    ) -> crate::cards::Card {
+        crate::cards::seed_goal_columns(pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let in_progress = crate::cards::get_goal_column(
+            pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            "in_progress",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        crate::cards::create_card(
+            pool,
+            crate::cards::CreateCard {
+                project_id: crate::projects::PERSONAL_PROJECT_ID.to_string(),
+                title: "E1 pin test goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(in_progress.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 0,
+                    "goal_state": "in_progress",
+                    "worker_session_id": session_id,
+                    "worker_session_ids": [session_id],
+                })),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    /// E1 pin (a): a headless auto-answered reservation gate must let the
+    /// SAME session retry in place — the goal keeps its current dispatched
+    /// session unchanged (same `worker_session_id`, `worker_session_ids`
+    /// still a single entry, still `in_progress`) and no `requeue_goal` call
+    /// ever fires. Pre-fix, this exact code path called
+    /// `goal_transition::requeue_goal`, which would have bounced the card to
+    /// `ready` and left `worker_session_id` stale — this test would fail on
+    /// the `state_binding`/`worker_session_id` assertions below against that
+    /// old behavior.
+    #[tokio::test]
+    async fn gate_auto_answer_retries_in_place_without_requeuing_the_goal() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session.id).await;
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let request = crate::cost_router::budget::reservation_gate_decision_request(
+            crate::cost_router::budget::BudgetScope::Task,
+            5.0,
+            0.0,
+            0.20,
+            5.0,
+            5.0,
+            Some(card.id.clone()),
+            None,
+        );
+        let decision = crate::decisions::create_decision(&pool, request)
+            .await
+            .unwrap();
+
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let outcome = try_auto_answer_goal_scoped_reservation_gate(
+            &pool,
+            &card.id,
+            &session,
+            &invocation_id,
+            &failure,
+            &decision.id,
+            true, // headless
+            &manager,
+            "budget gate detail",
+            "zai",
+            "glm-4.7",
+        )
+        .await;
+        assert_eq!(
+            outcome,
+            Some(ProviderAuthorizationOutcome {
+                detail: "budget gate detail".to_string(),
+                // Y4a: the same call must also report that it left a spendable
+                // grant behind, so the turn loop retries in place instead of
+                // ending the turn on top of a paid-for authorization.
+                gate_grant_minted: true,
+            }),
+            "a headless auto-answer must report retry-in-place, not fall through to park"
+        );
+
+        // (a) goal stays assigned to the SAME session; no second session
+        // dispatched; still in_progress (never bounced to ready).
+        let after = crate::cards::get_card(&pool, &card.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after
+                .metadata_json
+                .get("worker_session_id")
+                .and_then(|v| v.as_str()),
+            Some(session.id.as_str()),
+            "the goal must stay assigned to the session whose call was just authorized"
+        );
+        assert_eq!(
+            after
+                .metadata_json
+                .get("worker_session_ids")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(1),
+            "no second session may ever be created by this path"
+        );
+        let column = crate::cards::get_column(&pool, &after.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            column.state_binding.as_deref(),
+            Some("in_progress"),
+            "a retry-in-place must never move the goal out of in_progress"
+        );
+
+        // (c) the retry does not re-ask the gate for the same reservation:
+        // reusing `invocation_id` grants immediately (AlreadyReserved via
+        // the early invocation-id lookup), with no second decision created.
+        let decisions_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let retry = reserve_provider_invocation_for_model(
+            Arc::clone(&manager),
+            &session,
+            fixture.get_name(),
+            fixture.cost_tier(),
+            fixture.get_model_config(),
+            fixture.retry_config().max_physical_attempts(),
+            invocation_id.clone(),
+        )
+        .await;
+        assert!(
+            retry.is_ok(),
+            "the retry must reuse the already-granted reservation, not re-hit the gate: {retry:?}"
+        );
+        let decisions_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            decisions_before, decisions_after,
+            "the retry must not create a second gate decision for the same reservation"
+        );
+    }
+
+    /// E1 pin: a NON-headless run (no `HeadlessDispatchPolicy` installed)
+    /// must fall straight through to the caller's park path — this function
+    /// returns `None` and touches nothing. Exercises the `headless` flag
+    /// directly rather than the process-global headless dispatch policy
+    /// slot (see this function's own doc comment for why).
+    #[tokio::test]
+    async fn gate_auto_answer_is_a_no_op_when_not_headless() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session.id).await;
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let request = crate::cost_router::budget::reservation_gate_decision_request(
+            crate::cost_router::budget::BudgetScope::Task,
+            5.0,
+            0.0,
+            0.20,
+            5.0,
+            5.0,
+            Some(card.id.clone()),
+            None,
+        );
+        let decision = crate::decisions::create_decision(&pool, request)
+            .await
+            .unwrap();
+
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let outcome = try_auto_answer_goal_scoped_reservation_gate(
+            &pool,
+            &card.id,
+            &session,
+            &invocation_id,
+            &failure,
+            &decision.id,
+            false, // NOT headless
+            &manager,
+            "budget gate detail",
+            "zai",
+            "glm-4.7",
+        )
+        .await;
+        assert_eq!(outcome, None);
+
+        let reloaded = crate::decisions::get_decision(&pool, &decision.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reloaded.status, "open",
+            "a non-headless run must leave the gate open for a human"
+        );
+    }
+
+    /// I1 pin (harness loop, 2026-09-10, from M10's forensics): a coordinator
+    /// session — one with no `goal_id` at all, since `fast_accounting_
+    /// fixture` never stamps one — that hits the reservation gate under a
+    /// headless Auto run must get the SAME shape/budget-rule auto-answer a
+    /// worker's gate gets, and continue in the SAME session (a reservation
+    /// granted under `invocation_id`, no goal card touched — there is none).
+    /// Pre-fix, `handle_provider_authorization_failure` returned bare
+    /// `detail` immediately for any goal-less session — this pins the
+    /// replacement path directly.
+    #[tokio::test]
+    async fn session_scoped_gate_auto_answer_lets_the_coordinator_continue_without_a_goal() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        assert_eq!(
+            goal_id(&session.extension_data),
+            None,
+            "setup: a coordinator session carries no goal_id"
+        );
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let outcome = session_scoped_provider_authorization_failure(
+            &manager,
+            &session,
+            &invocation_id,
+            &failure,
+            "budget gate detail".to_string(),
+            true, // headless
+            "zai",
+            "glm-4.7",
+        )
+        .await;
+        assert_eq!(
+            outcome.detail, "budget gate detail",
+            "a headless auto-answer must report retry-in-place, not fall through unanswered"
+        );
+        // Y4a: the coordinator's own turn loop only retries when this is set.
+        assert!(
+            outcome.gate_grant_minted,
+            "a coordinator whose gate was auto-granted must be told a spendable \
+             reservation now exists, so its CURRENT turn can retry"
+        );
+
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let decision =
+            crate::decisions::find_open_reservation_gate_decision_for_session(&pool, &session.id)
+                .await
+                .unwrap();
+        // The decision was auto-answered (ACTOR_HEADLESS_POLICY), so it is no
+        // longer OPEN — confirm it exists and was answered, not left open.
+        assert!(
+            decision.is_none(),
+            "an auto-answered decision must no longer be open"
+        );
+        let answered: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE goal_id IS NULL AND kind = 'choice' \
+             AND status = 'answered' AND acted_by = ?",
+        )
+        .bind(crate::decisions::ACTOR_HEADLESS_POLICY)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(answered, 1);
+
+        // The SAME session got its reservation granted under its own call's
+        // invocation_id — a real reservation, not merely a decision.
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM cost_reservations WHERE invocation_id = ?")
+                .bind(&invocation_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state, "pending");
+    }
+
+    /// Y4a pin (harness loop, 2026-09-10, from Lane A12's M12 forensics): a
+    /// coordinator's auto-granted gate must be reported as `gate_grant_minted`
+    /// AND that grant must actually authorize a retry under the SAME
+    /// `invocation_id`, within the SAME turn.
+    ///
+    /// This is the session-scoped mirror of part (c) of
+    /// `gate_auto_answer_retries_in_place_without_requeuing_the_goal`, and it
+    /// is the coordinator's case that A12 traced: a worker gets a later turn
+    /// in which `reusable_gate_grant_invocation_id` can pick the grant up, but
+    /// a coordinator's turn ending IS the run ending, so a grant it never
+    /// consumes in-turn is money paid for nothing (fx01's correct worker
+    /// commit never surfaced; fx09 the same; fx07 truncated). Pre-Y4a
+    /// `session_scoped_provider_authorization_failure` returned a bare
+    /// `String`, so the turn loop could not distinguish this case from a park
+    /// and always emitted "provider spend could not be authorized" —
+    /// the `gate_grant_minted` assertion below would not compile against it.
+    #[tokio::test]
+    async fn session_scoped_gate_grant_authorizes_a_retry_under_the_same_invocation_id() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        assert_eq!(
+            goal_id(&session.extension_data),
+            None,
+            "setup: a coordinator session carries no goal_id"
+        );
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let outcome = session_scoped_provider_authorization_failure(
+            &manager,
+            &session,
+            &invocation_id,
+            &failure,
+            "budget gate detail".to_string(),
+            true, // headless
+            // F3: the grant is minted for THIS provider/model — the same
+            // identity the retry below reserves under.
+            fixture.get_name(),
+            &fixture.get_model_config().model_name,
+        )
+        .await;
+        assert!(
+            outcome.gate_grant_minted,
+            "the handler must report the grant it just minted, or the turn loop \
+             has no way to know an in-turn retry is authorized"
+        );
+
+        // The retry the turn loop now performs: the SAME invocation_id, exactly
+        // once. It must succeed off the idempotent `AlreadyReserved` path and
+        // raise no second gate decision.
+        let decisions_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let retry = reserve_provider_invocation_for_model(
+            Arc::clone(&manager),
+            &session,
+            fixture.get_name(),
+            fixture.cost_tier(),
+            fixture.get_model_config(),
+            fixture.retry_config().max_physical_attempts(),
+            invocation_id.clone(),
+        )
+        .await;
+        assert!(
+            retry.is_ok(),
+            "the single retry must reuse the granted reservation, not re-hit the gate: {retry:?}"
+        );
+        assert_eq!(
+            retry.unwrap().reservation_id.as_deref(),
+            Some(format!("invocation:{invocation_id}").as_str()),
+            "the retry must land on the very reservation the gate paid for"
+        );
+        let decisions_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            decisions_before, decisions_after,
+            "the retry must not create a second gate decision for the same reservation"
+        );
+    }
+
+    /// I1 pin: a coordinator that keeps hitting the same gate on successive
+    /// calls must not file a second Decision Inbox card — the session-scoped
+    /// dedupe (`find_open_reservation_gate_decision_for_session`) must find
+    /// and reuse the first still-open one.
+    #[tokio::test]
+    async fn session_scoped_gate_auto_answer_does_not_duplicate_the_decision_on_a_retry() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+
+        // First call: not headless yet, so the decision is created and left
+        // open (mirrors the non-headless pin above) rather than immediately
+        // auto-answered — isolates the dedupe assertion from the auto-answer
+        // path itself.
+        let first = session_scoped_provider_authorization_failure(
+            &manager,
+            &session,
+            &uuid::Uuid::new_v4().to_string(),
+            &failure,
+            "budget gate detail".to_string(),
+            false, // NOT headless — leaves the decision open
+            "zai",
+            "glm-4.7",
+        )
+        .await;
+        assert_eq!(first.detail, "budget gate detail");
+        // Y4a: nothing was granted, so nothing may be retried.
+        assert!(!first.gate_grant_minted);
+        let open_after_first: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE goal_id IS NULL AND kind = 'choice' \
+             AND status = 'open'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            open_after_first, 0,
+            "a non-headless call creates no decision at all — nothing to dedupe against yet"
+        );
+
+        // Manually raise the decision the way a headless run would, then
+        // confirm a second call finds and reuses it rather than filing a
+        // duplicate.
+        let cfg = crate::cost_router::budget::load_budget_config();
+        let request = crate::cost_router::budget::with_requesting_session_id(
+            crate::cost_router::budget::reservation_gate_decision_request(
+                crate::cost_router::budget::BudgetScope::Task,
+                5.0,
+                0.0,
+                0.20,
+                5.0,
+                cfg.task.gate,
+                None,
+                None,
+            ),
+            &session.id,
+        );
+        crate::decisions::create_decision(&pool, request)
+            .await
+            .unwrap();
+        let open_after_manual: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE goal_id IS NULL AND kind = 'choice' \
+             AND status = 'open'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(open_after_manual, 1);
+
+        let second = session_scoped_provider_authorization_failure(
+            &manager,
+            &session,
+            &uuid::Uuid::new_v4().to_string(),
+            &failure,
+            "budget gate detail".to_string(),
+            true, // headless this time — auto-answers the existing decision
+            "zai",
+            "glm-4.7",
+        )
+        .await;
+        assert_eq!(second.detail, "budget gate detail");
+
+        let total_reservation_gate_decisions: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE goal_id IS NULL AND kind = 'choice' \
+             AND json_extract(payload_json, '$.reservation_gate.requesting_session_id') = ?",
+        )
+        .bind(&session.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            total_reservation_gate_decisions, 1,
+            "the second call must reuse the existing decision, never file a duplicate"
+        );
+    }
+
+    /// I1 pin: the mirror of `gate_auto_answer_is_a_no_op_when_not_headless`
+    /// for the session-scoped path — a NON-headless coordinator call must
+    /// leave any decision it raised open for a human, never auto-answer.
+    #[tokio::test]
+    async fn session_scoped_gate_auto_answer_is_a_no_op_when_not_headless() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let outcome = session_scoped_provider_authorization_failure(
+            &manager,
+            &session,
+            &uuid::Uuid::new_v4().to_string(),
+            &failure,
+            "budget gate detail".to_string(),
+            false, // NOT headless
+            "zai",
+            "glm-4.7",
+        )
+        .await;
+        assert_eq!(outcome.detail, "budget gate detail");
+        // Y4a: a non-headless gate is for a human — never an in-turn retry.
+        assert!(!outcome.gate_grant_minted);
+
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let any_decision: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            any_decision, 0,
+            "a non-headless coordinator call must not even raise a decision"
+        );
+    }
+
+    /// M2 pin (harness loop, Round F, Lane F3, from Lane G9's MEDIUM
+    /// finding): a session that has already been auto-answered
+    /// `SESSION_GATE_AUTO_ANSWER_CAP_DEFAULT` (5) times must be escalated
+    /// honestly to a human on the next gate hit, not auto-answered again.
+    /// Fakes the counter directly (5 already-answered `ACTOR_HEADLESS_
+    /// POLICY` decisions inserted for this session) rather than driving 5
+    /// real gate cycles, so this test is fast and exercises the counting
+    /// query in isolation from the rest of the auto-answer machinery.
+    #[tokio::test]
+    async fn session_scoped_gate_auto_answer_escalates_once_the_cap_is_reached() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+
+        for i in 0..SESSION_GATE_AUTO_ANSWER_CAP_DEFAULT {
+            let payload = serde_json::json!({
+                "reservation_gate": { "requesting_session_id": session.id },
+            });
+            sqlx::query(
+                "INSERT INTO decisions
+                    (id, kind, goal_id, tier, headline, detail, payload_json,
+                     status, answer, acted_by, resolved_at)
+                 VALUES (?, 'choice', NULL, 1, 'fake auto-answer', 'fake auto-answer detail', ?,
+                         'answered', 'choice', ?, ?)",
+            )
+            .bind(format!("fake-auto-answer-{i}"))
+            .bind(payload.to_string())
+            .bind(crate::decisions::ACTOR_HEADLESS_POLICY)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let count_before = session_scoped_auto_answer_count(&pool, &session.id).await;
+        assert_eq!(
+            count_before, SESSION_GATE_AUTO_ANSWER_CAP_DEFAULT,
+            "setup: the fake counter must read back exactly the cap"
+        );
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let outcome = session_scoped_provider_authorization_failure(
+            &manager,
+            &session,
+            &invocation_id,
+            &failure,
+            "budget gate detail".to_string(),
+            true, // headless — would normally auto-answer
+            "zai",
+            "glm-4.7",
+        )
+        .await;
+        assert_eq!(
+            outcome.detail, "budget gate detail",
+            "the call still ends the turn honestly, it just must not auto-answer"
+        );
+        // Y4a: the cap escalates instead of auto-answering, so no reservation
+        // was minted and the coordinator must NOT retry in place.
+        assert!(
+            !outcome.gate_grant_minted,
+            "a capped session got no grant, so nothing authorizes an in-turn retry"
+        );
+
+        // No reservation was granted under this call's own invocation_id —
+        // the auto-answer never ran.
+        let reservation_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_reservations WHERE invocation_id = ?")
+                .bind(&invocation_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            reservation_count, 0,
+            "a session past its auto-answer cap must not get a fresh grant"
+        );
+
+        // The decision this call raised (or reused) stays open — escalated
+        // to a human, never silently answered — ACTOR_HEADLESS_POLICY is
+        // never attributed to it.
+        let decision =
+            crate::decisions::find_open_reservation_gate_decision_for_session(&pool, &session.id)
+                .await
+                .unwrap();
+        assert!(
+            decision.is_some(),
+            "a decision must exist and stay open for a human once the cap is reached"
+        );
+    }
+
+    async fn insert_answered_gate_decision(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        goal_id: Option<&str>,
+        session_id: &str,
+    ) {
+        let payload = serde_json::json!({
+            "reservation_gate": { "requesting_session_id": session_id },
+        });
+        sqlx::query(
+            "INSERT INTO decisions
+                (id, kind, goal_id, tier, headline, detail, payload_json,
+                 status, answer, acted_by, resolved_at)
+             VALUES (?, 'choice', ?, 1, 'fake auto-answer', 'fake auto-answer detail', ?,
+                     'answered', 'choice', ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(goal_id)
+        .bind(payload.to_string())
+        .bind(crate::decisions::ACTOR_HEADLESS_POLICY)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn goal_scoped_gate_auto_answer_escalates_once_the_cap_is_reached() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture, true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session.id).await;
+
+        for _ in 0..GOAL_GATE_AUTO_ANSWER_CAP_DEFAULT {
+            insert_answered_gate_decision(&pool, Some(&card.id), &session.id).await;
+        }
+        assert_eq!(
+            goal_scoped_auto_answer_count(&pool, &card.id).await,
+            GOAL_GATE_AUTO_ANSWER_CAP_DEFAULT
+        );
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let request = crate::cost_router::budget::reservation_gate_decision_request(
+            crate::cost_router::budget::BudgetScope::Task,
+            5.0,
+            0.0,
+            0.20,
+            5.0,
+            5.0,
+            Some(card.id.clone()),
+            None,
+        );
+        let decision = crate::decisions::create_decision(&pool, request)
+            .await
+            .unwrap();
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let outcome = try_auto_answer_goal_scoped_reservation_gate(
+            &pool,
+            &card.id,
+            &session,
+            &invocation_id,
+            &failure,
+            &decision.id,
+            true,
+            &manager,
+            "budget gate detail",
+            "zai",
+            "glm-4.7",
+        )
+        .await
+        .expect("the cap must report an explicit not-minted outcome");
+        assert_eq!(outcome.detail, "budget gate detail");
+        assert!(!outcome.gate_grant_minted);
+
+        let reservation_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_reservations WHERE invocation_id = ?")
+                .bind(&invocation_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(reservation_count, 0, "the ninth gate must not mint a grant");
+        let reloaded = crate::decisions::get_decision(&pool, &decision.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.status, "open");
+        assert!(reloaded.acted_by.is_none());
+        assert_eq!(
+            goal_scoped_auto_answer_count(&pool, &card.id).await,
+            GOAL_GATE_AUTO_ANSWER_CAP_DEFAULT,
+            "the ninth gate must stay unanswered for a human"
+        );
+    }
+
+    #[tokio::test]
+    async fn goal_scoped_gate_count_excludes_headless_escalation_answers() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture, true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session.id).await;
+
+        sqlx::query(
+            "INSERT INTO decisions
+                (id, kind, goal_id, tier, headline, detail, payload_json,
+                 status, answer, answer_note, acted_by, resolved_at)
+             VALUES (?, 'choice', ?, 1, 'escalation', 'retry requested', '{}',
+                     'answered', 'choice', 'headless escalation retry', ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&card.id)
+        .bind(crate::decisions::ACTOR_HEADLESS_POLICY)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            goal_scoped_auto_answer_count(&pool, &card.id).await,
+            0,
+            "headless escalation answers must not consume the reservation-gate cap"
+        );
+
+        insert_answered_gate_decision(&pool, Some(&card.id), &session.id).await;
+        assert_eq!(goal_scoped_auto_answer_count(&pool, &card.id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn goal_scoped_gate_and_session_scoped_gate_counts_are_independent() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture, true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session.id).await;
+        let other_card = dispatched_goal_card(&pool, &session.id).await;
+
+        insert_answered_gate_decision(&pool, None, &session.id).await;
+        assert_eq!(
+            session_scoped_auto_answer_count(&pool, &session.id).await,
+            1
+        );
+        assert_eq!(goal_scoped_auto_answer_count(&pool, &card.id).await, 0);
+
+        // Even matching requesting_session_id values cannot inflate the
+        // session counter. The goal counter spans worker sessions instead.
+        insert_answered_gate_decision(&pool, Some(&card.id), &session.id).await;
+        insert_answered_gate_decision(&pool, Some(&card.id), "another-worker").await;
+        insert_answered_gate_decision(&pool, Some(&other_card.id), &session.id).await;
+        assert_eq!(
+            session_scoped_auto_answer_count(&pool, &session.id).await,
+            1
+        );
+        assert_eq!(goal_scoped_auto_answer_count(&pool, &card.id).await, 2);
+        assert_eq!(
+            goal_scoped_auto_answer_count(&pool, &other_card.id).await,
+            1
+        );
+
+        insert_answered_gate_decision(&pool, None, &session.id).await;
+        assert_eq!(
+            session_scoped_auto_answer_count(&pool, &session.id).await,
+            2
+        );
+        assert_eq!(goal_scoped_auto_answer_count(&pool, &card.id).await, 2);
+    }
+
+    /// Grants a reservation for `session` via a headless gate auto-answer
+    /// (the exact path `try_auto_answer_reservation_gate` takes on success),
+    /// returning the `invocation_id` it was granted under.
+    async fn grant_a_gate_reservation(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        manager: &Arc<SessionManager>,
+        session: &Session,
+        card_id: &str,
+        provider: &str,
+        model: &str,
+    ) -> String {
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let request = crate::cost_router::budget::reservation_gate_decision_request(
+            crate::cost_router::budget::BudgetScope::Task,
+            5.0,
+            0.0,
+            0.20,
+            5.0,
+            5.0,
+            Some(card_id.to_string()),
+            None,
+        );
+        let decision = crate::decisions::create_decision(pool, request)
+            .await
+            .unwrap();
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let outcome = try_auto_answer_reservation_gate(
+            pool,
+            card_id,
+            session,
+            &invocation_id,
+            &failure,
+            &decision.id,
+            true, // headless
+            manager,
+            "budget gate detail",
+            provider,
+            model,
+        )
+        .await;
+        assert_eq!(
+            outcome,
+            Some(ProviderAuthorizationOutcome {
+                detail: "budget gate detail".to_string(),
+                gate_grant_minted: true,
+            }),
+            "setup: the gate must have been headlessly auto-answered"
+        );
+        invocation_id
+    }
+
+    /// I1 pin (a): a session with a pending grant makes its next call
+    /// without a new gate decision. `reusable_gate_grant_invocation_id`
+    /// hands back the ORIGINAL `invocation_id`, and reusing it for the next
+    /// `reserve_provider_invocation_for_model` call takes the idempotent
+    /// `AlreadyReserved` fast path — no second gate decision is ever
+    /// created. Pre-fix (no `granted_via_gate` marker / lookup), this
+    /// function does not exist and the retry would have minted a fresh
+    /// `invocation_id`, re-hitting the gate exactly as F10 traced.
+    #[tokio::test]
+    async fn reusable_gate_grant_invocation_id_lets_the_same_session_retry_without_a_new_gate_decision(
+    ) {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session.id).await;
+
+        let granted_invocation_id = grant_a_gate_reservation(
+            &pool,
+            &manager,
+            &session,
+            &card.id,
+            fixture.get_name(),
+            &fixture.get_model_config().model_name,
+        )
+        .await;
+
+        let reused = reusable_gate_grant_invocation_id(
+            &manager,
+            &session.id,
+            fixture.get_name(),
+            &fixture.get_model_config().model_name,
+        )
+        .await;
+        assert_eq!(
+            reused,
+            Some(granted_invocation_id.clone()),
+            "the session's own pending grant must be reused verbatim"
+        );
+
+        let decisions_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let retry = reserve_provider_invocation_for_model(
+            Arc::clone(&manager),
+            &session,
+            fixture.get_name(),
+            fixture.cost_tier(),
+            fixture.get_model_config(),
+            fixture.retry_config().max_physical_attempts(),
+            reused.unwrap(),
+        )
+        .await;
+        assert!(
+            retry.is_ok(),
+            "reusing the granted invocation_id must skip the gate: {retry:?}"
+        );
+        let decisions_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            decisions_before, decisions_after,
+            "no new gate decision may be created for a call that reuses a granted invocation_id"
+        );
+    }
+
+    /// I1 pin (b): a different session cannot consume another session's
+    /// grant. Looking it up under session B's id (never session A's, the one
+    /// the grant actually belongs to) returns `None`, and the grant is left
+    /// completely untouched — session A can still consume it afterward.
+    #[tokio::test]
+    async fn reusable_gate_grant_invocation_id_is_none_for_a_different_session() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory_a, manager, session_a, _completion_a) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let session_b = manager
+            .create_session(
+                std::env::temp_dir(),
+                "fast-accounting-b".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        manager.begin_budget_task(&session_b.id).await.unwrap();
+        let session_b = manager.get_session(&session_b.id, false).await.unwrap();
+
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session_a.id).await;
+        let granted_invocation_id = grant_a_gate_reservation(
+            &pool,
+            &manager,
+            &session_a,
+            &card.id,
+            fixture.get_name(),
+            &fixture.get_model_config().model_name,
+        )
+        .await;
+
+        let reused_by_b = reusable_gate_grant_invocation_id(
+            &manager,
+            &session_b.id,
+            fixture.get_name(),
+            &fixture.get_model_config().model_name,
+        )
+        .await;
+        assert_eq!(
+            reused_by_b, None,
+            "a grant belongs to the session whose failed call it authorized, never to a different session"
+        );
+
+        // Untouched: session A can still find and reuse it.
+        let reused_by_a = reusable_gate_grant_invocation_id(
+            &manager,
+            &session_a.id,
+            fixture.get_name(),
+            &fixture.get_model_config().model_name,
+        )
+        .await;
+        assert_eq!(reused_by_a, Some(granted_invocation_id));
+    }
+
+    /// I1 pin (c): an expired grant re-gates. A grant older than
+    /// `SessionManager::GRANT_CONSUME_TTL_SECS_DEFAULT` is released, not
+    /// reused — the caller falls back to minting a fresh `invocation_id` and
+    /// the ordinary gate/budget path runs again for it.
+    #[tokio::test]
+    async fn reusable_gate_grant_invocation_id_is_none_once_the_grant_has_expired() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session.id).await;
+        let granted_invocation_id = grant_a_gate_reservation(
+            &pool,
+            &manager,
+            &session,
+            &card.id,
+            fixture.get_name(),
+            &fixture.get_model_config().model_name,
+        )
+        .await;
+
+        // Backdate the grant's created_at past the TTL default (120s).
+        let stale = (chrono::Utc::now() - chrono::Duration::seconds(200)).to_rfc3339();
+        sqlx::query("UPDATE cost_reservations SET created_at = ? WHERE invocation_id = ?")
+            .bind(&stale)
+            .bind(&granted_invocation_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let reused = reusable_gate_grant_invocation_id(
+            &manager,
+            &session.id,
+            fixture.get_name(),
+            &fixture.get_model_config().model_name,
+        )
+        .await;
+        assert_eq!(reused, None, "a stale grant must re-gate, not be reused");
+
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM cost_reservations WHERE invocation_id = ?")
+                .bind(&granted_invocation_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            state, "released",
+            "the expired grant must be released, not left pending forever"
+        );
+    }
+
     #[tokio::test]
     async fn accounted_fast_refuses_paid_dispatch_without_a_durable_task() {
         let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
@@ -2226,6 +4086,77 @@ mod tests {
             "the pre-failover identity survived the switch: {}",
             parts.render()
         );
+        Ok(())
+    }
+
+    /// Lane R62f (A61 miss 5): a headless agent's prompt never carries the
+    /// first-run tour offer; an ordinary one still does while the tour is
+    /// not completed.
+    #[tokio::test]
+    async fn a_headless_session_prompt_never_offers_the_tour() -> anyhow::Result<()> {
+        const TOUR_TEXT: &str = "This user has not been shown around yet.";
+        let tour_completed = crate::config::Config::global()
+            .get_param::<bool>(crate::agents::self_knowledge::TOUR_COMPLETED_KEY)
+            .unwrap_or(false);
+
+        let headless = crate::agents::Agent::new();
+        headless.set_headless(true);
+        let session = headless
+            .config
+            .session_manager
+            .create_session(
+                std::env::current_dir().unwrap(),
+                "test-headless-tour".to_string(),
+                SessionType::Hidden,
+                GooseMode::default(),
+            )
+            .await?;
+        headless
+            .update_provider(
+                std::sync::Arc::new(MockProvider {
+                    model_config: ModelConfig::new("test-model").unwrap(),
+                }),
+                &session.id,
+            )
+            .await?;
+        let (_, _, parts) = headless
+            .prepare_tools_and_prompt(&session.id, session.working_dir.as_path())
+            .await?;
+        assert!(
+            !parts.render().contains(TOUR_TEXT),
+            "a headless session must not be offered the tour"
+        );
+
+        if !tour_completed
+            && !crate::agents::platform_extensions::orchestrator::is_headless_dispatch_policy_installed()
+        {
+            let interactive = crate::agents::Agent::new();
+            let session = interactive
+                .config
+                .session_manager
+                .create_session(
+                    std::env::current_dir().unwrap(),
+                    "test-interactive-tour".to_string(),
+                    SessionType::Hidden,
+                    GooseMode::default(),
+                )
+                .await?;
+            interactive
+                .update_provider(
+                    std::sync::Arc::new(MockProvider {
+                        model_config: ModelConfig::new("test-model").unwrap(),
+                    }),
+                    &session.id,
+                )
+                .await?;
+            let (_, _, parts) = interactive
+                .prepare_tools_and_prompt(&session.id, session.working_dir.as_path())
+                .await?;
+            assert!(
+                parts.render().contains(TOUR_TEXT),
+                "control: a non-headless session still gets the tour offer"
+            );
+        }
         Ok(())
     }
 

@@ -328,10 +328,24 @@ mod tests {
 
     /// Classify a path that need not exist. The in-use probe short-circuits on
     /// a missing directory, which is exactly what a pure path-rule test wants.
+    /// A root that cannot exist, so `classify`'s step 1 never finds anything
+    /// to stat.
+    ///
+    /// These cases are about the RULES -- Apple's caches are left alone, a
+    /// toolchain cache is regenerable rather than safe -- and every one of
+    /// those rules is decided from the path's shape: `is_macos_managed` wants
+    /// the `/Library/Caches/` substring plus the file name, and
+    /// `costly_cache_label` matches runs of consecutive components. Prefixing
+    /// preserves all of that. What it removes is the only host-dependent step,
+    /// `inuse::in_use_reason`, which stats the real path and runs BEFORE the
+    /// rules: on a machine that has touched npm today, `/Users/j/.npm` is
+    /// genuinely `in_use` and the case never reaches the rule it is testing.
+    const HERMETIC_ROOT: &str = "/permagent-classify-fixture-does-not-exist";
+
     fn classify_path(finding_type: &str, path: &str, size: u64) -> Classification {
         classify(
             finding_type,
-            &PathBuf::from(path),
+            &PathBuf::from(format!("{HERMETIC_ROOT}{path}")),
             size,
             &cfg(),
             &NoProcessProbe,

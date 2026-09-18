@@ -350,6 +350,46 @@ pub fn select_reviewer(
     }
 }
 
+/// Lane R63c: the cross-family candidate a REVIEW DISPATCH (`delegate` with
+/// `worker_persona: "reviewer"`) escalates to when no dedicated review pin
+/// decided it — the cheapest different-family model the user actually has
+/// that clears the size-scaled capability floor ([`select_reviewer`]'s
+/// BestFit step, with the configured and derived steps deliberately skipped).
+///
+/// Why not the derived map's REVIEW entry: the recommender picks REVIEW as the
+/// *strongest* different-family verifier (`recommend::review_rank`), not the
+/// cheapest capable one, so with an `ANTHROPIC_API_KEY` present it names
+/// `claude-fable-5` — the priciest row in the knowledge base. M47 r63 s5
+/// (`dschat`, every pack pinned to DeepSeek): the coordinator's reviewer
+/// delegate ran five turns on `anthropic/claude-fable-5` for $1.97, ~85% of
+/// the record's spend, for a one-line diff that `claude-haiku-4-5` clears the
+/// small-change floor for. Review keeps its cross-family requirement (the
+/// verification gate counts `reviewer_not_independent`); it just stops buying
+/// the frontier model to satisfy it.
+///
+/// `None` when nothing different-family clears the floor, or the author is
+/// unknown (no family can be proven different) — the caller's same-family
+/// fallback then applies, honestly labeled.
+///
+/// Lane N3 (M48 r64 s5, ruling 2026-09-17): the reviewer delegate and the
+/// reviewer mandate no longer call this. Its size-only floor read `git diff
+/// HEAD`, which is 0 after an auto-land, so a complex change got the cheapest
+/// reviewer; they now use `orchestrator::assign_delegate_reviewer`
+/// (`recommend::assign_reviewer` over the goal's trunk-relative diff).
+pub fn cheapest_cross_family_reviewer(
+    author: Option<(&str, &str)>,
+    available: &[AvailableModel],
+    changed_lines: usize,
+) -> Option<RoleModel> {
+    select_reviewer(author, None, None, available, changed_lines)
+        .pick()
+        .filter(|pick| pick.cross_family)
+        .map(|pick| RoleModel {
+            provider: pick.provider.clone(),
+            model: pick.model.clone(),
+        })
+}
+
 // ── Spend, failed closed ─────────────────────────────────────────────────────
 
 /// Whether the review may be paid for.
@@ -568,6 +608,69 @@ mod tests {
             .map(|m| m.blended_cost_per_mtok())
             .fold(f64::INFINITY, f64::min);
         assert!((pick.cost_hint_per_mtok - cheapest).abs() < 1e-9);
+    }
+
+    /// Lane R63c (M47 r63 s5): a DeepSeek author with the Anthropic line
+    /// available. The derived map's REVIEW entry is the strongest
+    /// different-family verifier (`claude-fable-5`); the review DISPATCH
+    /// candidate must instead be the cheapest different-family model that
+    /// clears the size-scaled floor — never the frontier row for a one-line
+    /// diff, and still never the author's own family.
+    #[test]
+    fn the_review_dispatch_candidate_is_the_cheapest_capable_cross_family_model_not_the_strongest()
+    {
+        let author = ("custom_deepseek", "deepseek-chat");
+        let available = vec![
+            AvailableModel::new("custom_deepseek", "deepseek-chat"),
+            AvailableModel::new("anthropic", "claude-fable-5"),
+            AvailableModel::new("anthropic", "claude-sonnet-5"),
+            AvailableModel::new("anthropic", "claude-haiku-4-5-20251001"),
+        ];
+        let cheapest_price = |floor: f64| {
+            available
+                .iter()
+                .filter_map(|a| lookup_model(&a.provider, &a.model))
+                .filter(|k| k.family != "deepseek" && k.orchestration_strength >= floor)
+                .map(|k| k.blended_cost_per_mtok())
+                .fold(f64::INFINITY, f64::min)
+        };
+
+        let small = cheapest_cross_family_reviewer(Some(author), &available, 1)
+            .expect("a cross-family model clears the small-change floor");
+        assert_ne!(
+            small.model, "claude-fable-5",
+            "never the frontier row by default"
+        );
+        assert_ne!(family_of(&small.provider, &small.model), "deepseek");
+        let small_kb = lookup_model(&small.provider, &small.model).expect("known");
+        assert!(
+            (small_kb.blended_cost_per_mtok() - cheapest_price(REVIEWER_MIN_ORCHESTRATION)).abs()
+                < 1e-9
+        );
+
+        let large = cheapest_cross_family_reviewer(Some(author), &available, SMALL_DIFF_LINES + 1)
+            .expect("a cross-family model clears the large-change floor");
+        let large_kb = lookup_model(&large.provider, &large.model).expect("known");
+        assert!(large_kb.orchestration_strength >= REVIEWER_STRONG_ORCHESTRATION);
+        assert!(
+            (large_kb.blended_cost_per_mtok() - cheapest_price(REVIEWER_STRONG_ORCHESTRATION))
+                .abs()
+                < 1e-9
+        );
+        assert_ne!(large.model, "claude-fable-5");
+
+        // Only the author's own family available ⇒ no cross-family candidate
+        // (the caller's honestly-labeled same-family fallback applies).
+        assert_eq!(
+            cheapest_cross_family_reviewer(
+                Some(author),
+                &[AvailableModel::new("custom_deepseek", "deepseek-chat")],
+                1
+            ),
+            None
+        );
+        // Unknown author ⇒ nothing can be proven cross-family.
+        assert_eq!(cheapest_cross_family_reviewer(None, &available, 1), None);
     }
 
     #[test]
