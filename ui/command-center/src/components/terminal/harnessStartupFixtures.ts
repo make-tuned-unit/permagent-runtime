@@ -30,6 +30,34 @@
  * So bracketed paste alone does not mean "there is an input box" — Claude
  * Code's trust dialog sets it too. It means "raw mode". What separates the two
  * captures is whether the harness went on to drive a full-screen surface.
+ *
+ * 2026-09-18 addition:
+ *
+ *   permagentReadyComposer — `permagent run --recipe permagent-coding
+ *                         --interactive` at its pinned composer, the one the
+ *                         screenshot shows ("• Ready · enter send · ctrl+j
+ *                         newline · /help"). Captured the same way, in an
+ *                         otherwise empty directory so the codebase-map
+ *                         question could be declined and the session reached
+ *                         its prompt. Over the WHOLE 74 KB capture the only
+ *                         DEC private modes are 2004 and 25 (cursor) — no
+ *                         alternate screen, no mouse tracking, no
+ *                         synchronized output. The harness paints a pinned
+ *                         strip into the real scrollback instead, and the one
+ *                         thing that says so is DECSTBM: `ESC [ 1 ; 19 r`
+ *                         immediately before `ESC [ ? 2004 h`.
+ *
+ * That is why the 2026-08-25 gate — bracketed paste plus one of alt screen /
+ * mouse tracking / synchronized output — could never fire here, and every
+ * Grow → Build dispatch into the Permagent harness sat out the 30 s ceiling
+ * and fell through to the "not delivered" chip.
+ *
+ * The permagent bytes below are the tail of that capture, from the last
+ * scrollback line through the first composer frame; the elided 67 KB prefix
+ * is provider routing and spinner frames and contains no DEC private mode
+ * other than 25 and no DECSTBM at all (asserted in followUpDelivery.test.ts).
+ * The session's working directory was rewritten to `/tmp/scratch`; no escape
+ * sequence was touched.
  */
 
 const decode = (b64: string): string => {
@@ -112,6 +140,43 @@ const codexReadyPromptB64 =
   'bBtbPzIwMjZoG1szOW0bWzQ5bRtbMG0bWz8yNWwbWz8yMDI2bBtbPzIwMjZoG1szOW0bWzQ5bRtbMG0bWz8yNWwbWz8yMDI2bBtb' +
   'PzIwMjZoG1szOW0bWzQ5bRtbMG0bWz8yNWwbWz8yMDI2bBtbPzIwMjZoG1szOW0bWzQ5bRtbMG0bWz8yNWwbWz8yMDI2bA==';
 
+const permagentReadyComposerB64 =
+  'G1s/MjVoICAbWzMybeKXjxtbMG0gG1sybW5ldyBzZXNzaW9uG1swbSAbWzJtwrcbWzBtIBtbMm1pbml0aWFsIG1vZGVsOhtbMG0g' +
+  'G1sybW9wZW5haRtbMG0gG1szNm1ncHQtNS40LW1pbmkbWzBtDQogICAgG1sybTIwMjYwOTE4XzE0G1swbSAbWzJtwrcgL3RtcC9z' +
+  'Y3JhdGNoG1swbQ0KICAgIBtbMzdtSGVucnkgaXMgcmVhZHkbWzBtDQoNDQoNDQoNDQoNDQoNDQobWzE7MTlyG1sxOTsxSBtbPzIw' +
+  'MDRoG1s/MjVsG1syMDsxSBtbSxtbMzg7MjswOzIxMzsyNTVt4oCiIFJlYWR5ICDCtyAgZW50ZXIgc2VuZCDCtyBjdHJsK2ogbmV3' +
+  'bGluZSDCtyAvaGVscCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgG1swbRtbMjE7' +
+  'MUgbW0sbWzM4OzI7MDsyMTM7MjU1beKVreKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKU' +
+  'gOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKU' +
+  'gOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKU' +
+  'gOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKU' +
+  'gOKUgOKUgOKUgOKUgOKUgOKUgOKVrhtbMG0bWzIyOzFIG1tLG1szODsyOzA7MjEzOzI1NW3ilIIbWzBtG1s0ODsyOzI4OzM2OzUw' +
+  'bRtbMzg7MjsyMzI7MjI4OzIyM20gG1szODsyOzA7MjEzOzI1NW3ina8gG1swbRtbNDg7MjsyODszNjs1MG0bWzM4OzI7MjMyOzIy' +
+  'ODsyMjNtG1szODsyOzkwOzEwOTsxMzJtQXNrIFBlcm1hZ2VudCB0byBkbyBhbnl0aGluZyAgICAgICAgICAgICAgICAgICAgICAg' +
+  'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIBtbMG0bWzQ4OzI7Mjg7MzY7NTBtG1szODsyOzIzMjsy' +
+  'Mjg7MjIzbSAbWzBtG1szODsyOzA7MjEzOzI1NW3ilIIbWzBtG1syMzsxSBtbSxtbMzg7MjswOzIxMzsyNTVt4pWw4pSA4pSA4pSA' +
+  '4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA' +
+  '4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA' +
+  '4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA' +
+  '4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pWvG1swbRtbMjQ7MUgb' +
+  'W0sbWzM4OzI7OTA7MTA5OzEzMm0gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg' +
+  'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgG1swbRtbMjI7NUgbWz8yNWgbWz8yNWwbWzIwOzFI' +
+  'G1tLG1szODsyOzA7MjEzOzI1NW3igKIgUmVhZHkgIMK3ICBlbnRlciBzZW5kIMK3IGN0cmwraiBuZXdsaW5lIMK3IC9oZWxwICAg' +
+  'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAbWzBtG1syMTsxSBtbSxtbMzg7MjswOzIx' +
+  'MzsyNTVt4pWt4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA' +
+  '4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA' +
+  '4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA' +
+  '4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA' +
+  '4pSA4pWuG1swbRtbMjI7MUgbW0sbWzM4OzI7MDsyMTM7MjU1beKUghtbMG0bWzQ4OzI7Mjg7MzY7NTBtG1szODsyOzIzMjsyMjg7' +
+  'MjIzbSAbWzM4OzI7MDsyMTM7MjU1beKdryAbWzBtG1s0ODsyOzI4OzM2OzUwbRtbMzg7MjsyMzI7MjI4OzIyM20bWzM4OzI7OTA7' +
+  'MTA5OzEzMm1Bc2sgUGVybWFnZW50IHRvIGRvIGFueXRoaW5nICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg' +
+  'ICAgICAgICAgICAgICAgICAgICAgICAgICAgG1swbRtbNDg7MjsyODszNjs1MG0bWzM4OzI7MjMyOzIyODsyMjNtIBtbMG0bWzM4' +
+  'OzI7MDsyMTM7MjU1beKUghtbMG0bWzIzOzFIG1tLG1szODsyOzA7MjEzOzI1NW3ilbDilIDilIDilIDilIDilIDilIDilIDilIDi' +
+  'lIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDi' +
+  'lIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDi' +
+  'lA==';
+
 export const claudeTrustDialogBytes = decode(claudeTrustDialogB64);
 export const claudeReadyPromptBytes = decode(claudeReadyPromptB64);
 export const codexReadyPromptBytes = decode(codexReadyPromptB64);
+export const permagentReadyComposerBytes = decode(permagentReadyComposerB64);

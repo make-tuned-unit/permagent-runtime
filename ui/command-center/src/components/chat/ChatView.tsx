@@ -13,7 +13,6 @@ import { ChatPendingDecisions } from './ChatPendingDecisions';
 import { DiscussNotice } from './DiscussNotice';
 import { useTheme } from '../../styles/useTheme';
 import { DropZone } from './DropZone';
-import { space } from '../../styles/tokens';
 
 export function ChatView() {
   const { colors } = useTheme();
@@ -87,6 +86,14 @@ export function ChatView() {
       {!voiceOverlay && <ChatPendingDecisions />}
       <ChatInput ref={chatInputRef} />
 
+      {/* The decisions go INSIDE the orb, not over it. They used to be a second
+          absolutely-positioned layer (`bottom: space.huge`, `zIndex: 70`) above
+          the orb's own `inset: 0` takeover: nothing tied the two boxes
+          together, and the orb centres its state labels in the full surface
+          height, so `SAY "HEY HENRY"` and `click anywhere to end the
+          conversation` rendered straight through the decision cards' text
+          (reported 2026-09-18). As the orb's footer they are flex siblings of
+          the orb block, so the orb gives up the height they take. */}
       {voiceConversation && voiceOverlay && (
         <VoiceOrb
           state={voiceConversation.state}
@@ -95,20 +102,8 @@ export function ChatView() {
           onExit={voiceConversation.exit}
           wakeHint={voiceConversation.wakeHint}
           teachWord={voiceConversation.teachWord}
+          footer={<ChatPendingDecisions overlay />}
         />
-      )}
-      {voiceOverlay && (
-        <div
-          style={{
-            position: 'absolute',
-            left: space.xl,
-            right: space.xl,
-            bottom: space.huge,
-            zIndex: 70,
-          }}
-        >
-          <ChatPendingDecisions overlay />
-        </div>
       )}
       </div>
     </DropZone>

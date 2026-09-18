@@ -34,6 +34,7 @@ import {
 import { glassSurface } from './Glass';
 import {
   placeViewportTooltip,
+  type TipSize,
   type TooltipSide,
   type ViewportPlacement,
 } from './tooltipPlacement';
@@ -74,6 +75,8 @@ const INNER_R = concentric(OUTER_R, PAD_Y);
 export interface TooltipBubbleProps {
   id: string;
   children: ReactNode;
+  /** Measuring seam: the placer needs the bubble's real box to flip honestly. */
+  bubbleRef?: (el: HTMLDivElement | null) => void;
   left: number;
   top: number;
   transform: string;
@@ -93,6 +96,7 @@ export interface TooltipBubbleProps {
 export function TooltipBubble({
   id,
   children,
+  bubbleRef,
   left,
   top,
   transform,
@@ -132,6 +136,7 @@ export function TooltipBubble({
     <div
       id={id}
       role={role}
+      ref={bubbleRef}
       style={{
         position: 'fixed',
         top,
@@ -224,6 +229,12 @@ export function Tooltip({
   const tipId = `pa-tip-${reactId.replace(/:/g, '')}`;
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  // The bubble's own box. Null for exactly one frame (before it is laid out),
+  // during which `placeViewportTooltip` falls back to its size-free heuristic.
+  // Without this the placer guessed 48px of needed clearance, so a label that
+  // wrapped to two lines was placed "above" a trigger 50px down the window and
+  // rendered up through the chat header onto the icon row (2026-09-18).
+  const [tipSize, setTipSize] = useState<TipSize | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>();
   const triggerRef = useRef<HTMLElement | null>(null);
 
@@ -238,7 +249,26 @@ export function Tooltip({
       return false;
     });
     setAnchor(null);
+    // Next open may carry different content, so never place it on a stale box.
+    setTipSize(null);
   }, [clear]);
+
+  /**
+   * Ref on the portalled bubble: the one place its real size exists. A zero
+   * box means "not laid out" (jsdom always, a browser never once painted), and
+   * is dropped so the fallback heuristic stays in charge rather than the placer
+   * flipping on a measurement that never happened.
+   */
+  const measureBubble = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    if (width <= 0 || height <= 0) return;
+    setTipSize(prev => (
+      prev && Math.abs(prev.width - width) < 0.5 && Math.abs(prev.height - height) < 0.5
+        ? prev
+        : { width, height }
+    ));
+  }, []);
 
   const commit = useCallback((el: HTMLElement) => {
     setAnchor(el.getBoundingClientRect());
@@ -297,7 +327,7 @@ export function Tooltip({
 
   let placementPos: ViewportPlacement | null = null;
   if (open && anchor) {
-    placementPos = placeViewportTooltip(anchor, placement);
+    placementPos = placeViewportTooltip(anchor, placement, undefined, undefined, tipSize ?? undefined);
   }
 
   return (
@@ -315,6 +345,7 @@ export function Tooltip({
       {open && placementPos && content != null && content !== false && content !== '' && createPortal(
         <TooltipBubble
           id={tipId}
+          bubbleRef={measureBubble}
           left={placementPos.left}
           top={placementPos.top}
           transform={placementPos.transform}

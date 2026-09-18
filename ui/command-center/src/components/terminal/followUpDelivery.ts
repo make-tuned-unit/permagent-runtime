@@ -52,6 +52,33 @@
  * trade: a prompt the user can click "Send now" on beats a prompt silently
  * eaten by a dialog. Launching a harness in a directory it already trusts
  * skips the dialog entirely and delivers on the first transition.
+ *
+ * 2026-09-18: that trade had a victim nobody checked — the Permagent harness
+ * itself, which is one of the four agents a Grow action can be sent to. Its
+ * composer (crates/goose-cli/src/session/composer.rs) deliberately does NOT
+ * take the alternate screen: it pins a strip to the bottom rows so the
+ * agent's output still lands in the real scrollback. A fresh PTY capture
+ * (`permagentReadyComposerBytes`) shows the whole startup emits exactly two
+ * DEC private modes, 2004 and 25 — no 1049, no mouse tracking, no 2026. So
+ * `isActive()` could never become true, every Grow → Build dispatch into it
+ * sat out the full 30 s and surfaced "Prompt not delivered — the agent didn't
+ * take the terminal in time." above a terminal that was plainly at its
+ * "• Ready · enter send · ctrl+j newline · /help" prompt.
+ *
+ * The signal that harness does emit, one byte before it turns on bracketed
+ * paste, is DECSTBM with parameters — `ESC [ 1 ; 19 r` on a 24-row terminal.
+ * Reserving rows outside the scrolling region is the pinned-strip equivalent
+ * of taking the alternate screen: it means a persistent surface is being
+ * driven, and a modal dialog does not do it (Claude Code's trust dialog emits
+ * only the parameterless `ESC [ r`, which resets the region to the whole
+ * screen and reserves nothing). So a parameterized DECSTBM now corroborates
+ * raw mode alongside alt screen / mouse tracking / synchronized output, and a
+ * bare `ESC [ r` clears it again — the harness's own suspend path writes
+ * `2004l` followed by `ESC [ r`, and must read as not-ready afterwards.
+ *
+ * Reading the tty rather than the clock is still the point: no timeout was
+ * lengthened here, and the ceiling still surfaces the chip when no harness
+ * ever takes the terminal.
  */
 
 export const FOLLOW_UP_CEILING_MS = 30_000;
@@ -60,6 +87,12 @@ export const FOLLOW_UP_SETTLE_MS = 250;
 // DEC private mode set/reset: ESC [ ? <params> h|l — matched globally so one
 // chunk can carry several transitions (rare, but cheap to handle correctly).
 const DEC_MODE_RE = /\x1b\[\?([0-9;]+)([hl])/g;
+
+// DECSTBM: ESC [ <top> ; <bottom> r sets a scroll region; ESC [ r (no params)
+// resets it to the full screen. The leading `?` is excluded deliberately —
+// `ESC [ ? … r` is DECRSTR (restore private modes), a different sequence that
+// happens to share the final byte.
+const SCROLL_REGION_RE = /\x1b\[([0-9;]*)r/g;
 
 const BRACKETED_PASTE_MODE = 2004;
 const ALT_SCREEN_MODE = 1049;
@@ -110,6 +143,9 @@ export function createFollowUpDelivery(opts: {
 
   const enabledModes = new Set<number>();
   let sawSynchronizedOutput = false;
+  // Tracked as state, not latched: the harness releases the region on suspend
+  // and a delivery timed to that gap would land on a bare shell.
+  let scrollRegionReserved = false;
   let carry = '';
   let sent = false;
   let cancelled = false;
@@ -124,7 +160,8 @@ export function createFollowUpDelivery(opts: {
   const drivesFullScreenSurface = () =>
     enabledModes.has(ALT_SCREEN_MODE) ||
     MOUSE_TRACKING_MODES.some((m) => enabledModes.has(m)) ||
-    sawSynchronizedOutput;
+    sawSynchronizedOutput ||
+    scrollRegionReserved;
 
   // The alternate screen alone is proof enough — nothing takes it to show a
   // line of text. Otherwise raw mode has to be corroborated.
@@ -192,15 +229,22 @@ export function createFollowUpDelivery(opts: {
       }
     }
 
+    SCROLL_REGION_RE.lastIndex = 0;
+    let region: RegExpExecArray | null;
+    while ((region = SCROLL_REGION_RE.exec(combined)) !== null) {
+      scrollRegionReserved = region[1].length > 0;
+    }
+
     // Retain a possible partial escape sequence at the very end of this
     // chunk so a marker split across a chunk boundary is still recognized.
     const lastEsc = combined.lastIndexOf('\x1b');
     if (lastEsc !== -1) {
       const tail = combined.slice(lastEsc);
       // Only worth carrying if it looks like the start of an unterminated
-      // DEC mode sequence (no 'h'/'l' after it yet) and is short enough to
-      // plausibly still be in flight.
-      if (tail.length <= MAX_CARRY && !/[hl]/.test(tail.slice(2))) {
+      // mode sequence (no final byte after it yet) and is short enough to
+      // plausibly still be in flight. 'r' counts as a final byte too now, or
+      // a DECSTBM already scanned above would be re-scanned on the next chunk.
+      if (tail.length <= MAX_CARRY && !/[hlr]/.test(tail.slice(2))) {
         carry = tail;
       }
     }

@@ -88,7 +88,10 @@ describe('ModelPicker', () => {
     expect(toggle).toBeTruthy();
     await act(async () => { toggle!.click(); });
 
-    const input = container.querySelector('input') as HTMLInputElement;
+    // The menu portals to document.body now, so it is no longer inside the
+    // component's own container: a picker in a clipped toolbar (the Build
+    // tab's glass tab strip) could not otherwise escape to be seen at all.
+    const input = document.body.querySelector('input') as HTMLInputElement;
     expect(input).toBeTruthy();
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -96,8 +99,7 @@ describe('ModelPicker', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
 
-    const items = Array.from(container.querySelectorAll('button'))
-      .slice(1)
+    const items = Array.from(document.body.querySelectorAll('[role="dialog"] button'))
       .map(b => b.textContent ?? '');
     expect(items.some(t => t.includes('claude-haiku-4-5'))).toBe(true);
     expect(items.some(t => t.includes('claude-opus-4-6'))).toBe(false);

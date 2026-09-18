@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { orbAmp, orbBands, orbMotionFor, orbSpin } from './orbDrive';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
@@ -128,6 +128,7 @@ export function VoiceOrb({
   onExit,
   wakeHint,
   teachWord,
+  footer,
 }: {
   state: string;
   getPlaybackAnalyser: () => AnalyserNode | null;
@@ -140,6 +141,21 @@ export function VoiceOrb({
   wakeHint?: string | null;
   /** Word placed on the Orb for a listen-once pronunciation. Never spoken. */
   teachWord?: string | null;
+  /**
+   * Content that must stay READABLE while the takeover is up — today the
+   * pending-decision cards.
+   *
+   * It is a slot rather than a sibling on purpose. ChatView used to float the
+   * decisions in their own `position: absolute; bottom` box at `zIndex: 70`
+   * over this one at `zIndex: 60`: two layers with no layout relationship, the
+   * upper one transparent. The orb centres its label column in the FULL
+   * surface height, so on a normal dock the centred `SAY "HEY HENRY"` and its
+   * `click anywhere to end the conversation` caption landed inside the
+   * decisions' band and the two texts drew straight through each other
+   * (reported 2026-09-18). Rendered here they are flex children of one column:
+   * the orb yields its share of the height, and no arithmetic has to agree.
+   */
+  footer?: ReactNode;
 }) {
   const { colors, reduceMotion } = useTheme();
   const wordGlass = useGlass('glass');
@@ -387,6 +403,7 @@ export function VoiceOrb({
   return (
     <Tooltip content="Click anywhere to end the conversation">
       <div
+        data-testid="voice-orb-takeover"
         onClick={onExit}
         style={{
           position: 'absolute',
@@ -395,12 +412,27 @@ export function VoiceOrb({
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
+          // The orb block gets the room the footer does not want. `center`
+          // here (with the orb block on `flex: 1`) keeps the sphere optically
+          // centred in ITS share of the surface instead of the whole of it,
+          // which is what let the centred labels sit under floating content.
           justifyContent: 'center',
-          gap: space.xl,
           cursor: 'pointer',
           background: `radial-gradient(ellipse at center, ${colors.surfaceHi} 0%, ${colors.bg} 75%)`,
         }}
       >
+      {/* Orb + state labels: one block, so the footer below can only ever take
+          height AWAY from it rather than be drawn across it. */}
+      <div style={{
+        flex: 1,
+        minHeight: 0,
+        alignSelf: 'stretch',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: space.xl,
+      }}>
       <div style={{ position: 'relative', width: SIZE, maxWidth: '90%', maxHeight: '60%' }}>
         <canvas
           ref={canvasRef}
@@ -481,6 +513,31 @@ export function VoiceOrb({
           click anywhere to end the conversation
         </span>
       </div>
+      </div>
+
+      {/* Actionable content, in flow beneath the orb block — never floated over
+          it. See the `footer` prop for the overlap this replaces. */}
+      {footer && (
+        <div
+          data-testid="voice-orb-footer"
+          // The slot's content decides whether it exists (ChatPendingDecisions
+          // renders nothing with an empty inbox), so an empty slot must not
+          // still reserve its padding and nudge the orb off centre.
+          className="empty:hidden"
+          style={{
+            flexShrink: 0,
+            alignSelf: 'stretch',
+            // No scroller here — the footer's content owns its own cap, so a
+            // pair of nested scroll areas never appears.
+            padding: `0 ${space.xl}px ${space.huge}px`,
+            // Default the cursor back: the takeover is click-to-exit, but the
+            // footer's own controls are not.
+            cursor: 'auto',
+          }}
+        >
+          {footer}
+        </div>
+      )}
     </div>
     </Tooltip>
   );

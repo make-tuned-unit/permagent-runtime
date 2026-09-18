@@ -14,6 +14,7 @@ import {
   claudeReadyPromptBytes,
   claudeTrustDialogBytes,
   codexReadyPromptBytes,
+  permagentReadyComposerBytes,
 } from './harnessStartupFixtures';
 
 const EXPECTED_PAYLOAD = `\x1b[200~do the thing\x1b[201~\r`;
@@ -215,6 +216,54 @@ describe('createFollowUpDelivery', () => {
     expect(writes).toEqual([EXPECTED_PAYLOAD]);
   });
 
+  /**
+   * A pinned-strip harness (the Permagent composer) never takes the alternate
+   * screen and never turns on mouse tracking — it carves the bottom rows out
+   * of the scrolling region with DECSTBM and paints there. The scroll region
+   * IS the full-screen surface in that design, so it has to corroborate raw
+   * mode like the others do.
+   */
+  it('accepts a DECSTBM scroll region as the corroborating surface signal', () => {
+    const { delivery, writes } = make();
+    delivery.onData('\x1b[1;19r\x1b[19;1H\x1b[?2004h');
+    vi.advanceTimersByTime(FOLLOW_UP_SETTLE_MS);
+    expect(writes).toEqual([EXPECTED_PAYLOAD]);
+  });
+
+  /**
+   * `ESC [ r` with no parameters resets the region to the whole screen —
+   * Claude Code emits exactly that at startup, before its trust dialog. It
+   * reserves nothing, so it must not stand in for a pinned strip.
+   */
+  it('does NOT treat a parameterless DECSTBM reset as a surface', () => {
+    const { delivery, writes } = make();
+    delivery.onData('\x1b7\x1b[r\x1b8\x1b[?2004h');
+    vi.advanceTimersByTime(FOLLOW_UP_SETTLE_MS * 4);
+    expect(writes).toEqual([]);
+  });
+
+  it('drops back to not-ready when the harness releases its scroll region', () => {
+    const { delivery, writes } = make();
+    delivery.onData('\x1b[1;19r\x1b[?2004h');
+    vi.advanceTimersByTime(FOLLOW_UP_SETTLE_MS - 50);
+    // Suspend: the composer tears the strip down (2004l then a bare DECSTBM).
+    delivery.onData('\x1b[?2004l\x1b[r');
+    vi.advanceTimersByTime(FOLLOW_UP_SETTLE_MS);
+    expect(writes).toEqual([]);
+
+    delivery.onData('\x1b[1;19r\x1b[?2004h');
+    vi.advanceTimersByTime(FOLLOW_UP_SETTLE_MS);
+    expect(writes).toEqual([EXPECTED_PAYLOAD]);
+  });
+
+  it('recognizes a DECSTBM split across two chunks', () => {
+    const { delivery, writes } = make();
+    delivery.onData('\x1b[?2004h\x1b[1;1');
+    delivery.onData('9r');
+    vi.advanceTimersByTime(FOLLOW_UP_SETTLE_MS);
+    expect(writes).toEqual([EXPECTED_PAYLOAD]);
+  });
+
   it('type-level: the exported factory returns a FollowUpDelivery', () => {
     const { delivery } = make();
     const typed: FollowUpDelivery = delivery;
@@ -297,5 +346,49 @@ describe('real harness startup streams', () => {
     delivery.onData(claudeTrustDialogBytes);
     delivery.sendNow();
     expect(writes).toEqual([EXPECTED_PAYLOAD]);
+  });
+  /**
+   * The reported bug (screenshot 2026-09-18): a Grow action sent to the
+   * Permagent harness sat out the full 30 s ceiling and surfaced the "Prompt
+   * not delivered — the agent didn't take the terminal in time." chip, while
+   * the terminal behind it was plainly at "• Ready · enter send · ctrl+j
+   * newline · /help". These bytes are that terminal.
+   */
+  it('delivers into the Permagent harness at its pinned composer', () => {
+    const { delivery, writes } = make();
+    delivery.onData(permagentReadyComposerBytes);
+    vi.advanceTimersByTime(FOLLOW_UP_SETTLE_MS);
+    expect(writes).toEqual([EXPECTED_PAYLOAD]);
+  });
+
+  it('never reaches the ceiling for the Permagent harness', () => {
+    const { delivery, writes, pendingCalls } = make();
+    delivery.onData(permagentReadyComposerBytes);
+    vi.advanceTimersByTime(FOLLOW_UP_CEILING_MS + 1);
+    expect(writes).toEqual([EXPECTED_PAYLOAD]);
+    expect(pendingCalls).toEqual([]);
+  });
+
+  it('delivers into the Permagent harness byte by byte too', () => {
+    const { delivery, writes } = make();
+    for (const byte of permagentReadyComposerBytes) delivery.onData(byte);
+    vi.advanceTimersByTime(FOLLOW_UP_SETTLE_MS);
+    expect(writes).toEqual([EXPECTED_PAYLOAD]);
+  });
+
+  /**
+   * Pins what the capture actually proves, so nobody re-derives readiness from
+   * a signal this harness does not emit: the ONLY DEC private modes in it are
+   * bracketed paste and cursor visibility. Alt screen, mouse tracking and
+   * synchronized output are all absent — DECSTBM is the whole signal.
+   */
+  it('the Permagent capture carries no alt screen, mouse tracking or sync output', () => {
+    const modes = new Set(
+      [...permagentReadyComposerBytes.matchAll(/\x1b\[\?([0-9;]+)[hl]/g)].flatMap((m) =>
+        m[1].split(';'),
+      ),
+    );
+    expect([...modes].sort()).toEqual(['2004', '25']);
+    expect(permagentReadyComposerBytes).toContain('\x1b[1;19r');
   });
 });

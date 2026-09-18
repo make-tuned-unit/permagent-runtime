@@ -75,6 +75,96 @@ describe('placeViewportTooltip', () => {
   });
 });
 
+// ── Measured placement: the box the bubble actually occupies ──────────
+//
+// jsdom has no layout engine, so nothing here measures a real bubble. What it
+// DOES do is give `placeViewportTooltip` a bubble size and check the box that
+// falls out of `left`/`top`/`transform` — which is the arithmetic that was
+// wrong. Two things must hold for every placement: the box is inside the
+// window, and it does not sit on the trigger it labels.
+
+/** Resolve a placement + bubble size into the rect the bubble will occupy. */
+function bubbleBox(p: ReturnType<typeof placeViewportTooltip>, tip: { width: number; height: number }) {
+  const { left, top, side } = p;
+  switch (side) {
+    case 'top': return { l: left - tip.width / 2, r: left + tip.width / 2, t: top - tip.height, b: top };
+    case 'bottom': return { l: left - tip.width / 2, r: left + tip.width / 2, t: top, b: top + tip.height };
+    case 'left': return { l: left - tip.width, r: left, t: top - tip.height / 2, b: top + tip.height / 2 };
+    case 'right': return { l: left, r: left + tip.width, t: top - tip.height / 2, b: top + tip.height / 2 };
+  }
+}
+
+describe('placeViewportTooltip (measured)', () => {
+  const viewport = { width: 1280, height: 800 };
+  /** A label that wrapped to two lines — the case the 48px guess got wrong. */
+  const twoLine = { width: 210, height: 60 };
+
+  function expectInside(box: ReturnType<typeof bubbleBox>) {
+    expect(box.l).toBeGreaterThanOrEqual(0);
+    expect(box.t).toBeGreaterThanOrEqual(0);
+    expect(box.r).toBeLessThanOrEqual(viewport.width);
+    expect(box.b).toBeLessThanOrEqual(viewport.height);
+  }
+
+  function expectClearOf(box: ReturnType<typeof bubbleBox>, anchor: { x: number; y: number; width: number; height: number }) {
+    const overlaps = box.l < anchor.x + anchor.width && box.r > anchor.x
+      && box.t < anchor.y + anchor.height && box.b > anchor.y;
+    expect(overlaps).toBe(false);
+  }
+
+  // The reported bug: the chat dock's header buttons sit ~50px down and flush
+  // right. Unmeasured, 50 >= FLIP_ROOM_PX(48) said "top fits", so a two-line
+  // label was drawn from y = 50 - 8 - 60 = -18 — up through the header and
+  // against the icon row — while its centre-only clamp let it run off the
+  // right edge as well.
+  it('keeps a wrapped label off the chat header and inside the window', () => {
+    const detachButton = { x: 1180, y: 50, width: 28, height: 28 };
+    const p = placeViewportTooltip(detachButton, 'top', 8, viewport, twoLine);
+    const box = bubbleBox(p, twoLine);
+    expectInside(box);
+    expectClearOf(box, detachButton);
+  });
+
+  it('clamps by the bubble edge, not its midpoint, against the right edge', () => {
+    const flushRight = { x: 1240, y: 400, width: 28, height: 28 };
+    const p = placeViewportTooltip(flushRight, 'top', 8, viewport, twoLine);
+    // Centre-clamping put `left` at 1272 and half a 210px bubble past 1280.
+    expect(p.left + twoLine.width / 2).toBeLessThanOrEqual(viewport.width - 8);
+    expectInside(bubbleBox(p, twoLine));
+  });
+
+  it('does not flip a one-line label down onto the content it covers', () => {
+    // 46px of clearance: too little for the 48px guess, ample for a 28px
+    // bubble plus its 8px gap and 8px margin. Flipping here dropped the label
+    // onto the transcript below the header.
+    const oneLine = { width: 180, height: 28 };
+    const anchor = { x: 400, y: 46, width: 28, height: 28 };
+    const p = placeViewportTooltip(anchor, 'top', 8, viewport, oneLine);
+    expect(p.side).toBe('top');
+    expectInside(bubbleBox(p, oneLine));
+    expectClearOf(bubbleBox(p, oneLine), anchor);
+  });
+
+  it('holds the invariants for every side and both edges', () => {
+    const sides = ['top', 'bottom', 'left', 'right'] as const;
+    const anchors = [
+      { x: 0, y: 0, width: 28, height: 28 },
+      { x: 1252, y: 0, width: 28, height: 28 },
+      { x: 0, y: 772, width: 28, height: 28 },
+      { x: 1252, y: 772, width: 28, height: 28 },
+      { x: 640, y: 400, width: 28, height: 28 },
+    ];
+    for (const side of sides) {
+      for (const anchor of anchors) {
+        const p = placeViewportTooltip(anchor, side, 8, viewport, twoLine);
+        const box = bubbleBox(p, twoLine);
+        expectInside(box);
+        expectClearOf(box, anchor);
+      }
+    }
+  });
+});
+
 describe('Tooltip', () => {
   it('wires aria-describedby to a role=tooltip bubble on focus', () => {
     act(() => {
@@ -140,6 +230,44 @@ describe('Tooltip', () => {
       btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     });
     expect(tip()?.textContent).toBe('Collapse');
+  });
+
+  // The math above is only worth having if the bubble's real box reaches it.
+  // jsdom reports 0×0 for everything, so we stand in for the layout engine and
+  // then assert on the placement the component committed.
+  it('places from the bubble it measured, not from the 48px guess', () => {
+    setReduceMotion(true); // resting transform, no spring frame to wait on
+    const real = HTMLElement.prototype.getBoundingClientRect;
+    const rect = (x: number, y: number, width: number, height: number) => ({
+      x, y, width, height, top: y, left: x, right: x + width, bottom: y + height,
+      toJSON: () => ({}),
+    } as DOMRect);
+    // Trigger: a dock-header icon button, ~50px down and flush right.
+    // Bubble: "Open chat in its own window" wrapped to two lines.
+    HTMLElement.prototype.getBoundingClientRect = function () {
+      return this.getAttribute('role') === 'tooltip'
+        ? rect(0, 0, 210, 60)
+        : rect(980, 50, 28, 28);
+    };
+    try {
+      act(() => {
+        root.render(
+          <Tooltip content="Open chat in its own window">
+            <button type="button">detach</button>
+          </Tooltip>,
+        );
+      });
+      act(() => { container.querySelector('button')!.focus(); });
+      const bubble = tip()!;
+      // 50px of clearance does not hold a 60px bubble: it must go below the
+      // button, not up through the header.
+      expect(bubble.style.transform).toBe('translate(-50%, 0)');
+      expect(parseFloat(bubble.style.top)).toBeGreaterThanOrEqual(50 + 28);
+      // ...and the clamp is on the bubble's edge, so its right side stays in.
+      expect(parseFloat(bubble.style.left) + 210 / 2).toBeLessThanOrEqual(window.innerWidth - 8);
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = real;
+    }
   });
 
   it('dismisses on Escape', () => {
