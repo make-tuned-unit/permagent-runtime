@@ -231,6 +231,23 @@ struct FirstPartyStats {
     /// The field name is deliberately not `visitors`: the UI must not present
     /// it as a precise headcount.
     device_signatures: i64,
+    /// Distinct PEOPLE, from the only identity this pipeline ever sees: a
+    /// `user_id` the site itself attaches to its own events. `None` means the
+    /// site has never sent a `user_id` on any event, so there is no identity
+    /// to count — an honest gap, not a zero. `Some(0)` means the site DOES
+    /// report identity and nobody signed up in this window, which is a real
+    /// zero and must read as one.
+    ///
+    /// Never derived from `device_signatures`, `visitor_hash`, `session_id`,
+    /// sessions, or a count of signup events: every one of those counts
+    /// browsers or retries, not people, and presenting any of them as a user
+    /// count would be a fabricated metric.
+    signed_up_users: Option<i64>,
+    /// Which event the count came from — the event name carrying the most
+    /// distinct `user_id`s, read from the data rather than hardcoded, so the
+    /// UI can name its source instead of asserting an unqualified "users".
+    /// `None` exactly when `signed_up_users` is `None`.
+    signup_event_name: Option<String>,
     /// Events in the last 5 minutes — the "live" indicator.
     events_last_5m: i64,
     /// How many rows the bot filter removed from every figure above. Surfaced
@@ -1406,6 +1423,81 @@ async fn first_party_stats(
     let bounce_rate = (sessions > 0).then(|| bounced as f64 / sessions as f64);
     let pages_per_session = (sessions > 0).then(|| session_pageviews as f64 / sessions as f64);
 
+    // ── Signed-up users (identity, not devices) ──
+    // The one truthful people-count this pipeline can produce: distinct
+    // `user_id` values the SITE attaches to its own events. `visitor_hash`,
+    // `session_id`, `device_signatures` and a plain count of signup events all
+    // count browsers or retries, so none of them may ever back this figure.
+    //
+    // Bot rows are excluded unconditionally, even under `?includeBots=true`: a
+    // crawler never completes a signup, so a bot-flagged row carrying a
+    // `user_id` is corruption rather than traffic.
+    //
+    // `properties` is always written through `analytics_classify::sanitize_properties`
+    // on both ingest paths, which emits a JSON object or NULL — so `json_extract`
+    // never meets malformed text here.
+    //
+    // Step 1: does this site report identity AT ALL (any time, not just this
+    // window)? This is what separates "no identity instrumented" (None) from
+    // "instrumented, nobody signed up in the window" (a real Some(0)).
+    let identity_ever: Option<(String, i64)> = sqlx::query_as(
+        "SELECT coalesce(name, '(unnamed)') AS event_name,
+                count(DISTINCT json_extract(properties, '$.user_id')) AS users
+         FROM analytics_events
+         WHERE project_id = ?1 AND kind = 'event' AND is_bot = 0
+           AND json_extract(properties, '$.user_id') IS NOT NULL
+         GROUP BY event_name
+         ORDER BY users DESC, event_name ASC
+         LIMIT 1",
+    )
+    .bind(&project.id)
+    .fetch_optional(&pool)
+    .await
+    .unwrap_or(None);
+
+    let (signed_up_users, signup_event_name) = match identity_ever {
+        None => (None, None),
+        Some((ever_name, _)) => {
+            // Step 2: distinct people in THIS window, across every event that
+            // carries a user_id — one person who fires two events, or the same
+            // event twice, counts once.
+            let users: i64 = sqlx::query_scalar(
+                "SELECT count(DISTINCT json_extract(properties, '$.user_id'))
+                 FROM analytics_events
+                 WHERE project_id = ?1 AND kind = 'event' AND is_bot = 0
+                   AND created_at >= datetime('now', ?2)
+                   AND json_extract(properties, '$.user_id') IS NOT NULL",
+            )
+            .bind(&project.id)
+            .bind(&since)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(0);
+
+            // Step 3: name the source event — the one carrying the most
+            // distinct user_ids in the window, falling back to the all-time
+            // winner so an empty window still names what it would have counted.
+            let windowed_name: Option<String> = sqlx::query_scalar(
+                "SELECT coalesce(name, '(unnamed)') AS event_name
+                 FROM analytics_events
+                 WHERE project_id = ?1 AND kind = 'event' AND is_bot = 0
+                   AND created_at >= datetime('now', ?2)
+                   AND json_extract(properties, '$.user_id') IS NOT NULL
+                 GROUP BY event_name
+                 ORDER BY count(DISTINCT json_extract(properties, '$.user_id')) DESC,
+                          event_name ASC
+                 LIMIT 1",
+            )
+            .bind(&project.id)
+            .bind(&since)
+            .fetch_optional(&pool)
+            .await
+            .unwrap_or(None);
+
+            (Some(users), Some(windowed_name.unwrap_or(ever_name)))
+        }
+    };
+
     let events_last_5m: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM analytics_events
          WHERE project_id = ?1 AND created_at >= datetime('now', '-5 minutes')",
@@ -1580,6 +1672,8 @@ async fn first_party_stats(
         period_days: days,
         pageviews,
         device_signatures,
+        signed_up_users,
+        signup_event_name,
         events_last_5m,
         bots_excluded,
         including_bots,
@@ -2429,6 +2523,186 @@ mod tests {
             "the project's own host must not become a traffic source: {top_sources:?}"
         );
         assert_eq!(stats["topEvents"][0]["name"], serde_json::json!("signup"));
+    }
+
+    /// Signed-up users is the ONLY people-count this pipeline is allowed to
+    /// produce, and it is only producible when the site itself attaches a
+    /// `user_id` to an event. The three states must stay distinguishable:
+    ///
+    /// * no site-supplied identity anywhere  → `None` (an honest gap; the UI
+    ///   must show what to instrument, never a zero)
+    /// * identity instrumented, none in this window → `Some(0)` (a real zero)
+    /// * identity in the window → distinct PEOPLE, so one person firing the
+    ///   same event twice counts once
+    ///
+    /// The counter-cases matter as much: the figure must never equal the number
+    /// of signup EVENTS, nor `deviceSignatures`/`sessions`, because each of
+    /// those would be a fabricated headcount.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn signed_up_users_counts_people_or_admits_it_cannot() {
+        let root = crate::test_support::test_root();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+        ]);
+        let (app, collect_app, pool, _state) = test_app().await;
+
+        async fn enable(app: &Router, project_id: &str) -> String {
+            let (status, setup) = request(
+                app,
+                "POST",
+                &format!("/api/projects/{project_id}/analytics/first_party/enable"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            setup["siteKey"].as_str().unwrap().to_string()
+        }
+        async fn stats_for(app: &Router, project_id: &str, days: u32) -> serde_json::Value {
+            let (status, stats) = request(
+                app,
+                "GET",
+                &format!("/api/projects/{project_id}/analytics/first_party/stats?days={days}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            stats
+        }
+
+        // ── A site with NO identity instrumented ──
+        let silent = seed_project(&pool, "fp-identity-silent").await;
+        let silent_key = enable(&app, &silent.id).await;
+        assert_eq!(
+            beacon(
+                &collect_app,
+                &format!("/collect/{silent_key}"),
+                serde_json::json!({ "k": "pv", "p": "/" }),
+            )
+            .await,
+            StatusCode::ACCEPTED
+        );
+        // An event WITH properties but no user_id — properties alone are not
+        // identity.
+        assert_eq!(
+            beacon(
+                &collect_app,
+                &format!("/collect/{silent_key}"),
+                serde_json::json!({
+                    "k": "ev", "p": "/signup", "n": "signup_complete",
+                    "d": { "plan": "free" }
+                }),
+            )
+            .await,
+            StatusCode::ACCEPTED
+        );
+        let silent_stats = stats_for(&app, &silent.id, 7).await;
+        assert_eq!(
+            silent_stats["signedUpUsers"],
+            serde_json::json!(null),
+            "a site that reports no identity must yield null, never 0 — a zero \
+             would read as 'nobody signed up' when the truth is 'nothing counts \
+             people here'"
+        );
+        assert_eq!(silent_stats["signupEventName"], serde_json::json!(null));
+        // The forbidden substitutions: this project HAS a device signature, a
+        // session and one signup event, and none of them may leak into the
+        // user count.
+        assert!(silent_stats["deviceSignatures"].as_i64().unwrap() > 0);
+
+        // ── A site that DOES report identity ──
+        let ladle = seed_project(&pool, "fp-identity-reporting").await;
+        let ladle_key = enable(&app, &ladle.id).await;
+        let signup = |user: &str| {
+            serde_json::json!({
+                "k": "ev", "p": "/signup", "n": "signup_complete",
+                "d": { "user_id": user }
+            })
+        };
+        // Alice signs up twice (a retry, or a second device) — one person.
+        for body in [
+            signup("11111111-1111-4111-8111-111111111111"),
+            signup("11111111-1111-4111-8111-111111111111"),
+            signup("22222222-2222-4222-8222-222222222222"),
+        ] {
+            assert_eq!(
+                beacon(&collect_app, &format!("/collect/{ladle_key}"), body).await,
+                StatusCode::ACCEPTED
+            );
+        }
+        // A different event also carrying Alice's id: she is still one person,
+        // and this event must not win the "which event names the figure" vote.
+        assert_eq!(
+            beacon(
+                &collect_app,
+                &format!("/collect/{ladle_key}"),
+                serde_json::json!({
+                    "k": "ev", "p": "/checkout", "n": "checkout_complete",
+                    "d": { "user_id": "11111111-1111-4111-8111-111111111111" }
+                }),
+            )
+            .await,
+            StatusCode::ACCEPTED
+        );
+
+        let ladle_stats = stats_for(&app, &ladle.id, 7).await;
+        assert_eq!(
+            ladle_stats["signedUpUsers"],
+            serde_json::json!(2),
+            "two distinct user_ids across four events: the same id twice counts once"
+        );
+        assert_eq!(
+            ladle_stats["signupEventName"],
+            serde_json::json!("signup_complete"),
+            "the source event is READ FROM THE DATA (most distinct user_ids), \
+             not hardcoded"
+        );
+        // Guard the three fabrications this metric exists to prevent.
+        let signup_events = ladle_stats["topEvents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == serde_json::json!("signup_complete"))
+            .unwrap()["count"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(signup_events, 3, "three signup EVENTS were ingested");
+        assert_ne!(
+            ladle_stats["signedUpUsers"].as_i64().unwrap(),
+            signup_events,
+            "a count of signup events is not a count of people"
+        );
+        assert_ne!(
+            ladle_stats["signedUpUsers"].as_i64().unwrap(),
+            ladle_stats["deviceSignatures"].as_i64().unwrap(),
+            "device signatures are not people"
+        );
+
+        // ── Identity instrumented, but nobody in THIS window: a real zero ──
+        // Age every row out of the window rather than the table: the site still
+        // reports identity, so the honest answer is 0, not "no source".
+        sqlx::query(
+            "UPDATE analytics_events SET created_at = datetime('now', '-40 days')
+             WHERE project_id = ?1",
+        )
+        .bind(&ladle.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let quiet = stats_for(&app, &ladle.id, 7).await;
+        assert_eq!(
+            quiet["signedUpUsers"],
+            serde_json::json!(0),
+            "a site that reports identity and had no signups this window is a \
+             REAL zero, and must not collapse back into the null gap"
+        );
+        assert_eq!(
+            quiet["signupEventName"],
+            serde_json::json!("signup_complete"),
+            "an empty window still names the event it would have counted"
+        );
     }
 
     fn lag_config(cursor: Option<&str>, latest: Option<&str>) -> FirstPartyConfig {
