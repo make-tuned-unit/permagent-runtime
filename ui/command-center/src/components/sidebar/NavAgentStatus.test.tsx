@@ -1,28 +1,24 @@
 /** @vitest-environment jsdom
  *
- * The nav status indicator beside Home (2026-09-01 ruling) replaces the old
- * dashboard hero card. It reads the same two sources the hero card read —
- * `/api/dashboard`'s agent state/reachability (useDashboard, unchanged) and
- * the identity store's configured persona name (`agentName`) — so this covers
- * the mapping from those sources to the dot's three-way state, that the hook
- * actually reads the store rather than a literal, and that both rail-state
- * components render what they are given.
+ * The agent's status on the Home H1. It used to live in the sidebar — a line
+ * under Home when open, a loose green dot when collapsed — and moved to the
+ * title at Jesse's request, so the two rail components and their hook are
+ * gone. These cover the state mapping and the header that replaced them.
  */
 import { act } from 'react-dom/test-utils';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../lib/api', () => ({ apiFetch: vi.fn() }));
+vi.mock('../../lib/api', () => ({ apiFetch: vi.fn(), api: { getIdentity: vi.fn() } }));
+// The configured name comes from the shared, module-cached resolver the World
+// uses. Mocked here so the tests pin WHICH source wins, not the network.
+const orchestrator = vi.hoisted(() => ({ name: null as string | null }));
+vi.mock('../world/shared/useOrchestratorName', () => ({ useOrchestratorName: () => orchestrator.name }));
 
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { DashboardData } from '../dashboard/useDashboard';
-import {
-  NavStatusBadge,
-  NavStatusLine,
-  resolveNavAgentState,
-  useNavAgentStatus,
-} from './NavAgentStatus';
+import { HeaderAgentStatus, resolveNavAgentState } from './NavAgentStatus';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 const apiFetchMock = vi.mocked(apiFetch);
@@ -45,6 +41,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   useCommandCenter.setState({ agentName: 'Agent' }); // the store's own default
+  orchestrator.name = null;
 });
 
 afterEach(() => {
@@ -69,87 +66,41 @@ describe('resolveNavAgentState', () => {
   });
 });
 
-let hookResult: ReturnType<typeof useNavAgentStatus> | undefined;
-function HookHarness() {
-  hookResult = useNavAgentStatus();
-  return null;
+function render(el: JSX.Element) {
+  act(() => { root.render(el); });
+  return container.querySelector('[data-testid="header-agent-status"]') as HTMLElement;
 }
 
-describe('useNavAgentStatus', () => {
-  it('reads the name from the identity store, not a literal — never "Henry"', async () => {
-    useCommandCenter.setState({ agentName: 'Zephyr' });
-    apiFetchMock.mockResolvedValue(dashboard('idle'));
-    await act(async () => { root.render(<HookHarness />); });
-    await act(async () => { await Promise.resolve(); });
-    expect(hookResult!.name).toBe('Zephyr');
-    expect(hookResult!.name).not.toBe('Henry');
-    // The dashboard payload's OWN agent.name is deliberately ignored — the
-    // identity store is the one persona-name source (see file header).
-    expect(hookResult!.name).not.toBe('name-the-indicator-must-ignore');
+describe('HeaderAgentStatus', () => {
+  it('uses the name the user configured, the same one the World shows', () => {
+    // QA: the header read "Agent online" while the World called the same
+    // agent Hank. One resolver now serves both.
+    orchestrator.name = 'Hank';
+    const el = render(<HeaderAgentStatus data={dashboard('idle')} error={null} />);
+    expect(el.textContent).toContain('Hank');
+    expect(el.getAttribute('aria-label')).toBe('Hank is online');
   });
 
-  it('maps a thinking daemon state to the thinking dot state', async () => {
-    apiFetchMock.mockResolvedValue(dashboard('thinking'));
-    await act(async () => { root.render(<HookHarness />); });
-    await act(async () => { await Promise.resolve(); });
-    expect(hookResult!.state).toBe('thinking');
-    expect(hookResult!.word).toBe('thinking');
+  it('never shows the dashboard payload name, which is the default persona', () => {
+    orchestrator.name = 'Hank';
+    const el = render(<HeaderAgentStatus data={dashboard('idle')} error={null} />);
+    expect(el.textContent).not.toContain('name-the-indicator-must-ignore');
   });
 
-  it('maps an idle daemon state to online', async () => {
-    apiFetchMock.mockResolvedValue(dashboard('idle'));
-    await act(async () => { root.render(<HookHarness />); });
-    await act(async () => { await Promise.resolve(); });
-    expect(hookResult!.state).toBe('online');
-    expect(hookResult!.word).toBe('online');
+  it('never shows the store default "Agent" as though it were a name', () => {
+    const el = render(<HeaderAgentStatus data={dashboard('idle')} error={null} />);
+    expect(el.textContent).not.toMatch(/\bAgent\b/);
+    expect(el.textContent).toContain('Your agent');
   });
 
-  it('maps a failed /api/dashboard poll to offline — the same reachability signal the Home freshness banner uses', async () => {
-    apiFetchMock.mockRejectedValue(new Error('daemon down'));
-    await act(async () => { root.render(<HookHarness />); });
-    await act(async () => { await Promise.resolve(); });
-    expect(hookResult!.state).toBe('offline');
-    expect(hookResult!.word).toBe('offline');
-  });
-});
-
-describe('NavStatusLine (open rail)', () => {
-  it('renders the given name, not a hardcoded persona string', () => {
-    act(() => { root.render(<NavStatusLine name="Zephyr" state="online" word="online" />); });
-    const el = container.querySelector('[data-testid="nav-status-line"]') as HTMLElement;
-    expect(el.textContent).toContain('Zephyr');
-    expect(el.textContent).not.toContain('Henry');
-    expect(el.getAttribute('aria-label')).toBe('Zephyr is online');
-  });
-
-  it('names the state word next to the dot', () => {
-    act(() => { root.render(<NavStatusLine name="Zephyr" state="offline" word="offline" />); });
-    const el = container.querySelector('[data-testid="nav-status-line"]') as HTMLElement;
-    expect(el.textContent).toContain('offline');
-  });
-});
-
-describe('NavStatusBadge (collapsed rail)', () => {
-  it('is keyboard-focusable and announces "{name} is {word}" to a screen reader', () => {
-    act(() => {
-      root.render(
-        <NavStatusBadge name="Zephyr" state="offline" word="offline" onHover={() => {}} onLeave={() => {}} />
-      );
-    });
-    const el = container.querySelector('[data-testid="nav-status-badge"]') as HTMLElement;
-    expect(el.getAttribute('aria-label')).toBe('Zephyr is offline');
-    expect(el.getAttribute('tabindex')).toBe('0');
-  });
-
-  it('reuses the sidebar tooltip hover pattern, offering "{name} · {word}"', () => {
-    const onHover = vi.fn();
-    act(() => {
-      root.render(
-        <NavStatusBadge name="Zephyr" state="offline" word="offline" onHover={onHover} onLeave={() => {}} />
-      );
-    });
-    const el = container.querySelector('[data-testid="nav-status-badge"]') as HTMLElement;
-    act(() => { el.focus(); });
-    expect(onHover).toHaveBeenCalledWith(el, 'Zephyr · offline');
+  it('takes state from the data it is handed, and does not fetch its own', () => {
+    // It used to call useDashboard(), which starts a 15s poller per call, so
+    // Home fetched /api/dashboard twice and header and body could disagree.
+    orchestrator.name = 'Hank';
+    const thinking = render(<HeaderAgentStatus data={dashboard('thinking')} error={null} />);
+    expect(thinking.getAttribute('aria-label')).toBe('Hank is thinking');
+    const offline = render(<HeaderAgentStatus data={dashboard('idle')} error={new Error('down')} />);
+    expect(offline.getAttribute('aria-label')).toBe('Hank is offline');
+    expect(apiFetchMock).not.toHaveBeenCalled();
   });
 });

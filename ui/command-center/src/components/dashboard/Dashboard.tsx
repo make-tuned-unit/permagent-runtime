@@ -243,7 +243,7 @@ export function Dashboard() {
         // sidebar was open, and a loose green dot beside the icon when it was
         // closed — which marked a row without saying anything. Here it has
         // room for the name and the word, not just the colour.
-        afterTitle={<HeaderAgentStatus />}
+        afterTitle={<HeaderAgentStatus data={data} error={error} />}
         // A failed poll keeps the last good payload, which is right — and
         // silent, which is not. Once the figures below stop being refreshed the
         // header says how old they are and offers the way back. Said in the

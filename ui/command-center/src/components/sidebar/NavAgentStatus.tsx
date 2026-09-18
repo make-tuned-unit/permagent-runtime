@@ -24,7 +24,8 @@
  */
 import type { CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { useDashboard } from '../dashboard/useDashboard';
+import type { DashboardData } from '../dashboard/useDashboard';
+import { useOrchestratorName } from '../world/shared/useOrchestratorName';
 import { space, textSize, font } from '../../styles/tokens';
 import { useTheme, type ThemeColors } from '../../styles/useTheme';
 
@@ -49,13 +50,6 @@ export function resolveNavAgentState(rawState: string | undefined, unreachable: 
   return 'online';
 }
 
-/** Combines the two sources described above into what the nav row needs. */
-export function useNavAgentStatus(): { name: string; state: NavAgentState; word: string } {
-  const name = useCommandCenter(s => s.agentName);
-  const { data, error } = useDashboard();
-  const state = resolveNavAgentState(data?.agent.state, error);
-  return { name, state, word: STATE_WORD[state] };
-}
 
 function dotColor(colors: ThemeColors, state: NavAgentState): string {
   if (state === 'offline') return colors.stale;
@@ -85,67 +79,7 @@ export function NavStatusDot({ state, size = 8 }: { state: NavAgentState; size?:
   );
 }
 
-/** OPEN rail (208px): a quiet line under the Home row — dot, name, state word. */
-export function NavStatusLine({ name, state, word }: { name: string; state: NavAgentState; word: string }) {
-  const { colors } = useTheme();
-  return (
-    <div
-      data-testid="nav-status-line"
-      // Screen readers get one clean sentence; the dot is decorative (aria-hidden).
-      aria-label={`${name} is ${word}`}
-      style={{
-        display: 'flex', alignItems: 'center', gap: space.sm,
-        // 34px left inset lines the text up under the row's label (12px row
-        // padding + 18px icon + 4px of the row's own icon/label gap).
-        padding: `0 ${space.xl}px ${space.md}px 34px`,
-        fontFamily: font.body,
-      }}
-    >
-      <NavStatusDot state={state} />
-      <span style={{ fontSize: textSize.small, color: colors.text, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {name}
-      </span>
-      <span style={{ fontSize: textSize.micro, color: colors.textDim, whiteSpace: 'nowrap' }}>
-        {word}
-      </span>
-    </div>
-  );
-}
 
-/**
- * COLLAPSED rail (64px): the dot alone, badged onto the Home row's icon so it
- * reads as belonging to Home rather than floating loose in the rail. Hover
- * uses the sidebar's existing tooltip machinery — `onHover`/`onLeave` are the
- * same `showTooltip`/`hideTooltip` pair every other row already wires through
- * `useSidebarTooltip()`, just given "{name} · {word}" instead of a row label.
- */
-export function NavStatusBadge({
-  name, state, word, onHover, onLeave,
-}: {
-  name: string; state: NavAgentState; word: string;
-  onHover: (el: HTMLElement | null, label: string) => void;
-  onLeave: () => void;
-}) {
-  return (
-    <span
-      data-testid="nav-status-badge"
-      role="status"
-      tabIndex={0}
-      aria-label={`${name} is ${word}`}
-      onMouseEnter={e => onHover(e.currentTarget, `${name} · ${word}`)}
-      onMouseLeave={onLeave}
-      onFocus={e => onHover(e.currentTarget, `${name} · ${word}`)}
-      onBlur={onLeave}
-      style={{
-        position: 'absolute', bottom: space.xxs, right: space.xxs,
-        lineHeight: 0, borderRadius: '50%',
-        cursor: 'default',
-      } as CSSProperties}
-    >
-      <NavStatusDot state={state} size={7} />
-    </span>
-  );
-}
 
 /**
  * The agent's status on a view's title line — "Henry · thinking" beside the H1.
@@ -157,9 +91,33 @@ export function NavStatusBadge({
  * sits next to the name of the thing it is the status OF and has room for the
  * word as well as the colour.
  */
-export function HeaderAgentStatus() {
+export function HeaderAgentStatus({ data, error }: {
+  /** The Home view's OWN dashboard payload — passed in, not re-fetched. */
+  data: DashboardData | null;
+  error: unknown;
+}) {
+  // Taken as props rather than calling `useDashboard()` here, because that
+  // hook is not shared state: every call starts its own 15-second poller. The
+  // first version of this component called it, which meant Home fetched
+  // /api/dashboard twice on every tick, and the header and the body beneath it
+  // could disagree about the agent's state for up to fifteen seconds.
   const { colors } = useTheme();
-  const { name, state, word } = useNavAgentStatus();
+  const storeName = useCommandCenter(s => s.agentName);
+  // ONE resolver for the agent's name, shared with the World.
+  //
+  // QA found the header reading "Home · Agent online" while the World called
+  // the same agent Hank: the header read the store's `agentName`, whose
+  // default is the literal word "Agent". The dashboard payload's
+  // `agent.name` is no better — it is the default persona ("Henry"), which is
+  // why the rail's tests deliberately ignored it. `useOrchestratorName` is the
+  // configured name the user chose, is module-cached (so this adds no fetch),
+  // and is exactly what the World's nameplate and passport use.
+  const configured = useOrchestratorName();
+  const name = configured
+    ?? (storeName && storeName !== 'Agent' ? storeName : null)
+    ?? 'Your agent';
+  const state = resolveNavAgentState(data?.agent.state, Boolean(error));
+  const word = STATE_WORD[state];
   return (
     <span
       data-testid="header-agent-status"
