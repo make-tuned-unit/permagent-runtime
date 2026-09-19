@@ -5,6 +5,7 @@ use tauri::Manager;
 mod accessibility;
 mod activity;
 mod browser;
+mod calendar;
 mod chrome;
 mod daemon;
 mod files;
@@ -391,6 +392,12 @@ fn main() {
             raise_chat_above_main,
             accessibility::reduce_transparency,
             chrome::reinset_traffic_lights,
+            // Apple Calendar via EventKit — the grant path the Home Calendar
+            // card never had (see calendar.rs for why it lives in the app).
+            calendar::calendar_authorization_status,
+            calendar::request_calendar_access,
+            calendar::calendar_upcoming_events,
+            calendar::open_calendar_privacy_settings,
         ])
         .setup(|app| {
             daemon::start_daemon(app.handle())?;

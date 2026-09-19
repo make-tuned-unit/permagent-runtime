@@ -17,8 +17,8 @@
 	     Calendar.app (`osascript` + `tell application "Calendar"`, in
 	     goose-server's dashboard_cards route). That is Automation, NOT the
 	     EventKit calendar permission, so the key macOS looks for is
-	     NSAppleEventsUsageDescription — NSCalendarsUsageDescription would do
-	     nothing here because nothing in the app links EventKit.
+	     NSAppleEventsUsageDescription. (The EventKit keys further down cover
+	     the app's own read in src/calendar.rs, not this daemon path.)
 
 	     Without this key macOS refuses the event with -1743 and never shows a
 	     prompt, which is why the card could only ever say "Grant Calendar
@@ -33,5 +33,21 @@
 	     and no prompt is possible no matter what this file says. -->
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Permagent reads today's events from your Apple Calendar to show them on the Home dashboard.</string>
+
+	<!-- EventKit — the grant path that actually works (src/calendar.rs).
+	     The user reported "i cant find anywhere to grant access to my iCal":
+	     the Apple-events route above can never prompt when launchd owns
+	     permagentd. The app now asks EventKit itself, from this signed
+	     bundle, and these keys are what macOS shows in that prompt.
+
+	     Both are required. macOS 14+ reads the FullAccess key for
+	     requestFullAccessToEventsWithCompletion; macOS 13 and earlier read
+	     the plain key for requestAccessToEntityType. Asking EventKit without
+	     the matching key does not fail gracefully — macOS kills the process
+	     for touching privacy-protected data with no usage description. -->
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Permagent shows your upcoming Apple Calendar events on the Home dashboard, next to meetings you log on people. Events are read on this Mac and are not changed.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Permagent shows your upcoming Apple Calendar events on the Home dashboard, next to meetings you log on people. Events are read on this Mac and are not changed.</string>
 </dict>
 </plist>

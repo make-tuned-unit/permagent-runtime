@@ -32,5 +32,12 @@
 	     sufficient: it only helps when the app spawned permagentd itself. -->
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
+
+	<!-- EventKit calendar access (src/calendar.rs, the Calendar card's
+	     "Connect Calendar" button). The hardened runtime denies calendar
+	     data to a signed app without this, on top of Info.plist's
+	     NSCalendarsFullAccessUsageDescription. -->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
 </dict>
 </plist>

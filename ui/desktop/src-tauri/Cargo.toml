@@ -27,7 +27,20 @@ objc2-screen-capture-kit = { version = "0.3", features = ["SCStream", "SCShareab
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", features = ["exception"] }
-objc2-foundation = { version = "0.3", features = ["NSString", "NSValue"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSValue", "NSDate", "NSError", "NSArray"] }
+# EventKit, for the Calendar card's grant path (src/calendar.rs). Default
+# features are off because they drag in MapKit/CoreLocation/AppKit colour
+# bindings we never touch; these are exactly the classes calendar.rs calls.
+objc2-event-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "EKTypes",
+    "EKObject",
+    "EKCalendar",
+    "EKCalendarItem",
+    "EKEvent",
+    "EKEventStore",
+] }
 # AppKit window/view geometry, for the traffic-light re-inset in chrome.rs.
 # Every feature here is already enabled by tao 0.35 on the same 0.3.2 crate, so
 # this is a re-declaration for direct use rather than a new build unit.
