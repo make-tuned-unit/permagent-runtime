@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   parseCalendarAuthStatus,
+  parseCalendarRequestResult,
   type CalendarAuthStatus,
   type ShellCalendarEvent,
 } from './calendarAccess';
@@ -44,9 +45,10 @@ export interface ShellCalendar {
   /** Today's Apple events once readable; empty otherwise. */
   events: ShellCalendarEvent[];
   /**
-   * True once a `connect` in this session came back `writeOnly`: macOS has
-   * shown (or already spent) its one upgrade prompt, so the card offers System
-   * Settings instead of asking again.
+   * True once a `connect` in this session was ANSWERED with `writeOnly`:
+   * macOS has shown (or already spent) its one upgrade prompt, so the card
+   * offers System Settings instead of asking again. A request that timed out
+   * unanswered leaves this false — nobody saw the prompt.
    */
   fullAccessAsked: boolean;
   /** Ask macOS for access. Resolves `true` only when access was granted. */
@@ -86,7 +88,11 @@ export function useShellCalendar(enabled: boolean, refreshSeconds?: number): She
     try {
       next = parseCalendarAuthStatus(await invokeShell<string>('calendar_authorization_status'));
     } catch {
-      next = 'unsupported';
+      // The status command is infallible in calendar.rs, so a rejection means
+      // this app does not register it ("command not found"): an outdated
+      // shell, not a Mac without Calendar. Saying "not available on this
+      // computer" here sent the user looking for a problem an update fixes.
+      next = 'shellOutdated';
     }
     if (!alive.current) return next;
     setStatus(next);
@@ -120,7 +126,16 @@ export function useShellCalendar(enabled: boolean, refreshSeconds?: number): She
     if (!active || requesting.current) return false;
     requesting.current = true;
     try {
-      const next = parseCalendarAuthStatus(await invokeShell<string>('request_calendar_access'));
+      const result = parseCalendarRequestResult(await invokeShell<string>('request_calendar_access'));
+      if (!result.answered) {
+        // The prompt went unanswered (a locked screen, as during QA, for the
+        // whole wait). Re-read the status so a late answer still shows, but keep
+        // offering the ask: treating this like a write-only answer sent the
+        // user to System Settings for a prompt they never saw.
+        if (!alive.current) return false;
+        return (await refresh()) === 'fullAccess';
+      }
+      const next = result.status ?? 'unsupported';
       if (!alive.current) return next === 'fullAccess';
       setStatus(next);
       if (next === 'writeOnly') setFullAccessAsked(true);
@@ -131,7 +146,7 @@ export function useShellCalendar(enabled: boolean, refreshSeconds?: number): She
     } finally {
       requesting.current = false;
     }
-  }, [active, loadEvents]);
+  }, [active, loadEvents, refresh]);
 
   const openSettings = useCallback(async () => {
     if (!active) return false;

@@ -191,6 +191,37 @@ describe('Calendar card — Apple Calendar access', () => {
     expect(invoke).not.toHaveBeenCalledWith('calendar_upcoming_events', expect.anything());
   });
 
+  it('from write-only, keeps offering Allow Full Access when the prompt timed out unanswered', async () => {
+    // QA's screen was locked, so the upgrade prompt sat unanswered until the
+    // shell gave up. The shell used to report the unchanged writeOnly then,
+    // and the card retired Allow Full Access for Open System Settings as if
+    // macOS had declined. It now reports `timedOut`, which must not count as
+    // an answer. Proves the renderer's handling of that value; that the Rust
+    // side returns it is pinned in calendarPermission.test.ts.
+    inDesktopApp();
+    shellStatus = 'writeOnly';
+    apiFetch.mockResolvedValue({ cells: [], note: DAEMON_GRANT_NOTE });
+    await render();
+    invoke.mockImplementation(async (cmd: string) => {
+      switch (cmd) {
+        case 'calendar_authorization_status': return shellStatus;
+        case 'request_calendar_access': return 'timedOut';
+        default: throw new Error('unexpected command ' + cmd);
+      }
+    });
+
+    await act(async () => { button('Allow Full Access')!.click(); });
+    await settle();
+
+    expect(invoke).toHaveBeenCalledWith('request_calendar_access', undefined);
+    // The status is read again after the timeout, so a late answer still lands.
+    expect(invoke.mock.calls.filter(c => c[0] === 'calendar_authorization_status').length).toBeGreaterThan(1);
+    expect(container.textContent).toContain('Permagent can add events but not read them');
+    expect(button('Open System Settings')).toBeUndefined();
+    expect(button('Allow Full Access')).toBeDefined();
+    expect(container.textContent).not.toContain('not available on this computer');
+  });
+
   it('when authorized, lists Apple events together with meetings logged on people', async () => {
     inDesktopApp();
     shellStatus = 'fullAccess';
@@ -220,6 +251,77 @@ describe('Calendar card — Apple Calendar access', () => {
 
     expect(container.textContent).toContain('Coffee with Priya');
     expect(button('Connect Calendar')).toBeDefined();
+  });
+
+  // The daemon's calendar endpoint runs two osascript reads (eight seconds
+  // each) before replying, and the card used to show "Loading…" for all of
+  // it, hiding the Connect button the shell had already answered for. A
+  // never-settling apiFetch stands in for that slow endpoint.
+  it('shows Connect Calendar while the daemon endpoint is still loading', async () => {
+    inDesktopApp();
+    apiFetch.mockReturnValue(new Promise(() => {}));
+    await render();
+
+    expect(container.textContent).not.toContain('Loading…');
+    expect(button('Connect Calendar')).toBeDefined();
+  });
+
+  it('lists Apple events while the daemon endpoint is still loading', async () => {
+    inDesktopApp();
+    shellStatus = 'fullAccess';
+    apiFetch.mockReturnValue(new Promise(() => {}));
+    await render();
+
+    expect(container.textContent).not.toContain('Loading…');
+    expect(container.textContent).toContain('Design review');
+  });
+
+  it('with access and no Apple events, waits for People before saying the day is empty', async () => {
+    inDesktopApp();
+    shellStatus = 'fullAccess';
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'calendar_authorization_status') return 'fullAccess';
+      if (cmd === 'calendar_upcoming_events') return [];
+      throw new Error('unexpected command ' + cmd);
+    });
+    apiFetch.mockReturnValue(new Promise(() => {}));
+    await render();
+
+    expect(container.textContent).toContain('Loading…');
+    expect(container.textContent).not.toContain('No events today');
+  });
+
+  // A Permagent.app built from 6b438fde carries calendar.rs but registers none
+  // of its commands, so Tauri rejects every calendar invoke. The card blamed
+  // the Mac ("not available on this computer") for what an update fixes.
+  it('when the app does not register the calendar commands, says to update Permagent', async () => {
+    inDesktopApp();
+    invoke.mockImplementation(async (cmd: string) => {
+      throw new Error(`Command ${cmd} not found`);
+    });
+    apiFetch.mockResolvedValue({ cells: [], note: DAEMON_GRANT_NOTE });
+    await render();
+
+    const panel = container.querySelector('[data-testid="calendar-access"]');
+    expect(panel?.getAttribute('data-state')).toBe('shell-outdated');
+    expect(container.textContent).toContain('Update Permagent to connect Apple Calendar');
+    expect(container.textContent).not.toContain('Apple Calendar is not available on this computer');
+    expect(container.textContent).not.toContain(DAEMON_GRANT_NOTE);
+    // No button that would only invoke another missing command.
+    expect(container.querySelector('button')).toBeNull();
+  });
+
+  it('when the app does not register the calendar commands, still shows People meetings', async () => {
+    inDesktopApp();
+    invoke.mockRejectedValue(new Error('Command calendar_authorization_status not found'));
+    apiFetch.mockResolvedValue({
+      cells: [{ label: 'Coffee with Priya', value: 'Priya Shah', sub: '9:30 AM' }],
+      note: DAEMON_GRANT_NOTE,
+    });
+    await render();
+
+    expect(container.textContent).toContain('Coffee with Priya');
+    expect(container.textContent).toContain('Update Permagent to connect Apple Calendar');
   });
 
   it('outside the desktop app says it needs the desktop app and invokes nothing', async () => {

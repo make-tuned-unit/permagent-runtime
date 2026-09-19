@@ -190,7 +190,17 @@ export function ManifestCard({ manifest }: Props) {
   );
 
   // ── Loading ──────────────────────────────────────────────────────────────
-  if (phase === 'loading' && !data) {
+  // The Calendar card does not wait for the daemon once the shell has
+  // answered. `/api/dashboard/calendar` runs two osascript reads against
+  // Calendar.app, each allowed eight seconds, before it replies — so the card
+  // sat on "Loading…" while the Connect Calendar button (or today's Apple
+  // events) it already had stayed hidden behind a request that could only add
+  // People meetings. Only a connected calendar with nothing of its own yet
+  // still waits: "No events today" before People has answered would be a guess.
+  const shellCanSpeak = calendarView != null
+    && calendarView.kind !== 'checking'
+    && (calendarView.kind !== 'connected' || shellCalendar.events.length > 0);
+  if (phase === 'loading' && !data && !shellCanSpeak) {
     return shell(
       <>
         <SectionTitle title={manifest.name} />

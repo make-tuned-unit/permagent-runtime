@@ -13,6 +13,8 @@ import {
   calendarAccessView,
   mergeCalendarCells,
   parseCalendarAuthStatus,
+  parseCalendarRequestResult,
+  REQUEST_TIMED_OUT,
   parseDaemonClock,
   type ShellCalendarEvent,
 } from './calendarAccess';
@@ -62,8 +64,18 @@ describe('calendarAccessView', () => {
     expect(calendarAccessView(true, null)).toEqual({ kind: 'checking', text: '' });
   });
 
+  it('an outdated shell asks for an app update, not "not available on this computer"', () => {
+    // A Permagent.app with calendar.rs but no registered commands rejects the
+    // status invoke; that is an update away, not a Mac without Calendar.
+    const v = calendarAccessView(true, 'shellOutdated');
+    expect(v.kind).toBe('shell-outdated');
+    expect(v.text).toBe('Update Permagent to connect Apple Calendar');
+    expect(v.text).not.toContain('not available');
+    expect(v.action).toBeUndefined();
+  });
+
   it('never tells the user to "grant" anything without a control to do it', () => {
-    const statuses = ['notDetermined', 'restricted', 'denied', 'fullAccess', 'writeOnly', 'unsupported'] as const;
+    const statuses = ['notDetermined', 'restricted', 'denied', 'fullAccess', 'writeOnly', 'unsupported', 'shellOutdated'] as const;
     for (const s of statuses) {
       const v = calendarAccessView(true, s);
       if (/grant/i.test(`${v.text} ${v.hint ?? ''}`)) expect(v.action).toBeDefined();
@@ -76,6 +88,19 @@ describe('parseCalendarAuthStatus', () => {
     expect(parseCalendarAuthStatus('fullAccess')).toBe('fullAccess');
     expect(parseCalendarAuthStatus('authorized')).toBe('unsupported');
     expect(parseCalendarAuthStatus(undefined)).toBe('unsupported');
+    // Only the hook may conclude the shell is outdated; the shell never says so.
+    expect(parseCalendarAuthStatus('shellOutdated')).toBe('unsupported');
+  });
+});
+
+describe('parseCalendarRequestResult', () => {
+  it('reports a timed-out request as unanswered, not as a status', () => {
+    // An unanswered prompt used to arrive as the unchanged writeOnly, which
+    // the card read as macOS declining the upgrade.
+    expect(parseCalendarRequestResult(REQUEST_TIMED_OUT)).toEqual({ answered: false, status: null });
+    expect(parseCalendarRequestResult('writeOnly')).toEqual({ answered: true, status: 'writeOnly' });
+    expect(parseCalendarRequestResult('fullAccess')).toEqual({ answered: true, status: 'fullAccess' });
+    expect(parseCalendarRequestResult('bogus')).toEqual({ answered: true, status: 'unsupported' });
   });
 });
 

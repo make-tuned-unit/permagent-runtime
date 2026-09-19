@@ -33,6 +33,9 @@ const MAIN_RS = fileURLToPath(
 const CALENDAR_RS = fileURLToPath(
   new URL('../../../../../desktop/src-tauri/src/calendar.rs', import.meta.url),
 );
+const CARGO_TOML = fileURLToPath(
+  new URL('../../../../../desktop/src-tauri/Cargo.toml', import.meta.url),
+);
 
 /** The commands `useShellCalendar.ts` invokes, by name. */
 const SHELL_COMMANDS = [
@@ -91,6 +94,19 @@ describe('macOS calendar permission keys', () => {
     expect(request?.[0]).toContain('if !can_prompt(before)');
   });
 
+  it('reports an unanswered prompt as timedOut instead of the unchanged status', () => {
+    // QA's screen was locked: the prompt went unanswered for PROMPT_WAIT and
+    // the request returned the unchanged writeOnly, which the card took for
+    // macOS declining the upgrade. Reads the Rust source; it proves the
+    // timeout branch returns the value the renderer parses as "unanswered",
+    // not that the build compiles or that macOS behaves this way.
+    const calendar = readFileSync(CALENDAR_RS, 'utf8');
+    expect(calendar).toMatch(/pub const TIMED_OUT: &str = "timedOut";/);
+    const request = /pub fn request_access_blocking\(\)[\s\S]*?\n    \}\n/.exec(calendar)?.[0] ?? '';
+    expect(request).toMatch(/match rx\.recv_timeout\(PROMPT_WAIT\) \{[\s\S]*?Err\(_\) => Ok\(TIMED_OUT\.to_string\(\)\)/);
+    expect(request).not.toContain('let _ = rx.recv_timeout');
+  });
+
   it('registers every calendar command the card invokes, and defines each one', () => {
     const main = readFileSync(MAIN_RS, 'utf8');
     const calendar = readFileSync(CALENDAR_RS, 'utf8');
@@ -100,5 +116,24 @@ describe('macOS calendar permission keys', () => {
       expect(main).toContain(`calendar::${cmd},`);
       expect(calendar).toMatch(new RegExp(`#\\[tauri::command\\]\\s*pub (async )?fn ${cmd}\\(`));
     }
+  });
+
+  it('declares the EventKit crate and every class calendar.rs calls', () => {
+    // calendar.rs landed in a commit whose Cargo.toml, main.rs and Info.plist
+    // did not wire it in, so a build from that commit ships a card that
+    // invokes commands the shell never registered ("not available on this
+    // computer"). This pins the manifest half: without the crate, or with a
+    // class feature missing, calendar.rs does not compile at all.
+    const cargo = readFileSync(CARGO_TOML, 'utf8');
+    const eventKit = /objc2-event-kit = \{[\s\S]*?\]\s*\}/.exec(cargo)?.[0] ?? '';
+    for (const feature of ['block2', 'EKCalendar', 'EKCalendarItem', 'EKEvent', 'EKEventStore', 'EKTypes']) {
+      expect(eventKit).toContain(`"${feature}"`);
+    }
+    const foundation = /objc2-foundation = \{[^}]*\}/.exec(cargo)?.[0] ?? '';
+    for (const feature of ['NSDate', 'NSError', 'NSArray']) {
+      expect(foundation).toContain(`"${feature}"`);
+    }
+    expect(cargo).toMatch(/^block2 = /m);
+    expect(cargo).toMatch(/^chrono = /m);
   });
 });

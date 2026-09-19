@@ -19,6 +19,14 @@ import type { CardCell } from './ManifestCard';
 /**
  * EventKit authorization as `calendar_authorization_status` spells it.
  * `unsupported` covers "not macOS" and "the shell could not ask".
+ *
+ * `shellOutdated` is never sent by the shell: the hook sets it when the
+ * status command itself is rejected. `calendar_authorization_status` cannot
+ * fail (it returns a plain `String` in calendar.rs), so a rejected invoke
+ * means this Permagent.app does not register the command — a build that has
+ * calendar.rs but not the `generate_handler!` entries in main.rs, as HEAD
+ * 6b438fde did. That card used to read "Apple Calendar is not available on
+ * this computer", blaming the Mac for what an app update fixes.
  */
 export type CalendarAuthStatus =
   | 'notDetermined'
@@ -26,8 +34,11 @@ export type CalendarAuthStatus =
   | 'denied'
   | 'fullAccess'
   | 'writeOnly'
-  | 'unsupported';
+  | 'unsupported'
+  | 'shellOutdated';
 
+// `shellOutdated` is left out on purpose: it is the hook's verdict on a
+// rejected invoke, never a value the shell returns.
 const KNOWN_STATUSES: readonly CalendarAuthStatus[] = [
   'notDetermined', 'restricted', 'denied', 'fullAccess', 'writeOnly', 'unsupported',
 ];
@@ -37,6 +48,39 @@ export function parseCalendarAuthStatus(raw: unknown): CalendarAuthStatus {
   return KNOWN_STATUSES.includes(raw as CalendarAuthStatus)
     ? (raw as CalendarAuthStatus)
     : 'unsupported';
+}
+
+/**
+ * What `request_calendar_access` returns when macOS never answered: the
+ * prompt sat unanswered for the shell's five-minute wait (a locked screen, as
+ * during QA), or EventKit dropped the handler. Spelled like `macos::TIMED_OUT` in
+ * calendar.rs. Never a status — `calendar_authorization_status` cannot return
+ * it — which is why it is kept out of `CalendarAuthStatus`.
+ */
+export const REQUEST_TIMED_OUT = 'timedOut';
+
+/** The outcome of one `request_calendar_access`. */
+export interface CalendarRequestResult {
+  /**
+   * Whether macOS answered the request. `false` means nobody saw or answered
+   * the prompt, so it proves nothing about what macOS would decide.
+   */
+  answered: boolean;
+  /** The status after an answer; `null` when unanswered (read it again). */
+  status: CalendarAuthStatus | null;
+}
+
+/**
+ * Narrow what `request_calendar_access` returned.
+ *
+ * Before the timeout had its own value, an unanswered upgrade prompt came back
+ * as the unchanged `writeOnly`, and the card took that for macOS declining the
+ * upgrade: it swapped Allow Full Access for Open System Settings although no
+ * one had seen the prompt. Only an answered request may retire the ask.
+ */
+export function parseCalendarRequestResult(raw: unknown): CalendarRequestResult {
+  if (raw === REQUEST_TIMED_OUT) return { answered: false, status: null };
+  return { answered: true, status: parseCalendarAuthStatus(raw) };
 }
 
 /** One event from `calendar_upcoming_events` (Rust `CalendarEvent`). */
@@ -63,6 +107,7 @@ export interface CalendarAccessView {
     | 'restricted'
     | 'write-only'
     | 'unsupported'
+    | 'shell-outdated'
     | 'connected';
   /** First line. Empty for `checking` and `connected`, which draw no panel. */
   text: string;
@@ -83,7 +128,8 @@ const MEETINGS_STILL_SHOW = 'Meetings you log on a person still show up on this 
  *   say so rather than show a button that cannot work.
  * @param status the shell's answer, or `null` while it is still being asked.
  * @param fullAccessAsked whether this card has already asked macOS for full
- *   access and got `writeOnly` back. macOS shows the write-only → full upgrade
+ *   access and macOS answered `writeOnly` (an unanswered, timed-out request
+ *   does not count). macOS shows the write-only → full upgrade
  *   prompt once; after that only System Settings can change it.
  */
 export function calendarAccessView(
@@ -150,6 +196,15 @@ export function calendarAccessView(
         kind: 'restricted',
         text: 'Calendar access is restricted on this Mac',
         hint: `A Screen Time or device-management setting blocks it, and Permagent cannot change that. ${MEETINGS_STILL_SHOW}`,
+      };
+    case 'shellOutdated':
+      // No button: the fix is a new app, not a setting. Pointing at System
+      // Settings here would send the user to a pane that cannot list an app
+      // that never asked.
+      return {
+        kind: 'shell-outdated',
+        text: 'Update Permagent to connect Apple Calendar',
+        hint: `This copy of the app cannot ask macOS for Calendar access yet. Install the latest Permagent, then choose Connect Calendar here. ${MEETINGS_STILL_SHOW}`,
       };
     case 'unsupported':
     default:
