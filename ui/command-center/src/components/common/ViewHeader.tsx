@@ -14,8 +14,9 @@
  * and every view follows.
  */
 import type { CSSProperties, ReactNode } from 'react';
-import { font, space, type } from '../../styles/tokens';
+import { font, glassSeamShadow, space, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { useGlass } from './Glass';
 
 /**
  * The opaque half of D11's hard scroll edge, as a standalone style fragment.
@@ -58,15 +59,49 @@ export interface ViewHeaderProps {
   /** Controls pinned to the right edge (search, buttons, indicators). */
   actions?: ReactNode;
   /** Opaque fill that turns this header into D11's hard scroll edge — see
-   *  `hardScrollEdgeSurface`. Omit it and the header stays transparent (the
-   *  historical default), which is only correct when whatever sits behind
-   *  the header is already opaque on its own. Pass the view's own fill
-   *  (`colors.bg`, `colors.surface`, …) when content can scroll behind it. */
+   *  `hardScrollEdgeSurface`. Omit it and the header wears the `glass`
+   *  material (the toolbar is the floating control layer, which is where
+   *  glass belongs). Pass the view's own fill (`colors.bg`, `colors.surface`,
+   *  …) when content can scroll behind it and must be cut off hard. */
   surface?: string;
 }
 
 export function ViewHeader({ title, subtitle, leading, afterTitle, actions, surface }: ViewHeaderProps) {
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
+  // "There is no liquid glass anywhere": the one bar every view wears was
+  // either bare (no `surface`) or an opaque fill, so the toolbar — the surface
+  // Apple names first for glass — never wore the glass material. With no
+  // `surface` it now takes the `glass` token's translucent fill and its rim
+  // (specular top edge, hairline, ambient shadow), and `useGlass` flattens it
+  // under Reduce Transparency.
+  //
+  // The token's `backdrop-filter` is deliberately NOT applied. This bar is a
+  // fixed sibling ABOVE the scroll container (see below), and every view's
+  // wrapper behind it is an opaque gradient, so no content ever passes under
+  // it: a blur here would sample a static fill and blur it into itself — the
+  // inert, every-frame compositing pass Glass.tsx exists to stamp out, paid on
+  // all six tabs for zero visible pixels. The filter belongs back on this bar
+  // only on the day a view lets its content scroll underneath it.
+  //
+  // `surface` still wins: D11's hard edge is a deliberate opaque cut.
+  const glass = useGlass('glass');
+  // The SEAMED rim, hairline on the bottom only: the token's four-sided ring
+  // put a line under the titlebar band and a second one beside the rail's own
+  // seam, doubling it in the header band (see `glassSeamShadow`).
+  const material: CSSProperties = {
+    background: glass.background,
+    boxShadow: glassSeamShadow(theme, 'glass', 'bottom'),
+  };
+  const chrome: CSSProperties = surface
+    ? { borderBottom: `1px solid ${colors.border}`, ...hardScrollEdgeSurface(surface) }
+    // The rim's hairline is the bottom edge here, so no `borderBottom` beside
+    // it; `relative` + `zIndex: 1` let the ambient shadow fall on the content
+    // below instead of being painted over by it. (That z-index caps menus that
+    // drop out of the bar at level 1. Checked against what sits below them:
+    // Home's cards are each their own stacking context at 0 — every card
+    // carries a `transform` — so the edit-mode menu still clears the remove
+    // buttons; Grow's opaque header has had the same z-index all along.)
+    : { ...material, position: 'relative', zIndex: 1 };
 
   return (
     <div
@@ -80,7 +115,6 @@ export function ViewHeader({ title, subtitle, leading, afterTitle, actions, surf
         // allowing controls to paint outside the workspace.
         flexWrap: 'wrap',
         padding: `${space.xxl}px ${space.huge}px`,
-        borderBottom: `1px solid ${colors.border}`,
         // The bar is a fixed sibling ABOVE the scroll container, never inside
         // it — a header that scrolls away takes the view's identity with it.
         flexShrink: 0,
@@ -90,7 +124,7 @@ export function ViewHeader({ title, subtitle, leading, afterTitle, actions, surf
         // switching tabs doesn't shift the content below by a few pixels.
         minHeight: 64,
         boxSizing: 'border-box',
-        ...(surface ? hardScrollEdgeSurface(surface) : null),
+        ...chrome,
       }}
     >
       {leading}

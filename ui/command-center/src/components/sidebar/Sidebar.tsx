@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import type { LayoutNode } from '../../lib/store';
-import { ease, font, radius, space, shell, textSize } from '../../styles/tokens';
+import { RAIL_FILL_OVER_VIBRANCY, ease, font, glassSeamShadow, radius, space, shell, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { FiBell, FiChevronLeft, FiChevronRight, FiClock, FiSettings } from 'react-icons/fi';
 import type { IconType } from 'react-icons';
 import { Button } from '../common/Button';
+import { useGlass } from '../common/Glass';
+import { NATIVE_WINDOW_IS_OPAQUE } from '../../lib/windowChrome';
 import { Tooltip } from '../common/Tooltip';
 import { Mobius } from '../mobius/Mobius';
 import { markAllRead, toggleTray, useNotifications, useTrayOpen } from '../../lib/notifications';
@@ -217,7 +219,36 @@ function SidebarRow({
 }
 
 export function Sidebar() {
-  const { gradient, colors } = useTheme();
+  // THE RAIL'S MATERIAL. "There is no liquid glass anywhere" was the report:
+  // the rail painted `gradient.sidebar`, a hand-picked tint that no other
+  // surface shared, ignored Reduce Transparency, and had nothing to be
+  // translucent OVER — the shell behind it is an opaque fill. It now wears
+  // `glassHi`, the token the design system already names for sidebars (large
+  // glass is the MORE opaque one, which is what keeps the labels legible over
+  // whatever the window lets through), and `useGlass` collapses it to the flat
+  // surface under Reduce Transparency.
+  //
+  // Only the fill and the rim are taken, never the blur. The rail is flush to
+  // the window's edge, so nothing in the WEB layer can ever sit behind it: a
+  // `backdrop-filter` here would sample the shell's flat colour and blur it
+  // into itself — the inert, full-price compositing pass Glass.tsx was written
+  // to stamp out. The blur behind a sidebar is the window's job (macOS's
+  // NSVisualEffectView via Tauri `windowEffects`), and the window is opaque ON
+  // PURPOSE today: chrome.rs and styles/shell.test.ts record the measured
+  // cost of `transparent: true` (idle whole-GPU 0.12% -> 6.1% on the M4, for
+  // an always-on agent). Until that decision is re-measured and signed off,
+  // this rail reads as glass through its rim and depth, not through wallpaper.
+  //
+  // The rail is already wired for the day that flips. With the window
+  // transparent, glassHi's 90% fill would bury the native material the GPU is
+  // paying for, so the fill thins to `RAIL_FILL_OVER_VIBRANCY` — keyed off the
+  // same `NATIVE_WINDOW_IS_OPAQUE` flag App.tsx reads, so the rail and the
+  // window cannot disagree. Reduce Transparency still wins: flat surface.
+  const { colors, theme, reduceTransparency } = useTheme();
+  const railGlass = useGlass('glassHi');
+  const railFill = NATIVE_WINDOW_IS_OPAQUE || reduceTransparency
+    ? railGlass.background
+    : RAIL_FILL_OVER_VIBRANCY[theme];
   const [open, setOpen] = useState(true);
   const workspaces = useCommandCenter(s => s.workspaces);
   const activeWorkspaceId = useCommandCenter(s => s.activeWorkspaceId);
@@ -265,8 +296,17 @@ export function Sidebar() {
   return (
     <div style={{
       width: W, height: '100%', flexShrink: 0,
-      borderRight: `1px solid ${colors.border}`,
-      background: gradient.sidebar,
+      // No `borderRight`: the rim draws the seam's hairline, and a border
+      // beside it doubled it. The rim is the SEAMED one, hairline on the right
+      // only — glassHi's own ring also drew lines down the window frame on the
+      // left, top and bottom, and its right half sat beside the header's left
+      // ring, a 2px seam in the header band (see `glassSeamShadow`).
+      background: railFill,
+      boxShadow: glassSeamShadow(theme, 'glassHi', 'right'),
+      // Above the content column, so the rim's ambient shadow falls on the
+      // content instead of being painted over by it — the depth cue that says
+      // the rail floats over the page rather than being a strip of it.
+      position: 'relative', zIndex: 2,
       display: 'flex', flexDirection: 'column',
       padding: '0 0 14px', gap: space.xs,
       transition: `width 220ms ${ease.out}`,
@@ -329,7 +369,7 @@ export function Sidebar() {
         }
         // The agent's status used to hang off this row — a second line under
         // Home when expanded, a loose green dot beside the icon when
-        // collapsed. Jesse asked for it on the Home heading instead, where it
+        // collapsed. The user asked for it on the Home heading instead, where it
         // sits beside the name of the thing it is the status of. It lives on
         // that H1 now (Dashboard's `afterTitle`), so Home is an ordinary row
         // like every other one.

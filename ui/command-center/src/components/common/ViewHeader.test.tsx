@@ -12,7 +12,16 @@ import { act } from 'react-dom/test-utils';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hardScrollEdgeSurface, ViewHeader } from './ViewHeader';
-import { type } from '../../styles/tokens';
+import { THEME_GLASS, setNativeReduceTransparency, setTheme, type } from '../../styles/tokens';
+
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+
+/** A colour as jsdom's style object reads it back (`rgba(1, 2, 3, 0.5)`). */
+function normalised(cssColor: string): string {
+  const probe = document.createElement('div');
+  probe.style.background = cssColor;
+  return probe.style.background;
+}
 
 let container: HTMLDivElement;
 let root: Root;
@@ -26,6 +35,8 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  setTheme('dark');
+  setNativeReduceTransparency(false);
 });
 
 function render(ui: React.ReactElement) {
@@ -74,14 +85,58 @@ describe('ViewHeader', () => {
     expect(container.querySelector('[data-testid="act"]')).not.toBeNull();
   });
 
-  // ── D11 hard scroll edge ──
-  // The header stays transparent (the historical default) unless a view opts
-  // into `surface`, since some parents are already opaque behind it.
-  it('stays transparent with no `surface` prop', () => {
+  // ── Glass by default, D11 hard edge on request ──
+  // "There is no liquid glass anywhere": the toolbar every view wears used to
+  // be bare with no `surface`, so the one surface Apple names first for glass
+  // never was. With no `surface` it now wears the `glass` token's fill and rim.
+  //
+  // jsdom has no compositor, so this proves the MATERIAL IS REQUESTED — the
+  // translucent fill, the rim, the opaque collapse under Reduce Transparency,
+  // and the ABSENCE of a blur — not how any of it looks on screen.
+  it('wears the glass fill and rim with no `surface` prop', () => {
     render(<ViewHeader title="Home" />);
     const header = container.querySelector('[data-testid="view-header"]') as HTMLElement;
-    expect(header.style.background).toBe('');
-    expect(header.style.position).toBe('');
+    const token = THEME_GLASS.dark.glass;
+    expect(header.style.background).toBe(normalised(token.background));
+    expect(header.style.background).toMatch(/^rgba\(.*, 0\.\d+\)$/);
+    expect(header.style.boxShadow).not.toBe('');
+    // One hairline, from the rim — not a border doubled up beside it.
+    expect(header.style.borderBottom).toBe('');
+  });
+
+  it('draws its hairline on the bottom seam only, not as a four-sided ring', () => {
+    // The glass token's ring put a line under the titlebar band and a second
+    // one beside the rail's own right-edge hairline — a doubled seam in the
+    // header band. A docked bar has one seam: the edge the content meets.
+    render(<ViewHeader title="Home" />);
+    const header = container.querySelector('[data-testid="view-header"]') as HTMLElement;
+    expect(header.style.boxShadow).not.toMatch(/inset 0 0 0 1px/);
+    expect(header.style.boxShadow).toContain('inset 0 -1px 0 0 rgba(255,255,255,0.07)');
+  });
+
+  it('does not pay for a blur: nothing ever scrolls behind a fixed sibling bar', () => {
+    // The header sits ABOVE the scroll container over an opaque view wrapper,
+    // so a backdrop-filter would only blur a static fill into itself — a
+    // compositing pass on every tab for zero visible pixels.
+    render(<ViewHeader title="Home" />);
+    const header = container.querySelector('[data-testid="view-header"]') as HTMLElement;
+    expect(header.style.backdropFilter).toBeFalsy();
+    expect((header.style as unknown as Record<string, unknown>).WebkitBackdropFilter).toBeFalsy();
+  });
+
+  it('collapses to the flat surface under Reduce Transparency, dropping the filter', () => {
+    setNativeReduceTransparency(true);
+    render(<ViewHeader title="Home" />);
+    const header = container.querySelector('[data-testid="view-header"]') as HTMLElement;
+    expect(header.style.background).toBe(normalised(THEME_GLASS.dark.glass.opaque));
+    expect(header.style.backdropFilter).toBeFalsy();
+  });
+
+  it('`surface` still wins, and never puts a blur under its opaque fill', () => {
+    render(<ViewHeader title="Grow" surface="rgb(1, 2, 3)" />);
+    const header = container.querySelector('[data-testid="view-header"]') as HTMLElement;
+    expect(header.style.backdropFilter).toBeFalsy();
+    expect(header.style.borderBottom).not.toBe('');
   });
 
   it('`surface` paints the opaque fill and pins the header above scrolling content', () => {

@@ -642,18 +642,30 @@ function _rgba(hex: string, alpha: number): string {
  * but on a pearl ground the bottom edge softens instead of darkening, and the
  * ambient shadow is cool graphite, because black is invisible on white.
  */
-function _glass(surface: string, border: string, light: boolean): ThemeGlass {
-  const rim = light
+/** Specular top edge, then shaded bottom edge — the two halves of the rim. */
+function _rim(light: boolean): [string, string] {
+  return light
     ? ['inset 0 1px 0 rgba(255,255,255,0.90)', 'inset 0 -1px 0 rgba(30,37,48,0.06)']
     : ['inset 0 1px 0 rgba(255,255,255,0.14)', 'inset 0 -1px 0 rgba(0,0,0,0.22)'];
-  const ambient = (spread: string) => (light ? `0 ${spread} rgba(30,37,48,0.12)` : `0 ${spread} rgba(0,0,0,0.28)`);
+}
+
+function _ambient(light: boolean, spread: string): string {
+  return light ? `0 ${spread} rgba(30,37,48,0.12)` : `0 ${spread} rgba(0,0,0,0.28)`;
+}
+
+/** Each variant's ambient spread — it floats further, so it throws further. */
+const _GLASS_SPREAD: Record<keyof ThemeGlass, string> = { glass: '8px 32px', glassHi: '16px 48px' };
+
+function _glass(surface: string, border: string, light: boolean): ThemeGlass {
+  const rim = _rim(light);
+  const ambient = (spread: string) => _ambient(light, spread);
   const shell = (spread: string) => [...rim, `inset 0 0 0 1px ${border}`, ambient(spread)].join(', ');
   return {
     // Default floating control layer — toolbars, popovers, toasts, launchers.
     glass: {
       background: _rgba(surface, 0.82),
       backdropFilter: 'blur(20px) saturate(180%)',
-      boxShadow: shell('8px 32px'),
+      boxShadow: shell(_GLASS_SPREAD.glass),
       opaque: surface,
     },
     // Large floating surfaces — sidebars, inspectors. More opaque (D6), and a
@@ -661,7 +673,7 @@ function _glass(surface: string, border: string, light: boolean): ThemeGlass {
     glassHi: {
       background: _rgba(surface, 0.90),
       backdropFilter: 'blur(24px) saturate(170%)',
-      boxShadow: shell('16px 48px'),
+      boxShadow: shell(_GLASS_SPREAD.glassHi),
       opaque: surface,
     },
   };
@@ -680,6 +692,61 @@ export const THEME_GLASS: Record<ThemeId, ThemeGlass> = {
 };
 
 export function getThemedGlass(): ThemeGlass { return THEME_GLASS[_activeTheme]; }
+
+/** The one edge of a docked glass surface that meets another surface. */
+export type GlassSeam = 'right' | 'bottom';
+
+/**
+ * The glass rim for a surface DOCKED to the window's structure — the rail,
+ * the view header — rather than floating free like a popover or a toast.
+ *
+ * The token's rim draws its hairline as `inset 0 0 0 1px`: a ring on all four
+ * sides, correct for a free-floating box. A docked bar has one real seam. On
+ * the others the ring drew lines where nothing meets: along the macOS window
+ * frame (the rail's left, top and bottom), under the titlebar band (the
+ * header's top) — and, where the two glass surfaces touch, the header's left
+ * ring sat against the rail's right ring, so the rail/content seam was 2px in
+ * the header band and 1px everywhere below it. The live Home screenshot of the
+ * first glass pass only checked the rail edge below the header, so it could
+ * not catch that.
+ *
+ * So: the specular top edge (that is the light, not a border), the hairline on
+ * the seam alone, and the variant's own ambient depth. The shaded bottom edge
+ * stays only when the bottom IS the seam. Same colours as `THEME_GLASS`, so it
+ * is still the same material, just cut to fit where it is mounted.
+ */
+export function glassSeamShadow(theme: ThemeId, variant: keyof ThemeGlass, seam: GlassSeam): string {
+  const { border } = THEME_COLORS[theme];
+  const light = theme === 'silver';
+  const [specular, shaded] = _rim(light);
+  const hairline = seam === 'right' ? `inset -1px 0 0 0 ${border}` : `inset 0 -1px 0 0 ${border}`;
+  const parts = seam === 'bottom' ? [specular, shaded, hairline] : [specular, hairline];
+  return [...parts, _ambient(light, _GLASS_SPREAD[variant])].join(', ');
+}
+
+/**
+ * The sidebar rail's tint for the day the window is TRANSPARENT and macOS's
+ * own `sidebar` material (NSVisualEffectView, via Tauri `windowEffects`) is
+ * what sits behind it. Not used while `NATIVE_WINDOW_IS_OPAQUE` is true.
+ *
+ * Why a separate token and not `glassHi`: glassHi is 90% opaque because it has
+ * to carry legibility on its own over web content. Over the native material
+ * that 90% would bury the very vibrancy the transparent window pays for (a
+ * review of "There is no liquid glass anywhere" caught exactly that — the old
+ * `gradient.sidebar` was 60%). The native material already blurs and dims the
+ * wallpaper, so the rail only needs enough of the theme's own surface to keep
+ * the theme's identity — and to keep dark labels readable when the app theme
+ * and the SYSTEM appearance disagree (the native material follows the system,
+ * not our theme picker), which is why the pearl theme keeps more.
+ *
+ * Provisional numbers, to be confirmed by eye on the real window alongside the
+ * GPU re-measurement that gates the transparent window itself.
+ */
+export const RAIL_FILL_OVER_VIBRANCY: Record<ThemeId, string> = {
+  dark: _rgba(DARK_COLORS.surface, 0.5),
+  aurora: _rgba(AURORA_COLORS.surface, 0.5),
+  silver: _rgba(SILVER_COLORS.surface, 0.62),
+};
 
 export interface ThemeGradients {
   workspace: string; card: string; label: string;
