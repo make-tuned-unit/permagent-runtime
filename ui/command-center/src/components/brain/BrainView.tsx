@@ -23,6 +23,7 @@ import {
 import { readViewMode, rememberViewMode, type BrainViewMode as ViewMode } from './viewMode';
 
 import { Tooltip } from '../common/Tooltip';
+import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
 const TOP_FILTERS: { key: keyof TypeFilters; label: string; shape: string }[] = [
   { key: 'person', label: 'people', shape: '●' },
   { key: 'project', label: 'projects', shape: '■' },
@@ -45,6 +46,19 @@ interface SelectedInfo {
       enriches them; preview text may be a truncated content_summary). The side
       panel badges it so a snapshot never masquerades as the whole memory. */
   preview?: boolean;
+}
+
+
+/** Right inset of the time slider: clear of the side panel when a node is
+ *  selected, otherwise clear of the floating chat pill (which QA saw sitting
+ *  on the slider's right end), otherwise the plain 16px gutter. */
+export function brainSliderRight(
+  panelOpen: boolean,
+  launcher: { width: number; height: number } | null,
+): number {
+  if (panelOpen) return 376;
+  if (launcher) return Math.ceil(launcher.width) + CHAT_LAUNCHER_MARGIN + 12;
+  return 16;
 }
 
 export function BrainView() {
@@ -128,6 +142,9 @@ export function BrainView() {
   // Librarian enriches them, so a just-created note/code memory needs the
   // preview to render at all.
   const pendingBrainMemory = useCommandCenter(s => s.pendingBrainMemory);
+  // The floating "Chat with …" pill (null while it is hidden) sits over this
+  // corner; the time slider stops short of it instead of running underneath.
+  const chatLauncherSize = useCommandCenter(s => s.chatLauncherSize);
   const clearPendingBrainMemory = useCommandCenter(s => s.clearPendingBrainMemory);
   useEffect(() => {
     if (!pendingBrainMemory) return;
@@ -900,7 +917,7 @@ export function BrainView() {
 
       {/* Time slider */}
       <div style={{
-        position: 'absolute', bottom: space.xxl, left: space.xxl, right: selected ? 376 : 16, zIndex: 10,
+        position: 'absolute', bottom: space.xxl, left: space.xxl, right: brainSliderRight(selected != null, chatLauncherSize), zIndex: 10,
         display: 'flex', alignItems: 'center', gap: space.xl, padding: `${space.lg}px ${space.xxl}px`,
         ...glassMat,
         border: `1px solid ${colors.borderHi}`, borderRadius: shellRadius,
