@@ -4876,8 +4876,8 @@ mod tests {
     /// The old path (whole window, two attempts) reproduces that exact gate.
     /// The shipped path (the prompt counted by the tokenizer the streamed turn
     /// uses, the default reserved-attempt count resolved from the same retry
-    /// envelope) is granted. A retry then asks to extend the hold by one more
-    /// attempt, and under this ceiling that is gated, not silently spent.
+    /// envelope, the shipped ceilings) is granted, and so is one retry's
+    /// extension; the hold stays well under the shipped task gate.
     ///
     /// What this does not prove: it plans and reserves exactly as
     /// `reserve_provider_invocation_for_model` does, but passes the ceilings
@@ -4975,7 +4975,12 @@ mod tests {
         let envelope = crate::providers::RetryConfig::default().max_physical_attempts();
         let attempts = crate::cost_router::reserved_physical_attempts_with(envelope, |_| None);
         let bound = plan(attempts, counted);
-        assert!(bound.amount_usd < 0.88, "hold ${:.4}", bound.amount_usd);
+        let shipped = crate::cost_router::budget::BudgetConfig::default();
+        assert!(
+            bound.amount_usd + 0.12 < shipped.task.gate,
+            "hold ${:.4}",
+            bound.amount_usd
+        );
         let granted = manager
             .reserve_bounded_provider_invocation(
                 "reported-new",
@@ -4983,7 +4988,7 @@ mod tests {
                 Some(&task),
                 bound,
                 lease,
-                &first_cut,
+                &shipped,
             )
             .await
             .unwrap();
@@ -4995,14 +5000,13 @@ mod tests {
             "the reported first call must go out: {granted:?}"
         );
 
-        // A retry needs one more attempt's worth; under a $1.00 gate with
-        // $0.12 spent and $0.61 held there is no room, so it is gated rather
-        // than spent unauthorized.
+        // A third attempt's worth still fits under the shipped $3 gate with
+        // $0.12 spent, so a retry is not gated either.
         let retry = manager.extend_reservation("reported-new", 1).await.unwrap();
         assert!(
             matches!(
                 retry,
-                crate::session::CostReservationOutcome::NeedsGate { .. }
+                crate::session::CostReservationOutcome::Granted { .. }
             ),
             "{retry:?}"
         );

@@ -711,8 +711,8 @@ mod tests {
         assert_eq!(one.output_tokens, five.output_tokens);
         assert_eq!(one.pricing_provenance, five.pricing_provenance);
 
-        // The shipped default: one attempt, a fifth of the old hold. A retry
-        // extends it one attempt at a time (see `RESERVE_ATTEMPTS_ENV`).
+        // The shipped default: two attempts, two fifths of the old hold (see
+        // `DEFAULT_RESERVED_ATTEMPTS` for why not one).
         let shipped = plan_reservation_bound(
             "zai",
             "glm-4.7",
@@ -722,17 +722,16 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(shipped.max_physical_attempts, 1);
-        assert_eq!(shipped.amount_usd, one.amount_usd);
-        assert_eq!(shipped.amount_usd * 5.0, five.amount_usd);
+        assert_eq!(shipped.max_physical_attempts, 2);
+        assert!((shipped.amount_usd - 2.0 * one.amount_usd).abs() < 1e-9);
+        assert!((shipped.amount_usd * 2.5 - five.amount_usd).abs() < 1e-9);
     }
 
     /// Y7: the knob can raise or lower the hold but never authorize more
     /// attempts than the retry policy would ever physically make, and never
-    /// zero. The shipped default is one: the attempt the call makes, with any
-    /// retry extending the hold when it happens.
+    /// zero. The shipped default is two (see `DEFAULT_RESERVED_ATTEMPTS`).
     #[test]
-    fn reserved_attempts_default_to_one_and_clamp_to_the_retry_envelope() {
+    fn reserved_attempts_default_to_two_and_clamp_to_the_retry_envelope() {
         let env = |value: Option<&str>| {
             let value = value.map(str::to_string);
             move |key: &str| {
@@ -1183,7 +1182,9 @@ mod tests {
     /// $1.00 gate and was not adopted — see `DEFAULT_RESERVED_ATTEMPTS`.
     #[test]
     fn the_reported_first_call_fits_the_shipped_gate_at_the_shipped_default() {
-        let gate = crate::cost_router::budget::BudgetConfig::default().task.gate;
+        let gate = crate::cost_router::budget::BudgetConfig::default()
+            .task
+            .gate;
         let headroom = gate - 0.12;
         let cfg = config(Some(400_000), Some(128_000));
         let bound = |attempts, counted| {

@@ -767,8 +767,16 @@ mod tests {
     /// is the one place that pins the shipped numbers.
     fn ladder() -> BudgetConfig {
         BudgetConfig {
-            task: BudgetCeilings { soft: 2.0, gate: 5.0, hard: 10.0 },
-            session: BudgetCeilings { soft: 10.0, gate: 25.0, hard: 50.0 },
+            task: BudgetCeilings {
+                soft: 2.0,
+                gate: 5.0,
+                hard: 10.0,
+            },
+            session: BudgetCeilings {
+                soft: 10.0,
+                gate: 25.0,
+                hard: 50.0,
+            },
         }
     }
 
