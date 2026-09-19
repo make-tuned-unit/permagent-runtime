@@ -406,13 +406,29 @@
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.22);
   color: var(--forum-text);
 }
+/* The header is two phrases that each stay whole, and it wraps between them.
+   It was a single no-wrap row: the status was nowrap, so when the two did
+   not fit the only thing that could give was the eyebrow. That row was also
+   what set the card's width (the lane shrinks to fit), so "SOVEREIGN
+   PASSPORT" and "NOT YET READ" already filled it with nothing to spare, and
+   "LAST KNOWN · OFFLINE" or "READING PASSPORT" is wider than the 300px slot.
+   QA's WebKit night render showed the header crowded together, with the
+   sovereign's in-world "AGENT" nameplate drawn over it. The nameplate was a
+   drei <Html> label out-ranking the HUD, which `.forum-canvas` now contains.
+   Now the status stays on the eyebrow's line, pushed right, while there is
+   room, and moves whole onto a line of its own when there is not. */
 .forum-passport-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+  column-gap: 12px;
+  row-gap: 3px;
+}
+.forum-passport-head > .eyebrow {
+  white-space: nowrap;
 }
 .forum-passport-status {
+  margin-left: auto;
   font-family: var(--forum-mono);
   font-size: 10px;
   letter-spacing: 0.09em;
