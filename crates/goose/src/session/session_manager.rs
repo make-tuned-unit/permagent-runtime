@@ -7894,6 +7894,91 @@ mod tests {
         );
     }
 
+    /// gated-turn-silence, reply half (E2E QA 2026-09-19): the live store
+    /// showed session 20260918_7's hold `released` by the boot sweep, but QA
+    /// could not send the follow-up message that proves the chat answers
+    /// again (locked screen, paid session). This is that follow-up at the
+    /// storage seam the reply path calls: turn 1's stream drops and marks its
+    /// hold, the daemon restarts, and the user's next message — a NEW budget
+    /// task, as `Agent::reply` begins one per interactive message — must be
+    /// granted, not handed "an expired provider reservation is unresolved",
+    /// which `agent.rs` turns into "I did not send this request because
+    /// provider spend could not be authorized" (the "my agent is not
+    /// responding to me" report). Only the released hold is gone: the
+    /// earlier turn's real settled spend still counts toward the session.
+    #[tokio::test]
+    async fn next_message_after_restart_is_granted_in_a_chat_whose_earlier_turn_dropped() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_dir = temp_dir.path().to_path_buf();
+        let sm = SessionManager::new(db_dir.clone());
+        let session = sm
+            .create_session(
+                db_dir.clone(),
+                "chat whose first reply dropped".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let cfg = reservation_config(5.0, 10.0, 25.0, 50.0);
+
+        let first_task = sm.begin_budget_task(&session.id).await.unwrap();
+        let dropped = match sm
+            .reserve_provider_invocation(
+                "reply-half-dropped-stream",
+                &session.id,
+                Some(&first_task),
+                1.56,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            other => panic!("turn 1 reservation was not granted: {other:?}"),
+        };
+        assert!(sm.mark_provider_invocation_unknown(&dropped).await.unwrap());
+        drop(sm);
+
+        // Daemon restart, then the user speaks again in the same chat.
+        let reopened = SessionManager::new(db_dir);
+        let next_task = reopened.begin_budget_task(&session.id).await.unwrap();
+        assert_ne!(first_task, next_task);
+        let outcome = reopened
+            .reserve_provider_invocation(
+                "reply-half-next-message",
+                &session.id,
+                Some(&next_task),
+                1.56,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap();
+        match outcome {
+            CostReservationOutcome::Granted { .. } => {}
+            CostReservationOutcome::Unknown { reason } => panic!(
+                "the next message must get a reply, but the chat would show \
+                 \"provider spend could not be authorized: {reason}\""
+            ),
+            other => panic!("the next message must be granted: {other:?}"),
+        }
+
+        let pool = reopened.pool_clone().await.unwrap();
+        let (unknown, pending): (i64, i64) = sqlx::query_as(
+            "SELECT COALESCE(SUM(CASE WHEN state = 'unknown' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN state = 'pending' THEN 1 ELSE 0 END), 0)
+             FROM cost_reservations WHERE session_id = ?",
+        )
+        .bind(&session.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(unknown, 0, "no unresolved hold may remain in the chat");
+        assert_eq!(pending, 1, "only the new message's own hold is live");
+    }
+
     /// YF1 (G6 review, Lane Y-fix 2026-09-09, finding #1): a late settlement
     /// — the provider call for a hold that was ALREADY reconciled away
     /// (released, no ledger evidence at the time) completing for real
