@@ -57,6 +57,580 @@ pub struct OllamaProvider {
     /// Ollama is a cloud egress from the sovereignty point of view, so this
     /// drives [`Provider::data_locality`]. Computed once at construction.
     is_local_host: bool,
+    /// What `/api/show` says about each model's window, by model name (see
+    /// [`ShowWindow`]). Cached because every `stream` call needs it and the
+    /// answer only changes when someone edits the Modelfile.
+    #[serde(skip)]
+    served_windows: std::sync::Mutex<std::collections::HashMap<String, ShowWindow>>,
+}
+
+/// Ollama's own default context window: what a model is loaded with when its
+/// Modelfile sets no `num_ctx` and the server has no `OLLAMA_CONTEXT_LENGTH`.
+const OLLAMA_SERVER_DEFAULT_NUM_CTX: usize = 4096;
+
+/// Where a [`ServedWindow`] came from, so the refusal can say which knob to
+/// turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServedWindowSource {
+    /// The model's Modelfile sets `num_ctx` (e.g. `qwen25-16k:latest`,
+    /// `minicpm5-2b-q8:latest`); Ollama loads it at that size.
+    Modelfile,
+    /// No Modelfile `num_ctx`: the server default applies — Ollama's 4096, or
+    /// the `OLLAMA_CONTEXT_LENGTH` configured here to mirror the server's.
+    ServerDefault,
+}
+
+/// The context window Ollama loads a LOCAL model with when the request does
+/// not say otherwise.
+///
+/// Why this exists: Ollama's OpenAI-compatible `/v1/chat/completions` drops
+/// the `options` object, `num_ctx` included. The CLI fallback run of
+/// 2026-09-19 (cli log 20260919_030958) sent `options.num_ctx = 32768` for
+/// `qwen2.5:7b` there; the server log shows the model stayed loaded at
+/// `n_ctx = 4096` and printed `truncating input prompt limit=2050
+/// prompt=55631`. Every qwen2.5:7b load in that log is 4096, while the models
+/// whose Modelfile sets `num_ctx` (minicpm5 at 32768, qwen25-16k at 16384)
+/// load at that size. So over `/v1` the window is the Modelfile's `num_ctx`,
+/// else the server default — never the number this provider asks for. That
+/// is why a request that needs more goes to the native `/api/chat` instead
+/// (see [`request_window`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServedWindow {
+    pub tokens: usize,
+    pub source: ServedWindowSource,
+    /// The model's trained context length (`model_info.*.context_length`),
+    /// the most a native request may ask for.
+    pub trained: Option<usize>,
+}
+
+/// What `/api/show` tells us about a model's window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShowWindow {
+    /// Runs on this Ollama; the window is knowable.
+    Local(ServedWindow),
+    /// An Ollama cloud model (`qwen3-coder:480b-cloud` and friends): Ollama
+    /// proxies it to ollama.com, which neither loads it at the local server
+    /// default nor truncates at 4096. Its window is not ours to guess, so
+    /// nothing here sizes or refuses its requests.
+    Remote,
+}
+
+/// How a request reaches Ollama.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OllamaTransport {
+    /// `/v1/chat/completions`: the window is whatever the model is served
+    /// with ([`ServedWindow`]).
+    OpenAiCompat,
+    /// `/api/chat`: honours `options.num_ctx`, so the window is the one this
+    /// provider asks for.
+    Native,
+}
+
+/// The window a request will really run in, and the endpoint that gets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestWindow {
+    pub tokens: usize,
+    pub transport: OllamaTransport,
+    pub served: ServedWindow,
+}
+
+impl RequestWindow {
+    fn describe(&self) -> &'static str {
+        match (self.transport, self.served.source) {
+            (OllamaTransport::Native, _) => "the num_ctx this app asks Ollama for",
+            (OllamaTransport::OpenAiCompat, ServedWindowSource::Modelfile) => {
+                "the num_ctx its Modelfile sets"
+            }
+            (OllamaTransport::OpenAiCompat, ServedWindowSource::ServerDefault) => {
+                "Ollama's default window: its Modelfile sets no num_ctx and no \
+                 larger context limit is configured for it here"
+            }
+        }
+    }
+}
+
+/// Which window and endpoint a request gets.
+///
+/// `requested` is the `num_ctx` this app configures for the model
+/// (`GOOSE_INPUT_LIMIT`, else the model config's context limit — the CLI
+/// fallback backfills it from the knowledge row, 32768 for `qwen2.5:7b`).
+/// When that is more than the model is served with, `/v1` would silently cut
+/// the prompt down to the served window, so the request goes native with
+/// `num_ctx` capped at the trained length. Otherwise nothing changes: `/v1`,
+/// and a served window at least as large as asked.
+pub fn request_window(served: ServedWindow, requested: Option<usize>) -> RequestWindow {
+    let wanted = requested
+        .filter(|n| *n > 0)
+        .map(|n| served.trained.map_or(n, |trained| n.min(trained)));
+    match wanted {
+        Some(tokens) if tokens > served.tokens => RequestWindow {
+            tokens,
+            transport: OllamaTransport::Native,
+            served,
+        },
+        _ => RequestWindow {
+            tokens: served.tokens,
+            transport: OllamaTransport::OpenAiCompat,
+            served,
+        },
+    }
+}
+
+/// The `num_ctx` a Modelfile sets, from `/api/show`'s `parameters` text
+/// (`"num_ctx                        16384\ntemperature 0"`).
+fn modelfile_num_ctx(show: &Value) -> Option<usize> {
+    show.get("parameters")?
+        .as_str()?
+        .lines()
+        .find_map(|line| {
+            let mut parts = line.split_whitespace();
+            if parts.next()? != "num_ctx" {
+                return None;
+            }
+            parts.next()?.parse::<usize>().ok()
+        })
+        .filter(|n| *n > 0)
+}
+
+/// The trained context length, from `/api/show`'s `model_info`
+/// (`"qwen2.context_length": 32768`).
+fn trained_context_length(show: &Value) -> Option<usize> {
+    show.get("model_info")?
+        .as_object()?
+        .iter()
+        .find(|(key, _)| key.ends_with(".context_length"))
+        .and_then(|(_, value)| value.as_u64())
+        .map(|n| n as usize)
+        .filter(|n| *n > 0)
+}
+
+/// Whether a model name is an Ollama cloud tag (`gpt-oss:120b-cloud`,
+/// `qwen3-coder:480b-cloud`, `deepseek-v3.1:671b-cloud`, `name:cloud`).
+fn is_cloud_model_name(model: &str) -> bool {
+    model
+        .rsplit_once(':')
+        .is_some_and(|(_, tag)| tag == "cloud" || tag.ends_with("-cloud"))
+}
+
+/// Whether `/api/show` describes a model Ollama proxies to ollama.com rather
+/// than runs here: cloud models carry `remote_host` / `remote_model`.
+fn show_is_remote(show: &Value) -> bool {
+    ["remote_host", "remote_model"].iter().any(|key| {
+        show.get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    })
+}
+
+/// The server default window this client should assume. `OLLAMA_CONTEXT_LENGTH`
+/// is the server's own variable name; setting it here (env or config) tells
+/// the client what the server was started with, which it cannot see.
+fn resolve_ollama_server_default_ctx() -> usize {
+    match crate::config::Config::global().get_param::<usize>("OLLAMA_CONTEXT_LENGTH") {
+        Ok(n) if n > 0 => n,
+        _ => OLLAMA_SERVER_DEFAULT_NUM_CTX,
+    }
+}
+
+fn served_window_from_show(show: &Value, model: &str, server_default: usize) -> ShowWindow {
+    if is_cloud_model_name(model) || show_is_remote(show) {
+        return ShowWindow::Remote;
+    }
+    let trained = trained_context_length(show);
+    ShowWindow::Local(match modelfile_num_ctx(show) {
+        Some(tokens) => ServedWindow {
+            tokens,
+            source: ServedWindowSource::Modelfile,
+            trained,
+        },
+        None => ServedWindow {
+            tokens: server_default,
+            source: ServedWindowSource::ServerDefault,
+            trained,
+        },
+    })
+}
+
+/// Whether an estimated prompt is over the window the request will run in.
+///
+/// No slack above the window. The estimate is o200k over the request JSON:
+/// on the reported request, mostly JSON tool schemas, it ran about 12% above
+/// Ollama's own count (62,364 against 55,631), but on a prompt that is mostly
+/// prose o200k and the qwen tokenizer land about even. Any slack above the
+/// window would let a real 4,097-to-4,600-token prose prompt through to be
+/// cut, which is the failure this guard exists to stop. So the only error
+/// the comparison allows is the over-count, which refuses a request that
+/// sits within the tokenizer gap of the edge rather than truncating one.
+fn exceeds_window(estimated_tokens: usize, window: usize) -> bool {
+    estimated_tokens > window
+}
+
+/// Whether the request carries an image. Base64 image data would be counted
+/// as text and swamp the estimate, so the preflight stands aside for it.
+fn payload_carries_images(payload: &Value) -> bool {
+    payload
+        .get("messages")
+        .and_then(Value::as_array)
+        .is_some_and(|messages| {
+            messages.iter().any(|message| {
+                message
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|parts| {
+                        parts.iter().any(|part| {
+                            part.get("type").and_then(Value::as_str) == Some("image_url")
+                        })
+                    })
+            })
+        })
+}
+
+/// o200k count of what the request actually carries to the model: the
+/// messages (system prompt included) and the tool schemas.
+async fn estimated_prompt_tokens(payload: &Value) -> Option<usize> {
+    if payload_carries_images(payload) {
+        return None;
+    }
+    let counter = crate::token_counter::create_token_counter().await.ok()?;
+    let pieces: Vec<String> = ["messages", "tools"]
+        .iter()
+        .filter_map(|key| payload.get(*key).map(Value::to_string))
+        .collect();
+    // A full tool surface is hundreds of KB of JSON; keep the tokenizer off
+    // the async runtime the stream runs on.
+    tokio::task::spawn_blocking(move || {
+        pieces
+            .iter()
+            .map(|piece| counter.count_tokens(piece))
+            .fold(0usize, usize::saturating_add)
+    })
+    .await
+    .ok()
+}
+
+/// The refusal for a request Ollama would truncate. Carries llama.cpp-shaped
+/// `"n_prompt_tokens"` / `"n_ctx"` numbers so
+/// `errors::extract_context_length_token_counts` reads it like the 400 a
+/// llama-server endpoint sends for the same overflow.
+fn served_window_refusal(
+    model: &str,
+    estimated_tokens: usize,
+    window: RequestWindow,
+) -> ProviderError {
+    ProviderError::ContextLengthExceeded(format!(
+        "this request is about {estimated_tokens} tokens (\"n_prompt_tokens\": {estimated_tokens}) \
+         but Ollama runs {model} in a {} token window (\"n_ctx\": {}; {}). Ollama would \
+         silently keep only the tail of it, so it was not sent. Use a model with a larger \
+         window, fewer extensions, or a larger context limit for this model (GOOSE_INPUT_LIMIT, \
+         or a Modelfile num_ctx).",
+        window.tokens,
+        window.tokens,
+        window.describe(),
+    ))
+}
+
+/// The window a request for `model_config` will really run in on the Ollama
+/// this process is configured for (`OLLAMA_HOST`) — the same answer `stream`
+/// acts on. `None` for a cloud model or when Ollama cannot be asked. For
+/// callers that size a session before its first turn, such as the CLI
+/// builder fitting extensions to a local fallback.
+pub async fn request_window_for_model_config(model_config: &ModelConfig) -> Option<RequestWindow> {
+    let provider = OllamaProvider::from_env(model_config.clone()).await.ok()?;
+    provider.request_window(model_config).await
+}
+
+// --- Native `/api/chat` translation --------------------------------------
+//
+// The request is still built by the shared OpenAI formatter (`create_request`)
+// so both endpoints carry the same prompt, tools and history; these turn that
+// payload into `/api/chat`'s shape, and `/api/chat`'s NDJSON stream back into
+// the OpenAI SSE lines `response_to_streaming_message_ollama` already parses.
+
+/// Text and base64 images from an OpenAI `content` (string, parts, or null).
+fn native_content(content: Option<&Value>) -> (String, Vec<String>) {
+    match content {
+        Some(Value::String(text)) => (text.clone(), Vec::new()),
+        Some(Value::Array(parts)) => {
+            let mut texts = Vec::new();
+            let mut images = Vec::new();
+            for part in parts {
+                match part.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        if let Some(text) = part.get("text").and_then(Value::as_str) {
+                            texts.push(text.to_string());
+                        }
+                    }
+                    Some("image_url") => {
+                        let data = part
+                            .get("image_url")
+                            .and_then(|image| image.get("url"))
+                            .and_then(Value::as_str)
+                            .and_then(|url| url.split_once("base64,"))
+                            .map(|(_, data)| data.to_string());
+                        match data {
+                            Some(data) => images.push(data),
+                            None => tracing::warn!(
+                                target: "permagent::providers::ollama",
+                                "dropping a non-inline image: /api/chat takes base64 only"
+                            ),
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            (texts.join("\n\n"), images)
+        }
+        _ => (String::new(), Vec::new()),
+    }
+}
+
+/// OpenAI-shaped messages as `/api/chat` takes them: `developer` becomes
+/// `system`, tool-call arguments become objects, images move to `images`, a
+/// tool result names its tool, and echoed reasoning rides as `thinking`.
+fn native_messages(messages: &[Value]) -> Vec<Value> {
+    let mut tool_names: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(messages.len());
+    for message in messages {
+        let role = match message.get("role").and_then(Value::as_str) {
+            Some("developer") => "system",
+            Some(role) => role,
+            None => "user",
+        };
+        let (text, images) = native_content(message.get("content"));
+        let mut native = json!({ "role": role, "content": text });
+        if !images.is_empty() {
+            native["images"] = json!(images);
+        }
+        if let Some(thinking) = message
+            .get("reasoning_content")
+            .or_else(|| message.get("reasoning"))
+            .and_then(Value::as_str)
+            .filter(|thinking| !thinking.is_empty())
+        {
+            native["thinking"] = json!(thinking);
+        }
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            let mut native_calls = Vec::with_capacity(calls.len());
+            for call in calls {
+                let Some(function) = call.get("function") else {
+                    continue;
+                };
+                let Some(name) = function.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let arguments = match function.get("arguments") {
+                    Some(Value::String(raw)) => serde_json::from_str::<Value>(raw)
+                        .ok()
+                        .filter(Value::is_object)
+                        .unwrap_or_else(|| json!({})),
+                    Some(value) if value.is_object() => value.clone(),
+                    _ => json!({}),
+                };
+                let mut native_call =
+                    json!({ "function": { "name": name, "arguments": arguments } });
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    tool_names.insert(id.to_string(), name.to_string());
+                    native_call["id"] = json!(id);
+                }
+                native_calls.push(native_call);
+            }
+            if !native_calls.is_empty() {
+                native["tool_calls"] = json!(native_calls);
+            }
+        }
+        if role == "tool" {
+            if let Some(id) = message.get("tool_call_id").and_then(Value::as_str) {
+                native["tool_call_id"] = json!(id);
+                if let Some(name) = tool_names.get(id) {
+                    native["tool_name"] = json!(name);
+                }
+            }
+        }
+        out.push(native);
+    }
+    out
+}
+
+/// The `/api/chat` body for an OpenAI-shaped `payload`, run in `num_ctx`.
+fn native_chat_request(payload: &Value, num_ctx: usize) -> Value {
+    let mut options = payload
+        .get("options")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    options.insert("num_ctx".to_string(), json!(num_ctx));
+    for key in ["temperature", "top_p", "seed"] {
+        if let Some(value) = payload.get(key).filter(|value| !value.is_null()) {
+            options.entry(key.to_string()).or_insert(value.clone());
+        }
+    }
+    let messages = payload
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .map(native_messages)
+        .unwrap_or_default();
+    let mut body = json!({
+        "model": payload.get("model").cloned().unwrap_or(Value::Null),
+        "messages": messages,
+        "stream": true,
+        "options": options,
+    });
+    if let Some(tools) = payload.get("tools").filter(|tools| !tools.is_null()) {
+        body["tools"] = tools.clone();
+    }
+    // `/v1` maps `reasoning_effort` onto `think` the same way.
+    if let Some(effort) = payload.get("reasoning_effort").and_then(Value::as_str) {
+        body["think"] = if effort == "none" {
+            json!(false)
+        } else {
+            json!(effort)
+        };
+    }
+    body
+}
+
+/// Turns `/api/chat`'s NDJSON stream into OpenAI SSE lines, one line in and
+/// zero or more lines out. Tool calls are collected and sent as one
+/// `finish_reason: "tool_calls"` chunk when the stream is done, the shape the
+/// OpenAI parser completes a tool-call message on.
+#[derive(Default)]
+struct NativeStreamTranslator {
+    model: String,
+    tool_calls: Vec<Value>,
+}
+
+impl NativeStreamTranslator {
+    fn sse(&self, mut chunk: Value) -> String {
+        // The parser only reports usage from a chunk that names its model.
+        chunk["model"] = json!(self.model);
+        format!("data: {chunk}")
+    }
+
+    fn translate(&mut self, line: &str) -> anyhow::Result<Vec<String>> {
+        let line = line.trim();
+        if line.is_empty() {
+            return Ok(Vec::new());
+        }
+        let chunk: Value = serde_json::from_str(line)
+            .map_err(|e| anyhow::anyhow!("unreadable Ollama /api/chat stream line: {e}"))?;
+        if let Some(error) = chunk.get("error") {
+            let detail = error
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| error.to_string());
+            return Err(anyhow::anyhow!("Ollama error: {detail}"));
+        }
+        if let Some(model) = chunk.get("model").and_then(Value::as_str) {
+            self.model = model.to_string();
+        }
+
+        let mut out = Vec::new();
+        let message = chunk.get("message");
+        let field = |key: &str| {
+            message
+                .and_then(|m| m.get(key))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        let text = field("content");
+        let thinking = field("thinking");
+        if !text.is_empty() || !thinking.is_empty() {
+            let mut delta = json!({ "role": "assistant" });
+            if !text.is_empty() {
+                delta["content"] = json!(text);
+            }
+            if !thinking.is_empty() {
+                delta["reasoning"] = json!(thinking);
+            }
+            out.push(self.sse(json!({
+                "choices": [{ "index": 0, "delta": delta, "finish_reason": null }]
+            })));
+        }
+
+        if let Some(calls) = message
+            .and_then(|m| m.get("tool_calls"))
+            .and_then(Value::as_array)
+        {
+            for call in calls {
+                let Some(function) = call.get("function") else {
+                    continue;
+                };
+                let Some(name) = function.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let arguments = match function.get("arguments") {
+                    Some(Value::String(raw)) => raw.clone(),
+                    Some(value) if !value.is_null() => value.to_string(),
+                    _ => "{}".to_string(),
+                };
+                let id = call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4().simple()));
+                let index = self.tool_calls.len();
+                self.tool_calls.push(json!({
+                    "index": index,
+                    "id": id,
+                    "type": "function",
+                    "function": { "name": name, "arguments": arguments }
+                }));
+            }
+        }
+
+        if chunk.get("done").and_then(Value::as_bool) == Some(true) {
+            let prompt = chunk
+                .get("prompt_eval_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let completion = chunk.get("eval_count").and_then(Value::as_u64).unwrap_or(0);
+            let usage = json!({
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": prompt + completion,
+            });
+            if self.tool_calls.is_empty() {
+                let finish = match chunk.get("done_reason").and_then(Value::as_str) {
+                    Some("length") => "length",
+                    _ => "stop",
+                };
+                out.push(self.sse(json!({
+                    "choices": [{ "index": 0, "delta": {}, "finish_reason": finish }]
+                })));
+                out.push(self.sse(json!({ "choices": [], "usage": usage })));
+            } else {
+                let calls = std::mem::take(&mut self.tool_calls);
+                out.push(self.sse(json!({
+                    "choices": [{
+                        "index": 0,
+                        "delta": { "role": "assistant", "tool_calls": calls },
+                        "finish_reason": "tool_calls"
+                    }],
+                    "usage": usage
+                })));
+            }
+            out.push("data: [DONE]".to_string());
+        }
+        Ok(out)
+    }
+}
+
+type LineStream = std::pin::Pin<Box<dyn futures::Stream<Item = anyhow::Result<String>> + Send>>;
+
+fn native_lines_to_openai_sse(lines: LineStream) -> LineStream {
+    Box::pin(try_stream! {
+        let mut lines = lines;
+        let mut translator = NativeStreamTranslator::default();
+        while let Some(line) = lines.next().await {
+            for sse in translator.translate(&line?)? {
+                yield sse;
+            }
+        }
+    })
 }
 
 /// Whether an Ollama base URL points at this machine (loopback). Fail-closed:
@@ -122,7 +696,10 @@ fn apply_ollama_options(payload: &mut Value, model_config: &ModelConfig) {
             }
         }
 
-        // Apply num_ctx from context limit settings.
+        // Apply num_ctx from context limit settings. `/v1` ignores it (see
+        // `ServedWindow`); when it asks for more than the model is served
+        // with, `stream` sends the request to `/api/chat` instead, where it
+        // is honoured (see `request_window`).
         if let Some(limit) = resolve_ollama_num_ctx(model_config) {
             let options = obj.entry("options").or_insert_with(|| json!({}));
             if let Some(options_obj) = options.as_object_mut() {
@@ -173,7 +750,96 @@ impl OllamaProvider {
             name: OLLAMA_PROVIDER_NAME.to_string(),
             skip_canonical_filtering: false,
             is_local_host,
+            served_windows: Default::default(),
         })
+    }
+
+    /// What `/api/show` says about `model`'s window (see [`ShowWindow`]),
+    /// cached per model. `None` when it cannot be read: then nothing is known,
+    /// and `stream` behaves as it always has rather than guess.
+    async fn show_window(&self, model: &str) -> Option<ShowWindow> {
+        // A cloud tag is known without asking.
+        if is_cloud_model_name(model) {
+            return Some(ShowWindow::Remote);
+        }
+        // Bound in its own statement so the lock guard drops before any await.
+        let cached = self
+            .served_windows
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(model).copied());
+        if let Some(window) = cached {
+            return Some(window);
+        }
+        let response = self
+            .api_client
+            .request(None, "api/show")
+            .api_post(&json!({ "model": model }))
+            .await
+            .ok()?;
+        if !response.status.is_success() {
+            return None;
+        }
+        let window = served_window_from_show(
+            response.payload.as_ref()?,
+            model,
+            resolve_ollama_server_default_ctx(),
+        );
+        if let Ok(mut cache) = self.served_windows.lock() {
+            cache.insert(model.to_string(), window);
+        }
+        Some(window)
+    }
+
+    /// The window a local `model` is served with over `/v1` (see
+    /// [`ServedWindow`]). `None` for a cloud model or when Ollama cannot be
+    /// asked.
+    pub async fn served_context_window(&self, model: &str) -> Option<ServedWindow> {
+        match self.show_window(model).await? {
+            ShowWindow::Local(window) => Some(window),
+            ShowWindow::Remote => None,
+        }
+    }
+
+    /// The window a request for `model_config` will run in, and the endpoint
+    /// it goes to (see [`request_window`]). `None` for a cloud model or when
+    /// Ollama cannot be asked: `/v1`, unguarded, as before.
+    pub async fn request_window(&self, model_config: &ModelConfig) -> Option<RequestWindow> {
+        let served = self.served_context_window(&model_config.model_name).await?;
+        Some(request_window(served, resolve_ollama_num_ctx(model_config)))
+    }
+
+    /// Refuse, before sending, a request Ollama would silently truncate.
+    ///
+    /// The CLI's `permagent run` fallback onto `ollama/qwen2.5:7b` sent a
+    /// ~55k-token prompt (101KB system prompt + 156 tool schemas) into a
+    /// 4096-token window; Ollama kept the last 2,050 tokens and the model
+    /// answered from a fragment, with nothing in any log but Ollama's own.
+    /// A loud `ContextLengthExceeded` is what a llama-server endpoint returns
+    /// for the same overflow, and it is what the agent loop already handles.
+    async fn preflight_request_window(
+        &self,
+        model: &str,
+        payload: &Value,
+        window: RequestWindow,
+    ) -> Result<(), ProviderError> {
+        let Some(estimated) = estimated_prompt_tokens(payload).await else {
+            return Ok(());
+        };
+        if !exceeds_window(estimated, window.tokens) {
+            return Ok(());
+        }
+        tracing::warn!(
+            target: "permagent::providers::ollama",
+            model,
+            estimated_prompt_tokens = estimated,
+            window = window.tokens,
+            transport = ?window.transport,
+            served_window = window.served.tokens,
+            served_window_source = ?window.served.source,
+            "refusing a request Ollama would silently truncate"
+        );
+        Err(served_window_refusal(model, estimated, window))
     }
 
     pub fn from_custom_config(
@@ -239,6 +905,7 @@ impl OllamaProvider {
             name: config.name.clone(),
             skip_canonical_filtering: config.skip_canonical_filtering,
             is_local_host,
+            served_windows: Default::default(),
         })
     }
 }
@@ -346,13 +1013,40 @@ impl Provider for OllamaProvider {
             true,
         )?;
         apply_ollama_options(&mut payload, model_config);
-        let mut log = RequestLog::start(model_config, &payload)?;
+
+        // Which window this request really runs in decides the endpoint: a
+        // `num_ctx` bigger than the model is served with only takes effect on
+        // `/api/chat` (the 2026-09-19 fallback asked `/v1` for 32768 and got
+        // 4096). A cloud model, or an Ollama whose `/api/show` cannot be read,
+        // stays on `/v1` with no window check, as before.
+        let window = self.request_window(model_config).await;
+        let transport = window.map_or(OllamaTransport::OpenAiCompat, |w| w.transport);
+        let native_body = match window {
+            Some(window) if window.transport == OllamaTransport::Native => {
+                Some(native_chat_request(&payload, window.tokens))
+            }
+            _ => None,
+        };
+        let (path, body) = match native_body.as_ref() {
+            Some(native) => ("api/chat", native),
+            None => ("v1/chat/completions", &payload),
+        };
+        let mut log = RequestLog::start(model_config, body)?;
+        if let Some(window) = window {
+            if let Err(refusal) = self
+                .preflight_request_window(&model_config.model_name, &payload, window)
+                .await
+            {
+                let _ = log.error(&refusal);
+                return Err(refusal);
+            }
+        }
 
         let response = self
             .with_retry(|| async {
                 let resp = self
                     .api_client
-                    .response_post(Some(session_id), "v1/chat/completions", &payload)
+                    .response_post(Some(session_id), path, body)
                     .await?;
                 handle_status_openai_compat(resp).await
             })
@@ -360,7 +1054,7 @@ impl Provider for OllamaProvider {
             .inspect_err(|e| {
                 let _ = log.error(e);
             })?;
-        stream_ollama(response, log)
+        stream_ollama(response, log, transport)
     }
 
     async fn fetch_supported_models(&self) -> Result<Vec<String>, ProviderError> {
@@ -468,7 +1162,11 @@ fn with_line_timeout(
 /// preventing duplicate content from being emitted to the UI.
 /// Timeout is applied at the raw SSE line level via with_line_timeout so that
 /// buffering inside response_to_streaming_message_ollama does not cause false stalls.
-fn stream_ollama(response: Response, mut log: RequestLog) -> Result<MessageStream, ProviderError> {
+fn stream_ollama(
+    response: Response,
+    mut log: RequestLog,
+    transport: OllamaTransport,
+) -> Result<MessageStream, ProviderError> {
     let stream = response.bytes_stream().map_err(std::io::Error::other);
 
     Ok(Box::pin(try_stream! {
@@ -478,7 +1176,12 @@ fn stream_ollama(response: Response, mut log: RequestLog) -> Result<MessageStrea
 
         let chunk_timeout = resolve_ollama_chunk_timeout();
         let timed_lines = with_line_timeout(framed, chunk_timeout);
-        let message_stream = response_to_streaming_message_ollama(timed_lines);
+        // `/api/chat` streams NDJSON; the parser below reads OpenAI SSE.
+        let sse_lines = match transport {
+            OllamaTransport::Native => native_lines_to_openai_sse(timed_lines),
+            OllamaTransport::OpenAiCompat => timed_lines,
+        };
+        let message_stream = response_to_streaming_message_ollama(sse_lines);
         pin!(message_stream);
 
         while let Some(message) = message_stream.next().await {
@@ -753,5 +1456,524 @@ mod tests {
             &ProviderError::NetworkError("connection refused".into()),
             &config
         ));
+    }
+
+    // --- Request window and native transport (r3-finding-1). The CLI
+    // fallback sent a ~55k-token request to `qwen2.5:7b` over `/v1` with
+    // `num_ctx: 32768`; Ollama ignored the num_ctx, served it in 4096 tokens
+    // and printed `truncating input prompt limit=2050 prompt=55631`, while
+    // the turn "succeeded". These pin the fix: a bigger window goes native
+    // where it is honoured, and whatever still does not fit is refused.
+
+    use crate::conversation::message::MessageContent;
+    use crate::providers::base::ProviderUsage;
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// `/api/show`'s `parameters` for `qwen25-16k:latest` on this machine.
+    const QWEN25_16K_PARAMETERS: &str =
+        "num_ctx                        16384\ntemperature                    0";
+
+    /// `/api/show` for `qwen2.5:7b` on this machine: no `parameters`, trained
+    /// for 32768.
+    fn qwen25_7b_show() -> Value {
+        json!({ "model_info": { "qwen2.context_length": 32768 } })
+    }
+
+    fn served(tokens: usize, source: ServedWindowSource, trained: Option<usize>) -> ServedWindow {
+        ServedWindow {
+            tokens,
+            source,
+            trained,
+        }
+    }
+
+    fn provider_at(uri: String) -> OllamaProvider {
+        OllamaProvider {
+            api_client: ApiClient::with_timeout(uri, AuthMethod::NoAuth, Duration::from_secs(5))
+                .expect("api client"),
+            model: ModelConfig::new("qwen2.5:7b").unwrap(),
+            supports_streaming: true,
+            name: OLLAMA_PROVIDER_NAME.to_string(),
+            skip_canonical_filtering: false,
+            is_local_host: true,
+            served_windows: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_modelfile_num_ctx_is_the_served_window() {
+        let show = json!({
+            "parameters": QWEN25_16K_PARAMETERS,
+            "model_info": { "qwen2.context_length": 32768 }
+        });
+        assert_eq!(modelfile_num_ctx(&show), Some(16_384));
+        assert_eq!(
+            served_window_from_show(&show, "qwen25-16k:latest", 4096),
+            ShowWindow::Local(served(16_384, ServedWindowSource::Modelfile, Some(32_768)))
+        );
+    }
+
+    /// `qwen2.5:7b` has no `parameters` at all: over `/v1` the server default
+    /// serves it, NOT its trained 32768 and NOT the num_ctx the request carries.
+    #[test]
+    fn no_modelfile_num_ctx_means_the_server_default() {
+        let show = qwen25_7b_show();
+        assert_eq!(modelfile_num_ctx(&show), None);
+        assert_eq!(trained_context_length(&show), Some(32_768));
+        assert_eq!(
+            served_window_from_show(&show, "qwen2.5:7b", OLLAMA_SERVER_DEFAULT_NUM_CTX),
+            ShowWindow::Local(served(
+                4096,
+                ServedWindowSource::ServerDefault,
+                Some(32_768)
+            ))
+        );
+        // A parameter merely containing the text is not num_ctx.
+        let show = json!({ "parameters": "num_ctx_extra 99\ntemperature 0.7" });
+        assert_eq!(modelfile_num_ctx(&show), None);
+    }
+
+    /// A cloud model has no Modelfile num_ctx either, but Ollama proxies it to
+    /// ollama.com, which does not truncate at 4096. It must never be sized at
+    /// the local default and refused on that basis.
+    #[test]
+    fn an_ollama_cloud_model_is_never_sized_at_the_local_default() {
+        let cloud_show = json!({
+            "remote_host": "https://ollama.com:443",
+            "remote_model": "qwen3-coder:480b",
+            "model_info": {}
+        });
+        assert_eq!(
+            served_window_from_show(&cloud_show, "my-alias:latest", 4096),
+            ShowWindow::Remote
+        );
+        // The tag alone is enough, whatever /api/show says.
+        for model in [
+            "qwen3-coder:480b-cloud",
+            "gpt-oss:120b-cloud",
+            "deepseek-v3.1:671b-cloud",
+            "kimi-k2:cloud",
+        ] {
+            assert!(is_cloud_model_name(model), "{model}");
+            assert_eq!(
+                served_window_from_show(&json!({}), model, 4096),
+                ShowWindow::Remote,
+                "{model}"
+            );
+        }
+        for model in ["qwen2.5:7b", "qwen25-16k:latest", "cloudy:7b", "qwen3"] {
+            assert!(!is_cloud_model_name(model), "{model}");
+        }
+    }
+
+    #[test]
+    fn a_bigger_requested_window_goes_native_capped_at_the_trained_length() {
+        let qwen25_7b = served(4096, ServedWindowSource::ServerDefault, Some(32_768));
+        // The CLI fallback's backfilled 32768: native, where it is honoured.
+        assert_eq!(
+            request_window(qwen25_7b, Some(32_768)),
+            RequestWindow {
+                tokens: 32_768,
+                transport: OllamaTransport::Native,
+                served: qwen25_7b,
+            }
+        );
+        // Never more than the model was trained for.
+        assert_eq!(request_window(qwen25_7b, Some(131_072)).tokens, 32_768);
+        // Nothing asked: `/v1` at what it is served with, as before.
+        assert_eq!(
+            request_window(qwen25_7b, None),
+            RequestWindow {
+                tokens: 4096,
+                transport: OllamaTransport::OpenAiCompat,
+                served: qwen25_7b,
+            }
+        );
+        // The Modelfile already serves what is asked, or more: stay on `/v1`.
+        let qwen25_16k = served(16_384, ServedWindowSource::Modelfile, Some(32_768));
+        assert_eq!(
+            request_window(qwen25_16k, Some(16_384)).transport,
+            OllamaTransport::OpenAiCompat
+        );
+        let smaller = request_window(qwen25_16k, Some(8_192));
+        assert_eq!(smaller.transport, OllamaTransport::OpenAiCompat);
+        assert_eq!(smaller.tokens, 16_384);
+    }
+
+    /// No slack above the window: a prose prompt of 4,097 real tokens must
+    /// not pass a 4096 window to be cut.
+    #[test]
+    fn the_window_check_allows_nothing_over_the_window() {
+        assert!(exceeds_window(4_097, 4096));
+        assert!(!exceeds_window(4_096, 4096));
+        // counted_prompt_tokens=Some(62364) from the reported reservation line:
+        // not even qwen2.5:7b's trained 32768 holds the untrimmed request.
+        assert!(exceeds_window(62_364, 32_768));
+    }
+
+    #[test]
+    fn an_image_request_is_not_estimated_as_text() {
+        let with_image = json!({ "messages": [{ "role": "user", "content": [
+            { "type": "text", "text": "what is this" },
+            { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } }
+        ]}]});
+        assert!(payload_carries_images(&with_image));
+        let text_only = json!({ "messages": [{ "role": "user", "content": "hi" }] });
+        assert!(!payload_carries_images(&text_only));
+    }
+
+    #[test]
+    fn the_refusal_reads_like_a_llama_server_overflow() {
+        let err = served_window_refusal(
+            "qwen2.5:7b",
+            62_364,
+            request_window(
+                served(4096, ServedWindowSource::ServerDefault, Some(32_768)),
+                Some(32_768),
+            ),
+        );
+        assert!(err.is_permanent());
+        let text = err.to_string();
+        assert!(
+            text.starts_with(crate::providers::errors::CONTEXT_LENGTH_EXCEEDED_MARKER),
+            "{text}"
+        );
+        assert_eq!(
+            crate::providers::errors::extract_context_length_token_counts(&text),
+            Some((62_364, 32_768)),
+            "{text}"
+        );
+        assert!(text.contains("qwen2.5:7b"), "{text}");
+    }
+
+    /// The `/api/chat` body carries the window in `options.num_ctx` (the
+    /// field `/v1` drops) and the conversation in the native shape.
+    #[test]
+    fn a_native_request_carries_num_ctx_and_the_history_in_native_shape() {
+        let payload = json!({
+            "model": "qwen2.5:7b",
+            "messages": [
+                { "role": "system", "content": "You are Henry." },
+                { "role": "user", "content": [
+                    { "type": "text", "text": "what is this" },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,QUJD" } }
+                ]},
+                { "role": "assistant", "content": null, "reasoning_content": "look first",
+                  "tool_calls": [{ "id": "call_1", "type": "function",
+                    "function": { "name": "developer__shell", "arguments": "{\"command\":\"ls\"}" } }] },
+                { "role": "tool", "content": "Cargo.toml", "tool_call_id": "call_1" }
+            ],
+            "tools": [{ "type": "function", "function": { "name": "developer__shell",
+                "description": "run", "parameters": { "type": "object", "properties": {} } } }],
+            "temperature": 0.2,
+            "stream": true,
+            "stream_options": { "include_usage": true },
+            "options": { "num_predict": 4096, "num_ctx": 32768 }
+        });
+        let body = native_chat_request(&payload, 32_768);
+        assert_eq!(body["model"], "qwen2.5:7b");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["options"]["num_ctx"], 32_768);
+        assert_eq!(body["options"]["num_predict"], 4096);
+        assert_eq!(body["options"]["temperature"], 0.2);
+        assert!(body.get("stream_options").is_none());
+        assert_eq!(body["tools"], payload["tools"]);
+
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(
+            messages[0],
+            json!({ "role": "system", "content": "You are Henry." })
+        );
+        assert_eq!(messages[1]["content"], "what is this");
+        assert_eq!(messages[1]["images"], json!(["QUJD"]));
+        assert_eq!(messages[2]["content"], "");
+        assert_eq!(messages[2]["thinking"], "look first");
+        assert_eq!(
+            messages[2]["tool_calls"],
+            json!([{ "id": "call_1", "function": {
+                "name": "developer__shell", "arguments": { "command": "ls" } } }])
+        );
+        assert_eq!(messages[3]["role"], "tool");
+        assert_eq!(messages[3]["content"], "Cargo.toml");
+        assert_eq!(messages[3]["tool_name"], "developer__shell");
+        assert_eq!(messages[3]["tool_call_id"], "call_1");
+
+        // `developer` is a system message to /api/chat.
+        let reasoning = json!({ "model": "m", "reasoning_effort": "none",
+            "messages": [{ "role": "developer", "content": "rules" }] });
+        let body = native_chat_request(&reasoning, 8192);
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["think"], false);
+    }
+
+    async fn collect_native(lines: &[&str]) -> Vec<(Option<Message>, Option<ProviderUsage>)> {
+        let owned: Vec<anyhow::Result<String>> =
+            lines.iter().map(|line| Ok(line.to_string())).collect();
+        let native: LineStream = Box::pin(tokio_stream::iter(owned));
+        let parsed = response_to_streaming_message_ollama(native_lines_to_openai_sse(native));
+        pin!(parsed);
+        let mut out = Vec::new();
+        while let Some(item) = parsed.next().await {
+            out.push(item.expect("stream item"));
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn a_native_text_stream_reads_as_text_and_usage() {
+        let items = collect_native(&[
+            r#"{"model":"qwen2.5:7b","message":{"role":"assistant","content":"o"},"done":false}"#,
+            r#"{"model":"qwen2.5:7b","message":{"role":"assistant","content":"k"},"done":false}"#,
+            r#"{"model":"qwen2.5:7b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":15000,"eval_count":2}"#,
+        ])
+        .await;
+        let text: String = items
+            .iter()
+            .filter_map(|(message, _)| message.as_ref().map(|m| m.as_concat_text()))
+            .collect();
+        assert_eq!(text, "ok");
+        let usage = items
+            .iter()
+            .find_map(|(_, usage)| usage.clone())
+            .expect("usage reported");
+        assert_eq!(usage.usage.input_tokens, Some(15_000));
+        assert_eq!(usage.usage.output_tokens, Some(2));
+        assert_eq!(usage.model, "qwen2.5:7b");
+    }
+
+    #[tokio::test]
+    async fn a_native_tool_call_reads_as_a_tool_request() {
+        let items = collect_native(&[
+            r#"{"model":"qwen2.5:7b","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"developer__shell","arguments":{"command":"ls"}}}]},"done":false}"#,
+            r#"{"model":"qwen2.5:7b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":900,"eval_count":20}"#,
+        ])
+        .await;
+        let requests: Vec<_> = items
+            .iter()
+            .filter_map(|(message, _)| message.as_ref())
+            .flat_map(|message| message.content.iter())
+            .filter_map(|content| match content {
+                MessageContent::ToolRequest(request) => request.tool_call.as_ref().ok(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requests.len(), 1, "{} stream items", items.len());
+        assert_eq!(requests[0].name, "developer__shell");
+        assert_eq!(
+            requests[0]
+                .arguments
+                .as_ref()
+                .and_then(|a| a.get("command")),
+            Some(&json!("ls"))
+        );
+    }
+
+    #[test]
+    fn a_native_error_line_is_an_error() {
+        let mut translator = NativeStreamTranslator::default();
+        let err = translator
+            .translate(r#"{"error":"model requires more system memory"}"#)
+            .unwrap_err();
+        assert!(err.to_string().contains("more system memory"), "{err}");
+    }
+
+    /// The reported case end to end through `stream`: `qwen2.5:7b` (no
+    /// Modelfile num_ctx) with the CLI fallback's 32768 window and a prompt far
+    /// over Ollama's 4096 default. Before this fix it went to `/v1`, where the
+    /// 32768 was dropped and the prompt cut. Now it goes to `/api/chat` with
+    /// `num_ctx: 32768`, and `/v1` is never called.
+    #[tokio::test]
+    async fn stream_sends_a_bigger_window_to_api_chat_where_num_ctx_is_honoured() {
+        let _guard = env_lock::lock_env([
+            ("GOOSE_INPUT_LIMIT", None::<&str>),
+            ("GOOSE_CONTEXT_LIMIT", None::<&str>),
+            ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .and(body_string_contains("qwen2.5:7b"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(qwen25_7b_show()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_string_contains("\"num_ctx\":32768"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/x-ndjson")
+                    .set_body_string(concat!(
+                        r#"{"model":"qwen2.5:7b","message":{"role":"assistant","content":"ok"},"done":false}"#,
+                        "\n",
+                        r#"{"model":"qwen2.5:7b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":15000,"eval_count":1}"#,
+                        "\n"
+                    )),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let provider = provider_at(server.uri());
+        let model_config = ModelConfig::new("qwen2.5:7b")
+            .unwrap()
+            .with_context_limit(Some(32_768));
+        // ~15k tokens: over 4096, inside 32768.
+        let system = "Henry tool inventory line. ".repeat(3_000);
+        let messages = vec![Message::user().with_text("Reply with the single word: ok")];
+        let mut stream = provider
+            .stream(&model_config, "", &system, &messages, &[])
+            .await
+            .expect("a request inside the native window is sent");
+        let mut text = String::new();
+        while let Some(item) = stream.next().await {
+            let (message, _usage) = item.expect("stream item");
+            if let Some(message) = message {
+                text.push_str(&message.as_concat_text());
+            }
+        }
+        assert_eq!(text, "ok");
+        // `expect(1)` / `expect(0)` are verified when `server` drops.
+    }
+
+    /// Nothing larger configured: `/v1` at the served 4096, and a request
+    /// over it is refused BEFORE it is posted, so Ollama never cuts it.
+    #[tokio::test]
+    async fn stream_refuses_a_request_ollama_would_truncate_without_sending_it() {
+        let _guard = env_lock::lock_env([
+            ("GOOSE_INPUT_LIMIT", None::<&str>),
+            ("GOOSE_CONTEXT_LIMIT", None::<&str>),
+            ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(qwen25_7b_show()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for endpoint in ["/v1/chat/completions", "/api/chat"] {
+            Mock::given(method("POST"))
+                .and(path(endpoint))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+        }
+
+        let provider = provider_at(server.uri());
+        let model_config = ModelConfig::new("qwen2.5:7b").unwrap();
+        let system = "Henry tool inventory line. ".repeat(3_000);
+        let messages = vec![Message::user().with_text("Reply with the single word: ok")];
+        match provider
+            .stream(&model_config, "", &system, &messages, &[])
+            .await
+        {
+            Err(ProviderError::ContextLengthExceeded(detail)) => {
+                assert!(detail.contains("\"n_ctx\": 4096"), "{detail}");
+            }
+            Err(other) => panic!("expected ContextLengthExceeded, got {other:?}"),
+            Ok(_) => panic!("a request over the served window must not be sent"),
+        }
+    }
+
+    /// A cloud model is neither sized at 4096 nor refused: it goes to `/v1`
+    /// as it always did, without even asking `/api/show`.
+    #[tokio::test]
+    async fn stream_leaves_an_ollama_cloud_model_alone() {
+        let _guard = env_lock::lock_env([
+            ("GOOSE_INPUT_LIMIT", None::<&str>),
+            ("GOOSE_CONTEXT_LIMIT", None::<&str>),
+            ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string("data: [DONE]\n\n"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = provider_at(server.uri());
+        let model_config = ModelConfig::new("qwen3-coder:480b-cloud").unwrap();
+        let system = "Henry tool inventory line. ".repeat(3_000);
+        let messages = vec![Message::user().with_text("hi")];
+        let mut stream = provider
+            .stream(&model_config, "", &system, &messages, &[])
+            .await
+            .expect("a cloud request is sent, not refused");
+        while let Some(item) = stream.next().await {
+            item.expect("stream item");
+        }
+    }
+
+    /// The window is looked up once per model, not once per call.
+    #[tokio::test]
+    async fn the_window_is_looked_up_once_per_model() {
+        let _guard = env_lock::lock_env([
+            ("GOOSE_INPUT_LIMIT", None::<&str>),
+            ("GOOSE_CONTEXT_LIMIT", None::<&str>),
+            ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "parameters": QWEN25_16K_PARAMETERS })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = provider_at(server.uri());
+        let model_config = ModelConfig::new("qwen25-16k:latest").unwrap();
+        for _ in 0..2 {
+            let window = provider
+                .request_window(&model_config)
+                .await
+                .expect("window known");
+            assert_eq!(window.tokens, 16_384);
+            assert_eq!(window.transport, OllamaTransport::OpenAiCompat);
+        }
+    }
+
+    /// When Ollama cannot be asked, nothing is known: stand aside rather than
+    /// refuse on a guess.
+    #[tokio::test]
+    async fn an_unreadable_show_does_not_block_the_request() {
+        let _guard = env_lock::lock_env([
+            ("GOOSE_INPUT_LIMIT", None::<&str>),
+            ("GOOSE_CONTEXT_LIMIT", None::<&str>),
+            ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let provider = provider_at(server.uri());
+        assert!(provider.served_context_window("qwen2.5:7b").await.is_none());
+        assert!(provider
+            .request_window(&ModelConfig::new("qwen2.5:7b").unwrap())
+            .await
+            .is_none());
     }
 }

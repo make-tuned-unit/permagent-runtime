@@ -668,10 +668,25 @@ fn startup_failover(
     fallback: Option<&permagent::cost_router::role_map::RoleModel>,
 ) -> Option<(ResolvedProviderConfig, String)> {
     let target = fallback?;
-    let model_config = permagent::model::ModelConfig::new(&target.model)
+    let mc = permagent::model::ModelConfig::new(&target.model)
         .ok()?
         .with_canonical_limits(&target.provider)
         .with_temperature(resolved.model_config.temperature);
+    // An Ollama stand-in has no canonical row, so backfill the knowledge
+    // row's window. Same rule as the mid-turn path
+    // (`Agent::switch_to_permanent_failure_fallback`). It becomes the
+    // request's `num_ctx`, which Ollama's OpenAI-compatible endpoint drops
+    // (the 2026-09-19 run sent 32768 and Ollama served 4096); the provider
+    // now sends such a request to `/api/chat`, where it is honoured, and
+    // `fit_extensions_to_local_window` fits the session to it.
+    let model_config = if mc.context_limit.is_none() {
+        mc.with_context_limit(permagent::cost_router::fallback::local_context_limit(
+            &target.provider,
+            &target.model,
+        ))
+    } else {
+        mc
+    };
     let notice = permagent::cost_router::fallback::precommit_failover_reply(
         &resolved.provider_name,
         &permagent::providers::errors::ProviderError::NetworkError(String::new()),
@@ -733,17 +748,27 @@ async fn failover_if_endpoint_is_dead(
         return (resolved, None);
     }
 
-    match startup_failover(
-        &resolved,
-        permagent::cost_router::fallback::permanent_failure_fallback(&resolved.provider_name)
-            .as_ref(),
-    ) {
+    // Probe-aware selection, not the configured order alone. The split's port
+    // being closed is exactly why we are here; the sync, unprobed selector
+    // would skip the split as the failed provider, see Ollama as "unknown",
+    // and land the session on the metered REVIEW model (zai/glm-5.2) while
+    // Ollama sat up on :11434 — the user's "assign basic tasks to qwen or
+    // MiniCPM" never reached a local model.
+    let fallback = permagent::cost_router::fallback::permanent_failure_fallback_available(
+        &resolved.provider_name,
+    )
+    .await
+    .map(|choice| choice.target);
+    match startup_failover(&resolved, fallback.as_ref()) {
         Some((switched, notice)) => {
             tracing::warn!(
                 target: "permagent::cost_router",
                 from_provider = %resolved.provider_name,
                 to_provider = %switched.provider_name,
                 to_model = %switched.model_name,
+                // The window an Ollama stand-in's `num_ctx` is sized from. The
+                // 2026-09-19 QA run could not confirm it: no line carried it.
+                context_limit = ?switched.model_config.context_limit,
                 probe_url = %url,
                 "startup probe found the endpoint dead; switched before the first turn"
             );
@@ -901,12 +926,15 @@ async fn handle_resumed_session_workdir(agent: &Agent, session_id: &str, interac
     }
 }
 
+/// The extensions this session will load, plus the keys of the ones someone
+/// asked for by name — the recipe's own list and the CLI flags — which a
+/// local-window trim (`fit_extensions_to_local_window`) must never drop.
 async fn collect_extension_configs(
     agent: &Agent,
     session_config: &SessionBuilderConfig,
     recipe: Option<&Recipe>,
     session_id: &str,
-) -> Result<Vec<ExtensionConfig>, ExtensionError> {
+) -> Result<(Vec<ExtensionConfig>, BTreeSet<String>), ExtensionError> {
     let configured_extensions: Vec<ExtensionConfig> = if session_config.resume {
         EnabledExtensionsState::for_session(
             &agent.config.session_manager,
@@ -932,10 +960,248 @@ async fn collect_extension_configs(
         &session_config.builtins,
     );
 
+    let mut explicit: BTreeSet<String> = recipe
+        .and_then(|r| r.extensions.as_deref())
+        .unwrap_or_default()
+        .iter()
+        .map(|cfg| permagent::config::name_to_key(&cfg.name()))
+        .collect();
+    explicit.extend(
+        cli_flag_extensions
+            .iter()
+            .map(|(_, cfg)| permagent::config::name_to_key(&cfg.name())),
+    );
+
     let mut all: Vec<ExtensionConfig> = configured_extensions;
     all.extend(cli_flag_extensions.into_iter().map(|(_, cfg)| cfg));
 
-    Ok(all)
+    Ok((all, explicit))
+}
+
+/// What a local-window trim keeps from the profile's default set: the file
+/// and shell tools, about 1k tokens of schema. Everything a recipe or a CLI
+/// flag named is kept as well.
+const LOCAL_WINDOW_CORE_EXTENSIONS: &[&str] = &["developer"];
+
+/// How much of a local window the system prompt and tool schemas may take:
+/// three quarters. The last quarter has to carry the conversation and the
+/// reply.
+fn local_request_budget(window: usize) -> usize {
+    window - window / 4
+}
+
+/// The system prompt and tool schemas a session sends on every turn, in o200k
+/// tokens (the provider's own preflight counts the same way).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LocalRequestSize {
+    system: usize,
+    tools: usize,
+}
+
+impl LocalRequestSize {
+    fn total(&self) -> usize {
+        self.system.saturating_add(self.tools)
+    }
+}
+
+/// The loaded extensions a trim removes: everything not in `keep` (keys as
+/// `name_to_key` spells them).
+fn extensions_to_shed(loaded: &[String], keep: &BTreeSet<String>) -> Vec<String> {
+    loaded
+        .iter()
+        .filter(|name| !keep.contains(&permagent::config::name_to_key(name)))
+        .cloned()
+        .collect()
+}
+
+/// Measure what this session will send on its first turn: the tool schemas
+/// as loaded, and the system prompt rendered the way the agent renders it for
+/// a CLI session (these extensions' instructions, the inventory scoped to
+/// them, project hints, saved skills, the model family's overlay).
+///
+/// A lower bound, not the exact prompt: the agent adds the live-status block
+/// (briefings, worker probes) and a one-line model identity at turn time.
+/// That part cannot be rendered here without its side effects (reading the
+/// briefings acknowledges them), so it is left out; the provider's preflight
+/// measures the real request and refuses what does not fit.
+async fn measure_local_request(
+    agent: &Agent,
+    session_id: &str,
+    provider_name: &str,
+    model_name: &str,
+) -> Option<LocalRequestSize> {
+    let tools = agent.list_tools(session_id, None).await;
+    let tools_json = serde_json::to_string(&tools).ok()?;
+    let working_dir = std::env::current_dir().ok()?;
+    let extensions_info = agent
+        .extension_manager
+        .get_extensions_info(&working_dir)
+        .await;
+    let saved_skills = match agent.config.session_manager.pool_clone().await {
+        Ok(pool) => permagent::skills::build_skills_prompt(&pool)
+            .await
+            .ok()
+            .flatten(),
+        Err(_) => None,
+    };
+    let counter = permagent::token_counter::create_token_counter()
+        .await
+        .ok()?;
+    let provider_name = provider_name.to_string();
+    let model_name = model_name.to_string();
+    // Rendering and counting a 100KB prompt is CPU work; keep it off the
+    // runtime.
+    tokio::task::spawn_blocking(move || {
+        let declared: Vec<String> = extensions_info.iter().map(|e| e.name.clone()).collect();
+        let mut manager = permagent::agents::prompt_manager::PromptManager::new();
+        if let Some(skills) = saved_skills {
+            manager.add_system_prompt_extra("saved_skills".to_string(), skills);
+        }
+        let system = manager
+            .builder()
+            .with_extensions(extensions_info.into_iter())
+            .with_declared_extensions(Some(declared))
+            .with_hints(&working_dir)
+            .with_model_family_from(&provider_name, &model_name)
+            .build();
+        LocalRequestSize {
+            system: counter.count_tokens(&system),
+            tools: counter.count_tokens(&tools_json),
+        }
+    })
+    .await
+    .ok()
+}
+
+/// The sentence the user reads when a session does not comfortably fit its
+/// local window, worded by what the measurement after any trim found.
+fn local_window_trim_notice(
+    model: &str,
+    window: usize,
+    before: LocalRequestSize,
+    after: LocalRequestSize,
+    kept: &[String],
+    shed: &[String],
+) -> String {
+    let mut notice = format!(
+        "ollama/{model} runs in a {window}-token window, and this session's system prompt \
+         and tools came to about {} tokens",
+        before.total()
+    );
+    if shed.is_empty() {
+        notice.push_str(". Every loaded extension was asked for by name, so none was dropped");
+    } else {
+        let loads = if kept.is_empty() {
+            "no extensions".to_string()
+        } else {
+            format!("only {}", kept.join(", "))
+        };
+        notice.push_str(&format!(
+            ", so it now loads {loads} (dropped: {})",
+            shed.join(", ")
+        ));
+    }
+    let breakdown = format!(
+        "about {} tokens (system prompt {}, tools {})",
+        after.total(),
+        after.system,
+        after.tools
+    );
+    if after.total() > window {
+        notice.push_str(&format!(
+            ". They are still at least {breakdown}, more than the whole window, so every \
+             turn will be refused rather than silently cut. Use a model with a larger window."
+        ));
+    } else if after.total() > local_request_budget(window) {
+        notice.push_str(&format!(
+            ". They are still at least {breakdown}, which leaves little of the window for \
+             the conversation and the reply; once it fills, turns will be refused rather \
+             than silently cut. A model with a larger window would do better."
+        ));
+    } else {
+        notice.push_str(&format!(
+            ". That brings them to {breakdown}, which leaves room for the conversation."
+        ));
+    }
+    notice
+}
+
+/// Fit a new session's extensions to the window a local Ollama model will
+/// really run it in.
+///
+/// Why: `permagent run` fell back to `ollama/qwen2.5:7b` and sent it every
+/// profile extension — 156 tool schemas and a 101KB system prompt, 62,364
+/// tokens by the reservation's count (cli log 20260919_030958) — and Ollama
+/// kept the last 2,050 of them. The provider now honours the fallback's
+/// 32768 window (see `permagent::providers::ollama::request_window`), but
+/// that request does not fit 32768 either. Most of it is extensions the turn
+/// never needed, so shed them here, before the first turn, measuring the
+/// system prompt and the tools together (the system prompt is the larger
+/// part), and say what the result is. The provider's preflight refuses
+/// whatever still does not fit.
+///
+/// Returns the notice when the session did not fit the budget.
+async fn fit_extensions_to_local_window(
+    agent: &Agent,
+    session_id: &str,
+    provider_name: &str,
+    model_config: &permagent::model::ModelConfig,
+    explicit: &BTreeSet<String>,
+) -> Option<String> {
+    if provider_name != "ollama" {
+        return None;
+    }
+    let window = permagent::providers::ollama::request_window_for_model_config(model_config)
+        .await?
+        .tokens;
+    let model_name = model_config.model_name.as_str();
+    let before = measure_local_request(agent, session_id, provider_name, model_name).await?;
+    if before.total() <= local_request_budget(window) {
+        return None;
+    }
+
+    let mut keep = explicit.clone();
+    keep.extend(
+        LOCAL_WINDOW_CORE_EXTENSIONS
+            .iter()
+            .map(|name| permagent::config::name_to_key(name)),
+    );
+    let loaded = agent.list_extensions().await;
+    let shed = extensions_to_shed(&loaded, &keep);
+    for name in &shed {
+        if let Err(error) = agent.remove_extension(name, session_id).await {
+            tracing::warn!(
+                extension = %name,
+                %error,
+                "could not drop extension to fit the local window"
+            );
+        }
+    }
+    let after = if shed.is_empty() {
+        before
+    } else {
+        measure_local_request(agent, session_id, provider_name, model_name)
+            .await
+            .unwrap_or(before)
+    };
+    let mut kept: Vec<String> = agent.list_extensions().await;
+    kept.sort();
+    tracing::warn!(
+        target: "permagent::cost_router",
+        provider = provider_name,
+        model = model_name,
+        window,
+        system_tokens_before = before.system,
+        tool_tokens_before = before.tools,
+        system_tokens_after = after.system,
+        tool_tokens_after = after.tools,
+        fits_window = after.total() <= window,
+        shed = %shed.join(","),
+        "fitted extensions to the local model's window"
+    );
+    Some(local_window_trim_notice(
+        model_name, window, before, after, &kept, &shed,
+    ))
 }
 
 async fn resolve_and_load_extensions(
@@ -1280,9 +1546,9 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         handle_resumed_session_workdir(&agent, &session_id, session_config.interactive).await;
     }
 
-    let extensions_for_provider =
+    let (extensions_for_provider, explicit_extensions) =
         match collect_extension_configs(&agent, &session_config, recipe, &session_id).await {
-            Ok(exts) => exts,
+            Ok(collected) => collected,
             Err(e) => {
                 output::render_error(&format!("Failed to collect extensions: {}", e));
                 process::exit(1);
@@ -1418,6 +1684,32 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         &session_id,
     )
     .await;
+
+    // A new session only: trimming persists the smaller set, and a resumed
+    // session's extensions are the user's saved choice. There the provider's
+    // preflight refusal is the guard.
+    if !session_config.resume {
+        if let Some(notice) = fit_extensions_to_local_window(
+            &agent_ptr,
+            &session_id,
+            &resolved.provider_name,
+            &provider_for_debug.get_model_config(),
+            &explicit_extensions,
+        )
+        .await
+        {
+            if let Some(notice) = deliver_failover_notice(notice, session_config.interactive) {
+                let message = permagent::conversation::message::Message::assistant()
+                    .with_system_notification(
+                        permagent::conversation::message::SystemNotificationType::InlineMessage,
+                        notice,
+                    );
+                if let Err(e) = session_manager.add_message(&session_id, &message).await {
+                    tracing::warn!("Failed to journal the local-window trim notice: {e}");
+                }
+            }
+        }
+    }
 
     // Harness loop, Lane R18f (A17 analysis Class 4, HARNESS_LOOP_LOG.md): a
     // DeepSeek coding-harness round's first `decompose_roadmap` call came
@@ -1786,6 +2078,167 @@ mod tests {
         );
         assert!(notice.contains("qwen38_split"), "{notice}");
         assert!(notice.contains("anthropic/claude-haiku-4-5"), "{notice}");
+    }
+
+    /// The startup path can now land on an Ollama stand-in. That model has no
+    /// canonical limits, so the ModelConfig carries the knowledge row's window.
+    /// The Ollama provider turns it into a native `/api/chat` request's
+    /// `num_ctx` (`/v1` would drop it), and `fit_extensions_to_local_window`
+    /// sizes the session to it.
+    #[test]
+    fn an_ollama_startup_fallback_carries_its_local_context_window() {
+        let target = permagent::cost_router::role_map::RoleModel {
+            provider: "ollama".to_string(),
+            model: "qwen2.5:7b".to_string(),
+        };
+        let expected =
+            permagent::cost_router::fallback::local_context_limit("ollama", "qwen2.5:7b");
+        assert!(
+            expected.is_some(),
+            "qwen2.5:7b must have a local knowledge row"
+        );
+        let (switched, _notice) =
+            startup_failover(&dead_split(), Some(&target)).expect("a configured fallback applies");
+        assert_eq!(switched.provider_name, "ollama");
+        // The invariant is "the fallback carries a window", not a specific
+        // source for it: a canonical or config-supplied limit would also do.
+        assert!(
+            switched.model_config.context_limit.is_some(),
+            "an Ollama fallback reached at startup must carry a context window"
+        );
+    }
+
+    // ── fitting a local Ollama window (r3-finding-1) ─────────────────────
+    // `permagent run` fell back to ollama/qwen2.5:7b with every profile
+    // extension: 156 tools and a 101KB system prompt, 62,364 counted prompt
+    // tokens, cut by Ollama to its last 2,050.
+
+    fn keys(names: &[&str]) -> BTreeSet<String> {
+        names
+            .iter()
+            .map(|n| permagent::config::name_to_key(n))
+            .collect()
+    }
+
+    fn keys_in_order(names: &[&str]) -> Vec<String> {
+        names
+            .iter()
+            .map(|n| permagent::config::name_to_key(n))
+            .collect()
+    }
+
+    fn size(system: usize, tools: usize) -> LocalRequestSize {
+        LocalRequestSize { system, tools }
+    }
+
+    /// The budget is the system prompt AND the tools against the window,
+    /// with a quarter left for the conversation and the reply.
+    #[test]
+    fn the_budget_counts_the_system_prompt_with_the_tools() {
+        assert_eq!(local_request_budget(4096), 3072);
+        assert_eq!(local_request_budget(32_768), 24_576);
+        // The reported request: over any window qwen2.5:7b has.
+        assert!(size(22_000, 40_364).total() > local_request_budget(32_768));
+        // Tools alone small, but the static system prompt (~20k tokens for
+        // the `basic` snapshot) is what breaks a 4096 window.
+        assert!(size(20_000, 1_000).total() > local_request_budget(4096));
+        assert!(size(15_000, 1_000).total() <= local_request_budget(32_768));
+    }
+
+    #[test]
+    fn a_trim_keeps_the_core_and_everything_named_explicitly() {
+        // Loaded names are keyed exactly as ExtensionManager keys them, with
+        // name_to_key(config.name()): "My Recipe Tool" loads as
+        // "myrecipetool" (whitespace is dropped, not turned into '_').
+        let loaded: Vec<String> = keys_in_order(&[
+            "developer",
+            "orchestrator",
+            "librarian",
+            "skills",
+            "finance",
+            "My Recipe Tool",
+        ]);
+        assert_eq!(loaded.last().map(String::as_str), Some("myrecipetool"));
+        let mut keep = keys(LOCAL_WINDOW_CORE_EXTENSIONS);
+        // A recipe or CLI flag named this one, spelled as its config name.
+        keep.extend(keys(&["My Recipe Tool"]));
+        let shed = extensions_to_shed(&loaded, &keep);
+        assert_eq!(shed, vec!["orchestrator", "librarian", "skills", "finance"]);
+    }
+
+    #[test]
+    fn nothing_is_shed_when_every_loaded_extension_was_asked_for() {
+        let loaded = vec!["developer".to_string(), "orchestrator".to_string()];
+        let keep = keys(&["developer", "orchestrator"]);
+        assert!(extensions_to_shed(&loaded, &keep).is_empty());
+    }
+
+    /// The trimmed session fits: say what was dropped and what it now takes,
+    /// and do not threaten a refusal.
+    #[test]
+    fn a_trim_that_fits_says_so() {
+        let notice = local_window_trim_notice(
+            "qwen2.5:7b",
+            32_768,
+            size(22_000, 40_000),
+            size(15_000, 1_000),
+            &["developer".to_string()],
+            &["orchestrator".to_string(), "skills".to_string()],
+        );
+        assert!(notice.contains("ollama/qwen2.5:7b"), "{notice}");
+        assert!(notice.contains("32768-token window"), "{notice}");
+        assert!(notice.contains("about 62000 tokens"), "{notice}");
+        assert!(notice.contains("only developer"), "{notice}");
+        assert!(notice.contains("orchestrator, skills"), "{notice}");
+        assert!(notice.contains("about 16000 tokens"), "{notice}");
+        assert!(!notice.contains("refused"), "{notice}");
+    }
+
+    /// The case the old notice got wrong: the TOOLS fit after the trim, but
+    /// the system prompt alone is bigger than the window. The notice must
+    /// say turns will be refused, not just "loads only developer".
+    #[test]
+    fn a_trim_that_cannot_fit_the_system_prompt_says_turns_will_be_refused() {
+        let notice = local_window_trim_notice(
+            "qwen2.5:7b",
+            4096,
+            size(22_000, 40_000),
+            size(15_000, 1_000),
+            &["developer".to_string()],
+            &["orchestrator".to_string()],
+        );
+        assert!(notice.contains("only developer"), "{notice}");
+        assert!(
+            notice.contains("system prompt 15000, tools 1000"),
+            "{notice}"
+        );
+        assert!(notice.contains("every turn will be refused"), "{notice}");
+        assert!(notice.contains("larger window"), "{notice}");
+
+        // Inside the window but past the budget: warn, do not promise a refusal
+        // on the first turn.
+        let notice = local_window_trim_notice(
+            "qwen25-16k:latest",
+            16_384,
+            size(20_000, 30_000),
+            size(13_000, 1_000),
+            &["developer".to_string()],
+            &["orchestrator".to_string()],
+        );
+        assert!(notice.contains("leaves little of the window"), "{notice}");
+        assert!(!notice.contains("every turn will be refused"), "{notice}");
+
+        // Nothing could be dropped at all: still say what will happen.
+        let notice = local_window_trim_notice(
+            "qwen2.5:7b",
+            4096,
+            size(15_000, 1_000),
+            size(15_000, 1_000),
+            &["developer".to_string()],
+            &[],
+        );
+        assert!(notice.contains("none was dropped"), "{notice}");
+        assert!(notice.contains("every turn will be refused"), "{notice}");
     }
 
     /// No fallback configured is not a licence to pretend: stay put, and let
