@@ -19,18 +19,26 @@
 import { shell } from '../styles/tokens';
 
 /**
- * Whether the native window is opaque. It is, deliberately and measurably:
- * `transparent: true` is the prerequisite for vibrancy / `NSVisualEffectView`,
- * and A1a measured it at ~+6 points of whole-GPU utilisation at idle on a
- * static page on this M4 (0.12% -> 6.1-6.3%, WindowServer +2.3pts) because
- * macOS alpha-composites the entire window every frame (tauri#15471). For an
- * always-on desktop agent that is a product decision, not a styling tweak.
+ * Whether the MAIN native window is opaque. It is not: since 2026-09-19 it is
+ * `transparent: true` with macOS's `sidebar` material behind the web layer
+ * (tauri.conf.json `windowEffects`), so the sidebar rail is real glass over the
+ * desktop. That reverses the A1a default on purpose. A1a measured the
+ * transparent window at ~+6 points of whole-GPU utilisation at idle on this M4
+ * (0.12% -> 6.1-6.3%, WindowServer +2.3pts, tauri#15471), and the user took
+ * that cost after "There is no liquid glass anywhere".
  *
- * This is a named constant rather than an inline assumption so the calls that
- * depend on it — `setBackgroundColor` in App.tsx, most of all — are greppable
- * the day someone decides to reverse it with their own measurement.
+ * What depends on it: App.tsx stops painting the NSWindow fill and moves the
+ * shell gradient off the window onto the content column, the page backgrounds
+ * clear (`native-vibrancy` on <html>), and the Sidebar thins its fill to
+ * `RAIL_FILL_OVER_VIBRANCY` so the material is not buried. The content column
+ * stays opaque (glass on the control layer only, never under content).
+ * Runtime windows (chat, detached panes) are opaque and never read this.
  */
-export const NATIVE_WINDOW_IS_OPAQUE = true;
+export const NATIVE_WINDOW_IS_OPAQUE = false;
+
+/** Set on <html> in the main window while it is transparent; index.css clears
+ *  the page backgrounds under it. */
+export const NATIVE_VIBRANCY_CLASS = 'native-vibrancy';
 
 /**
  * Window options that give a runtime-created window the same titlebar as the

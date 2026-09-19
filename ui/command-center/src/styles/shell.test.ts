@@ -26,6 +26,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { shell, trafficLightSpan } from './tokens';
+import { NATIVE_WINDOW_IS_OPAQUE } from '../lib/windowChrome';
 
 const CONF = fileURLToPath(new URL('../../../desktop/src-tauri/tauri.conf.json', import.meta.url));
 const CHROME_RS = fileURLToPath(new URL('../../../desktop/src-tauri/src/chrome.rs', import.meta.url));
@@ -87,8 +88,11 @@ describe('shell geometry agrees with the native window', () => {
     // `decorations: false` would forfeit the free macOS corner radius and the
     // native drop shadow, which is the whole reason to stay decorated.
     expect(main.decorations).toBe(true);
-    // No transparency: measured at ~+6 points of whole-GPU utilisation at idle.
-    expect(main.transparent ?? false).toBe(false);
+    // Transparent over the native sidebar material, and the web side agrees
+    // (windowChrome.ts). The +6pt idle GPU cost was accepted 2026-09-19.
+    expect(main.transparent).toBe(true);
+    expect(main.windowEffects?.effects).toEqual(['sidebar']);
+    expect(NATIVE_WINDOW_IS_OPAQUE).toBe(false);
   });
 
   it('puts the traffic lights where the CSS reserves room for them', () => {

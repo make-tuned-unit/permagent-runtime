@@ -43,6 +43,15 @@ body {
   background: rgb(var(--tw-dark-bg, 11 18 32));
 }
 
+/* Main window over the native sidebar material (lib/windowChrome.ts): the page
+   must not paint, or the rail's glass is just this colour. The content column
+   paints its own opaque gradient (App.tsx). */
+html.native-vibrancy,
+html.native-vibrancy body,
+html.native-vibrancy #root {
+  background: transparent;
+}
+
 /* Scrollbar styling — colors synced by _syncCssVars per theme */
 ::-webkit-scrollbar {
   width: 6px;

@@ -28,7 +28,7 @@ import { useAppNavigate } from './hooks/useAppNavigate';
 import { getOpenOnLaunch } from './lib/openOnLaunch';
 import { useVersionSkew } from './hooks/useVersionSkew';
 import { onRepaintRegain, forceCompositorRepaint } from './lib/repaintOnRegain';
-import { NATIVE_WINDOW_IS_OPAQUE, TITLEBAR_HEIGHT } from './lib/windowChrome';
+import { NATIVE_VIBRANCY_CLASS, NATIVE_WINDOW_IS_OPAQUE, TITLEBAR_HEIGHT } from './lib/windowChrome';
 
 type StartupConfigResult = 'app' | 'wizard' | 'malformed';
 
@@ -173,6 +173,15 @@ function App() {
         await invoke('enable_media_capture_cmd');
       } catch { /* voice mic capture unavailable — graceful */ }
     })();
+  }, []);
+
+  // Clear the page backgrounds so the native sidebar material can show through
+  // the rail. Main window, inside Tauri only: a browser tab or an opaque
+  // runtime window would show a bare white page instead. See windowChrome.ts.
+  useEffect(() => {
+    if (NATIVE_WINDOW_IS_OPAQUE || !('__TAURI_INTERNALS__' in window)) return;
+    document.documentElement.classList.add(NATIVE_VIBRANCY_CLASS);
+    return () => document.documentElement.classList.remove(NATIVE_VIBRANCY_CLASS);
   }, []);
 
   // Colour only — the part that genuinely tracks the theme.
@@ -394,7 +403,7 @@ function App() {
   }
 
   return (
-    <div ref={shellRef} className={`flex h-screen density-${density}`} style={{ background: gradient.shell }}>
+    <div ref={shellRef} className={`flex h-screen density-${density}`} style={{ background: NATIVE_WINDOW_IS_OPAQUE ? gradient.shell : 'transparent' }}>
       {/* THE SILHOUETTE. The rail is the outer flex child and runs the FULL
           height of the window — from under the traffic lights to the bottom
           edge — which is what makes the window read as a Tahoe app rather than
@@ -416,7 +425,10 @@ function App() {
           do — the rect they publish simply arrives correct. That is why this
           change does not touch the bounds pump, which lane R14 is restyling. */}
       <Sidebar />
-      <div className="flex flex-col flex-1 min-w-0">
+      {/* Over a transparent window the gradient lives here, not on the shell:
+          only the rail shows the native sidebar material, the content stays
+          opaque. */}
+      <div className="flex flex-col flex-1 min-w-0" style={NATIVE_WINDOW_IS_OPAQUE ? undefined : { background: gradient.shell }}>
         <div data-tauri-drag-region style={{ height: TITLEBAR_HEIGHT, flexShrink: 0 }} />
         <VersionSkewBanner skew={versionSkew} />
         <div className="flex flex-1 min-h-0">

@@ -36,11 +36,11 @@
 //!    y is 22 for a 13pt inset, and why `trafficLightPosition.y` must never be
 //!    read as "distance from the top of the window".
 //!
-//! Vibrancy and `transparent: true` are deliberately absent: the same spike
-//! measured `transparent: true` at +6 points of whole-GPU utilisation on a
-//! *static* page on this M4 (0.12% -> 6.1%), for an always-on desktop agent.
-//! Nothing here needs them — an overlay titlebar over an opaque window is the
-//! whole Tahoe impression at no GPU cost.
+//! The main window is `transparent: true` with the native `sidebar` material
+//! (tauri.conf.json `windowEffects`), so the rail is real glass over the
+//! desktop. The same spike measured the transparent window at +6 points of
+//! whole-GPU utilisation on a static page on this M4 (0.12% -> 6.1%); the user
+//! accepted that cost on 2026-09-19. Runtime windows (chat, panes) stay opaque.
 
 /// Left inset of the close button, in points. Config and code must agree; the
 /// test at the bottom of this file enforces that.
@@ -349,9 +349,13 @@ mod tests {
         assert_eq!(main["decorations"], true);
         assert_eq!(main["trafficLightPosition"]["x"], TRAFFIC_LIGHT_X);
         assert_eq!(main["trafficLightPosition"]["y"], TRAFFIC_LIGHT_Y);
-        // No transparency: A1a measured it at ~+6 points of whole-GPU
-        // utilisation at idle. If this assertion ever fails, that decision is
-        // being reversed and it needs its own measurement and sign-off.
-        assert!(main.get("transparent").is_none() || main["transparent"] == false);
+        // Transparent, with the native `sidebar` material behind the rail. A1a
+        // measured this at ~+6 points of whole-GPU utilisation at idle; the
+        // user signed off on that cost on 2026-09-19 ("There is no liquid
+        // glass anywhere" -> "proceed"). The web side keys off the same
+        // decision through `NATIVE_WINDOW_IS_OPAQUE` in windowChrome.ts.
+        assert_eq!(main["transparent"], true);
+        assert_eq!(main["windowEffects"]["effects"][0], "sidebar");
+        assert_eq!(conf["app"]["macOSPrivateApi"], true);
     }
 }

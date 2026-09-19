@@ -10,7 +10,10 @@ license = "Apache-2.0"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["unstable"] }
+# `macos-private-api`: the main window is transparent so macOS's own sidebar
+# material (tauri.conf.json `windowEffects`) shows through the rail. tauri-build
+# errors if this and `app.macOSPrivateApi` disagree.
+tauri = { version = "2", features = ["unstable", "macos-private-api"] }
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"

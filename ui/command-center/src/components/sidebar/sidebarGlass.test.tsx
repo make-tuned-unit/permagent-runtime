@@ -11,14 +11,20 @@
  * translucent fill and rim), collapses to the flat surface under Reduce
  * Transparency, and does NOT ask for a CSS blur.
  * WHAT IT CANNOT PROVE: how it looks. jsdom has no compositor and no
- * NSWindow. The main window is deliberately opaque (chrome.rs, shell.test.ts:
- * transparency measured at +6 points idle GPU), so in the real app nothing
- * shows through the rail; it reads as glass by its rim and depth only.
+ * NSWindow. These tests pin the OPAQUE-window path (glassHi), which is what
+ * the rail wears if `NATIVE_WINDOW_IS_OPAQUE` is ever flipped back; the
+ * shipped transparent path (thin fill over the native sidebar material) is
+ * pinned in sidebarVibrancy.test.tsx.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
+
+vi.mock('../../lib/windowChrome', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/windowChrome')>()),
+  NATIVE_WINDOW_IS_OPAQUE: true,
+}));
 
 import { Sidebar } from './Sidebar';
 import { useCommandCenter } from '../../lib/store';
