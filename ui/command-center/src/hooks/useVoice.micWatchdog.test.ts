@@ -24,6 +24,7 @@ import {
   bufferPeak,
   diagnoseMicInput,
   micFaultMessage,
+  micInputLabel,
   micWatchdogStep,
   msSinceMicSignal,
   vadOnsetLevel,
@@ -203,5 +204,19 @@ describe('wakeHintFor — the hint relayed to the popped-out orb', () => {
     expect(wakeHintFor({ active: true, gated: false, phrase: 'Hey Henry' })).toBeNull();
     expect(wakeHintFor({ active: false, gated: true, phrase: 'Hey Henry' })).toBeNull();
     expect(wakeHintFor({ active: true, gated: true, phrase: null })).toBeNull();
+  });
+});
+
+describe('micInputLabel — names the input in the verdict trail', () => {
+  const stream = (track?: { label?: string; readyState?: string }) => ({ getTracks: () => (track ? [track] : []) });
+  it('uses the track label, which tells an HFP headset from the built-in mic', () => {
+    expect(micInputLabel(stream({ label: 'Bose QC35 II', readyState: 'live' }))).toBe('"Bose QC35 II"');
+  });
+  it('says when there is no stream, no track, no label, or the track ended', () => {
+    expect(micInputLabel(null)).toBe('no microphone stream');
+    expect(micInputLabel(stream())).toBe('no microphone track');
+    expect(micInputLabel(stream({ label: '', readyState: 'live' }))).toBe('unnamed input');
+    expect(micInputLabel(stream({ label: 'MacBook Pro Microphone', readyState: 'ended' })))
+      .toBe('"MacBook Pro Microphone" (ended)');
   });
 });

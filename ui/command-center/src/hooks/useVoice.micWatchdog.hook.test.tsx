@@ -50,6 +50,7 @@ import {
   WAKE_REARM_MS,
   VOICE_VERDICT_KEY,
   VOICE_VERDICT_LOG_MAX,
+  VOICE_VERDICT_SCHEMA,
   readVoiceVerdict,
   readVoiceVerdictLog,
   recordVoiceVerdictEvent,
@@ -482,14 +483,93 @@ describe('useVoice — mic-input watchdog', () => {
       expect(readVoiceVerdict()?.error).toBeNull();
 
       expect(readVoiceVerdictLog().map(e => e.event))
-        .toEqual(['mic_rebuild', 'mic_fault_surfaced', 'mic_fault_cleared']);
-      expect(readVoiceVerdictLog()[1].detail).toContain(MIC_FAULT_MESSAGE);
+        .toEqual(['engine_up', 'hands_free_armed', 'mic_rebuild', 'mic_fault_surfaced', 'mic_fault_cleared']);
+      expect(readVoiceVerdictLog()[3].detail).toContain(MIC_FAULT_MESSAGE);
 
       // No engine, no verdict: a mirror must not read a dead window's word.
       act(() => root.render(<></>));
       expect(localStorage.getItem(VOICE_VERDICT_KEY)).toBeNull();
       // The trail survives — it is for after-the-fact checks.
-      expect(readVoiceVerdictLog()).toHaveLength(3);
+      expect(readVoiceVerdictLog()).toHaveLength(5);
+    });
+
+    // The first real-app check found the snapshot {"error":null,"wakeHint":
+    // null,"spotterDeaf":false} and an EMPTY trail — equally "never armed" and
+    // "armed and fine", so nothing could be confirmed. A healthy session must
+    // leave proof the watchdog ran against the real input.
+    it('a healthy hands-free session leaves proof: armed with its input, one mic_live, then off', async () => {
+      act(() => root.render(<Host />));
+      const headset = makeStream();
+      headset.track.label = 'Bose QC35 II';
+      getUserMedia.mockImplementationOnce(() => Promise.resolve(headset.stream));
+      act(() => { void hook.current!.setHandsFree(true); });
+      await flush();
+      act(() => MockWebSocket.instances[0].frame({ type: 'ready' }));
+      await flush();
+      expect(hook.current!.state).toBe('ready');
+      expect(JSON.parse(localStorage.getItem(VOICE_VERDICT_KEY)!).handsFree).toBe(true);
+
+      // Twenty seconds of room tone: many healthy ticks, one line.
+      for (let i = 0; i < 40; i++) {
+        act(() => pump());
+        await advance(500);
+      }
+      const log = readVoiceVerdictLog();
+      expect(log.map(e => e.event)).toEqual(['engine_up', 'hands_free_armed', 'mic_live']);
+      expect(log[1].detail).toBe('"Bose QC35 II"; listening graph running');
+      expect(log[2].detail).toMatch(/^"Bose QC35 II"; signal \d+ms ago$/);
+
+      await act(async () => { await hook.current!.setHandsFree(false); });
+      expect(readVoiceVerdictLog().map(e => e.event)).toEqual(['engine_up', 'hands_free_armed', 'mic_live', 'hands_free_off']);
+      expect(JSON.parse(localStorage.getItem(VOICE_VERDICT_KEY)!).handsFree).toBe(false);
+    });
+
+    it('a graph that recovers on its rebuild says so in its mic_live line', async () => {
+      await armHandsFree();
+      await advance(MIC_STALL_MS + MIC_WATCHDOG_TICK_MS); // deaf → one rebuild
+      expect(vadContexts()).toHaveLength(2);
+      act(() => pump());
+      await advance(MIC_WATCHDOG_TICK_MS);
+      const log = readVoiceVerdictLog();
+      expect(log.map(e => e.event)).toEqual(['engine_up', 'hands_free_armed', 'mic_rebuild', 'mic_live']);
+      expect(log[3].detail).toMatch(/after a rebuild$/);
+    });
+
+    // The second real-app check read a snapshot with no `handsFree` field and
+    // an EMPTY trail — what a bundle predating the trail writes, and ALSO what
+    // a session that never armed hands-free wrote, so it confirmed nothing.
+    // A mounted engine must now always leave a line saying which it is.
+    it('an engine that never arms hands-free still leaves a stamped line saying the watchdog had nothing to judge', async () => {
+      act(() => root.render(<Host />));
+      await flush();
+      const log = readVoiceVerdictLog();
+      expect(log.map(e => e.event)).toEqual(['engine_up']);
+      expect(log[0].detail).toBe(
+        `schema ${VOICE_VERDICT_SCHEMA}; hands-free off — the mic watchdog runs only once hands-free is armed`,
+      );
+      const snap = JSON.parse(localStorage.getItem(VOICE_VERDICT_KEY)!);
+      expect(snap.schema).toBe(VOICE_VERDICT_SCHEMA);
+      expect(snap.handsFree).toBe(false);
+
+      // Reloads/remounts replace the line instead of stacking it, so they can
+      // never push fault lines out of the bounded trail.
+      for (let i = 0; i < 3; i++) {
+        act(() => root.render(<></>));
+        act(() => root.render(<Host />));
+        await flush();
+      }
+      expect(readVoiceVerdictLog().map(e => e.event)).toEqual(['engine_up']);
+
+      act(() => { void hook.current!.setHandsFree(true); });
+      await flush();
+      act(() => MockWebSocket.instances[MockWebSocket.instances.length - 1].frame({ type: 'ready' }));
+      await flush();
+      expect(readVoiceVerdictLog().map(e => e.event)).toEqual(['engine_up', 'hands_free_armed']);
+      // A later mount does not erase what came before it.
+      act(() => root.render(<></>));
+      act(() => root.render(<Host />));
+      await flush();
+      expect(readVoiceVerdictLog().map(e => e.event)).toEqual(['engine_up', 'hands_free_armed', 'engine_up']);
     });
 
     it('keeps the trail bounded — a flapping mic cannot grow localStorage', () => {

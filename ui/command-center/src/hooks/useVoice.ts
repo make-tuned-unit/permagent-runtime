@@ -500,12 +500,39 @@ export const WAKE_REARM_MS = 30_000;
 //     bounded trail of verdict EVENTS in localStorage, which WKWebView persists
 //     to the app's LocalStorage sqlite on disk — readable without driving the
 //     GUI or opening the console.
+//
+//  3. That trail only recorded FAILURES, so the first real-app check could not
+//     confirm anything: the snapshot read {"error":null,"wakeHint":null,...}
+//     and the trail was empty, which is equally "hands-free was never armed"
+//     and "armed, the watchdog judged the mic, and it was fine". The trail now
+//     also records the lifecycle — hands-free armed (with the input it got)
+//     and the watchdog's first healthy verdict on each graph — and the
+//     snapshot says whether hands-free is on, so a session with no fault at
+//     all still proves the watchdog ran against the real input.
+//
+//  4. The second real-app check still could not confirm: the snapshot was
+//     {"error":null,"wakeHint":null,"spotterDeaf":false} with no `handsFree`
+//     field and the trail was EMPTY. Both are what a bundle built before (3)
+//     writes, and an empty trail is ALSO what (3) writes for a session in
+//     which hands-free was never switched on (the watchdog only runs while it
+//     is) — so "the fix never reached the app" and "it did, nobody armed it"
+//     read the same. The engine now stamps its trail format into the snapshot
+//     (`schema`) and writes an `engine_up` line when it mounts, saying whether
+//     hands-free is armed. A bundle carrying this code can no longer leave an
+//     empty trail, and a trail with `engine_up` but no `hands_free_armed`
+//     says, in words, that the watchdog had nothing to judge yet.
 
 /** Current engine verdict (owner window → mirror orbs). */
 export const VOICE_VERDICT_KEY = 'permagent-voice-verdict';
 /** Bounded trail of verdict events, newest last, for after-the-fact checks. */
 export const VOICE_VERDICT_LOG_KEY = 'permagent-voice-verdict-log';
-export const VOICE_VERDICT_LOG_MAX = 20;
+// 40, not 20: each hands-free session now adds two lifecycle lines, and they
+// must not push the fault lines QA is looking for out of the trail.
+export const VOICE_VERDICT_LOG_MAX = 40;
+/** Version of what the engine writes under the two keys above. Bump it when
+ *  the snapshot or the trail changes shape, so a real-app check can tell which
+ *  bundle wrote what it is reading (a missing `schema` = a pre-v4 bundle). */
+export const VOICE_VERDICT_SCHEMA = 4;
 
 export interface VoiceVerdict {
   /** The engine's error text (the watchdog's sentence, or any other fault). */
@@ -517,6 +544,10 @@ export interface VoiceVerdict {
 }
 
 export type VoiceVerdictEventName =
+  | 'engine_up'           // the engine mounted; detail = trail schema + hands-free state
+  | 'hands_free_armed'    // hands-free switched on; detail = input + graph state
+  | 'hands_free_off'
+  | 'mic_live'            // the watchdog's first healthy verdict on a graph
   | 'mic_rebuild'
   | 'mic_fault_surfaced'
   | 'mic_fault_cleared'
@@ -538,9 +569,26 @@ export function wakeHintFor(w: { active: boolean; gated: boolean; phrase: string
   return w.active && w.gated && w.phrase ? `Say "${w.phrase}"` : null;
 }
 
-export function publishVoiceVerdict(v: VoiceVerdict): void {
+/** Pure: how a mic stream is named in the verdict trail — the track label
+ *  (e.g. "Bose QC35 II") is what tells an HFP headset from the built-in mic. */
+export function micInputLabel(
+  stream: { getTracks(): Array<{ label?: string; readyState?: string }> } | null,
+): string {
+  if (!stream) return 'no microphone stream';
+  const track = stream.getTracks()[0];
+  if (!track) return 'no microphone track';
+  const name = track.label ? `"${track.label}"` : 'unnamed input';
+  return track.readyState === 'ended' ? `${name} (ended)` : name;
+}
+
+/** `handsFree` rides along in the stored snapshot only (mirror orbs do not
+ *  need it); it is what lets QA tell "never armed" from "armed and healthy". */
+export function publishVoiceVerdict(v: VoiceVerdict & { handsFree?: boolean }): void {
   try {
-    localStorage.setItem(VOICE_VERDICT_KEY, JSON.stringify({ ...v, at: Date.now() }));
+    localStorage.setItem(
+      VOICE_VERDICT_KEY,
+      JSON.stringify({ ...v, schema: VOICE_VERDICT_SCHEMA, at: Date.now() }),
+    );
   } catch { /* private mode / quota: the main window still reads the store */ }
 }
 
@@ -578,6 +626,30 @@ export function recordVoiceVerdictEvent(event: VoiceVerdictEventName, detail: st
     const next = [...readVoiceVerdictLog(), { at: new Date().toISOString(), event, detail }];
     localStorage.setItem(VOICE_VERDICT_LOG_KEY, JSON.stringify(next.slice(-VOICE_VERDICT_LOG_MAX)));
   } catch { /* the console line is still there */ }
+}
+
+/** Pure: the `engine_up` detail. Says outright when the watchdog has nothing
+ *  to judge, because an absent watchdog line is otherwise unreadable. */
+export function engineUpDetail(handsFree: boolean): string {
+  return handsFree
+    ? `schema ${VOICE_VERDICT_SCHEMA}; hands-free on — the mic watchdog is judging the input`
+    : `schema ${VOICE_VERDICT_SCHEMA}; hands-free off — the mic watchdog runs only once hands-free is armed`;
+}
+
+/**
+ * Mark the engine's mount in the trail. Consecutive mounts with nothing in
+ * between (a window reload, a remount) REPLACE the previous `engine_up` line
+ * rather than stacking, so reloads cannot push the fault lines QA is looking
+ * for out of the bounded trail.
+ */
+export function recordEngineUp(handsFree: boolean): void {
+  try {
+    const log = readVoiceVerdictLog();
+    const last = log[log.length - 1];
+    const kept = last && last.event === 'engine_up' ? log.slice(0, -1) : log;
+    const next = [...kept, { at: new Date().toISOString(), event: 'engine_up' as const, detail: engineUpDetail(handsFree) }];
+    localStorage.setItem(VOICE_VERDICT_LOG_KEY, JSON.stringify(next.slice(-VOICE_VERDICT_LOG_MAX)));
+  } catch { /* the snapshot's `schema` still identifies the bundle */ }
 }
 
 export interface VoiceEvent {
@@ -1618,6 +1690,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const micReacquirePendingRef = useRef(false);
   // When the current track went muted (0 = not muted).
   const micMutedSinceRef = useRef(0);
+  // The graph (by build time) whose healthy verdict is already in the trail.
+  const micLiveLoggedForRef = useRef(0);
 
   // A mechanical keyboard's click is a loud, very SHORT transient. Speech is
   // quieter per-buffer but sustained — so the discriminator that works is
@@ -1847,12 +1921,19 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   /** Enter/exit hands-free. Entering activates voice (mic + socket) if needed. */
   const setHandsFree = useCallback(async (on: boolean) => {
+    const handsFreeWasOn = handsFreeRef.current;
     handsFreeRef.current = on;
     setHandsFreeState(on);
     if (on) {
       if (!activeRef.current) await activate();
       startVadMonitor();
+      const ctx = vadCtxRef.current;
+      recordVoiceVerdictEvent(
+        'hands_free_armed',
+        `${micInputLabel(mediaStreamRef.current)}; listening graph ${ctx ? ctx.state : 'missing'}`,
+      );
     } else {
+      if (handsFreeWasOn) recordVoiceVerdictEvent('hands_free_off');
       stopVadMonitor();
       // The mic fault describes the hands-free graph we just tore down; leaving
       // it would strand push-to-talk in 'error' behind a stale message.
@@ -1990,15 +2071,25 @@ export function useVoice(options: UseVoiceOptions = {}) {
     });
 
     if (action === 'healthy') {
+      const rebuilt = micRebuildAttemptsRef.current > 0;
       micRebuildAttemptsRef.current = 0;
+      const firstOnGraph = micLiveLoggedForRef.current !== micGraphBuiltAtRef.current;
+      micLiveLoggedForRef.current = micGraphBuiltAtRef.current;
       if (micFaultSurfacedRef.current) {
         micFaultSurfacedRef.current = false;
         console.log('[useVoice] mic watchdog: input is back');
-        recordVoiceVerdictEvent('mic_fault_cleared');
+        recordVoiceVerdictEvent('mic_fault_cleared', micInputLabel(stream));
         if (stateRef.current === 'error') {
           setError(null);
           setStateAndEmit('ready');
         }
+      } else if (firstOnGraph) {
+        // Once per graph, never per tick: proof the watchdog judged the REAL
+        // input, which an empty trail could not give (see VOICE_VERDICT_LOG_KEY).
+        recordVoiceVerdictEvent(
+          'mic_live',
+          `${micInputLabel(stream)}; signal ${now - lastSignal}ms ago${rebuilt ? '; after a rebuild' : ''}`,
+        );
       }
       return;
     }
@@ -2087,9 +2178,13 @@ export function useVoice(options: UseVoiceOptions = {}) {
   // change, cleared when the engine goes away so no window reads a dead one.
   const verdictWakeHint = wakeHintFor({ active: wakeActive, gated: wakeGated, phrase: wakePhrase });
   useEffect(() => {
-    publishVoiceVerdict({ error, wakeHint: verdictWakeHint, spotterDeaf: wakeDeaf });
-  }, [error, verdictWakeHint, wakeDeaf]);
+    publishVoiceVerdict({ error, wakeHint: verdictWakeHint, spotterDeaf: wakeDeaf, handsFree });
+  }, [error, verdictWakeHint, wakeDeaf, handsFree]);
   useEffect(() => clearVoiceVerdict, []);
+  // Once per mount (see VOICE_VERDICT_SCHEMA): without this line a session that
+  // never armed hands-free left an empty trail, indistinguishable from a
+  // bundle that predates the trail entirely.
+  useEffect(() => { recordEngineUp(handsFreeRef.current); }, []);
 
   // Stable identity so consumers can use it as an effect dependency without
   // re-firing on unrelated renders.
