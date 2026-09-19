@@ -205,12 +205,19 @@ describe('CostStatusline', () => {
     // remaining $0.25) into a settled one, and these assertions were not
     // updated with it. Reading them off the fixture keeps the two sides of the
     // golden honest the next time it moves.
-    expect(eventText).toContain('session settled $0.00');
-    expect(eventText).toContain('session used $0.10');
-    expect(eventText).toContain('session remaining $0.90');
-    expect(eventText).toContain('session held $0.10');
-    expect(eventText).toContain('session billing paid_api');
-
+    // Wording changed deliberately on 2026-09-18: the bar used to print the
+    // ledger inline ("session settled $0.00 · session used $0.10 · session
+    // remaining $0.90 · session held $0.10 · session billing paid_api"), and
+    // The user, reading a line like it, said "I am unsure what all of this is".
+    // It now leads with spend and says the rest in plain words; this fixture is
+    // complete and fully priced, so its remainder is stated without a hedge.
+    const costSpan = container!.querySelector('span[style*="font-weight"]');
+    expect(costSpan?.textContent).toBe('$0.10');
+    expect(eventText).toContain('$0.10 pending');
+    expect(eventText).toContain('$0.90 left');
+    expect(eventText).not.toContain('unconfirmed');
+    expect(eventText).not.toContain('session settled');
+    expect(eventText).not.toContain('session billing');
     getActiveHarnessRuns.mockResolvedValueOnce([{
       runId: 'restarted-run', sessionId: budget.rootSessionId,
       project: '/tmp/fixture', status: 'waiting_gate',
@@ -227,5 +234,114 @@ describe('CostStatusline', () => {
     expect(container!.textContent).toBe(eventText);
     expect(useCommandCenter.getState().codingHarnessRunId).toBe('restarted-run');
     expect(useCommandCenter.getState().codingSpend?.budget).toEqual(budget);
+  });
+
+  it('renders the reported bar in plain words, qualifies the remainder, and keeps the detail in the tooltip', async () => {
+    // The user's screenshot of the Build cost bar: "$2.09 · session settled $0.53 ·
+    // session used $2.09 · session remaining $47.91 · session unknown $1.56 ·
+    // session budget unknown · task settled ..." — "I am unsure what all of
+    // this is". Same figures through the real liveness path and component.
+    const scope = {
+      ...restartProjection.session,
+      cap: { softUsd: 40, gateUsd: 45, hardUsd: 50, source: 'current_budget_config' },
+      settledUsd: 0.53, heldUsd: 0, unknownUsd: 1.56,
+      effectiveUsedUsd: 2.09, remainingUsd: 47.91,
+      band: 'unknown', completeness: 'partial',
+    };
+    const budget = {
+      ...restartProjection,
+      rootSessionId: 'reported-harness', taskId: 'reported-task',
+      session: scope, task: scope,
+      provenance: { ...restartProjection.provenance, asOf: '2026-09-18T12:00:00Z' },
+    };
+    vi.mocked(api.getSessionCost).mockResolvedValue({ own: 0, childrenTotal: 0, perChild: [] });
+    await act(async () => {
+      root!.render(<CostStatusline />);
+      applyLivenessFrame({
+        id: 'reported-event', type: 'session_spend_changed',
+        timestamp: '2026-09-18T12:00:00Z',
+        payload: {
+          session_id: budget.rootSessionId, budget,
+          session_usd: 2.09, turn_usd: 0, today_usd: 2.09, total_tokens: 0,
+          provider: null, model: null, working_dir: '/tmp/fixture',
+          estimated: false, final_turn: false,
+        },
+      }, Date.parse('2026-09-18T11:59:00Z'));
+    });
+    const status = container!.querySelector('[role="status"]')!;
+    const text = status.textContent!;
+    expect(text).toContain('$2.09');
+    // "$1.56 unconfirmed": the daemon's unknown_usd is budget held for calls
+    // whose charge could not be confirmed, not spend lacking a price.
+    expect(text).toContain('$1.56 unconfirmed');
+    expect(text).not.toContain('unpriced');
+    expect(text).toContain('~$47.91 left (unconfirmed)');
+    // The self-contradiction the user saw: a flat remainder beside "unknown".
+    expect(text).not.toMatch(/(^|[^~])\$47\.91 left(?! \(unconfirmed\))/);
+    expect(text).not.toContain('budget unknown');
+    expect(text).not.toContain('session');
+    expect(status.getAttribute('aria-label')).toContain('$1.56 of that is held for calls whose charge could not be confirmed');
+    expect(status.getAttribute('aria-label')).toContain('not confirmed');
+    // The model picker group is still its own right-hand sibling, untouched.
+    expect(container!.querySelector('[data-testid="statusline-model-idle"]')).not.toBeNull();
+    expect(status.contains(container!.querySelector('[data-testid="statusline-model-idle"]'))).toBe(false);
+
+    // Focusing the figures opens the tooltip, which keeps every ledger figure.
+    const trigger = status.parentElement as HTMLElement;
+    await act(async () => { trigger.focus(); });
+    const detail = document.querySelector('[data-testid="cost-budget-detail"]');
+    expect(detail?.textContent).toContain('settled $0.53');
+    expect(detail?.textContent).not.toContain('priced and settled');
+    expect(detail?.textContent).toContain('unconfirmed (held for calls whose charge could not be confirmed) $1.56');
+    expect(detail?.textContent).toContain('budget left about $47.91 (unconfirmed)');
+  });
+});
+
+describe('CostStatusline after an app launch (reload hydration, no live frame yet)', () => {
+  it('shows the plain-words bar for the reported figures, not a bare "Budget unknown" and not the ledger dump', async () => {
+    // QA could not confirm the new wording in the real app: the Build tab was
+    // never opened. What the user sees first after launching Permagent is not
+    // a live `session_spend_changed` frame but `hydrateCodingHarness()` reading
+    // /api/harness/runs/active — and for these figures that path marks the run
+    // `budgetStatus: 'unknown'` (band is 'unknown' whenever the daemon holds
+    // unconfirmed spend, budget_projection.rs `scope_from_aggregate`). This
+    // pins that the launch path lands on the same condensed bar as the live
+    // one. It proves the store → formatCostMeter → DOM wiring for that state;
+    // it does not prove the packaged app is on this build.
+    const scope = {
+      ...restartProjection.session,
+      cap: { softUsd: 40, gateUsd: 45, hardUsd: 50, source: 'current_budget_config' },
+      settledUsd: 0.53, heldUsd: 0, unknownUsd: 1.56,
+      effectiveUsedUsd: 2.09, remainingUsd: 47.91,
+      band: 'unknown', completeness: 'partial',
+    };
+    const budget = {
+      ...restartProjection,
+      rootSessionId: 'launched-harness', taskId: 'launched-task',
+      session: scope, task: scope,
+      provenance: { ...restartProjection.provenance, asOf: '2026-09-18T12:00:00Z', completeness: 'partial' },
+    };
+    vi.mocked(api.getSessionCost).mockResolvedValue({ own: 0, childrenTotal: 0, perChild: [] });
+    getActiveHarnessRuns.mockResolvedValueOnce([{
+      runId: 'launched-run', sessionId: budget.rootSessionId,
+      project: '/tmp/fixture', status: 'running',
+      updatedAt: budget.provenance.asOf, tokens: 0,
+      provider: null, model: null, budget,
+    }]);
+    await act(async () => {
+      root!.render(<CostStatusline />);
+      await useCommandCenter.getState().hydrateCodingHarness();
+    });
+    // The launch path's own verdict, so a later change to it is visible here.
+    expect(useCommandCenter.getState().codingSpend?.budgetStatus).toBe('unknown');
+    const status = container!.querySelector('[role="status"]')!;
+    const text = status.textContent!;
+    const costSpan = container!.querySelector('span[style*="font-weight"]');
+    expect(costSpan?.textContent).toBe('$2.09');
+    expect(text).toContain('$1.56 unconfirmed');
+    expect(text).toContain('~$47.91 left (unconfirmed)');
+    expect(text).not.toMatch(/budget unknown/i);
+    expect(text).not.toContain('session');
+    expect(text).not.toContain('task settled');
   });
 });

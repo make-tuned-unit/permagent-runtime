@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
 import { font, space, textSize } from '../../styles/tokens';
-import { formatCostMeter, type SubagentCostIncl } from '../../lib/costMeter';
+import {
+  formatBudgetDetail,
+  formatCostMeter,
+  isCautionSegment,
+  type SubagentCostIncl,
+} from '../../lib/costMeter';
 import { GLOSSARY } from '../../lib/vocabulary';
 import { useLiveGoals } from '../../lib/useLiveGoals';
 import { api } from '../../lib/api';
@@ -10,33 +15,26 @@ import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 import { ProviderModelPicker } from '../settings/ProviderModelPicker';
 
 import { Tooltip } from '../common/Tooltip';
-function budgetTitle(codingSpend: ReturnType<typeof useCommandCenter.getState>['codingSpend']): string {
+/**
+ * The tooltip carries everything the condensed bar leaves out. The bar used to
+ * print the whole ledger inline ("session settled … session used … session
+ * remaining … session unknown … session budget unknown · task settled …") and
+ * The user's verdict was "I am unsure what all of this is"; the detail moved here,
+ * one fact per line, in words, rather than being dropped.
+ */
+function budgetTitle(codingSpend: ReturnType<typeof useCommandCenter.getState>['codingSpend']) {
   const budget = codingSpend?.budget;
   if (!budget) return GLOSSARY.costMeter;
-  const format = (value: number | null) => value === null ? 'unavailable' : `$${value.toFixed(2)}`;
-  const cap = budget.session.cap;
-  const evidence = [
-    budget.sessionBilling.billingClass,
-    budget.sessionBilling.provider,
-    budget.sessionBilling.model,
-  ].filter(Boolean).join(' / ') || 'unavailable';
-  return [
-    `Budget projection ${budget.provenance.version}`,
-    `session used ${format(budget.session.effectiveUsedUsd)}`,
-    `session settled ${format(budget.session.settledUsd)}`,
-    `remaining ${format(budget.session.remainingUsd)}`,
-    `cap soft/gate/hard ${format(cap.softUsd)}/${format(cap.gateUsd)}/${format(cap.hardUsd)}`,
-    `billing ${evidence}`,
-    `task used ${format(budget.task.effectiveUsedUsd)}`,
-    `task settled ${format(budget.task.settledUsd)}`,
-    `sources ${budget.provenance.sources.join(', ') || 'unavailable'}`,
-    `as of ${budget.provenance.asOf}`,
-  ].join(' · ');
+  return (
+    <div data-testid="cost-budget-detail" style={{ display: 'flex', flexDirection: 'column', whiteSpace: 'pre' }}>
+      {formatBudgetDetail(budget).split('\n').map((line, i) => <div key={i}>{line}</div>)}
+    </div>
+  );
 }
 
 /**
  * The model you are spending on, at the end of the line that says what you are
- * spending. Jesse: "The model picker dropdown disappeared. It would make sense
+ * spending. The user: "The model picker dropdown disappeared. It would make sense
  * for it to be on the bottom bar with the costs and I could switch between
  * models."
  *
@@ -232,11 +230,14 @@ export function CostStatusline() {
             </span>
             {meter.segments.map((seg, i) => {
               const isSaving = seg.startsWith('cache saved');
-              // The fail-closed estimate disclosure needs to read as a caution, not
-              // as ordinary supporting context — colors.warning exists on the theme,
-              // so use it; a theme without one would fall back to textMuted rather
-              // than inventing a color that isn't part of the design system.
-              const isEstimated = seg === 'estimated — no published price';
+              // A figure that is not a confirmed bill — the fail-closed estimate,
+              // budget held for calls whose charge could not be confirmed, a
+              // remaining budget computed from either —
+              // needs to read as a caution, not as ordinary supporting context.
+              // colors.warning exists on the theme, so use it; a theme without
+              // one falls back to textMuted rather than inventing a color that
+              // isn't part of the design system.
+              const isEstimated = isCautionSegment(seg);
               return (
                 <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>
                   <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">

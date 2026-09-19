@@ -16,6 +16,8 @@ import {
   formatCostMeter,
   fmtUsd,
   fmtTokens,
+  formatBudgetDetail,
+  isCautionSegment,
   parseBudgetProjection,
   type CodingSpend,
 } from './costMeter';
@@ -119,7 +121,16 @@ describe('budget-projection.v1 validation and rendering', () => {
     expect(spend.budget?.rootSessionId).toBe('other-session');
   });
 
-  it('renders held/unknown/remaining/provenance distinctly from zero', () => {
+  it('renders held/unconfirmed/remaining distinctly from zero, in plain words', () => {
+    // Wording changed deliberately (2026-09-18). The bar used to read "session
+    // held $0.25 · session unknown $0.50 · session remaining $2.25 · session
+    // budget unknown · session billing paid_api / …" and the user said "I am
+    // unsure what all of this is". Ledger column names are now plain phrases,
+    // billing evidence moved to the tooltip, and a remaining figure computed
+    // from unconfirmed holds is qualified instead of stated flat. "unknown" is
+    // the daemon's reservations in state 'unknown' (calls whose charge could
+    // not be confirmed), so it reads "unconfirmed" — not "unpriced", which
+    // would be a different, false claim.
     const projection = parseBudgetProjection(budgetProjection({
       session: {
         ...budgetProjection().session,
@@ -134,11 +145,100 @@ describe('budget-projection.v1 validation and rendering', () => {
     }));
     const meter = formatCostMeter(null, codingSpend({ budget: projection ?? undefined }));
     expect(meter.cost).toBe('$0.75');
-    expect(meter.segments).toEqual(expect.arrayContaining([
-      'session held $0.25', 'session unknown $0.50', 'session remaining $2.25',
-      'session budget unknown', 'session billing paid_api / fixture / fixture-model',
-    ]));
+    expect(meter.segments).toEqual([
+      '$0.50 unconfirmed', '$0.25 pending', '~$2.25 left (unconfirmed)', 'this task $0.00', 'estimated',
+    ]);
     expect(meter.ariaLabel).toContain('billing is estimated');
+    expect(meter.ariaLabel).toContain('$0.50 of that is held for calls whose charge could not be confirmed');
+    expect(meter.ariaLabel).toContain('not confirmed because $0.50 is held for calls whose charge could not be confirmed');
+    expect(meter.ariaLabel).not.toContain('priced');
+  });
+
+  it('reads the reported Build bar as spend, unconfirmed holds, and a qualified remainder', () => {
+    // The exact figures from the user's screenshot: "$2.09 · session settled
+    // $0.53 · session used $2.09 · session remaining $47.91 · session unknown
+    // $1.56 · session budget unknown · task settled …". A precise remaining
+    // beside "budget unknown" contradicted itself; "unknown $1.56" was jargon;
+    // and eleven-plus segments do not fit one glance.
+    const scope = {
+      ...budgetProjection().session,
+      cap: { softUsd: 40, gateUsd: 45, hardUsd: 50, source: 'current_budget_config' },
+      settledUsd: 0.53,
+      heldUsd: 0,
+      unknownUsd: 1.56,
+      effectiveUsedUsd: 2.09,
+      remainingUsd: 47.91,
+      band: 'unknown',
+      completeness: 'partial',
+    };
+    const projection = parseBudgetProjection(budgetProjection({ session: scope, task: scope }));
+    expect(projection).not.toBeNull();
+    const meter = formatCostMeter(null, codingSpend({ budget: projection! }));
+    expect(meter.cost).toBe('$2.09');
+    expect(meter.segments).toEqual(['$1.56 unconfirmed', '~$47.91 left (unconfirmed)']);
+    // The invariant, not just today's strings: no segment states the remaining
+    // figure flatly while the budget is unconfirmed, and no ledger jargon.
+    expect(meter.segments).not.toContain('$47.91 left');
+    for (const seg of meter.segments) {
+      expect(seg).not.toMatch(/\b(settled|unknown \$|session|task settled)\b/);
+    }
+    // Full detail is kept, not dropped: the tooltip spells out every figure.
+    const detail = formatBudgetDetail(projection!);
+    expect(detail).toContain('Session spent $2.09');
+    // "settled" includes calls priced by estimate, so it is never "priced and
+    // settled"; the $1.56 is holds on calls whose charge is unknown.
+    expect(detail).toContain('settled $0.53');
+    expect(detail).not.toContain('priced and settled');
+    expect(detail).toContain('unconfirmed (held for calls whose charge could not be confirmed) $1.56');
+    expect(detail).not.toContain('unpriced');
+    expect(detail).toContain('budget left about $47.91 (unconfirmed)');
+    expect(detail).toContain('limits: warn $40.00 / pause $45.00 / stop $50.00');
+    expect(detail).toContain('billing paid_api / fixture / fixture-model');
+    expect(detail).toContain('Task spent $2.09');
+  });
+
+  it('states remaining flatly only when every figure is priced and the budget state is known', () => {
+    const projection = parseBudgetProjection(budgetProjection({
+      session: { ...budgetProjection().session, effectiveUsedUsd: 0.1, settledUsd: 0.1, remainingUsd: 2.9 },
+    }));
+    const meter = formatCostMeter(null, codingSpend({ budget: projection! }));
+    expect(meter.segments).toEqual(['$2.90 left', 'this task $0.00']);
+    expect(isCautionSegment('$2.90 left')).toBe(false);
+    expect(isCautionSegment('~$2.90 left (unconfirmed)')).toBe(true);
+    expect(isCautionSegment('$1.56 unconfirmed')).toBe(true);
+  });
+
+  it('says a partial scope with no unconfirmed holds is partial because of estimated prices', () => {
+    // The daemon marks a scope "partial" when it has unconfirmed holds OR
+    // settled calls priced by estimate (is_estimated = 1, whose dollars are
+    // already in settled_usd). With no holds, the remainder is qualified for
+    // the estimate, and the tooltip says settled includes estimated prices.
+    const projection = parseBudgetProjection(budgetProjection({
+      session: {
+        ...budgetProjection().session,
+        effectiveUsedUsd: 0.1, settledUsd: 0.1, remainingUsd: 2.9,
+        band: 'soft', completeness: 'partial',
+      },
+    }));
+    const meter = formatCostMeter(null, codingSpend({ budget: projection! }));
+    expect(meter.segments).toEqual(['~$2.90 left (unconfirmed)', 'this task $0.00']);
+    expect(meter.ariaLabel).toContain('not confirmed because some calls were priced by estimate');
+    expect(meter.ariaLabel).not.toContain('could not be confirmed');
+    const detail = formatBudgetDetail(projection!);
+    expect(detail).toContain('settled $0.10 (some calls used estimated prices)');
+  });
+
+  it('says the remaining budget is unknown rather than inventing a figure', () => {
+    const projection = parseBudgetProjection(budgetProjection({
+      session: {
+        ...budgetProjection().session,
+        cap: { softUsd: null, gateUsd: null, hardUsd: null, source: 'current_budget_config' },
+        remainingUsd: null,
+        band: null,
+      },
+    }));
+    const meter = formatCostMeter(null, codingSpend({ budget: projection! }));
+    expect(meter.segments).toContain('budget left unknown');
   });
 
   it('does not turn an unavailable harness projection into chat spend', () => {
