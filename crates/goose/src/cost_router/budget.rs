@@ -74,7 +74,7 @@ pub struct BudgetConfig {
 impl Default for BudgetConfig {
     /// Task $1/$3/$6, session $5/$12/$25 (soft/gate/hard).
     ///
-    /// These were task $2/$5/$10 and session $10/$25/$50. Jesse, on seeing a
+    /// These were task $2/$5/$10 and session $10/$25/$50. The user, on seeing a
     /// status line offering to spend $47.91 more on one session: "It would be
     /// completely unacceptable to spend $50 on a task. that is absurd."
     ///
@@ -508,6 +508,204 @@ pub async fn raise_budget_gate(
     decisions::create_decision(pool, req).await
 }
 
+// ── Unknown-hold sweep ───────────────────────────────────────────────────────
+
+/// How long a hold that reached `unknown` only because its lease expired
+/// (`unknown_marked_at IS NULL`) is kept before it may be resolved. Same 6h
+/// as `SessionManager::reconcile_stale_reservations`: roughly 3x the 2h
+/// paid-call lease, well beyond the longest legitimate stream, so a call that
+/// is genuinely still running past its lease can still settle into its own
+/// hold instead of losing it to someone else's headroom.
+pub const UNKNOWN_HOLD_GRACE_HOURS: i64 = 6;
+
+/// How often the daemon re-runs [`reconcile_concluded_unknown_holds`] after
+/// its boot pass, so a lease-only hold clears when its grace ends rather than
+/// whenever someone next happens to speak in that chat.
+pub const UNKNOWN_HOLD_SWEEP_INTERVAL_SECS: u64 = 15 * 60;
+
+/// What one sweep did.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct UnknownHoldSweep {
+    /// Expired `pending` holds moved to `unknown` (lease-only, grace applies).
+    pub expired_to_unknown: u64,
+    /// `unknown` holds settled to the spend their `cost_ledger` row records.
+    pub settled: u64,
+    /// `unknown` holds released because no ledger row shows they were billed.
+    pub released: u64,
+    /// Lease-only `unknown` holds still inside [`UNKNOWN_HOLD_GRACE_HOURS`].
+    pub still_held: u64,
+}
+
+/// Resolve every `unknown` provider-spend hold that can already be resolved
+/// on evidence, across ALL sessions, without waiting for a new call.
+///
+/// Why this exists (E2E QA, 2026-09-18, row
+/// `invocation:e1d47602-5717-47b9-9603-0b86911b4d6f`, session 20260918_7): an
+/// openai stream dropped before any reply started, the call marked its own
+/// $1.56 hold `unknown` (`unknown_marked_at` set, no ledger row), and after
+/// the daemon was redeployed with the session-tree reconcile fix the row was
+/// STILL `unknown` with $1.56 held. The only code that ever resolved an
+/// `unknown` hold ran inside `reserve_provider_invocation`, i.e. on the next
+/// paid call in that chat, so until the user happened to send another turn
+/// the hold kept counting against the session and task budgets (and the
+/// Budget view kept showing money nobody spent). A hold is a claim on
+/// headroom for a call in flight; once the call is known to be over, keeping
+/// it depends on nothing but whether someone speaks again.
+///
+/// The rules are exactly the admission path's, so this never releases
+/// anything that path would keep:
+/// - an expired `pending` hold becomes `unknown` (the provider may still have
+///   accepted it), with `unknown_marked_at` left NULL;
+/// - an `unknown` hold whose call concluded locally (`unknown_marked_at`
+///   set) is resolved at once;
+/// - a lease-only `unknown` hold is resolved only after
+///   [`UNKNOWN_HOLD_GRACE_HOURS`] past its lease, because the stream may
+///   still be live and about to settle;
+/// - resolving means: a `cost_ledger` row for its `invocation_id` settles it
+///   to that recorded `cost_usd` (the spend keeps counting), otherwise it is
+///   released (nothing durable says it was ever billed; if the spend lands
+///   later, `append_cost_ledger_with_usage` still records it as a
+///   `late_settlement`).
+///
+/// Each resolution is guarded by `state = 'unknown'`, so it races safely with
+/// the admission path doing the same work for the same row.
+pub async fn reconcile_concluded_unknown_holds(
+    pool: &Pool<Sqlite>,
+) -> Result<UnknownHoldSweep, sqlx::Error> {
+    reconcile_concluded_unknown_holds_at(pool, chrono::Utc::now()).await
+}
+
+/// [`reconcile_concluded_unknown_holds`] at a fixed instant, for tests.
+pub async fn reconcile_concluded_unknown_holds_at(
+    pool: &Pool<Sqlite>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<UnknownHoldSweep, sqlx::Error> {
+    let now_str = now.to_rfc3339();
+    let grace = chrono::Duration::hours(UNKNOWN_HOLD_GRACE_HOURS);
+
+    // Same statement the admission path runs first (the lease strings are
+    // written by `to_rfc3339`, so they compare in time order as text).
+    let expired_to_unknown = sqlx::query(
+        "UPDATE cost_reservations SET state = 'unknown', updated_at = ?
+         WHERE state = 'pending' AND lease_until <= ?",
+    )
+    .bind(&now_str)
+    .bind(&now_str)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    let mut sweep = UnknownHoldSweep {
+        expired_to_unknown,
+        ..UnknownHoldSweep::default()
+    };
+
+    let stale: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+        "SELECT reservation_id, invocation_id, unknown_marked_at, lease_until
+         FROM cost_reservations WHERE state = 'unknown'",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for (reservation_id, invocation_id, unknown_marked_at, lease_until) in stale {
+        let eligible = unknown_marked_at.is_some()
+            || match chrono::DateTime::parse_from_rfc3339(&lease_until) {
+                Ok(lease) => now - lease.with_timezone(&chrono::Utc) >= grace,
+                // An unreadable lease proves nothing either way: keep holding,
+                // exactly as the admission path does.
+                Err(_) => false,
+            };
+        if !eligible {
+            sweep.still_held += 1;
+            continue;
+        }
+
+        let mut tx = pool.begin().await?;
+        let ledger_cost: Option<f64> =
+            sqlx::query_scalar("SELECT cost_usd FROM cost_ledger WHERE call_id = ?")
+                .bind(&invocation_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let resolved = match ledger_cost {
+            Some(cost_usd) => {
+                let n = sqlx::query(
+                    "UPDATE cost_reservations
+                     SET state = 'settled', settled_cost_usd = ?, updated_at = ?
+                     WHERE reservation_id = ? AND state = 'unknown'",
+                )
+                .bind(cost_usd)
+                .bind(&now_str)
+                .bind(&reservation_id)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+                sweep.settled += n;
+                n
+            }
+            None => {
+                let n = sqlx::query(
+                    "UPDATE cost_reservations SET state = 'released', updated_at = ?
+                     WHERE reservation_id = ? AND state = 'unknown'",
+                )
+                .bind(&now_str)
+                .bind(&reservation_id)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+                sweep.released += n;
+                n
+            }
+        };
+        tx.commit().await?;
+        if resolved > 0 {
+            tracing::info!(
+                target: "permagent::cost_router",
+                reservation_id = %reservation_id,
+                invocation_id = %invocation_id,
+                settled_from_ledger = ledger_cost.is_some(),
+                "sweep resolved an unknown provider-spend hold without waiting for a new call"
+            );
+        }
+    }
+    Ok(sweep)
+}
+
+/// Run [`reconcile_concluded_unknown_holds`] once now and then every
+/// [`UNKNOWN_HOLD_SWEEP_INTERVAL_SECS`], for the life of the daemon. The boot
+/// pass is what clears a hold a redeploy left behind (the E2E row above); the
+/// interval clears lease-only holds when their grace ends. Failures are
+/// logged and retried on the next tick: a missed sweep only delays a release,
+/// it never releases anything early.
+pub fn spawn_unknown_hold_sweeper(pool: Pool<Sqlite>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(
+            UNKNOWN_HOLD_SWEEP_INTERVAL_SECS,
+        ));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            // The first tick completes immediately: that is the boot pass.
+            tick.tick().await;
+            match reconcile_concluded_unknown_holds(&pool).await {
+                Ok(sweep) if sweep.settled + sweep.released + sweep.expired_to_unknown > 0 => {
+                    tracing::info!(
+                        target: "permagent::cost_router",
+                        expired_to_unknown = sweep.expired_to_unknown,
+                        settled = sweep.settled,
+                        released = sweep.released,
+                        still_held = sweep.still_held,
+                        "unknown provider-spend hold sweep"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(
+                    target: "permagent::cost_router",
+                    error = %e,
+                    "unknown provider-spend hold sweep failed; will retry"
+                ),
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -747,5 +945,230 @@ mod tests {
         );
         // Headline stays short (Decision Inbox 80-char cap).
         assert!(req.headline.as_deref().unwrap().chars().count() <= 80);
+    }
+}
+
+#[cfg(test)]
+mod unknown_hold_sweep_tests {
+    use super::*;
+    use chrono::{DateTime, Duration, TimeZone, Utc};
+
+    // One connection: every `sqlite::memory:` connection is its own database.
+    async fn pool() -> Pool<Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // The ledger schema adds its rollup columns to `sessions`, so the
+        // base schema has to exist first, exactly as it does in the daemon.
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_cost_ledger_schema(&pool)
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_cost_reservations_schema(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// 2026-09-18T22:30Z: after the E2E row's 20:07Z lease, inside the 6h
+    /// grace a lease-only hold would still get.
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 18, 22, 30, 0).unwrap()
+    }
+
+    async fn hold(
+        pool: &Pool<Sqlite>,
+        invocation: &str,
+        state: &str,
+        amount: f64,
+        lease_until: DateTime<Utc>,
+        marked: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO cost_reservations
+                 (reservation_id, invocation_id, session_id, task_id, amount_usd,
+                  state, lease_until, created_at, updated_at, unknown_marked_at)
+             VALUES (?, ?, '20260918_7', 'task-1', ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(format!("invocation:{invocation}"))
+        .bind(invocation)
+        .bind(amount)
+        .bind(state)
+        .bind(lease_until.to_rfc3339())
+        .bind((lease_until - Duration::hours(2)).to_rfc3339())
+        .bind((lease_until - Duration::hours(2)).to_rfc3339())
+        .bind(marked.then(|| "2026-09-18 18:07:00".to_string()))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn state_of(pool: &Pool<Sqlite>, invocation: &str) -> (String, Option<f64>) {
+        sqlx::query_as(
+            "SELECT state, settled_cost_usd FROM cost_reservations WHERE invocation_id = ?",
+        )
+        .bind(invocation)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// What the Budget view and the admission check both count as held.
+    async fn held_usd(pool: &Pool<Sqlite>) -> f64 {
+        sqlx::query_scalar(
+            "SELECT CAST(COALESCE(SUM(amount_usd), 0.0) AS REAL) FROM cost_reservations
+             WHERE session_id = '20260918_7' AND state IN ('pending', 'unknown')",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// The E2E row: marked `unknown` by the call that dropped (no ledger row),
+    /// lease expired 20:07Z, $1.56 held. The sweep releases it with no new
+    /// turn in that chat, and the session stops counting it.
+    #[tokio::test]
+    async fn the_reported_concluded_hold_is_released_without_a_new_turn() {
+        let pool = pool().await;
+        let lease = Utc.with_ymd_and_hms(2026, 9, 18, 20, 7, 0).unwrap();
+        let id = "e1d47602-5717-47b9-9603-0b86911b4d6f";
+        hold(&pool, id, "unknown", 1.56, lease, true).await;
+        assert!((held_usd(&pool).await - 1.56).abs() < 1e-9);
+
+        let sweep = reconcile_concluded_unknown_holds_at(&pool, now())
+            .await
+            .unwrap();
+
+        assert_eq!(sweep.released, 1);
+        assert_eq!(sweep.settled, 0);
+        assert_eq!(state_of(&pool, id).await, ("released".to_string(), None));
+        assert_eq!(held_usd(&pool).await, 0.0);
+
+        // Idempotent: a second pass finds nothing to do.
+        let again = reconcile_concluded_unknown_holds_at(&pool, now())
+            .await
+            .unwrap();
+        assert_eq!(again, UnknownHoldSweep::default());
+    }
+
+    /// A concluded hold whose call DID bill is settled to the ledger's real
+    /// spend, never dropped: that spend keeps counting toward the ceilings.
+    #[tokio::test]
+    async fn a_concluded_hold_with_a_ledger_row_settles_to_the_recorded_spend() {
+        let pool = pool().await;
+        hold(
+            &pool,
+            "billed",
+            "unknown",
+            1.56,
+            now() - Duration::hours(1),
+            true,
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO cost_ledger (call_id, ts, session_id, task_id, cost_usd)
+             VALUES ('billed', ?, '20260918_7', 'task-1', 0.12)",
+        )
+        .bind(now().to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let sweep = reconcile_concluded_unknown_holds_at(&pool, now())
+            .await
+            .unwrap();
+
+        assert_eq!(sweep.settled, 1);
+        assert_eq!(sweep.released, 0);
+        assert_eq!(
+            state_of(&pool, "billed").await,
+            ("settled".to_string(), Some(0.12))
+        );
+    }
+
+    /// A hold that is `unknown` only because its lease ran out may belong to
+    /// a stream that is still live, so the sweep keeps it for the same 6h
+    /// grace the admission path does, then releases it.
+    #[tokio::test]
+    async fn a_lease_only_hold_waits_out_the_grace_before_release() {
+        let pool = pool().await;
+        let lease = now() - Duration::hours(1);
+        hold(&pool, "maybe-live", "unknown", 0.61, lease, false).await;
+
+        let early = reconcile_concluded_unknown_holds_at(&pool, now())
+            .await
+            .unwrap();
+        assert_eq!(early.still_held, 1);
+        assert_eq!(early.released, 0);
+        assert_eq!(state_of(&pool, "maybe-live").await.0, "unknown");
+
+        let late = reconcile_concluded_unknown_holds_at(
+            &pool,
+            lease + Duration::hours(UNKNOWN_HOLD_GRACE_HOURS),
+        )
+        .await
+        .unwrap();
+        assert_eq!(late.released, 1);
+        assert_eq!(late.still_held, 0);
+        assert_eq!(state_of(&pool, "maybe-live").await.0, "released");
+    }
+
+    /// An expired `pending` hold goes to lease-only `unknown` (held, not
+    /// released); a live `pending` hold and already-final rows are untouched.
+    #[tokio::test]
+    async fn expired_pending_becomes_held_unknown_and_live_rows_are_untouched() {
+        let pool = pool().await;
+        hold(
+            &pool,
+            "expired",
+            "pending",
+            0.61,
+            now() - Duration::minutes(5),
+            false,
+        )
+        .await;
+        hold(
+            &pool,
+            "live",
+            "pending",
+            0.61,
+            now() + Duration::hours(1),
+            false,
+        )
+        .await;
+        hold(
+            &pool,
+            "done",
+            "settled",
+            0.61,
+            now() - Duration::hours(9),
+            false,
+        )
+        .await;
+        hold(
+            &pool,
+            "freed",
+            "released",
+            0.61,
+            now() - Duration::hours(9),
+            true,
+        )
+        .await;
+
+        let sweep = reconcile_concluded_unknown_holds_at(&pool, now())
+            .await
+            .unwrap();
+
+        assert_eq!(sweep.expired_to_unknown, 1);
+        assert_eq!(sweep.still_held, 1);
+        assert_eq!(sweep.released, 0);
+        assert_eq!(state_of(&pool, "expired").await.0, "unknown");
+        assert_eq!(state_of(&pool, "live").await.0, "pending");
+        assert_eq!(state_of(&pool, "done").await.0, "settled");
+        assert_eq!(state_of(&pool, "freed").await.0, "released");
     }
 }
