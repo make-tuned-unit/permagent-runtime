@@ -8,7 +8,7 @@
  * project is known, and is entirely ABSENT (not `null`, not empty string)
  * when no project is open — the UI must never invent one.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from './api';
 
 function mockFetchOk(body: unknown = { id: 'sess-1' }) {
@@ -27,6 +27,13 @@ function sentBody(fetchMock: ReturnType<typeof mockFetchOk>): Record<string, unk
 }
 
 describe('api.createSession', () => {
+  beforeEach(() => {
+    // The client sends nothing from a browser that holds no daemon credential
+    // (an unpaired World tab flooded daemon.err with 401s), so these wire-shape
+    // tests run as a paired browser.
+    vi.stubGlobal('window', { location: { hash: '', pathname: '/', search: '' } });
+    vi.stubGlobal('localStorage', { getItem: () => 'tok-test', setItem: () => undefined });
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
   });

@@ -211,13 +211,50 @@ function invalidateDaemonToken(): void {
 // Kick off token loading immediately so it's ready when needed.
 loadDaemonToken();
 
+/** How often an unpaired browser re-reads its (local) credential while a
+ *  stream waits for one. Only localStorage / the URL fragment is read — no
+ *  request is made — so pairing in another tab is picked up within this. */
+export const UNPAIRED_RECHECK_MS = 5_000;
+let _browserCredentialWait: Promise<string> | null = null;
+
+/** Resolves with the browser's daemon token, waiting (without any network
+ *  traffic) until one exists. One shared wait, however many streams ask, so
+ *  sockets whose owners unmounted meanwhile do not each keep a timer alive. */
+function browserCredential(): Promise<string> {
+  if (_daemonToken) return Promise.resolve(_daemonToken);
+  if (!_browserCredentialWait) {
+    _browserCredentialWait = new Promise<string>(resolve => {
+      const check = () => {
+        void loadDaemonToken().then(token => {
+          if (token) {
+            _browserCredentialWait = null;
+            resolve(token);
+          } else {
+            setTimeout(check, UNPAIRED_RECHECK_MS);
+          }
+        });
+      };
+      check();
+    });
+  }
+  return _browserCredentialWait;
+}
+
 /** URL for the global `/events` WebSocket, daemon token attached (`?token=`).
  *  The browser WebSocket API cannot set an Authorization header, so the token
  *  rides the query string — same contract as the `/voice` WS, validated
  *  server-side by the same fail-closed constant-time core (C1/C2 auth).
  *  Async: waits for the token (Tauri IPC on first call) so the first
- *  connection attempt is already authenticated. */
+ *  connection attempt is already authenticated.
+ *
+ *  In an unpaired browser this resolves only once a credential exists. A
+ *  tokenless socket is refused by the daemon (401), and every caller's
+ *  reconnect loop then retried it forever — the World page left open in
+ *  Chrome put a /events 401 in daemon.err every few seconds. Holding the URL
+ *  back keeps each caller's socket unopened with no change to the callers:
+ *  they all re-check their own disposal after this await. */
 export async function eventsWsUrl(): Promise<string> {
+  if (!isTauri) await browserCredential();
   const token = await getStreamToken();
   const base = getApiBaseUrl().replace(/^http/, 'ws');
   return token ? `${base}/events?token=${encodeURIComponent(token)}` : `${base}/events`;
@@ -495,6 +532,79 @@ export interface PermagentEvent {
 
 // --- Fetch helper ---
 
+/** Daemon routes that answer without a credential: the `public` router in
+ *  crates/goose-server/src/routes/mod.rs (status, version, the loopback
+ *  browser/desktop bridges, pairing). An unpaired browser may still call these;
+ *  every other route is certain to 401 without a token. */
+const PUBLIC_DAEMON_PATHS = [
+  '/status',
+  '/system_info',
+  '/api/system_info',
+  '/api/tailnet/status',
+  '/api/tailnet/access',
+  '/api/version',
+  '/api/desktop',
+  '/api/browser/navigate',
+  '/api/browser/content',
+  '/api/browser/snapshot',
+  '/api/browser/act',
+  '/pair/claim',
+];
+
+export function isPublicDaemonPath(endpoint: string): boolean {
+  const path = endpoint.split(/[?#]/, 1)[0];
+  return PUBLIC_DAEMON_PATHS.some(p => path === p || path.startsWith(`${p}/`));
+}
+
+/** The error a request gets when it is NOT sent because this browser holds no
+ *  credential. Shaped like a daemon 401 (`status: 401`) so callers that map
+ *  statuses keep working, but nothing went over the wire. */
+function unpairedError(endpoint: string): Error & { status: number } {
+  const err = new Error(`${BROWSER_UNPAIRED} (${endpoint} was not sent)`) as Error & { status: number };
+  err.status = 401;
+  return err;
+}
+
+/**
+ * No credential, no request.
+ *
+ * An unpaired browser tab (the standalone World page at
+ * localhost:5173/ui/forum.html, left open in Chrome) sent a steady ~73
+ * requests a minute to the daemon — /api/agent/identity, /api/agents,
+ * /permagent/skills, /api/goals/active, /api/henry/status — and every one was
+ * a guaranteed 401 filling daemon.err. The token check below is local
+ * (localStorage in a browser), so running it on every tick is free and the
+ * first tick after pairing sends the real request. The desktop app never
+ * short-circuits: its token comes over IPC, and a 401 there is the signal
+ * the credential-failure banner is built on.
+ */
+async function requireCredential(endpoint: string): Promise<void> {
+  if (!_daemonToken) await loadDaemonToken();
+  if (_daemonToken || isTauri || isPublicDaemonPath(endpoint)) return;
+  setDaemonTokenError(BROWSER_UNPAIRED);
+  throw unpairedError(endpoint);
+}
+
+/** `fetch` for callers that want the raw Response: the daemon token attached,
+ *  and — for an unpaired browser — a local 401 Response instead of a request
+ *  that could only come back 401 (see `requireCredential`). */
+async function sendAuthed(endpoint: string, init?: RequestInit): Promise<Response> {
+  try {
+    await requireCredential(endpoint);
+  } catch (e) {
+    return new Response(JSON.stringify({ message: (e as Error).message }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(_daemonToken ? { Authorization: `Bearer ${_daemonToken}` } : {}),
+    ...((init?.headers as Record<string, string> | undefined) ?? {}),
+  };
+  return fetch(`${API_BASE_URL}${endpoint}`, { ...init, headers });
+}
+
 function authHeaders(): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (_daemonToken) h['Authorization'] = `Bearer ${_daemonToken}`;
@@ -510,8 +620,9 @@ async function apiFetchOnce<T>(
   options: RequestInit | undefined,
   mayRetryAuth: boolean,
 ): Promise<T> {
-  // Ensure the daemon token is loaded before making any authenticated request.
-  if (!_daemonToken) await loadDaemonToken();
+  // Ensure the daemon token is loaded before making any authenticated request,
+  // and send nothing at all when an unpaired browser has none.
+  await requireCredential(endpoint);
   const url = `${API_BASE_URL}${endpoint}`;
   const method = (options?.method ?? 'GET').toUpperCase();
   let response: Response;
@@ -624,7 +735,7 @@ export interface ReaderDigest {
  * still send the image so visual Q&A works, and fold any OCR that did land.
  */
 export async function readerIngest(file: File): Promise<ReaderDigest> {
-  if (!_daemonToken) await loadDaemonToken();
+  await requireCredential('/api/reader/ingest');
   const form = new FormData();
   form.append('file', file, file.name);
   // Do NOT set Content-Type — the browser adds the multipart boundary.
@@ -659,7 +770,7 @@ export async function uploadFinanceStatement(file: File): Promise<{
   sourceFile: string;
   ocrUsed: boolean;
 }> {
-  if (!_daemonToken) await loadDaemonToken();
+  await requireCredential('/api/finance/statements');
   const form = new FormData();
   form.append('file', file, file.name);
   const headers: Record<string, string> = {};
@@ -718,7 +829,7 @@ export interface UnresolvedPronunciation {
  * assets aren't downloaded yet — callers gate on getVoiceModelStatus first.
  */
 export async function synthesizeVoice(text: string, voiceId?: string | null): Promise<Blob> {
-  if (!_daemonToken) await loadDaemonToken();
+  await requireCredential('/voice/synthesize');
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
   const resp = await fetch(`${API_BASE_URL}/voice/synthesize`, {
@@ -772,7 +883,7 @@ export function extractText(msg: DaemonMessage): string {
  *
  * These ride as `systemNotification` blocks on an assistant frame and carry no
  * text block, so `extractText` returned "" and the whole frame rendered as
- * nothing. That is the silence Jesse hit: both cloud providers were out of
+ * nothing. That is the silence the user hit: both cloud providers were out of
  * credit, the daemon said so on every turn, and the UI threw the explanation
  * away — the agent looked broken when it was actually reporting a billing
  * problem. A notice the user cannot see is the same as no notice at all.
@@ -1239,7 +1350,7 @@ export const api = {
   // watch `bytes` fall from ~700KB toward ~55KB for the same session count.
   getSessions: async (): Promise<SessionSummary[]> => {
     const t0 = performance.now();
-    if (!_daemonToken) await loadDaemonToken();
+    await requireCredential('/api/sessions');
     const res = await fetch(`${API_BASE_URL}/api/sessions`, { headers: authHeaders() });
     const tResp = performance.now();
     if (!res.ok) {
@@ -1689,6 +1800,7 @@ export const api = {
     ),
 
   setProvider: async (provider: string, model: string): Promise<void> => {
+    await requireCredential('/config/set_provider');
     const url = `${API_BASE_URL}/config/set_provider`;
     const response = await fetch(url, {
       method: 'POST',
@@ -1822,7 +1934,7 @@ export const api = {
     for (const file of files) {
       form.append('files', file, file.name);
     }
-    if (!_daemonToken) await loadDaemonToken();
+    await requireCredential('/api/sessions/upload');
     const headers: Record<string, string> = {};
     if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
 
@@ -1841,9 +1953,9 @@ export const api = {
     `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
 
   deleteAttachment: (sessionId: string, attachmentId: string) =>
-    fetch(
-      `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
-      { method: 'DELETE', headers: authHeaders() },
+    sendAuthed(
+      `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { method: 'DELETE' },
     ),
 
   // ── Project documents (#471 Layer 2) ──────────────────────────────────────
@@ -1859,7 +1971,7 @@ export const api = {
   ): Promise<{ documents: ProjectDocument[] }> => {
     const form = new FormData();
     for (const file of files) form.append('files', file, file.name);
-    if (!_daemonToken) await loadDaemonToken();
+    await requireCredential('/api/projects/documents');
     const headers: Record<string, string> = {};
     if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
     const response = await fetch(
@@ -1876,7 +1988,7 @@ export const api = {
   /** Fetch a document's bytes (authed) as a Blob — the viewer wraps it in an
    *  object URL so `<img>`/`<iframe>` render it without a token in the URL. */
   fetchProjectDocumentBlob: async (projectId: string, docId: string): Promise<Blob> => {
-    if (!_daemonToken) await loadDaemonToken();
+    await requireCredential('/api/projects/documents');
     const response = await fetch(
       `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(docId)}`,
       { headers: authHeaders() },
@@ -1886,7 +1998,7 @@ export const api = {
   },
 
   fetchGrowMediaBlob: async (projectId: string, cardId: string, filename: string): Promise<Blob> => {
-    if (!_daemonToken) await loadDaemonToken();
+    await requireCredential('/api/projects/cards/media');
     const response = await fetch(
       `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(cardId)}/media/${encodeURIComponent(filename)}`,
       { headers: authHeaders() },
@@ -1897,9 +2009,9 @@ export const api = {
 
   /** Delete a project document (row + on-disk file). */
   deleteProjectDocument: (projectId: string, docId: string) =>
-    fetch(
-      `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(docId)}`,
-      { method: 'DELETE', headers: authHeaders() },
+    sendAuthed(
+      `/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(docId)}`,
+      { method: 'DELETE' },
     ),
 
   // ── Project memories (the Brain-loop read side, #587-adjacent) ─────────────
@@ -1927,9 +2039,9 @@ export const api = {
 
   /** Delete a project note (and best-effort disassociate its Brain memory). */
   deleteProjectNote: (projectId: string, noteId: string) =>
-    fetch(
-      `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`,
-      { method: 'DELETE', headers: authHeaders() },
+    sendAuthed(
+      `/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`,
+      { method: 'DELETE' },
     ),
 
   // ── Project code index (parse a codebase into the Brain, #471) ─────────────
@@ -1942,7 +2054,7 @@ export const api = {
   indexProjectCode: async (
     projectId: string,
   ): Promise<{ indexed: boolean; files: number; memoryKey: string }> => {
-    if (!_daemonToken) await loadDaemonToken();
+    await requireCredential('/api/projects/index-code');
     const response = await fetch(
       `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/index-code`,
       { method: 'POST', headers: authHeaders() },
@@ -1968,7 +2080,7 @@ export const api = {
    *  Whisper model. A 503 means dictation isn't set up on this install — the
    *  caller should surface that as a setup prompt, not a hard error. */
   transcribeAudio: async (audio: Blob): Promise<{ text: string }> => {
-    if (!_daemonToken) await loadDaemonToken();
+    await requireCredential('/api/dictation/transcribe');
     const form = new FormData();
     form.append('file', audio, 'dictation.wav');
     // Only Authorization — NOT Content-Type: the browser must add the multipart
@@ -2028,15 +2140,8 @@ export const api = {
   getInbox: () => apiFetch<InboxFile[]>('/api/inbox'),
 
   /** Fetch with daemon Bearer token auth (for /activity/* endpoints). */
-  fetchAuthed: async (endpoint: string, options?: RequestInit): Promise<Response> => {
-    const token = _daemonToken ?? await loadDaemonToken();
-    const url = `${API_BASE_URL}${endpoint}`;
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    };
-    return fetch(url, { ...options, headers: { ...headers, ...(options?.headers as Record<string, string> ?? {}) } });
-  },
+  fetchAuthed: (endpoint: string, options?: RequestInit): Promise<Response> =>
+    sendAuthed(endpoint, options),
 
   // ── System info (#381: wizard hardware scan) ────────────────────
 
@@ -2083,7 +2188,7 @@ export const api = {
     const url = `${API_BASE_URL}/api/ollama/pull`;
     const controller = new AbortController();
     const promise = (async () => {
-      if (!_daemonToken) await loadDaemonToken();
+      await requireCredential('/api/ollama/pull');
       const resp = await fetch(url, {
         method: 'POST',
         headers: authHeaders(),
@@ -2147,6 +2252,7 @@ export const api = {
     run_if_launched_in_window: boolean;
     pruning_enabled?: boolean;
   }) => {
+    await requireCredential('/api/librarian/schedule');
     const url = `${API_BASE_URL}/api/librarian/schedule`;
     const resp = await fetch(url, {
       method: 'PUT',
@@ -2248,6 +2354,7 @@ export const api = {
     }>('/api/agents'),
 
   runLibrarianNow: async () => {
+    await requireCredential('/api/librarian/run-now');
     const url = `${API_BASE_URL}/api/librarian/run-now`;
     const resp = await fetch(url, {
       method: 'POST',

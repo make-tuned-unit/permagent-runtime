@@ -68,7 +68,16 @@ describe('token attachment (paired browser device)', () => {
     await expect(fresh.eventsWsUrl()).resolves.toBe('/events?token=tok%20456');
   });
 
-  it('eventsWsUrl falls back to the bare URL when no token exists', async () => {
-    await expect(eventsWsUrl()).resolves.toBe('/events');
+  // No longer "falls back to the bare URL": a tokenless /events socket is a
+  // guaranteed 401, and an unpaired World tab reopened one every few seconds
+  // into daemon.err (2026-09-19). The URL is now held back until a credential
+  // exists — apiUnpaired.test.ts pins the wait and the resume.
+  it('eventsWsUrl does not hand out a tokenless URL', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const settled = await Promise.race([
+      eventsWsUrl().then(() => 'resolved'),
+      new Promise(r => setTimeout(() => r('pending'), 50)),
+    ]);
+    expect(settled).toBe('pending');
   });
 });

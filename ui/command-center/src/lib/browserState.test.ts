@@ -20,6 +20,11 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
+  // The client sends nothing from a browser that holds no daemon credential
+  // (an unpaired World tab flooded daemon.err with 401s), so these wire-shape
+  // tests run as a paired browser.
+  vi.stubGlobal('window', { location: { hash: '', pathname: '/', search: '' } });
+  vi.stubGlobal('localStorage', { getItem: () => 'tok-test', setItem: () => undefined });
 });
 
 afterEach(() => {

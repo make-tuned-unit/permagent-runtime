@@ -6,6 +6,7 @@
 //                          in the daemon runtime registry — the poll reports it so
 //                          it survives instead of being clobbered back to working),
 //                          fetch/parse failure → error (daemon unreachable IS a real signal)
+//                          no credential → error, and NO request: see the poll.
 //   Librarian  'daemon'  /events WebSocket (read-only). Wire types are
 //                          snake_case (PermagentEventType has
 //                          #[serde(rename_all = "snake_case")] and the envelope
@@ -21,7 +22,7 @@
 //                          follow-up (cf. issue #288 daemon AgentStateChanged).
 
 import { useEffect } from 'react';
-import { api } from '../../../lib/api';
+import { api, loadDaemonToken } from '../../../lib/api';
 import { useCommandCenter } from '../../../lib/store';
 import { setAgentSource } from '../shared/agentStatus';
 import { subscribeWorldEvents } from '../shared/worldEvents';
@@ -59,6 +60,23 @@ export function AgentStateSources() {
       if (polling || cancelled) return;
       polling = true;
       try {
+        // No credential, no request. A World with no token cannot be answered —
+        // the daemon 401s every call — so asking every 2s is pure noise. That is
+        // what happened on 2026-09-19: an unpaired `forum.html` tab in Chrome,
+        // proxied through Vite, sent /api/henry/status 30 times a minute for
+        // hours (804 x 401 in 11 minutes across the World's pollers) and
+        // drowned the daemon's access log. The reading is the same one a 401
+        // produced — Henry cannot be seen, so 'error' — but it costs no
+        // network. `loadDaemonToken` is local (localStorage in a browser, IPC
+        // in the app) and re-checks on every tick, so pairing this browser, or
+        // the app's token read recovering, resumes the real poll on its own.
+        if (!(await loadDaemonToken())) {
+          if (!cancelled) {
+            setAgentSource('henry', useCommandCenter.getState().agentName, 'error', 'daemon');
+            setHenryWork({ tool: null, tasksInFlight: 0 });
+          }
+          return;
+        }
         const s = await api.getHenryStatus();
         if (cancelled) return;
         // Fall back to the STORE's agent name, never a literal — "Henry" is
@@ -200,8 +218,10 @@ export function AgentStateSources() {
     const names = new Map(simAgents.map((a) => [a.id, a.name]));
 
     // Roster consumption: pick up display names from the daemon when present.
-    api
-      .getAgents()
+    // Only with a credential — unpaired, the call is a guaranteed 401 (see the
+    // Henry poll above) and the local names are already the fallback.
+    loadDaemonToken()
+      .then((token) => (token ? api.getAgents() : { agents: [] }))
       .then(({ agents }) => {
         if (cancelled) return;
         for (const a of agents) {
