@@ -178,6 +178,31 @@ describe('every top-level view uses the shared header', () => {
   }
 });
 
+// The Home header is the one QA judges the rail/header junction on ("1px or
+// 2px where the glass rail meets the glass header"). The seamed rim only
+// reaches that junction while Home wears the GLASS header: hand Home a
+// `surface` and it swaps to the opaque fill plus a plain `borderBottom`, and a
+// live capture of Home stops testing the seam at all. Home's scroll container
+// sits below the bar, so it has no need for the hard scroll edge. Source-level
+// on purpose: it reads the top-level props of Dashboard's <ViewHeader>
+// (indented one level inside it), not props of the JSX nested in them.
+describe('Home wears the glass header the rail seam is judged against', () => {
+  it('Dashboard passes no `surface` to its ViewHeader', () => {
+    const source = readFileSync(join(__dirname, '..', 'dashboard', 'Dashboard.tsx'), 'utf8');
+    const open = source.search(/^( *)<ViewHeader\b/m);
+    expect(open, 'Dashboard no longer renders <ViewHeader>').toBeGreaterThan(-1);
+    const indent = /^( *)/.exec(source.slice(open))![1];
+    const close = source.indexOf(`\n${indent}/>`, open);
+    expect(close, 'could not find the end of Dashboard\'s <ViewHeader>').toBeGreaterThan(open);
+    const topLevelProps = source.slice(open, close)
+      .split('\n')
+      .map(line => new RegExp(`^${indent}  ([A-Za-z]+)=`).exec(line)?.[1])
+      .filter((p): p is string => !!p);
+    expect(topLevelProps).toContain('title');
+    expect(topLevelProps).not.toContain('surface');
+  });
+});
+
 // The two screens that used to paint their own hard-scroll-edge fill by hand
 // (#1180's grow/ wrapper div, #1164's chat dock header) now go through
 // ViewHeader's `surface` prop / `hardScrollEdgeSurface` instead — this pins
