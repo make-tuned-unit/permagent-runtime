@@ -321,6 +321,17 @@ pub struct Agent {
     /// turn's own visible text stays scrubbed of raw provider payloads,
     /// unchanged.
     last_context_length_failure: Mutex<Option<String>>,
+    /// Test seam for the mid-turn switch: when set, the next
+    /// `switch_to_permanent_failure_fallback` uses this target and provider
+    /// instead of probing config and building one by name, so the reply-loop
+    /// tests can drive a real failover with in-memory providers.
+    #[cfg(test)]
+    test_failover: Mutex<Option<(crate::cost_router::role_map::RoleModel, Arc<dyn Provider>)>>,
+    /// Every `request_tokens` the mid-turn switch was called with, recorded
+    /// before the seam above replaces the choice, so a reply-loop test can
+    /// prove the arms pass the failed request's real size to it.
+    #[cfg(test)]
+    test_failover_request_tokens: Mutex<Vec<Option<usize>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -521,6 +532,39 @@ async fn persist_turn_ending_message(
     }
 }
 
+/// Save what this turn already streamed, THEN the turn-ending notice.
+///
+/// A transient error after text reached the user (a body cut off, a socket
+/// reset, an SSE `error` chunk mid-answer) ends the turn with a notice that
+/// asks for a resend. That notice was saved at once, while the half answer
+/// above it on screen was still queued in `streamed` and only saved at the end
+/// of the iteration, so the saved transcript read [notice, half answer]. The
+/// desktop reloads the transcript when a turn ends, so the "stream dropped"
+/// line jumped ABOVE the answer it explains and the session ended on a
+/// truncated reply with nothing under it: the wording QA could not confirm on
+/// 2026-09-19. Saving the streamed part first keeps the saved order the order
+/// the user saw. The same coalescing as the end-of-iteration save, so a
+/// reasoning item and its text stay one message.
+async fn persist_streamed_then_notice(
+    session_manager: &Arc<crate::session::SessionManager>,
+    session_id: &str,
+    streamed: &mut Conversation,
+    conversation: &mut Conversation,
+    notice: &Message,
+) {
+    if !streamed.is_empty() {
+        let (coalesced, _) = coalesce_turn_messages(streamed.messages().clone());
+        for message in &coalesced {
+            if let Err(e) = session_manager.add_message(session_id, message).await {
+                warn!("Failed to persist the text streamed before a turn-ending error: {e}");
+            }
+        }
+        conversation.extend(coalesced);
+        *streamed = Conversation::default();
+    }
+    persist_turn_ending_message(session_manager, session_id, notice).await;
+}
+
 impl Agent {
     pub fn new() -> Self {
         let config = Config::global();
@@ -575,6 +619,10 @@ impl Agent {
             container: Mutex::new(None),
             last_extension_config_mtime: Mutex::new(None),
             last_context_length_failure: Mutex::new(None),
+            #[cfg(test)]
+            test_failover: Mutex::new(None),
+            #[cfg(test)]
+            test_failover_request_tokens: Mutex::new(Vec::new()),
         }
     }
 
@@ -2102,6 +2150,18 @@ impl Agent {
             // out of credit would ping-pong the turn forever — the same
             // unbounded-retry defect this PR removes from the retry layer.
             let mut permanent_failure_fallback_used = false;
+            // The provider this reply failed over FROM, set by every arm that
+            // sets `permanent_failure_fallback_used`. The context-overflow arm
+            // reads it to tell a stand-in's small window from a long history,
+            // and switches the session back to it (see that arm).
+            let mut failed_over_from: Option<Arc<dyn Provider>> = None;
+            // Why it failed over, when that was a billing or auth rejection
+            // (its payload-free summary). The overflow arm hands the session
+            // back either way, but must not tell the user to "resend once it is
+            // reachable" to a provider that rejects every request until its
+            // credit or key is fixed: the resend would fail over to the same
+            // stand-in and be refused again.
+            let mut failed_over_permanent_cause: Option<String> = None;
             // R28a (HARNESS_LOOP_LOG.md "A27 analysis" misses 1/2): fires at
             // most once per reply, mirroring `monologue_nudged` above — see
             // `after_turn::turn_budget_nudge_text`'s own doc comment for why
@@ -2835,6 +2895,83 @@ impl Agent {
                         Err(ref provider_err @ ProviderError::ContextLengthExceeded(_)) => {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+
+                            // Right after a failover to a LOCAL model, an
+                            // overflow is the stand-in's small window, not a
+                            // long history: the 2026-09-19 QA CLI run's system
+                            // prompt and tools alone came to 62,364 tokens
+                            // against the 32,768 Ollama serves qwen2.5:7b in
+                            // (cli log 20260919_030958). The installed build
+                            // let Ollama truncate that silently at n_ctx 4096;
+                            // the Ollama preflight now refuses it instead. The
+                            // switch refuses a model that small by its own
+                            // count, so this arm is for when the preflight
+                            // still says no. Compacting would have the 7B
+                            // stand-in summarise the user's conversation and
+                            // still end on "context limit still exceeded".
+                            //
+                            // Ending the turn is not enough on its own: the
+                            // switch saved the stand-in as the session's model,
+                            // so the user's resend went back to the same window,
+                            // and `reply()`'s start-of-turn auto-compact judged
+                            // the last cloud request's token count against the
+                            // stand-in's window and summarised the history
+                            // anyway. Switch the session back to the model it
+                            // failed over from before saying so.
+                            if let Some(previous) = failed_over_from.clone() {
+                                let live = self.provider().await.ok().map(|p| {
+                                    crate::cost_router::role_map::RoleModel {
+                                        provider: p.get_name().to_string(),
+                                        model: p.get_model_config().model_name,
+                                    }
+                                });
+                                if let Some(stand_in) = live.filter(|t| {
+                                    crate::cost_router::fallback::is_local_model(&t.provider, &t.model)
+                                }) {
+                                    error!("Error: {}", provider_err);
+                                    self.record_context_length_failure(provider_err.to_string()).await;
+                                    let from = previous.get_name().to_string();
+                                    let restored = match self
+                                        .update_provider(Arc::clone(&previous), &session_config.id)
+                                        .await
+                                    {
+                                        Ok(()) => true,
+                                        Err(e) => {
+                                            warn!(
+                                                session_id = %session_config.id,
+                                                to_provider = %from,
+                                                error = %e,
+                                                "could not switch back from a local stand-in that was too small"
+                                            );
+                                            false
+                                        }
+                                    };
+                                    tracing::warn!(
+                                        target: "permagent::cost_router",
+                                        session_id = %session_config.id,
+                                        from_provider = %stand_in.provider,
+                                        from_model = %stand_in.model,
+                                        to_provider = %from,
+                                        restored,
+                                        reason = "local_fallback_overflow",
+                                        "routing snapshot: switched back after the local stand-in's window refused the request"
+                                    );
+                                    let message = Message::assistant().with_system_notification(
+                                        SystemNotificationType::InlineMessage,
+                                        crate::cost_router::fallback::local_fallback_overflow_reply(
+                                            &from,
+                                            &stand_in,
+                                            restored,
+                                            failed_over_permanent_cause.as_deref(),
+                                        ),
+                                    );
+                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                                    yield AgentEvent::Message(message);
+                                    state_guard.mark_error();
+                                    break;
+                                }
+                            }
+
                             compaction_attempts += 1;
 
                             if compaction_attempts >= 2 {
@@ -2931,9 +3068,17 @@ impl Agent {
                             let fallback = if permanent_failure_fallback_used {
                                 None
                             } else {
+                                let request_tokens = Self::failover_request_tokens(
+                                    &system_prompt,
+                                    conversation_with_moim.messages(),
+                                    &tools,
+                                )
+                                .await;
                                 self.switch_to_permanent_failure_fallback(
                                     &session_config.id,
                                     &failed_provider,
+                                    provider_err,
+                                    request_tokens,
                                 ).await
                             };
 
@@ -2947,6 +3092,8 @@ impl Agent {
                                 // Finish the turn on the new model instead of ending
                                 // the session: the same shape as recovery compaction.
                                 permanent_failure_fallback_used = true;
+                                failed_over_from = Some(Arc::clone(&turn_provider));
+                                failed_over_permanent_cause = Some(provider_err.user_facing_summary());
                                 did_switch_provider_this_iteration = true;
                                 let message = Message::assistant().with_system_notification(
                                     SystemNotificationType::InlineMessage,
@@ -2968,12 +3115,28 @@ impl Agent {
                             );
                             // Persist, so the explanation survives a reload rather
                             // than leaving the session ending on an unanswered turn.
-                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            persist_streamed_then_notice(
+                                &session_manager,
+                                &session_config.id,
+                                &mut messages_to_add,
+                                &mut conversation,
+                                &message,
+                            )
+                            .await;
                             yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
                         }
-                        Err(ref provider_err) if provider_err.is_stream_decode() => {
+                        // `is_dropped_stream`, not `is_stream_decode`: a body a
+                        // proxy or llama-server closed partway through a
+                        // `data:` line reaches here as `RequestFailed("Failed
+                        // to parse streaming chunk: EOF while parsing …")`,
+                        // and the RequestFailed arm below told the user the
+                        // provider "rejected this request as invalid" and to
+                        // switch models, for a stream that simply dropped.
+                        Err(ref provider_err)
+                            if crate::cost_router::fallback::is_dropped_stream(provider_err) =>
+                        {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
                             error!("Error: {}", provider_err);
@@ -2986,41 +3149,30 @@ impl Agent {
                                 provider_err,
                             ) && !permanent_failure_fallback_used
                             {
-                                let failed_provider = match self.provider().await {
-                                    Ok(p) => p.get_name().to_string(),
-                                    Err(_) => "the model provider".to_string(),
-                                };
-                                if let Some(target) = self
-                                    .switch_to_permanent_failure_fallback(
+                                let request_tokens = Self::failover_request_tokens(
+                                    &system_prompt,
+                                    conversation_with_moim.messages(),
+                                    &tools,
+                                )
+                                .await;
+                                if let Some(message) = self
+                                    .fail_over_before_commit(
                                         &session_config.id,
-                                        &failed_provider,
+                                        &turn_provider,
+                                        provider_err,
+                                        request_tokens,
                                     )
                                     .await
                                 {
-                                    tracing::info!(
-                                        target: "permagent::cost_router",
-                                        session_id = %session_config.id,
-                                        from_provider = %failed_provider,
-                                        to_provider = %target.provider,
-                                        to_model = %target.model,
-                                        "pre-commit failover after a stream decode error"
-                                    );
                                     permanent_failure_fallback_used = true;
+                                    failed_over_from = Some(Arc::clone(&turn_provider));
+                                    failed_over_permanent_cause = None;
                                     did_switch_provider_this_iteration = true;
                                     // M2b: this arm was the last silent one. A
                                     // dropped SSE body switched the model with
                                     // nothing in the transcript to say so, which
                                     // is the same dishonesty the NetworkError
                                     // sibling below already stopped doing.
-                                    let message = Message::assistant().with_system_notification(
-                                        SystemNotificationType::InlineMessage,
-                                        crate::cost_router::fallback::precommit_failover_reply(
-                                            &failed_provider,
-                                            provider_err,
-                                            &target,
-                                        ),
-                                    );
-                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
                                     yield AgentEvent::Message(message);
                                     break;
                                 }
@@ -3033,7 +3185,14 @@ impl Agent {
                             let message = Message::assistant().with_text(
                                 "The model stream dropped before the reply finished.\n\nPlease resend your message to try again."
                             );
-                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            persist_streamed_then_notice(
+                                &session_manager,
+                                &session_config.id,
+                                &mut messages_to_add,
+                                &mut conversation,
+                                &message,
+                            )
+                            .await;
                             yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
@@ -3047,26 +3206,24 @@ impl Agent {
                                 provider_err,
                             ) && !permanent_failure_fallback_used
                             {
-                                let failed_provider = match self.provider().await {
-                                    Ok(p) => p.get_name().to_string(),
-                                    Err(_) => "the model provider".to_string(),
-                                };
-                                if let Some(target) = self
-                                    .switch_to_permanent_failure_fallback(
+                                let request_tokens = Self::failover_request_tokens(
+                                    &system_prompt,
+                                    conversation_with_moim.messages(),
+                                    &tools,
+                                )
+                                .await;
+                                if let Some(message) = self
+                                    .fail_over_before_commit(
                                         &session_config.id,
-                                        &failed_provider,
+                                        &turn_provider,
+                                        provider_err,
+                                        request_tokens,
                                     )
                                     .await
                                 {
-                                    tracing::info!(
-                                        target: "permagent::cost_router",
-                                        session_id = %session_config.id,
-                                        from_provider = %failed_provider,
-                                        to_provider = %target.provider,
-                                        to_model = %target.model,
-                                        "pre-commit failover after a transient network error"
-                                    );
                                     permanent_failure_fallback_used = true;
+                                    failed_over_from = Some(Arc::clone(&turn_provider));
+                                    failed_over_permanent_cause = None;
                                     did_switch_provider_this_iteration = true;
                                     // M2: this switch used to be SILENT — the
                                     // one-line daemon warn was its entire trace,
@@ -3076,15 +3233,6 @@ impl Agent {
                                     // it the way the CreditsExhausted sibling
                                     // already does. The turn still finishes on the
                                     // new model; only the silence is removed.
-                                    let message = Message::assistant().with_system_notification(
-                                        SystemNotificationType::InlineMessage,
-                                        crate::cost_router::fallback::precommit_failover_reply(
-                                            &failed_provider,
-                                            provider_err,
-                                            &target,
-                                        ),
-                                    );
-                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
                                     yield AgentEvent::Message(message);
                                     break;
                                 }
@@ -3096,7 +3244,14 @@ impl Agent {
                             let message = Message::assistant().with_text(
                                 format!("{provider_err}\n\nPlease resend your message to try again.")
                             );
-                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            persist_streamed_then_notice(
+                                &session_manager,
+                                &session_config.id,
+                                &mut messages_to_add,
+                                &mut conversation,
+                                &message,
+                            )
+                            .await;
                             yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
@@ -3127,14 +3282,24 @@ impl Agent {
                             let fallback = if permanent_failure_fallback_used {
                                 None
                             } else {
+                                let request_tokens = Self::failover_request_tokens(
+                                    &system_prompt,
+                                    conversation_with_moim.messages(),
+                                    &tools,
+                                )
+                                .await;
                                 self.switch_to_permanent_failure_fallback(
                                     &session_config.id,
                                     &failed_provider,
+                                    provider_err,
+                                    request_tokens,
                                 ).await
                             };
 
                             if let Some(ref target) = fallback {
                                 permanent_failure_fallback_used = true;
+                                failed_over_from = Some(Arc::clone(&turn_provider));
+                                failed_over_permanent_cause = Some(provider_err.user_facing_summary());
                                 did_switch_provider_this_iteration = true;
                                 let message = Message::assistant().with_system_notification(
                                     SystemNotificationType::InlineMessage,
@@ -3159,7 +3324,14 @@ impl Agent {
                                      Check that the provider's API key is set, valid, and has the required permissions, then resend your message."
                                 )
                             );
-                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            persist_streamed_then_notice(
+                                &session_manager,
+                                &session_config.id,
+                                &mut messages_to_add,
+                                &mut conversation,
+                                &message,
+                            )
+                            .await;
                             yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
@@ -3184,6 +3356,40 @@ impl Agent {
                                 Ok(provider) => provider.get_name().to_string(),
                                 Err(_) => String::new(),
                             };
+                            // Before giving up, move a turn that has shown the
+                            // user nothing yet. `may_silent_precommit_failover`
+                            // has always accepted a spent rate limit, but this
+                            // arm sits ahead of the generic one that called it,
+                            // so a rate-limited cloud model ended the turn even
+                            // with a free local model up on this machine.
+                            if crate::cost_router::fallback::may_silent_precommit_failover(
+                                stream_committed,
+                                provider_err,
+                            ) && !permanent_failure_fallback_used
+                            {
+                                let request_tokens = Self::failover_request_tokens(
+                                    &system_prompt,
+                                    conversation_with_moim.messages(),
+                                    &tools,
+                                )
+                                .await;
+                                if let Some(message) = self
+                                    .fail_over_before_commit(
+                                        &session_config.id,
+                                        &turn_provider,
+                                        provider_err,
+                                        request_tokens,
+                                    )
+                                    .await
+                                {
+                                    permanent_failure_fallback_used = true;
+                                    failed_over_from = Some(Arc::clone(&turn_provider));
+                                    failed_over_permanent_cause = None;
+                                    did_switch_provider_this_iteration = true;
+                                    yield AgentEvent::Message(message);
+                                    break;
+                                }
+                            }
                             let message = Message::assistant().with_system_notification(
                                 SystemNotificationType::InlineMessage,
                                 format!(
@@ -3192,7 +3398,14 @@ impl Agent {
                                     crate::providers::wait_status::rate_limit_headline(&provider_id),
                                 ),
                             );
-                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            persist_streamed_then_notice(
+                                &session_manager,
+                                &session_config.id,
+                                &mut messages_to_add,
+                                &mut conversation,
+                                &message,
+                            )
+                            .await;
                             yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
@@ -3208,7 +3421,14 @@ impl Agent {
                             let message = Message::assistant().with_text(
                                 format!("Ran into this error: {provider_err}.\n\nThe provider rejected this request as invalid, so sending it again unchanged will fail the same way. Switch the model (Settings → Models), or start a new session, then resend your message.")
                             );
-                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            persist_streamed_then_notice(
+                                &session_manager,
+                                &session_config.id,
+                                &mut messages_to_add,
+                                &mut conversation,
+                                &message,
+                            )
+                            .await;
                             yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
@@ -3295,6 +3515,43 @@ impl Agent {
                                         error = %retry_error,
                                         "provider_stall: the retry attempt itself could not start a new stream"
                                     );
+                                    // Nothing reached the user and the stalled
+                                    // provider cannot be retried, so this is the
+                                    // same place as the give-up arm below: move
+                                    // the turn to a model that is up rather than
+                                    // ask for a resend. This branch used to end
+                                    // the turn with no failover attempt at all.
+                                    // The clause is the stall's own ("sent
+                                    // nothing back in time"), not the
+                                    // reservation error that stopped the retry.
+                                    if crate::cost_router::fallback::may_silent_precommit_failover(
+                                        stream_committed,
+                                        provider_err,
+                                    ) && !permanent_failure_fallback_used
+                                    {
+                                        let request_tokens = Self::failover_request_tokens(
+                                            &system_prompt,
+                                            conversation_with_moim.messages(),
+                                            &tools,
+                                        )
+                                        .await;
+                                        if let Some(message) = self
+                                            .fail_over_before_commit(
+                                                &session_config.id,
+                                                &turn_provider,
+                                                provider_err,
+                                                request_tokens,
+                                            )
+                                            .await
+                                        {
+                                            permanent_failure_fallback_used = true;
+                                            failed_over_from = Some(Arc::clone(&turn_provider));
+                                            failed_over_permanent_cause = None;
+                                            did_switch_provider_this_iteration = true;
+                                            yield AgentEvent::Message(message);
+                                            break;
+                                        }
+                                    }
                                     let message = Message::assistant().with_system_notification(
                                         SystemNotificationType::InlineMessage,
                                         format!(
@@ -3304,7 +3561,14 @@ impl Agent {
                                             turn_provider.get_name(),
                                         ),
                                     );
-                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                                    persist_streamed_then_notice(
+                                        &session_manager,
+                                        &session_config.id,
+                                        &mut messages_to_add,
+                                        &mut conversation,
+                                        &message,
+                                    )
+                                    .await;
                                     yield AgentEvent::Message(message);
                                     state_guard.mark_error();
                                     break;
@@ -3350,6 +3614,39 @@ impl Agent {
                                 retried = first_byte_stall_retried,
                                 "provider_stall: first-byte stall persisted; ending the turn without a retry left"
                             );
+                            // The provider stayed silent through its one retry.
+                            // Nothing reached the user, so move the turn to the
+                            // next model that is actually up instead of asking
+                            // for a resend (the split under load, or a cloud
+                            // queue, while Ollama sits idle on this machine).
+                            if crate::cost_router::fallback::may_silent_precommit_failover(
+                                stream_committed,
+                                provider_err,
+                            ) && !permanent_failure_fallback_used
+                            {
+                                let request_tokens = Self::failover_request_tokens(
+                                    &system_prompt,
+                                    conversation_with_moim.messages(),
+                                    &tools,
+                                )
+                                .await;
+                                if let Some(message) = self
+                                    .fail_over_before_commit(
+                                        &session_config.id,
+                                        &turn_provider,
+                                        provider_err,
+                                        request_tokens,
+                                    )
+                                    .await
+                                {
+                                    permanent_failure_fallback_used = true;
+                                    failed_over_from = Some(Arc::clone(&turn_provider));
+                                    failed_over_permanent_cause = None;
+                                    did_switch_provider_this_iteration = true;
+                                    yield AgentEvent::Message(message);
+                                    break;
+                                }
+                            }
                             let message = Message::assistant().with_system_notification(
                                 SystemNotificationType::InlineMessage,
                                 format!(
@@ -3358,7 +3655,14 @@ impl Agent {
                                     provider_err.user_facing_summary(),
                                 ),
                             );
-                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            persist_streamed_then_notice(
+                                &session_manager,
+                                &session_config.id,
+                                &mut messages_to_add,
+                                &mut conversation,
+                                &message,
+                            )
+                            .await;
                             yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
@@ -3372,26 +3676,24 @@ impl Agent {
                                 provider_err,
                             ) && !permanent_failure_fallback_used
                             {
-                                let failed_provider = match self.provider().await {
-                                    Ok(p) => p.get_name().to_string(),
-                                    Err(_) => "the model provider".to_string(),
-                                };
-                                if let Some(target) = self
-                                    .switch_to_permanent_failure_fallback(
+                                let request_tokens = Self::failover_request_tokens(
+                                    &system_prompt,
+                                    conversation_with_moim.messages(),
+                                    &tools,
+                                )
+                                .await;
+                                if let Some(message) = self
+                                    .fail_over_before_commit(
                                         &session_config.id,
-                                        &failed_provider,
+                                        &turn_provider,
+                                        provider_err,
+                                        request_tokens,
                                     )
                                     .await
                                 {
-                                    tracing::info!(
-                                        target: "permagent::cost_router",
-                                        session_id = %session_config.id,
-                                        from_provider = %failed_provider,
-                                        to_provider = %target.provider,
-                                        to_model = %target.model,
-                                        "pre-commit failover after a transient provider error"
-                                    );
                                     permanent_failure_fallback_used = true;
+                                    failed_over_from = Some(Arc::clone(&turn_provider));
+                                    failed_over_permanent_cause = None;
                                     did_switch_provider_this_iteration = true;
                                     // The last arm that still switched in
                                     // silence. A 5xx from the split inside its
@@ -3402,15 +3704,6 @@ impl Agent {
                                     // announcement as the NetworkError and
                                     // stream-drop siblings; the clause picks
                                     // "returned a server error" by variant.
-                                    let message = Message::assistant().with_system_notification(
-                                        SystemNotificationType::InlineMessage,
-                                        crate::cost_router::fallback::precommit_failover_reply(
-                                            &failed_provider,
-                                            provider_err,
-                                            &target,
-                                        ),
-                                    );
-                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
                                     yield AgentEvent::Message(message);
                                     break;
                                 }
@@ -3434,7 +3727,14 @@ impl Agent {
                             let message = Message::assistant().with_text(
                                 format!("Ran into this error: {provider_err}.\n\n{advice}")
                             );
-                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            persist_streamed_then_notice(
+                                &session_manager,
+                                &session_config.id,
+                                &mut messages_to_add,
+                                &mut conversation,
+                                &message,
+                            )
+                            .await;
                             yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
@@ -3501,7 +3801,15 @@ impl Agent {
                     )
                     .await?;
                 }
-                if tools_updated {
+                // A mid-turn failover re-runs this turn on a different model,
+                // so the prompt must be rebuilt for it. `prepare_tools_and_prompt`
+                // is where the live model identity line and the model family's
+                // overlay are written, and the re-run otherwise reused the
+                // prompt built for the model that just failed: the Ollama
+                // stand-in was told it was claude-haiku-4-5, the 2026-08-31
+                // wrong-identity defect again, one layer down.
+                let refresh_prompt = tools_updated || did_switch_provider_this_iteration;
+                if refresh_prompt {
                     (tools, toolshim_tools, system_prompt) =
                         self.prepare_tools_and_prompt(&session_config.id, &session.working_dir).await?;
                 }
@@ -3512,7 +3820,7 @@ impl Agent {
                         .lock()
                         .await
                         .load_subdirectory_hints(&working_dir);
-                    if has_new_hints && !tools_updated {
+                    if has_new_hints && !refresh_prompt {
                         (tools, toolshim_tools, system_prompt) =
                             self.prepare_tools_and_prompt(&session_config.id, &session.working_dir).await?;
                     }
@@ -3913,8 +4221,12 @@ impl Agent {
             .context("Failed to persist provider config to session")
     }
 
-    /// Swap the live provider after the current one PERMANENTLY rejected the
-    /// request (billing / auth), so the turn can finish on another model.
+    /// Swap the live provider after the current one rejected the request
+    /// permanently (billing / auth) or failed before anything was committed
+    /// (see `fail_over_before_commit`), so the turn can finish on another
+    /// model. `cause` is the error behind the switch, logged as the reason;
+    /// `request_tokens` is the size of the request that failed, so a local
+    /// model whose window cannot hold it is never chosen.
     ///
     /// Returns the target that is now live, or `None` when nothing is
     /// configured to fall back to — the caller must then say so plainly rather
@@ -3929,7 +4241,75 @@ impl Agent {
         &self,
         session_id: &str,
         failed_provider: &str,
+        cause: &ProviderError,
+        request_tokens: Option<usize>,
     ) -> Option<crate::cost_router::role_map::RoleModel> {
+        #[cfg(test)]
+        let injected = {
+            self.test_failover_request_tokens
+                .lock()
+                .await
+                .push(request_tokens);
+            self.test_failover.lock().await.take()
+        };
+        #[cfg(not(test))]
+        let injected: Option<(crate::cost_router::role_map::RoleModel, Arc<dyn Provider>)> = None;
+        let (target, replaced, provider) = match injected {
+            Some((target, provider)) => (target, String::new(), provider),
+            None => {
+                self.build_failover_provider(failed_provider, request_tokens)
+                    .await?
+            }
+        };
+        // For an Ollama target this is the `num_ctx` the provider will size
+        // the request to. QA on 2026-09-19 could not confirm the stand-in's
+        // window because no log carried it.
+        let context_limit = provider.get_model_config().context_limit;
+
+        if let Err(e) = self.update_provider(provider, session_id).await {
+            warn!(
+                fallback_provider = %target.provider,
+                fallback_model = %target.model,
+                error = %e,
+                "Could not activate the configured fallback provider"
+            );
+            return None;
+        }
+
+        // Routing snapshot note: the ONE line that explains, after the fact, why
+        // this session's spend moved to a different model mid-turn. `reason`
+        // is the real cause: it used to say `permanent_provider_rejection` for
+        // network, 5xx, rate-limit and stall failovers too, so the log gave
+        // QA a false cause for every transient switch.
+        tracing::warn!(
+            target: "permagent::cost_router",
+            session_id = %session_id,
+            from_provider = %failed_provider,
+            to_provider = %target.provider,
+            to_model = %target.model,
+            replaced_unavailable = %replaced,
+            context_limit = ?context_limit,
+            request_tokens = ?request_tokens,
+            reason = crate::cost_router::fallback::failover_cause(cause),
+            "routing snapshot: switched model mid-turn"
+        );
+
+        Some(target)
+    }
+
+    /// Choose the fallback for `failed_provider` over live local availability
+    /// and build its provider. Returns the target, the configured candidate it
+    /// stands in for (empty when none), and the provider, or `None` when
+    /// nothing configured can serve a request of `request_tokens`.
+    async fn build_failover_provider(
+        &self,
+        failed_provider: &str,
+        request_tokens: Option<usize>,
+    ) -> Option<(
+        crate::cost_router::role_map::RoleModel,
+        String,
+        Arc<dyn Provider>,
+    )> {
         // Availability-aware: probe the local endpoints the configured list
         // names and never switch to one that is down. 2026-09-18: every
         // permanent failure switched to the nightly-only `qwen38_split`, whose
@@ -3937,9 +4317,18 @@ impl Agent {
         // "Could not connect to 127.0.0.1:8081" while Ollama was up with four
         // models pulled. A down local candidate is now replaced by the best
         // installed Ollama model (see `cost_router::fallback::choose_fallback`).
-        let choice =
-            crate::cost_router::fallback::permanent_failure_fallback_available(failed_provider)
-                .await?;
+        //
+        // Size-aware: a local model whose window cannot hold this request is
+        // not chosen. 2026-09-19: the QA CLI run's 62,364-token request went
+        // to qwen2.5:7b's 32,768 window (cli log 20260919_030958); the
+        // installed build let Ollama truncate it at n_ctx 4096, and the Ollama
+        // preflight now refuses a request that size, so choosing by
+        // availability alone would move the turn to a model certain to refuse.
+        let choice = crate::cost_router::fallback::permanent_failure_fallback_for_request(
+            failed_provider,
+            request_tokens,
+        )
+        .await?;
         let replaced = choice
             .replaced
             .as_ref()
@@ -3991,31 +4380,64 @@ impl Agent {
                 return None;
             }
         };
+        Some((target, replaced, provider))
+    }
 
-        if let Err(e) = self.update_provider(provider, session_id).await {
-            warn!(
-                fallback_provider = %target.provider,
-                fallback_model = %target.model,
-                error = %e,
-                "Could not activate the configured fallback provider"
-            );
-            return None;
-        }
+    /// The size of the request that just failed, counted the way the
+    /// reservation counts it, so the switch can refuse a local model whose
+    /// window cannot hold it. `None` when it cannot be counted (images or
+    /// audio in context); the switch then behaves as it did before sizing.
+    async fn failover_request_tokens(
+        system_prompt: &SystemPromptParts,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Option<usize> {
+        crate::agents::reply_parts::counted_prompt_tokens(
+            &[
+                system_prompt.stable_prefix(),
+                system_prompt.volatile_suffix(),
+            ],
+            messages,
+            tools,
+        )
+        .await
+    }
 
-        // Routing snapshot note: the ONE line that explains, after the fact, why
-        // this session's spend moved to a different model mid-turn.
-        tracing::warn!(
+    /// One pre-commit failover, shared by every transient arm of the reply
+    /// loop (dropped stream, refused connection, 5xx, spent rate limit, first-
+    /// byte stall): switch the session to the next model that is up and can
+    /// hold the request, log why, and persist the one sentence that says so.
+    /// Returns that sentence for the arm to yield, or `None` when nothing
+    /// could take the turn and the arm should end it as before.
+    ///
+    /// Persisted, not just yielded: the desktop reloads the transcript when a
+    /// turn ends, and an unpersisted notice vanishes with the reload.
+    async fn fail_over_before_commit(
+        &self,
+        session_id: &str,
+        failed: &Arc<dyn Provider>,
+        err: &ProviderError,
+        request_tokens: Option<usize>,
+    ) -> Option<Message> {
+        let failed_provider = failed.get_name().to_string();
+        let target = self
+            .switch_to_permanent_failure_fallback(session_id, &failed_provider, err, request_tokens)
+            .await?;
+        tracing::info!(
             target: "permagent::cost_router",
             session_id = %session_id,
             from_provider = %failed_provider,
             to_provider = %target.provider,
             to_model = %target.model,
-            replaced_unavailable = %replaced,
-            reason = "permanent_provider_rejection",
-            "routing snapshot: switched model after a permanent provider rejection"
+            cause = crate::cost_router::fallback::failover_cause(err),
+            "pre-commit failover"
         );
-
-        Some(target)
+        let message = Message::assistant().with_system_notification(
+            SystemNotificationType::InlineMessage,
+            crate::cost_router::fallback::precommit_failover_reply(&failed_provider, err, &target),
+        );
+        persist_turn_ending_message(&self.config.session_manager, session_id, &message).await;
+        Some(message)
     }
 
     pub async fn update_goose_mode(&self, mode: GooseMode, session_id: &str) -> Result<()> {
@@ -5471,5 +5893,1031 @@ mod tests {
             rollup.model_ms_total
         );
         assert_eq!(rollup.tool_exec_ms_total, 0, "no tool was called this turn");
+    }
+
+    // --- Mid-turn failover, driven through the real reply loop ------------
+    //
+    // QA on 2026-09-19 could only confirm the CLI's startup failover: the
+    // mid-turn switch needs a listener that dies or a cloud 5xx. These drive
+    // `reply()` itself with in-memory providers: a primary that fails before
+    // sending anything, and a stand-in named exactly like the Ollama model the
+    // real switch picks (`ollama`/`qwen2.5:7b`, a free local knowledge row), so
+    // the spend gate, the local-window check and the notices all see what they
+    // see in production. `Agent::test_failover` replaces only the probe of
+    // config and the building of a provider by name; the switch, the saved
+    // session, the prompt rebuild and every arm run as shipped. What this does
+    // NOT prove: the probe of the real Ollama daemon, the real Ollama
+    // preflight's token count, or the desktop's rendering of the notices.
+
+    /// Fails every request with `fail`, or answers when `fail` is `None`.
+    /// Records every system prompt it is sent, so a test can see which
+    /// identity the model was given and whether a compaction call was made,
+    /// and the size of every request by the reservation's own counter, so a
+    /// test can compare it with the size the switch was given.
+    struct ScriptedProvider {
+        name: &'static str,
+        model: &'static str,
+        context_limit: usize,
+        fail: Option<fn() -> crate::providers::errors::ProviderError>,
+        shape: FailShape,
+        prompts: std::sync::Mutex<Vec<String>>,
+        sizes: std::sync::Mutex<Vec<Option<usize>>>,
+    }
+
+    /// Where `fail` reaches the agent. QA on 2026-09-19 could not stage a
+    /// mid-turn 503 or a dropped body (no fault-injecting listener on :8081),
+    /// and the two shapes take different roads through the transport: a 503
+    /// STATUS is returned by `stream()` itself (the retry layer's
+    /// `handle_status_openai_compat`), while a 200 whose SSE body later carries
+    /// an `error` chunk, or is cut off, arrives as an item of the stream
+    /// (`stream_openai_compat` downcasts it back to `ServerError`, or types it
+    /// `stream_decode`). Both must reach the same failover arms.
+    #[derive(Clone, Copy)]
+    enum FailShape {
+        /// `stream()` returns the error: the request never got a 2xx.
+        BeforeStream,
+        /// `stream()` answers, then the error arrives as a stream item,
+        /// after `partial` was streamed to the user when it is `Some`.
+        InStream { partial: Option<&'static str> },
+    }
+
+    impl ScriptedProvider {
+        fn new(
+            name: &'static str,
+            model: &'static str,
+            context_limit: usize,
+            fail: Option<fn() -> crate::providers::errors::ProviderError>,
+        ) -> Arc<Self> {
+            Self::shaped(name, model, context_limit, fail, FailShape::BeforeStream)
+        }
+
+        fn shaped(
+            name: &'static str,
+            model: &'static str,
+            context_limit: usize,
+            fail: Option<fn() -> crate::providers::errors::ProviderError>,
+            shape: FailShape,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                name,
+                model,
+                context_limit,
+                fail,
+                shape,
+                prompts: std::sync::Mutex::new(Vec::new()),
+                sizes: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn prompts(&self) -> Vec<String> {
+            self.prompts.lock().unwrap().clone()
+        }
+
+        fn sizes(&self) -> Vec<Option<usize>> {
+            self.sizes.lock().unwrap().clone()
+        }
+    }
+
+    impl std::fmt::Debug for ScriptedProvider {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ScriptedProvider")
+                .field("name", &self.name)
+                .finish()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for ScriptedProvider {
+        fn get_name(&self) -> &str {
+            self.name
+        }
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            // Small `max_tokens` and an explicit window for the same reason as
+            // `FixedDelayProvider`: the reservation planner needs both to
+            // authorize the paid primary at all.
+            crate::model::ModelConfig::new(self.model)
+                .unwrap()
+                .with_context_limit(Some(self.context_limit))
+                .with_max_tokens(Some(512))
+        }
+        async fn stream(
+            &self,
+            _: &crate::model::ModelConfig,
+            _: &str,
+            system: &str,
+            messages: &[crate::conversation::message::Message],
+            tools: &[rmcp::model::Tool],
+        ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
+        {
+            let size =
+                crate::agents::reply_parts::counted_prompt_tokens(&[system], messages, tools).await;
+            self.sizes.lock().unwrap().push(size);
+            self.prompts.lock().unwrap().push(system.to_string());
+            if let Some(fail) = self.fail {
+                match self.shape {
+                    FailShape::BeforeStream => return Err(fail()),
+                    FailShape::InStream { partial } => {
+                        let mut items: Vec<
+                            Result<
+                                (Option<Message>, Option<ProviderUsage>),
+                                crate::providers::errors::ProviderError,
+                            >,
+                        > = Vec::new();
+                        if let Some(text) = partial {
+                            items.push(Ok((Some(Message::assistant().with_text(text)), None)));
+                        }
+                        items.push(Err(fail()));
+                        return Ok(Box::pin(futures::stream::iter(items)));
+                    }
+                }
+            }
+            let usage = ProviderUsage::new(
+                self.model.to_string(),
+                crate::providers::base::Usage::new(Some(5), Some(5), Some(10)),
+            );
+            let message = Message::assistant().with_text("done from the stand-in");
+            let stream = futures::stream::once(async move { Ok((Some(message), Some(usage))) });
+            Ok(Box::pin(stream))
+        }
+    }
+
+    const PRIMARY: &str = "test-primary";
+    const PRIMARY_MODEL: &str = "primary-model";
+
+    fn primary_failing_with(
+        fail: fn() -> crate::providers::errors::ProviderError,
+    ) -> Arc<ScriptedProvider> {
+        ScriptedProvider::new(PRIMARY, PRIMARY_MODEL, 4_096, Some(fail))
+    }
+
+    /// The model the real switch picks at noon, with the window it is served in.
+    fn ollama_stand_in(
+        fail: Option<fn() -> crate::providers::errors::ProviderError>,
+    ) -> Arc<ScriptedProvider> {
+        ScriptedProvider::new("ollama", "qwen2.5:7b", 32_768, fail)
+    }
+
+    struct FailoverRun {
+        agent: Agent,
+        session_manager: Arc<SessionManager>,
+        session_id: String,
+        events: Vec<AgentEvent>,
+        _temp_dir: tempfile::TempDir,
+    }
+
+    impl FailoverRun {
+        /// Every message the reply stream yielded, as display text (a system
+        /// notification renders as `[SystemNotification: …]`).
+        fn texts(&self) -> Vec<String> {
+            self.events
+                .iter()
+                .filter_map(|event| match event {
+                    AgentEvent::Message(message) => Some(
+                        message
+                            .content
+                            .iter()
+                            .map(|content| content.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn said(&self, needle: &str) -> bool {
+            self.texts().iter().any(|text| text.contains(needle))
+        }
+
+        fn replaced_history(&self) -> bool {
+            self.events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::HistoryReplaced(_)))
+        }
+
+        /// Whether the SAVED transcript holds `needle`. The desktop reloads
+        /// the transcript from the daemon when a turn ends, so a notice that
+        /// was only yielded is gone from the screen a moment later.
+        async fn persisted(&self, needle: &str) -> bool {
+            self.saved_texts()
+                .await
+                .iter()
+                .any(|text| text.contains(needle))
+        }
+
+        /// The saved transcript, one display string per saved message, in
+        /// the order the desktop's reload shows it.
+        async fn saved_texts(&self) -> Vec<String> {
+            let session = self
+                .session_manager
+                .get_session(&self.session_id, true)
+                .await
+                .unwrap();
+            session
+                .conversation
+                .map(|conversation| {
+                    conversation
+                        .messages()
+                        .iter()
+                        .map(|message| {
+                            message
+                                .content
+                                .iter()
+                                .map(|content| content.to_string())
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+
+        /// Whether the saved transcript has `first` before `then`, each at
+        /// its first occurrence.
+        async fn saved_in_order(&self, first: &str, then: &str) -> bool {
+            let saved = self.saved_texts().await;
+            let at = |needle: &str| saved.iter().position(|text| text.contains(needle));
+            matches!((at(first), at(then)), (Some(a), Some(b)) if a < b)
+        }
+    }
+
+    async fn run_failover_turn(
+        primary: Arc<ScriptedProvider>,
+        stand_in: Arc<ScriptedProvider>,
+    ) -> FailoverRun {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let config = AgentRunnerConfig::new(
+            session_manager.clone(),
+            PermissionManager::instance(),
+            None,
+            GooseMode::Auto,
+            true, // no session naming: it would be one more provider call
+            GoosePlatform::GooseCli,
+        );
+        let agent = Agent::with_config(config);
+        let session = session_manager
+            .create_session(
+                std::path::PathBuf::from("."),
+                "mid-turn-failover-test".to_string(),
+                crate::session::SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .expect("create session");
+        let session_id = session.id.clone();
+        // The primary is a paid provider: without a budget task its call is
+        // refused before it can fail the way these tests need.
+        session_manager
+            .begin_budget_task(&session_id)
+            .await
+            .expect("begin budget task");
+        agent
+            .update_provider(primary, &session_id)
+            .await
+            .expect("set the primary provider");
+        *agent.test_failover.lock().await = Some((
+            crate::cost_router::role_map::RoleModel {
+                provider: stand_in.name.to_string(),
+                model: stand_in.model.to_string(),
+            },
+            stand_in as Arc<dyn Provider>,
+        ));
+
+        let session_config = SessionConfig {
+            id: session_id.clone(),
+            schedule_id: None,
+            max_turns: Some(4),
+            retry_config: None,
+        };
+        let mut events = Vec::new();
+        {
+            // Scoped so the stream (which borrows `agent`) is dropped before
+            // `agent` moves into the returned FailoverRun.
+            let reply_stream = agent
+                .reply(Message::user().with_text("hello"), session_config, None)
+                .await
+                .expect("reply starts");
+            tokio::pin!(reply_stream);
+            while let Some(event) = reply_stream.next().await {
+                events.push(event.expect("no error events"));
+            }
+        }
+        FailoverRun {
+            agent,
+            session_manager,
+            session_id,
+            events,
+            _temp_dir: temp_dir,
+        }
+    }
+
+    /// A refused connection before anything streamed: the turn moves to the
+    /// stand-in, says so, and the stand-in answers. The re-run is sent the
+    /// prompt built for the stand-in: before the refresh, it was sent the one
+    /// built for the failed model and told "You are currently served by
+    /// test-primary/primary-model", the 2026-08-31 wrong-identity defect.
+    #[tokio::test]
+    async fn a_network_failover_reruns_the_turn_on_the_stand_in_under_its_own_identity() {
+        let stand_in = ollama_stand_in(None);
+        let run = run_failover_turn(
+            primary_failing_with(|| {
+                crate::providers::errors::ProviderError::NetworkError(
+                    "Could not connect to 127.0.0.1:8081".to_string(),
+                )
+            }),
+            stand_in.clone(),
+        )
+        .await;
+
+        assert!(
+            run.said(
+                "test-primary unreachable (connection refused or unroutable) — switched this \
+                 session to ollama/qwen2.5:7b."
+            ),
+            "{:?}",
+            run.texts()
+        );
+        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
+        let prompts = stand_in.prompts();
+        assert_eq!(prompts.len(), 1, "one re-run on the stand-in");
+        assert!(
+            prompts[0].contains("You are currently served by ollama/qwen2.5:7b."),
+            "the stand-in must be told which model it is"
+        );
+        assert!(
+            !prompts[0].contains("served by test-primary/primary-model"),
+            "the stand-in was sent the failed model's identity"
+        );
+        assert_eq!(run.agent.provider().await.unwrap().get_name(), "ollama");
+    }
+
+    /// The switch is told how big the failed request was, so it can refuse a
+    /// local model whose window cannot hold it. `test_failover` replaces the
+    /// choice itself, so without this the reply-loop tests would pass even if
+    /// every arm passed `None` and the size-aware choice never ran. The size
+    /// must be the request the primary was actually sent, counted the same
+    /// way: the reservation counts the system prompt as two parts and the
+    /// messages before the agent-visible filter, the provider sees one joined
+    /// prompt, so the two may differ by a few tokens, never by the prompt.
+    #[tokio::test]
+    async fn a_failover_passes_the_failed_requests_size_to_the_switch() {
+        let primary = primary_failing_with(|| {
+            crate::providers::errors::ProviderError::NetworkError(
+                "Could not connect to 127.0.0.1:8081".to_string(),
+            )
+        });
+        let run = run_failover_turn(primary.clone(), ollama_stand_in(None)).await;
+
+        let sent = primary
+            .sizes()
+            .first()
+            .copied()
+            .flatten()
+            .expect("the primary's request can be counted");
+        let given = run.agent.test_failover_request_tokens.lock().await.clone();
+        assert_eq!(given.len(), 1, "one switch: {given:?}");
+        let given = given[0].expect("the switch must be given the request's size, not None");
+        assert!(
+            sent > 200,
+            "the request carries the whole system prompt: {sent}"
+        );
+        let slack = 16 + sent / 50;
+        assert!(
+            given.abs_diff(sent) <= slack,
+            "the switch was given {given} tokens for a {sent}-token request"
+        );
+    }
+
+    /// QA could not confirm the prompt-sized hold in the live app on
+    /// 2026-09-19: every reservation line since the redeploy was a free local
+    /// call ("reservation skipped: unpaid tier holds no dollars, provider:
+    /// ollama, model: qwen2.5:7b"), because the configured primary is a local
+    /// model, and the paid gpt-5.4-mini run that would log "reservation bound
+    /// computed" was not approved for spend. This drives the real streamed
+    /// turn with an in-memory stand-in NAMED `openai`/`gpt-5.4-mini`, so the
+    /// tier, the live registry price and the durable hold are exactly what a
+    /// real paid turn gets, at no cost.
+    ///
+    /// Proves: the reply loop hands the reservation the request it then
+    /// sends, so the ledger's hold covers that request and is nowhere near
+    /// the whole-window hold that refused the harness's first call
+    /// ("requested bound $1.56, ceiling $1.00" for a ~30k-token prompt).
+    /// Passing `None` at the seam, or counting a different request, fails it.
+    /// Does not prove: the real OpenAI transport or its billed token count,
+    /// the daemon's configured budget ceilings, or any UI display of the hold.
+    /// The slack is the same one the failover test above uses, for the same
+    /// reason: the reservation counts the system prompt as two parts, the
+    /// provider sees one joined string.
+    #[tokio::test]
+    async fn a_paid_turn_holds_money_for_the_request_it_sends_not_the_whole_window() {
+        let primary = ScriptedProvider::new("openai", "gpt-5.4-mini", 400_000, None);
+        let run = run_failover_turn(primary.clone(), ollama_stand_in(None)).await;
+
+        let sizes = primary.sizes();
+        assert_eq!(sizes.len(), 1, "one paid call, no failover: {sizes:?}");
+        let sent = sizes[0].expect("the paid request can be counted");
+
+        let pool = run.session_manager.pool_clone().await.unwrap();
+        let holds: Vec<f64> =
+            sqlx::query_scalar("SELECT amount_usd FROM cost_reservations WHERE session_id = ?")
+                .bind(&run.session_id)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            holds.len(),
+            1,
+            "one durable hold for one paid call: {holds:?}"
+        );
+        let held = holds[0];
+
+        let config = primary.get_model_config();
+        let attempts = crate::cost_router::reserved_physical_attempts(
+            primary.retry_config().max_physical_attempts(),
+        );
+        let plan = |counted: Option<usize>| {
+            crate::cost_router::reservation::plan_reservation_bound_for_prompt(
+                "openai",
+                "gpt-5.4-mini",
+                crate::session::CostTier::PaidApi,
+                &config,
+                attempts,
+                counted,
+            )
+            .unwrap()
+            .expect("openai/gpt-5.4-mini is a paid pair")
+            .amount_usd
+        };
+        let slack = 16 + sent / 50;
+        let floor = plan(Some(sent.saturating_sub(slack)));
+        let ceiling = plan(Some(sent + slack));
+        assert!(
+            held >= floor && held <= ceiling,
+            "held ${held:.6} for a {sent}-token request; a hold sized to it lies in \
+             ${floor:.6}..=${ceiling:.6}"
+        );
+        let whole_window = plan(None);
+        assert!(
+            held * 2.0 < whole_window,
+            "held ${held:.6}, the whole-window hold is ${whole_window:.6}: the turn \
+             reserved the window, not the request"
+        );
+    }
+
+    /// A billing rejection fails over; the stand-in's window then refuses the
+    /// request. The session goes back to the rejecting provider (staying on
+    /// the stand-in would compact against its window next message), but the
+    /// notice must not say "resend once it is reachable": the provider
+    /// rejects every request until its credit is topped up, so a resend fails
+    /// over to the same stand-in and is refused again.
+    #[tokio::test]
+    async fn an_overflow_after_a_billing_failover_does_not_promise_a_resend() {
+        fn window_refused() -> crate::providers::errors::ProviderError {
+            crate::providers::errors::ProviderError::ContextLengthExceeded(
+                "request exceeds the 32768-token window".to_string(),
+            )
+        }
+        let run = run_failover_turn(
+            primary_failing_with(
+                || crate::providers::errors::ProviderError::CreditsExhausted {
+                    details: "credit balance too low".to_string(),
+                    top_up_url: None,
+                },
+            ),
+            ollama_stand_in(Some(
+                window_refused as fn() -> crate::providers::errors::ProviderError,
+            )),
+        )
+        .await;
+
+        assert!(
+            run.said("This turn moved from test-primary to ollama/qwen2.5:7b"),
+            "{:?}",
+            run.texts()
+        );
+        // The billing notice before the re-run also names the cause, so look
+        // for it in the overflow notice itself.
+        assert!(
+            run.texts()
+                .iter()
+                .any(|t| t.contains("This session is back on test-primary")
+                    && t.contains("credit balance too low")
+                    && t.contains("until that is fixed")),
+            "the overflow notice names the rejection and what must change: {:?}",
+            run.texts()
+        );
+        assert!(
+            !run.said("resend once it is reachable"),
+            "a resend is rejected the same way: {:?}",
+            run.texts()
+        );
+        assert!(!run.replaced_history(), "the history must not be replaced");
+        assert_eq!(run.agent.provider().await.unwrap().get_name(), PRIMARY);
+    }
+
+    /// A spent rate limit is transient and nothing reached the user, so it
+    /// moves like a refused connection. Its arm came before the one that
+    /// called the failover gate, so it used to end the turn on "waited and
+    /// retried, and it is still limited" with a local model up.
+    #[tokio::test]
+    async fn a_spent_rate_limit_fails_over_instead_of_ending_the_turn() {
+        let run = run_failover_turn(
+            primary_failing_with(
+                || crate::providers::errors::ProviderError::RateLimitExceeded {
+                    details: "429 slow down".to_string(),
+                    retry_delay: None,
+                },
+            ),
+            ollama_stand_in(None),
+        )
+        .await;
+
+        assert!(
+            run.said(
+                "test-primary is rate-limiting this model — switched this session to \
+                 ollama/qwen2.5:7b."
+            ),
+            "{:?}",
+            run.texts()
+        );
+        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
+        assert!(
+            !run.said("waited and retried"),
+            "the turn must not end on the rate limit: {:?}",
+            run.texts()
+        );
+    }
+
+    /// A provider that never sends a first byte is retried once, then the
+    /// turn moves. Both ways the retry can end (it stalls again, or the
+    /// reservation will not pay for it and it never starts) now fail over;
+    /// either used to end the turn on "send it again once the provider
+    /// recovers".
+    #[tokio::test]
+    async fn a_first_byte_stall_that_outlasts_its_retry_fails_over() {
+        let run = run_failover_turn(
+            primary_failing_with(|| {
+                crate::providers::errors::ProviderError::first_byte_stall(
+                    "the provider sent nothing at all for 180 s",
+                )
+            }),
+            ollama_stand_in(None),
+        )
+        .await;
+
+        assert!(
+            run.said(
+                "test-primary sent nothing back in time — switched this session to \
+                 ollama/qwen2.5:7b."
+            ),
+            "{:?}",
+            run.texts()
+        );
+        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
+        assert!(!run.said("once the provider recovers"), "{:?}", run.texts());
+    }
+
+    /// The stand-in's window refuses the request. The turn must not compact
+    /// (the 7B would summarise the user's history), and the session must not
+    /// stay on the stand-in: the switch saved it as the session's model, so the
+    /// resend the notice asks for went to the same window, and the start-of-
+    /// turn auto-compact judged the last cloud request against it and
+    /// summarised the history one turn later. The session goes back to the
+    /// model it failed over from, and the notice says so.
+    #[tokio::test]
+    async fn a_stand_in_too_small_for_the_request_hands_the_session_back_and_never_compacts() {
+        fn window_refused() -> crate::providers::errors::ProviderError {
+            crate::providers::errors::ProviderError::ContextLengthExceeded(
+                "request of 62364 tokens exceeds the 32768-token window".to_string(),
+            )
+        }
+        let stand_in = ollama_stand_in(Some(
+            window_refused as fn() -> crate::providers::errors::ProviderError,
+        ));
+        let run = run_failover_turn(
+            primary_failing_with(|| {
+                crate::providers::errors::ProviderError::NetworkError(
+                    "Could not connect to 127.0.0.1:8081".to_string(),
+                )
+            }),
+            stand_in.clone(),
+        )
+        .await;
+
+        assert!(
+            run.said("This turn moved from test-primary to ollama/qwen2.5:7b"),
+            "{:?}",
+            run.texts()
+        );
+        assert!(
+            run.said("This session is back on test-primary"),
+            "{:?}",
+            run.texts()
+        );
+        assert!(!run.replaced_history(), "the history must not be replaced");
+        assert!(
+            !run.texts().iter().any(|t| t.contains("Compact")),
+            "no compaction notice: {:?}",
+            run.texts()
+        );
+        assert_eq!(
+            stand_in.prompts().len(),
+            1,
+            "the stand-in got the one refused request and no summarisation call"
+        );
+
+        assert_eq!(
+            run.agent.provider().await.unwrap().get_name(),
+            PRIMARY,
+            "the live provider is the one the turn failed over from"
+        );
+        let session = run
+            .session_manager
+            .get_session(&run.session_id, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            session.provider_name.as_deref(),
+            Some(PRIMARY),
+            "the saved session is back on the failed-over-from provider, so the next \
+             reply's auto-compact check uses its window, not the stand-in's"
+        );
+        assert_eq!(
+            session.model_config.map(|config| config.model_name),
+            Some(PRIMARY_MODEL.to_string())
+        );
+        let conversation = session.conversation.expect("conversation");
+        assert!(
+            conversation
+                .messages()
+                .iter()
+                .any(|message| message.as_concat_text().contains("hello")),
+            "the user's message is still in the history"
+        );
+    }
+
+    // --- The three cases QA could not stage on 2026-09-19 -----------------
+    //
+    // r2-unconfirmed-local-fallback: only the CLI's startup failover was
+    // checked in the real app. A mid-turn 503, the spend gate after the
+    // switch, and the stream-drop wording each needed a fault-injecting
+    // listener on :8081 that was not set up, and no "pre-commit failover" line
+    // was in the logs. These drive the same `reply()` loop with the failure
+    // delivered the way the real transport delivers it (see `FailShape`).
+    // What they do NOT prove: the real `handle_status_openai_compat` /
+    // `stream_openai_compat` typing of a live 503 (their own tests cover
+    // that), the real Ollama probe, or the desktop's rendering.
+
+    fn server_error_503() -> crate::providers::errors::ProviderError {
+        crate::providers::errors::ProviderError::ServerError("503 Service Unavailable".to_string())
+    }
+
+    fn body_dropped() -> crate::providers::errors::ProviderError {
+        crate::providers::errors::ProviderError::stream_decode("error decoding response body")
+    }
+
+    const SERVER_ERROR_NOTICE: &str = "test-primary returned a server error before any reply \
+                                       started — switched this session to ollama/qwen2.5:7b.";
+
+    /// A 503 status before anything streamed: the turn moves to the stand-in,
+    /// says so by cause, keeps the notice in the saved transcript, and the
+    /// stand-in answers. Before the arm called the shared failover, a 5xx
+    /// ended the turn on "Ran into this error … Please retry".
+    #[tokio::test]
+    async fn a_503_status_fails_over_before_any_reply_and_says_why() {
+        let stand_in = ollama_stand_in(None);
+        let run = run_failover_turn(primary_failing_with(server_error_503), stand_in.clone()).await;
+
+        assert!(run.said(SERVER_ERROR_NOTICE), "{:?}", run.texts());
+        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
+        assert!(!run.said("Ran into this error"), "{:?}", run.texts());
+        assert!(
+            run.persisted(SERVER_ERROR_NOTICE).await,
+            "the switch notice must survive the end-of-turn transcript reload"
+        );
+        assert_eq!(stand_in.prompts().len(), 1, "one re-run on the stand-in");
+        assert_eq!(run.agent.provider().await.unwrap().get_name(), "ollama");
+    }
+
+    /// The same 503 as a 200 whose SSE body then carried an `error` chunk: the
+    /// shape a llama-server or an OpenAI-compatible cloud sends mid-turn. It
+    /// is an ITEM of the stream, not an error from `stream()`, and nothing was
+    /// shown yet, so it must fail over exactly like the status above.
+    #[tokio::test]
+    async fn a_503_inside_the_stream_before_any_text_fails_over() {
+        let primary = ScriptedProvider::shaped(
+            PRIMARY,
+            PRIMARY_MODEL,
+            4_096,
+            Some(server_error_503 as fn() -> crate::providers::errors::ProviderError),
+            FailShape::InStream { partial: None },
+        );
+        let run = run_failover_turn(primary, ollama_stand_in(None)).await;
+
+        assert!(run.said(SERVER_ERROR_NOTICE), "{:?}", run.texts());
+        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
+    }
+
+    /// A body cut off before any text: the notice says the stream DROPPED (the
+    /// host answered, so "unreachable" would be false, the 2026-09-18
+    /// wording defect), and the turn finishes on the stand-in.
+    #[tokio::test]
+    async fn a_body_dropped_before_any_text_fails_over_and_says_it_dropped() {
+        let primary = ScriptedProvider::shaped(
+            PRIMARY,
+            PRIMARY_MODEL,
+            4_096,
+            Some(body_dropped as fn() -> crate::providers::errors::ProviderError),
+            FailShape::InStream { partial: None },
+        );
+        let run = run_failover_turn(primary, ollama_stand_in(None)).await;
+
+        let notice = "test-primary dropped the response stream before any reply started — \
+                      switched this session to ollama/qwen2.5:7b.";
+        assert!(run.said(notice), "{:?}", run.texts());
+        assert!(!run.said("unreachable"), "{:?}", run.texts());
+        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
+        assert!(run.persisted(notice).await, "the notice must be saved");
+    }
+
+    /// A body cut off AFTER text reached the user: no switch (a second model
+    /// would contradict the half answer on screen), the resend wording, saved
+    /// so the reload keeps it, and never "rejected as invalid". The notice is
+    /// saved BELOW the half answer: it used to be saved at once while the half
+    /// answer waited for the end of the iteration, so the desktop's reload put
+    /// "stream dropped" above the answer it explains (see
+    /// `persist_streamed_then_notice`). Fails on that order, not on wording.
+    #[tokio::test]
+    async fn a_body_dropped_after_text_asks_for_a_resend_and_does_not_switch() {
+        let primary = ScriptedProvider::shaped(
+            PRIMARY,
+            PRIMARY_MODEL,
+            4_096,
+            Some(body_dropped as fn() -> crate::providers::errors::ProviderError),
+            FailShape::InStream {
+                partial: Some("Here is the first half"),
+            },
+        );
+        let stand_in = ollama_stand_in(None);
+        let run = run_failover_turn(primary, stand_in.clone()).await;
+
+        let wording = "The model stream dropped before the reply finished.";
+        assert!(run.said(wording), "{:?}", run.texts());
+        assert!(
+            run.persisted(wording).await,
+            "the resend notice must be saved"
+        );
+        assert!(!run.said("switched this session"), "{:?}", run.texts());
+        assert!(
+            !run.said("rejected this request as invalid"),
+            "{:?}",
+            run.texts()
+        );
+        assert!(
+            stand_in.prompts().is_empty(),
+            "nothing may be sent to the stand-in"
+        );
+        assert_eq!(run.agent.provider().await.unwrap().get_name(), PRIMARY);
+
+        assert!(
+            run.saved_in_order("Here is the first half", wording).await,
+            "saved order must match the screen, half answer then notice: {:?}",
+            run.saved_texts().await
+        );
+    }
+
+    /// A 503 `error` chunk AFTER text reached the user: no switch, and the
+    /// error notice is saved below the half answer, as the user saw it.
+    #[tokio::test]
+    async fn a_503_after_text_does_not_switch_and_saves_the_notice_below_the_text() {
+        let primary = ScriptedProvider::shaped(
+            PRIMARY,
+            PRIMARY_MODEL,
+            4_096,
+            Some(server_error_503 as fn() -> crate::providers::errors::ProviderError),
+            FailShape::InStream {
+                partial: Some("Here is the first half"),
+            },
+        );
+        let stand_in = ollama_stand_in(None);
+        let run = run_failover_turn(primary, stand_in.clone()).await;
+
+        assert!(run.said("Ran into this error"), "{:?}", run.texts());
+        assert!(!run.said("switched this session"), "{:?}", run.texts());
+        assert!(
+            stand_in.prompts().is_empty(),
+            "nothing may be sent to the stand-in"
+        );
+        assert!(
+            run.saved_in_order("Here is the first half", "Ran into this error")
+                .await,
+            "saved order must match the screen: {:?}",
+            run.saved_texts().await
+        );
+    }
+
+    /// The exact error `formats::openai::parse_streaming_chunk` raises when a
+    /// proxy or llama-server closes the body cleanly partway through a
+    /// `data:` line: the line codec passes the partial line on at EOF and
+    /// serde reports end of input.
+    fn chunk_cut_off_mid_line() -> crate::providers::errors::ProviderError {
+        crate::providers::errors::ProviderError::RequestFailed(
+            "Failed to parse streaming chunk: EOF while parsing a string at line 1 column 58: \
+             \"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"the sec\""
+                .to_string(),
+        )
+    }
+
+    fn rate_limited() -> crate::providers::errors::ProviderError {
+        crate::providers::errors::ProviderError::RateLimitExceeded {
+            details: "429 Too Many Requests".to_string(),
+            retry_delay: None,
+        }
+    }
+
+    fn invalid_request_400() -> crate::providers::errors::ProviderError {
+        crate::providers::errors::ProviderError::RequestFailed(
+            "Bad request (400): invalid_request_error: messages: text content blocks must be non-empty"
+                .to_string(),
+        )
+    }
+
+    /// A body cut off partway through a `data:` line AFTER text streamed.
+    /// It reaches the agent as `RequestFailed("Failed to parse streaming
+    /// chunk: EOF while parsing …")`, which the RequestFailed arm answered
+    /// with "The provider rejected this request as invalid … Switch the
+    /// model", saved ABOVE the half answer. It is a dropped stream: the
+    /// resend wording, no switch, and the notice saved below the text.
+    #[tokio::test]
+    async fn a_chunk_cut_off_mid_line_after_text_reads_as_a_dropped_stream() {
+        let primary = ScriptedProvider::shaped(
+            PRIMARY,
+            PRIMARY_MODEL,
+            4_096,
+            Some(chunk_cut_off_mid_line as fn() -> crate::providers::errors::ProviderError),
+            FailShape::InStream {
+                partial: Some("Here is the first half"),
+            },
+        );
+        let stand_in = ollama_stand_in(None);
+        let run = run_failover_turn(primary, stand_in.clone()).await;
+
+        let wording = "The model stream dropped before the reply finished.";
+        assert!(run.said(wording), "{:?}", run.texts());
+        assert!(
+            !run.said("rejected this request as invalid"),
+            "{:?}",
+            run.texts()
+        );
+        assert!(!run.said("switched this session"), "{:?}", run.texts());
+        assert!(
+            stand_in.prompts().is_empty(),
+            "nothing may be sent to the stand-in"
+        );
+        assert!(
+            run.saved_in_order("Here is the first half", wording).await,
+            "saved order must match the screen: {:?}",
+            run.saved_texts().await
+        );
+    }
+
+    /// The same cut-off chunk before any text: nothing was shown, so the turn
+    /// moves to the stand-in and the notice says the stream dropped. Before,
+    /// it ended the turn on "rejected as invalid" with Ollama up and idle.
+    #[tokio::test]
+    async fn a_chunk_cut_off_mid_line_before_text_fails_over() {
+        let primary = ScriptedProvider::shaped(
+            PRIMARY,
+            PRIMARY_MODEL,
+            4_096,
+            Some(chunk_cut_off_mid_line as fn() -> crate::providers::errors::ProviderError),
+            FailShape::InStream { partial: None },
+        );
+        let run = run_failover_turn(primary, ollama_stand_in(None)).await;
+
+        assert!(
+            run.said(
+                "test-primary dropped the response stream before any reply started — \
+                 switched this session to ollama/qwen2.5:7b."
+            ),
+            "{:?}",
+            run.texts()
+        );
+        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
+        assert!(
+            !run.said("rejected this request as invalid"),
+            "{:?}",
+            run.texts()
+        );
+    }
+
+    /// A spent rate limit after text: no switch, and its notice is saved below
+    /// the half answer rather than above it.
+    #[tokio::test]
+    async fn a_rate_limit_after_text_saves_the_notice_below_the_text() {
+        let primary = ScriptedProvider::shaped(
+            PRIMARY,
+            PRIMARY_MODEL,
+            4_096,
+            Some(rate_limited as fn() -> crate::providers::errors::ProviderError),
+            FailShape::InStream {
+                partial: Some("Here is the first half"),
+            },
+        );
+        let stand_in = ollama_stand_in(None);
+        let run = run_failover_turn(primary, stand_in.clone()).await;
+
+        assert!(run.said("still limited"), "{:?}", run.texts());
+        assert!(!run.said("switched this session"), "{:?}", run.texts());
+        assert!(
+            stand_in.prompts().is_empty(),
+            "nothing may be sent to the stand-in"
+        );
+        assert!(
+            run.saved_in_order("Here is the first half", "still limited")
+                .await,
+            "saved order must match the screen: {:?}",
+            run.saved_texts().await
+        );
+    }
+
+    /// A genuine 4xx after text keeps its own wording (a resend would fail the
+    /// same way) but is saved below the half answer too.
+    #[tokio::test]
+    async fn a_real_4xx_after_text_keeps_its_wording_and_saves_below_the_text() {
+        let primary = ScriptedProvider::shaped(
+            PRIMARY,
+            PRIMARY_MODEL,
+            4_096,
+            Some(invalid_request_400 as fn() -> crate::providers::errors::ProviderError),
+            FailShape::InStream {
+                partial: Some("Here is the first half"),
+            },
+        );
+        let run = run_failover_turn(primary, ollama_stand_in(None)).await;
+
+        assert!(
+            run.said("rejected this request as invalid"),
+            "{:?}",
+            run.texts()
+        );
+        assert!(
+            run.saved_in_order("Here is the first half", "rejected this request as invalid")
+                .await,
+            "saved order must match the screen: {:?}",
+            run.saved_texts().await
+        );
+    }
+
+    /// The spend gate after the switch. A PAID primary (named as the real
+    /// `openai`/`gpt-5.4-mini` pair, so the tier and the durable hold are
+    /// what a real paid turn gets) returns a 503 before sending anything; the
+    /// free local stand-in must then be let through, not refused as "provider
+    /// spend could not be authorized", and must take no hold of its own. The
+    /// failed call's hold must not be settled as spend: it returned no usage.
+    #[tokio::test]
+    async fn after_a_paid_503_the_local_stand_in_passes_the_spend_gate_and_holds_nothing() {
+        let primary = ScriptedProvider::new(
+            "openai",
+            "gpt-5.4-mini",
+            400_000,
+            Some(server_error_503 as fn() -> crate::providers::errors::ProviderError),
+        );
+        let stand_in = ollama_stand_in(None);
+        let run = run_failover_turn(primary.clone(), stand_in.clone()).await;
+
+        assert!(
+            run.said(
+                "openai returned a server error before any reply started — switched this \
+                 session to ollama/qwen2.5:7b."
+            ),
+            "{:?}",
+            run.texts()
+        );
+        assert!(
+            !run.said("provider spend could not be authorized"),
+            "the spend gate refused the free stand-in: {:?}",
+            run.texts()
+        );
+        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
+        assert_eq!(stand_in.prompts().len(), 1, "the stand-in was called once");
+
+        let pool = run.session_manager.pool_clone().await.unwrap();
+        let holds: Vec<String> =
+            sqlx::query_scalar("SELECT state FROM cost_reservations WHERE session_id = ?")
+                .bind(&run.session_id)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            holds.len(),
+            1,
+            "one hold, the paid primary's; the local stand-in holds nothing: {holds:?}"
+        );
+        assert_ne!(
+            holds[0], "settled",
+            "a 503 with no usage must not be settled as spend: {holds:?}"
+        );
     }
 }

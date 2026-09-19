@@ -80,20 +80,65 @@ pub fn parse_fallback_list(raw: &str) -> Vec<RoleModel> {
         .collect()
 }
 
+/// A streamed body cut off partway through one SSE `data:` line.
+///
+/// When a proxy or llama-server closes the body cleanly in the middle of a
+/// line, the line codec hands the partial line on at EOF and the OpenAI-style
+/// chunk parser (`providers::formats::openai::parse_streaming_chunk`) types it
+/// `RequestFailed("Failed to parse streaming chunk: EOF while parsing …")`.
+/// That is not a transport error, so [`ProviderError::is_stream_decode`] does
+/// not match it, and the reply loop sent it to the 4xx arm: the user was told
+/// "The provider rejected this request as invalid … Switch the model" for what
+/// was a dropped stream, and resending would have worked. Only serde's
+/// end-of-input error counts: a complete line that is not a chunk is a real
+/// shape mismatch and stays where it was.
+pub fn is_cut_off_stream_chunk(err: &ProviderError) -> bool {
+    let ProviderError::RequestFailed(msg) = err else {
+        return false;
+    };
+    let m = msg.to_ascii_lowercase();
+    m.starts_with("failed to parse streaming chunk") && m.contains("eof while parsing")
+}
+
+/// Every shape a dropped response stream arrives in: a transport-level body
+/// or decode error, or a chunk cut off mid-line. The agent's stream-drop arm,
+/// the failover gate and the failover wording all read this one predicate, so
+/// they cannot disagree about what a dropped stream is.
+pub fn is_dropped_stream(err: &ProviderError) -> bool {
+    err.is_stream_decode() || is_cut_off_stream_chunk(err)
+}
+
 /// Whether a stream error may silent-switch to the next model: only before any
 /// assistant response was committed, and only for transient reachability
 /// failures. Billing/auth stay on the announced path.
 pub fn may_silent_precommit_failover(committed: bool, err: &ProviderError) -> bool {
-    if committed || err.is_permanent() {
+    if committed {
+        return false;
+    }
+    // Checked before `is_permanent()`: a cut-off chunk quotes whatever
+    // partial provider bytes it held, and those can contain text such as
+    // "invalid_request_error" that would make a dropped body read as a 4xx.
+    if is_cut_off_stream_chunk(err) {
+        return true;
+    }
+    if err.is_permanent() {
         return false;
     }
     // A dropped body is transient whatever variant carried it. The agent's
-    // stream-decode arm matches `is_stream_decode()`, which also accepts a
+    // stream-drop arm matches `is_dropped_stream()`, which also accepts a
     // `RequestFailed("… error decoding response body")` (session 20260827_1
     // was typed that way), but this gate used to accept only the variants
     // below — so that arm's failover was dead code for exactly the error it
     // was written for, and the user got "resend" instead of a local model.
+    //
+    // A first-byte stall is a provider that never started answering. The
+    // agent retries it once, and when the retry stalls too the turn used to
+    // end on "send it again once the provider recovers", even with Ollama up
+    // and idle on this machine. It sends nothing to the user, so it is as safe
+    // to move as a refused connection. The stream-budget runaway it shares a
+    // variant with stays out: `is_permanent()` rejects that one above.
     err.is_stream_decode()
+        || err.is_first_byte_provider_stall()
         || matches!(
             err,
             ProviderError::NetworkError(_)
@@ -252,6 +297,17 @@ impl LocalAvailability {
 /// agent loop, tools included), then edit reliability, then model id, so the
 /// same install always yields the same answer.
 pub fn best_installed_ollama_model(avail: &LocalAvailability) -> Option<RoleModel> {
+    best_installed_ollama_model_for_request(avail, None)
+}
+
+/// [`best_installed_ollama_model`], limited to the installed models whose
+/// window can hold a request of `request_tokens` ([`fits_local_window`]).
+/// `None` tokens means the request could not be counted, and every model is
+/// eligible, as before.
+pub fn best_installed_ollama_model_for_request(
+    avail: &LocalAvailability,
+    request_tokens: Option<usize>,
+) -> Option<RoleModel> {
     if avail.ollama != Reach::Up {
         return None;
     }
@@ -259,6 +315,15 @@ pub fn best_installed_ollama_model(avail: &LocalAvailability) -> Option<RoleMode
         .ollama_models
         .iter()
         .filter(|m| super::reservation::is_free_local_pair(OLLAMA_PROVIDER, m))
+        .filter(|m| {
+            fits_local_window(
+                &RoleModel {
+                    provider: OLLAMA_PROVIDER.to_string(),
+                    model: (*m).clone(),
+                },
+                request_tokens,
+            )
+        })
         .filter_map(|m| super::knowledge::lookup(OLLAMA_PROVIDER, m).map(|row| (m, row)))
         .min_by(|(am, a), (bm, b)| {
             b.orchestration_strength
@@ -275,6 +340,41 @@ pub fn best_installed_ollama_model(avail: &LocalAvailability) -> Option<RoleMode
         })
 }
 
+/// The share of a local window the request may fill, leaving the rest for the
+/// reply. The same three quarters the CLI trims its extensions to at startup
+/// (`goose-cli` `session::builder::local_request_budget`).
+pub fn local_request_budget(window: usize) -> usize {
+    window - window / 4
+}
+
+/// Pure: whether `target` can take a request of `request_tokens` (system
+/// prompt, tools and history, counted the way the reservation counts them).
+///
+/// Only LOCAL rows are judged: their window is the `num_ctx` this app serves
+/// them with, and nothing on this machine can make it larger mid-turn. A
+/// cloud model keeps the ordinary compaction path, so it always fits here.
+/// An uncounted request (`None`: images in context) fits everything, which is
+/// the behaviour before this check existed.
+///
+/// 2026-09-19: the QA run of `permagent run --provider qwen38_split -t 'Reply
+/// with the single word: ok'` (cli log 20260919_030958, session 20260919_2)
+/// failed over at startup to ollama/qwen2.5:7b with a 62,364-token request,
+/// against the 32,768 that model is served in. The installed build had no
+/// Ollama preflight, so Ollama silently truncated the prompt at n_ctx 4096 and
+/// the run still replied "ok". The preflight added in `providers::ollama` now
+/// refuses a request that size outright, so a switch that ignored the size
+/// would move the turn to a model certain to refuse it; the agent's usual
+/// answer to that refusal is to have the 7B summarise the user's history.
+pub fn fits_local_window(target: &RoleModel, request_tokens: Option<usize>) -> bool {
+    let Some(tokens) = request_tokens else {
+        return true;
+    };
+    match local_context_limit(&target.provider, &target.model) {
+        Some(window) => tokens <= local_request_budget(window),
+        None => true,
+    }
+}
+
 /// The fallback that was chosen, and why — enough for the routing log line to
 /// explain after the fact which configured model was passed over.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,11 +382,16 @@ pub struct FallbackChoice {
     /// The provider+model the session moves to.
     pub target: RoleModel,
     /// The configured local candidate this stands in for, when that
-    /// candidate's endpoint was down (e.g. the nightly split at noon).
+    /// candidate's endpoint was down (e.g. the nightly split at noon) or its
+    /// window was too small for the request.
     pub replaced: Option<RoleModel>,
     /// Configured candidates skipped because their endpoint was down and no
     /// local stand-in was available.
     pub skipped_down: Vec<RoleModel>,
+    /// Configured candidates skipped because their window cannot hold the
+    /// request ([`fits_local_window`]) and no larger local model was
+    /// installed to stand in.
+    pub skipped_too_small: Vec<RoleModel>,
 }
 
 /// Pure: pick the first configured fallback that can actually serve the turn.
@@ -309,36 +414,79 @@ pub struct FallbackChoice {
 ///   failed while up) is also replaced by an installed Ollama model at its
 ///   rank, so a split failure never jumps straight to a metered cloud model.
 ///
-/// Deterministic for a given snapshot: no clocks, no randomness.
+/// Deterministic for a given snapshot: no clocks, no randomness. Takes no
+/// account of the request's size; the agent's mid-turn switch uses
+/// [`choose_fallback_for_request`].
 pub fn choose_fallback(
     failed_provider: &str,
     candidates: &[FallbackCandidate],
     avail: &LocalAvailability,
 ) -> Option<FallbackChoice> {
+    choose_fallback_for_request(failed_provider, candidates, avail, None)
+}
+
+/// [`choose_fallback`], never choosing a local model whose window cannot hold
+/// a request of `request_tokens` ([`fits_local_window`]).
+///
+/// A local candidate that is up but too small is first replaced, at its rank,
+/// by the best installed Ollama model that does fit; with none, it is skipped
+/// and the walk goes on to the next candidate. A turn that can only fail on
+/// the stand-in is better moved to the next configured model than sent to a
+/// window that refuses it (2026-09-19 QA CLI run: 62,364 tokens against
+/// qwen2.5:7b's 32,768, which the Ollama preflight now refuses; see
+/// [`fits_local_window`]). With `request_tokens` `None` this is exactly
+/// [`choose_fallback`].
+pub fn choose_fallback_for_request(
+    failed_provider: &str,
+    candidates: &[FallbackCandidate],
+    avail: &LocalAvailability,
+    request_tokens: Option<usize>,
+) -> Option<FallbackChoice> {
     let failed = failed_provider.trim();
     let differs = |p: &str| !p.eq_ignore_ascii_case(failed);
+    let stand_in = || {
+        best_installed_ollama_model_for_request(avail, request_tokens)
+            .filter(|s| differs(&s.provider))
+    };
     let mut skipped_down: Vec<RoleModel> = Vec::new();
+    let mut skipped_too_small: Vec<RoleModel> = Vec::new();
 
     for c in candidates {
         if avail.reach_of(&c.target) == Reach::Down {
-            if let Some(stand_in) =
-                best_installed_ollama_model(avail).filter(|s| differs(&s.provider))
-            {
+            if let Some(target) = stand_in() {
                 return Some(FallbackChoice {
-                    target: stand_in,
+                    target,
                     replaced: Some(c.target.clone()),
                     skipped_down,
+                    skipped_too_small,
                 });
             }
             skipped_down.push(c.target.clone());
             continue;
         }
         if c.source == CandidateSource::ExplicitOverride || differs(&c.target.provider) {
-            return Some(FallbackChoice {
-                target: c.target.clone(),
-                replaced: None,
-                skipped_down,
-            });
+            if fits_local_window(&c.target, request_tokens) {
+                return Some(FallbackChoice {
+                    target: c.target.clone(),
+                    replaced: None,
+                    skipped_down,
+                    skipped_too_small,
+                });
+            }
+            // Up, but its window cannot hold this request. The rank still
+            // asked for a local model, so a larger installed one may serve it.
+            if is_local_provider(&c.target.provider) {
+                if let Some(target) = stand_in() {
+                    return Some(FallbackChoice {
+                        target,
+                        replaced: Some(c.target.clone()),
+                        skipped_down,
+                        skipped_too_small,
+                    });
+                }
+            }
+            skipped_too_small.push(c.target.clone());
+            continue;
         }
         // A LOCAL candidate skipped only because it is on the failed provider
         // (the split failed while its port was up — a 5xx or a dropped stream
@@ -346,13 +494,12 @@ pub fn choose_fallback(
         // rank. Without this, the next candidate — the metered zai/glm-5.2 —
         // won even with Ollama up and four models pulled.
         if is_local_provider(&c.target.provider) {
-            if let Some(stand_in) =
-                best_installed_ollama_model(avail).filter(|s| differs(&s.provider))
-            {
+            if let Some(target) = stand_in() {
                 return Some(FallbackChoice {
-                    target: stand_in,
+                    target,
                     replaced: Some(c.target.clone()),
                     skipped_down,
+                    skipped_too_small,
                 });
             }
         }
@@ -508,13 +655,24 @@ pub async fn probe_local_availability(candidates: &[FallbackCandidate]) -> Local
 /// Logs the snapshot and the decision on `permagent::cost_router`, so a switch
 /// that passed over the configured model can be explained after the fact.
 pub async fn permanent_failure_fallback_available(failed_provider: &str) -> Option<FallbackChoice> {
+    permanent_failure_fallback_for_request(failed_provider, None).await
+}
+
+/// [`permanent_failure_fallback_available`] for a request of known size: a
+/// local model whose window cannot hold `request_tokens` is not chosen
+/// ([`choose_fallback_for_request`]). The agent's mid-turn switch passes the
+/// size of the request that just failed.
+pub async fn permanent_failure_fallback_for_request(
+    failed_provider: &str,
+    request_tokens: Option<usize>,
+) -> Option<FallbackChoice> {
     let cfg = crate::config::Config::global();
     let candidates = permanent_failure_candidates(|k| cfg.get_param::<String>(k).ok());
     if candidates.is_empty() {
         return None;
     }
     let avail = probe_local_availability(&candidates).await;
-    let choice = choose_fallback(failed_provider, &candidates, &avail);
+    let choice = choose_fallback_for_request(failed_provider, &candidates, &avail, request_tokens);
     let fmt = |rm: &RoleModel| format!("{}/{}", rm.provider, rm.model);
     let candidate_list = candidates
         .iter()
@@ -534,6 +692,16 @@ pub async fn permanent_failure_fallback_available(failed_provider: &str) -> Opti
         .as_ref()
         .map(|c| c.skipped_down.iter().map(fmt).collect::<Vec<_>>().join(","))
         .unwrap_or_default();
+    let skipped_too_small = choice
+        .as_ref()
+        .map(|c| {
+            c.skipped_too_small
+                .iter()
+                .map(fmt)
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default();
     let ollama_models = avail.ollama_models.join(",");
     tracing::info!(
         target: "permagent::cost_router",
@@ -542,9 +710,11 @@ pub async fn permanent_failure_fallback_available(failed_provider: &str) -> Opti
         ollama = ?avail.ollama,
         ollama_models = %ollama_models,
         split = ?avail.split,
+        request_tokens = ?request_tokens,
         chosen = %chosen,
         replaced = %replaced,
         skipped_down = %skipped_down,
+        skipped_too_small = %skipped_too_small,
         "fallback selection over live local availability"
     );
     choice
@@ -559,6 +729,98 @@ pub fn local_context_limit(provider: &str, model: &str) -> Option<usize> {
     super::knowledge::lookup(provider, model)
         .filter(|row| row.is_local && row.context_window > 0)
         .map(|row| row.context_window as usize)
+}
+
+/// Whether `provider`/`model` is a model this machine serves itself, by the
+/// knowledge base's `is_local` flag. Used by the agent to decide that a
+/// context overflow right after a mid-turn failover is the stand-in's small
+/// window, not a history worth compacting.
+pub fn is_local_model(provider: &str, model: &str) -> bool {
+    super::knowledge::lookup(provider, model).is_some_and(|row| row.is_local)
+}
+
+/// The sentence for a turn that failed over to a LOCAL model whose window
+/// could not hold the request after all.
+///
+/// The switch already refuses a local model that is too small by its own
+/// count ([`fits_local_window`]); this is for when the Ollama preflight, which
+/// measures the real request, still says no, or when the request could not be
+/// counted. The agent's usual answer to that refusal is to compact the
+/// conversation and retry, which here would have the 7B stand-in summarise the
+/// user's history and still end on "context limit still exceeded". Instead the
+/// agent switches the session BACK to the model it failed over from
+/// (`restored`), so the next message is neither sent to the too-small window
+/// nor compacted against it, and this says so.
+///
+/// `restored` false means the switch back itself failed and the session is
+/// still on the stand-in: then the user has to switch the model, and resending
+/// alone would reach the same window.
+///
+/// `permanent_cause` is the [`ProviderError::user_facing_summary`] of a
+/// billing or auth rejection when that is what the turn failed over from. The
+/// session still goes back (staying on the stand-in would compact against its
+/// window on the next message), but "resend once it is reachable" would be
+/// false: a provider out of credit or with a rejected key rejects the resend
+/// too, which fails over to the same stand-in and is refused again. So the
+/// advice is to fix the rejection or pick another model, never to resend or to
+/// switch back to it. Payload-free like its siblings.
+pub fn local_fallback_overflow_reply(
+    failed_provider: &str,
+    fallback: &RoleModel,
+    restored: bool,
+    permanent_cause: Option<&str>,
+) -> String {
+    let head = format!(
+        "This turn moved from {failed_provider} to {}/{}, but that model's context window \
+         is too small for this session's request, so nothing was sent to it and your \
+         conversation was left as it is.",
+        fallback.provider, fallback.model
+    );
+    match (permanent_cause, restored) {
+        (None, true) => format!(
+            "{head} This session is back on {failed_provider}: resend once it is reachable \
+             again, or pick a model with a larger window in Settings → Models."
+        ),
+        (None, false) => format!(
+            "{head} This session is still on {}/{}, which cannot hold it: switch back to \
+             {failed_provider}, or to another model with a larger window, in Settings → Models \
+             before you resend.",
+            fallback.provider, fallback.model
+        ),
+        (Some(cause), true) => format!(
+            "{head} This session is back on {failed_provider}, but {cause}. A resend will be rejected the same way until that is fixed on the \
+             provider's side (its Plans & Billing page or API key), so fix it or pick another \
+             model with a larger window in Settings → Models first."
+        ),
+        (Some(cause), false) => format!(
+            "{head} This session is still on {}/{}, which cannot hold it, and \
+             {failed_provider} cannot take it either ({cause}). Pick another model with a \
+             larger window in Settings → Models before you resend.",
+            fallback.provider, fallback.model
+        ),
+    }
+}
+
+/// Pure: the cause of a mid-turn model switch, for the routing-snapshot log
+/// line. That line used to say `permanent_provider_rejection` for every
+/// switch, so a network failover, a 5xx, a spent rate limit or a stall all
+/// read in the log as a billing or auth rejection.
+pub fn failover_cause(err: &ProviderError) -> &'static str {
+    if is_dropped_stream(err) {
+        return "stream_dropped";
+    }
+    if err.is_first_byte_provider_stall() {
+        return "first_byte_stall";
+    }
+    match err {
+        ProviderError::CreditsExhausted { .. } => "credits_exhausted",
+        ProviderError::Authentication(_) => "authentication_rejected",
+        ProviderError::NetworkError(_) => "network_unreachable",
+        ProviderError::ServerError(_) => "server_error",
+        ProviderError::RateLimitExceeded { .. } => "rate_limited",
+        _ if err.is_permanent() => "permanent_provider_rejection",
+        _ => "transient_provider_error",
+    }
 }
 
 /// The ONE sentence the user sees or hears when a model is permanently
@@ -602,8 +864,14 @@ pub fn permanent_failure_reply(
 /// reported as one that could not be reached. "Unreachable" is reserved for the
 /// one cause that means it: a connection that never opened.
 fn precommit_failure_clause(provider: &str, err: &ProviderError) -> String {
-    if err.is_stream_decode() {
+    if is_dropped_stream(err) {
         return format!("{provider} dropped the response stream before any reply started");
+    }
+    // Checked before the variant match: a stall is an `ExecutionError`, which
+    // would otherwise read as the vague "failed before any reply started". The
+    // host may well have accepted the connection, so it is not "unreachable".
+    if err.is_first_byte_provider_stall() {
+        return format!("{provider} sent nothing back in time");
     }
     match err {
         ProviderError::NetworkError(_) => {
@@ -895,6 +1163,59 @@ mod tests {
         ));
     }
 
+    /// A body closed partway through a `data:` line reaches the agent as
+    /// the OpenAI chunk parser's `RequestFailed("Failed to parse streaming
+    /// chunk: EOF while parsing …")`. It is a dropped stream: the gate lets it
+    /// fail over before commit, the log cause and the notice say "dropped",
+    /// and it is never read as a 4xx even when the partial bytes it quotes
+    /// happen to contain "invalid_request_error".
+    #[test]
+    fn a_chunk_cut_off_mid_line_is_a_dropped_stream() {
+        let cut = ProviderError::RequestFailed(
+            "Failed to parse streaming chunk: EOF while parsing a string at line 1 column 58: \
+             \"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"the sec\""
+                .into(),
+        );
+        assert!(is_cut_off_stream_chunk(&cut));
+        assert!(is_dropped_stream(&cut));
+        assert!(may_silent_precommit_failover(false, &cut));
+        assert!(!may_silent_precommit_failover(true, &cut));
+        assert_eq!(failover_cause(&cut), "stream_dropped");
+        let target = RoleModel {
+            provider: "ollama".into(),
+            model: "qwen2.5:7b".into(),
+        };
+        let reply = precommit_failover_reply("qwen38_split", &cut, &target);
+        assert!(reply.contains("dropped the response stream"), "{reply}");
+        assert!(!reply.contains("the sec"), "leaked the payload: {reply}");
+
+        let quoting_a_4xx = ProviderError::RequestFailed(
+            "Failed to parse streaming chunk: EOF while parsing a string at line 1 column 40: \
+             \"{\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\""
+                .into(),
+        );
+        assert!(may_silent_precommit_failover(false, &quoting_a_4xx));
+    }
+
+    /// A COMPLETE line that is not a chunk is a real shape mismatch, and a
+    /// genuine 4xx is a rejection: neither may pass as a dropped stream.
+    #[test]
+    fn only_end_of_input_counts_as_a_cut_off_chunk() {
+        let shape = ProviderError::RequestFailed(
+            "Failed to parse streaming chunk: missing field `choices` at line 1 column 12: \"{}\""
+                .into(),
+        );
+        assert!(!is_cut_off_stream_chunk(&shape));
+        assert!(!is_dropped_stream(&shape));
+        let rejected =
+            ProviderError::RequestFailed("Bad request (400): invalid_request_error".into());
+        assert!(!is_dropped_stream(&rejected));
+        assert!(!may_silent_precommit_failover(false, &rejected));
+        assert!(!is_cut_off_stream_chunk(&ProviderError::NetworkError(
+            "Failed to parse streaming chunk: EOF while parsing".into()
+        )));
+    }
+
     /// M2: the pre-commit failover used to be silent. Session 20260831_10 was
     /// served by `anthropic/claude-haiku-4-5` after `qwen38_split`'s port was
     /// found dead, and NOTHING in the transcript said so.
@@ -1013,6 +1334,282 @@ mod tests {
             "{rate}"
         );
         assert!(!rate.contains("unreachable"), "{rate}");
+        let stall = reply(ProviderError::first_byte_stall("0 chars in 120 s"));
+        assert!(
+            stall.starts_with("openai sent nothing back in time"),
+            "{stall}"
+        );
+        assert!(!stall.contains("unreachable"), "{stall}");
+        assert!(
+            !stall.contains("120 s"),
+            "the detail is log material: {stall}"
+        );
+    }
+
+    /// A first-byte stall that survived its one retry used to end the turn on
+    /// "send it again once the provider recovers", with Ollama up and idle.
+    /// Nothing reached the user, so it may move. A stream-budget RUNAWAY
+    /// shares the variant and must not: it is ours, and permanent.
+    #[test]
+    fn a_first_byte_stall_may_fail_over_but_a_runaway_may_not() {
+        let stall = ProviderError::first_byte_stall("0 chars in 120 s");
+        assert!(may_silent_precommit_failover(false, &stall));
+        assert!(!may_silent_precommit_failover(true, &stall));
+        let runaway = ProviderError::stream_budget_exceeded("441 s, 3.0 MB");
+        assert!(!runaway.is_first_byte_provider_stall());
+        assert!(!may_silent_precommit_failover(false, &runaway));
+    }
+
+    /// The stand-in's window is the local row's, and only local rows count:
+    /// the agent must not skip compaction for a cloud fallback.
+    #[test]
+    fn only_local_rows_count_as_local_models() {
+        assert!(is_local_model("ollama", "qwen2.5:7b"));
+        assert!(is_local_model("qwen38_split", "qwen3.8-27b"));
+        assert!(!is_local_model("zai", "glm-5.2"));
+        assert!(!is_local_model("ollama", "not-a-pulled-model:1b"));
+    }
+
+    /// The overflow after a failover says which model it moved to, that
+    /// nothing was sent, and that the history is untouched, never that it is
+    /// compacting. The advice follows where the session actually is: back on
+    /// the failed provider, so resending is right; or still on the too-small
+    /// stand-in, so resending alone would hit the same window.
+    #[test]
+    fn a_local_overflow_after_failover_is_named_and_leaves_history_alone() {
+        let target = rm("ollama", "qwen2.5:7b");
+        let restored = local_fallback_overflow_reply("anthropic", &target, true, None);
+        assert!(
+            restored.contains("from anthropic to ollama/qwen2.5:7b"),
+            "{restored}"
+        );
+        assert!(restored.contains("nothing was sent"), "{restored}");
+        assert!(restored.contains("left as it is"), "{restored}");
+        assert!(!restored.to_lowercase().contains("compact"), "{restored}");
+        assert!(
+            restored.contains("back on anthropic"),
+            "the session was switched back and must say so: {restored}"
+        );
+
+        let stuck = local_fallback_overflow_reply("anthropic", &target, false, None);
+        assert!(
+            stuck.contains("still on ollama/qwen2.5:7b"),
+            "a failed switch-back must not pretend the session moved: {stuck}"
+        );
+        assert!(
+            stuck.contains("switch back to anthropic"),
+            "the user has to switch the model before a resend can work: {stuck}"
+        );
+        assert!(
+            !stuck.contains("resend once"),
+            "resending on the stand-in reaches the same window: {stuck}"
+        );
+    }
+
+    /// A failover from a billing or auth rejection must not promise that a
+    /// resend will work: the provider it hands back to rejects every request
+    /// until the credit or key is fixed, and the resend would fail over to the
+    /// same stand-in and be refused again. Nor may it send the user back to it.
+    #[test]
+    fn a_local_overflow_after_a_permanent_rejection_never_promises_a_resend() {
+        let target = rm("ollama", "qwen2.5:7b");
+        let cause = ProviderError::CreditsExhausted {
+            details: "credit balance too low".into(),
+            top_up_url: None,
+        }
+        .user_facing_summary();
+
+        let restored = local_fallback_overflow_reply("anthropic", &target, true, Some(&cause));
+        assert!(restored.contains("back on anthropic"), "{restored}");
+        assert!(restored.contains(&cause), "names the rejection: {restored}");
+        assert!(
+            !restored.contains("resend once"),
+            "a resend is rejected the same way: {restored}"
+        );
+        assert!(restored.contains("until that is fixed"), "{restored}");
+        assert!(!restored.to_lowercase().contains("compact"), "{restored}");
+
+        let stuck = local_fallback_overflow_reply("anthropic", &target, false, Some(&cause));
+        assert!(stuck.contains("still on ollama/qwen2.5:7b"), "{stuck}");
+        assert!(
+            !stuck.contains("switch back to anthropic"),
+            "anthropic is out of credit; switching back cannot help: {stuck}"
+        );
+        assert!(!stuck.contains("resend once"), "{stuck}");
+    }
+
+    /// The routing line names the real cause. It said
+    /// `permanent_provider_rejection` for network, 5xx, rate-limit and stall
+    /// failovers alike.
+    #[test]
+    fn each_failover_names_its_own_cause() {
+        assert_eq!(
+            failover_cause(&ProviderError::NetworkError("refused".into())),
+            "network_unreachable"
+        );
+        assert_eq!(
+            failover_cause(&ProviderError::ServerError("503".into())),
+            "server_error"
+        );
+        assert_eq!(
+            failover_cause(&ProviderError::RateLimitExceeded {
+                details: "slow down".into(),
+                retry_delay: None,
+            }),
+            "rate_limited"
+        );
+        assert_eq!(
+            failover_cause(&ProviderError::first_byte_stall("0 chars in 120 s")),
+            "first_byte_stall"
+        );
+        assert_eq!(
+            failover_cause(&ProviderError::RequestFailed(
+                "error decoding response body".into()
+            )),
+            "stream_dropped"
+        );
+        assert_eq!(
+            failover_cause(&ProviderError::Authentication("401".into())),
+            "authentication_rejected"
+        );
+        assert_eq!(failover_cause(&billing_error()), "credits_exhausted");
+        for transient in [
+            ProviderError::NetworkError("x".into()),
+            ProviderError::ServerError("x".into()),
+            ProviderError::first_byte_stall("x"),
+        ] {
+            assert_ne!(
+                failover_cause(&transient),
+                "permanent_provider_rejection",
+                "{transient:?}"
+            );
+        }
+    }
+
+    // ── request-size-aware selection ──────────────────────────────────────
+
+    /// The request size logged on 2026-09-19 for the QA CLI run that failed
+    /// over to ollama/qwen2.5:7b (cli log 20260919_030958, session
+    /// 20260919_2): the system prompt and tool schemas alone.
+    const QA_RUN_REQUEST_TOKENS: usize = 62_364;
+
+    #[test]
+    fn a_local_window_fits_only_what_leaves_room_for_the_reply() {
+        let small = rm("ollama", "qwen2.5:7b");
+        assert!(fits_local_window(&small, Some(20_000)));
+        assert!(!fits_local_window(&small, Some(QA_RUN_REQUEST_TOKENS)));
+        assert!(
+            !fits_local_window(&small, Some(30_000)),
+            "under the window but no room for the reply"
+        );
+        assert!(
+            fits_local_window(&small, None),
+            "an uncounted request keeps the old behaviour"
+        );
+        assert!(
+            fits_local_window(&rm("zai", "glm-5.2"), Some(QA_RUN_REQUEST_TOKENS)),
+            "cloud models keep the ordinary compaction path"
+        );
+        assert!(
+            !fits_local_window(&rm("qwen38_split", "qwen3.8-27b"), Some(5_000)),
+            "the split is served with -c 4096"
+        );
+    }
+
+    /// The QA run's shape mid-turn: split down, Ollama up with only
+    /// 32k-or-smaller models, a 62k request. `choose_fallback` picks
+    /// qwen2.5:7b, whose window the Ollama preflight refuses for a request
+    /// that size. The next configured model now serves the turn instead.
+    #[test]
+    fn a_request_too_big_for_every_installed_model_moves_to_the_next_candidate() {
+        let choice = choose_fallback_for_request(
+            "anthropic",
+            &live_config(),
+            &ollama_up_with_the_installed_models(),
+            Some(QA_RUN_REQUEST_TOKENS),
+        )
+        .expect("the configured cloud model can take the request");
+        assert_eq!(choice.target, rm("zai", "glm-5.2"));
+        assert_eq!(choice.replaced, None);
+        assert_eq!(
+            choice.skipped_down,
+            vec![rm("qwen38_split", "qwen3.8-27b")],
+            "the split was down and no installed model could stand in for it"
+        );
+    }
+
+    /// Same request with a large-window local model pulled: it stands in at
+    /// the split's rank, ahead of the metered model.
+    #[test]
+    fn a_larger_installed_model_stands_in_when_the_best_ranked_one_is_too_small() {
+        let mut avail = ollama_up_with_the_installed_models();
+        avail.ollama_models.push("qwen3-coder:30b".into());
+        let choice = choose_fallback_for_request(
+            "anthropic",
+            &live_config(),
+            &avail,
+            Some(QA_RUN_REQUEST_TOKENS),
+        )
+        .unwrap();
+        assert_eq!(choice.target, rm("ollama", "qwen3-coder:30b"));
+        assert_eq!(choice.replaced, Some(rm("qwen38_split", "qwen3.8-27b")));
+    }
+
+    /// An UP local candidate whose window is too small (the split at night,
+    /// served with -c 4096) is not chosen for a request it cannot hold.
+    #[test]
+    fn an_up_local_candidate_too_small_for_the_request_is_skipped() {
+        let avail = LocalAvailability {
+            ollama: Reach::Down,
+            ollama_models: vec![],
+            split: Reach::Up,
+        };
+        let choice =
+            choose_fallback_for_request("anthropic", &live_config(), &avail, Some(20_000)).unwrap();
+        assert_eq!(choice.target, rm("zai", "glm-5.2"));
+        assert_eq!(
+            choice.skipped_too_small,
+            vec![rm("qwen38_split", "qwen3.8-27b")]
+        );
+    }
+
+    /// A request that fits changes nothing: the ordinary stand-in is taken.
+    #[test]
+    fn a_request_that_fits_keeps_the_ordinary_stand_in() {
+        let sized = choose_fallback_for_request(
+            "anthropic",
+            &live_config(),
+            &ollama_up_with_the_installed_models(),
+            Some(8_000),
+        )
+        .unwrap();
+        let unsized_choice = choose_fallback(
+            "anthropic",
+            &live_config(),
+            &ollama_up_with_the_installed_models(),
+        )
+        .unwrap();
+        assert_eq!(sized, unsized_choice);
+        assert_eq!(sized.target.provider, "ollama");
+    }
+
+    /// Nothing configured can hold the request: no switch at all, so the turn
+    /// ends on its own honest message instead of a refusal from a stand-in.
+    #[test]
+    fn nothing_is_chosen_when_no_candidate_can_hold_the_request() {
+        let cands = permanent_failure_candidates(reader(&[(
+            KEY_FALLBACKS,
+            "qwen38_split/qwen3.8-27b,ollama/qwen2.5:7b",
+        )]));
+        assert_eq!(
+            choose_fallback_for_request(
+                "anthropic",
+                &cands,
+                &ollama_up_with_the_installed_models(),
+                Some(QA_RUN_REQUEST_TOKENS),
+            ),
+            None
+        );
     }
 
     // ── availability-aware selection ─────────────────────────────────────
