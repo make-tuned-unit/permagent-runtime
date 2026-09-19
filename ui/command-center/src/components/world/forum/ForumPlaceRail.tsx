@@ -38,6 +38,7 @@ export function ForumPlaceRail({
   onHold: (held: boolean) => void;
 }) {
   const listRef = useRef<HTMLDivElement | null>(null);
+  const handleRef = useRef<HTMLButtonElement | null>(null);
 
   // Escape closes the rail, but only when the rail itself has focus: the same
   // key exits walking, and a world you are exploring should not have its travel
@@ -56,6 +57,28 @@ export function ForumPlaceRail({
     return () => node.removeEventListener('keydown', onKey);
   }, [open, onToggle]);
 
+  // The closed rail is still rendered — it is slid out with `transform` and
+  // `opacity: 0`, not `display: none` — so everything in it stays in the DOM,
+  // and therefore in the accessibility tree, unless we say otherwise. The
+  // documented way to close it is Escape *while focus is inside it*, which is
+  // exactly the case WebKit punishes: a focused descendant inside an
+  // `aria-hidden` subtree makes Safari/WKWebView ignore the `aria-hidden`
+  // altogether ("Blocked aria-hidden ... because its descendant retained
+  // focus"). The rail then reappears to a screen reader while being invisible
+  // on screen, and the reading cursor is parked on an off-screen control.
+  //
+  // `inert` (paired with `aria-hidden`, as WizardShell already does for its
+  // inactive steps) is what actually fixes it: it drops the subtree from the
+  // AX tree AND from the tab order, and blurs focus held inside it. That last
+  // part would otherwise dump the user on <body>, so we hand focus back to the
+  // handle — the control that reopens the rail — rather than to nowhere.
+  useEffect(() => {
+    if (open) return;
+    const node = listRef.current;
+    if (!node || !node.contains(document.activeElement)) return;
+    handleRef.current?.focus();
+  }, [open]);
+
   return (
     <div
       className="forum-rail"
@@ -67,6 +90,7 @@ export function ForumPlaceRail({
     >
       <button
         type="button"
+        ref={handleRef}
         className="pa-btn forum-rail-handle"
         aria-expanded={open}
         aria-controls="forum-place-rail"
@@ -84,6 +108,9 @@ export function ForumPlaceRail({
         role="radiogroup"
         aria-label="World places"
         aria-hidden={!open}
+        // `aria-hidden` alone is a promise WebKit will break the moment focus
+        // is inside here (see the effect above); `inert` is what enforces it.
+        {...(open ? {} : { inert: '' })}
       >
         {places.map((place) => {
           const active = place.id === activeId;
