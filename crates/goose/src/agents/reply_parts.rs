@@ -682,12 +682,37 @@ impl Agent {
     /// Keeping these fields outside the mutable session/provider state prevents
     /// a provider switch on the next turn from rewriting this invocation's
     /// attribution.
-    pub(crate) async fn reserve_provider_invocation(
+    ///
+    /// The request's system prompt, messages and tools are known here, so the
+    /// hold is sized to the prompt actually being sent (see
+    /// [`counted_prompt_tokens`]) instead of the whole context window, which is
+    /// what refused the harness's first call ("requested bound $1.56, ceiling
+    /// $1.00" for a 30k-token prompt).
+    // This is the only Agent-level entry point. The request-blind
+    // `reserve_provider_invocation` that used to sit beside it was deleted once
+    // both streamed-turn call sites moved here: left in place it had no caller
+    // (clippy `-D warnings` fails on the dead_code), and any new caller would
+    // have silently reserved the whole context window again.
+    // Called by the streamed turn in `agents::agent` (first reservation and
+    // the Y4a single retry), with the same request it then streams.
+    pub(crate) async fn reserve_provider_invocation_for_request(
         &self,
         session: &Session,
         provider: &Arc<dyn Provider>,
         invocation_id: String,
+        system_prompt: &SystemPromptParts,
+        messages: &[Message],
+        tools: &[Tool],
     ) -> std::result::Result<ProviderInvocationContext, ProviderAuthorizationFailure> {
+        let counted = counted_prompt_tokens(
+            &[
+                system_prompt.stable_prefix(),
+                system_prompt.volatile_suffix(),
+            ],
+            messages,
+            tools,
+        )
+        .await;
         reserve_provider_invocation_for_model(
             Arc::clone(&self.config.session_manager),
             session,
@@ -696,6 +721,7 @@ impl Agent {
             provider.get_model_config(),
             provider.retry_config().max_physical_attempts(),
             invocation_id,
+            counted,
         )
         .await
     }
@@ -1792,10 +1818,89 @@ pub(crate) async fn record_provider_usage(
     Ok(())
 }
 
+/// Count, with the local o200k tokenizer, an upper estimate of the prompt a
+/// provider call is about to send: every system prompt part, every message and
+/// the tool schemas. The result feeds
+/// `cost_router::reservation::plan_reservation_bound_for_prompt`, which pads
+/// it by `prompt_token_margin` before it bounds a paid hold.
+///
+/// Why: the reservation used to price the model's whole context window for
+/// every call, so the harness's first call — ~30k tokens, 7% of a 400k window,
+/// $0.12 actually spent — was refused with "task budget gate required before
+/// provider call (spent $0.12, authorization holds $0.00, requested bound
+/// $1.56, ceiling $1.00)".
+///
+/// Every choice here errs toward counting MORE than the provider will bill,
+/// because an under-stated hold would authorize spend nobody approved:
+/// - each message is counted as its full JSON serialization (ids, timestamps,
+///   metadata, JSON escaping, and messages the provider later filters out as
+///   not agent-visible), which over-covers the per-message role/turn tokens a
+///   chat template adds;
+/// - tool schemas are counted as their complete JSON, nested properties and
+///   all, not the partial walk `TokenCounter::count_tokens_for_tools` does.
+///
+/// Returns `None` — and the caller then reserves the full window — whenever
+/// the count cannot be trusted: the tokenizer is unavailable, a message will
+/// not serialize, or the request carries an image, audio or binary resource,
+/// whose billed tokens depend on pixel dimensions or duration rather than on
+/// anything a text tokenizer can see.
+pub(crate) async fn counted_prompt_tokens(
+    system_parts: &[&str],
+    messages: &[Message],
+    tools: &[Tool],
+) -> Option<usize> {
+    let counter = crate::token_counter::create_token_counter().await.ok()?;
+    let mut pieces: Vec<String> = Vec::with_capacity(system_parts.len() + messages.len() + 1);
+    pieces.extend(system_parts.iter().map(|part| (*part).to_string()));
+    for message in messages {
+        let value = serde_json::to_value(message).ok()?;
+        if carries_binary_media(&value) {
+            return None;
+        }
+        pieces.push(value.to_string());
+    }
+    if !tools.is_empty() {
+        pieces.push(serde_json::to_string(tools).ok()?);
+    }
+    // A long session can be megabytes of text; tokenizing it is CPU work that
+    // must not stall the async runtime the reply stream is running on.
+    tokio::task::spawn_blocking(move || {
+        pieces
+            .iter()
+            .map(|piece| counter.count_tokens(piece))
+            .fold(0usize, usize::saturating_add)
+    })
+    .await
+    .ok()
+}
+
+/// Whether a serialized message carries content a text tokenizer cannot
+/// price: an image or audio block (as `MessageContent::Image` or inside a tool
+/// result) or an embedded binary resource (`blob`).
+fn carries_binary_media(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            let media_type = map
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| matches!(kind, "image" | "audio"));
+            media_type || map.contains_key("blob") || map.values().any(carries_binary_media)
+        }
+        Value::Array(items) => items.iter().any(carries_binary_media),
+        _ => false,
+    }
+}
+
 /// Reserve exactly one provider invocation using immutable transport/model
 /// facts captured before dispatch.  This is shared by streamed turns and the
 /// explicit physical attempts behind `complete_fast`; neither path may infer
 /// a free tier from a provider name or fabricate a task identity.
+///
+/// `counted_prompt_tokens` is [`counted_prompt_tokens`]' count of the request
+/// being authorized, or `None` when the caller cannot see it; `None` reserves
+/// the whole context window, so an uncounted call fails closed onto the worst
+/// case rather than onto a guess.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn reserve_provider_invocation_for_model(
     manager: Arc<SessionManager>,
     session: &Session,
@@ -1804,6 +1909,7 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     model_config: crate::model::ModelConfig,
     max_physical_attempts: u32,
     invocation_id: String,
+    counted_prompt_tokens: Option<usize>,
 ) -> std::result::Result<ProviderInvocationContext, ProviderAuthorizationFailure> {
     // Y7 (harness loop, from Lane A12's Q6 measurement): reserve for ONE
     // physical attempt by default instead of the provider's whole retry
@@ -1825,12 +1931,13 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     // reservation id; authorization and settlement must agree on one answer.
     let cost_tier =
         crate::cost_router::effective_cost_tier(provider, &model_config.model_name, cost_tier);
-    let bound = crate::cost_router::plan_reservation_bound(
+    let bound = crate::cost_router::reservation::plan_reservation_bound_for_prompt(
         provider,
         &model_config.model_name,
         cost_tier,
         &model_config,
         attempts_reserved,
+        counted_prompt_tokens,
     )
     .map_err(|e| ProviderAuthorizationFailure::Unknown {
         reason: format!("cannot authorize provider call: {e}"),
@@ -1852,6 +1959,22 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     // Local and subscription calls retain typed attribution, but never create
     // a paid-dollar hold.
     let Some(bound) = bound else {
+        // Say so. QA looked for "reservation bound computed" after the
+        // prompt-sized hold shipped (2026-09-19) and found none since the
+        // redeploy: the one run after it had failed over to
+        // `ollama`/`qwen2.5:7b` before its first turn, and a free call took
+        // this exit without a word, so "no paid hold was needed" and "the new
+        // reservation code never ran" looked the same in the log. This line
+        // tells them apart, and shows the prompt count the seam received,
+        // without anyone having to pay for a call to find out.
+        tracing::info!(
+            target: "permagent::cost_router::reservation",
+            provider = %context.provider,
+            model = %context.model,
+            cost_tier = ?context.cost_tier,
+            counted_prompt_tokens = ?counted_prompt_tokens,
+            "reservation skipped: unpaid tier holds no dollars"
+        );
         return Ok(context);
     };
     // F2 (harness loop, Round F, from the I1/M11 forensics chain): F8, D1
@@ -1879,6 +2002,10 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         // same number — and the reason a single call held $1.66 — until Y7.
         attempts_reserved = bound.max_physical_attempts,
         retry_envelope_attempts = max_physical_attempts,
+        // Whether the hold was sized to the counted prompt or to the whole
+        // window (`counted_prompt_tokens` absent), and the input it covers.
+        counted_prompt_tokens = ?counted_prompt_tokens,
+        reserved_input_tokens = bound.input_tokens,
         "reservation bound computed"
     );
     let task_id = budget_task_id(&session.extension_data);
@@ -2119,6 +2246,9 @@ impl AccountedFastCompletion {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<(Message, ProviderUsage)> {
+        // The exact request is in hand here, so the hold is sized to it rather
+        // than to the model's whole context window.
+        let counted = counted_prompt_tokens(&[system], messages, tools).await;
         let invocation = reserve_provider_invocation_for_model(
             Arc::clone(&self.manager),
             &self.session,
@@ -2127,6 +2257,7 @@ impl AccountedFastCompletion {
             model_config.clone(),
             self.provider.retry_config().max_physical_attempts(),
             uuid::Uuid::new_v4().to_string(),
+            counted,
         )
         .await
         .map_err(|failure| anyhow::anyhow!(failure.to_string()))?;
@@ -2672,6 +2803,7 @@ mod tests {
             fixture.get_model_config(),
             fixture.retry_config().max_physical_attempts(),
             uuid::Uuid::new_v4().to_string(),
+            None,
         )
         .await;
 
@@ -2696,6 +2828,7 @@ mod tests {
             fixture.get_model_config(),
             fixture.retry_config().max_physical_attempts(),
             uuid::Uuid::new_v4().to_string(),
+            None,
         )
         .await
         .expect("durable task should authorize the paid stream");
@@ -2916,6 +3049,7 @@ mod tests {
             fixture.get_model_config(),
             fixture.retry_config().max_physical_attempts(),
             invocation_id.clone(),
+            None,
         )
         .await;
         assert!(
@@ -3145,6 +3279,7 @@ mod tests {
             fixture.get_model_config(),
             fixture.retry_config().max_physical_attempts(),
             invocation_id.clone(),
+            None,
         )
         .await;
         assert!(
@@ -3689,6 +3824,7 @@ mod tests {
             fixture.get_model_config(),
             fixture.retry_config().max_physical_attempts(),
             reused.unwrap(),
+            None,
         )
         .await;
         assert!(
@@ -3948,6 +4084,118 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(rows, 1);
+    }
+
+    /// Collects what a scoped `tracing` subscriber writes, so a test can read
+    /// the reservation seam's log line back.
+    #[derive(Clone, Default)]
+    struct CapturedReservationLog(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedReservationLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl CapturedReservationLog {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    fn reservation_log_subscriber(
+        log: &CapturedReservationLog,
+    ) -> impl tracing::Subscriber + Send + Sync + 'static {
+        let writer = log.clone();
+        tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish()
+    }
+
+    // 2026-09-19: QA could not confirm the prompt-sized hold in the live app
+    // because the only run after the redeploy failed over to a free local
+    // model, and a free call left no reservation line at all. The unpaid exit
+    // must now say it ran, and carry the prompt count the seam was handed.
+    #[tokio::test]
+    async fn an_unpaid_call_logs_that_it_skipped_the_hold_and_what_it_counted() {
+        let fixture = LocalFastFallbackProvider::new();
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(Arc::new(fixture.clone()), false).await;
+        let log = CapturedReservationLog::default();
+        let _guard = tracing::subscriber::set_default(reservation_log_subscriber(&log));
+
+        let invocation = reserve_provider_invocation_for_model(
+            Arc::clone(&manager),
+            &session,
+            fixture.get_name(),
+            fixture.cost_tier(),
+            fixture.get_model_config(),
+            fixture.retry_config().max_physical_attempts(),
+            uuid::Uuid::new_v4().to_string(),
+            Some(1_234),
+        )
+        .await
+        .expect("a free local call needs no paid authorization");
+
+        assert!(invocation.reservation_id.is_none());
+        assert!(invocation.attempts_reserved.is_none());
+        let text = log.text();
+        assert!(
+            text.contains("reservation skipped: unpaid tier holds no dollars"),
+            "{text}"
+        );
+        assert!(text.contains("provider=local-fixture"), "{text}");
+        assert!(text.contains("counted_prompt_tokens=Some(1234)"), "{text}");
+        assert!(
+            !text.contains("reservation bound computed"),
+            "a free call must not claim a paid hold: {text}"
+        );
+    }
+
+    // The paid line is what QA greps for on a real paid run; pin that it names
+    // the count it was given and the input the hold actually covers.
+    #[tokio::test]
+    async fn a_paid_call_logs_the_counted_prompt_and_the_input_it_reserved() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let model_config = fixture.get_model_config();
+        let window = model_config.context_limit.unwrap()
+            - usize::try_from(model_config.max_tokens.unwrap()).unwrap();
+        let counted = 1_000usize;
+        let expected_input =
+            (counted + crate::cost_router::reservation::prompt_token_margin(counted)).min(window);
+        let log = CapturedReservationLog::default();
+        let _guard = tracing::subscriber::set_default(reservation_log_subscriber(&log));
+
+        // The outcome depends on the configured budget; the log line is
+        // written before the budget is consulted, which is what this pins.
+        let _ = reserve_provider_invocation_for_model(
+            Arc::clone(&manager),
+            &session,
+            fixture.get_name(),
+            fixture.cost_tier(),
+            model_config,
+            fixture.retry_config().max_physical_attempts(),
+            uuid::Uuid::new_v4().to_string(),
+            Some(counted),
+        )
+        .await;
+
+        let text = log.text();
+        assert!(text.contains("reservation bound computed"), "{text}");
+        assert!(text.contains("counted_prompt_tokens=Some(1000)"), "{text}");
+        assert!(
+            text.contains(&format!("reserved_input_tokens={expected_input}")),
+            "{text}"
+        );
+        assert!(!text.contains("reservation skipped"), "{text}");
     }
 
     #[tokio::test]
@@ -4495,5 +4743,311 @@ mod tests {
     fn test_app_hidden_when_visibility_is_empty() {
         let tool = make_tool_with_meta(Some(serde_json::json!({"ui": {"visibility": []}})));
         assert!(!is_tool_visible_to_app(&tool));
+    }
+
+    // --- counted_prompt_tokens: sizing a paid hold to the prompt actually sent.
+    // The user-visible failure these guard: the harness's first call (~30k
+    // tokens, 7% of a 400k window, $0.12 spent) was refused with "requested
+    // bound $1.56, ceiling $1.00" because the hold priced the whole window.
+
+    fn counted_prompt_fixture_tool() -> Tool {
+        Tool::new(
+            "developer__text_editor".to_string(),
+            "Edit a file on disk.".to_string(),
+            object!({
+                "type": "object",
+                "required": ["path", "command"],
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path." },
+                    "command": {
+                        "type": "string",
+                        "enum": ["view", "write", "str_replace"],
+                        "description": "What to do."
+                    },
+                    "edits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old": { "type": "string" },
+                                "new": { "type": "string" }
+                            }
+                        }
+                    }
+                }
+            }),
+        )
+    }
+
+    /// The count never falls below the repo's own chat-token estimator for
+    /// the same request: it counts whole JSON (message envelopes, nested tool
+    /// schema properties) where the estimator walks only part of it. This does
+    /// not prove the count bounds a provider's own tokenizer — that is what
+    /// `prompt_token_margin` is for — only that nothing sent is left out.
+    #[tokio::test]
+    async fn counted_prompt_never_undercounts_the_chat_token_estimator() {
+        let system = "You are a careful coding agent. Follow the repository rules.";
+        let messages = vec![
+            Message::user().with_text("Fix the failing test in src/lib.rs and explain the cause."),
+            Message::assistant().with_text("Reading the file first."),
+        ];
+        let tools = vec![counted_prompt_fixture_tool()];
+
+        let counted = counted_prompt_tokens(&[system], &messages, &tools)
+            .await
+            .expect("a text-only request must be countable");
+        let estimator = crate::token_counter::create_token_counter()
+            .await
+            .unwrap()
+            .count_chat_tokens(system, &messages, &tools);
+        assert!(
+            counted >= estimator,
+            "counted {counted} must cover the estimator's {estimator}"
+        );
+
+        // Dropping the tools or a system part can only lower the count.
+        let without_tools = counted_prompt_tokens(&[system], &messages, &[])
+            .await
+            .unwrap();
+        assert!(without_tools < counted);
+        let two_parts = counted_prompt_tokens(&[system, "volatile suffix"], &messages, &tools)
+            .await
+            .unwrap();
+        assert!(two_parts > counted);
+    }
+
+    /// End to end through the real tokenizer and the real bound: a ~30k-token
+    /// prompt to a 400k-context model reserves input for about that prompt
+    /// plus the margin, not the 272k-token window that produced the reported
+    /// $1.56 hold.
+    #[tokio::test]
+    async fn a_thirty_thousand_token_prompt_is_not_reserved_as_the_whole_window() {
+        let body = "word ".repeat(30_000);
+        let messages = vec![Message::user().with_text(body)];
+        let counted = counted_prompt_tokens(&["system"], &messages, &[])
+            .await
+            .unwrap();
+        assert!(
+            (30_000..32_000).contains(&counted),
+            "expected about 30k tokens, counted {counted}"
+        );
+
+        let cfg = ModelConfig {
+            context_limit: Some(400_000),
+            max_tokens: Some(128_000),
+            model_name: "gpt-5.4-mini".to_string(),
+            ..ModelConfig::default()
+        };
+        let sized = crate::cost_router::reservation::plan_reservation_bound_for_prompt(
+            "openai",
+            "gpt-5.4-mini",
+            CostTier::PaidApi,
+            &cfg,
+            2,
+            Some(counted),
+        )
+        .unwrap()
+        .unwrap();
+        let window = crate::cost_router::reservation::plan_reservation_bound_for_prompt(
+            "openai",
+            "gpt-5.4-mini",
+            CostTier::PaidApi,
+            &cfg,
+            2,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(window.input_tokens, 272_000);
+        assert!(sized.input_tokens >= counted);
+        assert!(
+            sized.input_tokens < 60_000,
+            "reserved {}",
+            sized.input_tokens
+        );
+        assert!(sized.amount_usd < window.amount_usd);
+    }
+
+    /// The user-reported refusal replayed against the real ledger gate: "task
+    /// budget gate required before provider call (spent $0.12, authorization
+    /// holds $0.00, requested bound $1.56, ceiling $1.00)", under the
+    /// first-cut task ceilings ($0.50/$1/$2) that produced it.
+    ///
+    /// The old path (whole window, two attempts) reproduces that exact gate.
+    /// The shipped path (the prompt counted by the tokenizer the streamed turn
+    /// uses, the default reserved-attempt count resolved from the same retry
+    /// envelope) is granted. A retry then asks to extend the hold by one more
+    /// attempt, and under this ceiling that is gated, not silently spent.
+    ///
+    /// What this does not prove: it plans and reserves exactly as
+    /// `reserve_provider_invocation_for_model` does, but passes the ceilings
+    /// explicitly because that function reads them from the process config.
+    /// It does not run a streamed turn.
+    #[tokio::test]
+    async fn the_reported_first_call_is_granted_under_the_ceiling_that_refused_it() {
+        let directory = TempDir::new().unwrap();
+        let manager = SessionManager::new(directory.path().to_path_buf());
+        let session = manager
+            .create_session(
+                directory.path().to_path_buf(),
+                "reported-gate".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task = manager.begin_budget_task(&session.id).await.unwrap();
+        let pool = manager.storage().pool().await.unwrap();
+        sqlx::query(
+            "INSERT INTO cost_ledger (call_id, ts, session_id, task_id, cost_usd)
+             VALUES ('earlier-call', ?, ?, ?, 0.12)",
+        )
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(&session.id)
+        .bind(&task)
+        .execute(pool)
+        .await
+        .unwrap();
+        let first_cut = crate::cost_router::budget::BudgetConfig {
+            task: crate::cost_router::budget::BudgetCeilings {
+                soft: 0.5,
+                gate: 1.0,
+                hard: 2.0,
+            },
+            session: crate::cost_router::budget::BudgetCeilings {
+                soft: 2.0,
+                gate: 5.0,
+                hard: 10.0,
+            },
+        };
+        let lease = "2099-01-01T00:00:00Z";
+        let cfg = ModelConfig {
+            context_limit: Some(400_000),
+            max_tokens: Some(128_000),
+            model_name: "gpt-5.4-mini".to_string(),
+            ..ModelConfig::default()
+        };
+        let plan = |attempts, counted| {
+            crate::cost_router::reservation::plan_reservation_bound_for_prompt(
+                "openai",
+                "gpt-5.4-mini",
+                CostTier::PaidApi,
+                &cfg,
+                attempts,
+                counted,
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        // Before: the whole window at two attempts is the reported gate.
+        let old = manager
+            .reserve_bounded_provider_invocation(
+                "reported-old",
+                &session.id,
+                Some(&task),
+                plan(2, None),
+                lease,
+                &first_cut,
+            )
+            .await
+            .unwrap();
+        match old {
+            crate::session::CostReservationOutcome::NeedsGate {
+                spent_usd,
+                held_usd,
+                requested_usd,
+                ceiling_usd,
+                ..
+            } => {
+                assert!((spent_usd - 0.12).abs() < 1e-9);
+                assert_eq!(held_usd, 0.0);
+                assert!((requested_usd - 1.56).abs() < 1e-9, "{requested_usd}");
+                assert_eq!(ceiling_usd, 1.0);
+            }
+            other => panic!("expected the reported gate, got {other:?}"),
+        }
+
+        // After: the counted prompt and the shipped attempt count.
+        let messages = vec![Message::user().with_text("word ".repeat(30_000))];
+        let counted = counted_prompt_tokens(&["system"], &messages, &[]).await;
+        assert!(counted.is_some());
+        let envelope = crate::providers::RetryConfig::default().max_physical_attempts();
+        let attempts = crate::cost_router::reserved_physical_attempts_with(envelope, |_| None);
+        let bound = plan(attempts, counted);
+        assert!(bound.amount_usd < 0.88, "hold ${:.4}", bound.amount_usd);
+        let granted = manager
+            .reserve_bounded_provider_invocation(
+                "reported-new",
+                &session.id,
+                Some(&task),
+                bound,
+                lease,
+                &first_cut,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                granted,
+                crate::session::CostReservationOutcome::Granted { .. }
+            ),
+            "the reported first call must go out: {granted:?}"
+        );
+
+        // A retry needs one more attempt's worth; under a $1.00 gate with
+        // $0.12 spent and $0.61 held there is no room, so it is gated rather
+        // than spent unauthorized.
+        let retry = manager.extend_reservation("reported-new", 1).await.unwrap();
+        assert!(
+            matches!(
+                retry,
+                crate::session::CostReservationOutcome::NeedsGate { .. }
+            ),
+            "{retry:?}"
+        );
+    }
+
+    /// An image's billed tokens depend on its pixel dimensions, not on any
+    /// text a tokenizer sees, so a request carrying one is not counted and the
+    /// caller falls back to the full-window hold.
+    #[tokio::test]
+    async fn a_request_with_an_image_is_not_counted() {
+        let messages = vec![Message::user()
+            .with_text("what is in this screenshot?")
+            .with_image("aGk=", "image/png")];
+        assert_eq!(
+            counted_prompt_tokens(&["system"], &messages, &[]).await,
+            None
+        );
+    }
+
+    /// The same holds for an image returned inside a tool result, which is
+    /// where screenshots usually enter a coding session; a text-only tool
+    /// result is still counted.
+    #[tokio::test]
+    async fn a_tool_result_image_is_not_counted_but_tool_text_is() {
+        use rmcp::model::{CallToolResult, Content};
+        let with_image = vec![Message::user().with_tool_response(
+            "call_1",
+            Ok(CallToolResult::success(vec![
+                Content::text("captured"),
+                Content::image("aGk=", "image/png"),
+            ])),
+        )];
+        assert_eq!(
+            counted_prompt_tokens(&["system"], &with_image, &[]).await,
+            None
+        );
+
+        let text_only = vec![Message::user().with_tool_response(
+            "call_1",
+            Ok(CallToolResult::success(vec![Content::text(
+                "42 tests passed",
+            )])),
+        )];
+        assert!(counted_prompt_tokens(&["system"], &text_only, &[])
+            .await
+            .is_some());
     }
 }
