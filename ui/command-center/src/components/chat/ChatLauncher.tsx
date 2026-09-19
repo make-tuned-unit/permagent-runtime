@@ -12,6 +12,93 @@ const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 // launcher's reserved corner from this anchor + the published size (#553).
 export const CHAT_LAUNCHER_MARGIN = 20;
 
+// ── Scroll clearance ────────────────────────────────────────────────────────
+// The pill floats over every screen at z-index 9999, and nothing reserved room
+// for it: on Grow → Analytics it sat on top of the last row of the EVENTS
+// column, and scrolling could not reveal that row because the Grow tabpanel's
+// scroll range (GrowView's `flex: 1; overflowY: auto` panel) ended exactly at
+// the viewport's bottom — under the pill. Every scroll region the pill sits
+// over now gets trailing clearance equal to the pill's height plus its
+// margins, so scrolling to the end always lifts the last row clear of it. This is done here, by the one component that knows where the
+// pill is and how big it is, instead of asking thirty-odd views to each
+// remember to pad themselves for a control they do not own.
+
+/** Set on each scroll region that currently runs under the pill. */
+export const LAUNCHER_CLEARANCE_ATTR = 'data-pa-launcher-clearance';
+
+/** Trailing room a scroll region under the pill needs: the pill's height plus
+ *  the gap below it and an equal gap above it, so the last row does not butt
+ *  against the pill's top edge. */
+export function launcherClearance(pillHeight: number): number {
+  return Math.ceil(pillHeight) + 2 * CHAT_LAUNCHER_MARGIN;
+}
+
+/** A region that scrolls vertically and can take a trailing block. A row flex
+ *  box is left alone: a trailing item there would sit BESIDE the content and
+ *  stretch the row, not extend it downward. The document itself is left alone
+ *  too — the shell is a fixed-height window and never scrolls.
+ *
+ *  A computed `overflow-y: auto` is NOT enough. CSS turns `overflow-y: visible`
+ *  into `auto` whenever overflow-x is auto, so a wrapper that only scrolls
+ *  sideways — the Settings egress-log table (`overflowX: 'auto'`), the Finance
+ *  holdings table — reads as a vertical scroller too. Those are auto-height
+ *  blocks: a trailing block inside one does not add scroll room, it makes the
+ *  table 84px taller and shoves everything below it down. So the region's
+ *  height must actually be limited, which shows as content taller than its box
+ *  (`scrollHeight > clientHeight`). An auto-height wrapper grows to fit its
+ *  content and normally never passes. It can pass for a moment, though: in real
+ *  WebKit a sideways-only table wrapper reported scrollHeight 90 over
+ *  clientHeight 84 on its first layout and 90/90 once settled, and the mark
+ *  set in that moment then stuck, because setting an attribute is not a
+ *  childList mutation and nothing re-checked it — the table stayed 84px taller.
+ *  So the overflow test only nominates a region; `addsOnlyScrollRoom` decides. */
+function takesClearance(el: Element): boolean {
+  if (el === document.documentElement || el === document.body) return false;
+  const cs = getComputedStyle(el);
+  if (cs.overflowY !== 'auto' && cs.overflowY !== 'scroll') return false;
+  const flexRow = cs.display.includes('flex') && !cs.flexDirection.startsWith('column');
+  if (flexRow) return false;
+  // 1px of slack: subpixel layout can leave scrollHeight one pixel above
+  // clientHeight on a box whose content fits exactly.
+  return el.scrollHeight > el.clientHeight + 1;
+}
+
+/** Mark `el` and keep the mark only if it added scroll room without resizing
+ *  the region. A height-limited region keeps its box: the trailing block only
+ *  lengthens what scrolls inside it. An auto-height one grows by the whole
+ *  block, which is the "shoves everything below it down" failure above, so its
+ *  mark comes straight back off. Both reads force a synchronous layout and
+ *  nothing paints between them, so a rejected mark is never seen. */
+export function addsOnlyScrollRoom(el: Element): boolean {
+  const before = el.getBoundingClientRect().height;
+  el.setAttribute(LAUNCHER_CLEARANCE_ATTR, '');
+  if (Math.abs(el.getBoundingClientRect().height - before) <= 0.5) return true;
+  el.removeAttribute(LAUNCHER_CLEARANCE_ATTR);
+  return false;
+}
+
+/** Every scroll region under the pill's box — sampled at its corners and
+ *  centre, because a region only has to reach part of the pill to be hidden
+ *  by it. `elementsFromPoint` returns each hit's whole ancestor stack, so
+ *  nested scrollers (a column inside a scrolling page) are all found. */
+export function scrollersUnderPill(pill: Element): Set<Element> {
+  const found = new Set<Element>();
+  if (typeof document.elementsFromPoint !== 'function') return found;
+  const r = pill.getBoundingClientRect();
+  const points: Array<[number, number]> = [
+    [r.left + 1, r.top + 1], [r.right - 1, r.top + 1],
+    [r.left + 1, r.bottom - 1], [r.right - 1, r.bottom - 1],
+    [r.left + r.width / 2, r.top + r.height / 2],
+  ];
+  for (const [x, y] of points) {
+    for (const el of document.elementsFromPoint(x, y)) {
+      if (el === pill || pill.contains(el)) continue;
+      if (takesClearance(el)) found.add(el);
+    }
+  }
+  return found;
+}
+
 export function ChatLauncher() {
   const { colors, reduceMotion } = useTheme();
   const glass = useGlass('glass');
@@ -27,6 +114,8 @@ export function ChatLauncher() {
   const [pressed, setPressed] = useState(false);
   const setChatLauncherSize = useCommandCenter(s => s.setChatLauncherSize);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const [pillHeight, setPillHeight] = useState<number | null>(null);
+  const visible = !(chatWindowOpen || chatDockOpen);
 
   // Publish the pill's measured size so the Browser can subtract its corner
   // from the native webview bounds (#553). ResizeObserver fires only on real
@@ -40,6 +129,7 @@ export function ChatLauncher() {
     const publish = () => {
       const r = el.getBoundingClientRect();
       setChatLauncherSize({ width: r.width, height: r.height });
+      setPillHeight(r.height);
     };
     publish();
     const observer = new ResizeObserver(publish);
@@ -49,6 +139,54 @@ export function ChatLauncher() {
       setChatLauncherSize(null);
     };
   }, [chatWindowOpen, chatDockOpen, setChatLauncherSize]);
+
+  // Mark the scroll regions under the pill (see `scrollersUnderPill`). Re-run
+  // when the DOM under it changes — switching tabs swaps the whole view, and a
+  // view's scroll region mounts after its data loads — when the window
+  // resizes, and on every scroll anywhere. Scroll matters on its own: a nested
+  // scroller that scrolls up under the pill needs room at once, and one that
+  // scrolls away must let it go, not wait for some unrelated re-render (a
+  // streamed chat token, a clock tick) to move the page at a random moment.
+  // Scroll events do not bubble, so the listener captures at the document to
+  // hear every nested scroller. Coalesced to one pass per frame; the marking
+  // itself only adds a pseudo-element, which is not a childList mutation, so
+  // it cannot loop.
+  // Every mark is removed when the pill hides (chat open) or unmounts, so a
+  // hidden pill reserves nothing.
+  useEffect(() => {
+    const pill = buttonRef.current;
+    if (!visible || !pill) return;
+    const marked = new Set<Element>();
+    let frame = 0;
+    const sync = () => {
+      frame = 0;
+      const next = scrollersUnderPill(pill);
+      for (const el of marked) {
+        if (!next.has(el)) { el.removeAttribute(LAUNCHER_CLEARANCE_ATTR); marked.delete(el); }
+      }
+      for (const el of next) {
+        if (!marked.has(el) && addsOnlyScrollRoom(el)) marked.add(el);
+      }
+    };
+    const schedule = () => {
+      if (frame) return;
+      if (typeof requestAnimationFrame === 'function') frame = requestAnimationFrame(sync);
+      else sync();
+    };
+    sync();
+    const observer = typeof MutationObserver === 'function' ? new MutationObserver(schedule) : null;
+    observer?.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('resize', schedule);
+    document.addEventListener('scroll', schedule, { capture: true, passive: true });
+    return () => {
+      if (frame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener('resize', schedule);
+      document.removeEventListener('scroll', schedule, { capture: true });
+      for (const el of marked) el.removeAttribute(LAUNCHER_CLEARANCE_ATTR);
+      marked.clear();
+    };
+  }, [visible]);
 
   // #629 multi-client liveness: identityRev bumps when `identity_changed`
   // arrives on /events, so a persona rename on another device relabels the
@@ -205,7 +343,7 @@ export function ChatLauncher() {
   // Hide whenever chat is already showing — in the detached window OR in the
   // dock. Dock-first made the dock the default surface, but the pill still only
   // checked the window, so it stayed on screen over an open chat.
-  if (chatWindowOpen || chatDockOpen) return null;
+  if (!visible) return null;
 
   // The pointer ladder as FILL, not as a second material (D2/D10). The glass
   // token already supplies the surface; hover and press add the theme's own
@@ -221,7 +359,19 @@ export function ChatLauncher() {
   const base = glass.background ?? colors.surface;
   const background = lift ? `linear-gradient(0deg, ${lift}, ${lift}), ${base}` : base;
 
+  // The clearance itself: a trailing block on each marked region. `flex: none`
+  // keeps a column flex box from shrinking it away; `grid-column: 1 / -1` makes
+  // it a full-width row of its own in a multi-column grid instead of taking a
+  // cell. Until the pill has been measured, the pill's rendered height at the
+  // default type size stands in.
+  const clearance = launcherClearance(pillHeight ?? 44);
+  const clearanceRule =
+    `[${LAUNCHER_CLEARANCE_ATTR}]::after{content:'';display:block;flex:none;` +
+    `grid-column:1/-1;height:${clearance}px;pointer-events:none;}`;
+
   return (
+    <>
+    <style data-testid="chat-launcher-clearance">{clearanceRule}</style>
     <button
       ref={buttonRef}
       onClick={openChatWindow}
@@ -270,5 +420,6 @@ export function ChatLauncher() {
       <FiMessageSquare size={16} />
       Chat with {agentName}
     </button>
+    </>
   );
 }
