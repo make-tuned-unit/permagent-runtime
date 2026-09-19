@@ -217,3 +217,20 @@ describe('wholeRowsHeight', () => {
     expect(wholeRowsHeight(60, [])).toBe(60);
   });
 });
+
+// r3: QA could not confirm the fix because the screen was locked, not because
+// the card was unreachable. This pins the two links between this file and
+// Home that a silent regression could cut, so "not seen in the app" is never
+// a wiring question again: the registry renders THIS component for the
+// `in_flight` type, and the default Home layout shows that card. (Whether a
+// user's saved layout still has it, and whether any goal is active so rows
+// render instead of "Nothing in flight", is live state this cannot see.)
+describe('In flight card is wired into Home', () => {
+  it('is the component the registry renders, and Home shows it by default', async () => {
+    const { CARD_REGISTRY } = await import('./registry');
+    const { DEFAULT_LAYOUT } = await import('../useLayout');
+    expect(CARD_REGISTRY.in_flight?.component).toBe(InFlightCard);
+    const card = DEFAULT_LAYOUT.cards.find(c => c.type === 'in_flight');
+    expect(card?.visible).toBe(true);
+  });
+});
