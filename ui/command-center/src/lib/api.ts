@@ -27,6 +27,83 @@ let _daemonTokenPromise: Promise<string | null> | null = null;
 
 const BROWSER_TOKEN_KEY = 'permagent-daemon-token';
 
+/**
+ * A browser credential the daemon has stopped accepting.
+ *
+ * "No credential, no request" (see `requireCredential`) stopped the unpaired
+ * World tab's 401 flood on 2026-09-19, but it only covers a browser holding NO
+ * token. A browser still holding a revoked device token, or one minted under a
+ * daemon secret that has since changed, has one — so every poll went out, came
+ * back 401, re-read the SAME token from localStorage, retried, and 401'd again:
+ * the same flood into daemon.err, doubled. Re-reading localStorage cannot fix a
+ * dead token, so once the daemon has refused it `BROWSER_DEAD_TOKEN_401S` times
+ * in a row with no success between, it is set aside here and the tab behaves as
+ * unpaired until the stored credential CHANGES (a new pairing, here or in
+ * another tab). Consecutive, not single: an older daemon 401s the one route it
+ * does not have (/api/agent/identity) while every other route answers 200 with
+ * the same token, and that must never lock a working tab out.
+ */
+let _rejectedBrowserToken: string | null = null;
+let _browserConsecutive401s = 0;
+export const BROWSER_DEAD_TOKEN_401S = 3;
+
+const BROWSER_CREDENTIAL_REJECTED =
+  'The daemon no longer accepts the credential this browser holds (401 on every request) — ' +
+  'nothing more is sent until it is paired again. Open the app, or pair this device from Settings → Devices.';
+
+/** The browser's credential, unless it is the one the daemon refused. */
+function usableBrowserToken(token: string | null): string | null {
+  if (token && token === _rejectedBrowserToken) return null;
+  if (token && _rejectedBrowserToken) {
+    // A different credential arrived — a re-pairing. Give it a clean slate.
+    _rejectedBrowserToken = null;
+    _browserConsecutive401s = 0;
+  }
+  return token;
+}
+
+/** Tally a browser request's auth outcome; returns true when `sentToken` has
+ *  just been set aside as dead. The desktop app never lands here: its token
+ *  comes over IPC and its 401 is what raises the credential banner. */
+function noteBrowserAuthResult(status: number, sentToken: string | null): boolean {
+  if (isTauri || !sentToken) return false;
+  if (status !== 401) {
+    if (status >= 200 && status < 300) _browserConsecutive401s = 0;
+    return false;
+  }
+  _browserConsecutive401s += 1;
+  if (_browserConsecutive401s < BROWSER_DEAD_TOKEN_401S) return false;
+  _rejectedBrowserToken = sentToken;
+  _daemonToken = null;
+  _daemonTokenPromise = null;
+  setDaemonTokenError(BROWSER_CREDENTIAL_REJECTED);
+  return true;
+}
+
+/** Why the last `#claim=` pairing link failed, while no credential has arrived
+ *  since. A failed claim used to fall back silently to "not paired", so a user
+ *  who had just opened the pairing link Settings → Devices gave them saw the
+ *  same message as one who never tried — with nothing saying the link itself
+ *  was refused (used, expired) or never reached the daemon (a dev server that
+ *  does not forward /pair answers 404). */
+let _claimFailure: string | null = null;
+
+function claimFailedMessage(reason: string): string {
+  return (
+    `The pairing link could not be redeemed (${reason} from POST /pair/claim) — this browser is still not paired, ` +
+    'and nothing is sent until it is. Pairing links work once and expire: make a new one in Settings → Devices ' +
+    'and open it in this browser.'
+  );
+}
+
+/** The message for a browser with no usable credential: holding one the daemon
+ *  refused, a pairing link that just failed, or never paired. */
+function browserUnpairedMessage(): string {
+  if (_rejectedBrowserToken) return BROWSER_CREDENTIAL_REJECTED;
+  if (_claimFailure) return claimFailedMessage(_claimFailure);
+  return BROWSER_UNPAIRED;
+}
+
 // Auth failure surface: `daemonAuth.ts` holds the published state, this module
 // is what detects the failure. A dead agent must not look like a quiet agent,
 // so every token failure is logged, retried, and published — never swallowed.
@@ -127,25 +204,113 @@ function pendingClaimCode(): string | null {
  *  so every successful claim IS a new pairing). On failure (expired/used code,
  *  hub unreachable) any previously stored credential is kept. */
 async function exchangeClaim(code: string): Promise<string | null> {
+  let resp: Response;
   try {
-    const resp = await fetch(`${API_BASE_URL}/pair/claim`, {
+    resp = await fetch(`${API_BASE_URL}/pair/claim`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),
     });
-    if (!resp.ok) return localStorage.getItem(BROWSER_TOKEN_KEY);
-    const { token } = (await resp.json()) as { token?: string };
-    if (!token) return localStorage.getItem(BROWSER_TOKEN_KEY);
+  } catch {
+    _claimFailure = 'the daemon could not be reached';
+    return storedBrowserToken();
+  }
+  try {
+    if (!resp.ok) {
+      _claimFailure = `HTTP ${resp.status}`;
+      return localStorage.getItem(BROWSER_TOKEN_KEY);
+    }
+    const { token } = (await resp.json().catch(() => ({}))) as { token?: string };
+    if (!token) {
+      _claimFailure = 'no token in the reply';
+      return localStorage.getItem(BROWSER_TOKEN_KEY);
+    }
+    _claimFailure = null;
     localStorage.setItem(BROWSER_TOKEN_KEY, token);
     reportDevicePaired(token);
     return token;
   } catch {
-    try {
-      return localStorage.getItem(BROWSER_TOKEN_KEY);
-    } catch {
-      return null;
-    }
+    return storedBrowserToken();
   }
+}
+
+function storedBrowserToken(): string | null {
+  try {
+    return localStorage.getItem(BROWSER_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** What a pasted pairing link / code carries, or null when it carries neither. */
+export function parsePairingInput(input: string): { claim: string } | { token: string } | null {
+  const text = input.trim();
+  if (!text) return null;
+  const hashAt = text.indexOf('#');
+  const frag = hashAt >= 0 ? text.slice(hashAt + 1) : text.includes('=') ? text : '';
+  if (frag) {
+    const params = new URLSearchParams(frag);
+    const claim = params.get('claim');
+    if (claim) return { claim };
+    const token = params.get('token');
+    if (token) return { token };
+    return null;
+  }
+  // A bare claim code (32 hex characters today); the daemon is the judge.
+  return /^[A-Za-z0-9_-]{8,}$/.test(text) ? { claim: text } : null;
+}
+
+/** True where this tab pairs itself (a browser); the desktop app's credential
+ *  comes over IPC and has nothing to paste. */
+export function canPairThisBrowser(): boolean {
+  return !isTauri;
+}
+
+/**
+ * Pair THIS tab from a pasted pairing link, `#claim=` / `#token=` fragment, or
+ * bare claim code — redeemed against this page's own origin.
+ *
+ * Why it exists: Settings → Devices builds the pairing link on the hub origin
+ * (`http://<hub>:3001/ui/#claim=…`), and a credential lives in the localStorage
+ * of the origin that redeemed it. Opening that link pairs the hub origin, never
+ * the localhost:5173 forum tab the user was actually looking at — which kept
+ * showing "not paired" with no way out short of hand-editing its URL. Pasting
+ * the same link here redeems the code through this origin (the dev server
+ * forwards /pair to the daemon), so the credential lands where it is needed.
+ * On success the tab's pollers and /events pick the credential up on their
+ * next tick; on failure the published auth message says why.
+ */
+export async function pairThisBrowser(input: string): Promise<{ paired: boolean; message: string | null }> {
+  if (isTauri) return { paired: false, message: 'The desktop app pairs itself — there is nothing to paste.' };
+  const parsed = parsePairingInput(input);
+  if (!parsed) {
+    return {
+      paired: false,
+      message: 'That is not a pairing link. Copy the whole link from Settings → Devices (it contains #claim=).',
+    };
+  }
+  let token: string | null;
+  if ('token' in parsed) {
+    const previous = storedBrowserToken();
+    try { localStorage.setItem(BROWSER_TOKEN_KEY, parsed.token); } catch { /* the in-memory copy still pairs this tab */ }
+    if (parsed.token !== previous) reportDevicePaired(parsed.token);
+    _claimFailure = null;
+    token = parsed.token;
+  } else {
+    const claimed = await exchangeClaim(parsed.claim);
+    token = _claimFailure ? null : claimed;
+  }
+  const usable = usableBrowserToken(token);
+  if (!usable) {
+    const message = browserUnpairedMessage();
+    setDaemonTokenError(message);
+    return { paired: false, message };
+  }
+  _daemonToken = usable;
+  _daemonTokenPromise = null;
+  _browserConsecutive401s = 0;
+  setDaemonTokenError(null);
+  return { paired: true, message: null };
 }
 
 export function loadDaemonToken(): Promise<string | null> {
@@ -160,18 +325,21 @@ export function loadDaemonToken(): Promise<string | null> {
     // stored / legacy `#token=` credential.
     const claim = typeof window !== 'undefined' ? pendingClaimCode() : null;
     if (claim) {
-      _daemonTokenPromise = exchangeClaim(claim).then(token => {
+      _daemonTokenPromise = exchangeClaim(claim).then(claimed => {
+        // A failed exchange falls back to the stored credential, which may be
+        // the one the daemon already refused.
+        const token = usableBrowserToken(claimed);
         _daemonToken = token;
         // A failed exchange must not be cached as "no token, forever": drop the
         // memo so the next caller can retry (or pick up a later pairing).
         if (!token) _daemonTokenPromise = null;
-        setDaemonTokenError(token ? null : BROWSER_UNPAIRED);
+        setDaemonTokenError(token ? null : browserUnpairedMessage());
         return token;
       });
       return _daemonTokenPromise;
     }
-    _daemonToken = browserToken();
-    setDaemonTokenError(_daemonToken ? null : BROWSER_UNPAIRED);
+    _daemonToken = usableBrowserToken(browserToken());
+    setDaemonTokenError(_daemonToken ? null : browserUnpairedMessage());
     return Promise.resolve(_daemonToken);
   }
   if (!_daemonTokenPromise) {
@@ -560,7 +728,7 @@ export function isPublicDaemonPath(endpoint: string): boolean {
  *  credential. Shaped like a daemon 401 (`status: 401`) so callers that map
  *  statuses keep working, but nothing went over the wire. */
 function unpairedError(endpoint: string): Error & { status: number } {
-  const err = new Error(`${BROWSER_UNPAIRED} (${endpoint} was not sent)`) as Error & { status: number };
+  const err = new Error(`${browserUnpairedMessage()} (${endpoint} was not sent)`) as Error & { status: number };
   err.status = 401;
   return err;
 }
@@ -581,7 +749,7 @@ function unpairedError(endpoint: string): Error & { status: number } {
 async function requireCredential(endpoint: string): Promise<void> {
   if (!_daemonToken) await loadDaemonToken();
   if (_daemonToken || isTauri || isPublicDaemonPath(endpoint)) return;
-  setDaemonTokenError(BROWSER_UNPAIRED);
+  setDaemonTokenError(browserUnpairedMessage());
   throw unpairedError(endpoint);
 }
 
@@ -597,12 +765,17 @@ async function sendAuthed(endpoint: string, init?: RequestInit): Promise<Respons
       headers: { 'Content-Type': 'application/json' },
     });
   }
+  const sentToken = _daemonToken;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(_daemonToken ? { Authorization: `Bearer ${_daemonToken}` } : {}),
+    ...(sentToken ? { Authorization: `Bearer ${sentToken}` } : {}),
     ...((init?.headers as Record<string, string> | undefined) ?? {}),
   };
-  return fetch(`${API_BASE_URL}${endpoint}`, { ...init, headers });
+  const response = await fetch(`${API_BASE_URL}${endpoint}`, { ...init, headers });
+  // Raw-Response callers count toward the dead-credential tally too, or a tab
+  // whose only pollers use fetchAuthed would never stop sending a dead token.
+  noteBrowserAuthResult(response.status, sentToken);
+  return response;
 }
 
 function authHeaders(): Record<string, string> {
@@ -625,6 +798,7 @@ async function apiFetchOnce<T>(
   await requireCredential(endpoint);
   const url = `${API_BASE_URL}${endpoint}`;
   const method = (options?.method ?? 'GET').toUpperCase();
+  const sentToken = _daemonToken;
   let response: Response;
   try {
     response = await fetch(url, {
@@ -661,12 +835,18 @@ async function apiFetchOnce<T>(
   // it asks for is ever answered. Re-read the token once (it may have rotated,
   // or been read before the secrets file existed) and retry; if it still fails,
   // say so out loud instead of turning it into a per-caller "Unauthorized".
+  const credentialDead = noteBrowserAuthResult(response.status, sentToken);
   if (response.status === 401) {
-    const hadToken = _daemonToken !== null;
+    const hadToken = sentToken !== null;
     invalidateDaemonToken();
-    if (mayRetryAuth && hadToken) {
+    if (mayRetryAuth && hadToken && !credentialDead) {
       const refreshed = await loadDaemonToken();
-      if (refreshed) return apiFetchOnce<T>(endpoint, options, false);
+      // In a browser the re-read is localStorage: the same token back means
+      // the retry can only be refused the same way, so it is not sent. The
+      // desktop app always retries — its IPC read can return a rotated token.
+      if (refreshed && (isTauri || refreshed !== sentToken)) {
+        return apiFetchOnce<T>(endpoint, options, false);
+      }
     }
     // A credential that worked seconds ago on another route is not a dead
     // credential: this route is refusing it on its own account. Say so in the
@@ -678,7 +858,7 @@ async function apiFetchOnce<T>(
         isTauri
           ? `The daemon rejected this app's credentials (401 on ${endpoint}). ` +
             'The agent cannot answer until this is fixed.'
-          : BROWSER_UNPAIRED,
+          : browserUnpairedMessage(),
       );
     }
   }

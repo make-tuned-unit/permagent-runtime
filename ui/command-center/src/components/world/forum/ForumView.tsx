@@ -34,6 +34,7 @@ import { useIdentityStore } from '../../../stores/identityStore';
 import { ForumPassport } from './ForumPassport';
 import { ForumPlaceRail } from './ForumPlaceRail';
 import { useDismissible } from './useDismissible';
+import { ForumAuthNotice } from './ForumAuthNotice';
 
 /**
  * Depth range, and why these two numbers matter more than they look.
@@ -390,6 +391,9 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           between the title and the bottom cards, and scrolls inside that, so
           it cannot sit on any of them however tall the window is. */}
       <div className="forum-lane forum-lane-left">
+      {/* First in the lane and never dismissible: an unpaired or refused tab
+          otherwise reads as a quiet world (see ForumAuthNotice). */}
+      <ForumAuthNotice />
       {!cards.isDismissed('brand') && <header className="forum-brand"><DismissCard label="the world title" onDismiss={()=>cards.dismiss('brand')} /><div><div className="eyebrow">WORLD / SOLAR FORUM</div><h1 style={typeRamp.display}>The Solar Forum</h1><p>Living forum · <span data-testid="forum-appearance">{appearance === 'night' ? 'Night' : 'Day'} / follows system appearance</span></p></div></header>}
       <ForumPlaceRail
         places={DISTRICTS.map(d => ({ id: d.id, name: d.name, subtitle: d.subtitle }))}

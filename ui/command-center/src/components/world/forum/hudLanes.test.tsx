@@ -70,7 +70,9 @@ describe('the forum HUD lays each corner out as one column', () => {
       expect(laneOf(card), `${card} left the rail's lane`).toBe(lane);
     }
     const order = [...lane!.children].map(c => c.className.split(' ')[0]);
-    expect(order).toEqual(['forum-brand', 'forum-rail', 'forum-location', 'forum-live', 'forum-controls']);
+    // jsdom holds no daemon credential, so the "not connected" notice is up —
+    // and it sits in the same column, above the title, not pinned over it.
+    expect(order).toEqual(['forum-auth-notice', 'forum-brand', 'forum-rail', 'forum-location', 'forum-live', 'forum-controls']);
   });
 
   it('stacks the passport above the skiff and Walk in one right-hand lane', () => {

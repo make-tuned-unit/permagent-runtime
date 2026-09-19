@@ -33,6 +33,12 @@ export default defineConfig({
       '/schedule': { target: 'http://localhost:3001', changeOrigin: true },
       '/activity': { target: 'http://localhost:3001', changeOrigin: true },
       '/voice': { target: 'http://localhost:3001', changeOrigin: true },
+      // Pairing and stream tokens. Without these a `#claim=` link, or the
+      // forum's "Pair this tab" box, POSTed /pair/claim to Vite itself and got
+      // a 404 — the :5173 World tab (2026-09-19) could never pair and kept
+      // showing "not paired"; /sse-token 404'd the same way for streams.
+      '/pair': { target: 'http://localhost:3001', changeOrigin: true },
+      '/sse-token': { target: 'http://localhost:3001', changeOrigin: true },
     },
   },
   build: {
