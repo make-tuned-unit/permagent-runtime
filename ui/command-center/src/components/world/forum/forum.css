@@ -21,9 +21,6 @@
   min-height:0;
   overflow:hidden}
 .forum-brand {
-  position:absolute;
-  top:28px;
-  left:28px;
   display:flex;
   align-items:center;
   gap:14px;
@@ -159,9 +156,6 @@
   font:9px var(--forum-mono);
   color:var(--forum-muted)}
 .forum-location {
-  position:absolute;
-  left:28px;
-  bottom:125px;
   pointer-events:none;
   padding:12px 16px;
   background:var(--forum-bg);
@@ -176,9 +170,7 @@
   font-size:20px;
   margin:4px 0}
 .forum-controls {
-  position:absolute;
-  bottom:22px;
-  left:28px;
+  pointer-events:auto;
   font:10px var(--forum-mono);
   color:var(--forum-muted);
   background:var(--forum-bg);
@@ -186,9 +178,7 @@
   padding:10px 14px;
   border-radius:var(--forum-radius)}
 .forum-live {
-  position:absolute;
-  bottom:70px;
-  left:28px;
+  pointer-events:auto;
   font:11px var(--forum-mono);
   background:var(--forum-bg);
   padding:10px 14px;
@@ -263,9 +253,6 @@
   border-left:0;
   padding:24px}
 .forum-brand {
-  top:16px;
-  left:16px;
-  right:16px;
   padding:12px;
   gap:8px}
 .forum-brand h1 {
@@ -273,8 +260,6 @@
 .forum-brand p {
   font-size:11px;
   max-width:230px}
-.forum-location,.forum-live,.forum-controls {
-  left:16px}
 .forum-districts {
   left:16px;
   right:16px;
@@ -284,12 +269,7 @@
   font-size:11px;
   padding:7px}
 .forum-controls {
-  font-size:8px;
-  right:16px}
-.forum-location {
-  bottom:135px}
-.forum-live {
-  right:16px}
+  font-size:8px}
 .forum-panel footer {
   font-size:8px}
 }
@@ -331,7 +311,6 @@
   overflow-y:auto;
   overscroll-behavior:contain}
 .forum-districts .pa-btn { white-space:nowrap; flex-shrink:0; }
-.forum-agora-return { position:absolute; right:28px; bottom:126px; }
 .forum-gate-prompt {
   position:absolute;
   left:50%;
@@ -357,9 +336,8 @@
   border-radius:2px;
   padding:7px 14px}
 .forum-mesh-plaque[data-state="connected"] { color:#CFE2FF; border-color:#5599FF; }
-.forum-play { position:absolute; right:28px; bottom:72px; }
 .forum-crosshair { pointer-events:none; position:absolute; top:50%; left:50%; color:var(--forum-accent); font:20px var(--forum-mono); transform:translate(-50%,-50%); text-shadow:0 0 4px #000; }
-@media(max-width:800px) { .forum-play { right:16px; bottom:192px; } .forum-agora-return { right:16px; bottom:246px; } .forum-controls { font-size:8px; line-height:1.6; } .forum-districts { max-width:calc(100% - 32px); max-height:calc(100% - 300px); } }
+@media(max-width:800px) { .forum-controls { font-size:8px; line-height:1.6; } .forum-districts { max-width:calc(100% - 32px); max-height:calc(100% - 300px); } }
 
 /* ── HUD presence ─────────────────────────────────────────────────────
    The HUD rests when the world is not being driven, so the view is the
@@ -404,9 +382,6 @@
    identity is currently verified. Bottom right, opposite the place card,
    clear of the sky bodies at the top of the frame. */
 .forum-passport-slot {
-  position: absolute;
-  right: 28px;
-  bottom: 132px;
   max-width: 300px;
 }
 .forum-passport {
@@ -495,13 +470,9 @@
 .forum-world[data-hud='resting'] .forum-desk-toggle { opacity: 0.5; }
 .forum-desk-toggle { transition: opacity 620ms ease; }
 
-/* The skiff control sits above Walk, so the two travel modes read as a pair
-   rather than as a button hidden somewhere else on the frame. */
-.forum-fly {
-  position: absolute;
-  right: 28px;
-  bottom: 118px;
-}
+/* The skiff control sits directly above Walk in the right lane, so the two
+   travel modes read as a pair rather than as a button hidden somewhere else
+   on the frame. */
 
 /* ── The place rail ───────────────────────────────────────────────────
    Places read down the left edge instead of across the sky. The old chip
@@ -510,14 +481,19 @@
    A rail has room for each place to say what it is, and it slides away
    entirely when you want the world to itself. */
 .forum-rail {
-  position: absolute;
-  left: 0;
-  top: 96px;
-  bottom: 96px;
+  /* A flex item of the left lane, not a box pinned at top:96px/bottom:96px.
+     It takes the height left over between the title card and the bottom
+     cards; the list then scrolls inside that (max-height: 100%) instead of
+     running over them. `min-height: 0` is what lets it be shorter than its
+     fourteen places — a flex item will not otherwise shrink below its
+     content, and would push the bottom cards out of the frame. The floor is
+     the handle's arrow and padding, so the way back to the places stays on
+     screen however little height is left (see the handle rules below). */
+  flex: 1 1 auto;
+  min-height: 38px;
   display: flex;
   align-items: flex-start;
   gap: 0;
-  z-index: 4;
   pointer-events: none;
 }
 .forum-rail-list {
@@ -592,6 +568,11 @@
   border-left: 0;
   backdrop-filter: blur(10px);
 }
+/* On a short world the lane can give the rail less height than the handle's
+   vertical "PLACES" label, and an uncapped handle then hangs down over the
+   place card below it. Capped to the rail it loses the tail of its label
+   instead, and the rail's 38px floor keeps its arrow visible. */
+.forum-rail-handle { max-height: 100%; overflow: hidden; flex-shrink: 0; }
 .forum-rail[data-open='open'] .forum-rail-handle { order: 2; border-radius: 0 12px 12px 0; }
 .forum-rail-handle-label {
   writing-mode: vertical-rl;
@@ -605,7 +586,7 @@
    Every panel over the world can be put away and stays away. The control
    is the same size and place on each card, and it only appears on hover
    or focus so it is not five crosses sitting on the view. */
-.forum-brand, .forum-location, .forum-live, .forum-passport-slot, .forum-controls { position: absolute; }
+.forum-brand, .forum-location, .forum-live, .forum-passport-slot, .forum-controls { position: relative; }
 .forum-card-dismiss {
   position: absolute;
   top: 4px;
@@ -633,4 +614,61 @@
   bottom: 22px;
   transform: translateX(-50%);
   z-index: 4;
+}
+
+/* ── HUD lanes ────────────────────────────────────────────────────────
+   Each corner of the world that carries more than one thing is a single
+   flex column, and the things in it are in normal flow. They used to be
+   separate absolute boxes with offsets tuned by hand against each other,
+   which holds only until something is added: the place rail arrived open by
+   default and on top, and at 1512x945 it hid the title card's subtitle and
+   drew "Debating theatre" and "Harbor" over the place card and the job feed,
+   while the passport covered half of "Fly the skiff". In a column two items
+   cannot occupy the same space, whatever the window size or which cards are
+   dismissed, so there is no offset left to get wrong.
+   The lanes themselves never take the pointer — the world is dragged through
+   them — and each item that should be clickable opts back in. */
+.forum-lane {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+  --forum-gutter: 28px;
+}
+.forum-lane-left {
+  left: 0;
+  top: 28px;
+  bottom: 22px;
+  align-items: flex-start;
+  /* Keep clear of the right lane's buttons on a narrow world. */
+  max-width: calc(100% - 200px);
+  z-index: 4;
+}
+/* The rail is flush with the window edge; the cards keep their gutter. */
+.forum-lane-left > :not(.forum-rail) {
+  margin-left: var(--forum-gutter);
+  flex: 0 0 auto;
+  max-width: calc(100% - var(--forum-gutter));
+}
+.forum-lane-right {
+  right: 28px;
+  /* Top bound: below the desk toggle, so a tall passport cannot climb onto it. */
+  top: 80px;
+  bottom: 72px;
+  align-items: flex-end;
+  justify-content: flex-end;
+  z-index: 3;
+}
+.forum-lane-right > * { pointer-events: auto; flex: 0 0 auto; }
+@media (max-width: 800px) {
+  .forum-lane { --forum-gutter: 16px; }
+  /* Full width, so the cards' percentages resolve against the world rather
+     than against a shrink-to-fit lane. */
+  .forum-lane-left { top: 16px; right: 0; max-width: none; }
+  .forum-lane-left > :not(.forum-rail) { max-width: calc(100% - 2 * var(--forum-gutter)); }
+  /* The desk toggle stays pinned top-right (top:28px; right:28px) and on a
+     phone the title card would otherwise run underneath it. */
+  .forum-lane-left > .forum-brand { max-width: calc(100% - var(--forum-gutter) - 140px); }
+  .forum-lane-right { right: 16px; bottom: 192px; }
 }

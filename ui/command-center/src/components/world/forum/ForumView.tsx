@@ -375,6 +375,16 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         <ForumPostProcessing />
         <PerfSampler />
       </Canvas>
+      {/* The left edge is ONE column, not five boxes each pinned to the corner
+          with its own hand-tuned offset. The place rail was added to that
+          corner after the cards were, open by default and on top of them, and
+          nothing about a set of absolute offsets can notice a newcomer: at
+          1512x945 it hid the title card's "Living forum · Night" line and
+          drew "Debating theatre" and "Harbor" over the place card and the job
+          feed. In one flex column the rail takes whatever height is left
+          between the title and the bottom cards, and scrolls inside that, so
+          it cannot sit on any of them however tall the window is. */}
+      <div className="forum-lane forum-lane-left">
       {!cards.isDismissed('brand') && <header className="forum-brand"><DismissCard label="the world title" onDismiss={()=>cards.dismiss('brand')} /><div><div className="eyebrow">WORLD / SOLAR FORUM</div><h1 style={typeRamp.display}>The Solar Forum</h1><p>Living forum · <span data-testid="forum-appearance">{appearance === 'night' ? 'Night' : 'Day'} / follows system appearance</span></p></div></header>}
       <ForumPlaceRail
         places={DISTRICTS.map(d => ({ id: d.id, name: d.name, subtitle: d.subtitle }))}
@@ -389,8 +399,9 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         onHold={hud.hold}
       />
       {!cards.isDismissed('place') && <div className="forum-location"><DismissCard label="the place card" onDismiss={()=>cards.dismiss('place')} /><span>{agoraOpen ? 'MESH AGORA' : district.name.toUpperCase()}</span><p>{agoraOpen ? 'The antechamber beyond the gate' : district.subtitle}</p></div>}
+      {!cards.isDismissed('feed') && <div className="forum-live"><DismissCard label="the job feed" onDismiss={()=>cards.dismiss('feed')} />{loaded ? `${goals.length} active jobs reported` : 'Job feed unavailable / connecting'}<small>Architecture preview · existing World agent feeds</small></div>}
       {!cards.isDismissed('hints') && <div className="forum-controls"><DismissCard label="the control hints" onDismiss={()=>cards.dismiss('hints')} />{agoraOpen ? (walking ? 'Arrow keys walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : flying ? 'Arrow keys fly · Space climb · C descend · Shift boost · land on a terrace, then E to step out · Esc overview' : walking ? 'Arrow keys walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>}
-      {agoraOpen && <div className="forum-agora-return"><Button colors={colors} variant="primary" flashSuccess={false} onClick={leaveMesh}>Return to the Forum</Button></div>}
+      </div>
       {meshPrompt && walking && !agoraOpen && <div className="forum-gate-prompt" role="status">E · Enter the MESH</div>}
       {cards.hiddenCount > 0 && (
         <div className="forum-restore" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}>
@@ -411,6 +422,19 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           {deskOpen ? 'Hide the desk' : 'Show the desk'}
         </Button>
       </div>
+      {walking && <div className="forum-crosshair" aria-hidden="true">+</div>}
+      {/* The bottom-right corner is one column too, for the same reason as the
+          left edge: the passport (bottom:132px) was laid over the skiff button
+          (bottom:118px), and the Agora's return button (bottom:126px) over the
+          skiff as well, because each offset was chosen without the others.
+          Stacked in one flow they sit above one another at any size. */}
+      <div className="forum-lane forum-lane-right">
+      {/* The passport belongs to the agent, so it appears where the agent does:
+          while you are embodied in the world as your sovereign, or while the
+          sovereign is the one selected at the desk. Everywhere else it is just
+          a card sitting on the view. */}
+      {sovereignInView && !cards.isDismissed('passport') && <div className="forum-passport-slot" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}><DismissCard label="the passport" onDismiss={()=>cards.dismiss('passport')} /><ForumPassport /></div>}
+      {agoraOpen && <div className="forum-agora-return"><Button colors={colors} variant="primary" flashSuccess={false} onClick={leaveMesh}>Return to the Forum</Button></div>}
       <div className="forum-fly"><Button colors={colors} variant={flying?'ghostOn':'ghost'} flashSuccess={false} onClick={()=>{
         if (flying) { setFlying(false); return; }
         setWalking(false);
@@ -427,13 +451,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         // available, so exploration does not depend on that browser feature.
         try { const result=canvas?.requestPointerLock?.(); if(result && typeof result.catch==='function')void result.catch(()=>{}); } catch { /* drag look remains available */ }
       }}>{walking?'Return to overview':'Walk the world'}</Button></div>
-      {walking && <div className="forum-crosshair" aria-hidden="true">+</div>}
-      {!cards.isDismissed('feed') && <div className="forum-live"><DismissCard label="the job feed" onDismiss={()=>cards.dismiss('feed')} />{loaded ? `${goals.length} active jobs reported` : 'Job feed unavailable / connecting'}<small>Architecture preview · existing World agent feeds</small></div>}
-      {/* The passport belongs to the agent, so it appears where the agent does:
-          while you are embodied in the world as your sovereign, or while the
-          sovereign is the one selected at the desk. Everywhere else it is just
-          a card sitting on the view. */}
-      {sovereignInView && !cards.isDismissed('passport') && <div className="forum-passport-slot" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}><DismissCard label="the passport" onDismiss={()=>cards.dismiss('passport')} /><ForumPassport /></div>}
+      </div>
     </section>
     <aside className="forum-panel" id="forum-agent-desk" aria-label="Agent learning and task desk" aria-hidden={!deskOpen}>
       <div className="eyebrow">AGENT DESK</div><h2 style={typeRamp.title}>Meet your collaborators.</h2>
