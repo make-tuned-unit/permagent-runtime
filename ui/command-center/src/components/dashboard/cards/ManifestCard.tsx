@@ -5,7 +5,10 @@ import { Stat, SectionTitle, EmptyNote } from '../atoms';
 import { apiFetch } from '../../../lib/api';
 import type { CardManifest } from './registry';
 import { CardIcon } from './cardIcons';
-import { correctCardNote } from './cardNotes';
+import { correctCardNote, isSupersededCardNote } from './cardNotes';
+import { calendarAccessView, mergeCalendarCells } from './calendarAccess';
+import { useShellCalendar } from './useShellCalendar';
+import { CalendarAccessPanel } from './CalendarAccessPanel';
 import { AsOf } from '../../common/AsOf';
 import { Button } from '../../common/Button';
 
@@ -76,6 +79,18 @@ export function ManifestCard({ manifest }: Props) {
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
   const requestGeneration = useRef(0);
+
+  // Apple Calendar is read by the desktop shell through EventKit, not by the
+  // daemon: the daemon's AppleScript read is refused by macOS with no prompt
+  // (launchd owns permagentd), which left the user with "i cant find anywhere
+  // to grant access to my iCal". The shell can ask, so the Calendar card gets
+  // its Apple events — and its Connect button — from there, and keeps the
+  // daemon for meetings and follow-ups logged on People.
+  const isCalendar = manifest.type === 'calendar';
+  const shellCalendar = useShellCalendar(isCalendar, manifest.refreshSeconds);
+  const calendarView = isCalendar
+    ? calendarAccessView(shellCalendar.inDesktopApp, shellCalendar.status, shellCalendar.fullAccessAsked)
+    : null;
 
   const fetchData = useCallback(async () => {
     const generation = ++requestGeneration.current;
@@ -253,12 +268,48 @@ export function ManifestCard({ manifest }: Props) {
     );
   }
 
-  const cells = data?.cells ?? [];
+  const cells = isCalendar
+    ? mergeCalendarCells(shellCalendar.events, data?.cells ?? [])
+    : (data?.cells ?? []);
 
-  // A note that tells the user to grant a permission this app cannot ask for
-  // is worse than no note: it reads as their failure to find a control that
-  // was never built. See `cardNotes.ts`.
-  const corrected = correctCardNote(manifest.type, data?.note);
+  // A note that tells the user to grant a permission is worse than no note when
+  // the card itself now offers the control: the stale instruction would sit
+  // next to the button that replaced it. See `cardNotes.ts`.
+  const note = isSupersededCardNote(manifest.type, data?.note) ? undefined : data?.note;
+  const corrected = correctCardNote(manifest.type, note);
+
+  const accessPanel = (compact: boolean) => calendarView && (
+    <CalendarAccessPanel
+      view={calendarView}
+      onConnect={shellCalendar.connect}
+      onOpenSettings={shellCalendar.openSettings}
+      compact={compact}
+    />
+  );
+
+  // ── Calendar with nothing listed ─────────────────────────────────────────
+  // Every daemon note on this card is about its own Apple-events read ("No
+  // events today", "Calendar is unavailable right now"). Once the shell owns
+  // Apple Calendar those notes cannot speak for it: "No events today" beside a
+  // Connect button would claim knowledge of a calendar nobody has read.
+  if (calendarView && cells.length === 0) {
+    return shell(
+      <>
+        <SectionTitle title={manifest.name} />
+        {calendarView.kind === 'connected' ? (
+          <EmptyNote
+            hint={phase === 'error' ? "Meetings logged on people couldn't be loaded just now." : undefined}
+          >
+            No events today
+          </EmptyNote>
+        ) : calendarView.kind === 'checking' ? (
+          <EmptyNote>Checking Calendar access…</EmptyNote>
+        ) : (
+          accessPanel(false)
+        )}
+      </>,
+    );
+  }
 
   // ── Error / empty ──────────────────────────────────────────────────────────
   if (phase === 'error' && cells.length === 0) {
@@ -266,7 +317,7 @@ export function ManifestCard({ manifest }: Props) {
       <>
         <SectionTitle title={manifest.name} />
         <EmptyNote hint={corrected?.hint}>
-          {corrected?.text || data?.note || "Couldn't load this card"}
+          {corrected?.text || note || "Couldn't load this card"}
         </EmptyNote>
       </>,
     );
@@ -276,7 +327,7 @@ export function ManifestCard({ manifest }: Props) {
       <>
         <SectionTitle title={manifest.name} />
         <EmptyNote hint={corrected?.hint}>
-          {corrected?.text || data?.note || 'Nothing to show'}
+          {corrected?.text || note || 'Nothing to show'}
         </EmptyNote>
       </>,
     );
@@ -426,6 +477,10 @@ export function ManifestCard({ manifest }: Props) {
           </div>
         )}
       </div>
+      {/* Events from People are listed, but Apple Calendar is not connected:
+          the way to connect it stays on the card rather than disappearing
+          the moment anything else has something to show. */}
+      {accessPanel(true)}
     </>,
   );
 }

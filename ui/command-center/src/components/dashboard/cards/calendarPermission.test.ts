@@ -1,17 +1,19 @@
 /**
- * The macOS keys without which a Calendar permission prompt can never appear.
+ * The macOS keys without which a Calendar permission prompt can never appear,
+ * and the shell commands the Calendar card calls to raise one.
  *
- * The daemon reads today's events by sending Apple events to Calendar.app
- * (`osascript` + `tell application "Calendar"`, in goose-server's
- * `dashboard_cards.rs`). That is Automation, not EventKit — nothing in the
- * tree links EventKit at all — so the keys macOS consults are
- * NSAppleEventsUsageDescription and the hardened-runtime entitlement
- * `com.apple.security.automation.apple-events`. NSCalendarsUsageDescription
- * would be decoration.
+ * Two read paths exist. The daemon reads today's events by sending Apple
+ * events to Calendar.app (`osascript` + `tell application "Calendar"`, in
+ * goose-server's `dashboard_cards.rs`) — Automation, whose keys are
+ * NSAppleEventsUsageDescription and `com.apple.security.automation.apple-events`.
+ * That path can never prompt when launchd owns permagentd, which is how the
+ * user ended up reporting "i cant find anywhere to grant access to my iCal".
  *
- * With the usage description absent, macOS refuses the event with -1743 and
- * shows no prompt at all, which is exactly the state the user hit: a card
- * telling them to grant access, and no prompt to grant it in.
+ * So the signed app now asks EventKit itself (`src-tauri/src/calendar.rs`).
+ * That needs NSCalendarsFullAccessUsageDescription (macOS 14+),
+ * NSCalendarsUsageDescription (13 and earlier) and the hardened-runtime
+ * entitlement `com.apple.security.personal-information.calendars`. With a
+ * usage description absent, macOS does not show a prompt — it kills the app.
  *
  * Node environment (not jsdom) so `import.meta.url` is a real file URL.
  */
@@ -25,6 +27,25 @@ const INFO_PLIST = fileURLToPath(
 const ENTITLEMENTS = fileURLToPath(
   new URL('../../../../../desktop/src-tauri/Entitlements.plist', import.meta.url),
 );
+const MAIN_RS = fileURLToPath(
+  new URL('../../../../../desktop/src-tauri/src/main.rs', import.meta.url),
+);
+const CALENDAR_RS = fileURLToPath(
+  new URL('../../../../../desktop/src-tauri/src/calendar.rs', import.meta.url),
+);
+
+/** The commands `useShellCalendar.ts` invokes, by name. */
+const SHELL_COMMANDS = [
+  'calendar_authorization_status',
+  'request_calendar_access',
+  'calendar_upcoming_events',
+  'open_calendar_privacy_settings',
+];
+
+function purposeOf(plist: string, key: string): string {
+  const m = new RegExp(`<key>${key}</key>\\s*<string>([^<]+)</string>`).exec(plist);
+  return m?.[1]?.trim() ?? '';
+}
 
 describe('macOS calendar permission keys', () => {
   it('declares NSAppleEventsUsageDescription with a real purpose string', () => {
@@ -41,5 +62,43 @@ describe('macOS calendar permission keys', () => {
     expect(ents).toMatch(
       /<key>com\.apple\.security\.automation\.apple-events<\/key>\s*<true\/>/,
     );
+  });
+
+  it('declares both EventKit calendar usage descriptions with real purpose strings', () => {
+    const plist = readFileSync(INFO_PLIST, 'utf8');
+    // macOS 14+ (requestFullAccessToEventsWithCompletion) and 13- (requestAccessToEntityType).
+    expect(purposeOf(plist, 'NSCalendarsFullAccessUsageDescription').length).toBeGreaterThan(10);
+    expect(purposeOf(plist, 'NSCalendarsUsageDescription').length).toBeGreaterThan(10);
+  });
+
+  it('carries the hardened-runtime calendars entitlement for EventKit', () => {
+    const ents = readFileSync(ENTITLEMENTS, 'utf8');
+    expect(ents).toMatch(
+      /<key>com\.apple\.security\.personal-information\.calendars<\/key>\s*<true\/>/,
+    );
+  });
+
+  it('lets a write-only app reach the full-access request instead of returning early', () => {
+    // The installed app reported writeOnly and the request returned before
+    // asking, so the upgrade prompt macOS still offers was never shown. This
+    // reads the Rust source; it proves the gate admits WriteOnly and that the
+    // request path consults it, not that macOS then shows the prompt.
+    const calendar = readFileSync(CALENDAR_RS, 'utf8');
+    const gate = /pub fn can_prompt\(before: EKAuthorizationStatus\) -> bool \{([\s\S]*?)\n    \}/.exec(calendar);
+    expect(gate?.[1]).toContain('EKAuthorizationStatus::NotDetermined');
+    expect(gate?.[1]).toContain('EKAuthorizationStatus::WriteOnly');
+    const request = /pub fn request_access_blocking\(\)[\s\S]*?requestFullAccessToEventsWithCompletion/.exec(calendar);
+    expect(request?.[0]).toContain('if !can_prompt(before)');
+  });
+
+  it('registers every calendar command the card invokes, and defines each one', () => {
+    const main = readFileSync(MAIN_RS, 'utf8');
+    const calendar = readFileSync(CALENDAR_RS, 'utf8');
+    expect(main).toMatch(/^mod calendar;$/m);
+    for (const cmd of SHELL_COMMANDS) {
+      // Unregistered, `invoke` rejects at runtime and the button does nothing.
+      expect(main).toContain(`calendar::${cmd},`);
+      expect(calendar).toMatch(new RegExp(`#\\[tauri::command\\]\\s*pub (async )?fn ${cmd}\\(`));
+    }
   });
 });
