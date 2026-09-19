@@ -163,7 +163,10 @@ function SidebarRow({
     <Button
       colors={colors}
       variant="bare"
-      onClick={onClick}
+      // Activating the row closes its tooltip. Focus survives the click
+      // (keyboard, VoiceOver, a synthetic press), and a focus-opened tooltip
+      // otherwise stayed on screen over the view it had just switched to.
+      onClick={() => { setHovered(false); onLeave?.(); onClick(); }}
       onMouseEnter={e => { setHovered(true); onHover?.(e.currentTarget, label, shortcut); }}
       onMouseLeave={() => { setHovered(false); onLeave?.(); }}
       onFocus={e => { setHovered(true); onHover?.(e.currentTarget, label, shortcut); }}
