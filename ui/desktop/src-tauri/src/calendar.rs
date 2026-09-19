@@ -63,7 +63,8 @@ pub fn calendar_authorization_status() -> String {
 /// access; after that macOS answers from the stored decision without asking, so this
 /// resolves immediately with the current status. Resolves with the status
 /// AFTER the request, in the same vocabulary as
-/// `calendar_authorization_status`.
+/// `calendar_authorization_status` — or with `timedOut` when macOS never
+/// answered (see `macos::TIMED_OUT`), which no status read ever returns.
 #[tauri::command]
 pub async fn request_calendar_access() -> Result<String, String> {
     #[cfg(target_os = "macos")]
@@ -157,8 +158,18 @@ mod macos {
     use std::time::Duration;
 
     /// How long to wait for the user to answer the system prompt before
-    /// reporting whatever the status is by then.
+    /// giving up and reporting `TIMED_OUT`.
     const PROMPT_WAIT: Duration = Duration::from_secs(300);
+
+    /// What the request reports when the completion handler never fired: the
+    /// prompt went unanswered for `PROMPT_WAIT` (the screen locked, the user
+    /// walked away), or EventKit dropped the handler without calling it.
+    /// This used to report the unchanged status instead, and from write-only
+    /// that is indistinguishable from macOS answering "write-only again" — so
+    /// the card retired Allow Full Access for System Settings although nobody
+    /// had seen the prompt — the case a locked screen during QA exposed.
+    /// `calendarAccess.ts` (`REQUEST_TIMED_OUT`) spells the same string.
+    pub const TIMED_OUT: &str = "timedOut";
 
     /// A sentinel for "could not ask" — not an EventKit value.
     const UNKNOWN: EKAuthorizationStatus = EKAuthorizationStatus(-1);
@@ -238,9 +249,12 @@ mod macos {
         let _store = caught.map_err(|_| "EventKit refused the access request".to_string())?;
 
         // The boolean alone cannot distinguish "denied" from "write-only";
-        // the status read afterwards can.
-        let _ = rx.recv_timeout(PROMPT_WAIT);
-        Ok(status_name(status()).to_string())
+        // the status read afterwards can. No answer at all is reported as
+        // such, never as a status: see `TIMED_OUT`.
+        match rx.recv_timeout(PROMPT_WAIT) {
+            Ok(_granted) => Ok(status_name(status()).to_string()),
+            Err(_) => Ok(TIMED_OUT.to_string()),
+        }
     }
 
     /// The pre-macOS-14 request, isolated so its deprecation allowance
