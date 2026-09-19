@@ -2042,6 +2042,54 @@ impl SessionStorage {
                     // paid invocation with `no such table`.
                     spectral_schema::apply_cost_reservations_schema(&self.pool).await?;
 
+                    // Boot pass over concluded `unknown` provider-spend holds
+                    // (gated-turn-silence, E2E QA 2026-09-18). The session-tree
+                    // reconcile in `reconcile_stale_reservations` only runs
+                    // inside `reserve_provider_invocation`, i.e. on the NEXT
+                    // paid turn in that chat. After the fix shipped, session
+                    // 20260918_7's $1.56 hold
+                    // (`invocation:e1d47602-...`, `unknown_marked_at` set, no
+                    // ledger row) was still `unknown` — and so were the same
+                    // kind of holds in 20260918_8/_9/_16 — because nobody had
+                    // spoken in those chats since: the chat still showed the
+                    // refusal, and the Budget view kept counting money nobody
+                    // spent. `cost_router::budget::spawn_unknown_hold_sweeper`
+                    // does this work but is not started by the daemon, so run
+                    // its sweep once here, where every process that opens the
+                    // store (daemon, CLI) passes before its first query. The
+                    // rules are the admission path's own (explicit marks
+                    // resolve at once, lease-only holds keep their 6h grace;
+                    // ledger evidence settles, no evidence releases), and every
+                    // update is guarded by `state = 'unknown'`, so running it
+                    // here as well as elsewhere is idempotent. A failure only
+                    // delays a release until the next paid turn reconciles it,
+                    // so it is logged and never fails opening the store.
+                    match crate::cost_router::budget::reconcile_concluded_unknown_holds(
+                        &self.pool,
+                    )
+                    .await
+                    {
+                        Ok(sweep)
+                            if sweep.settled + sweep.released + sweep.expired_to_unknown
+                                > 0 =>
+                        {
+                            info!(
+                                target: "permagent::cost_router",
+                                expired_to_unknown = sweep.expired_to_unknown,
+                                settled = sweep.settled,
+                                released = sweep.released,
+                                still_held = sweep.still_held,
+                                "boot sweep resolved concluded unknown provider-spend holds"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(
+                            target: "permagent::cost_router",
+                            error = %e,
+                            "boot sweep of unknown provider-spend holds failed; the next paid turn still reconciles them"
+                        ),
+                    }
+
                     // Growth actions + analytics events. Both apply functions
                     // claimed to run on every boot; they only ran on fresh init
                     // and their version-gated migrate. A DB already past v42
@@ -2657,19 +2705,55 @@ impl SessionStorage {
     /// real spend does land after this reconciliation already ran, it is
     /// still recorded and still counts toward the ceiling, flagged
     /// `late_settlement`.
+    ///
+    /// Scope (gated-turn-silence, 2026-09-18): the rows reconciled here are
+    /// the SAME rows the admission check below refuses on — every `unknown`
+    /// hold under `task_id` OR anywhere in `session_id`'s session tree.
+    /// Pre-fix this only looked at `task_id`, but an interactive chat starts
+    /// a NEW budget task on every user message (`agent.rs`,
+    /// `starts_new_budget_task` → `begin_budget_task`), while the refusal
+    /// also counts `unknown` holds across the whole session tree. So one
+    /// explicitly-marked `unknown` hold from an earlier turn (session
+    /// 20260918_7: an openai stream that "dropped before any reply started"
+    /// at 18:07, `unknown_marked_at` set, no ledger row) was never
+    /// reconciled by any later turn and refused every one of them for good —
+    /// "Can you sync my calendar?" and "who are you?" both got only "provider
+    /// spend could not be authorized ... an expired provider reservation is
+    /// unresolved", which the user reported as "my agent is not responding to
+    /// me". The eligibility rules above do not depend on which task owns the
+    /// hold, so widening the scope keeps them intact.
+    ///
+    /// Returns the latest instant at which a still-held (lease-expired,
+    /// inside `RECONCILE_GRACE`) hold becomes eligible, so the refusal can
+    /// tell the user when paid calls resume instead of only that they
+    /// stopped. `None` when nothing is still held for a known time.
     async fn reconcile_stale_reservations(
         tx: &mut sqlx::Transaction<'_, Sqlite>,
         task_id: &str,
+        session_id: &str,
         now: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
         let stale: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
-            "SELECT reservation_id, invocation_id, unknown_marked_at, lease_until
+            "WITH RECURSIVE lineage(id, parent_id) AS (
+                 SELECT id, parent_session_id FROM sessions WHERE id = ?
+                 UNION ALL
+                 SELECT s.id, s.parent_session_id
+                 FROM sessions s JOIN lineage l ON s.id = l.parent_id
+             ), session_tree(id) AS (
+                 SELECT id FROM lineage WHERE parent_id IS NULL
+                 UNION ALL
+                 SELECT s.id FROM sessions s JOIN session_tree t ON s.parent_session_id = t.id
+             )
+             SELECT reservation_id, invocation_id, unknown_marked_at, lease_until
              FROM cost_reservations
-             WHERE task_id = ? AND state = 'unknown'",
+             WHERE state = 'unknown'
+               AND (task_id = ? OR session_id IN (SELECT id FROM session_tree))",
         )
+        .bind(session_id)
         .bind(task_id)
         .fetch_all(&mut **tx)
         .await?;
+        let mut held_until: Option<chrono::DateTime<chrono::Utc>> = None;
 
         let now_dt = chrono::DateTime::parse_from_rfc3339(now)
             .ok()
@@ -2687,7 +2771,15 @@ impl SessionStorage {
                 // realistic in-flight completion.
                 match (now_dt, chrono::DateTime::parse_from_rfc3339(&lease_until)) {
                     (Some(now_dt), Ok(lease_until)) => {
-                        now_dt - lease_until.with_timezone(&chrono::Utc) >= grace
+                        let lease_until = lease_until.with_timezone(&chrono::Utc);
+                        let eligible = now_dt - lease_until >= grace;
+                        if !eligible {
+                            let clears_at = lease_until + grace;
+                            held_until = Some(
+                                held_until.map_or(clears_at, |existing| existing.max(clears_at)),
+                            );
+                        }
+                        eligible
                     }
                     _ => false,
                 }
@@ -2741,7 +2833,7 @@ impl SessionStorage {
                 }
             }
         }
-        Ok(())
+        Ok(held_until)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2813,6 +2905,7 @@ impl SessionStorage {
             _ => None,
         };
         let mut extension_from = None;
+        let mut unknown_held_until: Option<chrono::DateTime<chrono::Utc>> = None;
         if matches!(request, ReservationRequest::Initial(_)) {
             // An expired provider call may already have been accepted remotely;
             // preserve its hold as unknown rather than fabricating free allowance.
@@ -2827,7 +2920,8 @@ impl SessionStorage {
 
             // Initial reservations reconcile stale unknown holds (Y1). An
             // extension must not release its own evidence or mutate on refusal.
-            Self::reconcile_stale_reservations(&mut tx, task_id, &now).await?;
+            unknown_held_until =
+                Self::reconcile_stale_reservations(&mut tx, task_id, session_id, &now).await?;
         }
 
         let reservation_id = format!("invocation:{invocation_id}");
@@ -2992,8 +3086,26 @@ impl SessionStorage {
         }
         if task_unknown > 0 || session_unknown > 0 {
             tx.commit().await?;
+            // This text reaches the chat verbatim (agent.rs: "I did not send
+            // this request because provider spend could not be authorized:
+            // ..."). The bare "an expired provider reservation is unresolved"
+            // gave the user nothing to act on and read as the agent ignoring
+            // them (gated-turn-silence, 2026-09-18), so say what is held,
+            // until when, and what they can do now. The leading phrase is
+            // kept verbatim for the log/forensics trail that greps for it.
+            let resume = match unknown_held_until {
+                Some(at) => format!(
+                    "paid calls here resume automatically at {}",
+                    at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")
+                ),
+                None => "paid calls here stay paused until it is resolved".to_string(),
+            };
             return Ok(CostReservationOutcome::Unknown {
-                reason: "an expired provider reservation is unresolved".to_string(),
+                reason: format!(
+                    "an expired provider reservation is unresolved — an earlier paid call in \
+                     this chat ended without a confirmed bill, so I am not spending again until \
+                     it is accounted for; {resume}, or start a new chat to continue now"
+                ),
             });
         }
 
@@ -7525,6 +7637,261 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(state, "released");
+    }
+
+    /// gated-turn-silence (2026-09-18, "my agent is not responding to me"):
+    /// an interactive chat begins a NEW budget task on every user message,
+    /// so a hold explicitly marked `unknown` on an earlier turn (session
+    /// 20260918_7: openai stream dropped before any reply at 18:07, no ledger
+    /// row) sits under a task no later turn ever reserves under. Pre-fix,
+    /// reconciliation only looked at the current task while the admission
+    /// check counted `unknown` holds across the whole session tree, so every
+    /// later turn in that chat was refused with "an expired provider
+    /// reservation is unresolved" — four hours later, "Can you sync my
+    /// calendar?" and "who are you?" both got nothing but that line.
+    #[tokio::test]
+    async fn earlier_turn_unknown_hold_is_reconciled_by_the_next_turn_in_the_same_chat() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "chat with a dropped first turn".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let cfg = reservation_config(5.0, 10.0, 25.0, 50.0);
+
+        // Turn 1: granted, then the stream drops before any reply and the
+        // caller marks the hold unknown.
+        let first_task = sm.begin_budget_task(&session.id).await.unwrap();
+        let first_reservation = match sm
+            .reserve_provider_invocation(
+                "turn-1-dropped-stream",
+                &session.id,
+                Some(&first_task),
+                1.56,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            other => panic!("turn 1 reservation was not granted: {other:?}"),
+        };
+        assert!(sm
+            .mark_provider_invocation_unknown(&first_reservation)
+            .await
+            .unwrap());
+
+        // Turn 2: the next user message starts a fresh budget task, exactly
+        // as `Agent::reply` does for an interactive chat.
+        let second_task = sm.begin_budget_task(&session.id).await.unwrap();
+        assert_ne!(first_task, second_task);
+        let outcome = sm
+            .reserve_provider_invocation(
+                "turn-2-calendar-sync",
+                &session.id,
+                Some(&second_task),
+                0.98,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, CostReservationOutcome::Granted { .. }),
+            "the next turn must not be refused by an earlier turn's concluded hold: {outcome:?}"
+        );
+
+        let pool = sm.pool_clone().await.unwrap();
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'turn-1-dropped-stream'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            state, "released",
+            "no ledger row proves turn 1 was billed, so its hold is released"
+        );
+    }
+
+    /// gated-turn-silence companion: when an earlier turn's hold genuinely
+    /// must keep refusing (its lease merely expired, still inside the grace
+    /// window, so the call may still be streaming), the refusal that reaches
+    /// the chat must say when paid calls resume and what the user can do
+    /// now — the bare "an expired provider reservation is unresolved" read
+    /// as the agent silently ignoring them.
+    #[tokio::test]
+    async fn unresolved_hold_refusal_tells_the_user_when_and_what_to_do() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "chat with an in-flight hold".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let cfg = reservation_config(5.0, 10.0, 25.0, 50.0);
+
+        let first_task = sm.begin_budget_task(&session.id).await.unwrap();
+        sm.reserve_provider_invocation(
+            "turn-1-still-streaming",
+            &session.id,
+            Some(&first_task),
+            1.0,
+            "2099-01-01T00:00:00Z",
+            &cfg,
+        )
+        .await
+        .unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+        let recent_expiry = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        sqlx::query(
+            "UPDATE cost_reservations SET lease_until = ?
+             WHERE invocation_id = 'turn-1-still-streaming'",
+        )
+        .bind(&recent_expiry)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let second_task = sm.begin_budget_task(&session.id).await.unwrap();
+        let reason = match sm
+            .reserve_provider_invocation(
+                "turn-2-refused",
+                &session.id,
+                Some(&second_task),
+                1.0,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Unknown { reason } => reason,
+            other => panic!("an in-grace hold must still refuse: {other:?}"),
+        };
+        assert!(
+            reason.starts_with("an expired provider reservation is unresolved"),
+            "the forensic phrase must stay first: {reason}"
+        );
+        assert!(
+            reason.contains("resume automatically at"),
+            "the refusal must say when paid calls resume: {reason}"
+        );
+        assert!(
+            reason.contains("start a new chat to continue now"),
+            "the refusal must say what the user can do now: {reason}"
+        );
+
+        // The hold is still unknown (fail-closed inside the grace window),
+        // not released by the widened reconciliation scope.
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'turn-1-still-streaming'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "unknown");
+    }
+
+    /// gated-turn-silence, E2E QA 2026-09-18: after the session-tree
+    /// reconcile shipped, session 20260918_7's concluded $1.56 hold was still
+    /// `unknown` because reconciliation only ran on the next paid turn and
+    /// nobody had spoken in that chat since the redeploy. Opening the store
+    /// (daemon start) must resolve a concluded hold by itself — with no
+    /// reservation call at all — while a lease-only hold still inside its
+    /// grace window keeps holding, exactly as the admission path would.
+    #[tokio::test]
+    async fn reopening_the_store_resolves_a_concluded_unknown_hold_without_a_new_turn() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_dir = temp_dir.path().to_path_buf();
+        let sm = SessionManager::new(db_dir.clone());
+        let session = sm
+            .create_session(
+                db_dir.clone(),
+                "chat left silent after a dropped stream".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let cfg = reservation_config(5.0, 10.0, 25.0, 50.0);
+
+        let mut reservations = Vec::new();
+        for invocation in ["boot-concluded-drop", "boot-lease-only-in-grace"] {
+            match sm
+                .reserve_provider_invocation(
+                    invocation,
+                    &session.id,
+                    Some(&task_id),
+                    1.56,
+                    "2099-01-01T00:00:00Z",
+                    &cfg,
+                )
+                .await
+                .unwrap()
+            {
+                CostReservationOutcome::Granted { reservation_id } => {
+                    reservations.push(reservation_id)
+                }
+                other => panic!("setup reservation {invocation} was not granted: {other:?}"),
+            }
+        }
+        // The dropped stream concluded locally and marked its own hold.
+        assert!(sm
+            .mark_provider_invocation_unknown(&reservations[0])
+            .await
+            .unwrap());
+        // The other went `unknown` only because its lease lapsed 5 minutes
+        // ago: it may still be streaming, so it must keep holding.
+        let pool = sm.pool_clone().await.unwrap();
+        let recent_expiry = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        sqlx::query(
+            "UPDATE cost_reservations SET state = 'unknown', lease_until = ?
+             WHERE invocation_id = 'boot-lease-only-in-grace'",
+        )
+        .bind(&recent_expiry)
+        .execute(&pool)
+        .await
+        .unwrap();
+        drop(pool);
+        drop(sm);
+
+        // Daemon restart: open the store and read. No reservation call.
+        let reopened = SessionManager::new(db_dir);
+        let pool = reopened.pool_clone().await.unwrap();
+        let state_of = |invocation: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT state FROM cost_reservations WHERE invocation_id = ?",
+                )
+                .bind(invocation)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        assert_eq!(
+            state_of("boot-concluded-drop").await,
+            "released",
+            "a concluded hold with no ledger row must not wait for the user to speak again"
+        );
+        assert_eq!(
+            state_of("boot-lease-only-in-grace").await,
+            "unknown",
+            "a lease-only hold inside its grace window must keep holding across a restart"
+        );
     }
 
     /// YF1 (G6 review, Lane Y-fix 2026-09-09, finding #1): a late settlement
