@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Jesse: "i also want to see User counts because a few of my projects are
+ * The user: "i also want to see User counts because a few of my projects are
  * starting to get signed up users."
  *
  * The daemon counts distinct `user_id`s the site sends on its own events, and

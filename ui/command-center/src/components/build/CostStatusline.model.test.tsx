@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  *
- * The statusline model picker (Jesse 2026-09-18: "The model picker dropdown
+ * The statusline model picker (the user 2026-09-18: "The model picker dropdown
  * disappeared. It would make sense for it to be on the bottom bar with the
  * costs and I could switch between models.").
  *
@@ -160,7 +160,7 @@ describe('CostStatusline model picker', () => {
   });
 
   it('offers no control when no harness session is switchable, and says why', async () => {
-    // Jesse's exact situation: plain shell tabs, nothing that takes /model.
+    // The user's exact situation: plain shell tabs, nothing that takes /model.
     await act(async () => {
       root.render(
         <>

@@ -7,7 +7,7 @@
  *
  * The boats already in the island GLB are baked into the terrain and cannot
  * move. These are separate instances sailing real courses on the lagoon, which
- * is what Jesse asked for when he asked for more ships and water that lives.
+ * is what the user asked for when he asked for more ships and water that lives.
  */
 
 /**

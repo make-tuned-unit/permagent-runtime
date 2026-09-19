@@ -25,7 +25,7 @@ type Props = {
 /**
  * Provider-first model chooser shared by Chat, role defaults and terminals.
  *
- * Jesse: "I also cant seem to find the latest Haiku model. The dropdown picker
+ * The user: "I also cant seem to find the latest Haiku model. The dropdown picker
  * for models is ugly, it needs better design." Those turned out to be one
  * problem wearing two hats. A list of raw ids in a mono font is not a menu you
  * can find anything in — `claude-haiku-4-5-20251001` is a serial number, not a
@@ -54,7 +54,7 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
   // works only when no ancestor clips or re-parents it. In the Build tab the
   // trigger sits in the terminal's glass tab strip — a rounded, backdrop
   // filtered bar — and the menu simply never appeared: the button toggled, and
-  // the panel was painted somewhere you could not see. Jesse: "The select
+  // the panel was painted somewhere you could not see. The user: "The select
   // provider and model dropdown doesnt open in the Build tab."
   //
   // A portal to `document.body` with fixed coordinates cannot be clipped by
@@ -78,7 +78,7 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
     // The first version of this clamped `left` and ignored `top` entirely, so
     // a trigger near the bottom of the window opened its menu past the bottom
     // of the screen. In Settings the Harness row is the lowest of the three,
-    // which is exactly where Jesse reported he "cant see the harness models
+    // which is exactly where the user reported he "cant see the harness models
     // available in the dropdown" — the menu was open, just off the fold.
     const GAP = 6;
     const EDGE = 8;
@@ -256,7 +256,7 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
           The app's focus ring is `outline: 2px` at `outline-offset: 2px`. On a
           field that ran the full width of the panel the ring had nowhere to
           go: it drew over the panel's own rounded edge and out past it, which
-          is the cyan line Jesse photographed cutting across the menu. Given a
+          is the cyan line the user photographed cutting across the menu. Given a
           margin and its own radius, the same ring lands inside the panel. */}
       <div
         className="flex items-center gap-2"

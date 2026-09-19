@@ -430,7 +430,7 @@ export function FirstPartyAnalyticsPanel({
               // NOT "visitors": the hash merges people sharing a browser build,
               // OS and language, so it undercounts — badly on mobile.
               ['Devices', stats.deviceSignatures.toLocaleString(), 'distinct signatures, undercounts'],
-              // Jesse: "i also want to see User counts because a few of my
+              // The user: "i also want to see User counts because a few of my
               // projects are starting to get signed up users." This is the one
               // figure here that is actually people — it comes from a user_id
               // the site itself sends. `null` is a missing signal, not zero,

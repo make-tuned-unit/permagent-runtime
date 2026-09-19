@@ -721,7 +721,7 @@ type RoleEffective = {
    *  keys to go on it had nothing to open: with `harness_provider` unset the
    *  row printed `anthropic / claude-haiku-4-5 · from GOOSE_MODEL` and then
    *  handed the picker a null provider, so the menu listed provider headings
-   *  and not one model. Jesse: "I cant see the harness models available in the
+   *  and not one model. The user: "I cant see the harness models available in the
    *  dropdown." The model stays raw, so the trigger still says "Select a
    *  provider and model" — nothing has been chosen for this role, and saying
    *  otherwise would be the opposite lie. */
@@ -770,7 +770,7 @@ function computeRoleEffective(
  * full-width trigger filled the row. Voice wrapped the same picker in a
  * one-child `display: flex` box, which made it a shrink-to-fit flex item, so
  * its trigger hugged the words "Select a provider and model" and sat at maybe a
- * third of the width of the two rows around it. Jesse: "the alignment is all
+ * third of the width of the two rows around it. The user: "the alignment is all
  * off." Nothing about Voice wanted a flex row — it had one child and the gap it
  * declared could never apply. One body, three rows, so the fourth cannot drift
  * either.

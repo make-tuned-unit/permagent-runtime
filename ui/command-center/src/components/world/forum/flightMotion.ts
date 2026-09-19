@@ -1,7 +1,7 @@
 /**
  * Flying the skiff, as pure arithmetic.
  *
- * Jesse asked to board a ship, fly to other parts of the map, and land on the
+ * The user asked to board a ship, fly to other parts of the map, and land on the
  * floating islands. Landing is the hard half: a flyer that cannot be put down
  * deliberately is a camera with extra steps. So the model here is a lander —
  * damped, forgiving, and willing to touch down whenever the ground beneath it

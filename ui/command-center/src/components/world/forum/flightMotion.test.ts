@@ -115,7 +115,7 @@ describe('the landing a player actually performs', () => {
   const terraceAt = (height: number) => (): GroundSample => ({ height, landable: true });
 
   it('lands when the descend key is simply held down', () => {
-    // This is the bug Jesse hit: descent runs at LIFT_SPEED while the key is
+    // This is the bug the user hit: descent runs at LIFT_SPEED while the key is
     // held, touchdown requires arriving slower than TOUCHDOWN_SPEED, and
     // releasing the key stops the descent entirely because nothing pulls the
     // skiff down. Without a flare there is no key sequence that lands.

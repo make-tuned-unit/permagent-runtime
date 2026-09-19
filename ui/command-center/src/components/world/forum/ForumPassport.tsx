@@ -4,13 +4,14 @@ import { Button } from '../../common/Button';
 import { Tooltip } from '../../common/Tooltip';
 import { useTheme } from '../../../styles/useTheme';
 import { useIdentityStore } from '../../../stores/identityStore';
+import { useOrchestratorName } from '../shared/useOrchestratorName';
 
 /**
  * The sovereign's digital passport, on the forum HUD.
  *
  * The identity surface existed only on the legacy `WorldView` (`HenryHUD` →
  * `HenryIdentityTab`), so moving the World over to the Solar Forum took the
- * passport off the screen — Jesse's words: "the HUD with the identity card and
+ * passport off the screen — the user's words: "the HUD with the identity card and
  * specifically the Chitin ID and sovereign status of my agent is no longer
  * there, that is my sovereigns digital passport."
  *
@@ -35,6 +36,9 @@ export function ForumPassport({ onOpen }: { onOpen?: () => void }) {
   const lastSuccessfulFetch = useIdentityStore((s) => s.lastSuccessfulFetch);
   const startPolling = useIdentityStore((s) => s.startPolling);
   const stopPolling = useIdentityStore((s) => s.stopPolling);
+  // The agent's name is per-user config: when the passport record carries no
+  // name, show the configured persona name rather than a hardcoded one.
+  const configuredName = useOrchestratorName();
 
   // Ref-counted shared poll: the store owns the interval, so mounting this
   // alongside the legacy HUD cannot double-poll chitin.id or the RPC.
@@ -75,7 +79,7 @@ export function ForumPassport({ onOpen }: { onOpen?: () => void }) {
         <span className="eyebrow">SOVEREIGN PASSPORT</span>
         <span className="forum-passport-status" data-testid="forum-passport-status">{status.label}</span>
       </div>
-      <div className="forum-passport-name">{data.name?.trim() || 'Henry'}</div>
+      <div className="forum-passport-name">{data.name?.trim() || configuredName?.trim() || 'Your agent'}</div>
       <dl className="forum-passport-rows">
         <div>
           <dt>Chitin ID</dt>

@@ -61,7 +61,7 @@ export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, o
     const keyDown = (e:KeyboardEvent) => {
       if (focusedElsewhere()) { keys.current.clear(); return; }
       if (editable(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
-      // Arrow keys are the walking controls Jesse asked for: Up/Down drive the
+      // Arrow keys are the walking controls the user asked for: Up/Down drive the
       // avatar forward and back, Left/Right turn. WASD stays bound for anyone
       // already used to it. Preventing default on the arrows also stops the
       // page scrolling underneath the canvas while you walk.

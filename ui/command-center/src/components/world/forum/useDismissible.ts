@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState } from 'react';
 /**
  * Which of the world's cards the user has put away, remembered between visits.
  *
- * Jesse: "All of the cards on the world need to be dismissable." The world is
+ * The user: "All of the cards on the world need to be dismissable." The world is
  * the thing worth looking at, and every panel on top of it is the player's
  * choice to keep. Dismissal is therefore permanent until they ask for it back,
  * not a per-session tidy-up — a card you have to close on every load is a card

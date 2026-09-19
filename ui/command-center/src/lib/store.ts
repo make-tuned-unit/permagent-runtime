@@ -543,7 +543,7 @@ interface CommandCenterStore {
   pendingTerminalLaunch: PendingTerminalLaunch | null;
   setPendingTerminalLaunch: (launch: PendingTerminalLaunchInput | null) => void;
 
-  // --- Harness model switching (Jesse 2026-09-18: "The model picker dropdown
+  // --- Harness model switching (the user 2026-09-18: "The model picker dropdown
   // disappeared. It would make sense for it to be on the bottom bar with the
   // costs and I could switch between models.") ---
   //

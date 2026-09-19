@@ -8,7 +8,7 @@ export const HUD_REST_DELAY_WALKING_MS = 2400;
 /**
  * Whether the forum HUD should be showing right now.
  *
- * Jesse: "the key data on the screen blocks too much and needs to be hidden and
+ * The user: "the key data on the screen blocks too much and needs to be hidden and
  * responsive coming in to view and away again so i can enjoy the world."
  *
  * So the HUD is present when you are doing something and steps aside when you

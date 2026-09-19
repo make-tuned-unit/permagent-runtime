@@ -4,7 +4,7 @@ import { isRenderableChatMessage } from '../components/chat/MessageList';
 import type { ChatMessage } from './store';
 
 /**
- * The silence Jesse reported: "there is no response coming from my agent."
+ * The silence the user reported: "there is no response coming from my agent."
  *
  * The daemon was answering every turn — with a `systemNotification` saying both
  * cloud providers were out of credit and the local split was offline. Nothing

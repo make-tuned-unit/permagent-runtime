@@ -2,7 +2,7 @@
  *
  * The agent's status on the Home H1. It used to live in the sidebar — a line
  * under Home when open, a loose green dot when collapsed — and moved to the
- * title at Jesse's request, so the two rail components and their hook are
+ * title at the user's request, so the two rail components and their hook are
  * gone. These cover the state mapping and the header that replaced them.
  */
 import { act } from 'react-dom/test-utils';

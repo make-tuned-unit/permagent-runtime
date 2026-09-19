@@ -58,7 +58,7 @@ describe('TerminalManager harness model control', () => {
 
   it('sends the provider/model command to the active harness PTY', async () => {
     // Detached: the docked Build tab renders the picker on CostStatusline now
-    // (Jesse 2026-09-18, "on the bottom bar with the costs"), and a detached
+    // (the user 2026-09-18, "on the bottom bar with the costs"), and a detached
     // pane window has no statusline in its realm, so it keeps this one. Both
     // drive the same store state — see CostStatusline.model.test.tsx.
     act(() => root.render(<TerminalManager detached initialTab={{ id: 'harness', label: 'Build', sessionId: 'pty-1', initialCommand: 'permagent run --recipe permagent-coding --interactive' }} />));

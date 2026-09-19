@@ -200,7 +200,7 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
 
   // ── Layout ────────────────────────────────────────────────────────────
   //
-  // Jesse: "the alignment is all off." Chat's and Harness's pickers ran the
+  // The user: "the alignment is all off." Chat's and Harness's pickers ran the
   // full width of the row while Voice's hugged its own label, because Voice —
   // and only Voice — wrapped the picker in a `display: flex` box, which turns a
   // block child into a shrink-to-fit flex item. The picker renders a full-width
@@ -231,7 +231,7 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
 
   // ── What the picker is given to open on ───────────────────────────────
   //
-  // Jesse: "I cant see the harness models available in the dropdown." With no
+  // The user: "I cant see the harness models available in the dropdown." With no
   // harness_* keys set the row printed the session model and handed the picker
   // a null provider, and the picker opens on `value.provider` — so the menu
   // listed provider headings and not one model. The row names a provider it

@@ -1,7 +1,7 @@
 /**
  * Turning a provider's raw model ids into something a person can choose from.
  *
- * Two separate problems, both reported by Jesse as "I can't find the latest
+ * Two separate problems, both reported by the user as "I can't find the latest
  * Haiku model" and "the dropdown picker for models is ugly".
  *
  * The first is not cosmetic. The picker asked the daemon for each provider's
@@ -107,7 +107,7 @@ export function describeModel(id: string): ModelEntry {
   //
   // The first version of this only knew the Claude families, so every OpenAI
   // model fell through to its raw id and the menu read as a column of serial
-  // numbers — `gpt-5.4-nano-2026-03-17` — which is the thing Jesse called out.
+  // numbers — `gpt-5.4-nano-2026-03-17` — which is the thing the user called out.
   // Splitting on the separator the ids already use gets a real name out of any
   // vendor: "GPT 5.4 Nano", "MiniMax M2.7", "Qwen3.8 27B".
   //

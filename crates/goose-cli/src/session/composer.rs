@@ -2944,7 +2944,7 @@ mod tests {
 
     #[test]
     fn both_repaint_paths_check_the_terminal_geometry() {
-        // Jesse: "The field for the terminal chat is not responsive and doesnt
+        // The user, 2026-09-18: "The field for the terminal chat is not responsive and doesnt
         // grow with the terminal screen size."
         //
         // `self.cols` is only re-read by `refresh_size`, which only runs from

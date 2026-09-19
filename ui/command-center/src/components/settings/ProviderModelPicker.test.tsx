@@ -46,7 +46,7 @@ describe('ProviderModelPicker', () => {
   });
 
   it('still offers a known model the live list dropped', async () => {
-    // Jesse: "I also cant seem to find the latest Haiku model." The live list
+    // The user: "I also cant seem to find the latest Haiku model." The live list
     // comes back filtered through the canonical registry, and the picker used
     // to replace the provider's known models with it — so a model the app
     // fully supports became unselectable. The menu is now the union.
@@ -102,7 +102,7 @@ describe('the menu stays on screen', () => {
 
   it('flips above the trigger when the fold would cut it off', async () => {
     // The Harness row is the lowest of the three in Settings, and this is
-    // where Jesse could not see its models: the menu opened past the bottom
+    // where the user could not see its models: the menu opened past the bottom
     // of the window. Anchored from the bottom, it opens upward instead.
     const panel = await openAt(760);
     expect(panel.style.bottom).toBe('46px');

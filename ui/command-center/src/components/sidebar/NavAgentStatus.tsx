@@ -83,7 +83,7 @@ export function NavStatusDot({ state, size = 8 }: { state: NavAgentState; size?:
 /**
  * The agent's status on a view's title line — "Henry · thinking" beside the H1.
  *
- * Jesse, twice: the dot does not belong in the rail. Expanded it was a second
+ * The user, twice: the dot does not belong in the rail. Expanded it was a second
  * line of chrome under Home; collapsed it was a green dot floating next to an
  * icon, marking a row rather than saying anything, and reading as decoration
  * you cannot act on. The agreed home for this is the Home heading, where it

@@ -106,7 +106,7 @@ describe('searching for a model the way a person types it', () => {
 
 describe('naming models from every vendor, not just Anthropic', () => {
   it('names an OpenAI model instead of printing its serial number', () => {
-    // This is what Jesse saw in the menu: a column of these, verbatim.
+    // This is what the user saw in the menu: a column of these, verbatim.
     expect(describeModel('gpt-5.4-nano-2026-03-17').label).toBe('GPT 5.4 Nano');
     expect(describeModel('gpt-5.4-nano-2026-03-17').released).toBe('20260317');
     expect(describeModel('gpt-5-mini').label).toBe('GPT 5 Mini');

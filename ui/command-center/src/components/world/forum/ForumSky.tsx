@@ -86,7 +86,7 @@ void main(){vec3 d=normalize(direction);float plane=abs(dot(d,normalize(vec3(.18
 }
 function Birds() {
   const { scene }=useGLTF(`${import.meta.env.BASE_URL}world/forum-bird.glb`, false, false, extendForumLoader);
-  // Fourteen rather than six: Jesse asked for more birds in the sky, and at
+  // Fourteen rather than six: the user asked for more birds in the sky, and at
   // 20KB for the shared model with per-index courses from `birdFlight`, the
   // cost is a handful of draw calls rather than anything measurable.
   const birds=useMemo(()=>Array.from({length:14},()=>scene.clone(true)),[scene]);

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Jesse: "the places menu in world doesnt open."
+ * The user: "the places menu in world doesnt open."
  *
  * It could not be opened at all, and the cause was hit testing rather than
  * state. The rail is a flex row — a 32px handle, then the list — and the

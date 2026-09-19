@@ -218,7 +218,7 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
   // Drop-to-CC-terminal (#557): visual state while a file is dragged over the pane.
   const [dropActive, setDropActive] = useState(false);
-  // The model selection itself now lives in the store (Jesse 2026-09-18: put
+  // The model selection itself now lives in the store (the user 2026-09-18: put
   // the picker "on the bottom bar with the costs"). What stays here is the
   // part only the terminal can do: knowing WHICH tab is a switchable harness,
   // and reading the CLI's confirmation out of the PTY stream.
@@ -666,7 +666,7 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
           })}
         </div>
         <CycleTabsButton pane="terminal" onCycle={() => cycleTabs()} />
-        {/* Jesse 2026-09-18: "It would make sense for it to be on the bottom
+        {/* The user 2026-09-18: "It would make sense for it to be on the bottom
             bar with the costs." In the docked Build tab the picker now lives
             on CostStatusline, beside the money it spends, so this strip does
             not render a second one — one concept, one place. A DETACHED pane
