@@ -268,21 +268,35 @@ export function WatcherInsightsPanel({ project }: { project: Project }) {
         {insights.map(i => (
           <div key={i.created_at} style={{ display: 'flex', gap: space.lg, alignItems: 'baseline' }}>
             <span style={{ color: colors.purpleBright, fontSize: textSize.micro, flexShrink: 0, lineHeight: '18px' }}>◆</span>
-            <div style={{ minWidth: 0 }}>
+            {/* `flex: 1` + `minWidth: 0`: the column must take the row's width and
+                no more, so the chips below have a real edge to truncate against. */}
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.55 }}>{i.text}</div>
               {/* The cards the observation is about. Without these the reader
                   is told something stalled and given no way to reach it. */}
               {(i.cards ?? []).length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, marginTop: space.xs }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, marginTop: space.xs, minWidth: 0 }}>
                   {/* The key rides the list element — the `Tooltip` wrapper
                       (#1188) is what the map returns now, so the key had to
                       move out of the Button with it. */}
                   {(i.cards ?? []).map(c => (
                     <Tooltip key={c.id} content={`Open "${c.title}" on the board`}>
+                      {/* A long card title used to be clipped mid-word at BOTH
+                          ends and bleed past the panel's left edge ("e email
+                          template and curate first 8 weeks of events (W"):
+                          `.pa-btn` centres its content, so an over-wide label
+                          overflowed equally left and right, and a bare text
+                          node cannot take an ellipsis. Now the chip is capped at
+                          its row (`maxWidth: 100%`, never a fixed 260 that can
+                          exceed a narrow panel), starts its content at the left
+                          edge, and the title sits in its own truncating span.
+                          The full title stays on the tooltip and the aria-label. */}
                       <Button
                         colors={colors}
                         variant="bare"
                         onClick={() => openCardOnBoard(project.id, c.id)}
+                        aria-label={`Open "${c.title}" on the board`}
+                        data-testid="watcher-card-chip"
                         style={{
                           '--pa-btn-bg': colors.cyanSoft,
                           '--pa-btn-fg': colors.cyan,
@@ -291,11 +305,18 @@ export function WatcherInsightsPanel({ project }: { project: Project }) {
                           '--pa-btn-border-hover': colors.cyan,
                           '--pa-btn-pad': '2px 7px',
                           '--pa-btn-radius': `${radius.xs}px`,
-                          fontSize: 10, fontFamily: font.body, maxWidth: 260,
+                          fontSize: 10, fontFamily: font.body,
+                          maxWidth: '100%', minWidth: 0, flexShrink: 1,
+                          justifyContent: 'flex-start',
                           overflow: 'hidden', whiteSpace: 'nowrap',
                         } as CSSProperties}
                       >
-                        {c.title}
+                        <span
+                          data-testid="watcher-card-chip-title"
+                          style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                        >
+                          {c.title}
+                        </span>
                       </Button>
                     </Tooltip>
                   ))}

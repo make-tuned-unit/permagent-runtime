@@ -105,6 +105,44 @@ describe('Watcher insights', () => {
     expect(container.querySelectorAll('button')).toHaveLength(0);
   });
 
+  it('truncates a long card title at its right end instead of bleeding past the panel', async () => {
+    // Real titles from the app, 2026-09-18, rendered clipped mid-word at BOTH
+    // ends ("e email template and curate first 8 weeks of events (W"): the
+    // chip had a fixed 260px cap wider than a narrow panel, and `.pa-btn`
+    // centres its content, so the overflow spilled equally left and right.
+    // jsdom cannot measure the clip; this pins the invariants that prevent it.
+    const title = 'Design the welcome email template and curate first 8 weeks of events (Wave 1)';
+    await act(async () =>
+      root.render(
+        <WatcherInsightsPanel
+          project={project([
+            {
+              text: 'Two launch cards have not moved.',
+              created_at: '2026-09-18T09:00:00Z',
+              cards: [{ id: 'card-9', title }],
+            },
+          ])}
+        />,
+      ),
+    );
+    const chip = container.querySelector('[data-testid="watcher-card-chip"]') as HTMLElement;
+    expect(chip, 'the chip must render').toBeTruthy();
+    // Capped at its row, whatever the row's width — never a fixed pixel cap.
+    expect(chip.style.maxWidth).toBe('100%');
+    expect(chip.style.minWidth).toBe('0');
+    // Content starts at the left edge, so any overflow is on the right only.
+    expect(chip.style.justifyContent).toBe('flex-start');
+    // The title is an element that can take an ellipsis, not a bare text node.
+    const label = chip.querySelector('[data-testid="watcher-card-chip-title"]') as HTMLElement;
+    expect(label.textContent).toBe(title);
+    expect(label.style.textOverflow).toBe('ellipsis');
+    expect(label.style.overflow).toBe('hidden');
+    expect(label.style.whiteSpace).toBe('nowrap');
+    expect(label.style.minWidth).toBe('0');
+    // The full title survives for assistive tech even when the eye sees "…".
+    expect(chip.getAttribute('aria-label')).toBe(`Open "${title}" on the board`);
+  });
+
   it('renders nothing at all when there are no insights', async () => {
     await act(async () => root.render(<WatcherInsightsPanel project={project([])} />));
     expect(container.textContent).toBe('');
