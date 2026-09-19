@@ -67,9 +67,12 @@ describe('PTY attach / reattach behaviour is frozen (gate 6)', () => {
   it('keeps terminalReattach.ts byte-identical to the pre-R15 hash', () => {
     // Captured 2026-09-02 before any chrome restyle. Do not touch reattach /
     // minimize-recover logic from a visual lane.
+    // RE-FROZEN 2026-09-19 for a behaviour fix, not a restyle: a tab restored
+    // over a dead PTY now bumps `respawn` (its pane remounts and spawns a
+    // shell) and drops its launch fields. Pinned in terminalReattach.test.ts.
     const src = read('terminalReattach.ts');
     const hash = createHash('sha256').update(src).digest('hex');
-    expect(hash).toBe('95f5e668b243efea5229ecfbe0398a7d8e6ce285c9a3ddc989ea7c3b235addf9');
+    expect(hash).toBe('934da4e8115ea84666c1779be3a9d7316aa870788b6a40c4bb90b8234daea5c2');
   });
 
   it('keeps the Terminal mount/setup effect (attach + fit + listeners) byte-identical', () => {

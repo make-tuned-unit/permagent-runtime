@@ -147,6 +147,50 @@ describe('a tab whose PTY has gone', () => {
     expect(tabs[0].sessionId).toBeNull(); // will spawn
   });
 
+  // QA 2026-09-19, real app after a reinstall: the restored tab stayed blank
+  // with no shell behind it. `Terminal` spawns only on mount, and clearing
+  // `sessionId` under an already-mounted pane changed nothing. The bump in
+  // `respawn` is what the manager keys the pane on, so the pane remounts.
+  it('bumps respawn so the mounted pane is replaced and actually spawns', () => {
+    const [once] = reconcileTabs({
+      tabs: [{ id: 't1', label: 'proj', sessionId: 'pty-dead' }],
+      live: [], listed: true, adopt: false, detachedSessionIds: [], makeTab,
+    });
+    expect(once.respawn).toBe(1);
+    const [twice] = reconcileTabs({
+      tabs: [{ ...once, sessionId: 'pty-dead-again' }],
+      live: [], listed: true, adopt: false, detachedSessionIds: [], makeTab,
+    });
+    expect(twice.respawn).toBe(2);
+  });
+
+  it('comes back as a plain shell: a restart never re-runs the harness it launched', () => {
+    const [tab] = reconcileTabs({
+      tabs: [{
+        id: 't1', label: 'proj', sessionId: 'pty-dead', cwd: '/p',
+        initialCommand: 'permagent run --recipe permagent-coding --interactive',
+        followUpInput: 'fix the build', supervisedSessionId: 's1',
+        growthAction: { projectId: 'p', actionId: 'a' },
+      }],
+      live: [], listed: true, adopt: false, detachedSessionIds: [], makeTab,
+    });
+    expect(tab.cwd).toBe('/p');
+    expect(tab.initialCommand).toBeUndefined();
+    expect(tab.followUpInput).toBeUndefined();
+    expect(tab.supervisedSessionId).toBeUndefined();
+    expect(tab.growthAction).toBeUndefined();
+  });
+
+  it('leaves a live tab exactly as it was, with no respawn', () => {
+    const live = { id: 't1', label: 'proj', sessionId: 'pty-a', initialCommand: 'claude' };
+    const [tab] = reconcileTabs({
+      tabs: [live],
+      live: [{ ...LIVE_CLAUDE, session_id: 'pty-a' }],
+      listed: true, adopt: false, detachedSessionIds: [], makeTab,
+    });
+    expect(tab).toBe(live);
+  });
+
   /**
    * The dangerous case. If the listing itself failed, "nothing is running" is
    * not a fact — and acting on it would clear every id and respawn every shell,

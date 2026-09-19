@@ -151,9 +151,15 @@ export function reconcileTabs(args: ReconcileArgs): TerminalTab[] {
   const aliveIds = new Set(live.filter(s => s.alive).map(s => s.session_id));
   const detached = new Set(detachedSessionIds);
 
-  const kept = tabs.map(tab =>
-    tab.sessionId && !aliveIds.has(tab.sessionId) ? { ...tab, sessionId: null } : tab,
-  );
+  // A dead tab comes back as a plain shell in the same folder: a new `respawn`
+  // remounts its pane (Terminal only spawns on mount), and the launch fields are
+  // dropped so a restart never silently re-runs a harness — that command already
+  // ran once, and re-running a paid agent is the user's call, not the restore's.
+  const kept = tabs.map(tab => {
+    if (!tab.sessionId || aliveIds.has(tab.sessionId)) return tab;
+    const { initialCommand: _cmd, followUpInput: _follow, growthAction: _growth, supervisedSessionId: _sup, ...rest } = tab;
+    return { ...rest, sessionId: null, respawn: (tab.respawn ?? 0) + 1 };
+  });
 
   const claimed = new Set(kept.map(t => t.sessionId).filter((s): s is string => !!s));
   const adopted: TerminalTab[] = [];

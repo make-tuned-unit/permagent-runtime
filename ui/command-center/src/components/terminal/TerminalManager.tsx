@@ -63,6 +63,11 @@ export interface TerminalTab {
   supervisedSessionId?: string;
   followUpInput?: string;
   growthAction?: { projectId: string; actionId: string };
+  /** Bumped by reconciliation when this tab's PTY turned out to be dead. The
+   *  pane is keyed on it, because `Terminal` sets up (spawn or reattach) once
+   *  per mount: clearing `sessionId` under a mounted pane left it blank with
+   *  no shell behind it (QA 2026-09-19, the tab restored after an app restart). */
+  respawn?: number;
 }
 
 /** Only the Permagent interactive harness can accept a cross-provider model
@@ -723,7 +728,7 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
       <div className="flex-1 min-h-0 relative" style={{ backgroundColor: colors.bg }}>
         {tabs.map(tab => (
           <div
-            key={tab.id}
+            key={`${tab.id}:${tab.respawn ?? 0}`}
             className="absolute inset-0"
             style={{ display: tab.id === activeTabId ? 'block' : 'none' }}
           >
