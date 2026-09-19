@@ -19,15 +19,12 @@ import {
   MIC_STALL_MS,
   WAKE_DEAF_GATED_MS,
   WAKE_DEAF_VOICED_EPISODES,
-  VAD_KEEPALIVE_RMS,
-  VAD_ONSET_RMS,
   bufferPeak,
   diagnoseMicInput,
   micFaultMessage,
   micInputLabel,
   micWatchdogStep,
   msSinceMicSignal,
-  vadOnsetLevel,
   wakeHintFor,
   wakeSpotterLooksDeaf,
   type MicInputSample,
@@ -121,7 +118,7 @@ describe('msSinceMicSignal', () => {
 describe('wakeSpotterLooksDeaf', () => {
   const deaf = { gatedForMs: WAKE_DEAF_GATED_MS, voicedEpisodes: WAKE_DEAF_VOICED_EPISODES, spotterHasFired: false };
 
-  it('fails open after repeated ignored speech over enough time — no more "Say Hey Henry" forever', () => {
+  it('flags the spotter after repeated ignored speech over enough time', () => {
     expect(wakeSpotterLooksDeaf(deaf)).toBe(true);
   });
 
@@ -130,25 +127,9 @@ describe('wakeSpotterLooksDeaf', () => {
     expect(wakeSpotterLooksDeaf({ ...deaf, voicedEpisodes: WAKE_DEAF_VOICED_EPISODES - 1 })).toBe(false);
   });
 
-  it('never fails open once the spotter has fired this session — it works', () => {
+  it('never flags a spotter that has fired this session — it works', () => {
     expect(wakeSpotterLooksDeaf({ ...deaf, gatedForMs: 10 * WAKE_DEAF_GATED_MS, voicedEpisodes: 50, spotterHasFired: true }))
       .toBe(false);
-  });
-});
-
-describe('vadOnsetLevel', () => {
-  // The 2026-09-01 forensic mic (Bose QC35 on HFP): DSP-flattened speech
-  // between keepalive and onset. The deaf verdict is counted at keepalive.
-  const FORENSIC_SPEECH_RMS = 0.015;
-
-  it('a normal gate keeps the onset bar that rejects room noise and key clicks', () => {
-    expect(vadOnsetLevel(false)).toBe(VAD_ONSET_RMS);
-    expect(FORENSIC_SPEECH_RMS > vadOnsetLevel(false)).toBe(false);
-  });
-
-  it('after a deaf verdict, the speech that earned it can open a turn — "just talk" is true', () => {
-    expect(vadOnsetLevel(true)).toBe(VAD_KEEPALIVE_RMS);
-    expect(FORENSIC_SPEECH_RMS > vadOnsetLevel(true)).toBe(true);
   });
 });
 

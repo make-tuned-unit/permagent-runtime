@@ -394,7 +394,7 @@ export function micFaultMessage(fault: MicInputFault): string {
   return MIC_FAULT_MESSAGE;
 }
 
-// ── Deaf wake-word spotter (fail-open) ─────────────────────────────────────
+// ── Deaf wake-word spotter (hint only) ─────────────────────────────────────
 //
 // The rest of "stuck on listening": the 2026-09-01 forensics found a Bose HFP
 // mic that DID deliver buffers — low-level, but speech — to a keyword spotter
@@ -404,14 +404,11 @@ export function micFaultMessage(fault: MicInputFault): string {
 // cannot see this (the input is alive); only the pattern can: repeated,
 // sustained, voice-shaped audio and a spotter that has never answered.
 //
-// Once that pattern holds, the gate fails OPEN for the rest of the activation
-// (surviving socket reconnects; ended by deactivate, a wake hit, switching the
-// wake word off, or an input-device change): bare speech opens turns (the same
-// behaviour as hands-free with the wake word switched off, which the user
-// already opted into by arming hands-free), at the level the ignored speech
-// was counted at (vadOnsetLevel), and the orb says so instead of asking for a
-// phrase nobody is hearing. A spotter that has fired even once on the current
-// connection is working, and never fails open.
+// Once that pattern holds, the orb shows WAKE_DEAF_HINT instead of asking for
+// a phrase nobody is hearing (until deactivate, a wake hit, switching the wake
+// word off, or an input-device change). The gate itself stays CLOSED: bare
+// speech never opens a turn behind an armed wake word. A spotter that has
+// fired even once on the current connection is working, and is never flagged.
 
 /** Minimum time armed-and-gated before the spotter can be judged deaf. */
 export const WAKE_DEAF_GATED_MS = 15_000;
@@ -421,8 +418,19 @@ export const WAKE_DEAF_GATED_MS = 15_000;
  *  again, said it a third time" — a single cough or a sentence is not. */
 export const WAKE_DEAF_VOICED_EPISODES = 3;
 
-/** What the orb shows once the gate has failed open. */
-export const WAKE_DEAF_HINT = 'Wake word not being detected — just talk';
+/**
+ * Shown when the wake-word spotter has ignored several voiced episodes.
+ *
+ * It used to read "just talk" because the verdict also OPENED the wake gate.
+ * That was the wrong trade: the verdict cannot tell a deaf spotter from speech
+ * that simply was not addressed to the agent, so fifteen seconds of room
+ * conversation or a TV was enough to disable a working wake word for the
+ * rest of the activation — after which the agent answered everything said
+ * nearby. The gate now stays closed and this says what is true and what the
+ * user can actually do; there is no tap-to-talk on the orb (its click ends
+ * the conversation), so it does not offer one.
+ */
+export const WAKE_DEAF_HINT = 'Not hearing the wake word — check the mic, or turn the wake word off in Settings';
 
 /** Per-buffer RMS a sustained, voice-shaped streak must exceed to open a turn
  *  from 'ready'. Set against keyboard clicks and room noise on a normal mic. */
@@ -431,23 +439,7 @@ export const VAD_ONSET_RMS = 0.025;
  *  deaf-spotter episodes are counted at. */
 export const VAD_KEEPALIVE_RMS = 0.010;
 
-/**
- * Pure: the level bare speech must reach to open a turn.
- *
- * Normally VAD_ONSET_RMS. Once the spotter has been judged deaf, the evidence
- * for that verdict was speech counted at VAD_KEEPALIVE_RMS — the 2026-09-01
- * forensic mic (Bose QC35 on HFP) delivers DSP-flattened speech sitting between
- * the two. Failing the gate open but still demanding the onset level left that
- * user exactly as stuck, now behind an orb promising "just talk". So a deaf
- * verdict lowers onset to the level the ignored speech actually reached. The
- * spectral gate and the multi-buffer streak still apply, so a lone key click
- * still cannot open a turn.
- */
-export function vadOnsetLevel(spotterDeaf: boolean): number {
-  return spotterDeaf ? VAD_KEEPALIVE_RMS : VAD_ONSET_RMS;
-}
-
-/** Pure: has the wake-word spotter shown itself deaf enough to fail open? */
+/** Pure: has the wake-word spotter ignored enough speech to show the deaf hint? */
 export function wakeSpotterLooksDeaf(opts: {
   gatedForMs: number;
   voicedEpisodes: number;
@@ -480,7 +472,7 @@ export const WAKE_REARM_MS = 30_000;
 
 // ── Engine verdicts: relayed to mirror windows, kept for inspection ─────────
 //
-// The watchdog and the deaf-spotter fail-open decide things the user must SEE,
+// The watchdog and the deaf-spotter hint decide things the user must SEE,
 // and the 2026-09-18 report ("isn't responding and just gets stuck on
 // listening") reached the user through two gaps after both fixes shipped:
 //
@@ -539,7 +531,7 @@ export interface VoiceVerdict {
   error: string | null;
   /** Armed wake gate: what to say to open a turn (e.g. `Say "Hey Henry"`). */
   wakeHint: string | null;
-  /** The gate failed open because the spotter ignored repeated speech. */
+  /** The spotter ignored repeated speech; the orb shows WAKE_DEAF_HINT (the gate stays closed). */
   spotterDeaf: boolean;
 }
 
@@ -551,7 +543,7 @@ export type VoiceVerdictEventName =
   | 'mic_rebuild'
   | 'mic_fault_surfaced'
   | 'mic_fault_cleared'
-  | 'wake_gate_failed_open';
+  | 'wake_spotter_looks_deaf';
 
 export interface VoiceVerdictEvent {
   /** ISO timestamp, so the trail lines up against daemon.err by eye. */
@@ -762,8 +754,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
   // ("engaged") = a conversation is flowing and bare VAD onset opens turns.
   const [wakeGated, setWakeGated] = useState(false);
   const wakeGatedRef = useRef(false);
-  // Deaf-spotter fail-open (see wakeSpotterLooksDeaf). `wakeDeaf` = the gate
-  // has failed open because the spotter ignored repeated speech.
+  // Deaf-spotter hint (see wakeSpotterLooksDeaf). `wakeDeaf` = the gate
+  // flags that the spotter ignored repeated speech; the gate stays closed.
   const [wakeDeaf, setWakeDeaf] = useState(false);
   const wakeDeafRef = useRef(false);
   // The spotter has answered at least once on this handler — it works.
@@ -963,7 +955,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
               // a barge-in reconnect): mid-conversation the user expects to
               // keep talking without re-invoking the wake phrase.
               const engaged = Date.now() - lastConvActivityRef.current < WAKE_REARM_MS;
-              const gate = !engaged && !wakeDeafRef.current;
+              // A deaf verdict is a hint, never a reason to disarm the gate.
+              const gate = !engaged;
               wakeGatedRef.current = gate;
               setWakeGated(gate);
             } else if (msg.reason === 'downloading') {
@@ -1811,8 +1804,6 @@ export function useVoice(options: UseVoiceOptions = {}) {
       } else if (
         wakeActiveRef.current &&
         !wakeGatedRef.current &&
-        // A spotter already shown deaf would just trap the user again.
-        !wakeDeafRef.current &&
         now - lastConvActivityRef.current > WAKE_REARM_MS
       ) {
         wakeGatedRef.current = true;
@@ -1845,21 +1836,20 @@ export function useVoice(options: UseVoiceOptions = {}) {
             voicedEpisodes: wakeVoicedEpisodesRef.current,
             spotterHasFired: wakeSpotterFiredRef.current,
           })) {
-            console.warn(
-              `[useVoice] wake spotter silent through ${wakeVoicedEpisodesRef.current} voiced ` +
-              'episodes — failing the wake gate open; speech now opens turns',
-            );
-            recordVoiceVerdictEvent('wake_gate_failed_open', `${wakeVoicedEpisodesRef.current} voiced episodes ignored`);
-            wakeDeafRef.current = true;
-            setWakeDeaf(true);
-            wakeGatedRef.current = false;
-            setWakeGated(false);
-            // Treat the current utterance as the start of the conversation so
-            // the idle re-arm clock starts fresh too.
-            lastConvActivityRef.current = now;
-          } else {
-            return;
+            // Say so — but do NOT open the gate. See WAKE_DEAF_HINT for why
+            // failing open was withdrawn: ambient, unaddressed speech trips
+            // this verdict just as a deaf spotter does.
+            if (!wakeDeafRef.current) {
+              console.warn(
+                `[useVoice] wake spotter silent through ${wakeVoicedEpisodesRef.current} voiced ` +
+                'episodes — showing the hint; the wake gate stays closed',
+              );
+              recordVoiceVerdictEvent('wake_spotter_looks_deaf', `${wakeVoicedEpisodesRef.current} voiced episodes ignored`);
+              wakeDeafRef.current = true;
+              setWakeDeaf(true);
+            }
           }
+          return;
         }
         wakeGatedSinceRef.current = 0;
         wakeVoicedEpisodesRef.current = 0;
@@ -1868,10 +1858,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
         // Sustained-onset gate: one loud buffer (a key click) is ignored;
         // real speech clears the streak in ~250ms — imperceptible latency,
         // and the recording still captures the utterance from its 2nd buffer.
-        // A deaf spotter's verdict lowers the bar to the level its ignored
-        // episodes were counted at (see vadOnsetLevel) — otherwise the low-
-        // level HFP mic that caused the verdict still could not open a turn.
-        if (rms > vadOnsetLevel(wakeDeafRef.current) && looksLikeVoice()) {
+        if (rms > VAD_ONSET_RMS && looksLikeVoice()) {
           vadOnsetStreakRef.current += 1;
           if (vadOnsetStreakRef.current >= VAD_ONSET_STREAK) {
             vadOnsetStreakRef.current = 0;

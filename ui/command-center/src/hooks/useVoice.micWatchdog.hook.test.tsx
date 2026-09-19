@@ -323,7 +323,15 @@ describe('useVoice — mic-input watchdog', () => {
     expect(hook.current!.error).toBeNull();
   });
 
-  it('a live mic behind a wake gate whose spotter ignores repeated speech fails open', async () => {
+  // The deaf verdict is a HINT, never a reason to open the wake gate.
+  //
+  // It used to fail the gate open, and the reviewer's blocking objection was
+  // right: the verdict cannot tell a deaf spotter from speech nobody addressed
+  // to the agent. Fifteen seconds of room conversation or a TV was enough to
+  // disable a working wake word for the rest of the activation, after which
+  // the agent answered everything said nearby. These tests pin the withdrawal.
+
+  it('a spotter that ignores repeated speech earns a hint, and the gate stays closed', async () => {
     const ws = await armHandsFree();
     act(() => ws.frame({ type: 'wake_status', active: true, phrase: 'Hey Henry' }));
     await flush();
@@ -335,27 +343,25 @@ describe('useVoice — mic-input watchdog', () => {
       for (let b = 0; b < 4; b++) act(() => pump(speakAt.has(sec) ? VOICE : ROOM));
       await advance(1_000);
     }
-    // Enough episodes, not yet enough time: still gated, no turn opened.
-    expect(hook.current!.wakeWord.gated).toBe(true);
+    // Enough episodes, not yet enough time: no verdict yet.
     expect(hook.current!.wakeWord.spotterDeaf).toBe(false);
-    expect(hook.current!.state).toBe('ready');
 
     await advance(WAKE_DEAF_GATED_MS - 14_000);
     act(() => pump());
     await flush();
-    expect(hook.current!.wakeWord.gated).toBe(false);
     expect(hook.current!.wakeWord.spotterDeaf).toBe(true);
+    expect(hook.current!.wakeWord.gated).toBe(true);
     expect(hook.current!.state).toBe('ready');
 
-    // Bare speech now opens a turn.
+    // Bare speech still does NOT open a turn — the wake word is still the way in.
     act(() => { pump(VOICE); pump(VOICE); });
     await flush();
-    expect(hook.current!.state).toBe('recording');
+    expect(hook.current!.state).toBe('ready');
   });
 
   /** Arm the wake gate, say it three times at `level` with no spotter answer,
-   *  and wait out WAKE_DEAF_GATED_MS until the gate fails open. */
-  async function failOpenAt(ws: MockWebSocket, level: number) {
+   *  and wait out WAKE_DEAF_GATED_MS until the spotter is judged deaf. */
+  async function reachDeafVerdict(ws: MockWebSocket, level: number) {
     act(() => ws.frame({ type: 'wake_status', active: true, phrase: 'Hey Henry' }));
     await flush();
     expect(hook.current!.wakeWord.gated).toBe(true);
@@ -365,36 +371,44 @@ describe('useVoice — mic-input watchdog', () => {
       for (let b = 0; b < 4; b++) act(() => pump(speakAt.has(sec) ? level : ROOM));
       await advance(1_000);
     }
-    expect(hook.current!.wakeWord.gated).toBe(false);
     expect(hook.current!.wakeWord.spotterDeaf).toBe(true);
+    expect(hook.current!.wakeWord.gated).toBe(true);
     expect(hook.current!.state).toBe('ready');
   }
 
-  it('at the forensic HFP level (between keepalive and onset), "just talk" is true: speech opens a turn', async () => {
-    // Before: episodes were counted at keepalive, so the gate failed open and
-    // the orb said "just talk" — but onset still demanded 0.025, so the very
-    // speech that earned the verdict could never open a turn.
+  it('unaddressed speech on a working spotter can never disable the wake gate', async () => {
+    // The reviewer's missing test. A room conversation at ordinary levels, for
+    // longer than the verdict window, with no wake word said: the verdict may
+    // fire, but the gate must stay armed and no turn may open.
     const ws = await armHandsFree();
-    await failOpenAt(ws, HFP_VOICE);
-    act(() => { pump(HFP_VOICE); pump(HFP_VOICE); });
-    await flush();
-    expect(hook.current!.state).toBe('recording');
+    await reachDeafVerdict(ws, VOICE);
+    for (let sec = 0; sec < 30; sec++) {
+      for (let b = 0; b < 4; b++) act(() => pump(sec % 2 === 0 ? VOICE : ROOM));
+      await advance(1_000);
+    }
+    expect(hook.current!.wakeWord.gated).toBe(true);
+    expect(hook.current!.state).toBe('ready');
   });
 
-  it('room tone still opens no turn after the verdict — the lowered bar is not "any sound"', async () => {
+  it('at the HFP level the verdict is reached, but speech still needs the wake word', async () => {
     const ws = await armHandsFree();
-    await failOpenAt(ws, HFP_VOICE);
+    await reachDeafVerdict(ws, HFP_VOICE);
+    act(() => { pump(HFP_VOICE); pump(HFP_VOICE); });
+    await flush();
+    expect(hook.current!.state).toBe('ready');
+  });
+
+  it('room tone opens no turn after the verdict', async () => {
+    const ws = await armHandsFree();
+    await reachDeafVerdict(ws, HFP_VOICE);
     for (let i = 0; i < 20; i++) act(() => pump(ROOM));
     await flush();
     expect(hook.current!.state).toBe('ready');
   });
 
-  it('a reconnect (fresh wake_status) after the idle window does not re-trap a deaf verdict behind the gate', async () => {
-    // The daemon sends wake_status on every socket (re)connect, and a
-    // barge-in tears the socket down. Resetting the verdict there cost the
-    // user another 15s and three ignored attempts after every reconnect.
+  it('a reconnect keeps the hint and re-arms the gate, rather than leaving it open', async () => {
     const ws = await armHandsFree();
-    await failOpenAt(ws, HFP_VOICE);
+    await reachDeafVerdict(ws, HFP_VOICE);
     const idleSecs = Math.ceil(WAKE_REARM_MS / 1_000) + 5;
     for (let sec = 0; sec < idleSecs; sec++) {
       for (let b = 0; b < 4; b++) act(() => pump(ROOM));
@@ -403,15 +417,15 @@ describe('useVoice — mic-input watchdog', () => {
     act(() => ws.frame({ type: 'wake_status', active: true, phrase: 'Hey Henry' }));
     await flush();
     expect(hook.current!.wakeWord.spotterDeaf).toBe(true);
-    expect(hook.current!.wakeWord.gated).toBe(false);
+    expect(hook.current!.wakeWord.gated).toBe(true);
     act(() => { pump(HFP_VOICE); pump(HFP_VOICE); });
     await flush();
-    expect(hook.current!.state).toBe('recording');
+    expect(hook.current!.state).toBe('ready');
   });
 
-  it('a new input device clears the deaf verdict — the new mic gets a working wake gate again', async () => {
+  it('a new input device clears the deaf verdict — the new mic gets a fresh chance', async () => {
     const ws = await armHandsFree();
-    await failOpenAt(ws, HFP_VOICE);
+    await reachDeafVerdict(ws, HFP_VOICE);
     act(() => deviceListeners.forEach(fn => fn()));
     await flush();
     expect(hook.current!.wakeWord.spotterDeaf).toBe(false);
@@ -419,7 +433,7 @@ describe('useVoice — mic-input watchdog', () => {
 
   it('switching the wake word off clears the deaf hint', async () => {
     const ws = await armHandsFree();
-    await failOpenAt(ws, HFP_VOICE);
+    await reachDeafVerdict(ws, HFP_VOICE);
     act(() => hook.current!.wakeWord.setEnabled(false));
     await flush();
     expect(hook.current!.wakeWord.spotterDeaf).toBe(false);
@@ -459,17 +473,17 @@ describe('useVoice — mic-input watchdog', () => {
   describe('relays its verdicts for the mirror orb and for QA', () => {
     beforeEach(() => localStorage.clear());
 
-    it('relays the wake hint while gated, then the deaf verdict once it fails open', async () => {
+    it('relays the wake hint while gated, then the deaf verdict with the gate still armed', async () => {
       const ws = await armHandsFree();
       act(() => ws.frame({ type: 'wake_status', active: true, phrase: 'Hey Henry' }));
       await flush();
       expect(readVoiceVerdict()).toEqual({ error: null, wakeHint: 'Say "Hey Henry"', spotterDeaf: false });
 
-      await failOpenAt(ws, HFP_VOICE);
-      expect(readVoiceVerdict()).toEqual({ error: null, wakeHint: null, spotterDeaf: true });
+      await reachDeafVerdict(ws, HFP_VOICE);
+      expect(readVoiceVerdict()).toEqual({ error: null, wakeHint: 'Say "Hey Henry"', spotterDeaf: true });
       const log = readVoiceVerdictLog();
-      expect(log.map(e => e.event)).toContain('wake_gate_failed_open');
-      expect(log.find(e => e.event === 'wake_gate_failed_open')!.detail).toMatch(/voiced episodes ignored/);
+      expect(log.map(e => e.event)).toContain('wake_spotter_looks_deaf');
+      expect(log.find(e => e.event === 'wake_spotter_looks_deaf')!.detail).toMatch(/voiced episodes ignored/);
     });
 
     it('relays the watchdog sentence, logs rebuild → surfaced → cleared, and clears on unmount', async () => {

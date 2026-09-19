@@ -143,8 +143,10 @@ function palette(stops: RGB[], g: number): RGB {
  *
  * `spotterDeaf` is the other half of that report: a live mic whose wake-word
  * spotter never fired, so the orb asked for "Hey Henry" forever. useVoice now
- * fails the gate open after repeated ignored speech; the resting word must then
- * say that bare speech works, or the user keeps repeating the phrase.
+ * flags that after repeated ignored speech, but keeps the gate CLOSED (it cannot
+ * tell a deaf spotter from room talk nobody addressed to the agent). So the
+ * deaf hint replaces the plain `Say "Hey Henry"` in the resting state, telling
+ * the user what to check, and never claims bare speech works.
  */
 export function orbLabel({
   state,
@@ -166,9 +168,10 @@ export function orbLabel({
   if (thinking) return 'Thinking…';
   if (state === 'error') return errorText || 'Voice error — click to exit';
   if (state === 'idle') return 'Reconnecting…';
-  if (wakeHint) return wakeHint;
   // Only in the resting state: once a turn is open, "Listening" is the truth.
+  // It outranks the wake hint because the gate is still armed when it fires.
   if (spotterDeaf && state === 'ready') return WAKE_DEAF_HINT;
+  if (wakeHint) return wakeHint;
   return 'Listening';
 }
 

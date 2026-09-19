@@ -9,8 +9,9 @@
  * checks the takeover actually SAYS that (read from the engine VoiceHost
  * publishes to the store) instead of a generic "Voice error", and that the
  * fault outranks the wake hint. And the other half of the report: once the
- * wake gate fails open because the spotter ignored repeated speech, the orb
- * says bare speech works instead of a plain "Listening".
+ * spotter has ignored repeated speech, the orb says the wake word is not being
+ * heard and what to check. The gate stays armed, so it never claims bare
+ * speech works.
  *
  * jsdom has no canvas: the sphere never draws here. This proves the label
  * text and its wiring to the store, not the look.
@@ -46,14 +47,15 @@ describe('orbLabel', () => {
 });
 
 describe('orbLabel — deaf wake spotter', () => {
-  it('tells the user to just talk once the gate has failed open', () => {
+  it('says the wake word is not being heard, and never that bare speech works', () => {
     expect(orbLabel({ state: 'ready', spotterDeaf: true })).toBe(WAKE_DEAF_HINT);
+    expect(WAKE_DEAF_HINT).not.toMatch(/just talk/i);
   });
 
-  it('only in the resting state, and never over a fault or a live gate hint', () => {
+  it('replaces the still-armed gate hint, but only in the resting state and never over a fault', () => {
+    expect(orbLabel({ state: 'ready', spotterDeaf: true, wakeHint: 'Say "Hey Henry"' })).toBe(WAKE_DEAF_HINT);
     expect(orbLabel({ state: 'recording', spotterDeaf: true })).toBe('Listening');
     expect(orbLabel({ state: 'error', spotterDeaf: true, errorText: MIC_FAULT_MESSAGE })).toBe(MIC_FAULT_MESSAGE);
-    expect(orbLabel({ state: 'ready', spotterDeaf: true, wakeHint: 'Say "Hey Henry"' })).toBe('Say "Hey Henry"');
   });
 });
 
@@ -134,17 +136,17 @@ describe('VoiceOrb — fault label from the engine', () => {
         wakeWord,
       },
     });
-    // VoiceHost passes no wakeHint once the gate is open.
+    // The gate is still armed, so VoiceHost still passes the wake hint.
     act(() => root.render(
-      <VoiceOrb state="ready" getPlaybackAnalyser={noAnalyser} getMicAnalyser={noAnalyser} onExit={() => {}} />,
+      <VoiceOrb state="ready" wakeHint='Say "Hey Henry"' getPlaybackAnalyser={noAnalyser} getMicAnalyser={noAnalyser} onExit={() => {}} />,
     ));
-    expect(container.textContent).toContain('Wake word not being detected — just talk');
+    expect(container.textContent).toContain(WAKE_DEAF_HINT);
   });
   // The popped-out chat window renders a MIRROR orb (ChatApp's
   // ChatWindowVoiceOrb passes state, mirrorLevel, onExit and teachWord — no
   // wake hint, no error). There is no engine in that window's store, so before
   // the relay it said "Voice error — click to exit" over a dead mic, and plain
-  // "Listening" both while wake-gated and over a failed-open gate. These render
+  // "Listening" both while wake-gated and over a spotter that looks deaf. These render
   // the orb exactly as that host does and write the relay with the engine's own
   // publisher. They prove the mirror reads the relay and ignores its empty
   // store; the hook tests prove useVoice writes it. Neither proves the two
@@ -187,19 +189,19 @@ describe('VoiceOrb — fault label from the engine', () => {
       expect(label()).toBe('Not hearing the microphone — check the input device');
     });
 
-    it('shows "just talk" once the gate failed open', () => {
-      publishVoiceVerdict({ error: null, wakeHint: null, spotterDeaf: true });
+    it('shows the deaf hint over the still-armed gate hint', () => {
+      publishVoiceVerdict({ error: null, wakeHint: 'Say "Hey Henry"', spotterDeaf: true });
       renderMirror('ready');
-      expect(label()).toBe('Wake word not being detected — just talk');
+      expect(label()).toBe(WAKE_DEAF_HINT);
     });
 
     it('follows the engine as the verdict changes (polled, like the live feed)', () => {
       publishVoiceVerdict({ error: null, wakeHint: 'Say "Hey Henry"', spotterDeaf: false });
       renderMirror('ready');
       expect(label()).toBe('Say "Hey Henry"');
-      publishVoiceVerdict({ error: null, wakeHint: null, spotterDeaf: true });
+      publishVoiceVerdict({ error: null, wakeHint: 'Say "Hey Henry"', spotterDeaf: true });
       act(() => { vi.advanceTimersByTime(250); });
-      expect(label()).toBe('Wake word not being detected — just talk');
+      expect(label()).toBe(WAKE_DEAF_HINT);
     });
 
     it('the main-window orb ignores the relay and reads its own engine', () => {
