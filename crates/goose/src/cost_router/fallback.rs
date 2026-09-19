@@ -32,6 +32,15 @@
 //! Transient pre-commit failures may silent-switch via the same chain
 //! ([`may_silent_precommit_failover`]).
 //!
+//! ## Only an endpoint that is up
+//!
+//! The agent's mid-turn switch ([`permanent_failure_fallback_available`])
+//! probes the local endpoints the list names — a TCP connect to the split, a
+//! GET of Ollama's `/api/tags` — and never picks one that is down. A down LOCAL
+//! candidate is replaced, at its own rank, by the best installed Ollama model
+//! the knowledge base prices at $0 ([`choose_fallback`]). The selection is a
+//! pure function over that snapshot; the probe is the only I/O.
+//!
 //! `None` means "no fallback is configured" — which the reply path must then say
 //! plainly rather than retrying into the same wall.
 
@@ -78,68 +87,478 @@ pub fn may_silent_precommit_failover(committed: bool, err: &ProviderError) -> bo
     if committed || err.is_permanent() {
         return false;
     }
-    matches!(
-        err,
-        ProviderError::NetworkError(_)
-            | ProviderError::ServerError(_)
-            | ProviderError::RateLimitExceeded { .. }
-    )
+    // A dropped body is transient whatever variant carried it. The agent's
+    // stream-decode arm matches `is_stream_decode()`, which also accepts a
+    // `RequestFailed("… error decoding response body")` (session 20260827_1
+    // was typed that way), but this gate used to accept only the variants
+    // below — so that arm's failover was dead code for exactly the error it
+    // was written for, and the user got "resend" instead of a local model.
+    err.is_stream_decode()
+        || matches!(
+            err,
+            ProviderError::NetworkError(_)
+                | ProviderError::ServerError(_)
+                | ProviderError::RateLimitExceeded { .. }
+        )
 }
 
-/// Pure: resolve the fallback for a provider that was permanently rejected.
-///
-/// `read` is a key reader so this is unit-testable without the process-global
-/// config. `failed_provider` is compared case-insensitively; a candidate on the
-/// same provider is skipped (same account, same empty balance).
-pub fn resolve_permanent_failure_fallback(
-    failed_provider: &str,
+/// Where a fallback candidate came from — kept so the one precedence rule that
+/// depends on it (an explicit override may name the failed provider) survives
+/// the move from "first match" to "first match that is actually up".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateSource {
+    /// `PERMAGENT_FALLBACK_PROVIDER` + `PERMAGENT_FALLBACK_MODEL`.
+    ExplicitOverride,
+    /// One entry of `PERMAGENT_FALLBACKS`.
+    OrderedList,
+    /// A configured role→model mapping, by role label.
+    Role(&'static str),
+}
+
+/// One configured place a failed turn could move to, in precedence order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FallbackCandidate {
+    pub target: RoleModel,
+    pub source: CandidateSource,
+}
+
+/// Pure: every configured fallback, in the strict precedence the module note
+/// describes, deduplicated by provider+model (case-insensitive). Nothing is
+/// filtered for the failed provider here — [`choose_fallback`] owns that rule,
+/// because a DOWN local candidate on the failed provider is still a statement
+/// that the user wanted a local model at that rank.
+pub fn permanent_failure_candidates(
     read: impl Fn(&str) -> Option<String>,
-) -> Option<RoleModel> {
+) -> Vec<FallbackCandidate> {
     let non_empty = |k: &str| {
         read(k)
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     };
-    let differs = |p: &str| !p.eq_ignore_ascii_case(failed_provider.trim());
+    let mut out: Vec<FallbackCandidate> = Vec::new();
+    let mut push = |target: RoleModel, source: CandidateSource| {
+        let dup = out.iter().any(|c| {
+            c.target.provider.eq_ignore_ascii_case(&target.provider)
+                && c.target.model.eq_ignore_ascii_case(&target.model)
+        });
+        if !dup {
+            out.push(FallbackCandidate { target, source });
+        }
+    };
 
-    // 1. Explicit override wins, even if it names the failed provider — the
-    //    operator said so, and a same-provider override is a deliberate choice
-    //    (e.g. a different key on a different account).
     if let (Some(provider), Some(model)) = (
         non_empty(KEY_FALLBACK_PROVIDER),
         non_empty(KEY_FALLBACK_MODEL),
     ) {
-        return Some(RoleModel { provider, model });
+        push(
+            RoleModel { provider, model },
+            CandidateSource::ExplicitOverride,
+        );
     }
-
-    // 1b. Ordered list — first entry whose provider is genuinely different.
     if let Some(raw) = non_empty(KEY_FALLBACKS) {
         for rm in parse_fallback_list(&raw) {
-            if differs(&rm.provider) {
-                return Some(rm);
+            push(rm, CandidateSource::OrderedList);
+        }
+    }
+    for role in WorkflowRole::all() {
+        if let (Some(provider), Some(model)) =
+            (non_empty(&provider_key(role)), non_empty(&model_key(role)))
+        {
+            push(
+                RoleModel { provider, model },
+                CandidateSource::Role(role.as_str()),
+            );
+        }
+    }
+    out
+}
+
+/// Whether one endpoint answered the cheap probe taken when a fallback is
+/// being chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    Up,
+    Down,
+    /// Not probed (a cloud provider, or a local runtime this module has no
+    /// probe for). Treated exactly as before probing existed: eligible.
+    Unknown,
+}
+
+/// The local provider id of the two-machine Qwen3.8 split. Nightly-only by
+/// design (launchd 01:50–06:10), so for most of the day its port is closed.
+pub const SPLIT_PROVIDER: &str = "qwen38_split";
+/// The local Ollama provider id (`providers/ollama.rs`). NOT `ollama_cloud`,
+/// which is a metered hosted API and never a stand-in for a local model.
+pub const OLLAMA_PROVIDER: &str = "ollama";
+
+/// A snapshot of which local endpoints were up at the moment of the switch.
+/// Pure data, so the selection over it is unit-testable without sockets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalAvailability {
+    /// Whether the local Ollama daemon answered `/api/tags`.
+    pub ollama: Reach,
+    /// The model ids Ollama reported, AS REPORTED (`qwen2.5:7b`,
+    /// `minicpm5-2b-q8:latest`). Empty unless `ollama` is [`Reach::Up`].
+    pub ollama_models: Vec<String>,
+    /// Whether the split's port accepted a TCP connection.
+    pub split: Reach,
+}
+
+impl LocalAvailability {
+    /// Nothing probed — selection behaves exactly like the pre-probe resolver.
+    pub fn unprobed() -> Self {
+        Self {
+            ollama: Reach::Unknown,
+            ollama_models: Vec::new(),
+            split: Reach::Unknown,
+        }
+    }
+
+    /// Whether Ollama reported `model`. An untagged id is Ollama's own
+    /// shorthand for `:latest`, so `qwen3` matches a reported `qwen3:latest`.
+    fn ollama_has(&self, model: &str) -> bool {
+        let model = model.trim();
+        self.ollama_models.iter().any(|m| {
+            m.eq_ignore_ascii_case(model)
+                || (!model.contains(':') && m.eq_ignore_ascii_case(&format!("{model}:latest")))
+        })
+    }
+
+    /// How reachable one candidate is. A model Ollama does not have is as
+    /// unusable as a daemon that is down: the call would 404 "model not found".
+    pub fn reach_of(&self, target: &RoleModel) -> Reach {
+        if target.provider.eq_ignore_ascii_case(SPLIT_PROVIDER) {
+            return self.split;
+        }
+        if target.provider.eq_ignore_ascii_case(OLLAMA_PROVIDER) {
+            return match self.ollama {
+                Reach::Up if self.ollama_has(&target.model) => Reach::Up,
+                Reach::Up => Reach::Down,
+                other => other,
+            };
+        }
+        Reach::Unknown
+    }
+}
+
+/// Pure: the installed Ollama model best fit to stand in for a local candidate
+/// whose endpoint is down, or `None` when Ollama is not up or has nothing the
+/// knowledge base vouches for as free and local.
+///
+/// Only models [`super::reservation::is_free_local_pair`] accepts are eligible,
+/// so the stand-in can never be refused by the spend gate as "unknown budget"
+/// — the failure that killed the turn after the 2026-09-18 failover. Ranked by
+/// the knowledge base's orchestration strength (the fallback has to run the
+/// agent loop, tools included), then edit reliability, then model id, so the
+/// same install always yields the same answer.
+pub fn best_installed_ollama_model(avail: &LocalAvailability) -> Option<RoleModel> {
+    if avail.ollama != Reach::Up {
+        return None;
+    }
+    avail
+        .ollama_models
+        .iter()
+        .filter(|m| super::reservation::is_free_local_pair(OLLAMA_PROVIDER, m))
+        .filter_map(|m| super::knowledge::lookup(OLLAMA_PROVIDER, m).map(|row| (m, row)))
+        .min_by(|(am, a), (bm, b)| {
+            b.orchestration_strength
+                .total_cmp(&a.orchestration_strength)
+                .then_with(|| {
+                    b.edit_format_reliability
+                        .total_cmp(&a.edit_format_reliability)
+                })
+                .then_with(|| am.cmp(bm))
+        })
+        .map(|(m, _)| RoleModel {
+            provider: OLLAMA_PROVIDER.to_string(),
+            model: m.clone(),
+        })
+}
+
+/// The fallback that was chosen, and why — enough for the routing log line to
+/// explain after the fact which configured model was passed over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FallbackChoice {
+    /// The provider+model the session moves to.
+    pub target: RoleModel,
+    /// The configured local candidate this stands in for, when that
+    /// candidate's endpoint was down (e.g. the nightly split at noon).
+    pub replaced: Option<RoleModel>,
+    /// Configured candidates skipped because their endpoint was down and no
+    /// local stand-in was available.
+    pub skipped_down: Vec<RoleModel>,
+}
+
+/// Pure: pick the first configured fallback that can actually serve the turn.
+///
+/// Walks `candidates` in precedence order:
+///
+/// - A candidate whose endpoint is DOWN is never chosen. If it was a local
+///   candidate (the configured rank asked for a local model), the best
+///   installed Ollama model stands in AT THAT RANK — before any later cloud
+///   entry. 2026-09-18: every permanent failure fell back to
+///   `qwen38_split`/`qwen3.8-27b`, whose port is closed outside 01:50–06:10
+///   (and the split refused to start every night that week for want of
+///   9.5 GB free), while Ollama sat up on :11434 with four models pulled. The
+///   user was told "Could not connect to 127.0.0.1:8081" instead of getting
+///   the local model they had asked for.
+/// - Otherwise the old rule: the explicit override is taken as written; any
+///   other candidate on the failed provider is skipped (same account, same
+///   wall); the first remaining candidate wins.
+/// - A LOCAL candidate skipped for being on the failed provider (the split
+///   failed while up) is also replaced by an installed Ollama model at its
+///   rank, so a split failure never jumps straight to a metered cloud model.
+///
+/// Deterministic for a given snapshot: no clocks, no randomness.
+pub fn choose_fallback(
+    failed_provider: &str,
+    candidates: &[FallbackCandidate],
+    avail: &LocalAvailability,
+) -> Option<FallbackChoice> {
+    let failed = failed_provider.trim();
+    let differs = |p: &str| !p.eq_ignore_ascii_case(failed);
+    let mut skipped_down: Vec<RoleModel> = Vec::new();
+
+    for c in candidates {
+        if avail.reach_of(&c.target) == Reach::Down {
+            if let Some(stand_in) =
+                best_installed_ollama_model(avail).filter(|s| differs(&s.provider))
+            {
+                return Some(FallbackChoice {
+                    target: stand_in,
+                    replaced: Some(c.target.clone()),
+                    skipped_down,
+                });
+            }
+            skipped_down.push(c.target.clone());
+            continue;
+        }
+        if c.source == CandidateSource::ExplicitOverride || differs(&c.target.provider) {
+            return Some(FallbackChoice {
+                target: c.target.clone(),
+                replaced: None,
+                skipped_down,
+            });
+        }
+        // A LOCAL candidate skipped only because it is on the failed provider
+        // (the split failed while its port was up — a 5xx or a dropped stream
+        // inside the nightly window) still asked for a local model at this
+        // rank. Without this, the next candidate — the metered zai/glm-5.2 —
+        // won even with Ollama up and four models pulled.
+        if is_local_provider(&c.target.provider) {
+            if let Some(stand_in) =
+                best_installed_ollama_model(avail).filter(|s| differs(&s.provider))
+            {
+                return Some(FallbackChoice {
+                    target: stand_in,
+                    replaced: Some(c.target.clone()),
+                    skipped_down,
+                });
             }
         }
     }
-
-    // 2. First configured role whose provider is genuinely different.
-    for role in WorkflowRole::all() {
-        let (Some(provider), Some(model)) =
-            (non_empty(&provider_key(role)), non_empty(&model_key(role)))
-        else {
-            continue;
-        };
-        if differs(&provider) {
-            return Some(RoleModel { provider, model });
-        }
-    }
-
     None
 }
 
-/// Config-backed [`resolve_permanent_failure_fallback`].
+/// Whether `provider` is one of the local runtimes this module knows how to
+/// probe (and so a rank at which a local stand-in honours the user's intent).
+fn is_local_provider(provider: &str) -> bool {
+    provider.eq_ignore_ascii_case(SPLIT_PROVIDER) || provider.eq_ignore_ascii_case(OLLAMA_PROVIDER)
+}
+
+/// Pure: resolve the fallback for a provider that was permanently rejected,
+/// WITHOUT probing any endpoint (every candidate is [`Reach::Unknown`]).
+///
+/// `read` is a key reader so this is unit-testable without the process-global
+/// config. `failed_provider` is compared case-insensitively; a candidate on the
+/// same provider is skipped (same account, same empty balance). The explicit
+/// override wins even if it names the failed provider — the operator said so,
+/// and a same-provider override is a deliberate choice (e.g. a different key on
+/// a different account).
+pub fn resolve_permanent_failure_fallback(
+    failed_provider: &str,
+    read: impl Fn(&str) -> Option<String>,
+) -> Option<RoleModel> {
+    choose_fallback(
+        failed_provider,
+        &permanent_failure_candidates(read),
+        &LocalAvailability::unprobed(),
+    )
+    .map(|c| c.target)
+}
+
+/// Config-backed [`resolve_permanent_failure_fallback`] (no probing). Kept for
+/// sync callers; the agent's mid-turn switch uses
+/// [`permanent_failure_fallback_available`].
 pub fn permanent_failure_fallback(failed_provider: &str) -> Option<RoleModel> {
     let cfg = crate::config::Config::global();
     resolve_permanent_failure_fallback(failed_provider, |k| cfg.get_param::<String>(k).ok())
+}
+
+/// How long the Ollama `/api/tags` probe may take. A daemon that is up answers
+/// in milliseconds; this only bounds how long a dead one delays the switch.
+const OLLAMA_FALLBACK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+/// How long the split's TCP connect may take. It is on loopback: a closed port
+/// is refused immediately, so this only bounds a wedged listener.
+const SPLIT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(700);
+/// The split's default endpoint — the same default
+/// `providers/declarative/qwen38_split.json` gives `QWEN38_SPLIT_HOST`.
+const SPLIT_DEFAULT_HOST: &str = "http://127.0.0.1:8081";
+
+/// GET `<OLLAMA_HOST>/api/tags`: `(Up, models)` on a 2xx, `(Down, [])` on any
+/// failure. Unlike `recommend::discover_ollama_models_async` this does NOT fold
+/// in the configured `GOOSE_MODEL` floor — that floor would make a dead daemon
+/// look like one with a model pulled.
+async fn probe_ollama() -> (Reach, Vec<String>) {
+    let raw_host = crate::config::Config::global()
+        .get_param::<String>("OLLAMA_HOST")
+        .ok();
+    let url = format!("{}/api/tags", super::recommend::ollama_base_url(raw_host));
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(OLLAMA_FALLBACK_PROBE_TIMEOUT)
+        .build()
+    else {
+        return (Reach::Down, Vec::new());
+    };
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.text().await {
+            Ok(body) => (Reach::Up, super::recommend::parse_ollama_tags(&body)),
+            Err(_) => (Reach::Down, Vec::new()),
+        },
+        _ => (Reach::Down, Vec::new()),
+    }
+}
+
+/// Pure: the `(host, port)` a split base URL points at, or `None` when it is
+/// not a parseable http(s) URL.
+fn split_socket(raw: &str) -> Option<(String, u16)> {
+    let url = url::Url::parse(raw.trim()).ok()?;
+    let host = url
+        .host_str()?
+        .trim_matches(|c| c == '[' || c == ']')
+        .to_string();
+    let port = url.port_or_known_default()?;
+    Some((host, port))
+}
+
+/// TCP connect to the split's port. A connect, not an HTTP request: the
+/// question is only "is anything listening", and a loaded 27B split can take
+/// far longer to answer a request than the switch should wait.
+async fn probe_split() -> Reach {
+    let raw = crate::config::Config::global()
+        .get_param::<String>("QWEN38_SPLIT_HOST")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| SPLIT_DEFAULT_HOST.to_string());
+    let Some((host, port)) = split_socket(&raw) else {
+        return Reach::Down;
+    };
+    match tokio::time::timeout(
+        SPLIT_CONNECT_TIMEOUT,
+        tokio::net::TcpStream::connect((host.as_str(), port)),
+    )
+    .await
+    {
+        Ok(Ok(_)) => Reach::Up,
+        _ => Reach::Down,
+    }
+}
+
+/// Probe the local endpoints the candidate list actually names — nothing when
+/// every candidate is a cloud model, so a cloud-only config pays no latency.
+/// Ollama is probed whenever ANY local candidate is present, because it is
+/// the stand-in for a down one.
+pub async fn probe_local_availability(candidates: &[FallbackCandidate]) -> LocalAvailability {
+    let names = |p: &str| {
+        candidates
+            .iter()
+            .any(|c| c.target.provider.eq_ignore_ascii_case(p))
+    };
+    let wants_split = names(SPLIT_PROVIDER);
+    let wants_ollama = wants_split || names(OLLAMA_PROVIDER);
+    let mut avail = LocalAvailability::unprobed();
+    let (split, ollama) = tokio::join!(
+        async {
+            if wants_split {
+                Some(probe_split().await)
+            } else {
+                None
+            }
+        },
+        async {
+            if wants_ollama {
+                Some(probe_ollama().await)
+            } else {
+                None
+            }
+        }
+    );
+    if let Some(reach) = split {
+        avail.split = reach;
+    }
+    if let Some((reach, models)) = ollama {
+        avail.ollama = reach;
+        avail.ollama_models = models;
+    }
+    avail
+}
+
+/// Config-backed, availability-aware fallback: the candidates from config, a
+/// cheap probe of the local endpoints they name, then [`choose_fallback`].
+/// Logs the snapshot and the decision on `permagent::cost_router`, so a switch
+/// that passed over the configured model can be explained after the fact.
+pub async fn permanent_failure_fallback_available(failed_provider: &str) -> Option<FallbackChoice> {
+    let cfg = crate::config::Config::global();
+    let candidates = permanent_failure_candidates(|k| cfg.get_param::<String>(k).ok());
+    if candidates.is_empty() {
+        return None;
+    }
+    let avail = probe_local_availability(&candidates).await;
+    let choice = choose_fallback(failed_provider, &candidates, &avail);
+    let fmt = |rm: &RoleModel| format!("{}/{}", rm.provider, rm.model);
+    let candidate_list = candidates
+        .iter()
+        .map(|c| fmt(&c.target))
+        .collect::<Vec<_>>()
+        .join(",");
+    let chosen = choice
+        .as_ref()
+        .map(|c| fmt(&c.target))
+        .unwrap_or_else(|| "none".to_string());
+    let replaced = choice
+        .as_ref()
+        .and_then(|c| c.replaced.as_ref())
+        .map(fmt)
+        .unwrap_or_default();
+    let skipped_down = choice
+        .as_ref()
+        .map(|c| c.skipped_down.iter().map(fmt).collect::<Vec<_>>().join(","))
+        .unwrap_or_default();
+    let ollama_models = avail.ollama_models.join(",");
+    tracing::info!(
+        target: "permagent::cost_router",
+        from_provider = %failed_provider,
+        candidates = %candidate_list,
+        ollama = ?avail.ollama,
+        ollama_models = %ollama_models,
+        split = ?avail.split,
+        chosen = %chosen,
+        replaced = %replaced,
+        skipped_down = %skipped_down,
+        "fallback selection over live local availability"
+    );
+    choice
+}
+
+/// The context window to give a LOCAL fallback whose `ModelConfig` came back
+/// without one. An Ollama model has no canonical row, so without this the
+/// provider sends no `num_ctx` and Ollama serves the agent's multi-thousand-
+/// token system prompt through its small default window, silently truncated.
+/// `None` for cloud models (their limits come from the canonical registry).
+pub fn local_context_limit(provider: &str, model: &str) -> Option<usize> {
+    super::knowledge::lookup(provider, model)
+        .filter(|row| row.is_local && row.context_window > 0)
+        .map(|row| row.context_window as usize)
 }
 
 /// The ONE sentence the user sees or hears when a model is permanently
@@ -172,19 +591,31 @@ pub fn permanent_failure_reply(
     }
 }
 
-/// A short, payload-free phrase for the class of pre-commit failure that
-/// triggered a silent switch. Derived from the error VARIANT, never from its
-/// string: `NetworkError`'s own text carries the socket we failed to open
+/// What happened to `provider`, as a payload-free clause whose VERB is chosen
+/// by the cause. Derived from the error VARIANT, never from its string:
+/// `NetworkError`'s own text carries the socket we failed to open
 /// (`127.0.0.1:8081`), which is log material, not something to read aloud.
-fn precommit_failure_cause(err: &ProviderError) -> &'static str {
+///
+/// The verb matters. 2026-09-18: OpenAI's stream died mid-body after DNS, TCP,
+/// TLS and a 200 status had all succeeded, and the transcript said "openai
+/// unreachable (the model stream dropped …)" — a host that answered was
+/// reported as one that could not be reached. "Unreachable" is reserved for the
+/// one cause that means it: a connection that never opened.
+fn precommit_failure_clause(provider: &str, err: &ProviderError) -> String {
     if err.is_stream_decode() {
-        return "the model stream dropped before any reply started";
+        return format!("{provider} dropped the response stream before any reply started");
     }
     match err {
-        ProviderError::NetworkError(_) => "connection refused or unroutable",
-        ProviderError::ServerError(_) => "the provider returned a server error",
-        ProviderError::RateLimitExceeded { .. } => "the provider is rate-limiting this model",
-        _ => "the request failed before any reply started",
+        ProviderError::NetworkError(_) => {
+            format!("{provider} unreachable (connection refused or unroutable)")
+        }
+        ProviderError::ServerError(_) => {
+            format!("{provider} returned a server error before any reply started")
+        }
+        ProviderError::RateLimitExceeded { .. } => {
+            format!("{provider} is rate-limiting this model")
+        }
+        _ => format!("{provider} failed before any reply started"),
     }
 }
 
@@ -208,8 +639,8 @@ pub fn precommit_failover_reply(
     fallback: &RoleModel,
 ) -> String {
     format!(
-        "{failed_provider} unreachable ({}) — switched this session to {}/{}.",
-        precommit_failure_cause(err),
+        "{} — switched this session to {}/{}.",
+        precommit_failure_clause(failed_provider, err),
         fallback.provider,
         fallback.model
     )
@@ -440,6 +871,30 @@ mod tests {
         ));
     }
 
+    /// The agent's stream-decode arm fires for a dropped body typed as
+    /// `RequestFailed` too (session 20260827_1's shape). The gate must agree
+    /// with that arm, or its failover can never run for that error. A genuine
+    /// 4xx rejection stays out: it is permanent, not a dropped stream.
+    #[test]
+    fn a_dropped_stream_typed_as_request_failed_may_still_fail_over() {
+        let typed_as_request_failed = ProviderError::RequestFailed(
+            "Stream decode error: error decoding response body".into(),
+        );
+        assert!(typed_as_request_failed.is_stream_decode());
+        assert!(may_silent_precommit_failover(
+            false,
+            &typed_as_request_failed
+        ));
+        assert!(!may_silent_precommit_failover(
+            true,
+            &typed_as_request_failed
+        ));
+        assert!(!may_silent_precommit_failover(
+            false,
+            &ProviderError::RequestFailed("Bad request (400): invalid_request_error".into())
+        ));
+    }
+
     /// M2: the pre-commit failover used to be silent. Session 20260831_10 was
     /// served by `anthropic/claude-haiku-4-5` after `qwen38_split`'s port was
     /// found dead, and NOTHING in the transcript said so.
@@ -499,5 +954,319 @@ mod tests {
             !stream.to_lowercase().contains("connection refused"),
             "{stream}"
         );
+    }
+
+    /// The 2026-09-18 defect: a stream that died mid-body after DNS, TCP, TLS
+    /// and a 200 status all succeeded was announced as "openai unreachable".
+    /// The host answered; only the body died. The verb must say so.
+    #[test]
+    fn a_dropped_stream_is_never_called_unreachable() {
+        let target = RoleModel {
+            provider: "ollama".into(),
+            model: "qwen2.5:7b".into(),
+        };
+        let reply = precommit_failover_reply(
+            "openai",
+            &ProviderError::stream_decode("error decoding response body"),
+            &target,
+        );
+        assert!(
+            !reply.to_lowercase().contains("unreachable"),
+            "a host that answered is not unreachable: {reply}"
+        );
+        assert!(
+            reply.starts_with("openai dropped the response stream before any reply started"),
+            "{reply}"
+        );
+        assert!(
+            reply.contains("switched this session to ollama/qwen2.5:7b"),
+            "{reply}"
+        );
+    }
+
+    /// Each cause picks its own verb; only a connection that never opened is
+    /// "unreachable".
+    #[test]
+    fn each_precommit_cause_chooses_its_own_verb() {
+        let target = RoleModel {
+            provider: "ollama".into(),
+            model: "qwen2.5:7b".into(),
+        };
+        let reply = |e: ProviderError| precommit_failover_reply("openai", &e, &target);
+        let net = reply(ProviderError::NetworkError("Could not connect".into()));
+        assert!(
+            net.starts_with("openai unreachable (connection refused"),
+            "{net}"
+        );
+        let server = reply(ProviderError::ServerError("503".into()));
+        assert!(
+            server.starts_with("openai returned a server error"),
+            "{server}"
+        );
+        assert!(!server.contains("unreachable"), "{server}");
+        let rate = reply(ProviderError::RateLimitExceeded {
+            details: "slow down".into(),
+            retry_delay: None,
+        });
+        assert!(
+            rate.starts_with("openai is rate-limiting this model"),
+            "{rate}"
+        );
+        assert!(!rate.contains("unreachable"), "{rate}");
+    }
+
+    // ── availability-aware selection ─────────────────────────────────────
+
+    fn rm(provider: &str, model: &str) -> RoleModel {
+        RoleModel {
+            provider: provider.into(),
+            model: model.into(),
+        }
+    }
+
+    /// The live config on 2026-09-18: MECHANICAL and LOCAL both on the split,
+    /// REVIEW on a metered cloud model.
+    fn live_config() -> Vec<FallbackCandidate> {
+        permanent_failure_candidates(reader(&[
+            ("PERMAGENT_ROLE_MECHANICAL_PROVIDER", "qwen38_split"),
+            ("PERMAGENT_ROLE_MECHANICAL_MODEL", "qwen3.8-27b"),
+            ("PERMAGENT_ROLE_REVIEW_PROVIDER", "zai"),
+            ("PERMAGENT_ROLE_REVIEW_MODEL", "glm-5.2"),
+            ("PERMAGENT_ROLE_LOCAL_PROVIDER", "qwen38_split"),
+            ("PERMAGENT_ROLE_LOCAL_MODEL", "qwen3.8-27b"),
+        ]))
+    }
+
+    /// What Ollama on :11434 reported the same day.
+    fn ollama_up_with_the_installed_models() -> LocalAvailability {
+        LocalAvailability {
+            ollama: Reach::Up,
+            ollama_models: vec![
+                "qwen2.5-coder:7b".into(),
+                "minicpm5-2b-q8:latest".into(),
+                "qwen25-16k:latest".into(),
+                "qwen2.5:7b".into(),
+            ],
+            split: Reach::Down,
+        }
+    }
+
+    #[test]
+    fn candidates_keep_precedence_and_drop_duplicates() {
+        let c = live_config();
+        assert_eq!(
+            c,
+            vec![
+                FallbackCandidate {
+                    target: rm("qwen38_split", "qwen3.8-27b"),
+                    source: CandidateSource::Role("mechanical"),
+                },
+                FallbackCandidate {
+                    target: rm("zai", "glm-5.2"),
+                    source: CandidateSource::Role("review"),
+                },
+            ],
+            "LOCAL repeats MECHANICAL's pair and must not appear twice"
+        );
+    }
+
+    /// THE regression: at noon the split is down and Ollama is up. The switch
+    /// used to target 127.0.0.1:8081 anyway; now the best installed local
+    /// model stands in at the split's rank — ahead of the metered REVIEW model.
+    #[test]
+    fn a_down_split_is_replaced_by_an_installed_ollama_model_not_skipped_to_cloud() {
+        let choice = choose_fallback(
+            "openai",
+            &live_config(),
+            &ollama_up_with_the_installed_models(),
+        )
+        .expect("an up local model must be chosen");
+        assert_eq!(choice.target.provider, "ollama");
+        assert_ne!(choice.target.provider, "qwen38_split");
+        assert_eq!(choice.replaced, Some(rm("qwen38_split", "qwen3.8-27b")));
+        assert!(
+            crate::cost_router::reservation::is_free_local_pair(
+                &choice.target.provider,
+                &choice.target.model
+            ),
+            "the stand-in must pass the spend gate as free/local: {:?}",
+            choice.target
+        );
+    }
+
+    /// Same snapshot, same answer — and the answer is the documented ranking
+    /// (strongest orchestration first), not the order Ollama listed its tags.
+    #[test]
+    fn stand_in_choice_is_deterministic_regardless_of_tag_order() {
+        let a = ollama_up_with_the_installed_models();
+        let mut b = a.clone();
+        b.ollama_models.reverse();
+        let pick_a = best_installed_ollama_model(&a).unwrap();
+        let pick_b = best_installed_ollama_model(&b).unwrap();
+        assert_eq!(pick_a, pick_b);
+        let best = crate::cost_router::knowledge::lookup("ollama", &pick_a.model).unwrap();
+        for m in &a.ollama_models {
+            let row = crate::cost_router::knowledge::lookup("ollama", m).unwrap();
+            assert!(
+                best.orchestration_strength >= row.orchestration_strength,
+                "{} outranks the pick {}",
+                m,
+                pick_a.model
+            );
+        }
+    }
+
+    /// The split is up during its nightly window: then it is exactly what the
+    /// user configured, and it is taken as before.
+    #[test]
+    fn an_up_split_is_still_chosen() {
+        let mut avail = ollama_up_with_the_installed_models();
+        avail.split = Reach::Up;
+        let choice = choose_fallback("openai", &live_config(), &avail).unwrap();
+        assert_eq!(choice.target, rm("qwen38_split", "qwen3.8-27b"));
+        assert_eq!(choice.replaced, None);
+    }
+
+    /// Both local endpoints down: never pick the dead split; fall through to
+    /// the next configured candidate and say which ones were skipped.
+    #[test]
+    fn with_everything_local_down_the_split_is_skipped_not_chosen() {
+        let avail = LocalAvailability {
+            ollama: Reach::Down,
+            ollama_models: vec![],
+            split: Reach::Down,
+        };
+        let choice = choose_fallback("openai", &live_config(), &avail).unwrap();
+        assert_eq!(choice.target, rm("zai", "glm-5.2"));
+        assert_eq!(choice.skipped_down, vec![rm("qwen38_split", "qwen3.8-27b")]);
+    }
+
+    /// The split itself failed pre-commit (a harness role defaulted to it):
+    /// the local intent is honoured by Ollama rather than jumping to cloud.
+    #[test]
+    fn when_the_split_itself_failed_a_local_model_still_stands_in() {
+        let choice = choose_fallback(
+            "qwen38_split",
+            &live_config(),
+            &ollama_up_with_the_installed_models(),
+        )
+        .unwrap();
+        assert_eq!(choice.target.provider, "ollama");
+    }
+
+    /// The split itself failed while its port was UP (a server error or a
+    /// dropped stream inside the nightly window). It is skipped as the failed
+    /// provider — but the rank still asked for a local model, so Ollama stands
+    /// in instead of the metered zai/glm-5.2 that follows it.
+    #[test]
+    fn when_an_up_split_failed_a_local_model_stands_in_not_cloud() {
+        let mut avail = ollama_up_with_the_installed_models();
+        avail.split = Reach::Up;
+        let choice = choose_fallback("qwen38_split", &live_config(), &avail).unwrap();
+        assert_eq!(choice.target.provider, "ollama");
+        assert_ne!(choice.target, rm("zai", "glm-5.2"));
+        assert_eq!(choice.replaced, Some(rm("qwen38_split", "qwen3.8-27b")));
+        assert!(choice.skipped_down.is_empty());
+    }
+
+    /// Same failure with Ollama down: nothing local can serve, so the old
+    /// rule holds and the next configured candidate is taken.
+    #[test]
+    fn when_an_up_split_failed_and_ollama_is_down_the_next_candidate_wins() {
+        let avail = LocalAvailability {
+            ollama: Reach::Down,
+            ollama_models: vec![],
+            split: Reach::Up,
+        };
+        let choice = choose_fallback("qwen38_split", &live_config(), &avail).unwrap();
+        assert_eq!(choice.target, rm("zai", "glm-5.2"));
+        assert_eq!(choice.replaced, None);
+    }
+
+    /// Ollama is up but the configured model is not pulled: calling it would
+    /// 404, so it counts as down and an installed model stands in.
+    #[test]
+    fn a_configured_ollama_model_that_is_not_pulled_counts_as_down() {
+        let cands = permanent_failure_candidates(reader(&[(
+            KEY_FALLBACKS,
+            "ollama/qwen3-coder:30b,openai/gpt-5.4",
+        )]));
+        let choice =
+            choose_fallback("anthropic", &cands, &ollama_up_with_the_installed_models()).unwrap();
+        assert_eq!(choice.target.provider, "ollama");
+        assert_eq!(choice.replaced, Some(rm("ollama", "qwen3-coder:30b")));
+    }
+
+    /// An installed Ollama model that IS configured is used as written, and an
+    /// untagged id matches Ollama's `:latest` shorthand.
+    #[test]
+    fn a_configured_installed_ollama_model_is_used_as_written() {
+        let cands = permanent_failure_candidates(reader(&[(
+            KEY_FALLBACKS,
+            "ollama/minicpm5-2b-q8,openai/gpt-5.4",
+        )]));
+        let choice =
+            choose_fallback("anthropic", &cands, &ollama_up_with_the_installed_models()).unwrap();
+        assert_eq!(choice.target, rm("ollama", "minicpm5-2b-q8"));
+        assert_eq!(choice.replaced, None);
+    }
+
+    /// If Ollama is the provider that failed, another Ollama model is no
+    /// stand-in (same daemon).
+    #[test]
+    fn ollama_never_stands_in_for_itself() {
+        let cands = permanent_failure_candidates(reader(&[(
+            KEY_FALLBACKS,
+            "qwen38_split/qwen3.8-27b,openai/gpt-5.4",
+        )]));
+        let choice =
+            choose_fallback("ollama", &cands, &ollama_up_with_the_installed_models()).unwrap();
+        assert_eq!(choice.target, rm("openai", "gpt-5.4"));
+    }
+
+    /// Unprobed (cloud-only or sync callers): identical to the old resolver.
+    #[test]
+    fn unprobed_snapshot_keeps_the_configured_first_choice() {
+        let choice =
+            choose_fallback("openai", &live_config(), &LocalAvailability::unprobed()).unwrap();
+        assert_eq!(choice.target, rm("qwen38_split", "qwen3.8-27b"));
+    }
+
+    /// Unknown installed models (no knowledge-base row) are never picked: the
+    /// spend gate would refuse them as an unknown paid budget.
+    #[test]
+    fn unpriced_installed_models_are_not_eligible_stand_ins() {
+        let avail = LocalAvailability {
+            ollama: Reach::Up,
+            ollama_models: vec!["llama9-unknown:13b".into()],
+            split: Reach::Down,
+        };
+        assert_eq!(best_installed_ollama_model(&avail), None);
+    }
+
+    #[test]
+    fn split_socket_parses_the_declarative_default() {
+        assert_eq!(
+            split_socket("http://127.0.0.1:8081"),
+            Some(("127.0.0.1".to_string(), 8081))
+        );
+        assert_eq!(
+            split_socket("http://[::1]:8081/"),
+            Some(("::1".to_string(), 8081))
+        );
+        assert_eq!(split_socket("not a url"), None);
+    }
+
+    #[test]
+    fn local_context_limit_comes_from_the_local_row_only() {
+        assert_eq!(
+            local_context_limit("ollama", "qwen25-16k:latest"),
+            Some(16_384)
+        );
+        assert_eq!(
+            local_context_limit("qwen38_split", "qwen3.8-27b"),
+            Some(4_096)
+        );
+        assert_eq!(local_context_limit("anthropic", "claude-opus-4-8"), None);
     }
 }

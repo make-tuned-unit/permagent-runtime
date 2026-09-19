@@ -2234,11 +2234,22 @@ impl Agent {
                     Some(reused) => reused,
                     None => Uuid::new_v4().to_string(),
                 };
+                // Sized to the request about to be sent (the same system
+                // prompt, messages and tools handed to
+                // `stream_response_from_provider` below), not the model's whole
+                // context window: the harness's first call was refused with
+                // "requested bound $1.56, ceiling $1.00" for a ~30k-token
+                // prompt because this hold priced all 272k input tokens of
+                // gpt-5.4-mini's window. An uncountable request (image/audio in
+                // context) still falls back to the full window.
                 let invocation = match self
-                    .reserve_provider_invocation(
+                    .reserve_provider_invocation_for_request(
                         &session,
                         &turn_provider,
                         invocation_id.clone(),
+                        &system_prompt,
+                        conversation_with_moim.messages(),
+                        &tools,
                     )
                     .await
                 {
@@ -2281,10 +2292,13 @@ impl Agent {
                         // takes the unchanged park path.
                         let retried = if outcome.gate_grant_minted {
                             match self
-                                .reserve_provider_invocation(
+                                .reserve_provider_invocation_for_request(
                                     &session,
                                     &turn_provider,
                                     invocation_id.clone(),
+                                    &system_prompt,
+                                    conversation_with_moim.messages(),
+                                    &tools,
                                 )
                                 .await
                             {
@@ -3362,22 +3376,42 @@ impl Agent {
                                     Ok(p) => p.get_name().to_string(),
                                     Err(_) => "the model provider".to_string(),
                                 };
-                                if self
+                                if let Some(target) = self
                                     .switch_to_permanent_failure_fallback(
                                         &session_config.id,
                                         &failed_provider,
                                     )
                                     .await
-                                    .is_some()
                                 {
                                     tracing::info!(
                                         target: "permagent::cost_router",
                                         session_id = %session_config.id,
                                         from_provider = %failed_provider,
-                                        "silent pre-commit failover after a transient provider error"
+                                        to_provider = %target.provider,
+                                        to_model = %target.model,
+                                        "pre-commit failover after a transient provider error"
                                     );
                                     permanent_failure_fallback_used = true;
                                     did_switch_provider_this_iteration = true;
+                                    // The last arm that still switched in
+                                    // silence. A 5xx from the split inside its
+                                    // nightly window (or any cloud 503) moved
+                                    // the session to the Ollama stand-in with
+                                    // only a log line to say so, so the user
+                                    // could not tell which model answered. Same
+                                    // announcement as the NetworkError and
+                                    // stream-drop siblings; the clause picks
+                                    // "returned a server error" by variant.
+                                    let message = Message::assistant().with_system_notification(
+                                        SystemNotificationType::InlineMessage,
+                                        crate::cost_router::fallback::precommit_failover_reply(
+                                            &failed_provider,
+                                            provider_err,
+                                            &target,
+                                        ),
+                                    );
+                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                                    yield AgentEvent::Message(message);
                                     break;
                                 }
                             }
@@ -3896,10 +3930,41 @@ impl Agent {
         session_id: &str,
         failed_provider: &str,
     ) -> Option<crate::cost_router::role_map::RoleModel> {
-        let target = crate::cost_router::fallback::permanent_failure_fallback(failed_provider)?;
+        // Availability-aware: probe the local endpoints the configured list
+        // names and never switch to one that is down. 2026-09-18: every
+        // permanent failure switched to the nightly-only `qwen38_split`, whose
+        // port is closed outside 01:50–06:10, and the turn then died on
+        // "Could not connect to 127.0.0.1:8081" while Ollama was up with four
+        // models pulled. A down local candidate is now replaced by the best
+        // installed Ollama model (see `cost_router::fallback::choose_fallback`).
+        let choice =
+            crate::cost_router::fallback::permanent_failure_fallback_available(failed_provider)
+                .await?;
+        let replaced = choice
+            .replaced
+            .as_ref()
+            .map(|rm| format!("{}/{}", rm.provider, rm.model))
+            .unwrap_or_default();
+        let target = choice.target;
 
         let model_config = match crate::model::ModelConfig::new(&target.model) {
-            Ok(mc) => mc.with_canonical_limits(&target.provider),
+            Ok(mc) => {
+                let mc = mc.with_canonical_limits(&target.provider);
+                // An Ollama model has no canonical row, so it would otherwise
+                // reach the provider with no `num_ctx` and be served through
+                // Ollama's small default window — the agent's system prompt
+                // alone overflows it. The knowledge-base row carries the
+                // window the model is actually served with.
+                if mc.context_limit.is_none() {
+                    let limit = crate::cost_router::fallback::local_context_limit(
+                        &target.provider,
+                        &target.model,
+                    );
+                    mc.with_context_limit(limit)
+                } else {
+                    mc
+                }
+            }
             Err(e) => {
                 warn!(
                     fallback_provider = %target.provider,
@@ -3945,6 +4010,7 @@ impl Agent {
             from_provider = %failed_provider,
             to_provider = %target.provider,
             to_model = %target.model,
+            replaced_unavailable = %replaced,
             reason = "permanent_provider_rejection",
             "routing snapshot: switched model after a permanent provider rejection"
         );
