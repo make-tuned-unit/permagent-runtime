@@ -123,6 +123,18 @@ fn picker_root() -> Option<std::path::PathBuf> {
 }
 
 pub fn base_url() -> String {
+    // Unit tests must never reach the user's live scanner: the service on
+    // :8080 is real, holds real open trades, and `overbought`'s
+    // no-open-lots test failed on this machine because it read them (and then
+    // live quotes for them). Point tests at a loopback port nothing listens on
+    // (9, discard) so every call fails fast as "unreachable", exactly the
+    // down-scanner path the callers already handle. Tests that need scanner
+    // data parse fixtures directly (`parse_trade_row`, `parse_universe`).
+    #[cfg(test)]
+    {
+        return "http://127.0.0.1:9".to_string();
+    }
+    #[cfg(not(test))]
     crate::config::Config::global()
         .get_param::<String>(PICKER_URL_KEY)
         .ok()

@@ -7,11 +7,14 @@
 //!
 //! The planner intentionally does not infer a proportional token bound from
 //! raw request bytes. Providers may apply server-side chat templates and add
-//! BOS/EOS/control/image tokens that are absent from those bytes. A smaller
-//! authorization bound therefore requires the provider adapter at the Agent
-//! seam to return an authoritative, certified input-token upper bound that
-//! includes all such overhead; until that seam exists this module reserves the
-//! full accepted context capacity.
+//! BOS/EOS/control/image tokens that are absent from those bytes. When the
+//! caller has counted the prompt it is about to send
+//! ([`plan_reservation_bound_for_prompt`]), the input side is bounded by that
+//! count plus [`prompt_token_margin`], which is sized to cover that overhead
+//! and a provider tokenizer that counts the same text higher than the local
+//! one. When the prompt size is unknown this module still reserves the full
+//! accepted context capacity: an uncounted call fails closed onto the worst
+//! case, never onto a guess.
 
 use crate::model::ModelConfig;
 use crate::providers::canonical::{maybe_get_pricing, worst_case_pricing, Pricing};
@@ -88,6 +91,19 @@ pub fn describe_pricing_source(provenance: PricingProvenance) -> &'static str {
 /// `zai`/`glm-4.7` inputs: still 7 concurrent holds under a `$5.00` ceiling
 /// instead of the pre-Y7 2, so the spend cap goes back to being the binding
 /// constraint, and one rate-limit retry still survives.
+///
+/// Still two after 2026-09-18, deliberately. A one-attempt default was
+/// proposed because the retry loop can extend the SAME hold when it retries
+/// (`providers::retry` -> `authorize_attempt` -> `extend_reservation`), and a
+/// one-attempt hold made the harness's first call fit under the old $1.00
+/// task gate. It was not adopted: calls granted through
+/// `grant_reservation_after_gate_approval` carry no extension evidence, so
+/// under a one-attempt default they could never retry a 429 or 5xx — a
+/// reliability regression on exactly the calls the user has just approved.
+/// It also reversed the ruling above without the user's sign-off. It is no
+/// longer needed either: the input side is now sized to the counted prompt
+/// (`plan_reservation_bound_for_prompt`), which brings gpt-5.4-mini's
+/// two-attempt bound to ~$1.23, comfortably under the current $3.00 task gate.
 pub const RESERVE_ATTEMPTS_ENV: &str = "PERMAGENT_RESERVE_ATTEMPTS";
 
 /// Physical attempts reserved when [`RESERVE_ATTEMPTS_ENV`] says nothing:
@@ -231,8 +247,10 @@ pub fn effective_cost_tier(provider: &str, model: &str, declared: CostTier) -> C
 /// read directly.  The convenience defaults (`context_limit()` and
 /// `max_output_tokens()`) are estimates and therefore cannot authorize a paid
 /// call.  Input capacity is the entire accepted context minus the maximum
-/// output, and the input side uses the most expensive of fresh, cache-read, and
-/// cache-write rates.  The resulting one-attempt amount is multiplied by the
+/// output (this entry point does not know the prompt size; see
+/// [`plan_reservation_bound_for_prompt`] for a caller that does), and the
+/// input side uses the most expensive of fresh, cache-read, and cache-write
+/// rates.  The resulting one-attempt amount is multiplied by the
 /// maximum number of physical attempts.
 pub fn plan_reservation_bound(
     provider: &str,
@@ -240,6 +258,62 @@ pub fn plan_reservation_bound(
     cost_tier: CostTier,
     model_config: &ModelConfig,
     max_physical_attempts: u32,
+) -> Result<Option<ReservationBound>, ReservationBoundError> {
+    plan_reservation_bound_for_prompt(
+        provider,
+        model,
+        cost_tier,
+        model_config,
+        max_physical_attempts,
+        None,
+    )
+}
+
+/// Fixed allowance, in tokens, added to every counted prompt before it bounds
+/// a reservation. It covers what a local count of the serialized request
+/// cannot see: the provider's chat template (role/turn/BOS/EOS markers per
+/// message), the wrapper text a provider renders tool schemas into, and any
+/// short instructions an adapter prepends on its own.
+pub const PROMPT_OVERHEAD_TOKENS: usize = 4_096;
+
+/// The safety margin a counted prompt is padded by: half again the count, plus
+/// [`PROMPT_OVERHEAD_TOKENS`].
+///
+/// The count comes from the local o200k tokenizer
+/// (`agents::reply_parts::counted_prompt_tokens`), which is not the tokenizer
+/// every provider bills with; another vendor's vocabulary can split the same
+/// text into materially more tokens, most of all for code. Half again is
+/// deliberately generous: this bound is an authorization hold that is
+/// released at settlement, so padding it costs nothing but headroom, while an
+/// under-stated hold would let a call spend money nobody authorized.
+pub fn prompt_token_margin(counted_prompt_tokens: usize) -> usize {
+    (counted_prompt_tokens / 2).saturating_add(PROMPT_OVERHEAD_TOKENS)
+}
+
+/// [`plan_reservation_bound`], bounded by the size of the prompt actually
+/// being sent when the caller knows it.
+///
+/// `counted_prompt_tokens` is the caller's count of everything it is about to
+/// send (system prompt, messages and tool schemas). `Some(n)` reserves
+/// `n + prompt_token_margin(n)` input tokens, never more than the context can
+/// accept; `None` reserves the whole window exactly as before, so a caller that
+/// cannot count its request can never obtain a smaller hold than the worst
+/// case.
+///
+/// Why this exists: the harness refused its very first call with "task budget
+/// gate required before provider call (spent $0.12, authorization holds
+/// $0.00, requested bound $1.56, ceiling $1.00)". That call sent ~30k tokens,
+/// 7% of a 400k window, and cost $0.12 — but the bound priced all
+/// `context - output` input tokens regardless, so every call reserved the
+/// worst case and any sane budget cap deadlocked (the caps in
+/// `cost_router::budget` had to be raised to $1/$3/$6 because of it).
+pub fn plan_reservation_bound_for_prompt(
+    provider: &str,
+    model: &str,
+    cost_tier: CostTier,
+    model_config: &ModelConfig,
+    max_physical_attempts: u32,
+    counted_prompt_tokens: Option<usize>,
 ) -> Result<Option<ReservationBound>, ReservationBoundError> {
     validate_attempts(max_physical_attempts)?;
 
@@ -253,7 +327,14 @@ pub fn plan_reservation_bound(
 
     let (pricing, provenance) = resolve_pricing(provider, model)?;
 
-    calculate_bound(model_config, max_physical_attempts, pricing, provenance).map(Some)
+    calculate_bound_for_prompt(
+        model_config,
+        max_physical_attempts,
+        pricing,
+        provenance,
+        counted_prompt_tokens,
+    )
+    .map(Some)
 }
 
 pub(crate) fn resolve_pricing(
@@ -313,11 +394,28 @@ fn validate_attempts(max_physical_attempts: u32) -> Result<(), ReservationBoundE
     }
 }
 
+#[cfg(test)]
 fn calculate_bound(
     model_config: &ModelConfig,
     max_physical_attempts: u32,
     pricing: Pricing,
     pricing_provenance: PricingProvenance,
+) -> Result<ReservationBound, ReservationBoundError> {
+    calculate_bound_for_prompt(
+        model_config,
+        max_physical_attempts,
+        pricing,
+        pricing_provenance,
+        None,
+    )
+}
+
+fn calculate_bound_for_prompt(
+    model_config: &ModelConfig,
+    max_physical_attempts: u32,
+    pricing: Pricing,
+    pricing_provenance: PricingProvenance,
+    counted_prompt_tokens: Option<usize>,
 ) -> Result<ReservationBound, ReservationBoundError> {
     validate_attempts(max_physical_attempts)?;
     let context = model_config
@@ -352,7 +450,19 @@ fn calculate_bound(
         return Err(ReservationBoundError::ArithmeticOverflow);
     }
 
-    let input_tokens = context - output;
+    // The context can never accept more input than `context - output` next
+    // to a full-length reply, so that stays the ceiling either way. A counted
+    // prompt narrows it to what is actually being sent plus the margin; an
+    // uncounted one keeps the whole window (fail closed). A count larger than
+    // the window is clamped rather than refused: the provider will reject an
+    // over-long prompt, and it cannot bill more input than the window holds.
+    let window_input = context - output;
+    let input_tokens = match counted_prompt_tokens {
+        Some(counted) => counted
+            .saturating_add(prompt_token_margin(counted))
+            .min(window_input),
+        None => window_input,
+    };
     let input_cost = (input_tokens as f64 / 1_000_000.0) * input_rate;
     let output_cost = (output as f64 / 1_000_000.0) * output_rate;
     let per_attempt = input_cost + output_cost;
@@ -601,7 +711,8 @@ mod tests {
         assert_eq!(one.output_tokens, five.output_tokens);
         assert_eq!(one.pricing_provenance, five.pricing_provenance);
 
-        // The shipped default: two attempts, two fifths of the old hold.
+        // The shipped default: one attempt, a fifth of the old hold. A retry
+        // extends it one attempt at a time (see `RESERVE_ATTEMPTS_ENV`).
         let shipped = plan_reservation_bound(
             "zai",
             "glm-4.7",
@@ -611,16 +722,17 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(shipped.max_physical_attempts, 2);
-        assert_eq!(shipped.amount_usd, one.amount_usd * 2.0);
-        assert_eq!(shipped.amount_usd * 2.5, five.amount_usd);
+        assert_eq!(shipped.max_physical_attempts, 1);
+        assert_eq!(shipped.amount_usd, one.amount_usd);
+        assert_eq!(shipped.amount_usd * 5.0, five.amount_usd);
     }
 
-    /// Y7: the knob can lower the hold but never authorize more attempts than
-    /// the retry policy would ever physically make, and never zero. The
-    /// shipped default is two (one attempt plus one retry).
+    /// Y7: the knob can raise or lower the hold but never authorize more
+    /// attempts than the retry policy would ever physically make, and never
+    /// zero. The shipped default is one: the attempt the call makes, with any
+    /// retry extending the hold when it happens.
     #[test]
-    fn reserved_attempts_default_to_two_and_clamp_to_the_retry_envelope() {
+    fn reserved_attempts_default_to_one_and_clamp_to_the_retry_envelope() {
         let env = |value: Option<&str>| {
             let value = value.map(str::to_string);
             move |key: &str| {
@@ -631,6 +743,7 @@ mod tests {
         assert_eq!(DEFAULT_RESERVED_ATTEMPTS, 2);
         assert_eq!(reserved_physical_attempts_with(5, env(None)), 2);
         assert_eq!(reserved_physical_attempts_with(5, env(Some("1"))), 1);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("2"))), 2);
         assert_eq!(reserved_physical_attempts_with(5, env(Some("3"))), 3);
         assert_eq!(reserved_physical_attempts_with(5, env(Some(" 5 "))), 5);
         // Above the envelope: clamped down, never over-reserved again.
@@ -639,7 +752,7 @@ mod tests {
         assert_eq!(reserved_physical_attempts_with(5, env(Some("0"))), 2);
         assert_eq!(reserved_physical_attempts_with(5, env(Some("many"))), 2);
         assert_eq!(reserved_physical_attempts_with(5, env(Some(""))), 2);
-        // A one-attempt envelope still clamps the two-attempt default down.
+        // A one-attempt envelope still gets its one attempt.
         assert_eq!(reserved_physical_attempts_with(1, env(None)), 1);
         // A zero envelope stays zero so `plan_reservation_bound` still fails
         // closed instead of this function inventing an attempt.
@@ -913,6 +1026,262 @@ mod tests {
         let one = calculate_bound(&cfg, 1, pricing(), PricingProvenance::CanonicalExact).unwrap();
         let three = calculate_bound(&cfg, 3, pricing(), PricingProvenance::CanonicalExact).unwrap();
         assert!((three.amount_usd - one.amount_usd * 3.0).abs() < 1e-12);
+    }
+
+    /// `openai`/`gpt-5.4-mini`'s published rates ($0.75 in, $0.075 cache
+    /// read, $4.50 out per Mtok), written out so the arithmetic below does not
+    /// move if the generated registry is refreshed.
+    fn gpt_5_4_mini_pricing() -> Pricing {
+        Pricing {
+            input: Some(0.75),
+            output: Some(4.5),
+            cache_read: Some(0.075),
+            cache_write: None,
+        }
+    }
+
+    /// The user-reported deadlock: "task budget gate required before provider
+    /// call (spent $0.12, authorization holds $0.00, requested bound $1.56,
+    /// ceiling $1.00)". A 400k-context model with a 128k reply cap, two
+    /// reserved attempts (the default then), and no prompt size reproduces
+    /// that $1.56 exactly —
+    /// 272k input tokens priced for a call that sent ~30k.
+    #[test]
+    fn the_reported_1_56_bound_is_the_full_window_priced_for_an_unknown_prompt() {
+        let cfg = config(Some(400_000), Some(128_000));
+        let full = plan_reservation_bound("openai", "gpt-5.4-mini", CostTier::PaidApi, &cfg, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(full.input_tokens, 272_000);
+        assert!(
+            (full.amount_usd - 1.56).abs() < 1e-9,
+            "expected the reported $1.56, got ${:.6}",
+            full.amount_usd
+        );
+    }
+
+    /// (a) A counted 30k-token prompt reserves input for that prompt plus the
+    /// margin — 49,096 tokens, not the 272,000-token window — so the input
+    /// side of the hold drops from $0.204 to under $0.04 per attempt.
+    ///
+    /// The whole hold is still dominated by the OUTPUT side (128k reply
+    /// tokens x $4.50/Mtok = $0.576 per attempt), which this change does not
+    /// and must not touch: a call that may produce 128k tokens must hold
+    /// money for them. The assertions pin the input side, where the
+    /// over-reservation was.
+    #[test]
+    fn a_counted_prompt_bounds_input_by_what_is_sent_not_the_window() {
+        let cfg = config(Some(400_000), Some(128_000));
+        let counted = calculate_bound_for_prompt(
+            &cfg,
+            2,
+            gpt_5_4_mini_pricing(),
+            PricingProvenance::CanonicalExact,
+            Some(30_000),
+        )
+        .unwrap();
+        let full = calculate_bound_for_prompt(
+            &cfg,
+            2,
+            gpt_5_4_mini_pricing(),
+            PricingProvenance::CanonicalExact,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            counted.input_tokens,
+            30_000 + 15_000 + PROMPT_OVERHEAD_TOKENS
+        );
+        assert_eq!(counted.output_tokens, 128_000);
+        assert_eq!(counted.max_physical_attempts, 2);
+        // Never below what is actually sent: the margin only ever adds.
+        assert!(counted.input_tokens >= 30_000);
+        // Nowhere near the whole window.
+        assert!(counted.input_tokens * 5 < full.input_tokens);
+
+        let per_attempt_input = counted.input_tokens as f64 / 1_000_000.0 * 0.75;
+        let per_attempt_output = 128_000.0 / 1_000_000.0 * 4.5;
+        let expected = (per_attempt_input + per_attempt_output) * 2.0;
+        assert!(
+            (counted.amount_usd - expected).abs() < 1e-9,
+            "expected ${expected:.6}, got ${:.6}",
+            counted.amount_usd
+        );
+        assert!(per_attempt_input < 0.04);
+        // The saving is exactly the input the window reserved and the prompt
+        // does not need.
+        let saved = (full.input_tokens - counted.input_tokens) as f64 / 1_000_000.0 * 0.75 * 2.0;
+        assert!((full.amount_usd - counted.amount_usd - saved).abs() < 1e-9);
+    }
+
+    /// The same, through the public entry point and the live registry row.
+    #[test]
+    fn plan_for_prompt_uses_the_counted_prompt_for_a_priced_pair() {
+        let cfg = config(Some(400_000), Some(128_000));
+        let bound = plan_reservation_bound_for_prompt(
+            "openai",
+            "gpt-5.4-mini",
+            CostTier::PaidApi,
+            &cfg,
+            2,
+            Some(30_000),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(bound.input_tokens, 49_096);
+        assert!(bound.amount_usd < 1.56);
+    }
+
+    /// (b) An unknown prompt size keeps the full-window bound: a caller that
+    /// cannot count its request never gets a smaller hold than the worst case.
+    #[test]
+    fn an_unknown_prompt_size_still_reserves_the_full_window() {
+        let cfg = config(Some(400_000), Some(128_000));
+        let unknown = calculate_bound_for_prompt(
+            &cfg,
+            2,
+            gpt_5_4_mini_pricing(),
+            PricingProvenance::CanonicalExact,
+            None,
+        )
+        .unwrap();
+        assert_eq!(unknown.input_tokens, 400_000 - 128_000);
+        assert_eq!(
+            unknown,
+            calculate_bound(
+                &cfg,
+                2,
+                gpt_5_4_mini_pricing(),
+                PricingProvenance::CanonicalExact
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            plan_reservation_bound_for_prompt(
+                "openai",
+                "gpt-5.4-mini",
+                CostTier::PaidApi,
+                &cfg,
+                2,
+                None
+            ),
+            plan_reservation_bound("openai", "gpt-5.4-mini", CostTier::PaidApi, &cfg, 2)
+        );
+    }
+
+    /// The reported first call ("spent $0.12 ... requested bound $1.56,
+    /// ceiling $1.00") against what ships NOW: the two-attempt default and the
+    /// current task gate, read from `BudgetConfig::default()` rather than
+    /// written as a literal, so this cannot drift when a ceiling moves.
+    ///
+    /// Counting the ~30k-token prompt (30,040 tokens under o200k for the
+    /// reply_parts fixture) takes the two-attempt hold from the full-window
+    /// $1.56 to $1.23. Most of what remains is the 128k reply cap sent as
+    /// `max_completion_tokens`, $0.576 per attempt, which a hold must cover.
+    /// A one-attempt default ($0.61) was proposed to squeeze under the old
+    /// $1.00 gate and was not adopted — see `DEFAULT_RESERVED_ATTEMPTS`.
+    #[test]
+    fn the_reported_first_call_fits_the_shipped_gate_at_the_shipped_default() {
+        let gate = crate::cost_router::budget::BudgetConfig::default().task.gate;
+        let headroom = gate - 0.12;
+        let cfg = config(Some(400_000), Some(128_000));
+        let bound = |attempts, counted| {
+            calculate_bound_for_prompt(
+                &cfg,
+                attempts,
+                gpt_5_4_mini_pricing(),
+                PricingProvenance::CanonicalExact,
+                counted,
+            )
+            .unwrap()
+            .amount_usd
+        };
+        let shipped = reserved_physical_attempts_with(5, |_| None);
+        assert_eq!(shipped, 2);
+
+        let counted = bound(shipped, Some(30_040));
+        assert!(
+            (counted - 1.225_734).abs() < 1e-6,
+            "expected $1.225734, got ${counted:.6}"
+        );
+        assert!(
+            counted < headroom,
+            "the reported call must fit the shipped ${gate:.2} gate: ${counted:.4}"
+        );
+        // Counting the prompt is what matters: the full window still holds $1.56.
+        assert!((bound(2, None) - 1.56).abs() < 1e-9);
+        assert!(counted < bound(2, None));
+    }
+
+    /// (c) A counted prompt at or beyond the window is clamped to the input
+    /// the window can accept next to a full reply — never more (the provider
+    /// cannot bill it) and never an arithmetic overflow.
+    #[test]
+    fn a_prompt_larger_than_the_context_is_clamped_to_the_window() {
+        let cfg = config(Some(400_000), Some(128_000));
+        for counted in [260_000, 272_000, 400_000, 1_000_000, usize::MAX] {
+            let bound = calculate_bound_for_prompt(
+                &cfg,
+                2,
+                gpt_5_4_mini_pricing(),
+                PricingProvenance::CanonicalExact,
+                Some(counted),
+            )
+            .unwrap();
+            assert_eq!(bound.input_tokens, 272_000, "counted = {counted}");
+        }
+        // The margin itself never wraps: half of the largest count plus the
+        // fixed overhead still fits, and adding it to that count saturates.
+        assert_eq!(
+            prompt_token_margin(usize::MAX),
+            usize::MAX / 2 + PROMPT_OVERHEAD_TOKENS
+        );
+        assert_eq!(
+            usize::MAX.saturating_add(prompt_token_margin(usize::MAX)),
+            usize::MAX
+        );
+    }
+
+    /// A counted prompt changes only the size of a paid hold: a free local
+    /// pair still holds nothing, and a paid pair whose limits are unknowable
+    /// is still refused.
+    #[test]
+    fn a_counted_prompt_keeps_the_free_exit_and_the_fail_closed_errors() {
+        assert_eq!(
+            plan_reservation_bound_for_prompt(
+                "qwen38_split",
+                "qwen3.8-27b",
+                CostTier::PaidApi,
+                &config(Some(4_096), None),
+                DEFAULT_RESERVED_ATTEMPTS,
+                Some(1_000),
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            plan_reservation_bound_for_prompt(
+                "openai",
+                "gpt-5.4",
+                CostTier::PaidApi,
+                &config(Some(400_000), None),
+                DEFAULT_RESERVED_ATTEMPTS,
+                Some(1_000),
+            ),
+            Err(ReservationBoundError::MissingMaxOutput)
+        );
+        assert_eq!(
+            plan_reservation_bound_for_prompt(
+                "openai",
+                "gpt-5.4",
+                CostTier::PaidApi,
+                &config(Some(400_000), Some(128_000)),
+                0,
+                Some(1_000),
+            ),
+            Err(ReservationBoundError::InvalidAttempts)
+        );
     }
 
     #[test]

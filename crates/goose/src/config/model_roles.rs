@@ -546,8 +546,15 @@ mod tests {
             assess_harness_coordinator("ollama", "qwen3-coder:30b"),
             CoordinatorEligibility::BelowFloor
         );
+        // Rated since 2026-09-18 (an installed Ollama pull with a knowledge
+        // row), and its estimated orchestration score is below the floor.
         assert_eq!(
             assess_harness_coordinator("ollama", "qwen25-16k:latest"),
+            CoordinatorEligibility::BelowFloor
+        );
+        // A model with no knowledge row at all stays unrated.
+        assert_eq!(
+            assess_harness_coordinator("ollama", "llama3.1:8b"),
             CoordinatorEligibility::Unrated
         );
     }

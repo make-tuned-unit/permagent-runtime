@@ -467,6 +467,77 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         context_window: 40_960,
         is_local: true,
     },
+    // The models this machine's Ollama (:11434) actually has pulled, keyed by
+    // the EXACT id `/api/tags` reports. 2026-09-18: the permanent-failure
+    // fallback could only reach for the nightly split, which is down all day;
+    // these rows are what let `cost_router::fallback` stand one of them in AND
+    // let `reservation::is_free_local_pair` pass it as $0 — without a row the
+    // spend gate refuses a free local call for want of a paid reservation.
+    // All scores are ESTIMATES: no public aider/SWE-bench row exists for these
+    // exact quantized pulls. Windows are the `num_ctx` each is served with
+    // (`ollama show`: the Modelfile's own num_ctx, else the model's native
+    // context_length).
+    ModelKnowledge {
+        provider: "ollama",
+        model: "qwen2.5:7b",
+        display_name: "Qwen2.5 7B (local)",
+        family: "ollama",
+        // edit 0.62 / orch 0.36: 7B general instruct model with native tool
+        // calling; well below the 32B-class qwen3 row (0.76 / 0.48).
+        edit_format_reliability: 0.620,
+        orchestration_strength: 0.36,
+        input_usd_per_mtok: 0.0,
+        output_usd_per_mtok: 0.0,
+        cache_support: false,
+        context_window: 32_768,
+        is_local: true,
+    },
+    ModelKnowledge {
+        provider: "ollama",
+        model: "qwen25-16k:latest",
+        display_name: "Qwen2.5 7B, 16k window (local)",
+        family: "ollama",
+        // Same qwen2.5 7B weights as `qwen2.5:7b`, repackaged with a 16k
+        // num_ctx and temperature 0 — same capability estimate, smaller window.
+        edit_format_reliability: 0.620,
+        orchestration_strength: 0.36,
+        input_usd_per_mtok: 0.0,
+        output_usd_per_mtok: 0.0,
+        cache_support: false,
+        context_window: 16_384,
+        is_local: true,
+    },
+    ModelKnowledge {
+        provider: "ollama",
+        model: "qwen2.5-coder:7b",
+        display_name: "Qwen2.5-Coder 7B (local)",
+        family: "ollama",
+        // edit 0.66: code-tuned, better at diffs than the general 7B. orch
+        // 0.34: its tool calls are less reliable than the general instruct
+        // model's, so it ranks just below it for driving the agent loop.
+        edit_format_reliability: 0.660,
+        orchestration_strength: 0.34,
+        input_usd_per_mtok: 0.0,
+        output_usd_per_mtok: 0.0,
+        cache_support: false,
+        context_window: 32_768,
+        is_local: true,
+    },
+    ModelKnowledge {
+        provider: "ollama",
+        model: "minicpm5-2b-q8:latest",
+        display_name: "MiniCPM5 2B Q8 (local)",
+        family: "ollama",
+        // edit 0.45 / orch 0.28: a 2B model — the harness's MiniCPM5 local
+        // tier is being measured precisely because its ceiling is unknown.
+        edit_format_reliability: 0.450,
+        orchestration_strength: 0.28,
+        input_usd_per_mtok: 0.0,
+        output_usd_per_mtok: 0.0,
+        cache_support: false,
+        context_window: 32_768,
+        is_local: true,
+    },
     // Two-machine llama-server split (Librarian endpoint :8081). Q4_K_M 27B;
     // the server is launched with -c 4096, so the harness must treat that as
     // the real window, not the model's paper spec.
@@ -553,6 +624,15 @@ fn strip_ollama_tag(s: &str) -> &str {
     s.split_once(':').map(|(base, _)| base).unwrap_or(s)
 }
 
+/// Strip a trailing `:latest` (case-insensitive) — Ollama's implicit tag.
+/// Any other tag is left alone: `:7b` and `:30b` are different weights.
+fn strip_latest_tag(s: &str) -> &str {
+    match s.rsplit_once(':') {
+        Some((base, tag)) if tag.eq_ignore_ascii_case("latest") && !base.is_empty() => base,
+        _ => s,
+    }
+}
+
 /// I1 (harness loop, 2026-09-10, from M10's forensics): alternate provider
 /// spellings that carry no row of their OWN in [`KNOWN_MODELS`] but should
 /// still resolve through an existing row's real pricing/scores rather than
@@ -632,6 +712,23 @@ pub fn lookup_with_confidence(
             && strip_date_suffix(m.model).eq_ignore_ascii_case(q)
     }) {
         return Some((m, LookupConfidence::Alias));
+    }
+    // `:latest` alias: Ollama treats an untagged id as `:latest`, so an
+    // untagged `minicpm5-2b-q8` is the SAME pull as the row keyed
+    // `minicpm5-2b-q8:latest`. Without this, a fallback configured untagged
+    // would miss its row and the spend gate would refuse a $0 local call as an
+    // unknown paid budget. One direction only (untagged query → `:latest`
+    // row): a `:latest` query against an untagged FAMILY row such as `qwen3`
+    // stays a family estimate below, because that row describes a family, not
+    // one pull.
+    if !model.contains(':') {
+        if let Some(m) = KNOWN_MODELS.iter().find(|m| {
+            m.provider.eq_ignore_ascii_case(provider)
+                && m.model != strip_latest_tag(m.model)
+                && strip_latest_tag(m.model).eq_ignore_ascii_case(model)
+        }) {
+            return Some((m, LookupConfidence::Alias));
+        }
     }
     // Family-prefix fallback: an Ollama-style `:tag` stripped, matched on the
     // untagged base id. Provider-scoped; only fires when there WAS a tag, so an
@@ -890,7 +987,7 @@ mod tests {
         // Provider-scoped and only for a tagged query: no cross-vendor or
         // untagged-unknown collision.
         assert!(lookup("openai", "qwen3-coder:30b").is_none());
-        assert!(lookup("ollama", "qwen2.5-coder:7b").is_none());
+        assert!(lookup("ollama", "llama3.1:8b").is_none());
         assert!(lookup("ollama", "qwen3-coderx").is_none());
     }
 
@@ -905,5 +1002,43 @@ mod tests {
         assert!(kb_is_stale(
             snap + chrono::Duration::days(KB_SNAPSHOT_STALE_AFTER_DAYS + 1)
         ));
+    }
+
+    /// 2026-09-18: the permanent-failure fallback now stands an installed
+    /// Ollama model in for the (down) nightly split, and the spend gate only
+    /// lets a pair through as free when a row says local + $0. Each model this
+    /// machine's Ollama reports must therefore resolve EXACTLY, as local, free.
+    #[test]
+    fn installed_ollama_models_resolve_exactly_as_free_local_rows() {
+        for id in [
+            "qwen2.5:7b",
+            "qwen25-16k:latest",
+            "qwen2.5-coder:7b",
+            "minicpm5-2b-q8:latest",
+        ] {
+            let (row, conf) = lookup_with_confidence("ollama", id)
+                .unwrap_or_else(|| panic!("ollama/{id} must have a row"));
+            assert_eq!(conf, LookupConfidence::Exact, "{id}");
+            assert!(row.is_local, "{id}");
+            assert_eq!(row.input_usd_per_mtok, 0.0, "{id}");
+            assert_eq!(row.output_usd_per_mtok, 0.0, "{id}");
+        }
+        // Only the LOCAL provider: the metered hosted `ollama_cloud` gets no
+        // free pass from these rows.
+        assert!(lookup("ollama_cloud", "qwen2.5:7b").is_none());
+    }
+
+    /// Untagged is Ollama's `:latest`: same pull, same row — but `:latest`
+    /// never stands in for a different size tag.
+    #[test]
+    fn latest_tag_is_an_alias_and_other_tags_are_not() {
+        let (row, conf) = lookup_with_confidence("ollama", "minicpm5-2b-q8").unwrap();
+        assert_eq!(row.model, "minicpm5-2b-q8:latest");
+        assert_eq!(conf, LookupConfidence::Alias);
+        assert!(
+            lookup("ollama", "qwen2.5").is_none(),
+            "qwen2.5 is not qwen2.5:7b"
+        );
+        assert!(lookup("ollama", "qwen2.5-coder:32b").is_none());
     }
 }

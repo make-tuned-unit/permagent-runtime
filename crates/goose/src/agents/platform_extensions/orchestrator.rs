@@ -51319,7 +51319,17 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         let ts = chrono::DateTime::from_timestamp(1_700_000_010, 0)
             .unwrap()
             .to_rfc3339();
-        insert_task_ledger_row(&pool, "c-1", sid, "task-gate", &ts, 6.0, false).await;
+        // Read the ceilings off the shipped config rather than hardcoding them:
+        // a spend between the task gate and the task hard stop, and below the
+        // session's soft alert, is gated on the TASK scope alone.
+        let cfg = crate::cost_router::budget::BudgetConfig::default();
+        let spend = (cfg.task.gate + cfg.task.hard) / 2.0;
+        assert!(
+            spend < cfg.session.soft,
+            "fixture must leave the session fine: ${spend:.2} vs session soft ${:.2}",
+            cfg.session.soft
+        );
+        insert_task_ledger_row(&pool, "c-1", sid, "task-gate", &ts, spend, false).await;
 
         let attributed: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM cost_ledger WHERE session_id = ? AND task_id = ?",
@@ -51334,10 +51344,9 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             "the gate spend must be attributed to the active task"
         );
 
-        let cfg = crate::cost_router::budget::BudgetConfig::default();
         let snapshot = spend_snapshot(&pool, sid).await.unwrap();
-        assert!((snapshot.task_spent_usd - 6.0).abs() < 1e-9);
-        assert!((snapshot.session_spent_usd - 6.0).abs() < 1e-9);
+        assert!((snapshot.task_spent_usd - spend).abs() < 1e-9);
+        assert!((snapshot.session_spent_usd - spend).abs() < 1e-9);
         let verdict = crate::cost_router::budget_verdict(
             snapshot.task_spent_usd,
             snapshot.session_spent_usd,
@@ -51345,7 +51354,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         );
         assert!(
             verdict.needs_gate(),
-            "$6.00 on one task must cross the $5.00 task gate, got {verdict:?}"
+            "${spend:.2} on one task must cross the ${:.2} task gate, got {verdict:?}",
+            cfg.task.gate
         );
         assert_eq!(verdict.scope, crate::cost_router::budget::BudgetScope::Task);
     }
