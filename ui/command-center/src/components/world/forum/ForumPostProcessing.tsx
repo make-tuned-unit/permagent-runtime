@@ -169,6 +169,39 @@ import { ToneMappingMode } from 'postprocessing';
  * before embeds ForumAppView-BAoLuAgn.js with Bloom > AgX > grade,
  * multisampling 0 (verdict fix-shipped). Run it after every app rebuild; only
  * the look in the app itself, at night beside the gas giant, is still owed.
+ *
+ * Two more gaps between "shipped" and "on the user's screen", closed the
+ * same day (the screen was locked again, so the window itself could not be
+ * captured):
+ *  - The binary on disk is not what a RUNNING app shows: it serves the
+ *    assets of the binary it was launched from. `--shipped` now also reads
+ *    the running permagent-app's start time and fails (exit 3) if it predates
+ *    the binary. At 07:03Z the app running was launched 06:07:32Z, 22 s after
+ *    the binary holding ForumAppView-BPc9qO6y.js was written: fix-shipped.
+ *  - Every probe rendered EMPTY storage, i.e. Agent Desk and place rail
+ *    open. The user's app has both closed (read from its WebKit store), so
+ *    his canvas is the full window: another aspect, another framing of the
+ *    gas giant, other target sizes. `--app-state` renders that layout. In
+ *    the system WKWebView at 1512x945, night, display DPR 2: 0 pure-white
+ *    run pixels, largest white blob 73 px (a HUD glyph), gas giant banded.
+ *    It also found 9,876 exact-black run pixels, which is the far tower
+ *    facade taken to 0 by BRIGHTNESS: 7 clusters, none taller than 7 device
+ *    rows. Texture, not a rectangle (see SOLID_FILL and MIN_BLOCK_ROWS in
+ *    extremeRuns.ts, which judge each block on its own so that texture can
+ *    never dilute a real block into a clean verdict). With a job-19-sized
+ *    block planted over that same frame (PLANT=black|white) the probe reports
+ *    it on every frame, so the clean verdict is not a blind instrument.
+ *  - The app's window is 1280x800 pt (CGWindowList, pid 76299), so the World
+ *    panel is ~1072x748 with the rail open: at that size, night, DPR 2, the
+ *    same result (0 white run pixels, largest white blob 73 px).
+ *  The in-window capture itself is `probe-black-rect.mjs --app-window`; it
+ *  refuses on a locked screen, which is all it could do on 2026-09-19.
+ *  It also used to call ANY view clean, so a Dashboard capture could have
+ *  closed this. It now reads the World's own labels off the capture with
+ *  on-device Vision (worldFromOcr in extremeRuns.ts) and refuses without
+ *  them, and `--app-window --wait <s>` polls through the lock so the check
+ *  runs the first time the screen is unlocked with the night World open.
+ *  That capture is the one confirmation still owed.
  */
 const SATURATION = 0.5;
 const CONTRAST = 0.075;
