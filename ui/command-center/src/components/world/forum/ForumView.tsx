@@ -345,7 +345,12 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           warnings per load in job 18. Asking for `PCFShadowMap` outright is
           the same shadows the scene has actually been getting, without the
           deprecation path. */}
-      <Canvas frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...FORUM_VISTA.position] as [number,number,number], fov: FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
+      {/* `forum-canvas` makes the canvas host its own stacking context (see
+          forum.css). The in-world place tags are drei <Html> overlays, which
+          portal into this host with z-index up to 16777271 by default; with
+          no context around them they out-ranked the HUD lanes and QA saw
+          "Automate" drawn over the Places rail and "Build" over the job feed. */}
+      <Canvas className="forum-canvas" frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...FORUM_VISTA.position] as [number,number,number], fov: FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
         {agoraOpen ? <MeshAgora walking={walking} /> : <ForumLighting appearance={appearance} />}
         {/* The forum is hidden rather than unmounted while the Agora is open:
             an invisible group costs no draw calls, and keeping it mounted means

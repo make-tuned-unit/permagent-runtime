@@ -20,6 +20,18 @@
   min-width:0;
   min-height:0;
   overflow:hidden}
+/* The canvas host is its own stacking context, level with the world floor.
+   Everything drei's <Html> draws — the place tags, the agents' nameplates,
+   the Mesh plaque — is portalled into this div with a z-index up to
+   16777271 (drei's default zIndexRange), and until this rule nothing
+   contained that number: it competed directly with the HUD lanes at 3-4, so
+   the night render drew "Automate" over the Places rail's Maker hall row and
+   "Build" over "Architecture preview" in the job-feed card. Inside an isolated
+   context every label ranks below any sibling HUD layer, whatever z-index an
+   individual <Html> asks for, so the rail and cards occlude the world. */
+.forum-canvas {
+  isolation:isolate;
+  z-index:0}
 .forum-brand {
   display:flex;
   align-items:center;
