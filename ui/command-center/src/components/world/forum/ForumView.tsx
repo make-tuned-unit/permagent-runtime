@@ -11,6 +11,11 @@ import { VaultBoundary } from '../areas/hall/BlenderVault';
 import { useActiveGoals } from '../agents/goalActivity';
 import { PerfSampler } from '../shared/perf';
 import { Button } from '../../common/Button';
+
+/** A ghost button is transparent, which over the 3D scene left "Show the desk",
+ *  "Fly the skiff" and the hidden-card restore as bare text on the sky. Over the
+ *  world they take the same backing as the HUD cards. */
+const SCENE_BUTTON = { '--pa-btn-bg': 'var(--forum-bg)' } as CSSProperties;
 import { useTheme } from '../../../styles/useTheme';
 import { font, radius, type as typeRamp } from '../../../styles/tokens';
 import { ENV, STATE } from '../shared/palette';
@@ -409,16 +414,18 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       />
       {!cards.isDismissed('place') && <div className="forum-location"><DismissCard label="the place card" onDismiss={()=>cards.dismiss('place')} /><span>{agoraOpen ? 'MESH AGORA' : district.name.toUpperCase()}</span><p>{agoraOpen ? 'The antechamber beyond the gate' : district.subtitle}</p></div>}
       {!cards.isDismissed('feed') && <div className="forum-live"><DismissCard label="the job feed" onDismiss={()=>cards.dismiss('feed')} />{loaded ? `${goals.length} active jobs reported` : 'Job feed unavailable / connecting'}<small>Architecture preview · existing World agent feeds</small></div>}
-      {!cards.isDismissed('hints') && <div className="forum-controls"><DismissCard label="the control hints" onDismiss={()=>cards.dismiss('hints')} />{agoraOpen ? (walking ? 'Arrow keys walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : flying ? 'Arrow keys fly · Space climb · C descend · Shift boost · land on a terrace, then E to step out · Esc overview' : walking ? 'Arrow keys walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>}
-      </div>
-      {meshPrompt && walking && !agoraOpen && <div className="forum-gate-prompt" role="status">E · Enter the MESH</div>}
+      {/* In the left lane, not centred on its own: centred at bottom:22px it sat
+          on the control hints, which span the same row. */}
       {cards.hiddenCount > 0 && (
         <div className="forum-restore" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}>
-          <Button colors={colors} variant="ghost" flashSuccess={false} onClick={cards.restoreAll}>
+          <Button colors={colors} variant="ghost" flashSuccess={false} style={SCENE_BUTTON} onClick={cards.restoreAll}>
             {`Show ${cards.hiddenCount} hidden card${cards.hiddenCount === 1 ? '' : 's'}`}
           </Button>
         </div>
       )}
+      {!cards.isDismissed('hints') && <div className="forum-controls"><DismissCard label="the control hints" onDismiss={()=>cards.dismiss('hints')} />{agoraOpen ? (walking ? 'Arrow keys walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : flying ? 'Arrow keys fly · Space climb · C descend · Shift boost · land on a terrace, then E to step out · Esc overview' : walking ? 'Arrow keys walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>}
+      </div>
+      {meshPrompt && walking && !agoraOpen && <div className="forum-gate-prompt" role="status">E · Enter the MESH</div>}
       <div className="forum-desk-toggle">
         <Button
           colors={colors}
@@ -426,6 +433,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           flashSuccess={false}
           aria-expanded={deskOpen}
           aria-controls="forum-agent-desk"
+          style={SCENE_BUTTON}
           onClick={toggleDesk}
         >
           {deskOpen ? 'Hide the desk' : 'Show the desk'}
@@ -444,7 +452,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           a card sitting on the view. */}
       {sovereignInView && !cards.isDismissed('passport') && <div className="forum-passport-slot" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}><DismissCard label="the passport" onDismiss={()=>cards.dismiss('passport')} /><ForumPassport /></div>}
       {agoraOpen && <div className="forum-agora-return"><Button colors={colors} variant="primary" flashSuccess={false} onClick={leaveMesh}>Return to the Forum</Button></div>}
-      <div className="forum-fly"><Button colors={colors} variant={flying?'ghostOn':'ghost'} flashSuccess={false} onClick={()=>{
+      <div className="forum-fly"><Button colors={colors} variant={flying?'ghostOn':'ghost'} flashSuccess={false} style={SCENE_BUTTON} onClick={()=>{
         if (flying) { setFlying(false); return; }
         setWalking(false);
         setFlying(true);

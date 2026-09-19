@@ -636,13 +636,7 @@
 .forum-passport-slot:hover .forum-card-dismiss,
 .forum-card-dismiss:focus-visible { opacity: 1; }
 
-.forum-restore {
-  position: absolute;
-  left: 50%;
-  bottom: 22px;
-  transform: translateX(-50%);
-  z-index: 4;
-}
+.forum-restore { pointer-events: auto; }
 
 /* ── HUD lanes ────────────────────────────────────────────────────────
    Each corner of the world that carries more than one thing is a single

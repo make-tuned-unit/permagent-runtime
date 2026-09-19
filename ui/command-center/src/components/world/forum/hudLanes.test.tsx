@@ -86,6 +86,29 @@ describe('the forum HUD lays each corner out as one column', () => {
     expect(order).toEqual(['forum-passport-slot', 'forum-fly', 'forum-play']);
   });
 
+  // QA 2026-09-19, real window: "Show 1 hidden card" was centred on its own at
+  // bottom:22px and printed over the control hints on the same row, and it,
+  // "Show the desk" and "Fly the skiff" were ghost buttons with a transparent
+  // background, i.e. bare text on the 3D sky.
+  it('puts the hidden-card restore in the left lane, above the hints', () => {
+    const hide = host.querySelector('[aria-label="Hide the place card"]') as HTMLButtonElement;
+    act(() => hide.click());
+    const lane = laneOf('.forum-restore');
+    expect(lane?.classList.contains('forum-lane-left')).toBe(true);
+    const order = [...lane!.children].map(c => c.className.split(' ')[0]);
+    expect(order.indexOf('forum-restore')).toBeGreaterThan(-1);
+    expect(order.indexOf('forum-restore')).toBe(order.indexOf('forum-controls') - 1);
+  });
+
+  it('backs the buttons that sit on the scene instead of leaving them transparent', () => {
+    act(() => (host.querySelector('[aria-label="Hide the place card"]') as HTMLButtonElement).click());
+    for (const sel of ['.forum-restore button', '.forum-desk-toggle button', '.forum-fly button']) {
+      const btn = host.querySelector(sel) as HTMLElement | null;
+      expect(btn, sel).not.toBeNull();
+      expect(btn!.style.getPropertyValue('--pa-btn-bg'), sel).toBe('var(--forum-bg)');
+    }
+  });
+
   it('keeps the lanes as flex columns', () => {
     const block = ruleBodies('.forum-lane').join(';');
     expect(block).toMatch(/flex-direction:\s*column/);
@@ -99,7 +122,7 @@ describe('the forum HUD lays each corner out as one column', () => {
   });
 
   it('never pins a lane item back out of flow', () => {
-    const members = ['forum-brand', 'forum-rail', 'forum-location', 'forum-live', 'forum-controls',
+    const members = ['forum-brand', 'forum-rail', 'forum-location', 'forum-live', 'forum-restore', 'forum-controls',
       'forum-passport-slot', 'forum-agora-return', 'forum-fly', 'forum-play'];
     const offenders: string[] = [];
     for (const { selector, body } of rules()) {
