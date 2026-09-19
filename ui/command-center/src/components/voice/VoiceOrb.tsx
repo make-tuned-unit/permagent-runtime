@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { orbAmp, orbBands, orbMotionFor, orbSpin } from './orbDrive';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
 import { duration, ease, font, radius, space, textSize, type } from '../../styles/tokens';
 import { useGlass } from '../common/Glass';
 import { Tooltip } from '../common/Tooltip';
+import { useCommandCenter } from '../../lib/store';
+import { WAKE_DEAF_HINT, readVoiceVerdict, type useVoice, type VoiceVerdict } from '../../hooks/useVoice';
 
 /**
  * VoiceOrb — the full-window conversation-mode takeover.
@@ -120,6 +122,56 @@ function palette(stops: RGB[], g: number): RGB {
   return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
 }
 
+/**
+ * The orb's state word. Pure, so what the user reads for each state is
+ * testable without a canvas.
+ *
+ * Be honest about the states that are NOT listening. This defaulted every
+ * unrecognised state to "Listening", so a dropped socket ('idle') or a failed
+ * one ('error') looked exactly like a live, armed mic — the agent appeared to
+ * be listening and simply never answering, with nothing on screen to say
+ * otherwise. A stalled conversation must be visibly stalled.
+ *
+ * `errorText` is the engine's own diagnosis. It matters most for the mic
+ * watchdog in useVoice: "isn't responding and just gets stuck on listening"
+ * (2026-09-18) was a hands-free input that had gone deaf (a Bluetooth profile
+ * flip suspended the VAD graph) while the orb kept saying "Listening". The
+ * watchdog now parks the engine in 'error' with "Not hearing the microphone —
+ * check the input device", and that sentence — not a generic "Voice error" —
+ * is what the user needs in order to act. It also outranks the wake hint: a
+ * `Say "Hey Henry"` over a dead mic is the same lie in different words.
+ *
+ * `spotterDeaf` is the other half of that report: a live mic whose wake-word
+ * spotter never fired, so the orb asked for "Hey Henry" forever. useVoice now
+ * fails the gate open after repeated ignored speech; the resting word must then
+ * say that bare speech works, or the user keeps repeating the phrase.
+ */
+export function orbLabel({
+  state,
+  teachWord,
+  wakeHint,
+  errorText,
+  spotterDeaf,
+}: {
+  state: string;
+  teachWord?: string | null;
+  wakeHint?: string | null;
+  errorText?: string | null;
+  spotterDeaf?: boolean;
+}): string {
+  const speaking = state === 'playing';
+  const thinking = state === 'processing' || state === 'connecting';
+  if (teachWord) return speaking ? 'Placing a word on the Orb' : 'Say the word on the Orb';
+  if (speaking) return 'Speaking';
+  if (thinking) return 'Thinking…';
+  if (state === 'error') return errorText || 'Voice error — click to exit';
+  if (state === 'idle') return 'Reconnecting…';
+  if (wakeHint) return wakeHint;
+  // Only in the resting state: once a turn is open, "Listening" is the truth.
+  if (spotterDeaf && state === 'ready') return WAKE_DEAF_HINT;
+  return 'Listening';
+}
+
 export function VoiceOrb({
   state,
   getPlaybackAnalyser,
@@ -158,6 +210,47 @@ export function VoiceOrb({
   footer?: ReactNode;
 }) {
   const { colors, reduceMotion } = useTheme();
+  // Where the engine's verdicts come from depends on the window.
+  //
+  // Main window: the store VoiceHost publishes to, so the fault reaches the
+  // takeover without every host having to thread it through.
+  const storeError = useCommandCenter(s => s.voiceEngine?.error ?? null);
+  // useVoice publishes `spotterDeaf` on the same wakeWord object VoiceHost
+  // hands the store; the store's declared shape predates it, hence the read
+  // through useVoice's own type — a rename there fails the type check here
+  // instead of silently dropping the verdict.
+  const storeSpotterDeaf = useCommandCenter(s => Boolean(
+    (s.voiceEngine?.wakeWord as Partial<Pick<ReturnType<typeof useVoice>['wakeWord'], 'spotterDeaf'>> | undefined)
+      ?.spotterDeaf,
+  ));
+  // Mirror mode (`mirrorLevel` set — the popped-out chat window): there is no
+  // engine in this window's store, so the store says nothing. Before this the
+  // mirror said "Voice error — click to exit" over a dead mic, plain
+  // "Listening" over a failed-open gate, and plain "Listening" while the gate
+  // was armed (its host never passed a wake hint) — the exact "stuck on
+  // listening" of the 2026-09-18 report, in the window it was read in. Read the
+  // verdict the engine relays instead (useVoice, VOICE_VERDICT_KEY), polled on
+  // the live feed's cadence for the same WKWebView reason.
+  const mirror = mirrorLevel !== undefined;
+  const [relayed, setRelayed] = useState<VoiceVerdict | null>(() => (mirror ? readVoiceVerdict() : null));
+  useEffect(() => {
+    if (!mirror) { setRelayed(null); return; }
+    const poll = () => setRelayed(prev => {
+      const next = readVoiceVerdict();
+      if (!prev || !next) return next;
+      const same = prev.error === next.error && prev.wakeHint === next.wakeHint
+        && prev.spotterDeaf === next.spotterDeaf;
+      return same ? prev : next;
+    });
+    poll();
+    const id = setInterval(poll, 200);
+    return () => clearInterval(id);
+  }, [mirror]);
+  const engineError = mirror ? relayed?.error ?? null : storeError;
+  const spotterDeaf = mirror ? relayed?.spotterDeaf ?? false : storeSpotterDeaf;
+  // A host-passed hint wins (the main window computes its own from the store);
+  // the mirror's host has none to pass.
+  const shownWakeHint = wakeHint ?? (mirror ? relayed?.wakeHint ?? null : null);
   const wordGlass = useGlass('glass');
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number | null>(null);
@@ -374,31 +467,20 @@ export function VoiceOrb({
     // loop down and resetting the band smoothing and the rotation mid-turn.
   }, [getPlaybackAnalyser, getMicAnalyser, points]);
 
+  // A fault is amber, not the accent: in cyan, "Not hearing the microphone"
+  // read as one more resting state. Not red either — red on this screen means
+  // "recording".
   const stateColor = speaking
     ? colors.cyan
     : thinking
       ? colors.purple
       : listening
         ? colors.danger
-        : colors.cyan;
-
-  // Be honest about the states that are NOT listening. This defaulted every
-  // unrecognised state to "Listening", so a dropped socket ('idle') or a failed
-  // one ('error') looked exactly like a live, armed mic — the agent appeared to
-  // be listening and simply never answering, with nothing on screen to say
-  // otherwise. A stalled conversation must be visibly stalled.
-  const teaching = Boolean(teachWord);
-  const label = teaching
-    ? (speaking ? 'Placing a word on the Orb' : 'Say the word on the Orb')
-    : speaking
-      ? 'Speaking'
-      : thinking
-        ? 'Thinking…'
         : state === 'error'
-          ? 'Voice error — click to exit'
-          : state === 'idle'
-            ? 'Reconnecting…'
-            : (wakeHint ?? 'Listening');
+          ? colors.warning
+          : colors.cyan;
+
+  const label = orbLabel({ state, teachWord, wakeHint: shownWakeHint, errorText: engineError, spotterDeaf });
 
   return (
     <Tooltip content="Click anywhere to end the conversation">
@@ -493,6 +575,8 @@ export function VoiceOrb({
 
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: space.md }}>
         <span
+          data-testid="voice-orb-label"
+          role="status"
           style={{
             fontFamily: font.display,
             fontSize: textSize.small,

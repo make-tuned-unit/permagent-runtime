@@ -224,6 +224,248 @@ export function shouldEndVadTurn(
   return silentFor > endpointWindowMs(voicedFor);
 }
 
+// ── Mic-input watchdog ────────────────────────────────────────────────────
+//
+// "It isn't responding and just gets stuck on Listening" (2026-09-18). The
+// daemon log showed the wake/VAD gate never opened a turn across five
+// sessions, and nothing on the client could tell "armed and hearing you" from
+// "armed and receiving nothing". The hands-free VAD graph is an AudioContext +
+// ScriptProcessor on the persistent mic stream: a Bluetooth A2DP<->HFP profile
+// flip or a sleep/wake suspends that context (or mutes/ends the track), the
+// processor simply stops firing, and nothing noticed — `startVadMonitor`
+// returns early while `vadCtxRef` exists, so the dead graph was never rebuilt
+// and the orb said "Listening" forever. The pure half of the fix lives here so
+// it is unit-testable without an audio graph, like `vadSpectrum.ts`.
+
+/** How long the armed VAD graph may go without processing a buffer (or sit
+ *  with a muted track) before the input counts as dead. The monitor fires
+ *  every ~128ms, so 3s is ~23 missed buffers — never a hiccup. It is also the
+ *  grace a freshly built graph gets before it is judged. */
+export const MIC_STALL_MS = 3_000;
+
+/** Once the fault is on screen, how often to try one more rebuild — cheap,
+ *  and it recovers an input that came back without firing `devicechange`. */
+export const MIC_FAULT_RETRY_MS = 10_000;
+
+/** Watchdog poll period. */
+export const MIC_WATCHDOG_TICK_MS = 1_000;
+
+/** What the orb says instead of "Listening" when the mic is delivering nothing. */
+export const MIC_FAULT_MESSAGE = 'Not hearing the microphone — check the input device';
+
+/** Peak |sample| at or below which a buffer counts as digital silence —
+ *  1e-5 is -100 dBFS, far under any real capsule's self-noise (even a quiet
+ *  room with noise suppression sits tens of dB above it). What lands here is
+ *  an input delivering zeros: an HFP/SCO link renegotiating, or a device
+ *  muted in hardware. Those buffers still ARRIVE, so a liveness check that
+ *  only asked "did the processor fire?" called them healthy. */
+export const MIC_SILENCE_PEAK = 1e-5;
+
+/** How long the armed input may deliver only digital silence before it
+ *  counts as dead. Longer than MIC_STALL_MS: silence is a softer signal than
+ *  "no buffers at all", and a false alarm here would nag in a quiet room. */
+export const MIC_SILENT_MS = 5_000;
+
+/** What the orb says when buffers arrive but carry nothing. */
+export const MIC_SILENT_MESSAGE = 'Microphone is sending silence — check the input device';
+
+export type MicInputFault =
+  | 'no-stream'           // no mic stream at all (re-acquire failed)
+  | 'track-ended'         // device unplugged / revoked
+  | 'no-graph'            // VAD graph missing while hands-free is armed
+  | 'context-not-running' // AudioContext suspended / interrupted / closed
+  | 'track-muted'         // the OS is feeding the track no audio
+  | 'no-buffers'          // graph "running" but the processor stopped firing
+  | 'silent';             // buffers arrive, but every one is digital silence
+
+export interface MicInputSample {
+  hasStream: boolean;
+  trackEnded: boolean;
+  hasGraph: boolean;
+  /** `AudioContext.state` of the VAD graph, or null without one. */
+  ctxState: string | null;
+  /** How long the track has been continuously muted (0 = not muted). */
+  msTrackMuted: number;
+  /** Since the last buffer processed by the CURRENT graph; Infinity if the
+   *  current graph has never processed one. */
+  msSinceLastBuffer: number;
+  /** Since the current graph last delivered a buffer with any signal in it
+   *  (peak above MIC_SILENCE_PEAK) — see {@link msSinceMicSignal}. */
+  msSinceSignal: number;
+}
+
+/**
+ * Pure: how long the input has been digitally silent, for the watchdog.
+ *
+ * Measured from the LATEST of: the last non-silent buffer, the graph build
+ * (a buffer from an older graph says nothing about this one), and the moment
+ * the watchdog began judging this stretch (`judgingSince`). The last matters
+ * because echo cancellation may legitimately gate the mic to zeros while the
+ * agent is SPEAKING — a state the watchdog does not judge — and that stretch
+ * must not count against the mic the instant the loop returns to 'ready'.
+ */
+export function msSinceMicSignal(opts: {
+  now: number;
+  lastSignalAt: number;
+  graphBuiltAt: number;
+  judgingSince: number;
+}): number {
+  const { now, lastSignalAt, graphBuiltAt, judgingSince } = opts;
+  return Math.max(0, now - Math.max(lastSignalAt, graphBuiltAt, judgingSince));
+}
+
+/** Pure: peak |x| of a buffer — the digital-silence test's input. */
+export function bufferPeak(input: ArrayLike<number>): number {
+  let peak = 0;
+  for (let i = 0; i < input.length; i++) {
+    const v = input[i] < 0 ? -input[i] : input[i];
+    if (v > peak) peak = v;
+  }
+  return peak;
+}
+
+/**
+ * Pure: is the armed hands-free input actually delivering audio? Returns the
+ * most specific fault, or null when healthy. Order matters only for the
+ * diagnosis logged/shown — any fault means "not hearing you".
+ */
+export function diagnoseMicInput(
+  s: MicInputSample,
+  stallMs: number = MIC_STALL_MS,
+  silentMs: number = MIC_SILENT_MS,
+): MicInputFault | null {
+  if (!s.hasStream) return 'no-stream';
+  if (s.trackEnded) return 'track-ended';
+  if (!s.hasGraph) return 'no-graph';
+  if (s.ctxState !== 'running') return 'context-not-running';
+  if (s.msTrackMuted > stallMs) return 'track-muted';
+  if (!Number.isFinite(s.msSinceLastBuffer) || s.msSinceLastBuffer > stallMs) return 'no-buffers';
+  if (s.msSinceSignal > silentMs) return 'silent';
+  return null;
+}
+
+export type MicWatchdogAction = 'healthy' | 'wait' | 'rebuild' | 'surface-fault';
+
+/**
+ * Pure: what the watchdog does with a diagnosis.
+ *
+ * One rebuild first (a profile flip usually just needs a fresh context), and
+ * only if the rebuilt graph is ALSO dead once its grace expires does the fault
+ * go on screen. After that, a slow retry. `msSinceGraphBuilt` counts from the
+ * last build ATTEMPT, so a graph is never judged inside its own start-up.
+ *
+ * `provenLive`: the current graph has delivered at least one buffer with
+ * signal in it. No fault is not the same as proof — a freshly (re)built graph
+ * pumping zeros is inside its silence window, and treating that as 'healthy'
+ * reset the rebuild count and cleared the on-screen fault every retry, so an
+ * all-zero input flapped between rebuilds and never said what was wrong.
+ */
+export function micWatchdogStep(opts: {
+  fault: MicInputFault | null;
+  provenLive?: boolean;
+  rebuildAttempts: number;
+  msSinceGraphBuilt: number;
+  faultSurfaced: boolean;
+  graceMs?: number;
+  retryMs?: number;
+}): MicWatchdogAction {
+  const {
+    fault,
+    provenLive = true,
+    rebuildAttempts,
+    msSinceGraphBuilt,
+    faultSurfaced,
+    graceMs = MIC_STALL_MS,
+    retryMs = MIC_FAULT_RETRY_MS,
+  } = opts;
+  if (!fault) return provenLive ? 'healthy' : 'wait';
+  if (msSinceGraphBuilt < graceMs) return 'wait';
+  if (rebuildAttempts <= 0) return 'rebuild';
+  if (!faultSurfaced) return 'surface-fault';
+  return msSinceGraphBuilt >= retryMs ? 'rebuild' : 'wait';
+}
+
+/** Pure: the user-facing sentence for a fault. */
+export function micFaultMessage(fault: MicInputFault): string {
+  if (fault === 'no-stream' || fault === 'track-ended') {
+    return 'Microphone disconnected — check the input device';
+  }
+  if (fault === 'silent') return MIC_SILENT_MESSAGE;
+  return MIC_FAULT_MESSAGE;
+}
+
+// ── Deaf wake-word spotter (fail-open) ─────────────────────────────────────
+//
+// The rest of "stuck on listening": the 2026-09-01 forensics found a Bose HFP
+// mic that DID deliver buffers — low-level, but speech — to a keyword spotter
+// that never fired, behind an armed wake gate. While gated, VAD onset may not
+// open a turn and only a wake hit clears the gate, so the orb said
+// `Say "Hey Henry"` forever while the user said exactly that. The mic watchdog
+// cannot see this (the input is alive); only the pattern can: repeated,
+// sustained, voice-shaped audio and a spotter that has never answered.
+//
+// Once that pattern holds, the gate fails OPEN for the rest of the activation
+// (surviving socket reconnects; ended by deactivate, a wake hit, switching the
+// wake word off, or an input-device change): bare speech opens turns (the same
+// behaviour as hands-free with the wake word switched off, which the user
+// already opted into by arming hands-free), at the level the ignored speech
+// was counted at (vadOnsetLevel), and the orb says so instead of asking for a
+// phrase nobody is hearing. A spotter that has fired even once on the current
+// connection is working, and never fails open.
+
+/** Minimum time armed-and-gated before the spotter can be judged deaf. */
+export const WAKE_DEAF_GATED_MS = 15_000;
+
+/** Distinct voiced episodes (sustained, voice-shaped onsets with a quiet gap
+ *  between them) the spotter must have ignored. Three is "said it, said it
+ *  again, said it a third time" — a single cough or a sentence is not. */
+export const WAKE_DEAF_VOICED_EPISODES = 3;
+
+/** What the orb shows once the gate has failed open. */
+export const WAKE_DEAF_HINT = 'Wake word not being detected — just talk';
+
+/** Per-buffer RMS a sustained, voice-shaped streak must exceed to open a turn
+ *  from 'ready'. Set against keyboard clicks and room noise on a normal mic. */
+export const VAD_ONSET_RMS = 0.025;
+/** Per-buffer RMS that keeps a recording turn alive, and the level the
+ *  deaf-spotter episodes are counted at. */
+export const VAD_KEEPALIVE_RMS = 0.010;
+
+/**
+ * Pure: the level bare speech must reach to open a turn.
+ *
+ * Normally VAD_ONSET_RMS. Once the spotter has been judged deaf, the evidence
+ * for that verdict was speech counted at VAD_KEEPALIVE_RMS — the 2026-09-01
+ * forensic mic (Bose QC35 on HFP) delivers DSP-flattened speech sitting between
+ * the two. Failing the gate open but still demanding the onset level left that
+ * user exactly as stuck, now behind an orb promising "just talk". So a deaf
+ * verdict lowers onset to the level the ignored speech actually reached. The
+ * spectral gate and the multi-buffer streak still apply, so a lone key click
+ * still cannot open a turn.
+ */
+export function vadOnsetLevel(spotterDeaf: boolean): number {
+  return spotterDeaf ? VAD_KEEPALIVE_RMS : VAD_ONSET_RMS;
+}
+
+/** Pure: has the wake-word spotter shown itself deaf enough to fail open? */
+export function wakeSpotterLooksDeaf(opts: {
+  gatedForMs: number;
+  voicedEpisodes: number;
+  spotterHasFired: boolean;
+  minGatedMs?: number;
+  minEpisodes?: number;
+}): boolean {
+  const {
+    gatedForMs,
+    voicedEpisodes,
+    spotterHasFired,
+    minGatedMs = WAKE_DEAF_GATED_MS,
+    minEpisodes = WAKE_DEAF_VOICED_EPISODES,
+  } = opts;
+  if (spotterHasFired) return false;
+  return gatedForMs >= minGatedMs && voicedEpisodes >= minEpisodes;
+}
+
 /** localStorage key for the wake-word preference (default: enabled). */
 export const WAKE_WORD_LS_KEY = 'voice:wakeWordEnabled';
 
@@ -235,6 +477,108 @@ export const WAKE_WORD_LS_KEY = 'voice:wakeWordEnabled';
  * "hey <name>" every exchange.
  */
 export const WAKE_REARM_MS = 30_000;
+
+// ── Engine verdicts: relayed to mirror windows, kept for inspection ─────────
+//
+// The watchdog and the deaf-spotter fail-open decide things the user must SEE,
+// and the 2026-09-18 report ("isn't responding and just gets stuck on
+// listening") reached the user through two gaps after both fixes shipped:
+//
+//  1. The popped-out chat window renders a MIRROR orb (ChatApp) from the live
+//     feed, which carries only state + level. Its window has no engine in its
+//     store, so over a dead mic it said "Voice error — click to exit", over a
+//     failed-open gate plain "Listening", and while wake-gated plain
+//     "Listening" instead of `Say "Hey Henry"` — the exact "stuck on
+//     listening" words. The engine now publishes what it decided under its own
+//     key, and a mirror orb reads it (VoiceOrb, mirror mode). Same transport
+//     and reasoning as lib/voiceHandoff: localStorage, polled, because
+//     WKWebView does not reliably deliver `storage` events across webviews.
+//
+//  2. QA could not confirm either verdict: they were `console.warn` lines only,
+//     and the daemon has no message to log them under (daemon.err was searched
+//     and could never have shown them). The engine now also keeps a short,
+//     bounded trail of verdict EVENTS in localStorage, which WKWebView persists
+//     to the app's LocalStorage sqlite on disk — readable without driving the
+//     GUI or opening the console.
+
+/** Current engine verdict (owner window → mirror orbs). */
+export const VOICE_VERDICT_KEY = 'permagent-voice-verdict';
+/** Bounded trail of verdict events, newest last, for after-the-fact checks. */
+export const VOICE_VERDICT_LOG_KEY = 'permagent-voice-verdict-log';
+export const VOICE_VERDICT_LOG_MAX = 20;
+
+export interface VoiceVerdict {
+  /** The engine's error text (the watchdog's sentence, or any other fault). */
+  error: string | null;
+  /** Armed wake gate: what to say to open a turn (e.g. `Say "Hey Henry"`). */
+  wakeHint: string | null;
+  /** The gate failed open because the spotter ignored repeated speech. */
+  spotterDeaf: boolean;
+}
+
+export type VoiceVerdictEventName =
+  | 'mic_rebuild'
+  | 'mic_fault_surfaced'
+  | 'mic_fault_cleared'
+  | 'wake_gate_failed_open';
+
+export interface VoiceVerdictEvent {
+  /** ISO timestamp, so the trail lines up against daemon.err by eye. */
+  at: string;
+  event: VoiceVerdictEventName;
+  detail: string | null;
+}
+
+/**
+ * Pure: the wake hint for a wake-word surface. The same rule VoiceHost applies
+ * to the main-window takeover; exported so the relayed verdict cannot drift
+ * from it.
+ */
+export function wakeHintFor(w: { active: boolean; gated: boolean; phrase: string | null }): string | null {
+  return w.active && w.gated && w.phrase ? `Say "${w.phrase}"` : null;
+}
+
+export function publishVoiceVerdict(v: VoiceVerdict): void {
+  try {
+    localStorage.setItem(VOICE_VERDICT_KEY, JSON.stringify({ ...v, at: Date.now() }));
+  } catch { /* private mode / quota: the main window still reads the store */ }
+}
+
+export function clearVoiceVerdict(): void {
+  try { localStorage.removeItem(VOICE_VERDICT_KEY); } catch { /* ignore */ }
+}
+
+export function readVoiceVerdict(): VoiceVerdict | null {
+  try {
+    const raw = localStorage.getItem(VOICE_VERDICT_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw) as Partial<VoiceVerdict>;
+    return {
+      error: typeof v.error === 'string' && v.error ? v.error : null,
+      wakeHint: typeof v.wakeHint === 'string' && v.wakeHint ? v.wakeHint : null,
+      spotterDeaf: v.spotterDeaf === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function readVoiceVerdictLog(): VoiceVerdictEvent[] {
+  try {
+    const raw = localStorage.getItem(VOICE_VERDICT_LOG_KEY);
+    const list = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(list) ? (list as VoiceVerdictEvent[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function recordVoiceVerdictEvent(event: VoiceVerdictEventName, detail: string | null = null): void {
+  try {
+    const next = [...readVoiceVerdictLog(), { at: new Date().toISOString(), event, detail }];
+    localStorage.setItem(VOICE_VERDICT_LOG_KEY, JSON.stringify(next.slice(-VOICE_VERDICT_LOG_MAX)));
+  } catch { /* the console line is still there */ }
+}
 
 export interface VoiceEvent {
   type: 'transcript' | 'reply_text' | 'reply_audio' | 'error' | 'state_change';
@@ -346,6 +690,19 @@ export function useVoice(options: UseVoiceOptions = {}) {
   // ("engaged") = a conversation is flowing and bare VAD onset opens turns.
   const [wakeGated, setWakeGated] = useState(false);
   const wakeGatedRef = useRef(false);
+  // Deaf-spotter fail-open (see wakeSpotterLooksDeaf). `wakeDeaf` = the gate
+  // has failed open because the spotter ignored repeated speech.
+  const [wakeDeaf, setWakeDeaf] = useState(false);
+  const wakeDeafRef = useRef(false);
+  // The spotter has answered at least once on this handler — it works.
+  const wakeSpotterFiredRef = useRef(false);
+  // When the current armed-gate stretch began (0 = not gated).
+  const wakeGatedSinceRef = useRef(0);
+  // Voiced episodes heard during the current gated stretch, the running
+  // voiced-buffer streak, and a latch so one long utterance counts once.
+  const wakeVoicedEpisodesRef = useRef(0);
+  const wakeEpisodeStreakRef = useRef(0);
+  const wakeEpisodeLatchRef = useRef(false);
   // Last moment the loop was in any non-ready state — the "conversation is
   // live" clock that decides when the wake gate re-arms.
   const lastConvActivityRef = useRef(0);
@@ -519,12 +876,24 @@ export function useVoice(options: UseVoiceOptions = {}) {
             setWakeActive(active);
             setWakePhrase(msg.phrase ?? null);
             if (active) {
+              // The daemon sends this on EVERY socket (re)connect, and a
+              // barge-in interrupt tears the socket down (V3 forensics). The
+              // deaf verdict is about this mic feeding this spotter model, not
+              // about one socket, so it is KEPT for the rest of the activation:
+              // clearing it here re-trapped a user already judged unheard
+              // behind the gate for another 15s and 3 ignored attempts after
+              // every reconnect. It ends only on deactivate(), a wake hit, the
+              // wake word being switched off, or the input device changing.
+              wakeSpotterFiredRef.current = false;
+              wakeGatedSinceRef.current = 0;
+              wakeVoicedEpisodesRef.current = 0;
               // Arm the gate unless a conversation was just interrupted (e.g.
               // a barge-in reconnect): mid-conversation the user expects to
               // keep talking without re-invoking the wake phrase.
               const engaged = Date.now() - lastConvActivityRef.current < WAKE_REARM_MS;
-              wakeGatedRef.current = !engaged;
-              setWakeGated(!engaged);
+              const gate = !engaged && !wakeDeafRef.current;
+              wakeGatedRef.current = gate;
+              setWakeGated(gate);
             } else if (msg.reason === 'downloading') {
               // The daemon is fetching the KWS model; ask again shortly.
               if (wakeRetryRef.current) clearTimeout(wakeRetryRef.current);
@@ -536,6 +905,13 @@ export function useVoice(options: UseVoiceOptions = {}) {
             break;
           }
           case 'wake': {
+            // Any detection proves the spotter can hear — it is not deaf, and
+            // from here on the gate behaves normally for this session.
+            wakeSpotterFiredRef.current = true;
+            if (wakeDeafRef.current) {
+              wakeDeafRef.current = false;
+              setWakeDeaf(false);
+            }
             const action = routeWakeEvent(msg.kind ?? '', stateRef.current);
             if (action === 'start-turn') {
               wakeGatedRef.current = false;
@@ -923,6 +1299,52 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [connectSocket]);
 
+  /**
+   * Open the mic with the VAD-friendly constraints and watch its tracks. Used
+   * at activation AND by the mic watchdog's rebuild, so a re-acquired stream
+   * (new default device after a Bluetooth profile flip) is configured and
+   * watched exactly like the first one.
+   */
+  const acquireMicStream = useCallback(async (): Promise<MediaStream> => {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        sampleRate,
+        channelCount: 1,
+        echoCancellation: true,
+        // Browser-level noise suppression — attenuates broadband
+        // non-speech (keyboard clatter, fans) before the VAD ever sees it.
+        noiseSuppression: true,
+        // AGC is deliberately OFF. It renormalizes toward a target level,
+        // so during silence it AMPLIFIES the noise floor — pushing room
+        // tone and key clicks up over our fixed RMS thresholds. It works
+        // directly against a fixed-threshold VAD.
+        autoGainControl: false,
+      },
+    });
+    // Track listeners: nothing used to notice the device going away or the OS
+    // muting it (the "stuck on Listening" report). Each handler only records
+    // what happened; the watchdog tick owns every rebuild decision, so a
+    // storm of events can never stack rebuilds. Handlers for a stream that has
+    // since been replaced are ignored.
+    for (const track of stream.getTracks()) {
+      track.onended = () => {
+        if (mediaStreamRef.current !== stream) return;
+        console.warn('[useVoice] mic track ended — re-acquiring the input');
+        micReacquirePendingRef.current = true;
+      };
+      track.onmute = () => {
+        if (mediaStreamRef.current !== stream) return;
+        console.warn('[useVoice] mic track muted by the system');
+        if (!micMutedSinceRef.current) micMutedSinceRef.current = Date.now();
+      };
+      track.onunmute = () => {
+        if (mediaStreamRef.current !== stream) return;
+        micMutedSinceRef.current = 0;
+      };
+    }
+    return stream;
+  }, [sampleRate]);
+
   /** Activate voice: acquire mic + connect socket. */
   const activate = useCallback(async () => {
     activeRef.current = true;
@@ -931,22 +1353,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
     // This makes startRecording synchronous — no getUserMedia race.
     if (!mediaStreamRef.current) {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            sampleRate,
-            channelCount: 1,
-            echoCancellation: true,
-            // Browser-level noise suppression — attenuates broadband
-            // non-speech (keyboard clatter, fans) before the VAD ever sees it.
-            noiseSuppression: true,
-            // AGC is deliberately OFF. It renormalizes toward a target level,
-            // so during silence it AMPLIFIES the noise floor — pushing room
-            // tone and key clicks up over our fixed RMS thresholds. It works
-            // directly against a fixed-threshold VAD.
-            autoGainControl: false,
-          },
-        });
+        const stream = await acquireMicStream();
         mediaStreamRef.current = stream;
+        micMutedSinceRef.current = 0;
         console.log('[useVoice] mic acquired');
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Microphone access failed';
@@ -968,7 +1377,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     } catch (e) {
       console.error('[useVoice] activate failed:', e);
     }
-  }, [sampleRate, ensureReady, setStateAndEmit]);
+  }, [acquireMicStream, ensureReady, setStateAndEmit]);
 
   /** Deactivate voice: release mic + disconnect socket. */
   const deactivate = useCallback(() => {
@@ -999,6 +1408,18 @@ export function useVoice(options: UseVoiceOptions = {}) {
     setWakeActive(false);
     wakeGatedRef.current = false;
     setWakeGated(false);
+    wakeDeafRef.current = false;
+    setWakeDeaf(false);
+    wakeSpotterFiredRef.current = false;
+    wakeGatedSinceRef.current = 0;
+    wakeVoicedEpisodesRef.current = 0;
+    // The mic watchdog's bookkeeping belongs to this activation only, and its
+    // fault text must not outlive it on the mic button.
+    if (micFaultSurfacedRef.current) setError(null);
+    micRebuildAttemptsRef.current = 0;
+    micFaultSurfacedRef.current = false;
+    micReacquirePendingRef.current = false;
+    micMutedSinceRef.current = 0;
     // FIX 4: the pill must not survive an explicit "end voice" — otherwise
     // it sits on screen showing a word nothing is listening for anymore.
     // The socket close below is what makes the SERVER forget it too
@@ -1124,6 +1545,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
       setWakeActive(false);
       wakeGatedRef.current = false;
       setWakeGated(false);
+      // Wake word switched off: there is no spotter left to be deaf, and the
+      // orb must not keep saying the wake word is not being detected.
+      wakeDeafRef.current = false;
+      setWakeDeaf(false);
     }
   }, [sampleRate]);
   syncWakeModeRef.current = syncWakeMode;
@@ -1175,11 +1600,29 @@ export function useVoice(options: UseVoiceOptions = {}) {
   // floor under vadTurnStartRef — see that function's docstring.
   const recordingStartedAtRef = useRef(0);
 
+  // Mic watchdog state (see diagnoseMicInput / micWatchdogStep).
+  // Last time the VAD processor handed us a buffer — the liveness signal.
+  const vadLastBufferAtRef = useRef(0);
+  // Last time a buffer carried any signal (peak above MIC_SILENCE_PEAK).
+  const vadLastSignalAtRef = useRef(0);
+  // When the watchdog began judging the current stretch (0 = not judging).
+  const micJudgingSinceRef = useRef(0);
+  // Last time a VAD graph build was ATTEMPTED (first build or rebuild).
+  const micGraphBuiltAtRef = useRef(0);
+  // Rebuilds since the input was last healthy.
+  const micRebuildAttemptsRef = useRef(0);
+  // The orb is currently showing the mic fault (state 'error' is ours).
+  const micFaultSurfacedRef = useRef(false);
+  const micRebuildInFlightRef = useRef(false);
+  // A device change / ended track asked for a fresh getUserMedia.
+  const micReacquirePendingRef = useRef(false);
+  // When the current track went muted (0 = not muted).
+  const micMutedSinceRef = useRef(0);
+
   // A mechanical keyboard's click is a loud, very SHORT transient. Speech is
   // quieter per-buffer but sustained — so the discriminator that works is
   // duration, not level. Onset must hold across several consecutive buffers.
-  const VAD_ONSET = 0.025;
-  const VAD_KEEPALIVE = 0.010;
+  const VAD_KEEPALIVE = VAD_KEEPALIVE_RMS;
   const VAD_BARGE = 0.05;
   /** Consecutive ~128ms buffers over onset before a turn starts. A mechanical
    *  keyboard click is a single-buffer transient; speech sustains — this was
@@ -1227,6 +1670,27 @@ export function useVoice(options: UseVoiceOptions = {}) {
     if (!stream || vadCtxRef.current) return;
     const ctx = new AudioContext({ sampleRate });
     vadCtxRef.current = ctx;
+    micGraphBuiltAtRef.current = Date.now();
+    // A Bluetooth profile flip or sleep/wake SUSPENDS this context and the
+    // processor below silently stops firing — the "stuck on Listening"
+    // report. Resume on the spot; if that does not bring buffers back, the
+    // watchdog rebuilds the graph. Events from a context we already replaced
+    // are ignored (closing it on teardown fires one too). Property-style
+    // handler + optional resume: WebKit also reports a non-standard
+    // 'interrupted' state, and not every AudioContext implementation has
+    // both members.
+    const tryResume = () => {
+      if (typeof ctx.resume === 'function') ctx.resume().catch(() => {});
+    };
+    ctx.onstatechange = () => {
+      if (vadCtxRef.current !== ctx) return;
+      const st = ctx.state as string;
+      if (st === 'suspended' || st === 'interrupted') {
+        console.warn(`[useVoice] VAD audio context ${st} — resuming`);
+        tryResume();
+      }
+    };
+    if (ctx.state === 'suspended') tryResume();
     const source = ctx.createMediaStreamSource(stream);
     // Tap for the orb visualization — same small-FFT/smoothing profile as the
     // playback analyser. An analyser is a pass-through observer: it doesn't
@@ -1239,8 +1703,15 @@ export function useVoice(options: UseVoiceOptions = {}) {
     const proc = ctx.createScriptProcessor(2048, 1, 1);
     vadProcRef.current = proc;
     proc.onaudioprocess = (e) => {
-      if (!handsFreeRef.current) return;
+      // Liveness for the mic watchdog — stamped before anything else, since
+      // "the processor fired at all" is exactly what it needs to know.
+      vadLastBufferAtRef.current = Date.now();
       const input = e.inputBuffer.getChannelData(0);
+      // ...and whether it carried anything: an HFP link renegotiating keeps
+      // the processor firing with all-zero buffers, which "fired at all" alone
+      // would call a healthy mic.
+      if (bufferPeak(input) > MIC_SILENCE_PEAK) vadLastSignalAtRef.current = vadLastBufferAtRef.current;
+      if (!handsFreeRef.current) return;
       let sum = 0;
       for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
       const rms = Math.sqrt(sum / input.length);
@@ -1266,6 +1737,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
       } else if (
         wakeActiveRef.current &&
         !wakeGatedRef.current &&
+        // A spotter already shown deaf would just trap the user again.
+        !wakeDeafRef.current &&
         now - lastConvActivityRef.current > WAKE_REARM_MS
       ) {
         wakeGatedRef.current = true;
@@ -1275,15 +1748,56 @@ export function useVoice(options: UseVoiceOptions = {}) {
       if (s === 'ready') {
         vadBargeStreakRef.current = 0;
         // While the wake gate is armed, VAD onset must NOT open a turn — the
-        // wake phrase (detected daemon-side) is the only way in.
+        // wake phrase (detected daemon-side) is the only way in...
         if (wakeActiveRef.current && wakeGatedRef.current) {
           vadOnsetStreakRef.current = 0;
-          return;
+          // ...unless the spotter is deaf. Count voiced episodes it ignored;
+          // the bar is the keepalive level, not onset, because the reported
+          // case was a LOW-level HFP mic. One episode = a sustained voiced
+          // streak, then quiet again before the next can count.
+          if (!wakeGatedSinceRef.current) wakeGatedSinceRef.current = now;
+          if (rms > VAD_KEEPALIVE && looksLikeVoice()) {
+            wakeEpisodeStreakRef.current += 1;
+            if (wakeEpisodeStreakRef.current >= VAD_ONSET_STREAK && !wakeEpisodeLatchRef.current) {
+              wakeEpisodeLatchRef.current = true;
+              wakeVoicedEpisodesRef.current += 1;
+            }
+          } else {
+            wakeEpisodeStreakRef.current = Math.max(0, wakeEpisodeStreakRef.current - 1);
+            if (wakeEpisodeStreakRef.current === 0) wakeEpisodeLatchRef.current = false;
+          }
+          if (wakeSpotterLooksDeaf({
+            gatedForMs: now - wakeGatedSinceRef.current,
+            voicedEpisodes: wakeVoicedEpisodesRef.current,
+            spotterHasFired: wakeSpotterFiredRef.current,
+          })) {
+            console.warn(
+              `[useVoice] wake spotter silent through ${wakeVoicedEpisodesRef.current} voiced ` +
+              'episodes — failing the wake gate open; speech now opens turns',
+            );
+            recordVoiceVerdictEvent('wake_gate_failed_open', `${wakeVoicedEpisodesRef.current} voiced episodes ignored`);
+            wakeDeafRef.current = true;
+            setWakeDeaf(true);
+            wakeGatedRef.current = false;
+            setWakeGated(false);
+            // Treat the current utterance as the start of the conversation so
+            // the idle re-arm clock starts fresh too.
+            lastConvActivityRef.current = now;
+          } else {
+            return;
+          }
         }
+        wakeGatedSinceRef.current = 0;
+        wakeVoicedEpisodesRef.current = 0;
+        wakeEpisodeStreakRef.current = 0;
+        wakeEpisodeLatchRef.current = false;
         // Sustained-onset gate: one loud buffer (a key click) is ignored;
         // real speech clears the streak in ~250ms — imperceptible latency,
         // and the recording still captures the utterance from its 2nd buffer.
-        if (rms > VAD_ONSET && looksLikeVoice()) {
+        // A deaf spotter's verdict lowers the bar to the level its ignored
+        // episodes were counted at (see vadOnsetLevel) — otherwise the low-
+        // level HFP mic that caused the verdict still could not open a turn.
+        if (rms > vadOnsetLevel(wakeDeafRef.current) && looksLikeVoice()) {
           vadOnsetStreakRef.current += 1;
           if (vadOnsetStreakRef.current >= VAD_ONSET_STREAK) {
             vadOnsetStreakRef.current = 0;
@@ -1340,6 +1854,17 @@ export function useVoice(options: UseVoiceOptions = {}) {
       startVadMonitor();
     } else {
       stopVadMonitor();
+      // The mic fault describes the hands-free graph we just tore down; leaving
+      // it would strand push-to-talk in 'error' behind a stale message.
+      micRebuildAttemptsRef.current = 0;
+      micReacquirePendingRef.current = false;
+      if (micFaultSurfacedRef.current) {
+        micFaultSurfacedRef.current = false;
+        setError(null);
+        if (stateRef.current === 'error' && wsRef.current?.readyState === WebSocket.OPEN) {
+          setStateAndEmit('ready');
+        }
+      }
       // A VAD-started recording without its monitor would never end — close
       // the turn normally so anything already said still gets processed.
       if (stateRef.current === 'recording') stopRecordingRef.current?.();
@@ -1347,13 +1872,196 @@ export function useVoice(options: UseVoiceOptions = {}) {
     // Wake listening follows hands-free (on: start spotting if enabled;
     // off: tell the daemon to stop).
     syncWakeModeRef.current?.();
-  }, [activate, startVadMonitor, stopVadMonitor]);
+  }, [activate, startVadMonitor, stopVadMonitor, setStateAndEmit]);
 
   // Late-bound refs so the monitor callback (created once) always calls the
   // freshest versions without re-wiring the audio graph.
   const startRecordingRef = useRef<(() => void) | null>(null);
   const stopRecordingRef = useRef<(() => void) | null>(null);
   const interruptRef = useRef<(() => void) | null>(null);
+
+  // ── Mic-input watchdog ───────────────────────────────────────────────────
+  // Tear down and rebuild the hands-free listening graph, re-acquiring the
+  // mic when asked to (device change, ended track) or when the current track
+  // is dead. The new stream is acquired BEFORE the old one is released, so a
+  // failed getUserMedia keeps whatever input still existed. Never swaps the
+  // stream under a live recording — its processor is reading the old one.
+  const rebuildMicGraph = useCallback(async (reason: string, reacquire: boolean) => {
+    if (micRebuildInFlightRef.current) return;
+    micRebuildInFlightRef.current = true;
+    micRebuildAttemptsRef.current += 1;
+    micGraphBuiltAtRef.current = Date.now();
+    console.warn(`[useVoice] mic watchdog: rebuilding the listening graph — ${reason}`);
+    recordVoiceVerdictEvent('mic_rebuild', reason);
+    try {
+      stopVadMonitor();
+      const old = mediaStreamRef.current;
+      const oldDead = !old || old.getTracks().every(t => t.readyState === 'ended');
+      if ((reacquire || oldDead) && stateRef.current !== 'recording') {
+        const fresh = await acquireMicStream();
+        if (!activeRef.current) {
+          // Voice was turned off while we waited — don't leak a live mic.
+          fresh.getTracks().forEach(t => t.stop());
+          return;
+        }
+        mediaStreamRef.current = fresh;
+        micMutedSinceRef.current = 0;
+        old?.getTracks().forEach(t => t.stop());
+      }
+      if (!handsFreeRef.current || !activeRef.current) return;
+      startVadMonitor();
+    } catch (e) {
+      console.warn('[useVoice] mic watchdog: rebuild failed:', e);
+    } finally {
+      // Grace for the new graph counts from when it actually exists.
+      micGraphBuiltAtRef.current = Date.now();
+      micRebuildInFlightRef.current = false;
+    }
+  }, [acquireMicStream, startVadMonitor, stopVadMonitor]);
+
+  // One watchdog tick. Reads only refs, so the interval never needs rewiring.
+  const micWatchdogTick = useCallback(() => {
+    if (!handsFreeRef.current || !activeRef.current) return;
+    if (micRebuildInFlightRef.current) return;
+    const s = stateRef.current;
+
+    // A device change or ended track asked for a fresh input. Honoured in any
+    // state but 'recording' (that capture is still reading the old stream).
+    if (micReacquirePendingRef.current && s !== 'recording') {
+      micReacquirePendingRef.current = false;
+      void rebuildMicGraph('input device changed', true);
+      return;
+    }
+
+    // Judge only the states where the user is waiting on the mic: armed
+    // ('ready', including a wake-gated ready — the gate used to be able to
+    // hide a dead input indefinitely), mid-capture, or already showing our
+    // own fault. Processing/playing are left alone; a graph that died during
+    // a reply is caught the moment the loop returns to 'ready'.
+    // `showing`, not just the flag: a reconnect's 'ready' frame can paint over
+    // the fault while the input is still dead, and it must go back up.
+    const showing = s === 'error' && micFaultSurfacedRef.current;
+    if (s !== 'ready' && s !== 'recording' && !showing) {
+      micJudgingSinceRef.current = 0;
+      return;
+    }
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      micJudgingSinceRef.current = 0;
+      return;
+    }
+
+    const now = Date.now();
+    if (!micJudgingSinceRef.current) micJudgingSinceRef.current = now;
+    const stream = mediaStreamRef.current;
+    const tracks = stream ? stream.getTracks() : [];
+    const muted = tracks.some(t => t.muted);
+    if (muted) {
+      if (!micMutedSinceRef.current) micMutedSinceRef.current = now;
+    } else {
+      micMutedSinceRef.current = 0;
+    }
+    const ctx = vadCtxRef.current;
+    const lastBuf = vadLastBufferAtRef.current;
+    const fault = diagnoseMicInput({
+      hasStream: !!stream,
+      trackEnded: tracks.length > 0 && tracks.every(t => t.readyState === 'ended'),
+      hasGraph: !!ctx && !!vadProcRef.current,
+      ctxState: ctx ? ctx.state : null,
+      msTrackMuted: micMutedSinceRef.current ? now - micMutedSinceRef.current : 0,
+      // A buffer from BEFORE the current graph was built says nothing about it.
+      msSinceLastBuffer: lastBuf >= micGraphBuiltAtRef.current && lastBuf > 0
+        ? now - lastBuf
+        : Number.POSITIVE_INFINITY,
+      msSinceSignal: msSinceMicSignal({
+        now,
+        lastSignalAt: vadLastSignalAtRef.current,
+        graphBuiltAt: micGraphBuiltAtRef.current,
+        judgingSince: micJudgingSinceRef.current,
+      }),
+    });
+    const lastSignal = vadLastSignalAtRef.current;
+    const action = micWatchdogStep({
+      fault,
+      provenLive: lastSignal > 0 && lastSignal >= micGraphBuiltAtRef.current,
+      rebuildAttempts: micRebuildAttemptsRef.current,
+      msSinceGraphBuilt: now - micGraphBuiltAtRef.current,
+      faultSurfaced: showing,
+    });
+
+    if (action === 'healthy') {
+      micRebuildAttemptsRef.current = 0;
+      if (micFaultSurfacedRef.current) {
+        micFaultSurfacedRef.current = false;
+        console.log('[useVoice] mic watchdog: input is back');
+        recordVoiceVerdictEvent('mic_fault_cleared');
+        if (stateRef.current === 'error') {
+          setError(null);
+          setStateAndEmit('ready');
+        }
+      }
+      return;
+    }
+    if (action === 'wait') return;
+
+    // Either remedy means this capture is deaf too — a VAD-started recording
+    // can only end from the VAD callback that just stopped firing, so it would
+    // otherwise sit on "Listening" forever. Close it normally (whatever was
+    // captured still gets processed).
+    if (s === 'recording') stopRecordingRef.current?.();
+
+    if (action === 'rebuild') {
+      // A silent input is re-acquired too: a fresh getUserMedia is what gets
+      // a renegotiated HFP link (or the new default device) delivering again.
+      const dead = fault === 'track-ended' || fault === 'no-stream' || fault === 'track-muted'
+        || fault === 'silent';
+      void rebuildMicGraph(`input ${fault}`, dead);
+      return;
+    }
+    // 'surface-fault': the rebuilt graph is dead too. Say so instead of
+    // "Listening" — only from 'ready' (a stopped recording is 'processing'
+    // now; the next tick back in 'ready' surfaces it).
+    if (stateRef.current !== 'ready' || !fault) return;
+    const message = micFaultMessage(fault);
+    console.warn(`[useVoice] mic watchdog: ${fault} after a rebuild — surfacing "${message}"`);
+    recordVoiceVerdictEvent('mic_fault_surfaced', `${fault}: ${message}`);
+    micFaultSurfacedRef.current = true;
+    setError(message);
+    emit({ type: 'error', error: message });
+    setStateAndEmit('error');
+  }, [rebuildMicGraph, setStateAndEmit, emit]);
+
+  // Run the watchdog, and listen for input-device changes, only while
+  // hands-free is on — that is when the VAD graph is supposed to be live.
+  useEffect(() => {
+    if (!handsFree) return;
+    const id = setInterval(micWatchdogTick, MIC_WATCHDOG_TICK_MS);
+    // A Bluetooth A2DP<->HFP flip or headphones plugged in change the input
+    // devices; the old stream may keep pointing at a device that now delivers
+    // nothing. Re-acquire (the tick applies it, coalescing bursts of events).
+    const md = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined;
+    const onDeviceChange = () => {
+      console.warn('[useVoice] input devices changed — scheduling a mic re-acquire');
+      micReacquirePendingRef.current = true;
+      // The deaf verdict was about the OLD input feeding the spotter. A new
+      // device (say, leaving the Bose HFP mic for the built-in one) deserves a
+      // working wake gate again; the idle re-arm puts the gate back once the
+      // conversation goes quiet, and the spotter can be judged afresh.
+      if (wakeDeafRef.current) {
+        wakeDeafRef.current = false;
+        setWakeDeaf(false);
+      }
+    };
+    if (md && typeof md.addEventListener === 'function') {
+      md.addEventListener('devicechange', onDeviceChange);
+    }
+    return () => {
+      clearInterval(id);
+      if (md && typeof md.removeEventListener === 'function') {
+        md.removeEventListener('devicechange', onDeviceChange);
+      }
+    };
+  }, [handsFree, micWatchdogTick]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1373,6 +2081,16 @@ export function useVoice(options: UseVoiceOptions = {}) {
   interruptRef.current = interrupt;
   useEffect(() => stopVadMonitor, [stopVadMonitor]);
 
+  // Relay what the engine decided to mirror orbs (see VOICE_VERDICT_KEY): the
+  // popped-out chat window has no engine, so without this its orb said
+  // "Listening" over a dead mic's fault and over a failed-open gate. Written on
+  // change, cleared when the engine goes away so no window reads a dead one.
+  const verdictWakeHint = wakeHintFor({ active: wakeActive, gated: wakeGated, phrase: wakePhrase });
+  useEffect(() => {
+    publishVoiceVerdict({ error, wakeHint: verdictWakeHint, spotterDeaf: wakeDeaf });
+  }, [error, verdictWakeHint, wakeDeaf]);
+  useEffect(() => clearVoiceVerdict, []);
+
   // Stable identity so consumers can use it as an effect dependency without
   // re-firing on unrelated renders.
   const wakeWord = useMemo(
@@ -1385,8 +2103,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
       phrase: wakePhrase,
       /** True when the wake phrase is required to open the next turn. */
       gated: wakeGated,
+      /** The spotter ignored repeated speech, so the gate failed open: bare
+       *  speech opens turns and the UI should say so (WAKE_DEAF_HINT). */
+      spotterDeaf: wakeDeaf,
     }),
-    [wakeWordEnabled, setWakeWordEnabled, wakeActive, wakePhrase, wakeGated],
+    [wakeWordEnabled, setWakeWordEnabled, wakeActive, wakePhrase, wakeGated, wakeDeaf],
   );
 
   return {
