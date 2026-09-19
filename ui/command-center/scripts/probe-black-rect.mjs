@@ -14,23 +14,83 @@
  * judged by measurement instead of by hope. It needs no daemon and no token —
  * the standalone forum page renders the world on its own.
  *
- *   node scripts/probe-black-rect.mjs [url] [label]
+ *   node scripts/probe-black-rect.mjs [url] [label] [--engine webkit|chromium] [--scheme dark|light]
+ *   node scripts/probe-black-rect.mjs --shipped [/Applications/Permagent.app]
+ *
+ * `--shipped` answers a different question, with no browser and no GPU: is
+ * the fix in the app Jesse launches? Every pixel run below renders
+ * `ui/forum.html` from the vite DEV server, which is not in `dist/` at all,
+ * and on 2026-09-19 the in-app look was blocked by a locked screen. So this
+ * reads the asset names the Tauri binary embeds, opens the same-named chunks
+ * in `dist/assets` (vite names a chunk by a hash of its content, so a name
+ * match is a byte match), and reports the EffectComposer chain written in
+ * them. Exit 0 only if the forum chain is Bloom > AgX > grade, single-sampled.
+ * Exit 2 if the app embeds chunks this dist no longer has: then the dist was
+ * rebuilt after packaging and cannot vouch for the app either way.
+ *
+ * Engine: WEBKIT is the default, because the shipped app is Tauri, and Tauri on
+ * macOS is WKWebView. Every earlier run of this probe drove Chromium with
+ * `--use-angle=metal`, which is a renderer the app never uses — so on
+ * 2026-09-18, when Jesse photographed a white block over the night sky in the
+ * real app, this instrument had never once looked at the renderer he was
+ * looking at. `--engine chromium` keeps the old ANGLE path for comparison.
+ *
+ * Scheme: the forum follows prefers-color-scheme (useSystemAppearance), and
+ * the white rectangle was reported at NIGHT, so `dark` is the default. A
+ * probe that renders the day scene cannot see a night-only defect.
+ *
+ * Output also carries `clipPerFrame`: pure-white pixels, pixels with any
+ * channel at 255, and the largest connected pure-white blob, counted over the
+ * canvas rect only. That is the proxy the white-block A/B in
+ * ForumPostProcessing.tsx is recorded in: the block came from linear HDR
+ * clipping at 1.0 (no view transform in the composer), which shows up as a
+ * big flat-white blob long before it grows into a 200 px run.
  *
  * Env:
- *   ANGLE_BACKEND  metal (default here — the whole point) | gl
+ *   ENGINE         webkit (default) | chromium — same as --engine
+ *   SCHEME         dark (default) | light — same as --scheme
+ *   ANGLE_BACKEND  chromium only: metal (default) | gl
  *   SHOTS          how many frames to sample (default 6)
  *   SETTLE_MS      wait before the first frame (default 6000)
+ *   VIEWPORT       WxH (default 1280x1000)
+ *   DPR            deviceScaleFactor (default 1). The app runs on a Retina
+ *                  display, where the forum Canvas resolves dpr [1, 1.5] to
+ *                  1.5 — every render target is a different, non-power-of-two
+ *                  size from the one a DPR 1 probe exercises.
+ *   SAVE_ALL       save every frame, not only the ones with an artifact
+ *   DRAG           1 (default) orbits the camera between frames; 0 holds the
+ *                  default vista, which is the pose the white block was
+ *                  reported in (beside the gas giant)
+ *   RESIZE         1 resizes the viewport between frames (every render target
+ *                  in the composer is reallocated on a resize, and the app's
+ *                  window and Agent Desk resize the canvas all the time)
  */
-import { chromium } from 'playwright';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { chromium, webkit } from 'playwright';
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import os from 'node:os';
 import { inflateSync } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { clipReport, composerChains, embeddedAssetNames, extremeReport, isShippedForumChain } from '../src/components/world/forum/extremeRuns.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const url = process.env.APP_URL || process.argv[2] || 'http://localhost:5173/ui/forum.html';
-const label = process.argv[3] || 'probe';
-const backend = process.env.ANGLE_BACKEND || 'metal';
+const argv = process.argv.slice(2);
+const flag = (name) => { const i = argv.indexOf(name); if (i < 0) return undefined; const v = argv[i + 1]; argv.splice(i, 2); return v; };
+// `--analyze a.png b.png ...` runs the same detector over frames captured
+// elsewhere — the system-WKWebView probe (`probe-wkwebview.swift`) or a
+// screenshot of the real app — so every source is judged by one rule.
+const analyzeAt = argv.indexOf('--analyze');
+const analyzeFiles = analyzeAt >= 0 ? argv.splice(analyzeAt).slice(1) : [];
+const engine = flag('--engine') || process.env.ENGINE || 'webkit';
+const scheme = flag('--scheme') || process.env.SCHEME || 'dark';
+if (!['webkit', 'chromium'].includes(engine)) throw new Error(`--engine must be webkit or chromium, got ${engine}`);
+if (!['dark', 'light'].includes(scheme)) throw new Error(`--scheme must be dark or light, got ${scheme}`);
+const url = process.env.APP_URL || argv[0] || 'http://localhost:5173/ui/forum.html';
+const label = argv[1] || 'probe';
+// The label on saved frames and in the report: the ANGLE backend only means
+// anything under Chromium.
+const backend = engine === 'webkit' ? 'webkit' : `chromium-${process.env.ANGLE_BACKEND || 'metal'}`;
 const shots = Number(process.env.SHOTS || 6);
 const settleMs = Number(process.env.SETTLE_MS || 6000);
 const outDir = path.join(here, '../../../.playwright-mcp/black-rect');
@@ -69,90 +129,127 @@ function decodePng(buffer) {
   return { width, height, channels, stride, pixels };
 }
 
-/**
- * Blown-out pixels of EITHER polarity, with the bounding box they occupy.
- *
- * This counted pure black only, and that was a hole in the instrument rather
- * than in the theory. On 2026-09-18 Jesse photographed a solid WHITE rectangle
- * over the night world — the same hard-edged, axis-aligned block as the black
- * one — and this probe had reported zero black pixels minutes earlier, which
- * read as "clean" when it only ever meant "not black". A driver that hands
- * back an uninitialised or wrongly-cleared render target can do it in either
- * colour, so the fingerprint is a large run of IDENTICAL extreme pixels, not
- * a particular value.
- *
- * Both polarities are counted separately so a regression says which one it is,
- * and each keeps its own box: reporting one merged box across both would
- * describe a rectangle that does not exist.
- */
-function extremeReport(img) {
-  const track = () => ({ count: 0, minX: img.width, minY: img.height, maxX: -1, maxY: -1 });
-  const black = track();
-  const white = track();
-  const note = (t, x, y) => {
-    t.count++;
-    if (x < t.minX) t.minX = x; if (x > t.maxX) t.maxX = x;
-    if (y < t.minY) t.minY = y; if (y > t.maxY) t.maxY = y;
-  };
-  // Only count pixels inside a LONG UNBROKEN HORIZONTAL RUN.
-  //
-  // Counting every extreme pixel made this useless on a real frame: white card
-  // text, button fills and the day world's pale stone put 28,333 white pixels
-  // on screen with no defect present at all, and a bounding box spanning the
-  // window. The artifact is a solid block, so the thing that distinguishes it
-  // from legitimate UI is contiguity — a rectangle produces runs hundreds of
-  // pixels wide, and glyphs and gradients do not.
-  const MIN_RUN = 200;
-  const scan = (isHit, track) => {
-    for (let y = 0; y < img.height; y++) {
-      let runStart = -1;
-      for (let x = 0; x <= img.width; x++) {
-        const hit = x < img.width && isHit(y * img.stride + x * img.channels);
-        if (hit && runStart < 0) runStart = x;
-        if (!hit && runStart >= 0) {
-          if (x - runStart >= MIN_RUN) {
-            for (let k = runStart; k < x; k++) note(track, k, y);
-          }
-          runStart = -1;
-        }
-      }
-    }
-  };
-  const px = img.pixels;
-  scan((at) => px[at] === 0 && px[at + 1] === 0 && px[at + 2] === 0, black);
-  scan((at) => px[at] === 255 && px[at + 1] === 255 && px[at + 2] === 255, white);
-  const box = (t) => (t.maxX < 0 ? null : [t.minX, t.minY, t.maxX, t.maxY]);
-  return {
-    count: black.count + white.count,
-    black: { count: black.count, box: box(black) },
-    white: { count: white.count, box: box(white) },
-    box: black.count >= white.count ? box(black) : box(white),
-  };
+// The detector lives beside the forum so vitest can pin it (`src/` is the only
+// tree the frontend gate runs); Node 24 strips the types on import.
+
+// The WebKit build this playwright version pins may not be the one on disk
+// (this machine has webkit-2359 while playwright 1.62 asks for 2336, and
+// `playwright install` is a large download nobody asked for). Fall back to the
+// newest installed build rather than refusing to look; WEBKIT_EXECUTABLE wins.
+async function webkitExecutable() {
+  if (process.env.WEBKIT_EXECUTABLE) return process.env.WEBKIT_EXECUTABLE;
+  if (existsSync(webkit.executablePath())) return undefined;
+  const cache = path.join(os.homedir(), 'Library/Caches/ms-playwright');
+  const builds = (await readdir(cache).catch(() => []))
+    .filter((d) => /^webkit-\d+$/.test(d))
+    .sort((a, b) => Number(b.slice(7)) - Number(a.slice(7)));
+  for (const build of builds) {
+    const run = path.join(cache, build, 'pw_run.sh');
+    if (existsSync(run)) return run;
+  }
+  return undefined;
 }
 
-const browser = await chromium.launch({
-  headless: true,
-  channel: 'chrome',
-  args: [`--use-angle=${backend}`, '--enable-gpu', '--ignore-gpu-blocklist', '--disable-frame-rate-limit', '--disable-gpu-vsync'],
-});
-const page = await browser.newPage({ viewport: { width: 1280, height: 1000 }, deviceScaleFactor: 1 });
+// `--shipped [app]`: read the composer chain out of the bytes the installed
+// app serves. See the header; nothing is launched and nothing is rendered.
+const shippedAt = argv.indexOf('--shipped');
+if (shippedAt >= 0) {
+  const { readFile, stat } = await import('node:fs/promises');
+  const next = argv[shippedAt + 1];
+  const app = next && !next.startsWith('--') ? next : '/Applications/Permagent.app';
+  const binaryPath = path.join(app, 'Contents/MacOS/permagent-app');
+  const distAssets = path.join(here, '../dist');
+  if (!existsSync(binaryPath)) { console.error(`--shipped: no app binary at ${binaryPath}`); process.exit(1); }
+  if (!existsSync(path.join(distAssets, 'assets'))) { console.error(`--shipped: no ${distAssets}/assets; run \`npm run build\` first`); process.exit(1); }
+  const embedded = embeddedAssetNames((await readFile(binaryPath)).toString('latin1'));
+  const missing = [];
+  const chains = [];
+  for (const name of embedded) {
+    const file = path.join(distAssets, name);
+    if (!existsSync(file)) { missing.push(name); continue; }
+    for (const chain of composerChains(await readFile(file, 'utf8'))) chains.push({ chunk: name, ...chain, shipped: isShippedForumChain(chain) });
+  }
+  const forum = chains.filter((c) => c.effects.includes('Bloom') && c.effects.includes('HueSaturation'));
+  const verdict = embedded.length === 0 ? 'no-embedded-assets'
+    : missing.length ? 'dist-does-not-match-app'
+    : forum.length === 1 && forum[0].shipped ? 'fix-shipped'
+    : forum.length === 0 ? 'no-forum-composer' : 'fix-not-shipped';
+  console.log(JSON.stringify({
+    app,
+    binary: binaryPath,
+    binaryModified: (await stat(binaryPath)).mtime.toISOString(),
+    embeddedChunks: embedded.length,
+    missingFromDist: missing.slice(0, 10),
+    missingCount: missing.length,
+    composers: chains,
+    verdict,
+  }, null, 2));
+  process.exit(verdict === 'fix-shipped' ? 0 : verdict === 'dist-does-not-match-app' ? 2 : 1);
+}
+
+if (analyzeFiles.length) {
+  const { readFile } = await import('node:fs/promises');
+  const scale = Number(process.env.DPR || 1);
+  for (const file of analyzeFiles) {
+    const img = decodePng(await readFile(file));
+    const r = extremeReport(img, scale);
+    console.log(JSON.stringify({ file: path.basename(file), black: r.black, white: r.white, clip: clipReport(img) }));
+  }
+  process.exit(0);
+}
+
+const browser = engine === 'webkit'
+  ? await webkit.launch({ headless: true, executablePath: await webkitExecutable() })
+  : await chromium.launch({
+      headless: true,
+      channel: 'chrome',
+      args: [`--use-angle=${process.env.ANGLE_BACKEND || 'metal'}`, '--enable-gpu', '--ignore-gpu-blocklist', '--disable-frame-rate-limit', '--disable-gpu-vsync'],
+    });
+const [vw, vh] = (process.env.VIEWPORT || '1280x1000').split('x').map(Number);
+const dpr = Number(process.env.DPR || 1);
+const context = await browser.newContext({ viewport: { width: vw, height: vh }, deviceScaleFactor: dpr, colorScheme: scheme });
+const page = await context.newPage();
+const pageErrors = [];
+page.on('pageerror', (err) => pageErrors.push(String(err)));
 await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 await page.waitForTimeout(settleMs);
+// Refuse to report "clean" on a frame that is not the scene being asked about:
+// the forum prints which appearance it resolved, and a day frame says nothing
+// about a night defect.
+const appearance = await page.locator('[data-appearance]').first().getAttribute('data-appearance').catch(() => null);
+const renderer = await page.evaluate(() => {
+  const c = document.querySelector('canvas');
+  const gl = c && (c.getContext('webgl2') || c.getContext('webgl'));
+  if (!gl) return null;
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  return { version: gl.getParameter(gl.VERSION), renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER) };
+}).catch(() => null);
 
 await mkdir(outDir, { recursive: true });
 const results = [];
 for (let i = 0; i < shots; i++) {
   // Nudge the camera between frames: the defect sticks to a pose, so a single
   // frame proves nothing either way.
-  await page.mouse.move(640, 500);
-  await page.mouse.down();
-  await page.mouse.move(640 + i * 40, 500 + i * 12, { steps: 6 });
-  await page.mouse.up();
+  if (process.env.RESIZE === '1') {
+    const f = [1, 0.83, 0.91, 0.77, 1.07, 0.95][i % 6];
+    await page.setViewportSize({ width: Math.round(vw * f), height: Math.round(vh * (2 - f) / 1.05) });
+    await page.waitForTimeout(250);
+  }
+  if (process.env.DRAG !== '0') {
+    await page.mouse.move(640, 500);
+    await page.mouse.down();
+    await page.mouse.move(640 + i * 40, 500 + i * 12, { steps: 6 });
+    await page.mouse.up();
+  }
   await page.waitForTimeout(700);
   const buffer = await page.screenshot({ type: 'png' });
-  const report = extremeReport(decodePng(buffer));
+  const img = decodePng(buffer);
+  // Clip stats over the canvas only: the Agent Desk is white text on dark UI.
+  const rect = await page.evaluate(() => { const c = document.querySelector('canvas'); if (!c) return null; const r = c.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; }).catch(() => null);
+  const region = rect ? rect.map((v) => Math.round(v * dpr)) : undefined;
+  const report = { ...extremeReport(img, dpr), clip: clipReport(img, region) };
   results.push(report);
-  if (report.count > 0) await writeFile(path.join(outDir, `${label}-${backend}-${i}.png`), buffer);
+  if (report.count > 0 || process.env.SAVE_ALL) await writeFile(path.join(outDir, `${label}-${backend}-${i}.png`), buffer);
 }
 
 await browser.close();
@@ -161,11 +258,19 @@ const worst = results.reduce((a, b) => (b.count > a.count ? b : a), results[0]);
 const total = results.reduce((sum, r) => sum + r.count, 0);
 console.log(JSON.stringify({
   label,
+  engine,
   backend,
+  scheme,
+  viewport: `${vw}x${vh}@${dpr}`,
+  appearance,
+  renderer,
+  pageErrors: pageErrors.slice(0, 5),
   frames: results.length,
   framesWithArtifact: results.filter(r => r.count > 0).length,
   totalExtremePixels: total,
   blackPixels: results.reduce((sum, r) => sum + r.black.count, 0),
   whitePixels: results.reduce((sum, r) => sum + r.white.count, 0),
   worstFrame: worst,
+  // The clipping proxy (see clipReport): per frame, so a flicker shows.
+  clipPerFrame: results.map((r) => ({ white: r.clip.white, anyChannel: r.clip.anyChannel, largestWhite: r.clip.largestWhite })),
 }, null, 2));

@@ -41,7 +41,8 @@
 // calls at 93 fps with this mounted against 203 at 91 without it, and no
 // visible change to the daylight scene beyond the intended emissive glow.
 
-import { Bloom, BrightnessContrast, EffectComposer, HueSaturation } from '@react-three/postprocessing';
+import { Bloom, BrightnessContrast, EffectComposer, HueSaturation, ToneMapping } from '@react-three/postprocessing';
+import { ToneMappingMode } from 'postprocessing';
 
 /**
  * The grade that gives AgX its colour back.
@@ -61,6 +62,10 @@ import { Bloom, BrightnessContrast, EffectComposer, HueSaturation } from '@react
  *   forum, before        0.498     0.202       0.191
  *   forum, after         0.441     0.221       0.372
  *
+ * (Those figures were taken with AgX silently OFF: see THE WHITE BLOCK below.
+ * With AgX actually in the chain, and SATURATION retuned 0.4 -> 0.5, the day
+ * frame measures 0.435 / 0.199 / 0.354 at 1512x945, display DPR 2.)
+ *
  * Saturation was the gap: two and a half times under the thing it is meant to
  * look like, while luma ran bright and flat. These two effects are the Punchy
  * step, applied after bloom so the glow blooms scene colour and the grade lands
@@ -77,8 +82,95 @@ import { Bloom, BrightnessContrast, EffectComposer, HueSaturation } from '@react
  * target, so the ANGLE/Metal black rectangle documented above stays fixed.
  * `scripts/probe-black-rect.mjs` is the check for that and must be re-run after
  * any change to this chain.
+ *
+ * THE WHITE BLOCK (the user, 2026-09-18, real app, night): a hard-edged white
+ * shape over the sky beside the gas giant. Cause: this composer threw away the
+ * AgX view transform. ForumView sets `toneMapping: AgXToneMapping` on the
+ * Canvas, and two things switch it off while the composer is mounted. First and
+ * most directly, @react-three/postprocessing (2.19.1) sets
+ * `gl.toneMapping = NoToneMapping` outright for as long as EffectComposer is
+ * mounted (dist/EffectComposer.js:117-122), so the Canvas's AgX never runs,
+ * not even for a draw to the screen. Second, three (0.184) only tone-maps a
+ * draw to the SCREEN anyway, and the scene now draws into the composer's
+ * HalfFloat target; postprocessing (6.39) never tone-maps unless it is asked to
+ * (every effect material is `toneMapped: false`). So rendering the scene
+ * straight to the screen would NOT bring AgX back: the fix has to be a
+ * ToneMapping effect inside the chain. The frame reaching the grade was
+ * linear HDR, and everything above 1.0 was clipped to flat 255 at the end. The
+ * gas giant is the brightest thing at night; bloom adds its own halo on top,
+ * and the brighter bands and the halo fuse into one flat white patch whose
+ * edge is wherever the clip happens to land: a white block beside the gas giant.
+ * The fix is `<ToneMapping mode={AGX}>` after Bloom and before the grade:
+ * bloom still works on scene-linear light (that is what its threshold is in),
+ * and the grade lands on display-referred values, which is what a grade is for.
+ *
+ * A/B: one change at a time, measured with `scripts/probe-black-rect.mjs` in
+ * Playwright WebKit (webkit-2359, a stand-in for the system WKWebView the app
+ * embeds; see the WKWebView rows below), night via
+ * colorScheme dark, 1512x945 CSS px at display DPR 2 (the Canvas's dpr [1, 1.5]
+ * clamps it to 1.5 internally), default vista held still, 3 frames per row,
+ * identical across frames. Counted over the canvas rect in device px:
+ * `white` = pure 255,255,255 pixels, `any` = pixels with ANY channel at 255,
+ * `blob` = the largest connected pure-white shape. The floor is the HUD's
+ * white text over the canvas (no-composer row: 12,020 white, 184 blob = glyph).
+ *
+ *   chain                                   white    any       blob   rect
+ *   committed: Bloom > grade (no AgX)       21,450  125,975    5,822    0
+ *   no composer (renderer AgX, no bloom)    12,020   75,994      184    0
+ *   Bloom alone                             33,585  111,266   16,538    0   <- 331x356 px flat white over the gas giant
+ *   grade alone                             11,764  108,594      184    0
+ *   Bloom thresh 0.72 -> 0.90, + grade      13,918  114,818      536    0
+ *   Bloom levels 5 -> 3, + grade            22,161  122,633    6,063    0
+ *   Bloom intensity 0.55 -> 0.25, + grade   14,175  116,381    1,152    0
+ *   Bloom > AgX (no grade)                  11,382   12,159      184    0
+ *   AgX > grade (no bloom)                  11,382   13,801      184    0
+ *   Bloom > grade > AgX                     11,382   12,115      184    3   <- black runs: grade crushes the sky before AgX
+ *   Bloom > AgX > grade      (sat 0.4)      11,382   13,962      184    0
+ *   Bloom > AgX > grade      (sat 0.5)      11,382   14,329      184    0   <- SHIPPED
+ *   same, contrast 0.075 -> 0.12            11,382   24,476      184    3   <- black runs: night sky crushed
+ *
+ * The same check in the SYSTEM WKWebView that Tauri embeds
+ * (scripts/probe-wkwebview.swift at 1512x945, night, display DPR 2 and canvas
+ * DPR 1.5, whole-window snapshot so the HUD text counts), then run through
+ * `probe-black-rect.mjs --analyze`:
+ *
+ *   committed: Bloom > grade (no AgX)       33,233  138,183    5,822    0
+ *   SHIPPED: Bloom > AgX > grade (sat 0.5)  24,265   27,630      436    0   <- blob is desk heading text
+ *
+ * Bloom settings only shrink the clipped patch; they do not remove it, because
+ * the gas giant itself sits above 1.0. Only the view transform does. Every
+ * row with AgX in the chain drops to the HUD floor, and the gas-giant crop
+ * goes from 9.2% clipped to 0.0%. The rectangle detector (>=200 CSS px run of
+ * pure white/black) never fired white in any row, at this pose. The block in
+ * the real app was never captured, so that its pose and window size produce
+ * the same clip at block size is the leading explanation, not a confirmation.
+ *
+ * Keeping the look: AgX desaturates on the way in, so with the grade unchanged
+ * the day scene fell from saturation 0.365 to 0.314 (imgstats, world area).
+ * SATURATION 0.4 -> 0.5 brings it back to 0.354 (night 0.654 against 0.643
+ * before); luma is unchanged (day 0.435 against 0.434). Day contrast settles at
+ * 0.199 against 0.224, and it stays there, because raising CONTRAST crushes
+ * the night sky to pure black runs (last row).
+ *
+ * Earlier the same day, before this was found, the chain as committed was run
+ * without a single white rectangle hit: Playwright WebKit at 1280x1000 @1 and
+ * five sizes @2 (about 100 frames, orbit / still / resize), the system
+ * WKWebView via scripts/probe-wkwebview.swift at 1512x945, 1280x800 and
+ * 1440x900 (display DPR 2, canvas DPR 1.5; opaque and Tauri-transparent
+ * windows; about 40 frames), and Chromium ANGLE Metal (16 frames). A scratch
+ * readback found no NaN or Inf before or after Bloom, and alpha 255
+ * everywhere. So a non-finite value spreading through the mip chain, and a
+ * see-through canvas, are both ruled out.
+ *
+ * Is it in the app? Every probe above renders the vite DEV page, which is not
+ * the bundle Permagent.app serves. `probe-black-rect.mjs --shipped` reads the
+ * chunk names the installed binary embeds and this chain out of those same
+ * chunks in dist/. On 2026-09-19 it found the app packaged at 23:53 the night
+ * before embeds ForumAppView-BAoLuAgn.js with Bloom > AgX > grade,
+ * multisampling 0 (verdict fix-shipped). Run it after every app rebuild; only
+ * the look in the app itself, at night beside the gas giant, is still owed.
  */
-const SATURATION = 0.4;
+const SATURATION = 0.5;
 const CONTRAST = 0.075;
 const BRIGHTNESS = -0.035;
 
@@ -86,6 +178,9 @@ export function ForumPostProcessing() {
   return (
     <EffectComposer multisampling={0}>
       <Bloom mipmapBlur intensity={0.55} radius={0.6} levels={5} luminanceThreshold={0.72} luminanceSmoothing={0.3} />
+      {/* AgX here, not on the Canvas: the Canvas's toneMapping is skipped while
+          this composer is mounted, which is what clipped the gas giant white. */}
+      <ToneMapping mode={ToneMappingMode.AGX} />
       <HueSaturation saturation={SATURATION} />
       <BrightnessContrast brightness={BRIGHTNESS} contrast={CONTRAST} />
     </EffectComposer>
