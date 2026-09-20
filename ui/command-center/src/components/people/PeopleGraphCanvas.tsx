@@ -161,13 +161,22 @@ export function PeopleGraph() {
           })}
           {layout.clusters.map(cluster => (
             <Html key={cluster.id} position={[cluster.x, cluster.y + 1.6, cluster.z]} center style={{ pointerEvents: 'none' }}>
+              {/* A chip, not bare text: these labels sit in a 3D scene and
+                  always draw on top, so over a face or a dense cluster the
+                  letters used to land on the nodes themselves (QA 2026-09-20,
+                  "HARBOURVIEW RESIDENTS' ASSOCIATION" across an avatar). The
+                  World's place labels already wear the same chip. */}
               <div style={{
                 fontFamily: font.mono,
                 fontSize: 10,
                 letterSpacing: '0.06em',
                 textTransform: 'uppercase',
-                color: colors.textDim,
+                color: colors.textMuted,
                 whiteSpace: 'nowrap',
+                padding: '2px 6px',
+                borderRadius: radius.sm,
+                background: colors.surface,
+                border: `1px solid ${colors.border}`,
               }}>
                 {cluster.name}
               </div>

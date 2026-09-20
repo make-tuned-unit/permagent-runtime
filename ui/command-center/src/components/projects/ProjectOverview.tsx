@@ -237,8 +237,8 @@ function SummaryPanel({ project, onProjectUpdated }: {
 // design: no badge, no notification — read them as you browse. Renders
 // nothing until the first insight exists.
 
-interface WatcherInsightCard { id: string; title: string }
-interface WatcherInsight {
+export interface WatcherInsightCard { id: string; title: string }
+export interface WatcherInsight {
   text: string;
   created_at: string;
   /** The cards this insight is about. Absent on rows written before the
@@ -246,15 +246,38 @@ interface WatcherInsight {
   cards?: WatcherInsightCard[];
 }
 
+/** The newest observation per set of cards.
+ *
+ *  The Watcher runs daily and re-reports a situation that has not changed, so
+ *  a stalled trio produced three entries in a row that named the same three
+ *  cards in slightly different words (QA 2026-09-20). Reading the same thing
+ *  three times does not tell the user anything the first line did not. Entries
+ *  that name no cards are never folded together — there is nothing to compare
+ *  them on, and dropping one would drop an observation.
+ */
+export function newestPerCardSet(insights: WatcherInsight[]): WatcherInsight[] {
+  const seen = new Set<string>();
+  const out: WatcherInsight[] = [];
+  // Newest first, so the survivor of a fold is the most recent wording.
+  for (const insight of [...insights].sort((a, b) => b.created_at.localeCompare(a.created_at))) {
+    const cards = (insight.cards ?? []).map(c => c.id).sort();
+    if (cards.length === 0) { out.push(insight); continue; }
+    const key = cards.join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(insight);
+  }
+  return out;
+}
+
 function readWatcherInsights(metadata: Record<string, unknown>): WatcherInsight[] {
   const raw = metadata?.watcher_insights;
   if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((i): i is WatcherInsight =>
-      typeof i === 'object' && i !== null &&
-      typeof (i as WatcherInsight).text === 'string' &&
-      typeof (i as WatcherInsight).created_at === 'string')
-    .slice(0, 3);
+  const valid = raw.filter((i): i is WatcherInsight =>
+    typeof i === 'object' && i !== null &&
+    typeof (i as WatcherInsight).text === 'string' &&
+    typeof (i as WatcherInsight).created_at === 'string');
+  return newestPerCardSet(valid).slice(0, 3);
 }
 
 export function WatcherInsightsPanel({ project }: { project: Project }) {
