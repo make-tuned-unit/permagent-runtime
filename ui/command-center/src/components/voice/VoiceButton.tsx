@@ -29,8 +29,13 @@ import { Button } from '../common/Button';
 import { Tooltip } from '../common/Tooltip';
 
 /** The mic and its sibling chip are toolbar-dense controls, not prominent
- *  ones, so they stay rounded rectangles rather than capsules (D5). */
-const CONTROL = 28;
+ *  ones, so they stay rounded rectangles rather than capsules (D5).
+ *
+ *  The composer's only home for this button, so it takes the composer's
+ *  control size: attach, mic, field and send now share one height and one
+ *  radius (QA 2026-09-20 — "the send message button ... needs design work";
+ *  three sizes in one row was half of why). */
+const CONTROL = 36;
 
 const STATE_LABELS: Record<VoiceState, string> = {
   idle: '',
@@ -224,7 +229,7 @@ export function VoiceButton() {
             '--pa-btn-fg-hover': face.fgHover,
             '--pa-btn-bg-active': face.bg,
             '--pa-btn-pad': '0',
-            '--pa-btn-radius': `${radius.sm}px`,
+            '--pa-btn-radius': `${radius.md}px`,
             width: CONTROL,
             height: CONTROL,
             flexShrink: 0,

@@ -11,6 +11,10 @@ import { VoiceButton } from '../voice/VoiceButton';
 import { Tooltip } from '../common/Tooltip';
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
+/** The composer's controls are square and share the text field's height, so the
+ *  row reads as one control rather than three sizes stacked beside a field. */
+const COMPOSER_CONTROL = 36;
+
 export interface ChatInputHandle {
   addFiles: (files: File[]) => void;
 }
@@ -70,6 +74,10 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   const removeFile = useCallback((index: number) => {
     setPendingFiles(prev => prev.filter((_, i) => i !== index));
   }, []);
+
+
+  /** Something to send: typed text, or files waiting to go with it. */
+  const canSend = Boolean(input.trim()) || pendingFiles.length > 0;
 
   const handleSend = async () => {
     const msg = input.trim();
@@ -156,11 +164,11 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
                 '--pa-btn-border': colors.border,
                 '--pa-btn-fg-hover': colors.text,
                 '--pa-btn-pad': '0',
-                '--pa-btn-radius': `${radius.sm}px`,
-                width: 28, height: 28, flexShrink: 0,
+                '--pa-btn-radius': `${radius.md}px`,
+                width: COMPOSER_CONTROL, height: COMPOSER_CONTROL, flexShrink: 0,
               } as CSSProperties}
             >
-              <FiPaperclip size={12} style={{ display: 'block' }} />
+              <FiPaperclip size={13} style={{ display: 'block' }} />
             </Button>
           </span>
         </Tooltip>
@@ -239,8 +247,8 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
                   '--pa-btn-border-hover': colors.danger,
                   '--pa-btn-bg-active': `${colors.danger}40`,
                   '--pa-btn-pad': '0',
-                  '--pa-btn-radius': `${radius.sm}px`,
-                  width: 28, height: 28, flexShrink: 0,
+                  '--pa-btn-radius': `${radius.md}px`,
+                  width: COMPOSER_CONTROL, height: COMPOSER_CONTROL, flexShrink: 0,
                 } as CSSProperties}
               >
                 {stopping
@@ -263,23 +271,36 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
                 // The reply is the confirmation: by the time a tick could land, this
                 // button has already become Stop and the answer is streaming in.
                 flashSuccess={false}
-                disabled={!input.trim() && pendingFiles.length === 0}
+                disabled={!canSend}
                 aria-label="Send message"
+                // Flat accent, not the brand ribbon: the gradient belongs to
+                // the mark, and on a control it read as a sticker pasted onto
+                // the composer — with hover and press set to the SAME gradient
+                // it also never answered a press. Cyan is the app's one "do
+                // it" fill, it squares up with the field's height and radius,
+                // and it goes quiet when there is nothing to send.
                 style={{
-                  '--pa-btn-bg': colors.ribbonGradient,
-                  '--pa-btn-fg': colors.textOnAccent,
-                  '--pa-btn-bg-hover': colors.ribbonGradient,
-                  '--pa-btn-bg-active': colors.ribbonGradient,
+                  '--pa-btn-bg': canSend ? colors.cyan : colors.inputBg,
+                  '--pa-btn-fg': canSend ? colors.textOnCyan : colors.textDim,
+                  '--pa-btn-border': canSend ? 'transparent' : colors.border,
+                  '--pa-btn-bg-hover': canSend ? colors.cyan : colors.inputBg,
+                  '--pa-btn-fg-hover': canSend ? colors.textOnCyan : colors.textDim,
+                  '--pa-btn-border-hover': canSend ? 'transparent' : colors.border,
+                  '--pa-btn-bg-active': canSend ? colors.cyanGlow : colors.inputBg,
                   '--pa-btn-pad': '0',
-                  '--pa-btn-radius': `${radius.sm}px`,
+                  '--pa-btn-radius': `${radius.md}px`,
                   // `sendMessage` creates/verifies the session before the turn
                   // starts, so the spinner is real time, not decoration — and it
-                  // shares a 26px box with the glyph, which the default 5px gap
+                  // shares the box with the glyph, which the default 5px gap
                   // would overflow.
-                  width: 28, height: 28, flexShrink: 0, gap: 0,
+                  width: COMPOSER_CONTROL, height: COMPOSER_CONTROL, flexShrink: 0, gap: 0,
+                  boxShadow: canSend ? `0 0 10px ${colors.cyanSoft}` : 'none',
+                  transition: `background 160ms ${ease.out}, box-shadow 160ms ${ease.out}`,
                 } as CSSProperties}
               >
-                <FiSend size={12} />
+                {/* The paper plane's mass sits to its right, so it reads
+                    off-centre in a square box until it is nudged back. */}
+                <FiSend size={14} style={{ display: 'block', transform: 'translateX(-0.5px)' }} />
               </Button>
             </span>
           </Tooltip>
