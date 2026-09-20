@@ -173,7 +173,7 @@ export function PeopleGraph() {
                 textTransform: 'uppercase',
                 color: colors.textMuted,
                 whiteSpace: 'nowrap',
-                padding: '2px 6px',
+                padding: `${space.xxs}px ${space.sm}px`,
                 borderRadius: radius.sm,
                 background: colors.surface,
                 border: `1px solid ${colors.border}`,
