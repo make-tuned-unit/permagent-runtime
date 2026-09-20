@@ -72,8 +72,9 @@ export function AwarenessIndicator({ onOpenInspection }: Props) {
   const stale = last_event_time ? relativeTimeAgo(last_event_time) : '';
   const parts: string[] = [];
   if (project_name) parts.push(`Aware of ${project_name}`);
-  if (event_count > 0) parts.push(`${event_count} recent events`);
-  if (memory_count > 0) parts.push(`${memory_count} relevant memories`);
+  // "1 recent events" was on screen in the chat window (QA 2026-09-20).
+  if (event_count > 0) parts.push(`${event_count} recent event${event_count === 1 ? '' : 's'}`);
+  if (memory_count > 0) parts.push(`${memory_count} relevant ${memory_count === 1 ? 'memory' : 'memories'}`);
   if (stale) parts.push(`last action ${stale}`);
 
   const label = parts.join(' · ');

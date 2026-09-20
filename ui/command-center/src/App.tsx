@@ -28,7 +28,7 @@ import { useAppNavigate } from './hooks/useAppNavigate';
 import { getOpenOnLaunch } from './lib/openOnLaunch';
 import { useVersionSkew } from './hooks/useVersionSkew';
 import { onRepaintRegain, forceCompositorRepaint } from './lib/repaintOnRegain';
-import { NATIVE_VIBRANCY_CLASS, NATIVE_WINDOW_IS_OPAQUE, TITLEBAR_HEIGHT } from './lib/windowChrome';
+import { clearPageBackgroundForVibrancy, NATIVE_WINDOW_IS_OPAQUE, TITLEBAR_HEIGHT } from './lib/windowChrome';
 
 type StartupConfigResult = 'app' | 'wizard' | 'malformed';
 
@@ -179,21 +179,7 @@ function App() {
   // the rail. Main window, inside Tauri only: a browser tab or an opaque
   // runtime window would show a bare white page instead. See windowChrome.ts.
   useEffect(() => {
-    if (NATIVE_WINDOW_IS_OPAQUE || !('__TAURI_INTERNALS__' in window)) return;
-    document.documentElement.classList.add(NATIVE_VIBRANCY_CLASS);
-    // index.html's anti-flash script paints <html> INLINE before any module
-    // runs, and an inline style outranks the stylesheet: with it in place the
-    // rail sampled the same 252,253,254 over a bright wallpaper and over a
-    // dark window, i.e. the material behind it was invisible. That script has
-    // to keep painting for the chat and pane windows, which share this file
-    // and are opaque, so it is cleared here — in the main window only.
-    const root = document.documentElement;
-    const painted = root.style.background;
-    root.style.background = 'transparent';
-    return () => {
-      root.style.background = painted;
-      root.classList.remove(NATIVE_VIBRANCY_CLASS);
-    };
+    return clearPageBackgroundForVibrancy();
   }, []);
 
   // Colour only — the part that genuinely tracks the theme.

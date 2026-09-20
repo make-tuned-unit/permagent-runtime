@@ -11,6 +11,9 @@ import { Button } from './components/common/Button';
 import { Tooltip } from './components/common/Tooltip';
 import { Mobius } from './components/mobius/Mobius';
 import { useCommandCenter } from './lib/store';
+import {
+  clearPageBackgroundForVibrancy, NATIVE_WINDOW_IS_OPAQUE, TITLEBAR_HEIGHT,
+} from './lib/windowChrome';
 import { api } from './lib/api';
 import { MessageList } from './components/chat/MessageList';
 import { ChatInput } from './components/chat/ChatInput';
@@ -31,6 +34,9 @@ export default function ChatApp() {
   const setAgentName = useCommandCenter(s => s.setAgentName);
   const [inspectionOpen, setInspectionOpen] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
+
+  // Same as the main window: clear the inline page paint so the material shows.
+  useEffect(() => clearPageBackgroundForVibrancy(), []);
 
   // Sync native window titlebar appearance with theme
   useEffect(() => {
@@ -128,13 +134,22 @@ export default function ChatApp() {
   return (
     <div style={{
       width: '100vw', height: '100vh',
-      background: gradient.shell,
+      // Transparent over the native material, the same treatment the main
+      // window gets; the message bubbles and the composer carry their own
+      // fills, so the panel reads as glass rather than as a flat sheet.
+      background: NATIVE_WINDOW_IS_OPAQUE ? gradient.shell : 'transparent',
       display: 'flex', flexDirection: 'column',
       fontFamily: font.body,
       // The chat window must NEVER side-scroll: wide content (code blocks,
       // long tokens) scrolls inside its own block, not the window.
       overflowX: 'hidden',
     }}>
+      {/* The window wears an overlay titlebar (OVERLAY_TITLEBAR in
+          chatWindow.ts), so the traffic lights sit over our own HTML: the
+          toolbar starts below them and the band above is the drag region. */}
+      {!NATIVE_WINDOW_IS_OPAQUE && (
+        <div data-tauri-drag-region style={{ height: TITLEBAR_HEIGHT, flexShrink: 0 }} />
+      )}
       {/* Toolbar */}
       <div style={{
         height: 36, flexShrink: 0,

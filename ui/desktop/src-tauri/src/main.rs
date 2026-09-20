@@ -392,6 +392,7 @@ fn main() {
             raise_chat_above_main,
             accessibility::reduce_transparency,
             chrome::reinset_traffic_lights,
+            chrome::make_window_transparent_cmd,
             // Apple Calendar via EventKit — the grant path the Home Calendar
             // card never had (see calendar.rs for why it lives in the app).
             calendar::calendar_authorization_status,

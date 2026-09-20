@@ -11,7 +11,11 @@
  * LOGICAL pixels to match Tauri's WebviewWindow option units.
  */
 import type { WebviewWindow as WebviewWindowType } from '@tauri-apps/api/webviewWindow';
+import { Effect, EffectState } from '@tauri-apps/api/window';
 import { useCommandCenter } from './store';
+import {
+  applyWindowTransparency, NATIVE_WINDOW_IS_OPAQUE, OVERLAY_TITLEBAR, reinsetTrafficLights,
+} from './windowChrome';
 
 const CHAT_GEOMETRY_KEY = 'permagent.chatWindow.geometry';
 
@@ -87,13 +91,22 @@ export async function createChatWindow(appTheme: string): Promise<WebviewWindowT
     ? `index.html?view=chat&session=${encodeURIComponent(currentSession)}`
     : 'index.html?view=chat';
 
-  return new WebviewWindow('chat', {
+  // The same chrome the main window wears: an overlay titlebar over our own
+  // HTML, and the native material behind it. Runtime windows need both halves
+  // applied AFTER creation — the builder silently drops `trafficLightPosition`
+  // and does not carry transparency to the webview (see windowChrome.ts).
+  const chat = new WebviewWindow('chat', {
     url,
     title: 'Permagent Chat',
     ...MIN_SIZE,
+    ...OVERLAY_TITLEBAR,
     decorations: true,
     resizable: true,
     focus: true,
+    transparent: !NATIVE_WINDOW_IS_OPAQUE,
+    windowEffects: NATIVE_WINDOW_IS_OPAQUE
+      ? undefined
+      : { effects: [Effect.Sidebar], state: EffectState.FollowsWindowActiveState },
     // The in-app browser is a native child webview of the MAIN window. Native
     // child webviews always paint above the main window's HTML, and they ride
     // the main window's z-order — so the moment the user clicks the browser,
@@ -114,6 +127,11 @@ export async function createChatWindow(appTheme: string): Promise<WebviewWindowT
     theme: appTheme === 'silver' ? 'light' : 'dark',
     ...placement,
   });
+  void chat.once('tauri://created', () => {
+    void reinsetTrafficLights('chat');
+    void applyWindowTransparency('chat');
+  });
+  return chat;
 }
 
 /**

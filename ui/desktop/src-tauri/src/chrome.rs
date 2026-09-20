@@ -325,6 +325,19 @@ pub fn make_window_transparent(window: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "macos"))]
 pub fn make_window_transparent(_window: &tauri::WebviewWindow) {}
 
+/// Apply the transparent-window treatment to a window the FRONTEND created.
+///
+/// The main window gets this from `setup`; a runtime window (the chat window)
+/// has no equivalent hook, and its builder cannot be trusted with transparency
+/// for the same reason `trafficLightPosition` does not survive that path.
+#[tauri::command]
+pub fn make_window_transparent_cmd(app: tauri::AppHandle, window_label: String) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window(&window_label) {
+        make_window_transparent(&window);
+    }
+}
+
 #[tauri::command]
 pub fn reinset_traffic_lights(app: tauri::AppHandle, window_label: String) {
     use tauri::Manager;

@@ -71,3 +71,36 @@ export async function reinsetTrafficLights(windowLabel: string): Promise<void> {
     await invoke('reinset_traffic_lights', { windowLabel });
   } catch { /* older shell, or a window that closed while we were asking */ }
 }
+
+/**
+ * Give a frontend-created window the transparent treatment the main window gets
+ * from Rust's `setup`. Same two facts as there: the builder's `transparent`
+ * does not survive the signed bundle, and the webview keeps its own opaque
+ * background under the `unstable` add_child path.
+ */
+export async function applyWindowTransparency(windowLabel: string): Promise<void> {
+  if (NATIVE_WINDOW_IS_OPAQUE || !('__TAURI_INTERNALS__' in window)) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('make_window_transparent_cmd', { windowLabel });
+  } catch { /* older shell, or the window closed while we were asking */ }
+}
+
+/**
+ * Clear the page background so the native material shows through, and put it
+ * back on unmount. index.html's anti-flash script paints <html> INLINE before
+ * any module runs and an inline style outranks the stylesheet, so clearing the
+ * class alone is not enough. Returns a cleanup function; a no-op when the
+ * window is opaque or outside Tauri.
+ */
+export function clearPageBackgroundForVibrancy(): () => void {
+  if (NATIVE_WINDOW_IS_OPAQUE || !('__TAURI_INTERNALS__' in window)) return () => {};
+  const root = document.documentElement;
+  const painted = root.style.background;
+  root.classList.add(NATIVE_VIBRANCY_CLASS);
+  root.style.background = 'transparent';
+  return () => {
+    root.style.background = painted;
+    root.classList.remove(NATIVE_VIBRANCY_CLASS);
+  };
+}
