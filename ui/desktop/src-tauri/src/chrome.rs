@@ -275,6 +275,51 @@ pub fn make_window_transparent(window: &tauri::WebviewWindow) {
         ns_window.setOpaque(false);
         ns_window.setBackgroundColor(Some(&NSColor::clearColor()));
     }
+
+    // ...and the WKWebView on top of it, which otherwise paints its own opaque
+    // white over the material. wry sets this at creation from the window's
+    // `transparent`, but the `unstable` `add_child` path our in-app browser
+    // forces does not carry it (the same branch that drops
+    // `trafficLightPosition`, fact 1 above). `drawsBackground` is the KVC key
+    // wry itself uses; a failure here is cosmetic, so it is not propagated.
+    let _ = window.with_webview(|webview| unsafe {
+        use objc2::msg_send;
+        use objc2_foundation::{NSNumber, NSString};
+        let no = NSNumber::numberWithBool(false);
+        let key = NSString::from_str("drawsBackground");
+        // `inner()` hands back a raw pointer on this Tauri version.
+        let view = webview.inner() as *mut objc2::runtime::AnyObject;
+        if view.is_null() {
+            return;
+        }
+        let _: () = msg_send![&*view, setValue: &*no, forKey: &*key];
+    });
+
+    // One line of evidence, because the config flag, the window flag, the
+    // material view and the webview's own background are four separate things
+    // and the signed bundle has disagreed with the config on some of them.
+    // Verified 2026-09-20: opaque=false, one NSVisualEffectViewTagged sized to
+    // the window under the webview, and the webview's drawsBackground=false.
+    unsafe {
+        let ns_window = &*(ptr as *mut NSWindow);
+        let effects = ns_window
+            .contentView()
+            .map(|content| {
+                content
+                    .subviews()
+                    .iter()
+                    .filter(|view| {
+                        view.class().name().to_string_lossy().contains("VisualEffect")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        eprintln!(
+            "[chrome] main window: opaque={} material_views={}",
+            ns_window.isOpaque(),
+            effects
+        );
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
