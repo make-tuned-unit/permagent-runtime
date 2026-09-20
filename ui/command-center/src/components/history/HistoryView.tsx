@@ -29,10 +29,11 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { FiActivity, FiClock, FiDollarSign, FiInbox } from 'react-icons/fi';
 import { api, type IncidentView } from '../../lib/api';
-import { concentric, radius, space, textSize, type } from '../../styles/tokens';
+import { radius, space, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useNotifications } from '../../lib/notifications';
 import { Button } from '../common/Button';
+import { SEGMENT_STRIP_PAD, SEGMENT_STRIP_RADIUS, segmentedTab } from '../common/segmented';
 import { Tooltip } from '../common/Tooltip';
 import { H1 } from '../common/H1';
 import { SessionsList } from '../sessions/SessionsList';
@@ -175,16 +176,18 @@ export function HistoryView({ initialTab = 'sessions' }: { initialTab?: HistoryT
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <H1 sub={active.sub}>History</H1>
 
-      {/* Segmented control. Rounded rectangle, not a capsule: these are dense
-          medium controls, and capsules are for large/XL prominent actions
-          (WWDC25/310). Inner radius is concentric with the track's own. */}
+      {/* The app's segmented control (components/common/segmented.ts), the
+          same one Grow wears. History used to style its own, and painted the
+          selected tab with `colors.surface` — darker than this strip in the
+          dark theme, so the chosen tab looked recessed and a hovered one
+          looked chosen. */}
       <div
         role="tablist"
         aria-label="History"
         style={{
-          display: 'inline-flex', gap: space.xxs, alignSelf: 'flex-start',
-          padding: space.xxs, marginBottom: space.xxl,
-          borderRadius: radius.md, background: colors.fillSubtle,
+          display: 'inline-flex', gap: SEGMENT_STRIP_PAD, alignSelf: 'flex-start',
+          padding: SEGMENT_STRIP_PAD, marginBottom: space.xxl,
+          borderRadius: SEGMENT_STRIP_RADIUS, background: colors.bgDeeper,
           border: `1px solid ${colors.border}`,
         }}
       >
@@ -199,21 +202,7 @@ export function HistoryView({ initialTab = 'sessions' }: { initialTab?: HistoryT
               data-testid={`history-tab-${t.key}`}
               onClick={() => setTab(t.key)}
               flashSuccess={false}
-              style={{
-                '--pa-btn-bg': on ? colors.surface : 'transparent',
-                '--pa-btn-fg': on ? colors.text : colors.textMuted,
-                '--pa-btn-border': 'transparent',
-                '--pa-btn-border-hover': 'transparent',
-                '--pa-btn-bg-hover': on ? colors.surface : colors.fillHover,
-                '--pa-btn-fg-hover': colors.text,
-                '--pa-btn-bg-active': colors.fillActive,
-                '--pa-btn-pad': '5px 12px',
-                // r_inner = r_outer - padding (WWDC25/356): the track is
-                // radius.md with 2px of padding, so the segments are 6.
-                '--pa-btn-radius': `${concentric(radius.md, 2)}px`,
-                '--pa-btn-weight': on ? 600 : 500,
-                fontSize: textSize.caption, gap: space.sm,
-              } as CSSProperties}
+              style={{ ...segmentedTab(colors, on), gap: space.sm } as CSSProperties}
             >
               <t.icon size={13} />
               {t.label}

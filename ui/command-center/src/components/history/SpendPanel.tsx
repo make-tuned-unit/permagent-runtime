@@ -16,6 +16,12 @@ import { Tooltip } from '../common/Tooltip';
 import { Card, SectionLabel, StatRow } from '../common/Card';
 import { bandColor, bandLabel, formatTokens, formatUsd, timeAgo } from '../settings/format';
 
+/** Width of one dollar-ceiling field. Fits "$ 1000" with room for the stepper. */
+export const CAP_FIELD_WIDTH = 168;
+
+/** Reading measure for the Spend column. */
+export const SPEND_MAX_WIDTH = 1100;
+
 export function SpendPanel() {
   const { colors } = useTheme();
   const [snap, setSnap] = useState<SpendSnapshot | null>(null);
@@ -103,8 +109,11 @@ export function SpendPanel() {
     return <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading spend…</div>;
   }
 
+  // A two-digit dollar ceiling, not a paragraph: the field is sized to its
+  // content. These were `flex: 1` in a full-width row, so on a wide window each
+  // ceiling got a third of the card — QA 2026-09-20, "improperly spaced".
   const numInput = (v: string, on: (s: string) => void, label: string, scope = 'Session') => (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: space.xs, flex: 1, minWidth: 90 }}>
+    <label style={{ display: 'flex', flexDirection: 'column', gap: space.xs, flex: '0 0 auto', width: CAP_FIELD_WIDTH }}>
       <span style={{ ...type.label, color: colors.textDim }}>{label}</span>
       <div style={{ display: 'flex', alignItems: 'center', gap: space.xs, height: 30, padding: '0 8px', borderRadius: radius.md, background: colors.inputBg, border: `1px solid ${colors.border}` }}>
         <span style={{ color: colors.textDim, fontSize: textSize.small }}>$</span>
@@ -119,7 +128,9 @@ export function SpendPanel() {
   );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
+    // The panel is a column of single-column cards, so it reads better at a
+    // measure than stretched across a 1900px window.
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, maxWidth: SPEND_MAX_WIDTH }}>
       {/* Running total */}
       <Card>
         <SectionLabel>Running total — everything you have spent</SectionLabel>

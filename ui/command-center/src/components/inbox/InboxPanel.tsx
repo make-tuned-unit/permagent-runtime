@@ -47,7 +47,14 @@ function receivedLabel(iso: string): string {
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-const COLS = '1fr 120px 64px 118px 118px 76px';
+// Filename, source, size, received, project, status.
+//
+// Source and project were fixed 120/118px while the filename took every
+// remaining pixel, so on a wide window the filename column ran half-empty
+// while "mail-attachment.g…" and "Port Community Li…" stayed clipped beside
+// it (QA 2026-09-20). They share the growth now, with floors that keep the
+// narrow-window layout intact.
+const COLS = 'minmax(220px, 2fr) minmax(120px, 1fr) 64px 118px minmax(118px, 1fr) 76px';
 
 /** Outer radius of a file row card; inner controls nest via `concentric()`. */
 const ROW_RADIUS = radius.lg;

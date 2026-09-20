@@ -297,7 +297,7 @@ export function Sidebar() {
   }, [workspaces, goToWorkspace]);
 
   return (
-    <div style={{
+    <div data-pa-rail style={{
       width: W, height: '100%', flexShrink: 0,
       // No `borderRight`: the rim draws the seam's hairline, and a border
       // beside it doubled it. The rim is the SEAMED one, hairline on the right

@@ -11,7 +11,7 @@ import {
   type AppNotification,
 } from '../../lib/notifications';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
-import { font, radius, space, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useGlass } from '../common/Glass';
 import { ToastCard } from './Toast';
@@ -20,6 +20,11 @@ const TOAST_MS = 6000;
 /** Never more than this many stacked at once — a wall of toasts is its own
  *  kind of noise. */
 const MAX_TOASTS = 3;
+
+/** Gap between the rail's edge and the tray. */
+const TRAY_GAP = 8;
+/** Used until the rail can be measured (and if it ever cannot be found). */
+const RAIL_FALLBACK_LEFT = 84;
 
 export function NotificationHost() {
   const { colors } = useTheme();
@@ -109,6 +114,23 @@ export function NotificationHost() {
     return () => document.removeEventListener('mousedown', onPress, true);
   }, [open]);
 
+  // The tray hangs off the sidebar rail's real right edge. It used to be a
+  // flat `left: 60`, which is the COLLAPSED rail's width: with the rail
+  // expanded the tray opened on top of it (QA 2026-09-20). Measured when it
+  // opens and on resize, so it follows the rail either way.
+  const [trayLeft, setTrayLeft] = useState(RAIL_FALLBACK_LEFT);
+  useEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const rail = document.querySelector('[data-pa-rail]');
+      const right = rail?.getBoundingClientRect().right;
+      setTrayLeft(right && right > 0 ? Math.round(right) + TRAY_GAP : RAIL_FALLBACK_LEFT);
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [open]);
+
   const toasts = items.filter((i) => toastIds.includes(i.id));
 
   return (
@@ -117,7 +139,7 @@ export function NotificationHost() {
           (which sits just above Settings). */}
       {open && (
         <div data-notifications-ui style={{
-          position: 'fixed', bottom: 96, left: 60, zIndex: 90, width: 320,
+          position: 'fixed', bottom: 96, left: trayLeft, zIndex: 90, width: 320,
           maxHeight: '60vh', overflowY: 'auto',
           ...glass,
           // D4: the tray is the same floating-glass class as a toast, so it
@@ -129,8 +151,12 @@ export function NotificationHost() {
           boxShadow: `${glass.boxShadow}, ${colors.elevationFloating}`,
           padding: space.md,
         }}>
+          <div style={{
+            ...type.label, color: colors.textDim,
+            padding: `${space.xs}px ${space.lg}px ${space.md}px`,
+          }}>Notifications</div>
           {items.length === 0 ? (
-            <div style={{ padding: 18, textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
+            <div style={{ padding: `${space.lg}px ${space.lg}px ${space.xl}px`, fontSize: textSize.caption, color: colors.textDim }}>
               Nothing needs you — all quiet.
             </div>
           ) : items.map((n) => (
