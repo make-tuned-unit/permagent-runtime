@@ -109,6 +109,16 @@ describe('the forum HUD lays each corner out as one column', () => {
     }
   });
 
+  it('keeps the right lane clear of the floating chat pill', async () => {
+    const { forumRightLaneBottom } = await import('./ForumView');
+    const { CHAT_LAUNCHER_MARGIN } = await import('../../chat/ChatLauncher');
+    // QA 2026-09-20: the pill covered half of "Walk the world".
+    expect(forumRightLaneBottom({ width: 150, height: 44 }))
+      .toBeGreaterThanOrEqual(44 + 2 * CHAT_LAUNCHER_MARGIN);
+    // Hidden pill: the stylesheet's own inset, not a bigger hole.
+    expect(forumRightLaneBottom(null)).toBe(72);
+  });
+
   it('keeps the lanes as flex columns', () => {
     const block = ruleBodies('.forum-lane').join(';');
     expect(block).toMatch(/flex-direction:\s*column/);

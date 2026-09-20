@@ -11,6 +11,7 @@ import { VaultBoundary } from '../areas/hall/BlenderVault';
 import { useActiveGoals } from '../agents/goalActivity';
 import { PerfSampler } from '../shared/perf';
 import { Button } from '../../common/Button';
+import { CHAT_LAUNCHER_MARGIN } from '../../chat/ChatLauncher';
 
 /** A ghost button is transparent, which over the 3D scene left "Show the desk",
  *  "Fly the skiff" and the hidden-card restore as bare text on the sky. Over the
@@ -196,6 +197,16 @@ function ForumWater() {
   return null;
 }
 
+
+/** Bottom inset of the World's right-hand HUD lane: clear of the floating chat
+ *  pill when it is showing, otherwise the stylesheet's own 72px. */
+export function forumRightLaneBottom(
+  launcher: { width: number; height: number } | null,
+): number {
+  if (!launcher) return 72;
+  return Math.max(72, Math.ceil(launcher.height) + 2 * CHAT_LAUNCHER_MARGIN);
+}
+
 export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgent }: { visible?: boolean; onNavigate?: (tool: ToolType) => void; onOpenGoal?: (projectId:string,id:string)=>void; onManageAgent?: (id:string)=>void }) {
   const { colors } = useTheme();
   const appearance = useSystemAppearance();
@@ -207,6 +218,8 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   // 'Agent' is the store's own unset default, so it is treated as "not named
   // yet" rather than as a name.
   const storeAgentName = useCommandCenter((s) => s.agentName);
+  // Null while the chat pill is hidden; see `forumRightLaneBottom`.
+  const chatLauncherSize = useCommandCenter((s) => s.chatLauncherSize);
   const namedByUser = storeAgentName && storeAgentName !== 'Agent' ? storeAgentName : null;
   // Third source, and the one that actually answers when the daemon does not.
   // Both of the above read `/api/agent/identity`, which returns 401 against an
@@ -445,7 +458,10 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           (bottom:118px), and the Agora's return button (bottom:126px) over the
           skiff as well, because each offset was chosen without the others.
           Stacked in one flow they sit above one another at any size. */}
-      <div className="forum-lane forum-lane-right">
+      {/* The floating chat pill owns this corner too; QA 2026-09-20 caught it
+          covering half of "Walk the world". The lane's bottom clears whatever
+          the pill currently measures (null while it is hidden). */}
+      <div className="forum-lane forum-lane-right" style={{ bottom: forumRightLaneBottom(chatLauncherSize) }}>
       {/* The passport belongs to the agent, so it appears where the agent does:
           while you are embodied in the world as your sovereign, or while the
           sovereign is the one selected at the desk. Everywhere else it is just
