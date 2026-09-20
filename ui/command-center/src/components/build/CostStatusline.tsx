@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
 import { font, space, textSize } from '../../styles/tokens';
@@ -60,6 +60,43 @@ function HarnessModelControl() {
   const request = useCommandCenter((s) => s.harnessModelRequest);
   const requestHarnessModel = useCommandCenter((s) => s.requestHarnessModel);
 
+  // The harness role's saved default, for the no-session case below. Read once
+  // per mount; written straight back through the same call Settings makes, so
+  // the two surfaces cannot drift.
+  const [defaultRoute, setDefaultRoute] = useState<{ provider: string | null; model: string | null }>(
+    { provider: null, model: null },
+  );
+  useEffect(() => {
+    let live = true;
+    Promise.all([api.readConfig('harness_provider'), api.readConfig('harness_model')])
+      .then(([provider, model]) => {
+        if (!live) return;
+        setDefaultRoute({
+          provider: typeof provider === 'string' && provider ? provider : null,
+          model: typeof model === 'string' && model ? model : null,
+        });
+      })
+      .catch(() => { /* an unreadable config just leaves the picker unset */ });
+    return () => { live = false; };
+  }, []);
+  const saveDefaultRoute = useCallback(async (value: { provider: string; model: string }) => {
+    setDefaultRoute(value);
+    try {
+      await api.setModelRoute('harness', value.provider, value.model);
+    } catch {
+      // Put the picker back to what the daemon still holds rather than showing
+      // a choice that was never saved.
+      const [provider, model] = await Promise.all([
+        api.readConfig('harness_provider').catch(() => null),
+        api.readConfig('harness_model').catch(() => null),
+      ]);
+      setDefaultRoute({
+        provider: typeof provider === 'string' && provider ? provider : null,
+        model: typeof model === 'string' && model ? model : null,
+      });
+    }
+  }, []);
+
   // `marginLeft: auto` pins this to the right end and `flexShrink: 0` keeps it
   // whole: the bar clips from the right, so anything that shrinks must be the
   // supporting segments, never the authoritative spend figure on the left.
@@ -72,18 +109,28 @@ function HarnessModelControl() {
     gap: space.sm,
   } as const;
 
+  // With no harness running the control is NOT dead: it edits the model the
+  // next run will start on — the same `harness` role Settings → Models writes.
+  // It used to read "no harness — model fixed", which answered the question
+  // ("why can't I switch?") but left the user's actual ask — "I could switch
+  // between models" from the cost bar — unserved whenever no session was live.
   if (!sessionId) {
     return (
-      <Tooltip content="No Permagent harness session in the Build terminal. Start one — or focus its tab — to switch the model it runs on.">
-        <span
-          tabIndex={0}
-          data-testid="statusline-model-idle"
-          aria-disabled="true"
-          style={{ ...anchored, color: colors.textDim, outline: 'none' }}
-        >
-          no harness — model fixed
-        </span>
-      </Tooltip>
+      <div style={anchored} data-testid="statusline-model-default">
+        <Tooltip content="No harness session is running. This sets the model the NEXT harness run starts on — the same setting as Settings → Models → Harness.">
+          <span tabIndex={0} style={{ color: colors.textDim, whiteSpace: 'nowrap', outline: 'none' }}>
+            next run
+          </span>
+        </Tooltip>
+        <div style={{ width: 190, maxWidth: '26vw' }}>
+          <ProviderModelPicker
+            value={defaultRoute}
+            onChange={(value) => { void saveDefaultRoute(value); }}
+            compact
+            aria-label="Choose the model the next harness run uses"
+          />
+        </div>
+      </div>
     );
   }
 

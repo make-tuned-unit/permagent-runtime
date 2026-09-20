@@ -24,6 +24,9 @@ vi.mock('../../lib/useLiveGoals', () => ({
 vi.mock('../../lib/api', () => ({
   api: {
     getActiveHarnessRuns,
+    // The statusline's idle model control reads the harness default.
+    readConfig: vi.fn(async () => null),
+    setModelRoute: vi.fn(async () => ({})),
     getSessionCost: vi.fn(async () => ({
       own: 0.42,
       childrenTotal: 0.17,
@@ -283,8 +286,8 @@ describe('CostStatusline', () => {
     expect(status.getAttribute('aria-label')).toContain('$1.56 of that is held for calls whose charge could not be confirmed');
     expect(status.getAttribute('aria-label')).toContain('not confirmed');
     // The model picker group is still its own right-hand sibling, untouched.
-    expect(container!.querySelector('[data-testid="statusline-model-idle"]')).not.toBeNull();
-    expect(status.contains(container!.querySelector('[data-testid="statusline-model-idle"]'))).toBe(false);
+    expect(container!.querySelector('[data-testid="statusline-model-default"]')).not.toBeNull();
+    expect(status.contains(container!.querySelector('[data-testid="statusline-model-default"]'))).toBe(false);
 
     // Focusing the figures opens the tooltip, which keeps every ledger figure.
     const trigger = status.parentElement as HTMLElement;

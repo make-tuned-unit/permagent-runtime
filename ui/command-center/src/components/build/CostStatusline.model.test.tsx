@@ -39,6 +39,10 @@ vi.mock('../../lib/api', () => ({
     getSessionCost: vi.fn(async () => ({ own: 0, childrenTotal: 0, perChild: [] })),
     getActiveHarnessRuns: vi.fn(async () => []),
     getPacks: vi.fn(async () => ({ prompt: false, configured: [], recommendation: { recommendations: [], considered: [] } })),
+    // The idle control reads the harness role's saved default and writes it
+    // back through the same call Settings → Models makes.
+    readConfig: vi.fn(async (key: string) => (key === 'harness_model' ? 'glm-5.3' : 'zai')),
+    setModelRoute: vi.fn(async () => ({})),
   },
 }));
 vi.mock('../settings/ProviderModelPicker', () => ({
@@ -159,8 +163,12 @@ describe('CostStatusline model picker', () => {
     expect(terminalPicker?.getAttribute('data-value')).toBe('openai/gpt-5');
   });
 
-  it('offers no control when no harness session is switchable, and says why', async () => {
-    // The user's exact situation: plain shell tabs, nothing that takes /model.
+  // The user's ask was "it would make sense for it to be on the bottom bar
+  // with the costs and I could switch between models". With no session running
+  // the bar used to print "no harness — model fixed" and offer nothing; it now
+  // sets the model the NEXT run starts on — the harness role Settings writes.
+  it('with no harness session, sets the model the next run starts on', async () => {
+    const { api } = await import('../../lib/api');
     await act(async () => {
       root.render(
         <>
@@ -171,18 +179,22 @@ describe('CostStatusline model picker', () => {
     });
 
     expect(useCommandCenter.getState().harnessModelSessionId).toBeNull();
+    // Not the live-session control...
     expect(container.querySelector('[data-testid="statusline-model-control"]')).toBeNull();
-    // Not a dead trigger: no picker at all, just a note with a reason.
-    expect(container.querySelector('[data-testid="mock-provider-model"]')).toBeNull();
-    const idle = container.querySelector('[data-testid="statusline-model-idle"]');
+    // ...the default one, which says which run it affects.
+    const idle = container.querySelector('[data-testid="statusline-model-default"]');
     expect(idle).not.toBeNull();
-    expect(idle?.getAttribute('aria-disabled')).toBe('true');
-    expect(idle?.textContent).toContain('no harness');
-    // The spend readout is untouched by the degraded control.
-    expect(container.querySelector('[role="status"]')?.textContent).toContain('$0.00');
+    expect(idle?.textContent).toContain('next run');
 
-    // A request cannot be sent with nothing to send it to.
-    await act(async () => { await useCommandCenter.getState().requestHarnessModel({ provider: 'openai', model: 'gpt-5' }); });
+    // It shows the saved harness default rather than an empty control.
+    const picker = container.querySelector('[data-testid="mock-provider-model"]') as HTMLElement;
+    expect(picker).not.toBeNull();
+    expect(picker.getAttribute('data-value')).toBe('zai/glm-5.3');
+
+    // Choosing writes the role, and sends NOTHING to a terminal: there is no
+    // session to take a /model command.
+    await act(async () => { picker.click(); });
+    expect(api.setModelRoute).toHaveBeenCalledWith('harness', 'openai', 'gpt-5');
     expect(invoke).not.toHaveBeenCalledWith('write_to_pty', expect.anything(), expect.anything());
     expect(useCommandCenter.getState().harnessModelRequest).toBeNull();
   });
