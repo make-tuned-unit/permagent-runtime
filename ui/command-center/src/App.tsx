@@ -181,7 +181,19 @@ function App() {
   useEffect(() => {
     if (NATIVE_WINDOW_IS_OPAQUE || !('__TAURI_INTERNALS__' in window)) return;
     document.documentElement.classList.add(NATIVE_VIBRANCY_CLASS);
-    return () => document.documentElement.classList.remove(NATIVE_VIBRANCY_CLASS);
+    // index.html's anti-flash script paints <html> INLINE before any module
+    // runs, and an inline style outranks the stylesheet: with it in place the
+    // rail sampled the same 252,253,254 over a bright wallpaper and over a
+    // dark window, i.e. the material behind it was invisible. That script has
+    // to keep painting for the chat and pane windows, which share this file
+    // and are opaque, so it is cleared here — in the main window only.
+    const root = document.documentElement;
+    const painted = root.style.background;
+    root.style.background = 'transparent';
+    return () => {
+      root.style.background = painted;
+      root.classList.remove(NATIVE_VIBRANCY_CLASS);
+    };
   }, []);
 
   // Colour only — the part that genuinely tracks the theme.
