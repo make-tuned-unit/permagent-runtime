@@ -163,6 +163,13 @@ describe('CostStatusline model picker', () => {
     expect(terminalPicker?.getAttribute('data-value')).toBe('openai/gpt-5');
   });
 
+  it('keeps its right end clear of the floating chat pill', async () => {
+    const { statuslineRightPad } = await import('./CostStatusline');
+    // QA 2026-09-20: the pill covered "Change model" on the Build bar.
+    expect(statuslineRightPad({ width: 150, height: 44 })).toBeGreaterThanOrEqual(150 + 18);
+    expect(statuslineRightPad(null)).toBe(18);
+  });
+
   // The user's ask was "it would make sense for it to be on the bottom bar
   // with the costs and I could switch between models". With no session running
   // the bar used to print "no harness — model fixed" and offer nothing; it now

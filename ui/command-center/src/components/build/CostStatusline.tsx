@@ -13,6 +13,7 @@ import { useLiveGoals } from '../../lib/useLiveGoals';
 import { api } from '../../lib/api';
 import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 import { ProviderModelPicker } from '../settings/ProviderModelPicker';
+import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
 
 import { Tooltip } from '../common/Tooltip';
 /**
@@ -177,8 +178,17 @@ function HarnessModelControl() {
  * authority, otherwise the active chat session. The rendered strings come
  * verbatim from {@link formatCostMeter}, which is what the wiring test asserts.
  */
+/** Right inset of the Build status bar: clear of the floating chat pill when it
+ *  is showing, otherwise the bar's own 18px gutter. */
+export function statuslineRightPad(launcher: { width: number; height: number } | null): number {
+  const GUTTER = 18;
+  if (!launcher) return GUTTER;
+  return Math.ceil(launcher.width) + GUTTER + CHAT_LAUNCHER_MARGIN;
+}
+
 export function CostStatusline() {
   const { colors } = useTheme();
+  const chatLauncherSize = useCommandCenter((s) => s.chatLauncherSize);
   const liveTokens = useCommandCenter((s) => s.liveTokens);
   const codingSpend = useCommandCenter((s) => s.codingSpend);
   const codingHarnessHydration = useCommandCenter((s) => s.codingHarnessHydration);
@@ -235,7 +245,10 @@ export function CostStatusline() {
       style={{
         display: 'flex',
         alignItems: 'center',
-        padding: `${space.sm}px 18px`,
+        // The floating chat pill sits over this bar's right end — it covered
+        // the model control (QA 2026-09-20). The right padding clears whatever
+        // the pill currently measures.
+        padding: `${space.sm}px ${statuslineRightPad(chatLauncherSize)}px ${space.sm}px 18px`,
         borderTop: `1px solid ${colors.border}`,
         fontFamily: font.mono,
         fontSize: textSize.micro,
