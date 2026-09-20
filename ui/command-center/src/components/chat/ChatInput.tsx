@@ -44,6 +44,8 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const disabled = isStreaming;
+  /** One line, drawn over the field — see the placeholder span below. */
+  const placeholder = disabled ? `${agentName} is replying…` : `Message ${agentName}`;
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -191,17 +193,33 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
             }
           }}
         />
+        {/* The placeholder is DRAWN, not set on the textarea.
+            A textarea's native placeholder wraps, and in the docked composer
+            "Message your agent..." wrapped to a second line that then spilled
+            out of the field's 36px box — reported twice (QA 2026-09-20). No
+            width, no agent name and no translation can wrap this one: it is a
+            single line that truncates with an ellipsis. The textarea keeps the
+            accessible name, so a screen reader is unaffected. */}
+        <div style={{ position: 'relative', flex: 1, minWidth: 0, display: 'flex' }}>
+          {!input && (
+            <span
+              aria-hidden="true"
+              style={{
+                position: 'absolute', left: 13, right: 13, top: '50%',
+                transform: 'translateY(-50%)', pointerEvents: 'none',
+                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                fontFamily: font.body, fontSize: 14, lineHeight: 1.2,
+                color: colors.textDim,
+              }}
+            >{placeholder}</span>
+          )}
         <textarea
           ref={textareaRef}
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          // Short enough to stay on ONE line in the docked composer, where
-          // "Message your agent..." wrapped and clipped against the field's
-          // own height (QA 2026-09-20). It also reads better: you are writing
-          // to someone with a name.
-          placeholder={disabled ? `${agentName} is replying…` : `Message ${agentName}`}
+          aria-label={placeholder}
           disabled={disabled}
           rows={1}
           className="flex-1 resize-none rounded-lg px-3 py-2 text-[14px] outline-none transition disabled:opacity-40"
@@ -224,6 +242,7 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
             e.currentTarget.style.boxShadow = 'none';
           }}
         />
+        </div>
         {isStreaming ? (
           // Every-turn escape hatch: while a turn streams, the Send button
           // becomes a Stop button that cancels the in-flight request. Danger-

@@ -46,6 +46,28 @@ function type(text = 'hello') {
   });
 }
 
+describe('the composer placeholder', () => {
+  // Reported twice on 2026-09-20: "Message your agent..." wrapped to a second
+  // line in the docked composer and then overflowed the field's box. A
+  // textarea's native placeholder wraps and cannot be ellipsized, so it is
+  // drawn instead.
+  it('is one line that truncates, never the textarea\'s own wrapping one', () => {
+    expect(field().getAttribute('placeholder')).toBeNull();
+    const drawn = container.querySelector('[aria-hidden="true"]') as HTMLElement;
+    expect(drawn?.textContent).toMatch(/^Message /);
+    expect(drawn.style.whiteSpace).toBe('nowrap');
+    expect(drawn.style.textOverflow).toBe('ellipsis');
+    expect(drawn.style.overflow).toBe('hidden');
+    // The accessible name survives the swap.
+    expect(field().getAttribute('aria-label')).toBe(drawn.textContent);
+  });
+
+  it('disappears as soon as there is text, so it cannot sit under the caret', () => {
+    type();
+    expect(container.querySelector('[aria-hidden="true"]')).toBeNull();
+  });
+});
+
 describe('send button', () => {
   it('is square with the field, not a smaller box beside it', () => {
     expect(send().style.width).toBe(send().style.height);
