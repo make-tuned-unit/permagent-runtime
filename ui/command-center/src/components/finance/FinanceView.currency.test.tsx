@@ -6,7 +6,10 @@
  * wears a CA$ prefix it did not earn.
  */
 
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
@@ -187,4 +190,24 @@ it('tells the journal apart from the display — the form still records US dolla
   const form = container.querySelector('#finance-holdings-form') as HTMLElement;
   expect(form.textContent).toContain('Entry price (USD)');
   expect(form.textContent).toContain('Exit price (USD)');
+});
+
+// QA 2026-09-20, real window with the chat dock open: the lots table kept
+// shrinking until the mark ran into the P&L. It is the one table inside an
+// overflowX wrapper, so it takes a width floor and the wrapper scrolls.
+describe('the lots table stays readable in a narrow pane', () => {
+  it('keeps a width floor, and only on the wrapped table', async () => {
+    const { LOTS_TABLE_MIN_WIDTH } = await import('./FinanceView');
+    expect(LOTS_TABLE_MIN_WIDTH).toBeGreaterThanOrEqual(480);
+    // jsdom's import.meta.url is not a file: URL — resolve from the module path.
+    const source = readFileSync(
+      join(dirname(fileURLToPath(new URL(import.meta.url, 'file:///'))), 'FinanceView.tsx'),
+      'utf8',
+    );
+    // The floor is applied at the table that sits in the scrolling wrapper.
+    expect(source).toMatch(/overflowX: 'auto'[\s\S]{0,600}minWidth: LOTS_TABLE_MIN_WIDTH/);
+    // ...and tableStyle itself stays floor-free, or the unwrapped household
+    // and watchlist tables would be pushed out of their cards.
+    expect(source).toMatch(/function tableStyle\(\): CSSProperties \{\s*return \{ width: '100%', borderCollapse/);
+  });
 });

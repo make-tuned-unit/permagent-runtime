@@ -1336,7 +1336,11 @@ function HoldingsSection({
             </Button>
           </div>
           <div style={{ overflowX: 'auto', minWidth: 0 }}>
-          <table style={{ ...tableStyle(), tableLayout: 'fixed' }}>
+          {/* Only this table takes a floor: it is the one inside an
+              `overflowX: auto` wrapper, so below the floor the wrapper
+              scrolls. The household and watchlist tables have no wrapper —
+              a floor there would push them out of their card. */}
+          <table style={{ ...tableStyle(), tableLayout: 'fixed', minWidth: LOTS_TABLE_MIN_WIDTH }}>
             <thead>
               <tr>
                 <th style={th(colors)}>Symbol</th>
@@ -2210,6 +2214,14 @@ function warnFill(hex: string, a = 0.12): string {
   const b = n & 255;
   return `rgba(${r},${g},${b},${a})`;
 }
+
+/** The lots table's narrowest readable width, in px.
+ *
+ *  QA 2026-09-20 with the chat dock open: `tableLayout: fixed` shrank the
+ *  columns until the mark ran into the P&L ("CA$196.7" over "CA$1,405.88").
+ *  Every cell here is a number that must not be clipped or overlapped, so
+ *  below this the wrapper scrolls instead. */
+export const LOTS_TABLE_MIN_WIDTH = 520;
 
 function tableStyle(): CSSProperties {
   return { width: '100%', borderCollapse: 'collapse', fontFamily: font.body };
