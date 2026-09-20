@@ -190,9 +190,14 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
     setExpanded(current => (current === provider.name ? null : provider.name));
   };
 
+  // With no override set the row above already prints what is in force (e.g.
+  // "anthropic / claude-haiku-4-5 · from GOOSE_MODEL"), so the trigger names
+  // the ACTION rather than repeating a blank. "Select a provider and model"
+  // under a filled-in value line read as a control that had failed to load
+  // (QA 2026-09-20, Settings → Models).
   const trigger = selectedLabel
     ? selectedLabel
-    : (sessionActive ? 'Use session model' : 'Select a provider and model');
+    : (sessionActive ? 'Use session model' : 'Change model');
 
   return <div ref={rootRef} className="relative" data-testid="provider-model-picker">
     <button
