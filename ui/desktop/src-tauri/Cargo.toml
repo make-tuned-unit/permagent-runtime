@@ -53,6 +53,8 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSResponder",
     "NSView",
     "NSWindow",
+    # NSColor::clearColor, for the transparent main window (chrome.rs).
+    "NSColor",
 ] }
 # Objective-C blocks — needed for the one callback-shaped AppKit API we use,
 # NSWorkspace's accessibility-change observer (see src/accessibility.rs).

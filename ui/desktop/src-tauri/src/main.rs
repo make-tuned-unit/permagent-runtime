@@ -400,6 +400,12 @@ fn main() {
             calendar::open_calendar_privacy_settings,
         ])
         .setup(|app| {
+            // `transparent: true` in the config does not survive the signed
+            // bundle (tauri#13415): the window came back opaque and buried the
+            // native sidebar material. Re-assert it against the live NSWindow.
+            if let Some(main) = app.get_webview_window("main") {
+                chrome::make_window_transparent(&main);
+            }
             daemon::start_daemon(app.handle())?;
             // Auto-update check (#326/#378): on launch, ask the hosted manifest
             // if a newer signed build exists. Non-blocking, failure-tolerant —

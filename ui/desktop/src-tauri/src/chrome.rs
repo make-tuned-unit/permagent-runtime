@@ -251,6 +251,35 @@ fn apply_inset(window: &tauri::WebviewWindow, x: f64, y: f64) {
 /// A1a proved silently drops `trafficLightPosition` under `unstable`. So the
 /// frontend sets `titleBarStyle`/`hiddenTitle` (those do survive the builder)
 /// and calls this once the window exists.
+/// Make the window itself non-opaque with a clear fill.
+///
+/// `transparent: true` in the config is supposed to do this, and in a dev build
+/// it does. In the SIGNED bundle the window came back fully opaque — the rail
+/// sampled 252,253,254 at alpha 1.00 over a colourful desktop, i.e. the native
+/// `sidebar` material behind the web layer was never visible (tauri#13415).
+/// Setting it here, against the live `NSWindow` after it exists, is the same
+/// shape of fix as `ensure_inset` above: read AppKit's answer rather than trust
+/// the builder's.
+///
+/// Safe to call more than once, and a no-op off macOS.
+#[cfg(target_os = "macos")]
+pub fn make_window_transparent(window: &tauri::WebviewWindow) {
+    use objc2_app_kit::{NSColor, NSWindow};
+
+    let Ok(ptr) = window.ns_window() else { return };
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let ns_window = &*(ptr as *mut NSWindow);
+        ns_window.setOpaque(false);
+        ns_window.setBackgroundColor(Some(&NSColor::clearColor()));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn make_window_transparent(_window: &tauri::WebviewWindow) {}
+
 #[tauri::command]
 pub fn reinset_traffic_lights(app: tauri::AppHandle, window_label: String) {
     use tauri::Manager;
