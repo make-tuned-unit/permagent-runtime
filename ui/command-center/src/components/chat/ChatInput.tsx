@@ -7,6 +7,7 @@ import { useTheme } from '../../styles/useTheme';
 import { AttachmentChip } from './AttachmentChip';
 import { Button } from '../common/Button';
 import { VoiceButton } from '../voice/VoiceButton';
+import { useOrchestratorName } from '../world/shared/useOrchestratorName';
 
 import { Tooltip } from '../common/Tooltip';
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -22,6 +23,11 @@ export interface ChatInputHandle {
 export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, ref) {
   const { colors } = useTheme();
   const isStreaming = useCommandCenter(s => s.isStreaming);
+  // The configured name, then the store's — which defaults to the literal
+  // "Agent", so "Message Agent" is exactly what must not reach the screen.
+  const configuredName = useOrchestratorName();
+  const storeName = useCommandCenter(s => s.agentName);
+  const agentName = configuredName?.trim() || (storeName && storeName !== 'Agent' ? storeName : 'your agent');
   const sendMessage = useCommandCenter(s => s.sendMessage);
   const stopStreaming = useCommandCenter(s => s.stopStreaming);
 
@@ -191,10 +197,14 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder={disabled ? 'Agent is responding...' : 'Message your agent...'}
+          // Short enough to stay on ONE line in the docked composer, where
+          // "Message your agent..." wrapped and clipped against the field's
+          // own height (QA 2026-09-20). It also reads better: you are writing
+          // to someone with a name.
+          placeholder={disabled ? `${agentName} is replying…` : `Message ${agentName}`}
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none rounded-lg px-4 py-2 text-[14px] outline-none transition disabled:opacity-40"
+          className="flex-1 resize-none rounded-lg px-3 py-2 text-[14px] outline-none transition disabled:opacity-40"
           style={{
             fontFamily: font.body,
             color: colors.text,
