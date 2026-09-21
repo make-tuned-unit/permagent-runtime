@@ -362,7 +362,20 @@ function __permagentAct(args, maxEls, expectedGen, nextGen) {
     if (action === 'click') {
       __permagentClick(el);
     } else if (action === 'type') {
-      __permagentType(el, value == null ? '' : String(value));
+      // Check the result, exactly as `select` does below. `__permagentType`
+      // returns false for an element with no `value` property (a div, a
+      // contenteditable, the wrong ref) and the text goes nowhere — but this
+      // caller used to discard that and fall through to `{ ok: true }`, so the
+      // model was told the typing worked and browser.rs printed "Done". An
+      // action that did nothing must never report success.
+      var typed = __permagentType(el, value == null ? '' : String(value));
+      if (!typed) {
+        return {
+          ok: false,
+          error: 'element does not accept text input (' + el.tagName.toLowerCase() + ')',
+          snapshot: __permagentSnapshot(maxEls, nextGen),
+        };
+      }
     } else if (action === 'select') {
       var ok = __permagentSelect(el, value == null ? '' : String(value));
       if (!ok) {

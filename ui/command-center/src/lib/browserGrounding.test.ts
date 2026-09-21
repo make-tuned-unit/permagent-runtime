@@ -258,6 +258,29 @@ describe('act dispatcher', () => {
     expect(changes).toBe(2);
   });
 
+  // Reported 2026-09-21: `type` was the one action that ignored its own
+  // result. Typing into an element with no `value` property silently did
+  // nothing and still returned ok, so the agent was told it had filled a field
+  // it had not touched — and a browser agent that cannot trust its own action
+  // results will loop or confidently proceed on a false premise.
+  it('reports a failure when the element cannot take text, instead of a false success', () => {
+    // A link: in the snapshot (so the model can reference it) but with no
+    // `value` property, which is the exact shape that used to fail silently.
+    document.body.innerHTML = `<a href="/somewhere">Somewhere</a>`;
+    const ref = refOf(grounding.snapshot(), (e) => e.tag === 'a');
+    const res = grounding.act({ ref, action: 'type', value: 'hello' });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/does not accept text/);
+  });
+
+  it('still reports success when the field really does take the text', () => {
+    document.body.innerHTML = `<input aria-label="q" />`;
+    const ref = refOf(grounding.snapshot(), (e) => e.tag === 'input');
+    const res = grounding.act({ ref, action: 'type', value: 'hello' });
+    expect(res.ok).toBe(true);
+    expect((document.querySelector('input') as HTMLInputElement).value).toBe('hello');
+  });
+
   it('returns a structured error when no option matches', () => {
     document.body.innerHTML = `<select aria-label="s"><option value="a">A</option></select>`;
     const ref = refOf(grounding.snapshot(), (e) => e.tag === 'select');
