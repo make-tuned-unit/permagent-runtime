@@ -1395,28 +1395,152 @@ fn try_json_fields(raw: &str) -> Option<(String, String, String)> {
     ))
 }
 
+fn label_colon_at(hay: &str, pos: usize, label: &str) -> bool {
+    let needle = label.to_ascii_lowercase();
+    hay.get(pos..)
+        .is_some_and(|tail| tail.len() > needle.len() && tail.as_bytes()[needle.len()] == b':')
+        && hay
+            .get(pos..pos + needle.len())
+            .is_some_and(|got| got.eq_ignore_ascii_case(label))
+}
+
+fn line_prefix_before_label_is_ok(prefix: &str) -> bool {
+    let mut rest = prefix;
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return true;
+        }
+        if let Some(r) = rest.strip_prefix("**") {
+            rest = r;
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix("__") {
+            rest = r;
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix('*') {
+            rest = r;
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix('`') {
+            rest = r;
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix('_') {
+            rest = r;
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix("- ") {
+            rest = r;
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix('-') {
+            rest = r;
+            continue;
+        }
+        return false;
+    }
+}
+
+fn is_line_start_label(hay: &str, pos: usize) -> bool {
+    let before = hay.get(..pos).unwrap_or("");
+    let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let prefix = hay.get(line_start..pos).unwrap_or("");
+    line_prefix_before_label_is_ok(prefix)
+}
+
+fn is_uppercase_label_at(hay: &str, pos: usize, label: &str) -> bool {
+    let end = pos + label.len();
+    hay.get(pos..end).is_some_and(|got| {
+        got.bytes()
+            .zip(label.bytes())
+            .all(|(a, b)| a.is_ascii_uppercase() && a.eq_ignore_ascii_case(&b))
+    })
+}
+
+/// Mid-line UPPERCASE field labels (TERMS:, CATEGORIES:) may follow whitespace or
+/// a run of markdown emphasis (`*`, `_`, `` ` ``) that itself follows whitespace or
+/// line/text start. Lowercase/title-case `terms:` inside FACTS prose must not match.
+fn midline_prefix_allows_uppercase_label(hay: &str, pos: usize) -> bool {
+    if pos == 0 {
+        return true;
+    }
+    if hay
+        .get(..pos)
+        .and_then(|s| s.chars().next_back())
+        .is_some_and(|c| c.is_whitespace())
+    {
+        return true;
+    }
+    let prefix = hay.get(..pos).unwrap_or("");
+    let mut end = prefix.len();
+    while end > 0 {
+        let before = prefix.get(..end).unwrap_or("");
+        match before.chars().next_back() {
+            Some(ch @ ('*' | '`' | '_')) => end -= ch.len_utf8(),
+            _ => break,
+        }
+    }
+    if end == prefix.len() {
+        return false;
+    }
+    end == 0
+        || prefix
+            .get(..end)
+            .and_then(|s| s.chars().next_back())
+            .is_some_and(|c| c.is_whitespace())
+}
+
+fn is_anchored_field_label(hay: &str, pos: usize, label: &str) -> bool {
+    if !label_colon_at(hay, pos, label) {
+        return false;
+    }
+    if pos == 0 {
+        return true;
+    }
+    if is_line_start_label(hay, pos) {
+        return true;
+    }
+    midline_prefix_allows_uppercase_label(hay, pos) && is_uppercase_label_at(hay, pos, label)
+}
+
+fn find_anchored_label(hay: &str, lower: &str, label: &str, from: usize) -> Option<usize> {
+    let needle = format!("{}:", label.to_ascii_lowercase());
+    let mut search_from = from;
+    while let Some(rel) = lower.get(search_from..).and_then(|t| t.find(&needle)) {
+        let pos = search_from + rel;
+        if is_anchored_field_label(hay, pos, label) {
+            return Some(pos);
+        }
+        search_from = pos + 1;
+    }
+    None
+}
+
+fn trim_extracted_field_value(value: &str) -> &str {
+    value
+        .trim()
+        .trim_matches(|c: char| matches!(c, '*' | '_' | '`'))
+        .trim()
+}
+
 fn field_after_label(hay: &str, label: &str, next_labels: &[&str]) -> Option<String> {
     let lower = hay.to_ascii_lowercase();
     let needle = format!("{}:", label.to_ascii_lowercase());
-    let start = lower.find(&needle)?;
+    let start = find_anchored_label(hay, &lower, label, 0)?;
     let value_start = start + needle.len();
     let mut end = hay.len();
     for next in next_labels {
-        let n = format!("{}:", next.to_ascii_lowercase());
-        if let Some(pos) = lower.get(value_start..).and_then(|t| t.find(&n)) {
-            end = end.min(value_start + pos);
+        if let Some(pos) = find_anchored_label(hay, &lower, next, value_start) {
+            end = end.min(pos);
         }
     }
     // `lower` is an ASCII-only lowercasing of `hay`, so it is byte-for-byte
     // the same length and every offset found in one is a char boundary in the
     // other. `get` says that rather than assuming it: a malformed slice yields
     // no field instead of panicking on a model's stray multibyte output.
-    let value = hay
-        .get(value_start..end)
-        .unwrap_or("")
-        .trim()
-        .trim_matches('*')
-        .trim();
+    let value = trim_extracted_field_value(hay.get(value_start..end).unwrap_or(""));
     if value.is_empty() {
         None
     } else {
@@ -3702,6 +3826,188 @@ CATEGORIES: team meeting, project planning, engineering"#;
         let result = parse_structured_description(raw).unwrap();
         assert!(result.starts_with("Browser navigated"));
         assert!(result.contains("navigate, navigation"));
+    }
+
+    #[test]
+    fn parse_structured_ignores_lowercase_label_colon_inside_facts() {
+        let raw = "FACTS: Agreed payment terms: net 30 with the supplier.\n\
+TERMS: payment, payments, supplier, net\n\
+CATEGORIES: finance, contracts";
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (
+                Some("Agreed payment terms: net 30 with the supplier.".into()),
+                Some("payment, payments, supplier, net".into()),
+                Some("finance, contracts".into()),
+            )
+        );
+        parse_structured_description(raw).expect("payment-terms prose must not split FACTS");
+    }
+
+    #[test]
+    fn parse_structured_ignores_categories_colon_inside_facts() {
+        let raw = "FACTS: Note categories: misc and other.\n\
+TERMS: note, notes, misc, other\n\
+CATEGORIES: notes, misc";
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (
+                Some("Note categories: misc and other.".into()),
+                Some("note, notes, misc, other".into()),
+                Some("notes, misc".into()),
+            )
+        );
+        parse_structured_description(raw).expect("categories: inside FACTS must not truncate");
+    }
+
+    #[test]
+    fn parse_structured_one_line_uppercase_labels_still_parse() {
+        let raw = "FACTS: Browser navigated to Gmail in a tab. TERMS: navigate, navigation, navigated, browser CATEGORIES: web browsing, email";
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (
+                Some("Browser navigated to Gmail in a tab.".into()),
+                Some("navigate, navigation, navigated, browser".into()),
+                Some("web browsing, email".into()),
+            )
+        );
+        let result = parse_structured_description(raw).expect("one-line uppercase labels");
+        assert!(result.starts_with("Browser navigated"));
+    }
+
+    #[test]
+    fn parse_structured_markdown_emphasis_labels_parse() {
+        let raw = "**FACTS:** The user migrated their brain.\n\
+**TERMS:** migrated, Permagent, brain, Mac\n\
+**CATEGORIES:** technology, data";
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (
+                Some("The user migrated their brain.".into()),
+                Some("migrated, Permagent, brain, Mac".into()),
+                Some("technology, data".into()),
+            )
+        );
+        parse_structured_description(raw).expect("markdown-emphasis labels");
+    }
+
+    #[test]
+    fn parse_structured_one_line_markdown_emphasis_labels_parse() {
+        let raw = "**FACTS:** The user asked for a joke. **TERMS:** joke, jokes, tell, told **CATEGORIES:** humor, chat";
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (
+                Some("The user asked for a joke.".into()),
+                Some("joke, jokes, tell, told".into()),
+                Some("humor, chat".into()),
+            )
+        );
+        let result = parse_structured_description(raw).expect("one-line **LABEL:** fields");
+        assert!(
+            !result.contains("**FACTS:**") && !result.starts_with('*'),
+            "FACTS must not keep emphasis markers: {result}"
+        );
+    }
+
+    #[test]
+    fn parse_structured_title_case_terms_inside_facts_stays_in_facts() {
+        let raw = "FACTS: Signed the Payment Terms: net 30 addendum.\n\
+TERMS: payment, payments, addendum, net\n\
+CATEGORIES: finance, contracts";
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (
+                Some("Signed the Payment Terms: net 30 addendum.".into()),
+                Some("payment, payments, addendum, net".into()),
+                Some("finance, contracts".into()),
+            )
+        );
+        parse_structured_description(raw).expect("Title-case Terms: inside FACTS must not split");
+    }
+
+    #[test]
+    fn parse_structured_multibyte_before_midline_uppercase_label_does_not_panic() {
+        let raw = "FACTS: café visit—TERMS: cafe, visit, visits, coffee CATEGORIES: food, outing";
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (
+                Some("café visit—TERMS: cafe, visit, visits, coffee".into()),
+                None,
+                Some("food, outing".into()),
+            )
+        );
+        // Em dash (not whitespace/emphasis) sits directly before TERMS:, so that
+        // match is not an anchored field label; extraction cannot recover all three
+        // fields from this one-liner.
+        assert!(
+            parse_structured_description(raw).is_none(),
+            "expected None without anchored TERMS"
+        );
+    }
+
+    #[test]
+    fn extract_labeled_fields_em_space_before_midline_terms() {
+        let raw = "FACTS: A supplier invoice arrived.\u{2003}TERMS: invoice, invoices, supplier, arrived CATEGORIES: finance, purchasing";
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (
+                Some("A supplier invoice arrived.".into()),
+                Some("invoice, invoices, supplier, arrived".into()),
+                Some("finance, purchasing".into()),
+            )
+        );
+    }
+
+    #[test]
+    fn extract_labeled_fields_nbsp_before_midline_terms() {
+        let raw = "FACTS: A supplier invoice arrived.\u{00a0}TERMS: invoice, invoices, supplier, arrived CATEGORIES: finance, purchasing";
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (
+                Some("A supplier invoice arrived.".into()),
+                Some("invoice, invoices, supplier, arrived".into()),
+                Some("finance, purchasing".into()),
+            )
+        );
+    }
+
+    #[test]
+    fn extract_labeled_fields_underscore_emphasis_three_lines() {
+        let raw = "__FACTS:__ A supplier invoice arrived.\n\
+__TERMS:__ invoice, invoices, supplier, arrived\n\
+__CATEGORIES:__ finance, purchasing";
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (
+                Some("A supplier invoice arrived.".into()),
+                Some("invoice, invoices, supplier, arrived".into()),
+                Some("finance, purchasing".into()),
+            )
+        );
+    }
+
+    #[test]
+    fn extract_labeled_fields_underscore_emphasis_one_line() {
+        let raw = "__FACTS:__ x __TERMS:__ y __CATEGORIES:__ z";
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (Some("x".into()), Some("y".into()), Some("z".into()),)
+        );
+    }
+
+    #[test]
+    fn extract_labeled_fields_keeps_internal_underscore_in_value() {
+        let raw = "FACTS: A note about naming.\n\
+TERMS: snake_case, foo, bar, baz\n\
+CATEGORIES: code, style";
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (
+                Some("A note about naming.".into()),
+                Some("snake_case, foo, bar, baz".into()),
+                Some("code, style".into()),
+            )
+        );
     }
 
     // ── Batch checkpoint mechanism (#68) ──────────────────────────────
