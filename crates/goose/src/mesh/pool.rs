@@ -480,6 +480,16 @@ impl InferenceBody {
         body.insert("options".into(), options);
         Self(Value::Object(body))
     }
+
+    /// Opt-in native Ollama controls (`/api/generate` and `/api/chat`).
+    /// These are top-level keys in Ollama's body shape.
+    pub fn with_ollama_native_controls(mut self, think: bool, format: Value) -> Self {
+        if let Value::Object(body) = &mut self.0 {
+            body.insert("think".into(), Value::Bool(think));
+            body.insert("format".into(), format);
+        }
+        self
+    }
 }
 
 impl InferenceBody {
@@ -1234,6 +1244,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stream_body_default_is_unchanged() {
+        let body =
+            InferenceBody::for_stream("m", "p", "s", serde_json::json!({ "num_predict": 150 }));
+        assert_eq!(
+            serde_json::to_string(&body).unwrap(),
+            r#"{"model":"m","prompt":"p","system":"s","stream":true,"options":{"num_predict":150}}"#
+        );
+    }
+
+    #[test]
+    fn stream_body_native_opt_in_adds_top_level_think_and_format() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["FACTS", "TERMS", "CATEGORIES"],
+            "additionalProperties": false,
+            "properties": {
+                "FACTS": { "type": "string" },
+                "TERMS": { "type": "array", "items": { "type": "string" }, "minItems": 4, "maxItems": 10 },
+                "CATEGORIES": { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 5 }
+            }
+        });
+        let body =
+            InferenceBody::for_stream("m", "p", "s", serde_json::json!({ "num_predict": 150 }))
+                .with_ollama_native_controls(false, schema.clone());
+        assert_eq!(
+            serde_json::to_string(&body).unwrap(),
+            r#"{"model":"m","prompt":"p","system":"s","stream":true,"options":{"num_predict":150},"think":false,"format":{"type":"object","required":["FACTS","TERMS","CATEGORIES"],"additionalProperties":false,"properties":{"FACTS":{"type":"string"},"TERMS":{"type":"array","items":{"type":"string"},"minItems":4,"maxItems":10},"CATEGORIES":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":5}}}}"#
+        );
+        let v = serde_json::to_value(&body).unwrap();
+        assert_eq!(v["think"], false);
+        assert_eq!(v["format"], schema);
+        assert!(
+            v["options"].get("think").is_none() && v["options"].get("format").is_none(),
+            "native controls must stay top-level in the Ollama body"
+        );
+    }
+
+    #[test]
     fn chat_stream_body_disables_thinking_and_caps_output() {
         let body = InferenceBody::for_chat_stream("qwen3.8-27b", "P", "S", 150, 0.2);
         let v = serde_json::to_value(&body).unwrap();
@@ -1244,6 +1292,15 @@ mod tests {
         assert_eq!(v["messages"][0]["content"], "S");
         assert_eq!(v["messages"][1]["role"], "user");
         assert_eq!(v["messages"][1]["content"], "P");
+    }
+
+    #[test]
+    fn chat_stream_body_serialization_is_unchanged() {
+        let body = InferenceBody::for_chat_stream("m", "p", "s", 150, 0.0);
+        assert_eq!(
+            serde_json::to_string(&body).unwrap(),
+            r#"{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"p"}],"stream":true,"max_tokens":150,"temperature":0.0,"cache_prompt":true,"chat_template_kwargs":{"enable_thinking":false}}"#
+        );
     }
 
     fn peer(endpoint: &str, trusted: bool) -> PeerConfig {

@@ -108,6 +108,19 @@ pub(crate) fn resolve_model() -> String {
     DEFAULT_MODEL.to_string()
 }
 
+fn librarian_native_response_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["FACTS", "TERMS", "CATEGORIES"],
+        "additionalProperties": false,
+        "properties": {
+            "FACTS": { "type": "string" },
+            "TERMS": { "type": "array", "items": { "type": "string" }, "minItems": MIN_TERMS, "maxItems": MAX_TERMS },
+            "CATEGORIES": { "type": "array", "items": { "type": "string" }, "minItems": MIN_CATEGORIES, "maxItems": MAX_CATEGORIES }
+        }
+    })
+}
+
 /// Read the schedule config and return a human-readable window summary
 /// like "02:00 + 240min (enabled)" or "disabled".
 fn load_schedule_summary() -> String {
@@ -571,7 +584,7 @@ async fn describe_one_with_context(
             );
         }
 
-        let raw = call_ollama_streaming_pooled(
+        let raw = call_ollama_streaming_pooled_describe(
             LIBRARIAN_SYSTEM_PROMPT,
             &prompt,
             model,
@@ -1662,6 +1675,47 @@ pub(crate) async fn call_ollama_streaming_pooled(
     memory_key: &str,
     session_id: Option<&str>,
 ) -> Result<String, String> {
+    call_ollama_streaming_pooled_with_native_controls(
+        system,
+        prompt,
+        model,
+        emit_events,
+        memory_key,
+        session_id,
+        None,
+    )
+    .await
+}
+
+async fn call_ollama_streaming_pooled_describe(
+    system: &str,
+    prompt: &str,
+    model: &str,
+    emit_events: bool,
+    memory_key: &str,
+    session_id: Option<&str>,
+) -> Result<String, String> {
+    call_ollama_streaming_pooled_with_native_controls(
+        system,
+        prompt,
+        model,
+        emit_events,
+        memory_key,
+        session_id,
+        Some(librarian_native_response_schema()),
+    )
+    .await
+}
+
+async fn call_ollama_streaming_pooled_with_native_controls(
+    system: &str,
+    prompt: &str,
+    model: &str,
+    emit_events: bool,
+    memory_key: &str,
+    session_id: Option<&str>,
+    native_format: Option<serde_json::Value>,
+) -> Result<String, String> {
     // A dedicated Librarian endpoint (`PERMAGENT_LIBRARIAN_ENDPOINT`) wins over
     // the mesh pool. If it is unreachable — the two-machine split only runs in
     // the nightly window, and either mini can be down — fall back to the
@@ -1676,20 +1730,22 @@ pub(crate) async fn call_ollama_streaming_pooled(
                 emit_events,
                 memory_key,
                 session_id,
+                native_format,
             )
             .await;
         }
         let backend = crate::config::librarian_backend();
         let attempt = if backend == "ollama" {
-            call_ollama_streaming(
-                &endpoint,
+            call_ollama_streaming(OllamaStreamingRequest {
+                base_url: &endpoint,
                 system,
                 prompt,
                 model,
                 emit_events,
                 memory_key,
                 session_id,
-            )
+                native_format: native_format.clone(),
+            })
             .await
         } else {
             call_llamacpp_streaming(
@@ -1785,13 +1841,23 @@ pub(crate) async fn call_ollama_streaming_pooled(
                     emit_events,
                     memory_key,
                     session_id,
+                    native_format,
                 )
                 .await;
             }
             Err(err) => return Err(err),
         }
     }
-    call_local_backends(system, prompt, model, emit_events, memory_key, session_id).await
+    call_local_backends(
+        system,
+        prompt,
+        model,
+        emit_events,
+        memory_key,
+        session_id,
+        native_format,
+    )
+    .await
 }
 
 /// The backends that need no operator configuration, in preference order:
@@ -1811,6 +1877,7 @@ async fn call_local_backends(
     emit_events: bool,
     memory_key: &str,
     session_id: Option<&str>,
+    native_format: Option<serde_json::Value>,
 ) -> Result<String, String> {
     if let Some(text) = try_apple_on_device(system, prompt, emit_events, memory_key).await {
         return Ok(text);
@@ -1822,6 +1889,7 @@ async fn call_local_backends(
         emit_events,
         memory_key,
         session_id,
+        native_format,
     )
     .await
 }
@@ -2394,18 +2462,20 @@ async fn call_ollama_streaming_pooled_inner(
     emit_events: bool,
     memory_key: &str,
     session_id: Option<&str>,
+    native_format: Option<serde_json::Value>,
 ) -> Result<String, String> {
     let lease = crate::mesh::pool::lease_batch(Some(model));
     let endpoint = lease.endpoint().to_string();
-    match call_ollama_streaming(
-        &endpoint,
+    match call_ollama_streaming(OllamaStreamingRequest {
+        base_url: &endpoint,
         system,
         prompt,
         model,
         emit_events,
         memory_key,
         session_id,
-    )
+        native_format: native_format.clone(),
+    })
     .await
     {
         Ok(text) => {
@@ -2419,15 +2489,16 @@ async fn call_ollama_streaming_pooled_inner(
                     error = %err,
                     "pool peer failed during a streaming pass; retrying on the local endpoint"
                 );
-                call_ollama_streaming(
-                    &local,
+                call_ollama_streaming(OllamaStreamingRequest {
+                    base_url: &local,
                     system,
                     prompt,
                     model,
                     emit_events,
                     memory_key,
                     session_id,
-                )
+                    native_format,
+                })
                 .await
             }
             None => Err(err),
@@ -2610,16 +2681,29 @@ pub(crate) async fn call_llamacpp_streaming(
 /// (`librarian_entities`) uses an evidence-only contract — the v1 entity pass
 /// silently inherited the three-field system prompt, which fought its own
 /// one-sentence instruction.
-pub(crate) async fn call_ollama_streaming(
-    base_url: &str,
-    system: &str,
-    prompt: &str,
-    model: &str,
+struct OllamaStreamingRequest<'a> {
+    base_url: &'a str,
+    system: &'a str,
+    prompt: &'a str,
+    model: &'a str,
     emit_events: bool,
-    memory_key: &str,
-    session_id: Option<&str>,
-) -> Result<String, String> {
+    memory_key: &'a str,
+    session_id: Option<&'a str>,
+    native_format: Option<serde_json::Value>,
+}
+
+async fn call_ollama_streaming(request: OllamaStreamingRequest<'_>) -> Result<String, String> {
     use futures::StreamExt;
+    let OllamaStreamingRequest {
+        base_url,
+        system,
+        prompt,
+        model,
+        emit_events,
+        memory_key,
+        session_id,
+        native_format,
+    } = request;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
@@ -2627,19 +2711,24 @@ pub(crate) async fn call_ollama_streaming(
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
+    let schema_mode = native_format.is_some();
+
     // Wire bytes leave only through the mesh inference-only choke-point
     // (`InferenceBody`), so this streaming path enforces the same HARD
     // INVARIANT as the pool engine's own dispatch.
-    let body = crate::mesh::pool::InferenceBody::for_stream(
+    let mut body = crate::mesh::pool::InferenceBody::for_stream(
         model,
         prompt,
         system,
         serde_json::json!({
             "temperature": 0.2,
             "top_p": 0.9,
-            "num_predict": 150,
+            "num_predict": if schema_mode { 256 } else { 150 },
         }),
     );
+    if let Some(format) = native_format {
+        body = body.with_ollama_native_controls(false, format);
+    }
 
     crate::mesh::audit_and_check_mesh_egress(base_url, session_id, model, Some(system), prompt)
         .await?;
@@ -2661,6 +2750,7 @@ pub(crate) async fn call_ollama_streaming(
     let mut accumulated = String::new();
     let mut line_buffer = String::new();
     let mut saw_done = false;
+    let mut terminal_done_reason: Option<String> = None;
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result
@@ -2696,6 +2786,10 @@ pub(crate) async fn call_ollama_streaming(
                 .unwrap_or(false)
             {
                 saw_done = true;
+                terminal_done_reason = parsed
+                    .get("done_reason")
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned);
             }
 
             if let Some(err) = parsed.get("error").and_then(|v| v.as_str()) {
@@ -2724,6 +2818,10 @@ pub(crate) async fn call_ollama_streaming(
                 .unwrap_or(false)
             {
                 saw_done = true;
+                terminal_done_reason = parsed
+                    .get("done_reason")
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned);
             }
         }
     }
@@ -2732,6 +2830,13 @@ pub(crate) async fn call_ollama_streaming(
         return Err(
             "Ollama stream terminated prematurely — no done signal received. \
              Model may have crashed or run out of memory."
+                .to_string(),
+        );
+    }
+
+    if schema_mode && terminal_done_reason.as_deref() == Some("length") {
+        return Err(
+            "Ollama truncated structured output (done_reason=length); refusing partial JSON."
                 .to_string(),
         );
     }
@@ -4010,6 +4115,19 @@ CATEGORIES: code, style";
         );
     }
 
+    #[test]
+    fn extract_labeled_fields_accepts_schema_shaped_json_arrays() {
+        let raw = r#"{"FACTS":"A migration was applied.","TERMS":["migration","migrations","applied","database"],"CATEGORIES":["software development","data"]}"#;
+        assert_eq!(
+            extract_labeled_fields(raw),
+            (
+                Some("A migration was applied.".into()),
+                Some("migration, migrations, applied, database".into()),
+                Some("software development, data".into()),
+            )
+        );
+    }
+
     // ── Batch checkpoint mechanism (#68) ──────────────────────────────
     //
     // These exercise the pure batch loop (`run_batch_core`) with an in-memory
@@ -4017,7 +4135,6 @@ CATEGORIES: code, style";
     // Ollama is required. They cover: config parsing/clamping, atomic file
     // round-trip, unbounded drain, the `max_per_run` cap + multi-call resume,
     // crash-mid-batch resume with no reprocessing, and interval checkpointing.
-
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4425,8 +4542,9 @@ CATEGORIES: code, style";
 #[cfg(test)]
 mod readiness_probe_tests {
     use super::{
-        check_endpoint_ready, classify_completion_answer, classify_list_answer,
-        foreign_body_reason, is_endpoint_down, is_endpoint_not_ready, Readiness,
+        call_ollama_streaming, check_endpoint_ready, classify_completion_answer,
+        classify_list_answer, foreign_body_reason, is_endpoint_down, is_endpoint_not_ready,
+        librarian_native_response_schema, OllamaStreamingRequest, Readiness, DEFAULT_MODEL,
     };
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -4675,5 +4793,159 @@ mod readiness_probe_tests {
         assert!(!is_endpoint_down(
             "llama-server error (400): invalid max_tokens"
         ));
+    }
+
+    #[tokio::test]
+    async fn ollama_schema_mode_sends_native_controls_and_256_tokens() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/generate"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "{\"response\":\"{\\\"FACTS\\\":\\\"f\\\"\",\"done\":false}\n\
+                 {\"response\":\"}\",\"done\":true,\"done_reason\":\"stop\"}\n",
+                "application/x-ndjson",
+            ))
+            .mount(&server)
+            .await;
+
+        let schema = librarian_native_response_schema();
+        let result = call_ollama_streaming(OllamaStreamingRequest {
+            base_url: &server.uri(),
+            system: "sys",
+            prompt: "prompt",
+            model: DEFAULT_MODEL,
+            emit_events: false,
+            memory_key: "m1",
+            session_id: None,
+            native_format: Some(schema.clone()),
+        })
+        .await;
+        assert!(result.is_ok(), "schema path should stream successfully");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body.get("think"), Some(&serde_json::Value::Bool(false)));
+        assert_eq!(body.get("format"), Some(&schema));
+        assert_eq!(body["options"]["num_predict"], serde_json::json!(256));
+    }
+
+    #[tokio::test]
+    async fn ollama_plain_mode_omits_native_controls_and_uses_150_tokens() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/generate"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "{\"response\":\"plain\",\"done\":true,\"done_reason\":\"stop\"}\n",
+                "application/x-ndjson",
+            ))
+            .mount(&server)
+            .await;
+
+        let result = call_ollama_streaming(OllamaStreamingRequest {
+            base_url: &server.uri(),
+            system: "sys",
+            prompt: "prompt",
+            model: DEFAULT_MODEL,
+            emit_events: false,
+            memory_key: "m1",
+            session_id: None,
+            native_format: None,
+        })
+        .await;
+        assert!(result.is_ok(), "plain path should stream successfully");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(body.get("think").is_none());
+        assert!(body.get("format").is_none());
+        assert_eq!(body["options"]["num_predict"], serde_json::json!(150));
+    }
+
+    #[tokio::test]
+    async fn ollama_done_reason_length_errors_only_for_schema_mode() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/generate"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "{\"response\":\"{\\\"FACTS\\\":\\\"cut\",\"done\":false}\n\
+                 {\"response\":\"\",\"done\":true,\"done_reason\":\"length\"}\n",
+                "application/x-ndjson",
+            ))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let schema_err = call_ollama_streaming(OllamaStreamingRequest {
+            base_url: &server.uri(),
+            system: "sys",
+            prompt: "prompt",
+            model: DEFAULT_MODEL,
+            emit_events: false,
+            memory_key: "m1",
+            session_id: None,
+            native_format: Some(librarian_native_response_schema()),
+        })
+        .await;
+        assert!(
+            schema_err
+                .as_ref()
+                .is_err_and(|err| err.contains("done_reason=length")),
+            "schema mode must reject length-truncated structured JSON"
+        );
+
+        let plain_ok = call_ollama_streaming(OllamaStreamingRequest {
+            base_url: &server.uri(),
+            system: "sys",
+            prompt: "prompt",
+            model: DEFAULT_MODEL,
+            emit_events: false,
+            memory_key: "m1",
+            session_id: None,
+            native_format: None,
+        })
+        .await;
+        assert!(
+            plain_ok.is_ok(),
+            "plain path keeps existing behavior on done_reason=length"
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_json_reply_parses_into_expected_description_fields() {
+        let raw = r#"{"FACTS":"A migration was applied.","TERMS":["migration","migrations","applied","database"],"CATEGORIES":["software development","data"]}"#;
+        let out =
+            super::parse_structured_description(raw).expect("schema-shaped JSON should parse");
+        assert_eq!(
+            out,
+            "A migration was applied. Related terms: migration, migrations, applied, database. Categories: software development, data."
+        );
+    }
+
+    /// Live end-to-end check of the schema path: the production request
+    /// builder, a real local Ollama, and the production parser. Uses a fixed
+    /// public sample — no memory data. Run with:
+    /// `cargo test -p permagent --lib live_ollama_schema_describe -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "requires a local Ollama with the default Librarian model"]
+    async fn live_ollama_schema_describe_parses_with_the_production_parser() {
+        let raw = call_ollama_streaming(OllamaStreamingRequest {
+            base_url: "http://127.0.0.1:11434",
+            system: super::LIBRARIAN_SYSTEM_PROMPT,
+            prompt: "Memory: Applied the v54 to v55 database migration to the staging server and the smoke tests passed.",
+            model: DEFAULT_MODEL,
+            emit_events: false,
+            memory_key: "live-schema-check",
+            session_id: None,
+            native_format: Some(librarian_native_response_schema()),
+        })
+        .await
+        .expect("local Ollama should answer on the schema path");
+        println!("LIVE RAW: {raw}");
+        let parsed = super::parse_structured_description(raw.trim())
+            .expect("a schema-constrained reply must pass the strict parser without salvage");
+        println!("LIVE PARSED: {parsed}");
+        assert!(parsed.contains("Related terms:") && parsed.contains("Categories:"));
     }
 }
