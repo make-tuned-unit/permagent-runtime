@@ -61,7 +61,10 @@ not be able to commit — the coordinator commits after review).
 1. **Phase-0 audit** recorded: what already exists, exact files/functions, the pattern mirrored. *Located* vs *traced*
    stated for every behavioural claim. **The audit reads the comments at the site and asks why the code is the way
    it is before the node is accepted** — two nodes (A5, A2c) had premises that the code's own comments or success
-   path already refuted.
+   path already refuted. **Expected strings in tests come from the source, never from the prompt or a guess**: gate 2
+   caught a worker test asserting an invented description format (`Facts:/Terms:/Categories:` lines) where the code
+   stores `… Related terms: …. Categories: ….` — had the guess happened to match, it would have passed while asserting
+   a format nobody verified.
 2. **Unit tests** for the change, including the failing case that motivated it (red before, green after — shown).
 3. **A wiring test** proving the production path reaches the new code — the house pattern of a source-scanning or
    call-path test, not just a test of the function in isolation.
