@@ -1,6 +1,6 @@
 # DAG J — implementing the agreed direction, with Jev as a configurable judge provider
 
-**Date:** 2026-09-21 · **Status:** PROPOSED — awaiting `permagent-runtime-46`'s agreement on ownership and order.
+**Date:** 2026-09-21 · **Status:** **AGREED 2026-09-21 15:30** with `permagent-runtime-46` — ownership, gate model and tiers accepted; the judge-role design **amended by the peer** (§4 Phase B); its DoD additions adopted (§3). Dispatch open on every coordinator-owned node.
 **Asked by:** Jesse — *"Coordinate with the other session to create a structured DAG to implement the agreed upon
 direction. Use Codex via plugin and Cursor via CLI as workers. Verify every piece of code end to end for full wiring
 with full regression tests. Add JEV as a model provider so we can have it configured for its new role. Work
@@ -67,6 +67,30 @@ not be able to commit — the coordinator commits after review).
 7. **Coordinator review**, then commit by the coordinator with the evidence summarised in the message.
 8. **Self-knowledge descriptor** in the same change for any user-facing capability (standing rule).
 
+**Added by `permagent-runtime-46`, each from a defect it caught this week:**
+
+9. **Red-then-green means the test was OBSERVED failing**, not argued to fail.
+10. **A passing test must be proven to have executed something** — assert on elapsed time or side effects, not on
+    `Ok`. (Three integration tests claimed a five-minute worker wait and returned in 15 µs.)
+11. **"Did this test pass BEFORE my change?"** — one command, run before blaming the diff. Known pre-existing noise:
+    four `goal_engine` tests fail **in isolation** (sqlx "requires a Tokio context") and pass in the full suite — not a
+    worker's to fix.
+12. **Process-wide guards key per DATABASE, never per session id** — session ids are per-day sequences that repeat
+    across stores.
+13. **Behavioural assertions over source-greps** — a guard test broke because an unrelated string contained
+    `qwen2.5:7b`.
+14. **UI diffs use `space.*` / `textSize.*` tokens**; the fitness tests reject raw pixels.
+15. **Verify the INSTALLED artifact, not the tree** — on a dirty shared checkout "built from commit X" is false; string
+    the bundled binary for a known literal.
+16. **No tool schema may carry a top-level `oneOf` / `allOf` / `anyOf`** — Anthropic rejects the whole request. (Live
+    outage 2026-09-21: `extensionmanager__get_memory`, `ext_manager.rs:505`; fixed by the peer with a guard test over
+    `all_possible_tools()`. **No worker touches that schema.**)
+17. **Every worker report states "NOT BUILT"** when it did not build. *"A worker forbidden from cargo is reasoning
+    about compilation from reading, and its prose reads identically either way."* **No node closes on a worker's
+    claim.**
+18. **Gate order inside a window:** focused target → the module's neighbours → the full lib suite. Gates are batched,
+    in windows the peer opens.
+
 ## 4. The graph
 
 ```
@@ -90,8 +114,8 @@ D*  instructions ledger · graph verification (Spectral) · inbox ranking · typ
 |---|---|---|---|---|---|
 | **A1** | `adversary_inspector`: a verdict that is not exactly ALLOW or BLOCK, and **any error**, goes to hold/ask — never allow. Today it parses `starts_with("BLOCK")`, treats **everything else — including an empty reply — as ALLOW** (`:322-348`), allows on any error or timeout (`:437-450`), and allows when no provider is available (`:253`). Phase-0 audit done (Cursor `composer-2.5`, verified): three fail-open paths, not two; hold-and-ask is `InspectionAction::RequireApproval`; the inspector is registered always but **off unless `adversary.md` exists**; no test covers verdict parsing or the error paths; `test_adversary_enabled_default_tools` currently *asserts* no-provider → Allow and must change on purpose. | `crates/goose/src/security/adversary_inspector.rs` (+ its tests) | coordinator | T2 (security) → review by Codex read-only | tests for: malformed verdict, empty reply, provider error, timeout — each must NOT allow; existing ALLOW/BLOCK behaviour unchanged |
 | **A2** | Librarian leftovers: (a) `field_after_label` must anchor labels to line starts — a FACTS sentence containing "terms:" splits wrongly today; (b) the native Ollama request sends `think:false` and a JSON-schema `format`, **passed from the Librarian caller only**, not set globally in the shared builder; (c) the endpoint-failure fallback honours the scheduled model instead of the hard-coded `DEFAULT_MODEL`. | `platform_extensions/librarian.rs`, `mesh/pool.rs` (a new opt-in constructor only) | coordinator | (a) T0 · (b) T1 · (c) T0 | (a) a regression test with "payment terms: net 30" in FACTS; (b) request-body tests for both paths + a live describe on the resident 7B; (c) test the fallback model. **Not included — needs Jesse's ruling:** lowering the minimum term/category counts (a retrieval-quality decision). |
-| **A3** | **Evidence ledger** — per action: did the callee report success · did a check run after the last mutation · is the duration plausible. A "done" with no supporting row is held. | `cost_router/hold_done.rs`, `agents/agent.rs`, `tool_monitor.rs` | **PEER** | — | would have caught both live cases: browser "Done" on a no-op type; 15 µs "five-minute" tests |
-| **A4** | Cost-ledger fields: `call_purpose`, `trigger_ref`, `retry_of_call_id`, **`pre_call_evidence`**, `tool_call_count`, `completion_kind` — set in `record_provider_usage()`, provenance from `reserve_provider_invocation_for_model()`. | `agents/reply_parts.rs`, `session/session_manager.rs`, schema migration | **PEER** | — | historical rows stay `unknown`, never guessed |
+| **A3** *(taken by the peer)* | **Evidence ledger** — per action: did the callee report success · did a check run after the last mutation · is the duration plausible. A "done" with no supporting row is held. | `cost_router/hold_done.rs`, `agents/agent.rs`, `tool_monitor.rs` | **PEER** | — | would have caught both live cases: browser "Done" on a no-op type; 15 µs "five-minute" tests |
+| **A4** *(taken by the peer)* | Cost-ledger fields: `call_purpose`, `trigger_ref`, `retry_of_call_id`, **`pre_call_evidence`**, `tool_call_count`, `completion_kind` — set in `record_provider_usage()`, provenance from `reserve_provider_invocation_for_model()`. | `agents/reply_parts.rs`, `session/session_manager.rs`, schema migration | **PEER** | — | historical rows stay `unknown`, never guessed |
 | **A5** | ~~Serve the recurring charges~~ **PREMISE WRONG — reduced by its own Phase-0 audit.** The route already serves them: `routes/finance.rs:355-366` uses `spend_forecast`'s list on success, and `recurring: vec![]` is only the fallback when the forecast errors (verified). What is actually missing is **coverage**: no test asserts `recurring` anywhere, and there is no route test for `GET /api/finance`. | `crates/goose/src/finance_ledger.rs` tests only | coordinator | T0 | a ledger test with two same-payee transactions asserts a non-empty `recurring`; no production change |
 
 ### Phase B — Jev as a configurable judge provider (Jesse's explicit ask)
@@ -109,13 +133,32 @@ that cannot answer. It gets its own small seam, and it is registered and configu
   `von`, `jev-local`) all speak. **Provider ids:** `jev` (hosted, `https://api.typesafe.ai`, key `TYPESAFE_API_KEY` in
   the keychain, `DataLocality::Cloud`) and `systemone` (any compatible endpoint; `Local` **only** when the host is
   loopback or on the trusted mesh — otherwise Cloud, fail-closed).
-- **Role:** `PERMAGENT_ROLE_JUDGE_PROVIDER` / `PERMAGENT_ROLE_JUDGE_MODEL`, the existing `PERMAGENT_ROLE_*` pattern
-  (`cost_router/role_map.rs` — **peer-owned; the peer adds the role or tells me how**). Unset = no judge; every call
-  site then takes its deterministic path. **The judge role never resolves to a text model and a text role never
-  resolves to the judge.**
+- **Role — AMENDED BY THE PEER, and it is right.** Do **not** add `Judge` to `WorkflowRole` (`recommend.rs:259`): that
+  enum *is* the text routing table — a fixed `[WorkflowRole; 5]` enumerated by `derive_role`, `resolve_role_model`,
+  `mappings_to_persist`, the Settings picker and the statusline — so the recommender would propose Sonnet for the judge
+  and the UI would offer it; the first invariant would be *violated by construction* and defended by runtime asserts
+  forever. Instead the decision module gets **its own parallel namespace**: a small `DecisionRole` enum in
+  `crates/goose/src/decision/` with keys `PERMAGENT_DECISION_JUDGE_PROVIDER` / `_MODEL`, mirroring `role_map`'s
+  half-configured rule exactly (`Some` only when **both** keys are non-empty). Both invariants then hold
+  **structurally**: the judge is not in the text table, and no text role can resolve to it **as long as `jev` and
+  `systemone` are never registered in `providers::create`** — unknown ids already hard-fail there. `role_map.rs` is not
+  touched at all.
+- **Budget identity.** Hosted `jev` is a **paid** provider, and a paid reservation requires a durable task identity —
+  the exact thing that silently killed every scheduled run on 09-19 → 09-21 (fixed in `0cafe04c`). **A judge call from
+  a scheduled or headless context must be inside a budget task or it is refused before the wire — an explicit test in
+  B2, not an assumption.**
+- **Vendor neutrality.** One trait with one backend is a trait shaped like that backend. **A second, deterministic
+  `DecisionBackend` lands in the same node**, however simple — otherwise the seam is unfalsifiable.
+- **Fail awake.** Not only *unset role → deterministic path*: **backend unreachable, timeout, malformed distribution and
+  refused-by-locality all fall to the deterministic path and log** — never block, never silently pick.
+- **Never a classifier over explicit state** — if the answer is already in structured state, no question is asked.
+  A call-site rule **with a test**, not a convention.
 - **Privacy guard:** every call site declares `StateClass::{Public, Private}`. `Private` + `Cloud` → refused before the
-  request is built, recorded in `egress_audit`, fail-closed. Batching guard: ≤ 20 questions per state (measured
-  accuracy cliff); a larger batch is split, never sent.
+  request is built, recorded in `egress_audit`, fail-closed. Batching guard: ≤ 20 questions per state; a larger batch
+  is split, never sent. *Source for the cliff:* `realZachi/pg-jev`'s own benchmark (1–20 rows per state 100 %, 40 →
+  92–98 %, 80 → 77–94 %), reproduced independently by `yodablocks/jev-orderby-bench` — both measured on **items**
+  batched into one state on **hosted** Jev. For *questions about one item* on a *local* backend it is an **assumption
+  to be measured in B4**, not a fact.
 - **Journal, right-sized:** `(site, question_version, state_ref, distribution, acted)` — a **reference** to the state,
   never a copy, so forgetting a memory cascades. Thresholds live in config, never as literals.
 - **Accounting:** judge calls go through the same accounted path as `complete_fast` and join
