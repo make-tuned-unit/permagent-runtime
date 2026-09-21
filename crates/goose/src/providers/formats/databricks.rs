@@ -244,21 +244,37 @@ fn apply_claude_thinking_config(payload: &mut Value, model_config: &ModelConfig)
             );
         }
         ThinkingType::Enabled => {
-            let budget_tokens = model_config
+            // Same leak as the Anthropic format had, spelled over two lines:
+            // `max_output_tokens() + budget_tokens` walks past the ceiling the
+            // cost router priced. Both formats now fit the budget INSIDE the
+            // ceiling through one shared helper so they cannot drift again.
+            let requested = model_config
                 .get_config_param::<i32>("budget_tokens", "CLAUDE_THINKING_BUDGET")
-                .unwrap_or(16000)
-                .max(1024);
-
-            let max_tokens = model_config.max_output_tokens() + budget_tokens;
-            obj.insert("max_tokens".to_string(), json!(max_tokens));
-            obj.insert(
-                "thinking".to_string(),
-                json!({
-                    "type": "enabled",
-                    "budget_tokens": budget_tokens
-                }),
-            );
-            obj.insert("temperature".to_string(), json!(2));
+                .unwrap_or(16000);
+            let ceiling = model_config.max_output_tokens();
+            match super::anthropic::fit_thinking_budget_within_ceiling(ceiling, requested) {
+                Some(budget_tokens) => {
+                    obj.insert("max_tokens".to_string(), json!(ceiling));
+                    obj.insert(
+                        "thinking".to_string(),
+                        json!({
+                            "type": "enabled",
+                            "budget_tokens": budget_tokens
+                        }),
+                    );
+                    obj.insert("temperature".to_string(), json!(2));
+                }
+                None => {
+                    tracing::warn!(
+                        target: "permagent::cost_router",
+                        max_tokens = ceiling,
+                        requested_budget = requested,
+                        "extended thinking skipped: the authorised output ceiling cannot hold \
+                         the minimum thinking budget plus a visible answer"
+                    );
+                    obj.insert("max_tokens".to_string(), json!(ceiling));
+                }
+            }
         }
         ThinkingType::Disabled => {
             if let Some(temp) = model_config.temperature {
@@ -1114,8 +1130,10 @@ mod tests {
         let request = create_request(&model_config, "system", &[], &[], &ImageFormat::OpenAi)?;
 
         assert_eq!(request["thinking"]["type"], "enabled");
-        assert_eq!(request["thinking"]["budget_tokens"], 10000);
-        assert_eq!(request["max_tokens"], 14096);
+        // Fitted inside the 4,096 ceiling (4096 - 512), not added to it. This
+        // previously asserted 14096 — the leak, pinned by its own test.
+        assert_eq!(request["thinking"]["budget_tokens"], 3584);
+        assert_eq!(request["max_tokens"], 4096);
         assert_eq!(request["temperature"], 2);
         assert!(request.get("max_completion_tokens").is_none());
 

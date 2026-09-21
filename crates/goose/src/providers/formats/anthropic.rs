@@ -688,6 +688,39 @@ pub fn cache_ttl(model_config: &ModelConfig) -> CacheTtl {
     }
 }
 
+/// Anthropic's floor for an extended-thinking budget; a smaller one is rejected.
+const MIN_THINKING_BUDGET_TOKENS: i32 = 1_024;
+/// Output kept for the visible answer when a thinking budget is fitted inside
+/// the authorised ceiling. Without it a tight ceiling would buy thinking and
+/// leave no room to say anything.
+const MIN_VISIBLE_OUTPUT_TOKENS: i32 = 512;
+
+/// Fit an extended-thinking budget INSIDE an authorised output ceiling.
+///
+/// Anthropic counts thinking tokens against `max_tokens`, so both this format
+/// and the Databricks one used to buy room by sending `max_tokens + budget` —
+/// which walks past the ceiling the cost router priced. `max_tokens` is
+/// `model_config.max_output_tokens()`, and on a reserved call that IS the
+/// reservation's cap, so a call authorised for 4,096 output tokens asked the
+/// API for 20,096 at the default budget: the reservation under-priced it 5x and
+/// the task/session ceilings could be passed without tripping.
+///
+/// `None` means the ceiling cannot hold the minimum budget plus a visible
+/// answer, and the caller must send NO thinking block rather than raise the
+/// ceiling — a turn that thinks less is recoverable, one that silently
+/// overspends is not. Shared so the two Claude-speaking formats cannot drift.
+pub(crate) fn fit_thinking_budget_within_ceiling(
+    max_tokens: i32,
+    requested_budget: i32,
+) -> Option<i32> {
+    let requested = requested_budget.max(MIN_THINKING_BUDGET_TOKENS);
+    let affordable = max_tokens.saturating_sub(MIN_VISIBLE_OUTPUT_TOKENS);
+    if affordable < MIN_THINKING_BUDGET_TOKENS {
+        return None;
+    }
+    Some(requested.min(affordable))
+}
+
 fn apply_thinking_config(payload: &mut Value, model_config: &ModelConfig, max_tokens: i32) {
     let obj = payload.as_object_mut().unwrap();
     match thinking_type(model_config) {
@@ -697,12 +730,38 @@ fn apply_thinking_config(payload: &mut Value, model_config: &ModelConfig, max_to
             obj.insert("output_config".to_string(), json!({"effort": effort}));
         }
         ThinkingType::Enabled => {
-            let budget_tokens = model_config
+            // Anthropic counts thinking tokens against `max_tokens`, so extended
+            // thinking needs room for the budget PLUS the visible answer. This
+            // used to buy that room by sending `max_tokens + budget_tokens` —
+            // which walks straight past the ceiling the cost router priced.
+            // `max_tokens` here is `model_config.max_output_tokens()`, and on a
+            // reserved call that IS the reservation's cap (see
+            // `cost_router::reservation` and `apply_reserved_output_cap`): a call
+            // authorised for 4,096 output tokens asked the API for 20,096 at the
+            // default budget, so the reservation under-priced it by 5x and the
+            // task/session ceilings could be passed without ever tripping.
+            //
+            // The priced ceiling wins. The budget is fitted INSIDE it, leaving
+            // `MIN_VISIBLE_OUTPUT_TOKENS` for the answer itself; if the ceiling
+            // cannot hold Anthropic's 1,024-token minimum budget plus that floor,
+            // thinking is dropped rather than the ceiling broken — a turn that
+            // thinks less is recoverable, a turn that silently overspends is not.
+            let requested = model_config
                 .get_config_param::<i32>("budget_tokens", "CLAUDE_THINKING_BUDGET")
-                .unwrap_or(16000)
-                .max(1024);
-
-            obj.insert("max_tokens".to_string(), json!(max_tokens + budget_tokens));
+                .unwrap_or(16000);
+            let Some(budget_tokens) = fit_thinking_budget_within_ceiling(max_tokens, requested)
+            else {
+                tracing::warn!(
+                    target: "permagent::cost_router",
+                    max_tokens,
+                    requested_budget = requested,
+                    "extended thinking skipped: the authorised output ceiling cannot hold \
+                     the minimum thinking budget plus a visible answer"
+                );
+                return;
+            };
+            // `max_tokens` is deliberately NOT rewritten: it already carries the
+            // priced ceiling, and the budget now lives inside it.
             obj.insert(
                 "thinking".to_string(),
                 json!({
@@ -1383,8 +1442,66 @@ mod tests {
         let payload = create_request(&config, "system", &messages, &[])?;
 
         assert_eq!(payload["thinking"]["type"], "enabled");
-        assert_eq!(payload["thinking"]["budget_tokens"], 10000);
-        assert_eq!(payload["max_tokens"], 4096 + 10000);
+        // The 10,000-token request is fitted INSIDE the 4,096 ceiling rather
+        // than added to it: 4096 - 512 = 3584. Before this fix the payload
+        // asked for 14,096 output tokens on a call priced for 4,096.
+        assert_eq!(payload["thinking"]["budget_tokens"], 3584);
+        assert_eq!(
+            payload["max_tokens"], 4096,
+            "max_tokens must stay at the authorised ceiling"
+        );
+
+        Ok(())
+    }
+
+    /// The reservation cap is the whole point: whatever thinking asks for, the
+    /// payload may never request more output than the call was priced for.
+    #[test]
+    fn thinking_never_raises_max_tokens_above_the_authorised_ceiling() -> Result<()> {
+        let _guard = env_lock::lock_env([
+            ("CLAUDE_THINKING_TYPE", None::<&str>),
+            ("CLAUDE_THINKING_EFFORT", None::<&str>),
+            ("CLAUDE_THINKING_ENABLED", None::<&str>),
+            ("CLAUDE_THINKING_BUDGET", None::<&str>),
+        ]);
+
+        for (ceiling, want_thinking, want_budget) in [
+            // Roomy ceiling: the full request fits untouched.
+            (32_000, true, Some(10_000)),
+            // Tight ceiling: the budget shrinks to fit, answer room preserved.
+            (4_096, true, Some(3_584)),
+            // Too tight for the 1,024 minimum plus 512 of answer: no thinking.
+            (1_400, false, None),
+        ] {
+            let mut params = std::collections::HashMap::new();
+            params.insert("thinking_type".to_string(), json!("enabled"));
+            params.insert("budget_tokens".to_string(), json!(10000));
+
+            let mut config = cfg("claude-3-7-sonnet-20250219");
+            config.max_tokens = Some(ceiling);
+            config.request_params = Some(params);
+
+            let messages = vec![Message::user().with_text("Hello")];
+            let payload = create_request(&config, "system", &messages, &[])?;
+
+            assert_eq!(
+                payload["max_tokens"], ceiling,
+                "ceiling {ceiling} must be preserved exactly"
+            );
+            if want_thinking {
+                assert_eq!(payload["thinking"]["type"], "enabled", "ceiling {ceiling}");
+                assert_eq!(
+                    payload["thinking"]["budget_tokens"],
+                    want_budget.unwrap(),
+                    "ceiling {ceiling}"
+                );
+            } else {
+                assert!(
+                    payload.get("thinking").is_none(),
+                    "ceiling {ceiling} cannot afford thinking, so none may be requested"
+                );
+            }
+        }
 
         Ok(())
     }
