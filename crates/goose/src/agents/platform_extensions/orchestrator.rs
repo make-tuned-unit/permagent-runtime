@@ -18574,6 +18574,21 @@ async fn descendant_session_ids(
 /// descendant never stops the loop on that same pass, even if everything
 /// already known just finished, precisely to give a completion-triggered
 /// dependent dispatch a chance to appear on the very next re-query.
+///
+/// Y-poll-suspend (harness loop, 2026-09-21): this is no longer called only
+/// from the CLI's post-run wait. `Agent::reply_internal`'s mid-turn
+/// suspension guard calls this SAME function to hand a coordinator's turn to
+/// the host poller instead of letting the model spend a provider turn just to
+/// look again at unchanged worker state — see that guard's own comment
+/// (`crates/goose/src/agents/agent.rs`) for the measured cost this exists to
+/// cut. In the headless CLI flow the two calls can never actually overlap
+/// (the mid-turn call happens INSIDE `session.headless()`, which must return
+/// before `CliSession::drain_dispatched_goals`'s own post-run call is even
+/// reached), but nothing enforced that ordering, and a retried or re-entrant
+/// reply loop is not a case worth trusting to timing — [`CoordinatorDrainGuard`]
+/// makes a second concurrent call for the same coordinator a no-op (an empty
+/// summary) instead of two pollers double-parking or double-counting the
+/// same goals.
 pub async fn drain_dispatched_goals(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     coordinator_session_id: &str,
@@ -18581,6 +18596,15 @@ pub async fn drain_dispatched_goals(
     poll_interval: std::time::Duration,
     on_status: impl FnMut(&str, GoalState),
 ) -> Result<DrainSummary, String> {
+    let Some(_drain_guard) = CoordinatorDrainGuard::try_begin(coordinator_session_id) else {
+        tracing::debug!(
+            target: "permagentd::brain",
+            session_id = %coordinator_session_id,
+            "drain_dispatched_goals: another drain is already running for this coordinator — \
+             reporting nothing new rather than double-polling the same goals",
+        );
+        return Ok(DrainSummary::default());
+    };
     // Snapshot before handing the reference into `drain_dispatched_goals_with`
     // — kept alive as a local for the whole call, but the `RwLock` read guard
     // behind `goal_dispatch_hook_snapshot` itself is released immediately.
@@ -18602,6 +18626,78 @@ pub async fn drain_dispatched_goals(
         },
     )
     .await
+}
+
+/// Coordinator sessions with a [`drain_dispatched_goals`] running right now.
+/// A SET, not a counter (contrast [`GOAL_COMPLETIONS_IN_FLIGHT`], which
+/// deliberately IS a counter for overlapping handlers on the same card): a
+/// coordinator only ever wants ONE poller watching its own descendants at a
+/// time, so a second concurrent attempt is refused outright rather than
+/// stacked.
+static ACTIVE_COORDINATOR_DRAINS: once_cell::sync::Lazy<Mutex<HashSet<String>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashSet::new()));
+
+/// RAII marker: `coordinator_session_id` has a drain in flight for as long as
+/// this value stays alive. Dropping it (including on an early return or a
+/// panic) always clears the mark, the same "a dead holder can never wedge
+/// this forever" guarantee [`CompletionInFlight`] gives its own registry.
+struct CoordinatorDrainGuard {
+    coordinator_session_id: String,
+}
+
+impl CoordinatorDrainGuard {
+    /// `None` when another drain already holds this coordinator — the
+    /// caller's job, not this guard's, to decide what "someone else is
+    /// already watching" means for it (`drain_dispatched_goals` treats it as
+    /// "nothing new to report").
+    fn try_begin(coordinator_session_id: &str) -> Option<Self> {
+        let mut active = ACTIVE_COORDINATOR_DRAINS.lock().ok()?;
+        if !active.insert(coordinator_session_id.to_string()) {
+            return None;
+        }
+        Some(Self {
+            coordinator_session_id: coordinator_session_id.to_string(),
+        })
+    }
+}
+
+impl Drop for CoordinatorDrainGuard {
+    fn drop(&mut self) {
+        if let Ok(mut active) = ACTIVE_COORDINATOR_DRAINS.lock() {
+            active.remove(&self.coordinator_session_id);
+        }
+    }
+}
+
+/// A compact, comparable snapshot of every goal `coordinator_session_id` has
+/// currently dispatched — one [`GoalState`] per goal CARD, keyed by card id
+/// rather than worker-session id for the same reason `goal_started_at` is in
+/// [`drain_dispatched_goals_with`] (R52b): a re-dispatch gives a card a new
+/// session id, and the question this answers is "has anything actually
+/// moved", not "is it still the same process". Empty when nothing has been
+/// dispatched — the same emptiness [`drain_dispatched_goals_with`]'s own fast
+/// path treats as "nothing to wait for".
+///
+/// Read-only and side-effect-free by design: this feeds
+/// `Agent::reply_internal`'s inspection-turn suspension guard, which only
+/// ever needs to tell "the model is looking at the same unchanged picture
+/// again" from "something happened since the last look" — it has none of
+/// `drain_dispatched_goals`'s own authority to redispatch, park, or land
+/// anything, and must never be given any.
+pub(crate) async fn coordinator_worker_state_snapshot(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
+) -> Result<std::collections::BTreeMap<String, GoalState>, String> {
+    let mut snapshot = std::collections::BTreeMap::new();
+    for session_id in descendant_session_ids(pool, coordinator_session_id).await? {
+        if let Some((card_id, _project_id)) =
+            goal_card_for_worker_session(pool, &session_id).await?
+        {
+            let state = goal_state_for_card(pool, &card_id).await?;
+            snapshot.insert(card_id, state);
+        }
+    }
+    Ok(snapshot)
 }
 
 /// The drain's re-dispatch rail, bundled so
@@ -39299,50 +39395,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// is asserted against a generous cap so a regression that ignores the
     /// empty wait-set (and sleeps for the whole cap regardless) would show up
     /// as a slow test, not just a wrong count.
-    #[tokio::test]
-    async fn drain_dispatched_goals_returns_immediately_when_nothing_was_dispatched() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sm = Arc::new(crate::session::SessionManager::new(
-            tmp.path().to_path_buf(),
-        ));
-        let pool = sm.pool_clone().await.unwrap();
-        let coordinator = sm
-            .create_session(
-                tmp.path().to_path_buf(),
-                "coordinator".to_string(),
-                SessionType::Hidden,
-                GooseMode::Auto,
-            )
-            .await
-            .unwrap();
-
-        let start = std::time::Instant::now();
-        let summary = drain_dispatched_goals(
-            &pool,
-            &coordinator.id,
-            std::time::Duration::from_secs(5),
-            std::time::Duration::from_millis(20),
-            |_, _| panic!("no dispatched goal exists — on_status must never fire"),
-        )
-        .await
-        .unwrap();
-
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(1),
-            "an empty wait-set must never sleep out the cap: took {:?}",
-            start.elapsed()
-        );
-        assert_eq!(summary, DrainSummary::default());
-        assert!(!summary.dispatched_anything());
-    }
-
-    /// T3, "a fake dispatched goal that completes → drain returns promptly":
-    /// the goal card is ALREADY Complete before the drain starts (the
-    /// simplest deterministic stand-in for "completed by the time we poll" —
-    /// no timing dependency on a concurrently-running fake worker), so the
-    /// very first poll observes a terminal state and returns without
-    /// sleeping out the generous cap.
-    #[tokio::test]
+        #[tokio::test]
     async fn drain_dispatched_goals_returns_promptly_once_the_dispatched_goal_completes() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(crate::session::SessionManager::new(

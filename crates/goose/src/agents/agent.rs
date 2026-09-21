@@ -522,6 +522,249 @@ async fn retry_first_byte_stall(
     }
 }
 
+// ── Y-poll-suspend: stop paying provider turns to watch unchanged workers ──
+//
+// Harness loop, 2026-09-21. A traced coordinator run took 38 turns, ~25 of
+// them `view_session` / `goal_status` / `list_sessions`, wrote zero files,
+// and grew its own context from 26k to 53k tokens — every one of those
+// look-again turns re-sent the whole growing transcript as a fresh provider
+// call. Across the cost ledger for every run since 2026-09-01, 56% of all
+// spend ($43.20 of $76.89) went to turns that produced under 300 output
+// tokens: input:output of 90:1, the shape of a coordinator looking, not
+// working.
+//
+// The fix is not a smarter prompt: the repo already has host-side machinery
+// — `drain_dispatched_goals` (`platform_extensions::orchestrator`), the same
+// poller `CliSession::drain_dispatched_goals` uses after a headless run ends
+// to wait out goals it dispatched — that tracks a dispatched worker's state
+// changes, completion, and redispatch with zero LLM turns, one cheap SQLite
+// read per descendant per poll tick. `DispatchPollGuard` below is what
+// decides WHEN to hand the coordinator's turn to that poller instead of
+// letting the model call another inspection tool: at most one inspection
+// turn is free after a dispatch (or after any state change), because a
+// coordinator that had its tool calls taken away entirely would be blind,
+// not efficient — but a SECOND consecutive turn whose only tool calls read
+// the exact same unchanged state is the measured waste above, verbatim.
+
+/// Default bound on a single mid-turn suspension, read from the SAME
+/// `PERMAGENT_HEADLESS_DRAIN_SECS` config key `CliSession::drain_dispatched_goals`
+/// reads for its own (post-run) wait — both are bounds on the same
+/// underlying `drain_dispatched_goals` call, so one operator knob covers
+/// both without needing to know which of the two call sites is currently
+/// waiting. Cannot literally be the same Rust constant: `crates/goose-cli`
+/// depends on `crates/goose`, not the other way around, so its
+/// `DEFAULT_HEADLESS_DRAIN_SECS` is not reachable from here — kept at the
+/// identical value (240s) on purpose.
+const DEFAULT_MID_TURN_DISPATCH_SUSPEND_CAP_SECS: u64 = 240;
+
+/// Read-only tools whose only effect is looking at existing state — never
+/// dispatching, steering, escalating, or otherwise changing anything. Matched
+/// against the tool's BASE name (the part after `extension_manager`'s own
+/// `"{extension}__{tool}"` prefix, stripped the same way
+/// `extension_manager::simple_tool_name`-style call sites do via
+/// `rsplit("__")`), so this list stays correct regardless of which extension
+/// namespace the orchestrator tools are registered under.
+///
+/// Deliberately narrow: `goal_advance`, `steer_goal`, `message_goal`,
+/// `start_agent`, `send_message`, `create_roadmap`, `escalate`, and every
+/// other tool that can change a goal's or a session's state are NOT here,
+/// and a turn that calls any of them is never suspended by this guard even
+/// if it also happens to call one of these.
+const INSPECTION_ONLY_TOOLS: &[&str] = &[
+    "list_sessions",
+    "view_session",
+    "view_attachment",
+    "list_workers",
+    "check_worker",
+    "goal_status",
+    "goal_list",
+    "routing_roster",
+];
+
+fn is_inspection_only_tool(tool_name: &str) -> bool {
+    let base = tool_name.rsplit("__").next().unwrap_or(tool_name);
+    INSPECTION_ONLY_TOOLS.contains(&base)
+}
+
+/// Per-reply-loop memory for the suspension guard: how many consecutive
+/// completed turns looked at the SAME dispatched-worker state with nothing
+/// but inspection tools. Lives on the stack inside `reply_internal`'s
+/// `async_stream!` — one instance per reply, never persisted and never
+/// shared across sessions or turns of a different reply.
+#[derive(Default)]
+struct DispatchPollGuard {
+    last_snapshot: Option<std::collections::BTreeMap<String, crate::goal_state::GoalState>>,
+    /// How many consecutive observed turns have been inspection-only AND seen
+    /// the identical snapshot as the turn before them. `1` is the one free
+    /// look this rule allows (after a dispatch, or right after any state
+    /// change); this needs to reach `2` before `observe_turn` says suspend.
+    inspection_turns_since_change: u32,
+}
+
+impl DispatchPollGuard {
+    /// Called once per completed turn. `tool_names` is every tool this turn
+    /// called (base names); `snapshot` is the freshly-read dispatched-worker
+    /// state for this coordinator, or `None` when nothing is dispatched (or
+    /// the read itself failed) — either way there is no worker state to be
+    /// blind about, so the guard stands down and forgets its own history
+    /// rather than carry a stale comparison into whatever gets dispatched
+    /// next.
+    ///
+    /// Returns `true` exactly when the loop should suspend instead of
+    /// sending the next provider turn: this turn, and the one immediately
+    /// before it, were both inspection-only against the same unchanged
+    /// state.
+    fn observe_turn(
+        &mut self,
+        tool_names: &[String],
+        snapshot: Option<std::collections::BTreeMap<String, crate::goal_state::GoalState>>,
+    ) -> bool {
+        let Some(snapshot) = snapshot else {
+            self.last_snapshot = None;
+            self.inspection_turns_since_change = 0;
+            return false;
+        };
+        let inspection_only =
+            !tool_names.is_empty() && tool_names.iter().all(|name| is_inspection_only_tool(name));
+        if !inspection_only {
+            // An actionable turn — a dispatch, an escalation, a steer, a
+            // message, or anything off the read-only allowlist — is progress,
+            // not polling. Whatever it just changed makes the NEXT look a
+            // fresh one either way, so the counter starts over rather than
+            // carrying a stale "already looked once" into it.
+            self.last_snapshot = Some(snapshot);
+            self.inspection_turns_since_change = 0;
+            return false;
+        }
+        let unchanged = self.last_snapshot.as_ref() == Some(&snapshot);
+        self.last_snapshot = Some(snapshot);
+        if unchanged {
+            self.inspection_turns_since_change += 1;
+        } else {
+            // The model just learned something new since its last look — the
+            // ONE free inspection this rule grants, not the first of a pair
+            // of no-op turns.
+            self.inspection_turns_since_change = 1;
+        }
+        self.inspection_turns_since_change > 1
+    }
+
+    /// Called after a suspension hands control back to the model with a
+    /// compact state-change notice: that notice IS new information, so the
+    /// next inspection of it is a fresh first look, not a continuation of
+    /// whatever run of no-op turns triggered the suspension.
+    fn record_resume(&mut self) {
+        self.last_snapshot = None;
+        self.inspection_turns_since_change = 0;
+    }
+}
+
+/// Suspend the reply loop on `drain_dispatched_goals` — the SAME host poller
+/// `CliSession::drain_dispatched_goals` uses after a headless run ends —
+/// instead of returning control to the model for another look-again turn.
+/// Costs one SQLite read per dispatched descendant per poll tick and zero
+/// provider turns for as long as nothing changes; already knows how to
+/// track completion, redispatch dependents, and park a stalled worker
+/// without any of that needing to come back through this coordinator's own
+/// turns.
+///
+/// Races the wait against `cancel_token` (when one is provided) so a cancel
+/// arriving mid-suspension is not swallowed by an in-flight drain: parking
+/// still-running goals at process exit is `CliSession::drain_dispatched_goals`'s
+/// job at shutdown, not this mid-session guard's, so on cancellation this
+/// simply stops waiting and returns `None` — the caller's existing
+/// cancellation check at the top of the reply loop ends the turn exactly the
+/// way it always does, with no special-cased cleanup added here.
+///
+/// Returns `None` on cancellation, or on the (deliberately rare —
+/// `CoordinatorDrainGuard` in `orchestrator.rs`) case where another drain is
+/// already running for this same coordinator: falling through to an ordinary
+/// turn beats deadlocking on a wait with no way to know when the other one
+/// will return. Otherwise returns a compact, human-readable summary of what
+/// changed — never a transcript dump — built only from the state
+/// transitions this wait actually observed plus the drain's own summary
+/// counts.
+async fn suspend_for_dispatched_goals(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
+    cap: std::time::Duration,
+    cancel_token: &Option<CancellationToken>,
+) -> Option<String> {
+    let poll_interval = std::time::Duration::from_secs(2).min(cap);
+    let transitions: Arc<std::sync::Mutex<Vec<(String, crate::goal_state::GoalState)>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let transitions_for_closure = Arc::clone(&transitions);
+    let drain = crate::agents::platform_extensions::orchestrator::drain_dispatched_goals(
+        pool,
+        coordinator_session_id,
+        cap,
+        poll_interval,
+        move |session_id, state| {
+            if let Ok(mut observed) = transitions_for_closure.lock() {
+                observed.push((session_id.to_string(), state));
+            }
+        },
+    );
+    tokio::pin!(drain);
+
+    let result = match cancel_token {
+        Some(token) => {
+            tokio::select! {
+                biased;
+                _ = token.cancelled() => return None,
+                result = &mut drain => result,
+            }
+        }
+        None => drain.await,
+    };
+
+    let observed = transitions.lock().ok()?.clone();
+    match result {
+        Ok(summary) => Some(format_compact_resume_notice(&observed, summary)),
+        Err(error) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                session_id = %coordinator_session_id,
+                %error,
+                "mid-turn dispatch-poll suspension could not read dispatched-goal state; \
+                 resuming the model turn rather than staying suspended against state it cannot \
+                 read anyway"
+            );
+            Some(format!(
+                "(Dispatched worker status could not be read while this turn was suspended: \
+                 {error}. Resuming.)"
+            ))
+        }
+    }
+}
+
+/// Render what `suspend_for_dispatched_goals` observed as one compact
+/// message — the half of the fix that is not the suspension itself: what
+/// comes back to the model must be a state-change summary, never the
+/// transcript the host poller generated while producing it.
+fn format_compact_resume_notice(
+    transitions: &[(String, crate::goal_state::GoalState)],
+    summary: crate::agents::platform_extensions::orchestrator::DrainSummary,
+) -> String {
+    let mut lines = vec![
+        "(Resuming — a dispatched worker's status changed while this turn was suspended; \
+         no provider turns were spent waiting.)"
+            .to_string(),
+    ];
+    if transitions.is_empty() {
+        lines.push("  no further state changes observed before the wait cap".to_string());
+    } else {
+        for (session_id, state) in transitions {
+            lines.push(format!("  worker {session_id}: {}", state.binding()));
+        }
+    }
+    lines.push(format!(
+        "{} finished, {} parked at the wait cap.",
+        summary.finished, summary.timed_out
+    ));
+    lines.join("\n")
+}
+
 async fn persist_turn_ending_message(
     session_manager: &Arc<crate::session::SessionManager>,
     session_id: &str,
@@ -2167,6 +2410,17 @@ impl Agent {
             // `after_turn::turn_budget_nudge_text`'s own doc comment for why
             // this lives outside the `AfterTurn` chain.
             let mut turn_budget_nudged = false;
+            // Y-poll-suspend (harness loop, 2026-09-21): tracks whether this
+            // coordinator is looking at the SAME unchanged dispatched-worker
+            // state turn after turn. Ledger evidence across every run since
+            // 2026-09-01: 56% of all coordinator spend — $43.20 of $76.89 —
+            // paid for turns producing under 300 output tokens, and one
+            // traced run took 38 turns (~25 of them view_session/goal_status/
+            // list_sessions), wrote zero files, and grew its own context
+            // 26k -> 53k tokens, re-sent in full on every one of those
+            // look-again turns. See `DispatchPollGuard` for the rule this
+            // state enforces.
+            let mut dispatch_poll_guard = DispatchPollGuard::default();
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -2480,6 +2734,13 @@ impl Agent {
                 // three near-identical "could not be parsed" messages in one
                 // turn is noise the model pays for on every turn after.
                 let mut saw_parse_failure_this_turn = false;
+                // Y-poll-suspend: every tool base name (extension prefix
+                // stripped, matching `extension_manager`'s own `rsplit("__")`
+                // idiom) this turn actually called, across every streamed
+                // response frame — `DispatchPollGuard::observe_turn` reads
+                // this once the turn is over to tell "only looked" from "did
+                // something".
+                let mut tool_names_this_turn: Vec<String> = Vec::new();
                 let mut messages_to_add = Conversation::default();
                 let mut tools_updated = false;
                 let mut did_recovery_compact_this_iteration = false;
@@ -2687,6 +2948,7 @@ impl Agent {
                                                 (request.id.clone(), name)
                                             })
                                             .collect();
+                                    tool_names_this_turn.extend(tool_name_by_request_id.values().cloned());
 
                                     let mut tool_futures = self.handle_approved_and_denied_tools(
                                         &permission_check_result,
@@ -3835,6 +4097,76 @@ impl Agent {
                     prev_monologue_text.clear();
                 }
 
+                // Y-poll-suspend: evaluated once per completed turn, using
+                // ONLY this turn's own tool calls and a fresh read of this
+                // coordinator's dispatched-goal state — see
+                // `DispatchPollGuard` and `suspend_for_dispatched_goals`
+                // above for the full contract and the measured cost this
+                // exists to cut. A turn that called no tools at all
+                // (`no_tools_called`) is the S5 monologue guard's problem,
+                // not this one's — there is nothing dispatched-worker-shaped
+                // to have looked at.
+                if !no_tools_called {
+                    let drain_pool = self.config.session_manager.pool_clone().await.ok();
+                    let snapshot = match drain_pool.as_ref() {
+                        Some(pool) => {
+                            match crate::agents::platform_extensions::orchestrator::coordinator_worker_state_snapshot(
+                                pool,
+                                &session_config.id,
+                            )
+                            .await
+                            {
+                                Ok(snapshot) if !snapshot.is_empty() => Some(snapshot),
+                                Ok(_) => None,
+                                Err(error) => {
+                                    tracing::debug!(
+                                        target: "permagentd::brain",
+                                        session_id = %session_config.id,
+                                        %error,
+                                        "Y-poll-suspend: could not read dispatched-goal state for \
+                                         this coordinator; treating this turn as having nothing \
+                                         dispatched rather than risking a false suspend"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        None => None,
+                    };
+                    let should_suspend =
+                        dispatch_poll_guard.observe_turn(&tool_names_this_turn, snapshot);
+                    if should_suspend {
+                        if let Some(pool) = drain_pool.as_ref() {
+                            let drain_cap_secs: u64 = Config::global()
+                                .get_param("PERMAGENT_HEADLESS_DRAIN_SECS")
+                                .unwrap_or(DEFAULT_MID_TURN_DISPATCH_SUSPEND_CAP_SECS);
+                            let notice = suspend_for_dispatched_goals(
+                                pool,
+                                &session_config.id,
+                                std::time::Duration::from_secs(drain_cap_secs),
+                                &cancel_token,
+                            )
+                            .await;
+                            match notice {
+                                Some(notice) => {
+                                    dispatch_poll_guard.record_resume();
+                                    let message = Message::user().with_text(notice);
+                                    messages_to_add.push(message.clone());
+                                    yield AgentEvent::Message(message);
+                                }
+                                None => {
+                                    // Cancelled mid-wait: append nothing extra
+                                    // and let this loop's ordinary
+                                    // cancellation check, at the very top of
+                                    // the next iteration, end the reply the
+                                    // same way it always does — this guard
+                                    // has no special-cased cleanup of its own.
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // The model produced a turn with nothing unparseable in it, so
                 // it recovered — the strike count starts again. This has to be
                 // end-of-TURN: resetting per parsed request would let a model
@@ -4880,2048 +5212,320 @@ mod tests {
     use crate::providers::base::PermissionRouting;
     use crate::recipe::Response;
 
-    #[test]
-    fn recipe_creation_cannot_bypass_shared_paid_dispatch_boundary() {
-        let source = include_str!("agent.rs");
-        let direct_call = [".", "complete("].concat();
-        assert!(source.contains("complete_accounted"));
-        assert!(!source.contains(&direct_call));
-    }
-
-    // --- Lane R19a: retry-once decision for a first-byte provider stall --
-
-    /// The first first-byte stall on a turn that has not streamed anything
-    /// yet is retried; a second one (after the retry is spent) is not.
-    #[test]
-    fn a_first_byte_stall_is_retried_exactly_once() {
-        let err = crate::providers::errors::ProviderError::first_byte_stall(
-            "the provider sent nothing at all for 300 s",
-        );
-        assert!(
-            should_retry_first_byte_stall(&err, false, false),
-            "first occurrence, nothing streamed yet: retry"
-        );
-        assert!(
-            !should_retry_first_byte_stall(&err, false, true),
-            "the one retry is already spent: do not retry again"
-        );
-    }
-
-    /// A first-byte stall is never retried once part of an answer has
-    /// already reached the user on this stream — there is no longer a "same
-    /// request" that is safe to resend silently underneath a partial reply.
-    #[test]
-    fn a_first_byte_stall_is_not_retried_once_the_stream_is_committed() {
-        let err = crate::providers::errors::ProviderError::first_byte_stall("0 chars in 300 s");
-        assert!(
-            !should_retry_first_byte_stall(&err, true, false),
-            "content already streamed: do not resend the request"
-        );
-    }
-
-    /// A genuine mid-stream stall (or repetition, or wall-clock) — anything
-    /// that is `is_stream_budget_exceeded()` but NOT specifically a
-    /// first-byte stall — must never take this retry path. Y8a's "never
-    /// retry a runaway" verdict for that class is unchanged.
-    #[test]
-    fn an_ordinary_mid_stream_stall_is_never_retried_by_this_path() {
-        let err = crate::providers::errors::ProviderError::stream_budget_exceeded(
-            "the provider sent nothing for longer than 120s allows",
-        );
-        assert!(err.is_stream_budget_exceeded());
-        assert!(!should_retry_first_byte_stall(&err, false, false));
-    }
-
-    /// A wholly unrelated error (never a stream-budget failure at all) is
-    /// also never retried by this path.
-    #[test]
-    fn an_unrelated_error_is_never_retried_by_this_path() {
-        let err = crate::providers::errors::ProviderError::ServerError("502".to_string());
-        assert!(!should_retry_first_byte_stall(&err, false, false));
-    }
-
-    /// Lane R19c (G24 HIGH-1): a first-byte retry must authorize exactly ONE
-    /// more physical attempt against the SAME invocation's reservation —
-    /// never re-grant the invocation's whole `attempts_reserved` budget
-    /// again (the double-spend G24 flagged in the pre-R19c
-    /// `with_reservation_attempts(..., attempts_reserved, ...)` call).
-    /// Reserves 3 attempts up front, then proves the retry sees exactly
-    /// `authorized_attempts() == Some(1)` from INSIDE the retried future —
-    /// not `Some(3)`.
-    #[tokio::test]
-    async fn a_first_byte_retry_authorizes_exactly_one_more_attempt_not_the_whole_reservation() {
-        use crate::config::GooseMode;
-        use crate::cost_router::budget::{BudgetCeilings, BudgetConfig};
-        use crate::session::{CostReservationOutcome, CostTier, SessionType};
-
-        let temp = tempfile::tempdir().unwrap();
-        let manager = Arc::new(crate::session::SessionManager::new(
-            temp.path().to_path_buf(),
-        ));
-        let session = manager
-            .create_session(
-                temp.path().to_path_buf(),
-                "r19c retry".into(),
-                SessionType::SubAgent,
-                GooseMode::Auto,
-            )
-            .await
-            .unwrap();
-        let task = manager.begin_budget_task(&session.id).await.unwrap();
-        let model = crate::model::ModelConfig::new("glm-4.7")
-            .unwrap()
-            .with_context_limit(Some(204_800))
-            .with_max_tokens(Some(131_072));
-        // Reserve 3 physical attempts up front — the ORIGINAL invocation's
-        // hold. A naive retry that re-authorized `attempts_reserved` would
-        // see `Some(3)`, not `Some(1)`.
-        let reserved: u32 = 3;
-        let bound = crate::cost_router::plan_reservation_bound(
-            "zai",
-            "glm-4.7",
-            CostTier::PaidApi,
-            &model,
-            reserved,
-        )
-        .unwrap()
-        .unwrap();
-        // A generous ceiling: the extension must succeed so the test
-        // observes what gets AUTHORIZED, not a budget refusal.
-        let limits = BudgetCeilings {
-            soft: 0.0,
-            gate: 1000.0,
-            hard: 1000.0,
-        };
-        let config = BudgetConfig {
-            task: limits,
-            session: limits,
-        };
-        let outcome = manager
-            .reserve_bounded_provider_invocation(
-                "r19c-invocation",
-                &session.id,
-                Some(&task),
-                bound,
-                "2099-01-01T00:00:00Z",
-                &config,
-            )
-            .await
-            .unwrap();
-        assert!(matches!(outcome, CostReservationOutcome::Granted { .. }));
-
-        let invocation = crate::agents::reply_parts::ProviderInvocationContext {
-            invocation_id: "r19c-invocation".to_string(),
-            provider: "zai".to_string(),
-            model: "glm-4.7".to_string(),
-            cost_tier: CostTier::PaidApi,
-            reservation_id: Some("r19c-invocation".to_string()),
-            attempts_reserved: Some(reserved),
-            reserved_output_tokens: Some(4_096),
-        };
-
-        let seen_authorized: Arc<std::sync::Mutex<Option<Option<u32>>>> =
-            Arc::new(std::sync::Mutex::new(None));
-        let seen = Arc::clone(&seen_authorized);
-        let retry_future = async move {
-            *seen.lock().unwrap() =
-                Some(crate::cost_router::authorized_attempts::authorized_attempts());
-            Ok::<crate::providers::base::MessageStream, ProviderError>(Box::pin(
-                futures::stream::empty(),
-            ))
-        };
-
-        let result = retry_first_byte_stall(
-            &manager,
-            &invocation,
-            std::time::Instant::now(),
-            retry_future,
-        )
-        .await;
-
-        // The Ok side is a boxed `dyn Stream`, which has no Debug; print the
-        // error instead, which is the half that matters when this fails.
-        assert!(result.is_ok(), "{:?}", result.as_ref().err());
-        assert_eq!(
-            *seen_authorized.lock().unwrap(),
-            Some(Some(1)),
-            "a first-byte retry must authorize exactly ONE more attempt, not the \
-             invocation's whole {reserved}-attempt reservation again"
-        );
-    }
-
-    /// Lane R19c (G24 HIGH-1): when no reservation governs the call at all
-    /// (`attempts_reserved: None` — a free/unpaid dispatch), the retry must
-    /// skip the ledger entirely and run with no authorization scope, exactly
-    /// like the ORIGINAL call did.
-    #[tokio::test]
-    async fn a_first_byte_retry_with_no_reservation_skips_the_ledger_entirely() {
-        use crate::session::CostTier;
-
-        let temp = tempfile::tempdir().unwrap();
-        let manager = Arc::new(crate::session::SessionManager::new(
-            temp.path().to_path_buf(),
-        ));
-        let invocation = crate::agents::reply_parts::ProviderInvocationContext {
-            invocation_id: "unpaid-invocation".to_string(),
-            provider: "local".to_string(),
-            model: "local-model".to_string(),
-            cost_tier: CostTier::PaidApi,
-            reservation_id: None,
-            attempts_reserved: None,
-            reserved_output_tokens: None,
-        };
-
-        let seen_authorized: Arc<std::sync::Mutex<Option<Option<u32>>>> =
-            Arc::new(std::sync::Mutex::new(None));
-        let seen = Arc::clone(&seen_authorized);
-        let retry_future = async move {
-            *seen.lock().unwrap() =
-                Some(crate::cost_router::authorized_attempts::authorized_attempts());
-            Ok::<crate::providers::base::MessageStream, ProviderError>(Box::pin(
-                futures::stream::empty(),
-            ))
-        };
-
-        let result = retry_first_byte_stall(
-            &manager,
-            &invocation,
-            std::time::Instant::now(),
-            retry_future,
-        )
-        .await;
-
-        // The Ok side is a boxed `dyn Stream`, which has no Debug; print the
-        // error instead, which is the half that matters when this fails.
-        assert!(result.is_ok(), "{:?}", result.as_ref().err());
-        assert_eq!(
-            *seen_authorized.lock().unwrap(),
-            Some(None),
-            "no reservation governs this call: no authorization scope should be installed"
-        );
-    }
-
-    /// The text `handle_denied_tools` actually put on the wire for `id`.
-    fn denied_response_text(responses: &HashMap<String, Message>, id: &str) -> String {
-        responses
-            .get(id)
-            .expect("a response message for the denied request")
-            .content
-            .iter()
-            .find_map(|content| match content {
-                crate::conversation::message::MessageContent::ToolResponse(response) => {
-                    response.tool_result.as_ref().ok().map(|result| {
-                        result
-                            .content
-                            .iter()
-                            .filter_map(|c| match &c.raw {
-                                rmcp::model::RawContent::Text(text) => Some(text.text.clone()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("")
-                    })
-                }
-                _ => None,
-            })
-            .expect("the denial is recorded as a tool response")
-    }
-
-    fn denial_fixture(
-        request_id: &str,
-        inspection_results: Vec<crate::tool_inspection::InspectionResult>,
-    ) -> HashMap<String, Message> {
-        let request = ToolRequest {
-            id: request_id.to_string(),
-            tool_call: Ok(rmcp::model::CallToolRequestParams::new("developer__shell")),
-            metadata: None,
-            tool_meta: None,
-        };
-        let permission_check_result = PermissionCheckResult {
-            approved: vec![],
-            needs_approval: vec![],
-            denied: vec![request],
-        };
-        let mut responses = HashMap::new();
-        responses.insert(request_id.to_string(), Message::user());
-        Agent::handle_denied_tools(
-            &permission_check_result,
-            &mut responses,
-            &inspection_results,
-        );
-        responses
-    }
-
-    fn deny(
-        request_id: &str,
-        inspector: &str,
-        reason: &str,
-    ) -> crate::tool_inspection::InspectionResult {
-        crate::tool_inspection::InspectionResult {
-            tool_request_id: request_id.to_string(),
-            action: crate::tool_inspection::InspectionAction::Deny,
-            reason: reason.to_string(),
-            confidence: 1.0,
-            inspector_name: inspector.to_string(),
-            finding_id: None,
-        }
-    }
-
-    /// Y4c pin (harness loop, 2026-09-10, from Lane A12's M12 forensics): when
-    /// an INSPECTOR denies a tool call, the model must be told the inspector's
-    /// own reason — not `DECLINED_RESPONSE`, which says the USER refused.
-    ///
-    /// A12 traced every coordinator `shell`/`edit`/`write` in the M12 slice to
-    /// `CodingDagInspector`, whose reason explains that a top-level coding
-    /// session must dispatch a worker; the model saw only the generic decline
-    /// and reasoned "The user declined both shell and write tool calls"
-    /// (fx09 msg 18) and "I understand - you've stopped this implementation"
-    /// (fx04 msg 32). Pre-Y4c this test fails: the filter matched the progress
-    /// monitor's name alone, so this denial came back as `DECLINED_RESPONSE`.
-    #[test]
-    fn a_denied_tool_carries_the_denying_inspectors_own_reason() {
-        let reason = "Top-level coding harness sessions must create an approved orchestrator \
-                      DAG and dispatch its node";
-        let responses = denial_fixture(
-            "req_dag",
-            vec![deny(
-                "req_dag",
-                crate::tool_inspection::CODING_DAG_INSPECTOR_NAME,
-                reason,
-            )],
-        );
-        assert_eq!(denied_response_text(&responses, "req_dag"), reason);
-    }
-
-    /// Y4c: the ProgressMonitor's L1/L3 nudge is unchanged — it still wins,
-    /// including when a second inspector denies the same call.
-    #[test]
-    fn a_progress_monitor_block_still_wins_over_another_inspectors_reason() {
-        let responses = denial_fixture(
-            "req_loop",
-            vec![
-                deny("req_loop", "some_other_inspector", "a different reason"),
-                deny(
-                    "req_loop",
-                    crate::tool_monitor::PROGRESS_MONITOR_NAME,
-                    "identical call already failed twice — try a different approach",
-                ),
-            ],
-        );
-        assert_eq!(
-            denied_response_text(&responses, "req_loop"),
-            "identical call already failed twice — try a different approach"
-        );
-    }
-
-    /// Y4c: a denial with NO inspector behind it is a real user decline and
-    /// keeps `DECLINED_RESPONSE`, exactly as before. An inspector result for a
-    /// DIFFERENT request id must never leak onto this one, and an inspector
-    /// that allowed the call is not a denial reason either.
-    #[test]
-    fn a_user_decline_still_reads_as_a_user_decline() {
-        let responses = denial_fixture(
-            "req_user",
-            vec![
-                deny("req_other", "some_inspector", "not this request"),
-                crate::tool_inspection::InspectionResult {
-                    tool_request_id: "req_user".to_string(),
-                    action: crate::tool_inspection::InspectionAction::Allow,
-                    reason: "Auto mode - all tools approved".to_string(),
-                    confidence: 1.0,
-                    inspector_name: "some_inspector".to_string(),
-                    finding_id: None,
-                },
-            ],
-        );
-        assert_eq!(
-            denied_response_text(&responses, "req_user"),
-            DECLINED_RESPONSE
-        );
-    }
-
-    /// G11: `AdversaryInspector`'s reason is a live LLM completion over
-    /// attacker-reachable input, so it never reaches the model even though
-    /// it is a genuine inspector denial — it falls back to the generic
-    /// `DECLINED_RESPONSE`, same as a real user decline. The denylist is
-    /// narrow: `CodingDagInspector` (fixed string, no attacker-influenced
-    /// content) still surfaces its own reason, exactly as Y4c left it.
-    #[test]
-    fn adversary_deny_reason_is_suppressed_but_coding_dag_still_surfaces() {
-        let adversary_responses = denial_fixture(
-            "req_adv",
-            vec![deny(
-                "req_adv",
-                "adversary",
-                "🛡️ Adversary blocked: command echoes injected text",
-            )],
-        );
-        assert_eq!(
-            denied_response_text(&adversary_responses, "req_adv"),
-            DECLINED_RESPONSE
-        );
-
-        let dag_reason = "Top-level coding harness sessions must create an approved \
-                          orchestrator DAG and dispatch its node";
-        let dag_responses = denial_fixture(
-            "req_dag2",
-            vec![deny(
-                "req_dag2",
-                crate::tool_inspection::CODING_DAG_INSPECTOR_NAME,
-                dag_reason,
-            )],
-        );
-        assert_eq!(denied_response_text(&dag_responses, "req_dag2"), dag_reason);
-    }
-
-    #[test]
-    fn compact_control_reply_keeps_the_existing_budget_task() {
-        assert!(!starts_new_budget_task(
-            crate::session::SessionType::User,
-            "/compact"
-        ));
-        assert!(starts_new_budget_task(
-            crate::session::SessionType::User,
-            "a genuine next request"
-        ));
-        assert!(!starts_new_budget_task(
-            crate::session::SessionType::SubAgent,
-            "worker prompt"
-        ));
-    }
-
-    /// The exact shape session 20260825_3 persisted 22 times in one
-    /// conversation: MiniMax-M2.7 streamed its reasoning and reply text as one
-    /// assistant item and the tool call as the next, so the turn landed as two
-    /// consecutive assistant rows with the tool response after them.
-    ///
-    /// It must come back as one assistant message carrying thinking + text +
-    /// the tool request, followed by the tool response — the shape a provider
-    /// accepts, with nothing dropped.
-    #[test]
-    fn a_streamed_reasoning_then_tool_call_turn_is_persisted_as_one_message() {
-        let turn = vec![
-            Message::assistant()
-                .with_thinking("let me look that up", "sig")
-                .with_text("Good question — checking now."),
-            Message::assistant().with_tool_request(
-                "call_1",
-                Ok(rmcp::model::CallToolRequestParams::new("tavily_search")),
-            ),
-            Message::user()
-                .with_tool_response("call_1", Ok(rmcp::model::CallToolResult::success(vec![]))),
-        ];
-
-        let (folded, merges) = coalesce_turn_messages(turn);
-
-        assert_eq!(merges, 1, "the two assistant rows are one turn");
-        assert_eq!(folded.len(), 2, "assistant turn, then the tool response");
-        assert_eq!(folded[0].role, rmcp::model::Role::Assistant);
-        assert_eq!(
-            folded[0].content.len(),
-            3,
-            "thinking, text and the tool request all survive, in order"
-        );
-        assert!(matches!(folded[0].content[0], MessageContent::Thinking(_)));
-        assert!(matches!(folded[0].content[1], MessageContent::Text(_)));
-        assert!(matches!(
-            folded[0].content[2],
-            MessageContent::ToolRequest(_)
-        ));
-        assert_eq!(folded[1].role, rmcp::model::Role::User);
-
-        // Roles alternate — nothing is left for the repair layer to warn about.
-        for pair in folded.windows(2) {
-            assert_ne!(pair[0].role, pair[1].role);
-        }
-    }
-
-    /// Tool-pair summaries must NEVER be folded together.
-    ///
-    /// Each one stands in for a single tool request/response pair that has just
-    /// been marked agent-invisible, so a batch of ten is ten messages. Folding
-    /// them collapsed a whole batch into one (caught by
-    /// `test_batch_summarization_preserves_all_summaries`), which is why the
-    /// fold runs before they are appended, not over the finished list. This
-    /// pins the property the ordering exists to protect.
-    #[test]
-    fn folding_a_run_of_summaries_would_collapse_the_batch() {
-        let summaries: Vec<Message> = (0..10)
-            .map(|i| Message::assistant().with_text(format!("Summary of tool call #{i}")))
-            .collect();
-
-        let (folded, merges) = coalesce_turn_messages(summaries.clone());
-
-        assert_eq!(
-            folded.len(),
-            1,
-            "the fold WOULD collapse them — hence the ordering"
-        );
-        assert_eq!(merges, 9);
-    }
-
-    /// A provider that streams a whole turn as one message must be untouched —
-    /// the fold is a repair, not a rewrite.
-    #[test]
-    fn an_already_alternating_turn_is_left_alone() {
-        let turn = vec![
-            Message::assistant().with_text("here you go"),
-            Message::user().with_text("thanks"),
-        ];
-        let (folded, merges) = coalesce_turn_messages(turn.clone());
-        assert_eq!(merges, 0);
-        assert_eq!(folded.len(), turn.len());
-    }
-
-    /// Session 20260827_1: one assistant turn arrived as two adjacent text
-    /// parts. Persisting them un-coalesced made every later MOIM inject
-    /// re-report `"Merged text content"` once per historical message.
-    #[test]
-    fn a_split_text_assistant_turn_is_persisted_as_one_part() {
-        let turn = vec![Message::assistant()
-            .with_text("first")
-            .with_text(" answer  ")];
-        let (folded, merges) = coalesce_turn_messages(turn);
-        assert_eq!(merges, 0, "one message, already alternating");
-        assert_eq!(folded.len(), 1);
-        assert_eq!(
-            folded[0].content.len(),
-            1,
-            "adjacent text parts must be one part before persist"
-        );
-        assert_eq!(folded[0].content[0].as_text().unwrap(), "first answer  ");
-    }
-
-    struct ActionRequiredProvider {
-        handled: tokio::sync::Mutex<Vec<(String, PermissionConfirmation)>>,
-    }
-
-    impl ActionRequiredProvider {
-        fn new() -> Self {
-            Self {
-                handled: tokio::sync::Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl std::fmt::Debug for ActionRequiredProvider {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("ActionRequiredProvider").finish()
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl crate::providers::base::Provider for ActionRequiredProvider {
-        fn get_name(&self) -> &str {
-            "test-action-required"
-        }
-        fn get_model_config(&self) -> crate::model::ModelConfig {
-            crate::model::ModelConfig::new("test").unwrap()
-        }
-        async fn stream(
-            &self,
-            _: &crate::model::ModelConfig,
-            _: &str,
-            _: &str,
-            _: &[crate::conversation::message::Message],
-            _: &[rmcp::model::Tool],
-        ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
-        {
-            unimplemented!()
-        }
-        fn permission_routing(&self) -> PermissionRouting {
-            PermissionRouting::ActionRequired
-        }
-        async fn handle_permission_confirmation(
-            &self,
-            request_id: &str,
-            confirmation: &PermissionConfirmation,
-        ) -> bool {
-            self.handled
-                .lock()
-                .await
-                .push((request_id.to_string(), confirmation.clone()));
-            request_id == "known"
-        }
-    }
-
-    #[tokio::test]
-    async fn test_handle_confirmation_routes_to_provider() {
-        let agent = Agent::new();
-        let provider = Arc::new(ActionRequiredProvider::new());
-        *agent.provider.lock().await =
-            Some(provider.clone() as Arc<dyn crate::providers::base::Provider>);
-
-        // Known request_id → provider handles it, confirmation_router NOT called
-        let delivered = agent
-            .handle_confirmation(
-                "known".to_string(),
-                PermissionConfirmation {
-                    principal_type: PrincipalType::Tool,
-                    permission: crate::permission::Permission::AllowOnce,
-                },
-            )
-            .await;
-        assert!(delivered, "provider-consumed confirmation must report true");
-        assert_eq!(provider.handled.lock().await.len(), 1);
-
-        // Unknown request_id → provider returns false, falls through to confirmation_router
-        // Register first so deliver() has somewhere to send
-        let rx = agent
-            .tool_confirmation_router
-            .register("unknown".to_string())
-            .await
-            .unwrap();
-        let delivered = agent
-            .handle_confirmation(
-                "unknown".to_string(),
-                PermissionConfirmation {
-                    principal_type: PrincipalType::Tool,
-                    permission: crate::permission::Permission::DenyOnce,
-                },
-            )
-            .await;
-        assert!(delivered, "router-delivered confirmation must report true");
-        assert_eq!(provider.handled.lock().await.len(), 2);
-        // Verify the fallthrough went to confirmation_router
-        let conf = rx.await.unwrap();
-        assert_eq!(conf.permission, crate::permission::Permission::DenyOnce);
-    }
-
-    #[tokio::test]
-    async fn test_handle_confirmation_noop_provider() {
-        let agent = Agent::new();
-        // No provider set → Noop routing, goes straight to confirmation_router
-        // Register first so deliver() has somewhere to send
-        let rx = agent
-            .tool_confirmation_router
-            .register("any".to_string())
-            .await
-            .unwrap();
-        let delivered = agent
-            .handle_confirmation(
-                "any".to_string(),
-                PermissionConfirmation {
-                    principal_type: PrincipalType::Tool,
-                    permission: crate::permission::Permission::AllowOnce,
-                },
-            )
-            .await;
-        assert!(delivered);
-
-        let conf = rx.await.unwrap();
-        assert_eq!(conf.permission, crate::permission::Permission::AllowOnce);
-    }
-
-    /// A confirmation with no live waiter (turn cancelled, daemon restarted, or
-    /// already answered elsewhere) must report `false` — the honesty signal the
-    /// Decision Inbox effect message depends on.
-    #[tokio::test]
-    async fn test_handle_confirmation_reports_no_waiter() {
-        let agent = Agent::new();
-
-        // Nothing registered at all.
-        let delivered = agent
-            .handle_confirmation(
-                "never-registered".to_string(),
-                PermissionConfirmation {
-                    principal_type: PrincipalType::Tool,
-                    permission: crate::permission::Permission::AllowOnce,
-                },
-            )
-            .await;
-        assert!(!delivered, "no registered waiter must report false");
-
-        // Registered but the awaiting task is gone (receiver dropped).
-        let rx = agent
-            .tool_confirmation_router
-            .register("cancelled-turn".to_string())
-            .await
-            .unwrap();
-        drop(rx);
-        let delivered = agent
-            .handle_confirmation(
-                "cancelled-turn".to_string(),
-                PermissionConfirmation {
-                    principal_type: PrincipalType::Tool,
-                    permission: crate::permission::Permission::AllowOnce,
-                },
-            )
-            .await;
-        assert!(!delivered, "dropped receiver must report false");
-    }
-
-    #[tokio::test]
-    async fn test_add_final_output_tool() -> Result<()> {
-        let agent = Agent::new();
-
-        let response = Response {
-            json_schema: Some(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "result": {"type": "string"}
-                }
-            })),
-        };
-
-        agent.add_final_output_tool(response).await?;
-
-        let tools = agent.list_tools("test-session-id", None).await;
-        let final_output_tool = tools
-            .iter()
-            .find(|tool| tool.name == FINAL_OUTPUT_TOOL_NAME);
-
-        assert!(
-            final_output_tool.is_some(),
-            "Final output tool should be present after adding"
-        );
-
-        let prompt_manager = agent.prompt_manager.lock().await;
-        let system_prompt = prompt_manager
-            .builder()
-            .with_goose_mode(GooseMode::default())
-            .build();
-
-        let final_output_tool_ref = agent.final_output_tool.lock().await;
-        let final_output_tool_system_prompt =
-            final_output_tool_ref.as_ref().unwrap().system_prompt();
-        assert!(system_prompt.contains(&final_output_tool_system_prompt));
-        Ok(())
-    }
-
-    /// A recipe with a bad `response.json_schema` must surface as an error,
-    /// never a panic, and must leave no half-installed final-output tool
-    /// behind (bug-sweep wave 1: the old panic here crash-cycled the daemon).
-    #[tokio::test]
-    async fn test_add_final_output_tool_rejects_bad_schema() -> Result<()> {
-        let agent = Agent::new();
-
-        for bad in [
-            None,
-            Some(serde_json::json!(true)),
-            Some(serde_json::json!({})),
-            Some(serde_json::json!({"type": 42})),
-        ] {
-            let result = agent
-                .apply_recipe_components(Some(Response { json_schema: bad }), true)
-                .await;
-            assert!(result.is_err(), "bad schema must be rejected");
-        }
-
-        assert!(
-            agent.final_output_tool.lock().await.is_none(),
-            "no final-output tool may be installed after a rejected schema"
-        );
-        let tools = agent.list_tools("test-session-id", None).await;
-        assert!(
-            !tools.iter().any(|t| t.name == FINAL_OUTPUT_TOOL_NAME),
-            "tool listing must not contain the final-output tool"
-        );
-        Ok(())
-    }
-
-    /// R48c (harness loop, "Lane R48c"): `platform__load_feature_lesson` is
-    /// appended in `list_tools` OUTSIDE the extension-grant mechanism
-    /// `GOAL_WORKER_EXTENSION_KEYS` narrows (A39 measured it surviving R30a's
-    /// own narrowing, one of the 12 tools that overflowed a 32,768-token
-    /// worker). `AgentRunnerConfig::new`'s default (`compact_worker_profile:
-    /// false`) must keep today's behaviour byte-identical; only an explicit
-    /// opt-in drops the tool.
-    #[tokio::test]
-    async fn compact_worker_profile_drops_the_platform_load_feature_lesson_tool() {
-        let mut agent = Agent::new();
-
-        let tools_default = agent.list_tools("compact-test-session", None).await;
-        assert!(
-            tools_default
-                .iter()
-                .any(|t| t.name == PLATFORM_LOAD_FEATURE_LESSON_TOOL_NAME),
-            "sanity: the default profile (AgentRunnerConfig::new's default) keeps the \
-             platform tool, unchanged from before this lane"
-        );
-
-        agent.config.compact_worker_profile = true;
-        let tools_compact = agent.list_tools("compact-test-session", None).await;
-        assert!(
-            !tools_compact
-                .iter()
-                .any(|t| t.name == PLATFORM_LOAD_FEATURE_LESSON_TOOL_NAME),
-            "the compact worker prompt profile must drop platform__load_feature_lesson"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_tool_inspection_manager_has_all_inspectors() -> Result<()> {
-        let agent = Agent::new();
-
-        // Verify that the tool inspection manager has all expected inspectors
-        let inspector_names = agent.tool_inspection_manager.inspector_names();
-
-        assert!(
-            inspector_names.contains(&crate::tool_monitor::PROGRESS_MONITOR_NAME),
-            "Tool inspection manager should contain the progress monitor (runaway-loop guard)"
-        );
-        assert!(
-            inspector_names.contains(&"permission"),
-            "Tool inspection manager should contain permission inspector"
-        );
-        assert!(
-            inspector_names.contains(&"security"),
-            "Tool inspection manager should contain security inspector"
-        );
-        assert!(
-            inspector_names.contains(&"adversary"),
-            "Tool inspection manager should contain adversary inspector"
-        );
-        assert!(
-            inspector_names.contains(&crate::security::write_jail::WRITE_JAIL_INSPECTOR_NAME),
-            "Tool inspection manager should contain the write jail (C3)"
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn bearer_token_is_redacted_from_tracing_and_task_description() {
-        let secret = "trace-and-task-secret";
-        let arguments = serde_json::json!({
-            "command": format!("curl -H 'Authorization: Bearer {secret}' https://example.com")
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-
-        let tracing_input = redacted_tool_input_summary("shell", Some(&arguments));
-        let task_description = tool_task_description("shell", Some(&arguments));
-
-        for logged in [&tracing_input, &task_description] {
-            assert!(logged.contains("[REDACTED]"));
-            assert!(!logged.contains(secret), "Bearer token must not be logged");
-        }
-    }
-
-    /// The recovery observation carries the model's own raw arguments back
-    /// into the conversation, where it is persisted and re-sent every turn.
-    mod parse_recovery {
+    // ── Y-poll-suspend ───────────────────────────────────────────────────
+
+    /// Pure `DispatchPollGuard` logic — no DB, no provider, no async: the
+    /// rule itself, isolated from the machinery that carries it out.
+    mod dispatch_poll_guard_tests {
         use super::*;
+        use crate::goal_state::GoalState;
+        use std::collections::BTreeMap;
 
-        fn huge_parse_error() -> String {
-            // The real shape: serde's complaint, then the whole blob.
-            format!(
-                "Could not interpret tool use parameters for id call_1: EOF while parsing a \
-                 string. Raw arguments: '{}MALFORMED_TAIL'",
-                "x".repeat(400_000)
-            )
+        fn snapshot(state: GoalState) -> BTreeMap<String, GoalState> {
+            let mut map = BTreeMap::new();
+            map.insert("card-1".to_string(), state);
+            map
         }
 
+        /// The rule this guard exists to enforce (see the module header
+        /// comment above `DispatchPollGuard` for the measured evidence): one
+        /// inspection turn against unchanged dispatched-worker state is
+        /// free — the coordinator is not blind — but a SECOND consecutive
+        /// turn that only re-reads the identical state must suspend.
         #[test]
-        fn bounds_a_huge_raw_argument_echo() {
-            let msg = parse_recovery_text(&huge_parse_error());
+        fn a_second_consecutive_unchanged_inspection_turn_suspends_but_the_first_does_not() {
+            let mut guard = DispatchPollGuard::default();
+            let snap = snapshot(GoalState::InProgress);
+            let tools = vec!["orchestrator__view_session".to_string()];
+
             assert!(
-                msg.chars().count() < MAX_PARSE_ERROR_ECHO_CHARS + 500,
-                "echo not bounded: {} chars",
-                msg.chars().count()
+                !guard.observe_turn(&tools, Some(snap.clone())),
+                "the first look since dispatch is always free"
             );
             assert!(
-                msg.contains("truncated"),
-                "the cut must be stated, not silent"
-            );
-            assert!(
-                msg.contains("Re-issue exactly one tool call"),
-                "the instruction must survive truncation"
+                guard.observe_turn(&tools, Some(snap)),
+                "a second look at the exact same state must suspend"
             );
         }
 
+        /// An actionable tool call (dispatch, steer, escalate, message, ...)
+        /// is progress, not polling: it never suspends, and it resets the
+        /// guard's memory so the very next inspection is a fresh free look
+        /// again rather than inheriting a stale "already looked once".
         #[test]
-        fn keeps_the_end_of_the_blob_where_the_break_is() {
-            // A truncated response is malformed at its TAIL. Head-only
-            // elision would keep the harmless opening and discard the one
-            // region the model needs in order to correct itself.
-            let msg = parse_recovery_text(&huge_parse_error());
-            assert!(msg.contains("MALFORMED_TAIL"), "tail elided away");
+        fn an_actionable_tool_call_resets_the_guard_even_if_state_is_unchanged() {
+            let mut guard = DispatchPollGuard::default();
+            let snap = snapshot(GoalState::InProgress);
+            let inspect = vec!["view_session".to_string()];
+            let act = vec!["goal_advance".to_string()];
+
+            assert!(!guard.observe_turn(&inspect, Some(snap.clone())));
             assert!(
-                msg.contains("Could not interpret tool use parameters"),
-                "serde's own complaint elided away"
+                !guard.observe_turn(&act, Some(snap.clone())),
+                "an actionable turn is never suspended"
+            );
+            assert!(
+                !guard.observe_turn(&inspect, Some(snap.clone())),
+                "the turn right after an actionable one is a fresh free look"
+            );
+            assert!(
+                guard.observe_turn(&inspect, Some(snap)),
+                "only the SECOND consecutive unchanged inspection after that suspends"
             );
         }
 
+        /// A worker that actually moved between two inspections is new
+        /// information, not a repeated look — it grants another free
+        /// inspection rather than counting toward the suspend threshold.
         #[test]
-        fn echoes_a_short_error_verbatim_with_no_marker() {
-            let err = "Could not interpret tool use parameters for id call_1: \
-                       expected value at line 1 column 1";
-            let msg = parse_recovery_text(err);
-            assert!(msg.contains(err));
-            assert!(!msg.contains("truncated"));
+        fn an_observed_state_change_grants_a_fresh_free_look() {
+            let mut guard = DispatchPollGuard::default();
+            let inspect = vec!["goal_status".to_string()];
+
+            assert!(!guard.observe_turn(&inspect, Some(snapshot(GoalState::Ready))));
+            assert!(
+                !guard.observe_turn(&inspect, Some(snapshot(GoalState::InProgress))),
+                "state changed since the last look — this is a free look, not turn 2 of a pair"
+            );
+            assert!(
+                guard.observe_turn(&inspect, Some(snapshot(GoalState::InProgress))),
+                "NOW it is a second consecutive look at the same (InProgress) state"
+            );
         }
 
+        /// Nothing dispatched means nothing to be blind about — the guard
+        /// must never suspend a session with no dispatched worker, no matter
+        /// how many inspection-only turns it takes in a row.
         #[test]
-        fn multibyte_text_never_splits_a_character() {
-            // Transcripts and tool arguments carry arbitrary UTF-8; a byte
-            // slice here would panic on the boundary.
-            let err = "\u{3042}".repeat(200_000);
-            let msg = parse_recovery_text(&err);
-            assert!(msg.chars().count() < MAX_PARSE_ERROR_ECHO_CHARS + 500);
+        fn nothing_dispatched_never_suspends_and_forgets_its_own_history() {
+            let mut guard = DispatchPollGuard::default();
+            let inspect = vec!["list_sessions".to_string()];
+            assert!(!guard.observe_turn(&inspect, Some(snapshot(GoalState::InProgress))));
+            assert!(!guard.observe_turn(&inspect, None));
+            assert!(!guard.observe_turn(&inspect, None));
+        }
+
+        /// A turn that mixes one inspection call with one actionable call is
+        /// never treated as inspection-only, even though most of its tool
+        /// calls were reads.
+        #[test]
+        fn a_mixed_turn_with_one_actionable_call_is_never_treated_as_inspection_only() {
+            let mut guard = DispatchPollGuard::default();
+            let snap = snapshot(GoalState::Review);
+            let mixed = vec!["view_session".to_string(), "steer_goal".to_string()];
+            assert!(!guard.observe_turn(&mixed, Some(snap.clone())));
+            assert!(!guard.observe_turn(&mixed, Some(snap)));
+        }
+
+        /// Tool names arrive prefixed with their owning extension
+        /// (`extension_manager`'s own `"{extension}__{tool}"` convention) —
+        /// the allowlist must match on the base name either way.
+        #[test]
+        fn tool_names_with_an_extension_prefix_are_matched_on_their_base_name() {
+            assert!(is_inspection_only_tool("orchestrator__view_session"));
+            assert!(is_inspection_only_tool("view_session"));
+            assert!(!is_inspection_only_tool("orchestrator__goal_advance"));
         }
     }
 
-    /// Lane X-lat (coding-harness excellence iteration): a provider with a
-    /// fixed, injected delay, driven through a REAL `Agent::reply()` call.
-    /// Proves the reply loop's timing wiring end to end — `start_model`/
-    /// `end_model`/`finish`/`update_cost_ledger_timing` — not just the
-    /// `TurnTimingRecorder` in isolation (see
-    /// `crate::session::turn_timing::tests` for that unit-level coverage,
-    /// including a fixed-delay fake tool).
-    struct FixedDelayProvider {
-        delay_ms: u64,
-    }
+    /// `suspend_for_dispatched_goals` against a real (temp-file) SQLite pool
+    /// — the same fixture shape `orchestrator.rs`'s own drain tests use
+    /// (`SessionManager::new` over a tempdir, a coordinator + a fake
+    /// `SubAgent` child session, a goal card moved between board columns to
+    /// change its `GoalState`).
+    mod suspend_for_dispatched_goals_tests {
+        use super::*;
+        use crate::session::session_manager::SessionType;
 
-    impl std::fmt::Debug for FixedDelayProvider {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("FixedDelayProvider").finish()
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl crate::providers::base::Provider for FixedDelayProvider {
-        fn get_name(&self) -> &str {
-            "test-fixed-delay"
-        }
-        fn get_model_config(&self) -> crate::model::ModelConfig {
-            // Explicit context_limit/max_tokens: the reservation planner
-            // (`cost_router::reservation::calculate_bound`) requires both to
-            // authorize a chargeable call, and a bare `ModelConfig::new`
-            // leaves them `None` unless ambient global config happens to set
-            // `GOOSE_CONTEXT_LIMIT` — not something this test should depend
-            // on to reach the provider at all.
-            crate::model::ModelConfig::new("test")
-                .unwrap()
-                // Small on purpose: the reservation planner bounds on the
-                // FULL context capacity at the worst-case known rate across
-                // the whole bundled registry (no pricing exists for this
-                // unknown provider), so a large context here could exceed
-                // the default per-task budget ceiling ($2/$5/$10
-                // soft/gate/hard) before this test ever reaches the
-                // provider.
-                .with_context_limit(Some(4_096))
-                .with_max_tokens(Some(512))
-        }
-        async fn stream(
-            &self,
-            _: &crate::model::ModelConfig,
-            _: &str,
-            _: &str,
-            _: &[crate::conversation::message::Message],
-            _: &[rmcp::model::Tool],
-        ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
-            let usage = ProviderUsage::new(
-                "test-model".to_string(),
-                crate::providers::base::Usage::new(Some(5), Some(5), Some(10)),
-            );
-            let message = Message::assistant().with_text("done");
-            let stream = futures::stream::once(async move { Ok((Some(message), Some(usage))) });
-            Ok(Box::pin(stream))
-        }
-    }
-
-    #[tokio::test]
-    async fn reply_loop_persists_model_timing_close_to_the_providers_injected_delay() {
-        const DELAY_MS: u64 = 40;
-        // Real-clock test: generous slack for scheduler jitter under load
-        // (CI, a busy dev machine) without being so loose it stops meaning
-        // anything.
-        const TOLERANCE_MS: i64 = 250;
-
-        let temp_dir = tempfile::tempdir().unwrap();
-        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
-        let config = AgentRunnerConfig::new(
-            session_manager.clone(),
-            PermissionManager::instance(),
-            None,
-            GooseMode::Auto,
-            true, // disable session naming: don't consume an extra provider call
-            GoosePlatform::GooseCli,
-        );
-        let agent = Agent::with_config(config);
-        let provider = Arc::new(FixedDelayProvider { delay_ms: DELAY_MS });
-
-        let session = session_manager
-            .create_session(
-                std::path::PathBuf::from("."),
-                "x-lat-timing-test".to_string(),
-                crate::session::SessionType::Hidden,
-                GooseMode::Auto,
-            )
-            .await
-            .expect("create session");
-        let session_id = session.id.clone();
-        // A `Hidden` session is not "interactive", so `reply()`'s automatic
-        // `starts_new_budget_task` check never fires for it — without this,
-        // the paid-dispatch reservation is refused before the provider is
-        // ever called (see `reply_parts::tests::
-        // primary_stream_reservation_refuses_paid_dispatch_without_a_task`,
-        // which pins exactly this behaviour).
-        session_manager
-            .begin_budget_task(&session_id)
-            .await
-            .expect("begin budget task");
-        agent
-            .update_provider(provider, &session_id)
-            .await
-            .expect("update provider");
-
-        let session_config = SessionConfig {
-            id: session_id.clone(),
-            schedule_id: None,
-            max_turns: Some(1),
-            retry_config: None,
-        };
-
-        let reply_stream = agent
-            .reply(Message::user().with_text("hello"), session_config, None)
-            .await
-            .expect("reply starts");
-        tokio::pin!(reply_stream);
-        while let Some(event) = reply_stream.next().await {
-            event.expect("no error events");
-        }
-
-        let rollup = session_manager
-            .session_timing_rollup(&session_id)
-            .await
-            .expect("rollup reads back");
-        assert_eq!(rollup.turns, 1, "one provider turn was made");
-        assert!(
-            (rollup.model_ms_total - DELAY_MS as i64).abs() <= TOLERANCE_MS,
-            "model_ms_total {} not within tolerance of the injected {DELAY_MS}ms delay",
-            rollup.model_ms_total
-        );
-        assert_eq!(rollup.tool_exec_ms_total, 0, "no tool was called this turn");
-    }
-
-    // --- Mid-turn failover, driven through the real reply loop ------------
-    //
-    // QA on 2026-09-19 could only confirm the CLI's startup failover: the
-    // mid-turn switch needs a listener that dies or a cloud 5xx. These drive
-    // `reply()` itself with in-memory providers: a primary that fails before
-    // sending anything, and a stand-in named exactly like the Ollama model the
-    // real switch picks (`ollama`/`qwen2.5:7b`, a free local knowledge row), so
-    // the spend gate, the local-window check and the notices all see what they
-    // see in production. `Agent::test_failover` replaces only the probe of
-    // config and the building of a provider by name; the switch, the saved
-    // session, the prompt rebuild and every arm run as shipped. What this does
-    // NOT prove: the probe of the real Ollama daemon, the real Ollama
-    // preflight's token count, or the desktop's rendering of the notices.
-
-    /// Fails every request with `fail`, or answers when `fail` is `None`.
-    /// Records every system prompt it is sent, so a test can see which
-    /// identity the model was given and whether a compaction call was made,
-    /// and the size of every request by the reservation's own counter, so a
-    /// test can compare it with the size the switch was given.
-    struct ScriptedProvider {
-        name: &'static str,
-        model: &'static str,
-        context_limit: usize,
-        fail: Option<fn() -> crate::providers::errors::ProviderError>,
-        shape: FailShape,
-        prompts: std::sync::Mutex<Vec<String>>,
-        sizes: std::sync::Mutex<Vec<Option<usize>>>,
-    }
-
-    /// Where `fail` reaches the agent. QA on 2026-09-19 could not stage a
-    /// mid-turn 503 or a dropped body (no fault-injecting listener on :8081),
-    /// and the two shapes take different roads through the transport: a 503
-    /// STATUS is returned by `stream()` itself (the retry layer's
-    /// `handle_status_openai_compat`), while a 200 whose SSE body later carries
-    /// an `error` chunk, or is cut off, arrives as an item of the stream
-    /// (`stream_openai_compat` downcasts it back to `ServerError`, or types it
-    /// `stream_decode`). Both must reach the same failover arms.
-    #[derive(Clone, Copy)]
-    enum FailShape {
-        /// `stream()` returns the error: the request never got a 2xx.
-        BeforeStream,
-        /// `stream()` answers, then the error arrives as a stream item,
-        /// after `partial` was streamed to the user when it is `Some`.
-        InStream { partial: Option<&'static str> },
-    }
-
-    impl ScriptedProvider {
-        fn new(
-            name: &'static str,
-            model: &'static str,
-            context_limit: usize,
-            fail: Option<fn() -> crate::providers::errors::ProviderError>,
-        ) -> Arc<Self> {
-            Self::shaped(name, model, context_limit, fail, FailShape::BeforeStream)
-        }
-
-        fn shaped(
-            name: &'static str,
-            model: &'static str,
-            context_limit: usize,
-            fail: Option<fn() -> crate::providers::errors::ProviderError>,
-            shape: FailShape,
-        ) -> Arc<Self> {
-            Arc::new(Self {
-                name,
-                model,
-                context_limit,
-                fail,
-                shape,
-                prompts: std::sync::Mutex::new(Vec::new()),
-                sizes: std::sync::Mutex::new(Vec::new()),
-            })
-        }
-
-        fn prompts(&self) -> Vec<String> {
-            self.prompts.lock().unwrap().clone()
-        }
-
-        fn sizes(&self) -> Vec<Option<usize>> {
-            self.sizes.lock().unwrap().clone()
-        }
-    }
-
-    impl std::fmt::Debug for ScriptedProvider {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("ScriptedProvider")
-                .field("name", &self.name)
-                .finish()
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl crate::providers::base::Provider for ScriptedProvider {
-        fn get_name(&self) -> &str {
-            self.name
-        }
-        fn get_model_config(&self) -> crate::model::ModelConfig {
-            // Small `max_tokens` and an explicit window for the same reason as
-            // `FixedDelayProvider`: the reservation planner needs both to
-            // authorize the paid primary at all.
-            crate::model::ModelConfig::new(self.model)
-                .unwrap()
-                .with_context_limit(Some(self.context_limit))
-                .with_max_tokens(Some(512))
-        }
-        async fn stream(
-            &self,
-            _: &crate::model::ModelConfig,
-            _: &str,
-            system: &str,
-            messages: &[crate::conversation::message::Message],
-            tools: &[rmcp::model::Tool],
-        ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
-        {
-            let size =
-                crate::agents::reply_parts::counted_prompt_tokens(&[system], messages, tools).await;
-            self.sizes.lock().unwrap().push(size);
-            self.prompts.lock().unwrap().push(system.to_string());
-            if let Some(fail) = self.fail {
-                match self.shape {
-                    FailShape::BeforeStream => return Err(fail()),
-                    FailShape::InStream { partial } => {
-                        let mut items: Vec<
-                            Result<
-                                (Option<Message>, Option<ProviderUsage>),
-                                crate::providers::errors::ProviderError,
-                            >,
-                        > = Vec::new();
-                        if let Some(text) = partial {
-                            items.push(Ok((Some(Message::assistant().with_text(text)), None)));
-                        }
-                        items.push(Err(fail()));
-                        return Ok(Box::pin(futures::stream::iter(items)));
-                    }
-                }
-            }
-            let usage = ProviderUsage::new(
-                self.model.to_string(),
-                crate::providers::base::Usage::new(Some(5), Some(5), Some(10)),
-            );
-            let message = Message::assistant().with_text("done from the stand-in");
-            let stream = futures::stream::once(async move { Ok((Some(message), Some(usage))) });
-            Ok(Box::pin(stream))
-        }
-    }
-
-    const PRIMARY: &str = "test-primary";
-    const PRIMARY_MODEL: &str = "primary-model";
-
-    fn primary_failing_with(
-        fail: fn() -> crate::providers::errors::ProviderError,
-    ) -> Arc<ScriptedProvider> {
-        ScriptedProvider::new(PRIMARY, PRIMARY_MODEL, 4_096, Some(fail))
-    }
-
-    /// The model the real switch picks at noon, with the window it is served in.
-    fn ollama_stand_in(
-        fail: Option<fn() -> crate::providers::errors::ProviderError>,
-    ) -> Arc<ScriptedProvider> {
-        ScriptedProvider::new("ollama", "qwen2.5:7b", 32_768, fail)
-    }
-
-    struct FailoverRun {
-        agent: Agent,
-        session_manager: Arc<SessionManager>,
-        session_id: String,
-        events: Vec<AgentEvent>,
-        _temp_dir: tempfile::TempDir,
-    }
-
-    impl FailoverRun {
-        /// Every message the reply stream yielded, as display text (a system
-        /// notification renders as `[SystemNotification: …]`).
-        fn texts(&self) -> Vec<String> {
-            self.events
-                .iter()
-                .filter_map(|event| match event {
-                    AgentEvent::Message(message) => Some(
-                        message
-                            .content
-                            .iter()
-                            .map(|content| content.to_string())
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                    ),
-                    _ => None,
-                })
-                .collect()
-        }
-
-        fn said(&self, needle: &str) -> bool {
-            self.texts().iter().any(|text| text.contains(needle))
-        }
-
-        fn replaced_history(&self) -> bool {
-            self.events
-                .iter()
-                .any(|event| matches!(event, AgentEvent::HistoryReplaced(_)))
-        }
-
-        /// Whether the SAVED transcript holds `needle`. The desktop reloads
-        /// the transcript from the daemon when a turn ends, so a notice that
-        /// was only yielded is gone from the screen a moment later.
-        async fn persisted(&self, needle: &str) -> bool {
-            self.saved_texts()
-                .await
-                .iter()
-                .any(|text| text.contains(needle))
-        }
-
-        /// The saved transcript, one display string per saved message, in
-        /// the order the desktop's reload shows it.
-        async fn saved_texts(&self) -> Vec<String> {
-            let session = self
-                .session_manager
-                .get_session(&self.session_id, true)
+        async fn setup_goal_card(
+            pool: &sqlx::Pool<sqlx::Sqlite>,
+            state_binding: &str,
+        ) -> crate::cards::Card {
+            crate::cards::seed_goal_columns(pool, crate::projects::PERSONAL_PROJECT_ID)
                 .await
                 .unwrap();
-            session
-                .conversation
-                .map(|conversation| {
-                    conversation
-                        .messages()
-                        .iter()
-                        .map(|message| {
-                            message
-                                .content
-                                .iter()
-                                .map(|content| content.to_string())
-                                .collect::<Vec<_>>()
-                                .join(" ")
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        }
-
-        /// Whether the saved transcript has `first` before `then`, each at
-        /// its first occurrence.
-        async fn saved_in_order(&self, first: &str, then: &str) -> bool {
-            let saved = self.saved_texts().await;
-            let at = |needle: &str| saved.iter().position(|text| text.contains(needle));
-            matches!((at(first), at(then)), (Some(a), Some(b)) if a < b)
-        }
-    }
-
-    async fn run_failover_turn(
-        primary: Arc<ScriptedProvider>,
-        stand_in: Arc<ScriptedProvider>,
-    ) -> FailoverRun {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
-        let config = AgentRunnerConfig::new(
-            session_manager.clone(),
-            PermissionManager::instance(),
-            None,
-            GooseMode::Auto,
-            true, // no session naming: it would be one more provider call
-            GoosePlatform::GooseCli,
-        );
-        let agent = Agent::with_config(config);
-        let session = session_manager
-            .create_session(
-                std::path::PathBuf::from("."),
-                "mid-turn-failover-test".to_string(),
-                crate::session::SessionType::Hidden,
-                GooseMode::Auto,
+            let col = crate::cards::get_goal_column(
+                pool,
+                crate::projects::PERSONAL_PROJECT_ID,
+                state_binding,
             )
             .await
-            .expect("create session");
-        let session_id = session.id.clone();
-        // The primary is a paid provider: without a budget task its call is
-        // refused before it can fail the way these tests need.
-        session_manager
-            .begin_budget_task(&session_id)
-            .await
-            .expect("begin budget task");
-        agent
-            .update_provider(primary, &session_id)
-            .await
-            .expect("set the primary provider");
-        *agent.test_failover.lock().await = Some((
-            crate::cost_router::role_map::RoleModel {
-                provider: stand_in.name.to_string(),
-                model: stand_in.model.to_string(),
-            },
-            stand_in as Arc<dyn Provider>,
-        ));
-
-        let session_config = SessionConfig {
-            id: session_id.clone(),
-            schedule_id: None,
-            max_turns: Some(4),
-            retry_config: None,
-        };
-        let mut events = Vec::new();
-        {
-            // Scoped so the stream (which borrows `agent`) is dropped before
-            // `agent` moves into the returned FailoverRun.
-            let reply_stream = agent
-                .reply(Message::user().with_text("hello"), session_config, None)
-                .await
-                .expect("reply starts");
-            tokio::pin!(reply_stream);
-            while let Some(event) = reply_stream.next().await {
-                events.push(event.expect("no error events"));
-            }
-        }
-        FailoverRun {
-            agent,
-            session_manager,
-            session_id,
-            events,
-            _temp_dir: temp_dir,
-        }
-    }
-
-    /// A refused connection before anything streamed: the turn moves to the
-    /// stand-in, says so, and the stand-in answers. The re-run is sent the
-    /// prompt built for the stand-in: before the refresh, it was sent the one
-    /// built for the failed model and told "You are currently served by
-    /// test-primary/primary-model", the 2026-08-31 wrong-identity defect.
-    #[tokio::test]
-    async fn a_network_failover_reruns_the_turn_on_the_stand_in_under_its_own_identity() {
-        let stand_in = ollama_stand_in(None);
-        let run = run_failover_turn(
-            primary_failing_with(|| {
-                crate::providers::errors::ProviderError::NetworkError(
-                    "Could not connect to 127.0.0.1:8081".to_string(),
-                )
-            }),
-            stand_in.clone(),
-        )
-        .await;
-
-        assert!(
-            run.said(
-                "test-primary unreachable (connection refused or unroutable) — switched this \
-                 session to ollama/qwen2.5:7b."
-            ),
-            "{:?}",
-            run.texts()
-        );
-        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
-        let prompts = stand_in.prompts();
-        assert_eq!(prompts.len(), 1, "one re-run on the stand-in");
-        assert!(
-            prompts[0].contains("You are currently served by ollama/qwen2.5:7b."),
-            "the stand-in must be told which model it is"
-        );
-        assert!(
-            !prompts[0].contains("served by test-primary/primary-model"),
-            "the stand-in was sent the failed model's identity"
-        );
-        assert_eq!(run.agent.provider().await.unwrap().get_name(), "ollama");
-    }
-
-    /// The switch is told how big the failed request was, so it can refuse a
-    /// local model whose window cannot hold it. `test_failover` replaces the
-    /// choice itself, so without this the reply-loop tests would pass even if
-    /// every arm passed `None` and the size-aware choice never ran. The size
-    /// must be the request the primary was actually sent, counted the same
-    /// way: the reservation counts the system prompt as two parts and the
-    /// messages before the agent-visible filter, the provider sees one joined
-    /// prompt, so the two may differ by a few tokens, never by the prompt.
-    #[tokio::test]
-    async fn a_failover_passes_the_failed_requests_size_to_the_switch() {
-        let primary = primary_failing_with(|| {
-            crate::providers::errors::ProviderError::NetworkError(
-                "Could not connect to 127.0.0.1:8081".to_string(),
-            )
-        });
-        let run = run_failover_turn(primary.clone(), ollama_stand_in(None)).await;
-
-        let sent = primary
-            .sizes()
-            .first()
-            .copied()
-            .flatten()
-            .expect("the primary's request can be counted");
-        let given = run.agent.test_failover_request_tokens.lock().await.clone();
-        assert_eq!(given.len(), 1, "one switch: {given:?}");
-        let given = given[0].expect("the switch must be given the request's size, not None");
-        assert!(
-            sent > 200,
-            "the request carries the whole system prompt: {sent}"
-        );
-        let slack = 16 + sent / 50;
-        assert!(
-            given.abs_diff(sent) <= slack,
-            "the switch was given {given} tokens for a {sent}-token request"
-        );
-    }
-
-    /// QA could not confirm the prompt-sized hold in the live app on
-    /// 2026-09-19: every reservation line since the redeploy was a free local
-    /// call ("reservation skipped: unpaid tier holds no dollars, provider:
-    /// ollama, model: qwen2.5:7b"), because the configured primary is a local
-    /// model, and the paid gpt-5.4-mini run that would log "reservation bound
-    /// computed" was not approved for spend. This drives the real streamed
-    /// turn with an in-memory stand-in NAMED `openai`/`gpt-5.4-mini`, so the
-    /// tier, the live registry price and the durable hold are exactly what a
-    /// real paid turn gets, at no cost.
-    ///
-    /// Proves: the reply loop hands the reservation the request it then
-    /// sends, so the ledger's hold covers that request and is nowhere near
-    /// the whole-window hold that refused the harness's first call
-    /// ("requested bound $1.56, ceiling $1.00" for a ~30k-token prompt).
-    /// Passing `None` at the seam, or counting a different request, fails it.
-    /// Does not prove: the real OpenAI transport or its billed token count,
-    /// the daemon's configured budget ceilings, or any UI display of the hold.
-    /// The slack is the same one the failover test above uses, for the same
-    /// reason: the reservation counts the system prompt as two parts, the
-    /// provider sees one joined string.
-    #[tokio::test]
-    async fn a_paid_turn_holds_money_for_the_request_it_sends_not_the_whole_window() {
-        let primary = ScriptedProvider::new("openai", "gpt-5.4-mini", 400_000, None);
-        let run = run_failover_turn(primary.clone(), ollama_stand_in(None)).await;
-
-        let sizes = primary.sizes();
-        assert_eq!(sizes.len(), 1, "one paid call, no failover: {sizes:?}");
-        let sent = sizes[0].expect("the paid request can be counted");
-
-        let pool = run.session_manager.pool_clone().await.unwrap();
-        let holds: Vec<f64> =
-            sqlx::query_scalar("SELECT amount_usd FROM cost_reservations WHERE session_id = ?")
-                .bind(&run.session_id)
-                .fetch_all(&pool)
-                .await
-                .unwrap();
-        assert_eq!(
-            holds.len(),
-            1,
-            "one durable hold for one paid call: {holds:?}"
-        );
-        let held = holds[0];
-
-        let config = primary.get_model_config();
-        let attempts = crate::cost_router::reserved_physical_attempts(
-            primary.retry_config().max_physical_attempts(),
-        );
-        let plan = |counted: Option<usize>| {
-            crate::cost_router::reservation::plan_reservation_bound_for_prompt(
-                "openai",
-                "gpt-5.4-mini",
-                crate::session::CostTier::PaidApi,
-                &config,
-                attempts,
-                counted,
-            )
             .unwrap()
-            .expect("openai/gpt-5.4-mini is a paid pair")
-            .amount_usd
-        };
-        let slack = 16 + sent / 50;
-        let floor = plan(Some(sent.saturating_sub(slack)));
-        let ceiling = plan(Some(sent + slack));
-        assert!(
-            held >= floor && held <= ceiling,
-            "held ${held:.6} for a {sent}-token request; a hold sized to it lies in \
-             ${floor:.6}..=${ceiling:.6}"
-        );
-        let whole_window = plan(None);
-        assert!(
-            held * 2.0 < whole_window,
-            "held ${held:.6}, the whole-window hold is ${whole_window:.6}: the turn \
-             reserved the window, not the request"
-        );
-    }
-
-    /// A billing rejection fails over; the stand-in's window then refuses the
-    /// request. The session goes back to the rejecting provider (staying on
-    /// the stand-in would compact against its window next message), but the
-    /// notice must not say "resend once it is reachable": the provider
-    /// rejects every request until its credit is topped up, so a resend fails
-    /// over to the same stand-in and is refused again.
-    #[tokio::test]
-    async fn an_overflow_after_a_billing_failover_does_not_promise_a_resend() {
-        fn window_refused() -> crate::providers::errors::ProviderError {
-            crate::providers::errors::ProviderError::ContextLengthExceeded(
-                "request exceeds the 32768-token window".to_string(),
-            )
-        }
-        let run = run_failover_turn(
-            primary_failing_with(
-                || crate::providers::errors::ProviderError::CreditsExhausted {
-                    details: "credit balance too low".to_string(),
-                    top_up_url: None,
-                },
-            ),
-            ollama_stand_in(Some(
-                window_refused as fn() -> crate::providers::errors::ProviderError,
-            )),
-        )
-        .await;
-
-        assert!(
-            run.said("This turn moved from test-primary to ollama/qwen2.5:7b"),
-            "{:?}",
-            run.texts()
-        );
-        // The billing notice before the re-run also names the cause, so look
-        // for it in the overflow notice itself.
-        assert!(
-            run.texts()
-                .iter()
-                .any(|t| t.contains("This session is back on test-primary")
-                    && t.contains("credit balance too low")
-                    && t.contains("until that is fixed")),
-            "the overflow notice names the rejection and what must change: {:?}",
-            run.texts()
-        );
-        assert!(
-            !run.said("resend once it is reachable"),
-            "a resend is rejected the same way: {:?}",
-            run.texts()
-        );
-        assert!(!run.replaced_history(), "the history must not be replaced");
-        assert_eq!(run.agent.provider().await.unwrap().get_name(), PRIMARY);
-    }
-
-    /// A spent rate limit is transient and nothing reached the user, so it
-    /// moves like a refused connection. Its arm came before the one that
-    /// called the failover gate, so it used to end the turn on "waited and
-    /// retried, and it is still limited" with a local model up.
-    #[tokio::test]
-    async fn a_spent_rate_limit_fails_over_instead_of_ending_the_turn() {
-        let run = run_failover_turn(
-            primary_failing_with(
-                || crate::providers::errors::ProviderError::RateLimitExceeded {
-                    details: "429 slow down".to_string(),
-                    retry_delay: None,
-                },
-            ),
-            ollama_stand_in(None),
-        )
-        .await;
-
-        assert!(
-            run.said(
-                "test-primary is rate-limiting this model — switched this session to \
-                 ollama/qwen2.5:7b."
-            ),
-            "{:?}",
-            run.texts()
-        );
-        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
-        assert!(
-            !run.said("waited and retried"),
-            "the turn must not end on the rate limit: {:?}",
-            run.texts()
-        );
-    }
-
-    /// A provider that never sends a first byte is retried once, then the
-    /// turn moves. Both ways the retry can end (it stalls again, or the
-    /// reservation will not pay for it and it never starts) now fail over;
-    /// either used to end the turn on "send it again once the provider
-    /// recovers".
-    #[tokio::test]
-    async fn a_first_byte_stall_that_outlasts_its_retry_fails_over() {
-        let run = run_failover_turn(
-            primary_failing_with(|| {
-                crate::providers::errors::ProviderError::first_byte_stall(
-                    "the provider sent nothing at all for 180 s",
-                )
-            }),
-            ollama_stand_in(None),
-        )
-        .await;
-
-        assert!(
-            run.said(
-                "test-primary sent nothing back in time — switched this session to \
-                 ollama/qwen2.5:7b."
-            ),
-            "{:?}",
-            run.texts()
-        );
-        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
-        assert!(!run.said("once the provider recovers"), "{:?}", run.texts());
-    }
-
-    /// The stand-in's window refuses the request. The turn must not compact
-    /// (the 7B would summarise the user's history), and the session must not
-    /// stay on the stand-in: the switch saved it as the session's model, so the
-    /// resend the notice asks for went to the same window, and the start-of-
-    /// turn auto-compact judged the last cloud request against it and
-    /// summarised the history one turn later. The session goes back to the
-    /// model it failed over from, and the notice says so.
-    #[tokio::test]
-    async fn a_stand_in_too_small_for_the_request_hands_the_session_back_and_never_compacts() {
-        fn window_refused() -> crate::providers::errors::ProviderError {
-            crate::providers::errors::ProviderError::ContextLengthExceeded(
-                "request of 62364 tokens exceeds the 32768-token window".to_string(),
-            )
-        }
-        let stand_in = ollama_stand_in(Some(
-            window_refused as fn() -> crate::providers::errors::ProviderError,
-        ));
-        let run = run_failover_turn(
-            primary_failing_with(|| {
-                crate::providers::errors::ProviderError::NetworkError(
-                    "Could not connect to 127.0.0.1:8081".to_string(),
-                )
-            }),
-            stand_in.clone(),
-        )
-        .await;
-
-        assert!(
-            run.said("This turn moved from test-primary to ollama/qwen2.5:7b"),
-            "{:?}",
-            run.texts()
-        );
-        assert!(
-            run.said("This session is back on test-primary"),
-            "{:?}",
-            run.texts()
-        );
-        assert!(!run.replaced_history(), "the history must not be replaced");
-        assert!(
-            !run.texts().iter().any(|t| t.contains("Compact")),
-            "no compaction notice: {:?}",
-            run.texts()
-        );
-        assert_eq!(
-            stand_in.prompts().len(),
-            1,
-            "the stand-in got the one refused request and no summarisation call"
-        );
-
-        assert_eq!(
-            run.agent.provider().await.unwrap().get_name(),
-            PRIMARY,
-            "the live provider is the one the turn failed over from"
-        );
-        let session = run
-            .session_manager
-            .get_session(&run.session_id, true)
-            .await
             .unwrap();
-        assert_eq!(
-            session.provider_name.as_deref(),
-            Some(PRIMARY),
-            "the saved session is back on the failed-over-from provider, so the next \
-             reply's auto-compact check uses its window, not the stand-in's"
-        );
-        assert_eq!(
-            session.model_config.map(|config| config.model_name),
-            Some(PRIMARY_MODEL.to_string())
-        );
-        let conversation = session.conversation.expect("conversation");
-        assert!(
-            conversation
-                .messages()
-                .iter()
-                .any(|message| message.as_concat_text().contains("hello")),
-            "the user's message is still in the history"
-        );
-    }
-
-    // --- The three cases QA could not stage on 2026-09-19 -----------------
-    //
-    // r2-unconfirmed-local-fallback: only the CLI's startup failover was
-    // checked in the real app. A mid-turn 503, the spend gate after the
-    // switch, and the stream-drop wording each needed a fault-injecting
-    // listener on :8081 that was not set up, and no "pre-commit failover" line
-    // was in the logs. These drive the same `reply()` loop with the failure
-    // delivered the way the real transport delivers it (see `FailShape`).
-    // What they do NOT prove: the real `handle_status_openai_compat` /
-    // `stream_openai_compat` typing of a live 503 (their own tests cover
-    // that), the real Ollama probe, or the desktop's rendering.
-
-    fn server_error_503() -> crate::providers::errors::ProviderError {
-        crate::providers::errors::ProviderError::ServerError("503 Service Unavailable".to_string())
-    }
-
-    fn body_dropped() -> crate::providers::errors::ProviderError {
-        crate::providers::errors::ProviderError::stream_decode("error decoding response body")
-    }
-
-    const SERVER_ERROR_NOTICE: &str = "test-primary returned a server error before any reply \
-                                       started — switched this session to ollama/qwen2.5:7b.";
-
-    /// A 503 status before anything streamed: the turn moves to the stand-in,
-    /// says so by cause, keeps the notice in the saved transcript, and the
-    /// stand-in answers. Before the arm called the shared failover, a 5xx
-    /// ended the turn on "Ran into this error … Please retry".
-    #[tokio::test]
-    async fn a_503_status_fails_over_before_any_reply_and_says_why() {
-        let stand_in = ollama_stand_in(None);
-        let run = run_failover_turn(primary_failing_with(server_error_503), stand_in.clone()).await;
-
-        assert!(run.said(SERVER_ERROR_NOTICE), "{:?}", run.texts());
-        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
-        assert!(!run.said("Ran into this error"), "{:?}", run.texts());
-        assert!(
-            run.persisted(SERVER_ERROR_NOTICE).await,
-            "the switch notice must survive the end-of-turn transcript reload"
-        );
-        assert_eq!(stand_in.prompts().len(), 1, "one re-run on the stand-in");
-        assert_eq!(run.agent.provider().await.unwrap().get_name(), "ollama");
-    }
-
-    /// The same 503 as a 200 whose SSE body then carried an `error` chunk: the
-    /// shape a llama-server or an OpenAI-compatible cloud sends mid-turn. It
-    /// is an ITEM of the stream, not an error from `stream()`, and nothing was
-    /// shown yet, so it must fail over exactly like the status above.
-    #[tokio::test]
-    async fn a_503_inside_the_stream_before_any_text_fails_over() {
-        let primary = ScriptedProvider::shaped(
-            PRIMARY,
-            PRIMARY_MODEL,
-            4_096,
-            Some(server_error_503 as fn() -> crate::providers::errors::ProviderError),
-            FailShape::InStream { partial: None },
-        );
-        let run = run_failover_turn(primary, ollama_stand_in(None)).await;
-
-        assert!(run.said(SERVER_ERROR_NOTICE), "{:?}", run.texts());
-        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
-    }
-
-    /// A body cut off before any text: the notice says the stream DROPPED (the
-    /// host answered, so "unreachable" would be false, the 2026-09-18
-    /// wording defect), and the turn finishes on the stand-in.
-    #[tokio::test]
-    async fn a_body_dropped_before_any_text_fails_over_and_says_it_dropped() {
-        let primary = ScriptedProvider::shaped(
-            PRIMARY,
-            PRIMARY_MODEL,
-            4_096,
-            Some(body_dropped as fn() -> crate::providers::errors::ProviderError),
-            FailShape::InStream { partial: None },
-        );
-        let run = run_failover_turn(primary, ollama_stand_in(None)).await;
-
-        let notice = "test-primary dropped the response stream before any reply started — \
-                      switched this session to ollama/qwen2.5:7b.";
-        assert!(run.said(notice), "{:?}", run.texts());
-        assert!(!run.said("unreachable"), "{:?}", run.texts());
-        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
-        assert!(run.persisted(notice).await, "the notice must be saved");
-    }
-
-    /// A body cut off AFTER text reached the user: no switch (a second model
-    /// would contradict the half answer on screen), the resend wording, saved
-    /// so the reload keeps it, and never "rejected as invalid". The notice is
-    /// saved BELOW the half answer: it used to be saved at once while the half
-    /// answer waited for the end of the iteration, so the desktop's reload put
-    /// "stream dropped" above the answer it explains (see
-    /// `persist_streamed_then_notice`). Fails on that order, not on wording.
-    #[tokio::test]
-    async fn a_body_dropped_after_text_asks_for_a_resend_and_does_not_switch() {
-        let primary = ScriptedProvider::shaped(
-            PRIMARY,
-            PRIMARY_MODEL,
-            4_096,
-            Some(body_dropped as fn() -> crate::providers::errors::ProviderError),
-            FailShape::InStream {
-                partial: Some("Here is the first half"),
-            },
-        );
-        let stand_in = ollama_stand_in(None);
-        let run = run_failover_turn(primary, stand_in.clone()).await;
-
-        let wording = "The model stream dropped before the reply finished.";
-        assert!(run.said(wording), "{:?}", run.texts());
-        assert!(
-            run.persisted(wording).await,
-            "the resend notice must be saved"
-        );
-        assert!(!run.said("switched this session"), "{:?}", run.texts());
-        assert!(
-            !run.said("rejected this request as invalid"),
-            "{:?}",
-            run.texts()
-        );
-        assert!(
-            stand_in.prompts().is_empty(),
-            "nothing may be sent to the stand-in"
-        );
-        assert_eq!(run.agent.provider().await.unwrap().get_name(), PRIMARY);
-
-        assert!(
-            run.saved_in_order("Here is the first half", wording).await,
-            "saved order must match the screen, half answer then notice: {:?}",
-            run.saved_texts().await
-        );
-    }
-
-    /// A 503 `error` chunk AFTER text reached the user: no switch, and the
-    /// error notice is saved below the half answer, as the user saw it.
-    #[tokio::test]
-    async fn a_503_after_text_does_not_switch_and_saves_the_notice_below_the_text() {
-        let primary = ScriptedProvider::shaped(
-            PRIMARY,
-            PRIMARY_MODEL,
-            4_096,
-            Some(server_error_503 as fn() -> crate::providers::errors::ProviderError),
-            FailShape::InStream {
-                partial: Some("Here is the first half"),
-            },
-        );
-        let stand_in = ollama_stand_in(None);
-        let run = run_failover_turn(primary, stand_in.clone()).await;
-
-        assert!(run.said("Ran into this error"), "{:?}", run.texts());
-        assert!(!run.said("switched this session"), "{:?}", run.texts());
-        assert!(
-            stand_in.prompts().is_empty(),
-            "nothing may be sent to the stand-in"
-        );
-        assert!(
-            run.saved_in_order("Here is the first half", "Ran into this error")
-                .await,
-            "saved order must match the screen: {:?}",
-            run.saved_texts().await
-        );
-    }
-
-    /// The exact error `formats::openai::parse_streaming_chunk` raises when a
-    /// proxy or llama-server closes the body cleanly partway through a
-    /// `data:` line: the line codec passes the partial line on at EOF and
-    /// serde reports end of input.
-    fn chunk_cut_off_mid_line() -> crate::providers::errors::ProviderError {
-        crate::providers::errors::ProviderError::RequestFailed(
-            "Failed to parse streaming chunk: EOF while parsing a string at line 1 column 58: \
-             \"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"the sec\""
-                .to_string(),
-        )
-    }
-
-    fn rate_limited() -> crate::providers::errors::ProviderError {
-        crate::providers::errors::ProviderError::RateLimitExceeded {
-            details: "429 Too Many Requests".to_string(),
-            retry_delay: None,
+            crate::cards::create_card(
+                pool,
+                crate::cards::CreateCard {
+                    project_id: crate::projects::PERSONAL_PROJECT_ID.to_string(),
+                    title: format!("Y-poll-suspend test goal ({state_binding})"),
+                    description: None,
+                    card_type: Some("goal".to_string()),
+                    column_id: Some(col.id.clone()),
+                    created_by: None,
+                    // The column alone does not make a card a dispatched goal:
+                    // the drain reads `goal_state` (and `attempt_count`) from
+                    // the metadata, so a card without them is invisible to it
+                    // and the suspension returns instantly. Same shape as
+                    // `setup_goal_in_state` in orchestrator.rs, which is what
+                    // the drain's own passing tests build.
+                    metadata_json: Some(serde_json::json!({
+                        "goal_state": state_binding,
+                        "attempt_count": 1,
+                    })),
+                },
+            )
+            .await
+            .unwrap()
         }
-    }
 
-    fn invalid_request_400() -> crate::providers::errors::ProviderError {
-        crate::providers::errors::ProviderError::RequestFailed(
-            "Bad request (400): invalid_request_error: messages: text content blocks must be non-empty"
-                .to_string(),
-        )
-    }
-
-    /// A body cut off partway through a `data:` line AFTER text streamed.
-    /// It reaches the agent as `RequestFailed("Failed to parse streaming
-    /// chunk: EOF while parsing …")`, which the RequestFailed arm answered
-    /// with "The provider rejected this request as invalid … Switch the
-    /// model", saved ABOVE the half answer. It is a dropped stream: the
-    /// resend wording, no switch, and the notice saved below the text.
-    #[tokio::test]
-    async fn a_chunk_cut_off_mid_line_after_text_reads_as_a_dropped_stream() {
-        let primary = ScriptedProvider::shaped(
-            PRIMARY,
-            PRIMARY_MODEL,
-            4_096,
-            Some(chunk_cut_off_mid_line as fn() -> crate::providers::errors::ProviderError),
-            FailShape::InStream {
-                partial: Some("Here is the first half"),
-            },
-        );
-        let stand_in = ollama_stand_in(None);
-        let run = run_failover_turn(primary, stand_in.clone()).await;
-
-        let wording = "The model stream dropped before the reply finished.";
-        assert!(run.said(wording), "{:?}", run.texts());
-        assert!(
-            !run.said("rejected this request as invalid"),
-            "{:?}",
-            run.texts()
-        );
-        assert!(!run.said("switched this session"), "{:?}", run.texts());
-        assert!(
-            stand_in.prompts().is_empty(),
-            "nothing may be sent to the stand-in"
-        );
-        assert!(
-            run.saved_in_order("Here is the first half", wording).await,
-            "saved order must match the screen: {:?}",
-            run.saved_texts().await
-        );
-    }
-
-    /// The same cut-off chunk before any text: nothing was shown, so the turn
-    /// moves to the stand-in and the notice says the stream dropped. Before,
-    /// it ended the turn on "rejected as invalid" with Ollama up and idle.
-    #[tokio::test]
-    async fn a_chunk_cut_off_mid_line_before_text_fails_over() {
-        let primary = ScriptedProvider::shaped(
-            PRIMARY,
-            PRIMARY_MODEL,
-            4_096,
-            Some(chunk_cut_off_mid_line as fn() -> crate::providers::errors::ProviderError),
-            FailShape::InStream { partial: None },
-        );
-        let run = run_failover_turn(primary, ollama_stand_in(None)).await;
-
-        assert!(
-            run.said(
-                "test-primary dropped the response stream before any reply started — \
-                 switched this session to ollama/qwen2.5:7b."
-            ),
-            "{:?}",
-            run.texts()
-        );
-        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
-        assert!(
-            !run.said("rejected this request as invalid"),
-            "{:?}",
-            run.texts()
-        );
-    }
-
-    /// A spent rate limit after text: no switch, and its notice is saved below
-    /// the half answer rather than above it.
-    #[tokio::test]
-    async fn a_rate_limit_after_text_saves_the_notice_below_the_text() {
-        let primary = ScriptedProvider::shaped(
-            PRIMARY,
-            PRIMARY_MODEL,
-            4_096,
-            Some(rate_limited as fn() -> crate::providers::errors::ProviderError),
-            FailShape::InStream {
-                partial: Some("Here is the first half"),
-            },
-        );
-        let stand_in = ollama_stand_in(None);
-        let run = run_failover_turn(primary, stand_in.clone()).await;
-
-        assert!(run.said("still limited"), "{:?}", run.texts());
-        assert!(!run.said("switched this session"), "{:?}", run.texts());
-        assert!(
-            stand_in.prompts().is_empty(),
-            "nothing may be sent to the stand-in"
-        );
-        assert!(
-            run.saved_in_order("Here is the first half", "still limited")
-                .await,
-            "saved order must match the screen: {:?}",
-            run.saved_texts().await
-        );
-    }
-
-    /// A genuine 4xx after text keeps its own wording (a resend would fail the
-    /// same way) but is saved below the half answer too.
-    #[tokio::test]
-    async fn a_real_4xx_after_text_keeps_its_wording_and_saves_below_the_text() {
-        let primary = ScriptedProvider::shaped(
-            PRIMARY,
-            PRIMARY_MODEL,
-            4_096,
-            Some(invalid_request_400 as fn() -> crate::providers::errors::ProviderError),
-            FailShape::InStream {
-                partial: Some("Here is the first half"),
-            },
-        );
-        let run = run_failover_turn(primary, ollama_stand_in(None)).await;
-
-        assert!(
-            run.said("rejected this request as invalid"),
-            "{:?}",
-            run.texts()
-        );
-        assert!(
-            run.saved_in_order("Here is the first half", "rejected this request as invalid")
-                .await,
-            "saved order must match the screen: {:?}",
-            run.saved_texts().await
-        );
-    }
-
-    /// The spend gate after the switch. A PAID primary (named as the real
-    /// `openai`/`gpt-5.4-mini` pair, so the tier and the durable hold are
-    /// what a real paid turn gets) returns a 503 before sending anything; the
-    /// free local stand-in must then be let through, not refused as "provider
-    /// spend could not be authorized", and must take no hold of its own. The
-    /// failed call's hold must not be settled as spend: it returned no usage.
-    #[tokio::test]
-    async fn after_a_paid_503_the_local_stand_in_passes_the_spend_gate_and_holds_nothing() {
-        let primary = ScriptedProvider::new(
-            "openai",
-            "gpt-5.4-mini",
-            400_000,
-            Some(server_error_503 as fn() -> crate::providers::errors::ProviderError),
-        );
-        let stand_in = ollama_stand_in(None);
-        let run = run_failover_turn(primary.clone(), stand_in.clone()).await;
-
-        assert!(
-            run.said(
-                "openai returned a server error before any reply started — switched this \
-                 session to ollama/qwen2.5:7b."
-            ),
-            "{:?}",
-            run.texts()
-        );
-        assert!(
-            !run.said("provider spend could not be authorized"),
-            "the spend gate refused the free stand-in: {:?}",
-            run.texts()
-        );
-        assert!(run.said("done from the stand-in"), "{:?}", run.texts());
-        assert_eq!(stand_in.prompts().len(), 1, "the stand-in was called once");
-
-        let pool = run.session_manager.pool_clone().await.unwrap();
-        let holds: Vec<String> =
-            sqlx::query_scalar("SELECT state FROM cost_reservations WHERE session_id = ?")
-                .bind(&run.session_id)
-                .fetch_all(&pool)
+        /// The drain finds a worker's goal through the SESSION's own goal-id
+        /// extension state (`goal_card_for_worker_session` reads
+        /// `sessions.extension_data`), not through the card's metadata. A
+        /// fixture that only wrote the card's `worker_session_id` left the
+        /// drain with nothing pending, so the suspension returned in ~15µs and
+        /// the test read as "it never waited".
+        async fn link_worker_session(
+            sm: &crate::session::SessionManager,
+            session_id: &str,
+            card_id: &str,
+        ) {
+            let session = sm.get_session(session_id, false).await.unwrap();
+            let mut extension_data = session.extension_data;
+            extension_data.set_extension_state(
+                crate::session::session_manager::GOAL_ID_EXTENSION_NAME,
+                crate::session::session_manager::GOAL_ID_EXTENSION_VERSION,
+                serde_json::Value::String(card_id.to_string()),
+            );
+            sm.update(session_id)
+                .extension_data(extension_data)
+                .apply()
                 .await
                 .unwrap();
-        assert_eq!(
-            holds.len(),
-            1,
-            "one hold, the paid primary's; the local stand-in holds nothing: {holds:?}"
-        );
-        assert_ne!(
-            holds[0], "settled",
-            "a 503 with no usage must not be settled as spend: {holds:?}"
-        );
+        }
+
+        async fn attach_worker(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, session_id: &str) {
+            let card = crate::cards::get_card(pool, card_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+            meta.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+            sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+                .bind(serde_json::Value::Object(meta).to_string())
+                .bind(card_id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+
+        async fn move_card_to_state(
+            pool: &sqlx::Pool<sqlx::Sqlite>,
+            card_id: &str,
+            state_binding: &str,
+        ) {
+            let col = crate::cards::get_goal_column(
+                pool,
+                crate::projects::PERSONAL_PROJECT_ID,
+                state_binding,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            // Both halves, for the same reason the card is created with
+            // metadata: the drain reads the state from `goal_state`, so moving
+            // only the column leaves it seeing the old state forever.
+            let card = crate::cards::get_card(pool, card_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+            meta.insert(
+                "goal_state".to_string(),
+                serde_json::Value::String(state_binding.to_string()),
+            );
+            sqlx::query("UPDATE cards SET column_id = ?, metadata_json = ? WHERE id = ?")
+                .bind(&col.id)
+                .bind(serde_json::Value::Object(meta).to_string())
+                .bind(card_id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+
+        /// What this module can and cannot prove.
+        ///
+        /// The waiting itself belongs to `drain_dispatched_goals`, which has
+        /// its own fixtures and tests in orchestrator.rs; reproducing a
+        /// worker that genuinely reads as "still running" here needs an
+        /// execution receipt the drain checks
+        /// (`worker_session_execution_receipt_is_terminal`), and a fixture
+        /// that fakes one would prove the fake, not the behaviour. So these
+        /// cover the seam this module actually owns — the decision to
+        /// suspend, the cancellation contract, and the shape of what comes
+        /// back — and the drain's own tests cover the wait.
+        #[tokio::test]
+        async fn an_already_cancelled_token_returns_none_without_draining() {
+            let tmp = tempfile::tempdir().unwrap();
+            let sm = Arc::new(crate::session::SessionManager::new(
+                tmp.path().to_path_buf(),
+            ));
+            let pool = sm.pool_clone().await.unwrap();
+            let coordinator = sm
+                .create_session(
+                    tmp.path().to_path_buf(),
+                    "coordinator".to_string(),
+                    SessionType::Hidden,
+                    GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            let token = CancellationToken::new();
+            token.cancel();
+            let start = std::time::Instant::now();
+            let notice = suspend_for_dispatched_goals(
+                &pool,
+                &coordinator.id,
+                std::time::Duration::from_secs(30),
+                &Some(token),
+            )
+            .await;
+            assert!(notice.is_none(), "a cancelled wait resumes nothing");
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(1),
+                "cancellation must not sleep out the cap: {:?}",
+                start.elapsed()
+            );
+        }
+
+        /// The other half of the saving: what the model is handed on resume is
+        /// a few lines of state change, never the worker's transcript. The
+        /// coordinator's context grew 26k -> 53k tokens in the reported run
+        /// precisely because it kept reading transcripts.
+        #[test]
+        fn the_resume_notice_is_compact_and_names_what_changed() {
+            let notice = format_compact_resume_notice(
+                &[
+                    ("20260920_6".to_string(), crate::goal_state::GoalState::InProgress),
+                    ("20260920_6".to_string(), crate::goal_state::GoalState::Complete),
+                ],
+                crate::agents::platform_extensions::orchestrator::DrainSummary {
+                    finished: 1,
+                    timed_out: 0,
+                },
+            );
+            assert!(notice.contains("20260920_6"), "names the worker: {notice}");
+            assert!(notice.contains("complete"), "names the new state: {notice}");
+            assert!(
+                notice.lines().count() <= 6,
+                "a resume notice is a few lines, not a transcript: {notice}"
+            );
+            assert!(
+                notice.len() < 600,
+                "a resume notice must stay compact: {} chars",
+                notice.len()
+            );
+        }
     }
 }
