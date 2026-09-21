@@ -270,6 +270,19 @@ impl AgentRunnerConfig {
     }
 }
 
+/// Whether THIS reply should open a new budget task.
+///
+/// Interactive only, deliberately: a child or headless session inherits its
+/// parent's identity at creation, so opening another here would split one
+/// user task into several budget identities and defeat the per-task ceiling.
+///
+/// The exception that cost us: a SCHEDULED session has no parent to inherit
+/// from — the scheduler mints it from nothing — so it fell through this rule
+/// with no task at all and every paid call was refused ("paid provider
+/// reservation requires a durable task identity"). That is fixed where the run
+/// is created (`scheduler.rs`, at `create_session`), not by loosening this
+/// rule: the run boundary is the scheduler's to declare, and one run is one
+/// task. See `a_scheduled_run_opens_its_own_budget_task`.
 fn starts_new_budget_task(session_type: crate::session::SessionType, message_text: &str) -> bool {
     session_type.is_interactive()
         && !crate::agents::execute_commands::COMPACT_TRIGGERS.contains(&message_text.trim())

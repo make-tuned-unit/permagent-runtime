@@ -2334,6 +2334,26 @@ async fn execute_job_inner(
         )
         .await?;
 
+    // One scheduled RUN is one budget task, and it must be declared here.
+    //
+    // `starts_new_budget_task` (agent.rs) only begins one for an INTERACTIVE
+    // session type, on the reasoning that a child or headless session inherits
+    // its parent's identity at creation. A scheduled run has no parent: the
+    // scheduler creates it from nothing. So it began no task, carried
+    // `task_id: None` into `reserve_bounded_provider_invocation`, and every
+    // paid call was refused with "paid provider reservation requires a durable
+    // task identity" — which is why EVERY scheduled session between 2026-09-19
+    // and 2026-09-21 recorded zero calls and zero cost. The automations were
+    // not slow or throttled; they could not spend at all.
+    //
+    // Per run, not per schedule: the per-task ceiling should bound one night's
+    // health review, not creep across every run the schedule ever makes.
+    agent
+        .config
+        .session_manager
+        .begin_budget_task(&session.id)
+        .await?;
+
     // A recipe that declares no `extensions:` used to inherit the user's ENTIRE
     // enabled set — including `orchestrator` (dispatch goals, spawn agents) and
     // `recipe_author` (create more schedules via its process-global scheduler
@@ -2893,6 +2913,39 @@ mod tests {
     /// with a recorded skip instead of parking the drain loop forever or
     /// filing undeliverable `tool_approval` decisions (the bare job agent is
     /// never registered in `AgentManager`, so nothing could answer them).
+    /// Every scheduled RUN must open its own budget task before it can spend.
+    ///
+    /// Reported 2026-09-21: "Nightly Health Review ... I did not send this
+    /// request because provider spend could not be authorized: provider budget
+    /// is unknown; refusing call: paid provider reservation requires a durable
+    /// task identity." The ledger showed EVERY scheduled session from
+    /// 2026-09-19 to 2026-09-21 with zero calls and zero cost — health-review,
+    /// storage-insights and workspace-snapshot alike. They were not throttled;
+    /// they could not spend at all, because `starts_new_budget_task`
+    /// (agent.rs) opens one only for an interactive session type and a
+    /// scheduled session has no parent to inherit an identity from.
+    ///
+    /// A source guard, and honest about it: exercising the real path needs a
+    /// provider, a recipe on disk and a live agent, so what this pins is that
+    /// the run-creation site still declares a budget task. Delete the call and
+    /// this fails; that is the regression that silently killed automations.
+    #[test]
+    fn a_scheduled_run_opens_its_own_budget_task() {
+        let src = include_str!("scheduler.rs");
+        let at = src
+            .find("SessionType::Scheduled,")
+            .expect("the scheduled run is still created here");
+        let after = &src[at..];
+        let begins = after
+            .find("begin_budget_task")
+            .expect("a scheduled run must open a budget task or it cannot spend");
+        let next_fn = after.find("\nasync fn ").unwrap_or(after.len());
+        assert!(
+            begins < next_fn,
+            "the budget task must be opened in the same function that creates the run",
+        );
+    }
+
     /// `#[tokio::test]`, not `#[test]`: `Agent::new()` reaches sqlx's pool
     /// constructor, which panics ("requires a Tokio context") off a runtime.
     #[tokio::test]
