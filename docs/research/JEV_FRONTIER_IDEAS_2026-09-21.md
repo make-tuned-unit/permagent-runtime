@@ -13,6 +13,17 @@ explicit state · gates tighten, wake-gates fail awake · **a judge belongs only
 recoverable** · labels must measure the right thing · no hosted Jev for private state · everything here is a **local**
 typed judge. Evidence tags: `[MEASURED]` · `[DEMO-ONLY]` · `[UNVERIFIED]`.
 
+> **Read this first — the constraint that decides what is buildable this quarter is MEMORY, not ideas.** The M4
+> reported 0 MB available and 11–18 GB of swap on every reading today; a release build took free disk to 3.7 GiB and
+> tripped the Sidebar battery's floor watcher. An always-resident scorer has nowhere to live on that machine. Ideas
+> that ride the Librarian's existing per-memory pass are buildable now; per-tool-call ideas need the M1 or Apple's
+> on-device model; voice needs the M1 or the phone. Details in §3. *(Moved up at `permagent-runtime-46`'s suggestion.)*
+>
+> **Revised after review by `permagent-runtime-46` (2026-09-21 afternoon):** idea 1.7 is re-aimed from predicting
+> approve/reject to **ranking** — the live counts do not support a predictor; idea 1.3 is **split** into a
+> deterministic half to ship now and a typed half for later; the `pi-heed` trial now carries its **n = 13**; and §4
+> adopts its order.
+
 ---
 
 ## 0. What we were missing
@@ -91,8 +102,8 @@ Supersession outcomes and your deletions of wrong facts are the ongoing labels.
 long as the context window — or in a memory file an agent happens to re-read. *(Today's session is the proof: the
 cross-session build rules exist only because I wrote them into my own notes by hand, and I still broke one.)*
 
-**The idea.** `pi-heed` `[MEASURED — the one real RCT in the corpus]`: real models broke a rule changed mid-session
-**8 times in 13 with the guard off, 0 in 13 with it on, zero false blocks**; replay over 9,090 real tool calls cut
+**The idea.** `pi-heed` `[MEASURED — the one real RCT in the corpus, and a small one: **n = 13 per arm**]`: real models broke a rule
+changed mid-session **8 times in 13 with the guard off, 0 in 13 with it on, zero false blocks**; replay over 9,090 real tool calls cut
 blocks 1,013 → 95. Build the Permagent version:
 
 - a **deterministic, visible, editable ledger** of standing instructions — scoped (global / project / session),
@@ -107,7 +118,7 @@ believes you told it. This is *memory you can see* applied to **instructions**, 
 Inbox obey what you actually said rather than a static permissions file. **Error:** a wrong block is one approval
 prompt. **Labels:** you confirming, editing or deleting a rule; you overriding a block.
 
-### 1.3 One honesty mechanism instead of five per-feature rules
+### 1.3 An evidence ledger now — and a typed claim check later
 
 **The opening (TRACED).** Self-report honesty exists only per feature — `hold_done.rs`, `review_gate::is_grounded`,
 Growth's "grounded or silent", `dependency_claim_guard.rs`. There is **no general check** of an agent's outbound
@@ -123,6 +134,15 @@ judge (typed, per outbound status message):   claims_done?   claims_verified?   
 code  (the ledger of hard facts):             did a check run AFTER the last mutation?  exit code?  duration plausible?
 flag only when the CLAIM and the LEDGER disagree.   Neither alone decides.
 ```
+
+**Split this in two, and ship the first half with no model at all.** `[PEER]` *"Both fresh instances were in my lane and
+neither needed a model: the worker claiming five-minute integration tests was refuted by the elapsed time (15 µs), and
+the browser claiming 'Done' was refuted by the function's own discarded return value… That is the strongest thing in
+your document precisely because it is not Jev — and it makes the typed layer honest later, because a claim checker
+needs an evidence ledger to check against."* So: **(a) now, deterministic** — an evidence ledger recording, per
+action, *did the callee report success*, *did a check run after the last mutation*, *is the duration plausible*; a
+"done" with no supporting row is held. **(b) later, typed** — the claim detector above, which has nothing to compare
+against until (a) exists.
 
 `abide` is the measured sibling for rules on edits: 93 real sessions, 1,256 edits, **$0.22**, ~73 % turn-level
 precision on human review `[MEASURED]` — and the **27 % false-positive rate is the honest expectation.** So a flag
@@ -188,24 +208,32 @@ surface, and the watch.
 of being heard breaks well before LLM latency. **But** it needs an always-resident scorer, and the M4 has no memory
 for one (§3). Open question worth a spike: run the perception model **on the phone**, where VAD already runs.
 
-### 1.7 A model of your judgement, trained on what you already did
+### 1.7 Learn the order you answer in — not what you will answer
 
-**The labels exist and are free (TRACED).** `decisions` — 16 kinds × five answer types, with `answer_note`,
-`answer_choice_id`, `answer_input`; an **append-only `decision_audit`** with hash chaining; **draft → revision pairs**
-from every edit (`correction_delta`); explicit **declines** as recognition keys; `person_merge_log` for identity
-resolution; `council_positions` with the chair's ruling; `growth_action_outcomes`. Today the inbox is ranked by a
-**fixed formula** — `0.5·blocked + 0.3·priority + 0.2·age` — and **nothing predicts what you would choose.**
+**What the live data says** `[PEER, queried 2026-09-21]`: **213 answered** decisions, 15 superseded, 14 open.
+`risk_gate` approve 41 / reject 21 · `choice` 34 · `approve_review` approve 29 / reject 11 · `file_to_project` approve
+18 · `unblock` reject 17 / approve 8 · **`malformed` approve 12** · `council_action` approve 10 · `enrichment_proposal`
+approve 6 · `tool_approval` reject 3 / approve 2 · `project_intel_proposal` approve 1.
 
-**The idea.** `Luce`'s recipe — a LoRA plus a small head, a *local* Ollama teacher, soft labels — on your own
-history. `jev-align` shows the other half: optimise the **question wording itself** from feedback, and capture
-production decisions to keep feeding the loop. **Not to auto-approve.** Three uses whose errors are cheap: **rank the
-inbox** (a wrong rank is a card one slot lower); **pre-draft in your voice** (the edit pairs are the training data);
-and **tell an agent before it files a card** — *"likely to be declined: you turned down the last three like this"* —
-so fewer bad cards are filed at all.
+**What that rules out.** 213 sits inside `Luce`'s 100–300 band, but it is **not 213 usable labels.** The two largest
+behaviours run ~2 : 1 and ~2.6 : 1 approve-over-reject, so a model fitted to them *"learns 'Jesse approves' and will be
+right about 65–70 % of the time while telling you nothing."* The informative rows are the **52 rejects** — below the
+band. **A predictor of approve/reject is premature**, and I withdraw it. Two corrections to my first draft as well:
+**there is no `answer = 'edit'` value in this data**, so the draft → revision pairs I described would have to be
+*reconstructed* from `answer_input`, `answer_note`, `answer_choice_id` and `staged_answer_json` — uncounted; and the
+**12 `kind = 'malformed'` rows are a data-quality signal in the Inbox itself**, to be understood before anything is
+trained on it.
 
-**The honest constraint.** `[PEER]` the inbox holds ~7 unanswered items — supply may be thin. `Luce`'s discipline is
-the right one: **100–300 real labels, or refuse to report a number.** Count first (the peer knows the live DB). And
-the documented failure mode is real: narrow training made a model **worse than its own base** out of distribution.
+**What it supports instead — ranking.** The inbox is ordered today by a **fixed formula**,
+`0.5·blocked + 0.3·priority + 0.2·age`, that learns nothing (TRACED, `decision_inbox/curation.rs`). `resolved_at −
+created_at` on 213 rows is a **real time-to-answer target, available immediately, where every row counts** — which
+kinds you answer within the hour and which sit for days. A wrong rank costs a card one slot lower: the cheapest error
+in this document. **Baseline first:** fit the three weights of the existing formula to time-to-answer before reaching
+for anything with a model in it; a learned ranker has to beat *that*.
+
+**Still true, for later:** `Luce` `[MEASURED]` shows a rule that lives in outcomes is learnable locally (97.3 % vs
+44.7 % zero-shot), and `jev-align` optimises the **question wording** from feedback. When rejects pass ~100, revisit.
+The documented failure mode stands: narrow training made a model **worse than its own base** out of distribution.
 
 ### 1.8 Judgements as data: a journal, hysteresis, and typed annotations
 
@@ -291,16 +319,20 @@ go-ahead and a heads-up to both peer sessions. The better hardware you mentioned
 
 ## 4. Suggested order
 
-1. **The deterministic halves first — they need no model and fix live defects:** the *"duration plausible / a check
-   ran after the last mutation"* evidence ledger (1.3); hysteresis on desk status (1.8); serving the recurring charges
-   already computed (1.10).
-2. **One experiment: tool-result judging at ingest** (1.5), on the eval bench, scored by exit code and re-ask rate.
-   `[PEER]`'s pick and mine.
-3. **The standing-instructions ledger** (1.2) — deterministic store and UI first; the judge only proposes candidates.
-4. **Graph verification** (1.1), in shadow, with the Spectral session, using `gate27b.py`.
-5. **The cheap-rung trajectory probe** (1.4), once per-run budget ids have a few weeks of data.
-6. **Count the labels**, then decide on 1.7.
-7. **Voice partials** (1.6) when a resident scorer has somewhere to live.
+*As revised by `permagent-runtime-46`, whose lane both live instances of the honesty defect were in.*
+
+1. **The deterministic evidence ledger (1.3a) — first, ahead of anything typed.** No model, zero inference cost, and
+   it would have caught both of today's false-success reports. Alongside it, the other no-model wins: hysteresis on
+   desk status (1.8) and serving the recurring charges that are already computed (1.10).
+2. **The trajectory controller for cheap-rung runs (1.4).** It has a true label in the verify outcome and, as of
+   today's scheduler fix, per-run budget identity — so cost-to-abort is measurable for the first time.
+3. **The one funded Jev experiment: judging tool results at ingest (1.5)**, on the eval bench, scored by exit code and
+   re-ask rate.
+4. **The standing-instructions ledger (1.2)** — deterministic store and UI first; the judge only proposes candidates.
+5. **Graph verification (1.1)**, in shadow, with the Spectral session, using `gate27b.py`.
+6. **Inbox ranking (1.7)** — refit the existing formula's weights to time-to-answer; understand the `malformed` rows.
+7. **The typed half of the honesty check (1.3b)**, once the ledger exists to check against.
+8. **Voice partials (1.6)** when a resident scorer has somewhere to live.
 
 Nothing here is a platform. Each item is one workflow with a named label source — the shape Codex held me to.
 
@@ -309,7 +341,7 @@ Nothing here is a platform. Each item is one workflow with a named label source 
 ## 5. Not established
 
 Latency on our chips; whether the Apple on-device model can serve per-tool-call hard labels fast enough; how many
-answered decisions exist (not queried — the peer knows the live DB); whether `memory_annotations` can take a lens
+of the 213 answered decisions carry a non-null `answer_input` / `answer_note` (the reconstructable revision pairs — uncounted); whether `memory_annotations` can take a lens
 column without touching Spectral's pinned schema (LOCATED only); whether a perception model can run on the phone;
 `semanticspace.dev` could not be fetched; the DataJev and JevLoop repositories were read by a research agent, not by
 me; every `[DEMO-ONLY]` tag above means *it ran*, not *it is good*.
