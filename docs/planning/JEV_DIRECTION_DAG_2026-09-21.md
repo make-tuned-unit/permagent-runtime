@@ -222,7 +222,7 @@ judge arm is removed. C2: decided by the peer.
   `Agent::dispatch_tool_call` — `agent.rs`, peer-owned). Shadow only: the journal records what the judge would have done while the existing
   path runs. There is **no dedicated mail-ingest module**; Gmail arrives as tool results.
 
-**Rulings from `permagent-runtime-46`, 2026-09-21 late evening (supersede the lines above where they differ):**
+**Rulings from `permagent-runtime-46`, 2026-09-21 evening (supersede the lines above where they differ):**
 
 - **Migrations:** the coordinator holds **v56 (S1 claim table) and v57 (B2b journal)**. The peer holds no number; it takes the next free one
   when A4 actually begins and announces it first — a reserved-but-unused version is how two people both take v58.
@@ -429,7 +429,7 @@ persisted and yielded, also yield a typed `Err` for `SessionType::Scheduled`. Th
 `permagent-runtime-46` chooses who implements it. Apple on-device and both llama.cpp paths were found to emit terminal usage; mesh
 coverage was not established.
 
-**S1's minute-truncated key is WITHDRAWN (2026-09-21 late evening; stopped at Phase 0 by Codex Astra, no code written).** Counterexample,
+**S1's minute-truncated key is WITHDRAWN (2026-09-21 evening; stopped at Phase 0 by Codex Astra, no code written).** Counterexample,
 TRACED: catch-up runs sleep a 30 s stagger after startup and then claim at "now" (`scheduler.rs:1323` → `:472` → `:1398`); two processes
 two seconds apart can straddle a minute boundary (12:00:59 / 12:01:01), derive different keys, and **both win**. The 900 s floor does not
 constrain recovery timing. The coordinator found a second case: `every_seconds` jobs are armed relative to *process start*, so two
@@ -442,7 +442,7 @@ fire claim, but refused while an unfinished claim (`finished_at IS NULL`, younge
 cross-process running guard from the same table. **Also learned:** a FRESH database does not run the migration ladder
 (`init_spectral_db`), so every new table must also be installed by fresh init.
 
-**S2, third and final design (2026-09-21 late evening — found by `permagent-runtime-46`, verified by the coordinator): the verdict already
+**S2, third and final design (2026-09-21 evening — found by `permagent-runtime-46`, verified by the coordinator): the verdict already
 exists and the scheduler throws it away.** `agent.rs:4477-4484` yields `AgentEvent::RuntimeOutcome(Succeeded | Failed | Cancelled)` at the
 end of every reply stream, driven by the same error latch the six silent-failure exits set; `scheduler.rs` discards it under `Ok(_) => {}`
 and infers `ok` from the absence of a stream `Err`. The fix is entirely in `scheduler.rs`: capture the outcome in the drain; `Failed` →
