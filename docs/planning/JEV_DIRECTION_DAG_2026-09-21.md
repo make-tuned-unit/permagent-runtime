@@ -31,7 +31,7 @@ methodically… use the cheapest workers capable for the job."*
    a proposal to the peer, not a fait accompli.**
 7. **No source edit lands in the shared checkout while a release build is running or planned** — checked with `ps` and
    confirmed with the peer first (today's lesson). Before any release build the builder runs `git status --short`.
-8. **Every cargo call:** ≥ 11 GiB free, a stated growth estimate (**4–5 GiB** for a lib-test relink, measured), a df
+8. **Every cargo call:** ask the peer **before** starting (it confirms the build lock is free), never while another cargo run is live; abort if free space drops **under 10 GiB mid-gate**; the regression baseline is **whatever the pre-apply run on the day reports** (5,783 this morning, 5,792 by the afternoon), never a number from a message. ≥ 11 GiB free, a stated growth estimate (**4–5 GiB** for a lib-test relink, measured), a df
    poll with a 7 GiB kill, start + finish notices to `permagent-runtime-46` and `sidebar-14`. Nothing heavy on the M1.
 9. **A node is DONE only with pasted evidence**, never an assertion — see §3.
 
@@ -263,6 +263,32 @@ Kokoro on socket connect was V2c on 2026-09-01. TTFT 2.54 s is the model thinkin
 (`docs/orchestrator/VOICE_V3_END_TO_END_DAG.md`, branch `feat/voice-v3-dag`) owns W0–W9; V2, V4 and V5 belong inside it
 rather than beside it — to be reconciled with whoever holds that lane before dispatch. **V1 is new — nothing in V2 or
 V3 anticipated an OS-level isolation trap.**
+
+## 4c. Phase S — the scheduler defects found on 2026-09-21 (diagnosed by `permagent-runtime-46`, not yet fixed)
+
+**S-1 — every scheduled job fires TWICE at the same instant.** Visible in Automate's Recent Activity and in the store:
+sessions `20260921_2` and `_3` both at 06:20:00Z (health-review, cron `0 20 3 * * *`), `_4` and `_5` both at 11:00:00Z
+(workspace-snapshot). Ruled out, each with evidence: **not** the retry loop (every job has `max_retries = 0`, and
+retries run inline under one claim with a 10 s base that would separate the timestamps — `scheduler.rs:771-835`);
+**not** duplicate entries (5 jobs, distinct ids); **not** a second in-process registration (`load_jobs_from_storage`
+has one caller inside `Scheduler::new`; `AgentManager::instance()` is behind a `OnceCell`). The in-process claim guard
+(`scheduler.rs:710-737`) cannot help: it only skips a tick while the job is `currently_running`, and these runs failed
+in milliseconds. **What is left is two PROCESSES over one `~/.permagent/schedule.json`**, each with its own scheduler
+and claim map — `Scheduler::new` starts the cron loop as a side effect of construction, and
+`crates/goose-cli/src/commands/schedule.rs` constructs a live `Scheduler` in **five** subcommands; the Tauri app plus a
+leftover sidecar would do the same. *Not caught red-handed — one process was alive when checked; a hypothesis with
+everything else eliminated.* It mattered little while every run was refused; **now that scheduled runs can spend
+(`0cafe04c`) it doubles the bill.**
+
+**S-2 — a scheduled run that did nothing reports success.** All three jobs record `last_status: ok` although every one
+of those sessions holds only *"I did not send this request because provider spend could not be authorized."* Green
+ticks over four dead runs is why nobody noticed the automations had stopped for three days. The same defect class as
+the browser's "Done" and the 15 µs tests — and exactly what the evidence ledger (A3) exists to catch.
+
+| Node | What | Files | Owner | Tier | Acceptance |
+|---|---|---|---|---|---|
+| **S1** | A **persisted per-fire claim** keyed by `(job_id, scheduled_instant)` in the DB, so the second process loses the race whichever process it is. *Not* an in-process mutex (cannot solve a cross-process bug) and *not* a PID-file owner lock (the CLI subcommands would silently refuse to schedule — worse). | `crates/goose/src/scheduler.rs` + schema migration | coordinator; **the peer edited this file today (`0cafe04c`) — confirm it holds no uncommitted work there before dispatch** | T2 | testable without a second process: write the claim row directly, assert the fire is skipped; a second test asserts two claims for *different* instants both run; the unique key is on the DB, per the "guards key per database" rule |
+| **S2** | A scheduled run that produced **no provider call** is not `ok` — record `refused` / `no_work` with the reason, and show it as such in Automate | `scheduler.rs`; status rendering is `ui/**` (**peer**) | coordinator + peer | T1 | replay of 09-19 → 09-21: those runs show as refused, not green; assert on the recorded provider-call count, not on `Ok` |
 
 ## 5. Needs Jesse
 
