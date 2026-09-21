@@ -34,6 +34,10 @@ type Props = {
  * filtered through the bundled canonical registry, so a model the app fully
  * supports could simply not be in the menu. See `modelCatalog.ts`.
  */
+/** Height of the compact trigger: it sits inside the chat header's 36px band
+ *  and the Build status bar, and must never set their height. */
+export const COMPACT_TRIGGER_HEIGHT = 26;
+
 export function ProviderModelPicker({ value, onChange, onUseSession, sessionActive, compact, 'aria-label': ariaLabel }: Props) {
   const { colors } = useTheme();
   const glass = useGlass('glass');
@@ -213,10 +217,16 @@ export function ProviderModelPicker({ value, onChange, onUseSession, sessionActi
         '--pa-btn-bg': 'transparent',
         '--pa-btn-bg-hover': colors.surfaceHi,
         '--pa-btn-border': colors.border,
-        '--pa-btn-pad': compact ? '6px 10px' : '8px 12px',
+        // Compact lives in a fixed-height band — the chat window's 36px header
+        // and the Build cost bar — so it takes an explicit height instead of
+        // growing out of it from its own line box and padding. Reported
+        // 2026-09-20: "the box around the model picker in the chat window
+        // still exceeds the space of the chat window header".
+        '--pa-btn-pad': compact ? `0 ${space.lg}px` : '8px 12px',
         '--pa-btn-radius': `${radius.md}px`,
         justifyContent: 'space-between',
         gap: space.md,
+        ...(compact ? { height: COMPACT_TRIGGER_HEIGHT, minHeight: 0 } : null),
       } as CSSProperties}
     >
       <span className="truncate text-left flex items-baseline gap-2 min-w-0">

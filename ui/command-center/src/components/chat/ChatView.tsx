@@ -9,7 +9,6 @@ import { RoleRoutingPrompt } from './RoleRoutingPrompt';
 import { ModelPicker } from './ModelPicker';
 import { SessionPicker } from './SessionPicker';
 import { VoiceOrb } from '../voice/VoiceOrb';
-import { ChatPendingDecisions } from './ChatPendingDecisions';
 import { DiscussNotice } from './DiscussNotice';
 import { useTheme } from '../../styles/useTheme';
 import { DropZone } from './DropZone';
@@ -83,7 +82,11 @@ export function ChatView() {
           Zero-height when empty; content-sized, capped, scrollable when not. */}
       <div id="meeting-dock-slot" style={{ flexShrink: 0, maxHeight: '45%', overflowY: 'auto' }} />
       <DiscussNotice />
-      {!voiceOverlay && <ChatPendingDecisions />}
+      {/* Pending decisions are NOT shown here. They were a strip of cards
+          above the composer (and a footer inside the voice orb) carrying
+          Approve / Reject / Add note / Discuss buttons; the user asked for
+          them out of chat on 2026-09-20. The Decision Inbox on Home is where
+          they live, and Henry still raises them in conversation. */}
       <ChatInput ref={chatInputRef} />
 
       {/* The decisions go INSIDE the orb, not over it. They used to be a second
@@ -102,7 +105,6 @@ export function ChatView() {
           onExit={voiceConversation.exit}
           wakeHint={voiceConversation.wakeHint}
           teachWord={voiceConversation.teachWord}
-          footer={<ChatPendingDecisions overlay />}
         />
       )}
       </div>

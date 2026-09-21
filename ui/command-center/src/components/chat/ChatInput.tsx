@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardR
 import { FiSend, FiLoader, FiPaperclip } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { takeWizardIntent } from '../../lib/wizardIntent';
-import { ease, font, radius, space } from '../../styles/tokens';
+import { ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { AttachmentChip } from './AttachmentChip';
 import { Button } from '../common/Button';
@@ -205,10 +205,13 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
             <span
               aria-hidden="true"
               style={{
-                position: 'absolute', left: 13, right: 13, top: '50%',
+                // The field's own text inset: its px-3 padding plus its 1px border,
+                // so the drawn placeholder starts exactly where typing does.
+                position: 'absolute', left: `calc(${space.xl}px + 1px)`,
+                right: `calc(${space.xl}px + 1px)`, top: '50%',
                 transform: 'translateY(-50%)', pointerEvents: 'none',
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                fontFamily: font.body, fontSize: 14, lineHeight: 1.2,
+                fontFamily: font.body, fontSize: textSize.body, lineHeight: 1.2,
                 color: colors.textDim,
               }}
             >{placeholder}</span>

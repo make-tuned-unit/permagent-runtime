@@ -1,21 +1,18 @@
 /**
  * @vitest-environment jsdom
  *
- * Conversation-mode layering.
+ * Conversation mode, and decisions staying out of chat.
  *
- * Reported 2026-09-18: with the orb up, the cyan `SAY "HEY HENRY"` state word
- * and its `click anywhere to end the conversation` caption were drawn straight
- * through the pending-decision text ("IREN looks stretched — consider taking
- * the gain"). ChatView floated the decisions in their own
- * `position: absolute; bottom` box at `zIndex: 70` over the orb's `inset: 0`
- * takeover at `zIndex: 60` — two layers with no layout relationship, the upper
- * one transparent, and the orb centring its labels in the FULL surface height.
+ * The 2026-09-18 report was that the orb's `SAY "HEY HENRY"` state word drew
+ * through the pending-decision cards; the fix of the day put the decisions
+ * inside the orb's own flex column. On 2026-09-20 the user asked for those
+ * cards out of the chat surface altogether — "i dont like how the decisions
+ * are shown in the chat window ... i dont like the designs and buttons" — so
+ * the overlap cannot happen for the simplest reason available: chat does not
+ * render decisions at all. They live in the Decision Inbox on Home.
  *
- * jsdom has no layout engine, so this cannot assert "the boxes do not
- * intersect". What it CAN assert is the structural invariant that makes the
- * intersection impossible: the decisions render inside the orb's own flex
- * column, and nothing between them is taken out of flow. Two absolutely
- * positioned siblings — the shape of the bug — fail that.
+ * This pins both halves: the orb still takes the surface over and still says
+ * its own words, and no decision card or approval button appears in chat.
  */
 import { act } from 'react-dom/test-utils';
 import { createRoot, type Root } from 'react-dom/client';
@@ -71,14 +68,6 @@ vi.mock('./RoleRoutingPrompt', () => ({ RoleRoutingPrompt: () => null }));
 vi.mock('./ModelPicker', () => ({ ModelPicker: () => null }));
 vi.mock('./SessionPicker', () => ({ SessionPicker: () => null }));
 vi.mock('./DiscussNotice', () => ({ DiscussNotice: () => null }));
-// Stand-in for the real card list: this test is about WHERE ChatView puts the
-// decisions, not what a decision row renders.
-vi.mock('./ChatPendingDecisions', () => ({
-  ChatPendingDecisions: () => (
-    <div data-testid="chat-pending-decisions">IREN looks stretched — consider taking the gain</div>
-  ),
-}));
-
 import { ChatView } from './ChatView';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -104,67 +93,19 @@ function render() {
   act(() => { root.render(<ChatView />); });
 }
 
-/** Every element from `el` up to (but not including) `stop`. */
-function chainTo(el: HTMLElement, stop: HTMLElement): HTMLElement[] {
-  const out: HTMLElement[] = [];
-  for (let node: HTMLElement = el; node && node !== stop; node = node.parentElement!) out.push(node);
-  return out;
-}
-
-function outOfFlow(el: HTMLElement): boolean {
-  return el.style.position === 'absolute' || el.style.position === 'fixed';
-}
-
-/** Deepest element containing the whole of `text`. */
-function deepestWith(text: string): HTMLElement {
-  const all = Array.from(container.querySelectorAll<HTMLElement>('*'))
-    .filter(el => el.textContent?.includes(text));
-  return all[all.length - 1];
-}
-
-it('lays the orb labels and the decisions out in one flow, not as two layers', () => {
+it('takes the surface over and says its own words', () => {
   render();
-  // Deliberately found by their COPY, not by a test id: the invariant is about
-  // the two things the user saw overlap, and it must hold however they are
-  // marked up.
-  const caption = deepestWith('click anywhere to end the conversation');
-  const decisions = deepestWith('IREN looks stretched');
-  expect(caption).toBeTruthy();
-  expect(decisions).toBeTruthy();
-
-  // Walk both up to the first element that holds both.
-  let shared: HTMLElement = decisions;
-  while (!shared.contains(caption)) shared = shared.parentElement!;
-
-  // Neither branch is taken out of flow below that point, so the shared
-  // container's layout — one flex column — is what separates them. Before the
-  // fix the decisions hung off ChatView in their own `position: absolute`
-  // box while the orb centred the caption in the full height, and the two
-  // simply rendered through each other.
-  for (const el of chainTo(decisions, shared)) expect(outOfFlow(el)).toBe(false);
-  for (const el of chainTo(caption, shared)) expect(outOfFlow(el)).toBe(false);
-  // And the shared container really is that column, not the chat surface.
-  expect(shared.getAttribute('data-testid')).toBe('voice-orb-takeover');
+  const takeover = container.querySelector<HTMLElement>('[data-testid="voice-orb-takeover"]');
+  expect(takeover).toBeTruthy();
+  expect(takeover!.textContent).toContain('Say "Hey Henry"');
+  expect(takeover!.textContent).toContain('click anywhere to end the conversation');
 });
 
-it('renders exactly one pending-decisions layer while the orb is up', () => {
+it('renders no decision card and no approval button anywhere in chat', () => {
   render();
-  // The inline copy is suppressed under the takeover; the footer copy is the
-  // only one. Two simultaneous copies is the duplicate-layer bug by another
-  // name (and would double every approval button).
-  expect(container.querySelectorAll('[data-testid="chat-pending-decisions"]').length).toBe(1);
-});
-
-it('keeps the orb state word and its caption out of the decisions box', () => {
-  render();
-  const orbBlock = container.querySelector<HTMLElement>('[data-testid="voice-orb-takeover"]')!
-    .firstElementChild as HTMLElement;
-  const footer = container.querySelector<HTMLElement>('[data-testid="voice-orb-footer"]')!;
-  // Separate flex children: the wake hint and the caption live in the orb
-  // block, the decisions in the footer, and neither subtree contains the other.
-  expect(orbBlock.textContent).toContain('Say "Hey Henry"');
-  expect(orbBlock.textContent).toContain('click anywhere to end the conversation');
-  expect(orbBlock.contains(footer)).toBe(false);
-  expect(footer.textContent).toContain('IREN looks stretched');
-  expect(footer.textContent).not.toContain('Hey Henry');
+  expect(container.querySelector('[data-testid="chat-pending-decisions"]')).toBeNull();
+  expect(container.querySelector('[data-testid="voice-orb-footer"]')).toBeNull();
+  for (const word of ['Approve', 'Reject', 'Add note', 'Decision Inbox']) {
+    expect(container.textContent, word).not.toContain(word);
+  }
 });
