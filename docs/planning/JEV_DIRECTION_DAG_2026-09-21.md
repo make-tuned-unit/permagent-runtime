@@ -219,6 +219,11 @@ which reads `session.isPaired`, `splashDone` and `route.showVoice` — and the t
   check. **No fix is proven until it survives the device.**
 - **What changed is the OS.** iOS 27.0 shipped this month; the build predates it.
 - Only one Permagent crash report is on the phone, so frequency is unknown.
+- **Jesse is rebuilding the app from current source (2026-09-21 afternoon) and will retry** — that is what moved
+  `CURRENT_PROJECT_VERSION` 941 → 942. **Prediction, stated before the test: it will still crash on closing voice**,
+  because `PermagentApp.swift` is unchanged. A crash on the fresh build confirms the diagnosis on current source and
+  eliminates "old build" as a variable; **no crash would mean the newer SDK changed the inserted check**, which would
+  itself be the finding. Either way: pull the new `.ips` and the matching daemon log lines.
 
 ### Finding V-2 — "stuck on Listening" is end-of-turn detection that never fires, then a silent empty result
 
@@ -235,6 +240,13 @@ which reads `session.isPaired`, `splashDone` and `route.showVoice` — and the t
   headphones-first I/O split designed that day (output on the headset over A2DP, input on the built-in mic so HFP never
   engages) is the structural answer. **One question to Jesse settles it faster than any telemetry: were the Bose
   headphones connected?**
+  **ANSWERED 2026-09-21 — NO: "They weren't connected today."** The HFP cause is **ruled out for this incident.** That
+  leaves the two hypotheses the log cannot separate: (a) **ambient level above the keepalive floor** — mean RMS 0.037
+  against a 0.006 floor, so the VAD never saw 1.4 s of "silence" on the built-in mic; or (b) **Jesse was speaking and
+  STT dropped 25.8 s of real speech**, which would be a server-side bug in the long-audio windowing path
+  (`sherpa_backend.rs:63-70`, *located, never traced with real audio*). What separates them is whether he was talking
+  during those 25 seconds and what the room sounded like — **so V2's telemetry is no longer optional**, and the
+  09-01 verdict must not be reused as the explanation here.
 - **It recurs.** 2026-09-19 15:38 — a **19.6 s** capture → `empty_stt / finite_signal_no_words`; the same session has
   turns of 76 s, 42 s and 30 s flagged `critical_stall`.
 - The server windows audio over 14 s into ≤ 12 s segments (`sherpa_backend.rs:63-70`), so length alone should not
