@@ -204,6 +204,24 @@ that cannot answer. It gets its own small seam, and it is registered and configu
 **Kill dates.** C1: if no arm beats head/tail on task success at equal-or-lower tokens after one full bench round, the
 judge arm is removed. C2: decided by the peer.
 
+**B2 is split (2026-09-21 evening, from its Phase-0 audit — Cursor `composer-2.5`, a worker's claims until the build):**
+
+- **B2a — configurable, no schema, no accounting (dispatched):** config helpers `PERMAGENT_DECISION_JUDGE_PROVIDER` / `_MODEL` /
+  `_ENDPOINT` mirroring `librarian_endpoint()`; `JudgeProvider {Jev, SystemOne}` with the half-configured rule; a pure `resolve_judge(...)`
+  plus a thin reader; **sovereign mode never builds a cloud judge**; a refusal row in `egress_audit` only if it needs no schema change and
+  stores no state text; a structural test that `providers::create` registers neither id.
+- **B2b — journal + accounting (needs the peer):** the journal table takes migration **v57 → v58** (S1 has v56, the peer's A4 has v57); the
+  paid-call reservation stack lives in `reply_parts.rs` / `cost_router/**` (peer-owned), and the audit found **no existing seam for paid
+  non-provider calls** (search, image, TTS appear to reserve nothing) — so "the same accounted path as `complete_fast`" is a design
+  question for the peer, not a wiring job. The budget-task test and the new `dispatch_inventory` seam kind land here.
+- **The stored key is not where Permagent looks.** `Config::get_secret` reads ONE JSON blob under keychain service `permagent`, account
+  `secrets` (`config/base.rs:28-29`), then falls back to the environment. Jesse's key is a standalone generic password under service
+  `TYPESAFE_API_KEY`, which `get_secret("TYPESAFE_API_KEY")` will **not** find. B2a uses the project's one secrets path; the key must be
+  added to Permagent's store (Settings later via B3, or a no-echo command) — see §5.
+- **C1's first call site, per the plan, is the large tool-result ingest** (`large_response_handler.rs`, reached from
+  `Agent::dispatch_tool_call` — `agent.rs`, peer-owned). Shadow only: the journal records what the judge would have done while the existing
+  path runs. There is **no dedicated mail-ingest module**; Gmail arrives as tool results.
+
 ## 4b. Phase V — the voice incident of 2026-09-21 (added at Jesse's request)
 
 *Jesse: "I tried voice and it got stuck on listening and then the iOS app crashed. It might be because it is an old
@@ -378,6 +396,7 @@ coverage was not established.
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
+1a. **The TypeSafe key must also be in Permagent's own secret store** before the configured judge can use it — the app reads the `permagent`/`secrets` keychain blob, not the standalone `TYPESAFE_API_KEY` item you created (that one keeps working for my curl checks). Not needed until B2a is built and gated.
 1b. **V1 needs your phone:** the iOS 27 crash fix is only proven by installing a build and running 25 voice open/close cycles on the device.
 2. **Minimum term/category counts** in the Librarian (they force padding on sparse memories) — a retrieval-quality
    ruling, deliberately left out of A2.
