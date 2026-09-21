@@ -359,6 +359,19 @@ the browser's "Done" and the 15 µs tests — and exactly what the evidence ledg
   schedulers; it does NOT close the defect** (two app processes, or an app plus a subcommand that legitimately needs a scheduler, still
   double-fire). Only S1's persisted claim does.
 
+**S2's row-count design is WITHDRAWN (2026-09-21, stopped at Phase 0 by its own STOP rule — no code was written).** Codex Astra
+traced two counterexamples: (1) `providers/ollama.rs:656` permits `OLLAMA_STREAM_USAGE=false` (the comment at `:678-682` says older
+Ollama servers stall before the first SSE when given `stream_options`) — no usage, no ledger row, so a *working* local automation would
+be marked failed and auto-paused after three fires; (2) a scheduled prompt that is a slash command (`/clear`, `/skills`, `/prompts`)
+completes locally with no provider call by design. Absence of a row is absence of evidence. The coordinator then checked for a positive
+signal readable from `scheduler.rs` alone and found none: `mark_error()` (`agent.rs:2315`) flips a process-global agent state, and
+`record_provider_call_authorized` is a process-global receipts counter; nothing persists a refusal against the session.
+**Proposed replacement (peer's file, peer's call):** at the refusal branch (`agent.rs:2657-2666`), after the assistant message is
+persisted and yielded, also yield a typed `Err` for `SessionType::Scheduled`. The scheduler already maps a stream `Err` to `Error`
+(`scheduler.rs:2541-2545`, `:2754-2764`), so S2 then needs no scheduler change and interactive chat is untouched. Parked until
+`permagent-runtime-46` chooses who implements it. Apple on-device and both llama.cpp paths were found to emit terminal usage; mesh
+coverage was not established.
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
