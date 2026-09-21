@@ -47,31 +47,31 @@ pub const LIBRARIAN_SYSTEM_PROMPT: &str = r#"You write search-index entries for 
 Output format (exactly this structure, nothing else):
 
 FACTS: <one short sentence restating what the memory describes>
-TERMS: <4 to 10 vocabulary terms — words from the memory plus their inflected forms>
+TERMS: <4 to 10 vocabulary terms — words from the memory plus their other word forms>
 CATEGORIES: <2 to 5 category-level terms the memory belongs to>
 
 Rules:
-- FACTS: under 30 tokens, one sentence, plain restatement of facts. No speculation. No significance commentary.
-- TERMS: include exact words from the memory plus inflected forms (e.g., "doctor, doctors, doctoring"; "navigate, navigation, navigated"). 4 to 10 terms total. Comma-separated.
-- CATEGORIES: name the broader categories the memory belongs to (e.g., for Dr. Patel: "physician, medical, healthcare"; for a Slack message: "conversation, chat, communication"). 2 to 5 terms. Comma-separated.
+- FACTS: under 30 tokens, one sentence, plain restatement of facts. No speculation. No significance commentary. Add nothing the memory does not state: no year, date, name, place, product or cause that is not written there. Copy identifiers exactly as written — URLs, domains, IDs, tool names, people. Keep who or what it came from (e.g., "via claude-code").
+- TERMS: exact words from the memory plus other forms of those same words (e.g., "doctor, doctors"; "navigate, navigated, navigating, navigation"), and the full form of an obvious abbreviation (e.g., "docs, documentation"). No synonyms and no new concepts. 4 to 10 terms total. Comma-separated.
+- CATEGORIES: name the broader categories the memory belongs to (e.g., for a dentist appointment: "dental, medical, healthcare"; for a Slack message: "conversation, chat, communication"). This is the only field where you may generalize or use a well-known name for something the memory identifies another way (e.g., "Gmail" for mail.google.com). Never put a new concrete fact here. 2 to 5 terms. Comma-separated.
 
 Do not add any text outside these three lines.
 
 EXAMPLES:
 
 Memory: "Tell me a joke" (Slack message from the user to the agent on April 24)
-FACTS: The user asked the agent to tell a joke via Slack on April 24, 2026.
-TERMS: joke, jokes, ask, asked, asking, message, request
+FACTS: The user sent the agent a Slack message on April 24 saying "Tell me a joke".
+TERMS: joke, jokes, tell, telling, told, Slack, message, messages
 CATEGORIES: conversation, chat, communication, humor
 
 Memory: "Navigated to mail.google.com in tab btab-..."
-FACTS: Browser navigated to Gmail in a browser tab.
-TERMS: navigate, navigation, navigated, browser, browsing, tab, Gmail
-CATEGORIES: web browsing, email, Google services
+FACTS: Navigated to mail.google.com in a tab.
+TERMS: navigated, navigate, navigating, navigation, mail.google.com, tab, tabs
+CATEGORIES: web browsing, email, Gmail, Google services
 
 Memory: "Task completed via claude-code: read Phase 2 docs and execute build plan"
-FACTS: Completed a task to read Phase 2 documentation and execute the build plan.
-TERMS: task, tasks, build, building, plan, planning, completed, documentation
+FACTS: A task was completed via claude-code: read Phase 2 docs and execute the build plan.
+TERMS: task, tasks, completed, complete, claude-code, docs, documentation, build, plan
 CATEGORIES: software development, project management, task execution"#;
 
 // ---------------------------------------------------------------------------
@@ -3117,13 +3117,103 @@ mod tests {
             .collect();
         assert_eq!(
             LIBRARIAN_SYSTEM_PROMPT.len(),
-            1794,
+            2409,
             "Librarian prompt length changed"
         );
         assert_eq!(
-            digest, "db80afa13b46ba625856c2c8d805a84bf78042ce3455ea08716f589f7c3b5ce5",
+            digest, "b69739af2d859497c59cb3e26d86ee7718cb2645e90d429acbc179e7e20651a6",
             "Librarian prompt wording changed — this prompt is deliberately out of scope for prompt refactors"
         );
+    }
+
+    /// The prompt's examples must obey the prompt's own rules.
+    ///
+    /// They once did not: a memory dated "April 24" was restated as "April 24,
+    /// 2026", `mail.google.com` became "Gmail" in FACTS, "docs" became
+    /// "documentation" and "via claude-code" was dropped. A few-shot example
+    /// that breaks a rule teaches the model the rule is soft, and FACTS is the
+    /// field a reader trusts — so an invented detail there is an invented memory.
+    /// This checks the examples against the same parser that judges the model.
+    #[test]
+    fn librarian_prompt_examples_obey_the_prompts_own_rules() {
+        let examples = super::LIBRARIAN_SYSTEM_PROMPT
+            .split("EXAMPLES:")
+            .nth(1)
+            .expect("prompt has an EXAMPLES section");
+        let blocks: Vec<&str> = examples
+            .split("\n\n")
+            .map(str::trim)
+            .filter(|b| b.starts_with("Memory:"))
+            .collect();
+        assert_eq!(blocks.len(), 3, "expected three worked examples");
+
+        let field = |block: &str, label: &str| -> String {
+            block
+                .lines()
+                .find_map(|l| l.strip_prefix(label))
+                .unwrap_or_else(|| panic!("example is missing {label}"))
+                .trim()
+                .to_string()
+        };
+        let years = |text: &str| -> Vec<String> {
+            text.split(|c: char| !c.is_ascii_digit())
+                .filter(|t| t.len() == 4 && (t.starts_with("19") || t.starts_with("20")))
+                .map(str::to_string)
+                .collect()
+        };
+
+        for block in blocks {
+            let memory = field(block, "Memory:");
+            let facts = field(block, "FACTS:");
+            let terms = field(block, "TERMS:");
+            let categories = field(block, "CATEGORIES:");
+
+            // The worked answer must be one the production parser accepts as-is,
+            // with no salvage — otherwise the prompt teaches an invalid shape.
+            let answer = format!("FACTS: {facts}\nTERMS: {terms}\nCATEGORIES: {categories}");
+            assert!(
+                super::parse_structured_description(&answer).is_some(),
+                "example does not parse under the production parser:\n{answer}"
+            );
+
+            let n_terms = terms.split(',').filter(|t| !t.trim().is_empty()).count();
+            let n_cats = categories
+                .split(',')
+                .filter(|t| !t.trim().is_empty())
+                .count();
+            assert!(
+                (super::MIN_TERMS..=super::MAX_TERMS).contains(&n_terms),
+                "TERMS count {n_terms} is outside the enforced range: {terms}"
+            );
+            assert!(
+                (super::MIN_CATEGORIES..=super::MAX_CATEGORIES).contains(&n_cats),
+                "CATEGORIES count {n_cats} is outside the enforced range: {categories}"
+            );
+
+            // No invented year: every year in FACTS must be in the memory.
+            for year in years(&facts) {
+                assert!(
+                    memory.contains(&year),
+                    "FACTS invents the year {year}, which the memory never states: {facts}"
+                );
+            }
+
+            // Identifiers survive verbatim: a dotted host or a hyphenated tool
+            // name in the memory must reappear unchanged in FACTS.
+            for token in memory.split(|c: char| c.is_whitespace() || c == '"' || c == ':') {
+                let token = token.trim_matches(|c: char| !c.is_alphanumeric());
+                let dotted = token.contains('.')
+                    && token.split('.').all(|p| !p.is_empty())
+                    && token.chars().any(|c| c.is_alphabetic());
+                let tool_name = token == "claude-code";
+                if dotted || tool_name {
+                    assert!(
+                        facts.contains(token),
+                        "FACTS drops or rewrites the identifier {token:?}: {facts}"
+                    );
+                }
+            }
+        }
     }
 
     use super::*;
