@@ -495,17 +495,13 @@ impl ExtensionManagerClient {
                         "properties": {
                             "id": {
                                 "type": "string",
-                                "description": "Stable Spectral memory id"
+                                "description": "Stable Spectral memory id. Provide exactly one of id or key."
                             },
                             "key": {
                                 "type": "string",
-                                "description": "Stable logical memory key"
+                                "description": "Stable logical memory key. Provide exactly one of id or key."
                             }
-                        },
-                        "oneOf": [
-                            {"required": ["id"]},
-                            {"required": ["key"]}
-                        ]
+                        }
                     })
                     .as_object()
                     .expect("Schema must be an object")
@@ -1105,6 +1101,28 @@ mod tests {
             "description": "A concise abstract of the alpha beat."
         }))
         .expect("synthetic MemoryHit should deserialize")
+    }
+
+    /// Anthropic rejects the WHOLE request — every tool, not just the offending
+    /// one — with `input_schema does not support oneOf, allOf, or anyOf at the
+    /// top level`. On 2026-09-21 a top-level `oneOf` on `get_memory` made every
+    /// chat turn on Claude fail with a 400, so this is a shipped-outage guard,
+    /// not a style rule. The exclusivity it expressed lives in
+    /// `handle_get_memory`, which rejects zero-or-both at call time.
+    #[test]
+    fn no_platform_tool_schema_uses_a_top_level_union() {
+        for tool in ExtensionManagerClient::all_possible_tools() {
+            for keyword in ["oneOf", "allOf", "anyOf"] {
+                assert!(
+                    !tool.input_schema.contains_key(keyword),
+                    "tool `{}` has a top-level `{}`; Anthropic rejects the entire \
+                     request when any tool schema does. Express the constraint in \
+                     the handler and the description instead.",
+                    tool.name,
+                    keyword
+                );
+            }
+        }
     }
 
     #[test]
