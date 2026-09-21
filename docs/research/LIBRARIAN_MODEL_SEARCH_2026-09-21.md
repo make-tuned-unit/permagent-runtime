@@ -54,7 +54,13 @@ that the Librarian had stopped — was wrong. That flag gates exactly one thing:
 `~/.permagent/spectral/permagent.db`) shows `ollama / qwen2.5:7b` calls on 09-18 (29), 09-19 (51), 09-20 (120) and
 09-21 (10 so far) `[LOCAL]` verified; the peer also reports a daemon log line from 11:05 today reading
 `described: 3572, annotations: 3571` (`librarian.rs:2795`), which I could not locate myself. The ledger has **no**
-`qwen2.5:7b` rows for 09-08 → 09-17; I do not know whether that is no calls or no recording.
+`ollama` rows at all between 08-13 (15 rows) and 09-18 — yet the table was written every day in between (75, 35, 30,
+45, 22, 13, 21, 4, 66, 27 rows on 09-08 → 09-17) `[LOCAL]` verified. Every `ollama` row is `is_chargeable = 0`,
+`cost_usd = 0.0`. **So the gap is a change in what gets RECORDED, not an idle Librarian** (diagnosis by the peer
+session; which commit flipped it is unconfirmed — `git log -S"is_chargeable" --since=2026-08-13 -- crates/goose` would
+find it). **Two rules follow. (1) Never use `cost_ledger` to infer whether LOCAL work ran** — it is a spend ledger; free
+calls are recorded at the pipeline's discretion and the history is not uniform. **(2) Any "share of calls" computed over
+a window spanning 09-18 shifts purely because local calls started being recorded.**
 **Do not read state from the JSON files:** `librarian_checkpoint.json` says `described_total: 56` as of 09-04 against a
 live count of 3,572, and `librarian_state.json` is frozen at 09-04/05. The source of truth is the brain DB
 (`~/.permagent/brain/memory.db`) and the ledger — file mtimes are what misled me. Nobody in either session turned the
@@ -190,5 +196,5 @@ Two research agents died on usage limits; this was finished with targeted reads.
 or hallucination figure for a small candidate; Granite 4.2's benchmark tables (HF returned 401) and whether any 4.2
 size is a hybrid-Mamba variant; base-M-series tok/s for any candidate; Gemma 4 12B's disk size and licence detail;
 LFM 2.5's licence; whether Ollama 0.32.9 honours thinking-off for `qwen3.5` on the path the Librarian uses; who switched the
-nightly window off on 2026-09-08 and why (§1c), and why the ledger shows no `qwen2.5:7b` rows for 09-08 → 09-17; how often the Apple on-device path serves. The `[RECALLED]` Qwen2.5-7B
+nightly window off on 2026-09-08 and why (§1c), and which commit started recording free local calls in the ledger; how often the Apple on-device path serves. The `[RECALLED]` Qwen2.5-7B
 figures are from memory and should be re-checked before being quoted anywhere.

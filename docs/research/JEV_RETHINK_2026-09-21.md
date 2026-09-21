@@ -25,7 +25,9 @@ mostly with **gates** — places to say *no* faster. That was the wrong altitude
    $76.89 — went to turns producing under 300 output tokens**: looking and routing, not working. Input-to-output across
    the whole ledger is **90 : 1**. *(Caveat from the same session: ledger prices were wrong until `18c8de1e` — Sonnet 5
    overstated by half, Fable/Opus 5 on a worst-case fallback — so treat the dollars as indicative and the **shape** as
-   the finding.)*
+   the finding. A second hazard, same source: free local calls only began being recorded in the ledger on 09-18, so any
+   share-of-**calls** figure spanning that date moves with no behaviour change. The 56 % is a share of **dollars**, which
+   $0 local rows cannot move — but do not extend it to call counts.)*
 3. **Our hardware cannot hold a big model, and that is not changing soon.** The M4 could not find 9.5 GB free on 27
    separate nights. It can hold a **0.4 GB** decision model all day without anyone noticing.
 
