@@ -119,3 +119,117 @@ work I had labelled "verified": I verified that a line existed and then asserted
 citation is evidence of *location*. Behaviour needs the whole path — guards, backend selection, fallback, parser,
 persistence, outcome — or a run. Documents from me that say `[CODE]` should be read with that in mind until they say
 which of the two was checked.
+
+---
+
+## 6. Round two
+
+*Codex's round-one thread could not be resumed ("already has an active writer" — most likely the Codex desktop app
+holding it open), so round two ran on a fresh thread (`01a0c43d-ed1b-7c03-85ec-a9410707c74c`) that read its own
+round-one text from this repo. Verbatim: `debate/codex-astra-round2-VERBATIM.txt`. I re-checked its new factual claims
+— the two other prompt examples, the ledger write path, the statement-ingest module — and all held.*
+
+### Rulings on the three points I contested
+
+| | Codex's ruling | Where that leaves it |
+|---|---|---|
+| **1. Distributions** | **PARTIAL.** I was right that an `unknown` enum is not reliable abstention — *"my round-one proposal supplied an output contract, not a calibrated uncertainty mechanism."* But ranking and thresholds do not *inherently* need logprobs: deterministic scores, constrained ordinal grades, pairwise comparison, disagreement across samples. **The audit I cited actually demonstrates the alternative** — k=5 self-consistency took selective accuracy 42.7 % → 82.8 % (at 28.2 % coverage). And logprobs are probabilities of *outputs*, not that a *decision is correct*. | **Open — an experiment, not an argument.** Its concession: requiring two successful workloads before *generalising* is fair; requiring two before *trying* logits on one worthwhile workload "would be needless obstruction." |
+| **2. Sequential reliability** | **AGREE** with me. 0.98²⁰ applies whoever picks the elements; it argues against treating per-step accuracy as task reliability, not against a cheap selector. Its addition: a deterministic postcondition cannot catch every *semantic* error — typing the wrong recipient passes a field-value check perfectly. | **Settled.** Compare selectors under identical grounding, verification and recovery; measure completed tasks, harmful actions, interventions, latency and cost. |
+| **3. Instrumentation** | **AGREE on scope; purpose alone is insufficient.** Same idea at the right size. | **Settled**, with a concrete spec (below). |
+
+**The minimum ledger fields** (Codex's spec, write path verified): `call_purpose` (user response · tool continuation ·
+background check · retry · verification · context maintenance) · `trigger_ref` · `retry_of_call_id` ·
+**`pre_call_evidence`** — a versioned, bounded record of the facts available *before* dispatch and the proposed skip
+rule's result (`would_skip = yes/no/unknown`), *"the actual predicate inputs, not merely a state hash or a model's
+assertion"* · `tool_call_count` · `completion_kind`. Set where the row is assembled —
+`agents/reply_parts.rs:1574 record_provider_usage()` (`CostLedgerRow` at `:1735`; the authoritative INSERT is
+`session/session_manager.rs:3589`) — with provenance starting before dispatch, passed into
+`reserve_provider_invocation_for_model()` (`reply_parts.rs:1940`). **Its caveat stands: these fields make candidate calls
+*reviewable*; they do not manufacture counterfactual truth, and historical rows stay unknown.** *(All in the peer
+session's files — passed on.)*
+
+### "Did Claude concede too much?"
+
+- **(a) Hosted Jev and public pages — yes, I over-conceded.** A blanket rejection is unjustified for genuinely public
+  page content; with cookies, authenticated DOM, drafts and private analytics excluded, privacy stops being the
+  decisive objection and quality, cost, latency and dependency become the questions. **Restored:** a public-content
+  benchmark arm is legitimate. *"Ownership of the website does not make all associated data public."*
+- **(b) Memory forget/export — keep, but it is not obviously cheap.** Real forgetting means derived descriptions and
+  embeddings, caches, retained logs and backups, and preventing re-ingestion from surviving sources. *"A delete button
+  is not that contract."* Ship a narrowly defined export/delete **with explicit coverage**, alongside the useful
+  workflow — not as another infrastructure programme ahead of it. **Accepted:** I called this "the strongest
+  differentiator per line of code" without establishing the cost.
+- **(c) My randomised false-sleep audit — the sampling idea is right; my claim for it was wrong.** It estimates
+  P(should wake | would skip), **not** P(skip | should wake). "System Two judges" is a *proxy* label with shared-model
+  error and hindsight. And the arithmetic does not work: at 5 %, fifty audits need ~1,000 would-be skips; one 3-hour
+  monitor yields at most 480 opportunities in sixty days → ≤ 24 audits. Fifty clean audits bound the false-sleep rate
+  at only ~5.8 %; **a 1 % tolerance needs ~299.** *"'5 % and fifty' is a pilot budget, not a reliability gate."*
+  **Accepted.**
+- **(d) My adversary-gate stop rule — not sensible as written.** If a red-team set supplies the positives, review them
+  *before* deployment; waiting thirty days measures scheduling, not field evidence. Thirty variants of one exploit are
+  not thirty challenges. Use a fixed reviewed development set **and** a separate held-out challenge set; report seeded
+  recall separately from natural-traffic false blocks; **sample agreements too** — reviewing only disagreements misses
+  attacks both models allow. And exceeding the review budget should end *the experimental classifier* — never remove the
+  existing protection or restore fail-open. **Accepted.**
+
+### The Librarian prompt teaches invention in every example `[CODE]` verified
+
+Beyond the invented year: `mail.google.com` becomes "Gmail" (external entity knowledge, under a rule that says *"based
+only on the memory content"*); "docs" becomes "documentation"; the third example **drops "via claude-code"** — lost
+provenance; TERMS adds *ask / asked / asking / request* for a memory that says "Tell me a joke"; the rule itself calls
+"navigation" an *inflection* of "navigate" (it is a derivation); "Dr. Patel" is assumed to be a physician; and the
+**minimum** counts (≥ 4 TERMS, ≥ 2 CATEGORIES) force padding on sparse memories.
+
+**Smallest coherent repair:** one JSON object with exactly `FACTS`, `TERMS`, `CATEGORIES`; FACTS preserves explicit
+identifiers, dates, attribution and qualifications and resolves nothing from background knowledge; TERMS is source
+vocabulary plus permitted morphological forms only; CATEGORIES may abstract but adds no concrete fact; rewrite every
+example to obey; allow shorter arrays. On the native Ollama path, pass a JSON Schema as top-level **`format`** and
+top-level **`think: false`** in `InferenceBody::for_stream()` (`mesh/pool.rs:473`) — *not* inside `options`; pass it
+from the Librarian caller, not globally (the adjudicator has a different contract); `response_format` on the compatible
+path (`:492`). **Validate the assembled JSON strictly and reject truncation rather than invoking permissive salvage.**
+Schema guarantees structure, not fidelity — and **the Apple-first route needs its own enforcement.**
+
+### Candidate browser workflows (repo-supported — *not* observations of Jesse's habits)
+
+1. **Retrieve a monthly statement from an authenticated bank or card portal into the existing ingest path** —
+   `finance_statements.rs` already parses CSV/OFX/QFX. Narrow, repeatable, read/download-only. **Codex's strongest
+   candidate.** Needs: account identity, statement period, currency, table headers, loading/error state, download
+   completion — an "Export" control today says nothing about *which* account or period.
+2. **Prepare an internal-link edit on one owned site's CMS as a draft** — needs paragraphs, headings, existing links in
+   context, draft-vs-published status, save confirmation, the rendered result. If the site is source-controlled, edit
+   the repo instead.
+3. **Carry one Concierge reply proposal into the right Gmail thread for review** — a *separately authorised* capability;
+   it must not use browser access to bypass the Concierge's read-only boundary. Needs full thread text, sender/recipient
+   relationships, quoted-message boundaries, draft-save status.
+
+All three need surrounding business state and observable completion evidence that an interactive-elements-only
+snapshot does not carry.
+
+---
+
+## 7. Final joint position
+
+**Both sides now hold:**
+
+1. Fix concrete correctness defects before constructing a general decision platform.
+2. Short-output spending is not established waste; measure call purpose and pre-call evidence before claiming savings.
+3. Test one repeated browser workflow early — adequate context, postconditions, bounded recovery, approval at
+   consequential actions.
+4. Repair the Librarian contract and examples before comparing models; judge faithful extraction and the backend that
+   actually served.
+5. Keep authorisation deterministic and private state local; reject classifier-granted permissions and causal SEO
+   claims from ordinary before/after traffic.
+
+**Still open — settled by an experiment, not more argument:**
+
+1. On a real ranking or selective-decision workload, which signal wins at the required error tolerance: deterministic
+   scoring, constrained comparisons, repeated sampling, or calibrated logits?
+2. On the chosen browser workflow, which selector delivers the best verified completion rate and total cost under
+   identical safeguards?
+3. After the contract is repaired, does the smaller Librarian model improve faithful searchable entries, retries,
+   latency and memory use over the incumbent?
+
+**Net of two rounds:** I conceded most of round one and was right to; in round two Codex conceded that an `unknown`
+enum is not an uncertainty mechanism, agreed outright on sequential reliability, restored the hosted-Jev public-content
+arm I had over-conceded, and showed that two of my own round-one answers — the 5 %/n=50 audit and the 30-day stop rule —
+were themselves statistically unsound. Neither side changed its mind about what to build next. That list is §4.

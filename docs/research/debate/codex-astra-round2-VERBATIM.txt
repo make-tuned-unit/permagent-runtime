@@ -1,0 +1,176 @@
+1. DISTRIBUTIONS — PARTIAL.
+
+Claude is right that an “unknown” enum does not create reliable abstention. Deterministic code acting on a hard label does not make that label correct either. My round-one proposal supplied an output contract, not a calibrated uncertainty mechanism.
+
+But ranking and asymmetric thresholds do not inherently require logprobs:
+
+- Ranking can use deterministic relevance scores, constrained ordinal grades, or pairwise A/B/tie comparisons. Pairwise comparisons introduce cost, order effects and potentially inconsistent rankings.
+- Abstention can follow missing evidence, failed predicates, disagreement across samples, or disagreement between independently grounded checks.
+- Five-sample self-consistency supplies an empirical agreement score. It is neither a calibrated probability nor necessarily cheaper than obtaining logits once.
+
+The cited audit actually demonstrates the last alternative: k=5 improved selective factual accuracy from 42.7% to 82.8%, at only 28.2% coverage. It also explicitly limits generalisation beyond the tested model/configuration. This is evidence against trusting verbalised confidence, not evidence that distributions are indispensable. [Primary paper](https://arxiv.org/html/2608.23663v2)
+
+Logprobs deserve a benchmark arm. They are probabilities of model outputs, not automatically probabilities that decisions are correct. Calibration and held-out evaluation remain necessary.
+
+My revised position: an enum is sufficient for the interface; the deployment may need an additional uncertainty signal. Neither Claude nor I can settle the cheapest adequate signal by argument. Also, requiring two successful workloads before generalising remains reasonable; requiring two before trying logits on one worthwhile workload would be needless obstruction.
+
+2. SEQUENTIAL RELIABILITY — AGREE.
+
+I accept Claude’s correction. The illustrative 0.98^20 ≈ 0.668 applies regardless of the selector’s price. It argues against treating per-step accuracy as task reliability, not against cheap selectors.
+
+The calculation assumes independent errors and that every erroneous step defeats completion. Recovery changes that model; correlated misunderstandings can make matters worse.
+
+Deterministic postconditions should verify observable progress after each meaningful action, with bounded recovery. They cannot prove every semantic choice correct: typing the wrong recipient can pass a field-value check perfectly.
+
+Compare selectors under the same grounding, verification and recovery system. Measure completed tasks, harmful actions, interventions, latency and total cost. My round-one argument supports that comparison; it does not establish its winner.
+
+3. INSTRUMENTATION — AGREE on scope; purpose alone is insufficient.
+
+Yes: the same basic idea at the right size. Record why a paid call happened. Do not build a five-site decision platform first.
+
+The actual accounting path matters:
+
+- cost_router handles routing, reservations and related policy. Its routing receipts are not per-call purpose evidence.
+- providers/utils.rs:387 defines RequestLog: rotating request/response JSONL, retaining ten logs. It is not the ledger writer.
+- agents/reply_parts.rs:1574, record_provider_usage(), assembles CostLedgerRow at line 1735.
+- session/session_manager.rs:3487, append_cost_ledger_with_usage(), performs the authoritative transaction; the INSERT is at line 3589.
+
+The minimum useful additional logical fields are:
+
+- call_purpose: a small enum distinguishing user response, tool continuation, background check, retry, verification and context maintenance.
+- trigger_ref: the particular user event, tool result, schedule tick or state change that caused this call.
+- retry_of_call_id: nullable linkage to an earlier failed invocation.
+- pre_call_evidence: a versioned, bounded record of the facts available before dispatch and the proposed skip rule’s result.
+- tool_call_count: completed output tool requests, not streaming fragments.
+- completion_kind: text, tools, mixed, empty, error or cancelled; unknown must remain distinct from zero.
+
+Existing call_id, session/task/goal attribution, model, tokens, cost and is_estimated need no duplication.
+
+The essential field is pre_call_evidence. For one polling experiment, it could contain the predicate/version, changed-state flags, pending-work count, observation freshness, last successful check, next mandatory wake deadline, and would_skip=yes/no/unknown. Record the actual predicate inputs, not merely a state hash or a model’s assertion that the call was unnecessary.
+
+The single best place to populate the ledger fields is record_provider_usage(), where the cost row is assembled. But their provenance must begin before dispatch: pass caller-supplied purpose and evidence into reserve_provider_invocation_for_model() at reply_parts.rs:1939 and carry them in ProviderInvocationContext. Response processing supplies the output fields. The database writer should persist evidence, not invent it.
+
+These fields make candidate calls reviewable. They do not manufacture counterfactual truth. “No tools and a short answer” still does not prove safe skipping. A validated deterministic predicate can establish avoidability for a narrow case; semantic cases require reviewed shadow outcomes or an experiment. Historical rows without evidence remain unknown.
+
+4. DID CLAUDE CONCEDE TOO MUCH?
+
+(a) Hosted Jev and public pages
+
+A blanket rejection is unjustified for genuinely public page content. The revised “no hosted Jev for private state” boundary is defensible; “public fixtures only, never a real public-page workload” is unnecessarily restrictive.
+
+A public-page comparison can exclude cookies, authenticated DOM, unpublished drafts, private analytics and internal business instructions. Ownership of the website does not make all associated data public.
+
+Privacy then stops being the decisive objection. Incremental quality, cost, latency and dependency become the questions. Claude should defend a public-content benchmark arm, not assume hosted adoption or permanent exclusion. The original document already allowed non-private evaluation fixtures.
+
+(b) Memory forget/export first
+
+Keep them as basic safeguards. Withdraw the implication that comprehensive forgetting is an obviously cheap prerequisite to the browser experiment.
+
+Export is bounded only after defining its scope. Effective forgetting may require deleting derived descriptions and embeddings, invalidating caches, handling retained logs and backups, and preventing re-ingestion from surviving sources. A delete button is not that contract.
+
+Deliver a narrowly defined export/delete capability with explicit coverage alongside the useful workflow. Do not quietly turn “memory controls first” into another infrastructure programme. Claude was right to retain user control; neither of us established its implementation cost.
+
+(c) Randomised false-sleep audits
+
+The sampling idea is right. “System Two judges, therefore unbiased false-sleep estimate” is wrong.
+
+Uniform random selection of would-be skips removes selection bias for the sampled skip population, assuming audits actually complete and labels concern the same pre-wake state. It estimates P(should wake | would skip), not P(skip | should wake), which needs a different denominator.
+
+System Two supplies a proxy label. Shared model errors, missing context and hindsight can bias it. Human adjudication of a sample, or objective outcome checks, are still needed. If forced wakes change later state, the estimate describes the audited operating policy, not automatically the counterfactual system that never audits.
+
+The proposed volume is weak:
+
+- At 5%, fifty audits require 1,000 would-be skips in expectation: 16.7 daily over sixty days.
+- One three-hour monitor produces at most 480 opportunities in sixty days, yielding at most 24 expected audits if every opportunity would skip.
+- Fifty independent audits with zero false sleeps give an approximately 5.8% one-sided 95% upper bound. They cannot establish a 1% tolerance; that would require about 299 zero-failure audits.
+
+Repeated ticks of the same condition also provide less independent evidence than fifty distinct events.
+
+Choose audit volume from the tolerated error and observed traffic. “5% and fifty” is a pilot budget, not a reliability gate.
+
+(d) Adversary stop rule
+
+Not sensible as written. If the red-team set supplies positives, review them before deployment. Waiting thirty days to accumulate thirty seeded positives measures scheduling, not field evidence.
+
+Thirty positives also say little without attack diversity and held-out separation. Variants of one exploit are not thirty independent security challenges.
+
+Use a fixed reviewed development set and a separate held-out challenge set. Report seeded attack recall separately from natural-traffic false blocks and review burden. Reviewing only disagreements and blocks misses attacks both models allow; sample agreements too. The incumbent verdict is a comparison target, not ground truth.
+
+A three-hour review budget is a defensible project constraint. Exceeding it should end or redesign the experimental classifier, not remove the existing protection or restore fail-open behaviour.
+
+5. THE LIBRARIAN PROMPT
+
+I read the entire constant, including all three examples at librarian.rs:45–77.
+
+Beyond the invented year:
+
+- The joke example adds ask/asked/asking and request to TERMS. They are semantic paraphrases, not words in the memory or inflections of its words.
+- The navigation example replaces mail.google.com with Gmail in FACTS. That is external entity knowledge, however ordinary, under a rule saying “based only on the memory content.” TERMS additionally introduces browser/browsing and Gmail.
+- The task example substitutes documentation for docs in both FACTS and TERMS. This is abbreviation expansion, not inflection.
+- That example drops “via claude-code,” losing explicit provenance. This is an omission, not an invented fact.
+- The rule itself calls navigation an inflected form of navigate. It is a derivation. “Dr. Patel” → physician/medical/healthcare also assumes “Dr.” means a medical doctor rather than another doctorate.
+- The broad “based only on memory content” instruction is underspecified for CATEGORIES, whose purpose is abstraction. Google services and software development illustrate semantic classification beyond copied vocabulary. Such categories can be useful; they should be explicitly permitted as categories, not silently treated as extracted facts.
+- The minimum of four TERMS and two CATEGORIES can force padding on sparse memories. It conflicts with faithful extraction when insufficient material exists.
+
+The third example does not clearly invent task completion: its input already says “Task completed.” I would not charge it with that.
+
+The smallest coherent repair is:
+
+- Demand one JSON object containing exactly FACTS, TERMS and CATEGORIES.
+- FACTS must preserve explicit identifiers, dates, attribution and qualifications; do not resolve unknown dates or entities using background knowledge.
+- TERMS contains source vocabulary and explicitly permitted morphological forms; no synonyms or implicit brand expansions.
+- CATEGORIES may contain broad supported classifications, with no new concrete facts.
+- Remove or rewrite every example to follow those rules. Permit shorter arrays when evidence is sparse, and align the parser’s minimum-count checks accordingly.
+
+For native Ollama, pass a JSON Schema through top-level format in InferenceBody::for_stream() at pool.rs:473, and top-level think:false for models supporting that setting. The schema should require exactly those three keys, disallow additionalProperties, type FACTS as a string and the other fields as string arrays, and bound their lengths. Do not hide format or think inside options. [Ollama generate API](https://docs.ollama.com/api/generate)
+
+Pass the schema explicitly from the Librarian caller; do not impose it globally on shared builders or adjudication calls with different contracts. On the compatible path at pool.rs:492, use response_format with the equivalent JSON Schema where supported. [Ollama structured outputs](https://docs.ollama.com/capabilities/structured-outputs)
+
+One necessary qualification: prompt plus request constraints are insufficient to guarantee every stored result. Validate the fully assembled JSON before acceptance; reject truncation and malformed output instead of invoking permissive salvage. The existing JSON parser accepts arrays, but also accepts alternate shapes and ignores extra fields. Strict validation must precede it.
+
+Schema enforcement guarantees structure, not factual fidelity, one-sentence semantics or a tokenizer-specific thirty-token limit. Those remain separate checks. The Apple-first route also needs its own contract enforcement; fixing Ollama does not fix every backend.
+
+6. THE BROWSER WORKFLOW
+
+These are repo-supported candidates, not established observations of Jesse’s habits. The projects schema records possible project associations; it does not prove which chores recur. The July roster document is design evidence, while concierge.rs shows a later implementation.
+
+First candidate: retrieve a monthly household statement from an authenticated bank or card portal and feed the existing ingest path.
+
+finance_statements.rs already parses CSV/OFX/QFX; the finance extension already consumes dropped statements. This supplies a clear destination for browser output.
+
+Missing context: account identity, statement period, currency, transaction-table headers, explanatory text, loading/error state and download completion. The browser list can expose an “Export” control without telling the agent which account or period it will export. This is my strongest initial candidate: narrow, repeatable, and read/download-focused.
+
+Second candidate: inspect one owned-site page and prepare an internal-link edit in its CMS.
+
+projects has site_url, repo_url and root_path at spectral_schema.rs:546; the Grower provides the project/change context. Start with a draft edit and observable preview, not an SEO-effect promise.
+
+Missing context: article paragraphs, headings, existing link destinations in context, editor section boundaries, draft-versus-published status, save confirmation and the rendered result. Interactive controls alone cannot tell whether an anchor belongs in a sentence or whether the intended page changed. If the site is source-controlled and a repository edit is easier, use that route instead.
+
+Third candidate: take one Concierge reply proposal into the correct Gmail thread for user review.
+
+concierge.rs explicitly provides read-only triage and in-app draft proposals, not Gmail mutation. A browser draft workflow would be a separately authorised capability extension. It should not use browser access to bypass the Concierge’s boundary.
+
+Missing context: complete thread text, sender/recipient relationships, timestamps, quoted-message boundaries, attachment identity, draft-save status and send confirmation. An interactive list cannot reliably establish whom the reply addresses or what earlier message it answers.
+
+The current snapshot returns URL plus capped interactive entries containing ref, role, name, tag and optional value, with generation/truncation metadata (browser_grounding.js:205–245). All three workflows need surrounding business state and observable completion evidence.
+
+FINAL JOINT POSITION
+
+The five positions already supported by both arguments are:
+
+1. Fix concrete correctness defects before constructing a general decision platform.
+2. Short-output spending is not established waste; measure call purpose and pre-call evidence before claiming savings.
+3. Test one repeated browser workflow early, with adequate context, postconditions, bounded recovery and consequential-action approval.
+4. Repair the Librarian contract and examples before comparing models; judge faithful extraction and the backend actually served.
+5. Keep authorisation deterministic and private state local; reject classifier-granted permissions and causal SEO claims from ordinary before/after traffic.
+
+Three questions remain experimental:
+
+1. On an actual ranking or selective-decision workload, which signal wins at the required error tolerance: deterministic scoring, constrained comparisons, repeated sampling or calibrated logits?
+2. On the chosen browser workflow, which selector delivers the best verified completion rate and total cost under identical safeguards?
+3. After repairing the contract, does the smaller Librarian improve faithful searchable entries, retries, latency and memory use over the incumbent?
+
+Read-only throughout. No files changed, builds or tests run, database accessed, or services touched.
+
+Codex session ID: 01a0c43d-ed1b-7c03-85ec-a9410707c74c
+Resume in Codex: codex resume 01a0c43d-ed1b-7c03-85ec-a9410707c74c
