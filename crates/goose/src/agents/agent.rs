@@ -5507,8 +5507,14 @@ mod tests {
         fn the_resume_notice_is_compact_and_names_what_changed() {
             let notice = format_compact_resume_notice(
                 &[
-                    ("20260920_6".to_string(), crate::goal_state::GoalState::InProgress),
-                    ("20260920_6".to_string(), crate::goal_state::GoalState::Complete),
+                    (
+                        "20260920_6".to_string(),
+                        crate::goal_state::GoalState::InProgress,
+                    ),
+                    (
+                        "20260920_6".to_string(),
+                        crate::goal_state::GoalState::Complete,
+                    ),
                 ],
                 crate::agents::platform_extensions::orchestrator::DrainSummary {
                     finished: 1,
