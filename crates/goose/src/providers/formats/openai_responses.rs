@@ -98,6 +98,56 @@ pub struct ResponseUsage {
     pub input_tokens: i32,
     pub output_tokens: i32,
     pub total_tokens: i32,
+    // OpenAI reports the cache-read subset of `input_tokens` here, not as a
+    // sibling of it — see `input_tokens_details.cached_tokens` in the
+    // Responses API reference. Optional because older responses (and other
+    // OpenAI-compatible hosts speaking this same shape) omit the object
+    // entirely; that ABSENCE must stay distinguishable from an explicit
+    // `cached_tokens: 0`, which is why this is `Option`, not a bare `i32`
+    // defaulted to zero. Measured on the live ledger since 2026-09-01: every
+    // other cache-reporting provider (anthropic, custom_deepseek, zai,
+    // minimax) shows a real cache-hit rate while openai showed 0% across 87
+    // calls — because this field was never read, not because caching never
+    // hit. Coercing "unknown" to zero here would keep that blind spot and
+    // additionally mis-price cached input at the full fresh-input rate
+    // (`crates/goose/src/providers/canonical/cost.rs::cost_breakdown` only
+    // carves out the cheaper cache-read rate when this is populated).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens_details: Option<ResponseInputTokensDetails>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResponseInputTokensDetails {
+    // `Option` for the same reason as above: a present `input_tokens_details`
+    // object with the `cached_tokens` key missing (rather than the whole
+    // object being absent) should still read as "unknown", not "0".
+    #[serde(default)]
+    pub cached_tokens: Option<i32>,
+}
+
+/// The one place that turns a Responses-API `usage` block into our internal
+/// `Usage`. Both the non-streaming path (`get_responses_usage`) and the
+/// streaming `ResponseCompleted` branch used to build `Usage` independently
+/// and neither read the cache breakdown — that duplication is exactly how the
+/// gap went unnoticed on one path while the other was "fixed". Route both
+/// through here so they can't drift apart again.
+fn usage_from_response_usage(usage: &ResponseUsage) -> Usage {
+    let cache_read_input_tokens = usage
+        .input_tokens_details
+        .as_ref()
+        .and_then(|details| details.cached_tokens);
+
+    // No `cache_write_input_tokens` here: the Responses API (like OpenAI's
+    // Chat Completions) has no write-premium field — prompt caching there is
+    // automatic and reads are the only billed-differently category. Leaving
+    // this `None` matches `formats/openai.rs::get_usage`, which does the same
+    // for the same reason.
+    Usage::new(
+        Some(usage.input_tokens),
+        Some(usage.output_tokens),
+        Some(usage.total_tokens),
+    )
+    .with_cache_tokens(cache_read_input_tokens, None)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -582,13 +632,10 @@ pub fn responses_api_to_message(response: &ResponsesApiResponse) -> anyhow::Resu
 }
 
 pub fn get_responses_usage(response: &ResponsesApiResponse) -> Usage {
-    response.usage.as_ref().map_or_else(Usage::default, |u| {
-        Usage::new(
-            Some(u.input_tokens),
-            Some(u.output_tokens),
-            Some(u.total_tokens),
-        )
-    })
+    response
+        .usage
+        .as_ref()
+        .map_or_else(Usage::default, usage_from_response_usage)
 }
 
 fn process_streaming_output_items(
@@ -743,14 +790,10 @@ where
 
                 ResponsesStreamEvent::ResponseCompleted { response, .. } => {
                     let model = model_name.as_ref().unwrap_or(&response.model);
-                    let usage = response.usage.as_ref().map_or_else(
-                        Usage::default,
-                        |u| Usage::new(
-                            Some(u.input_tokens),
-                            Some(u.output_tokens),
-                            Some(u.total_tokens),
-                        ),
-                    );
+                    let usage = response
+                        .usage
+                        .as_ref()
+                        .map_or_else(Usage::default, usage_from_response_usage);
                     final_usage = Some(ProviderUsage {
                         usage,
                         model: model.clone(),
@@ -1083,5 +1126,139 @@ mod tests {
         let info: ResponseReasoningInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.effort.as_deref(), Some("high"));
         assert_eq!(info.summary.as_deref(), Some("Thought deeply"));
+    }
+
+    // Regression coverage for the 0%-cache-hit-rate bug: `ResponseUsage` used
+    // to keep only the three plain counts, so `input_tokens_details.cached_tokens`
+    // was parsed and then thrown away on both the non-streaming and streaming
+    // paths. These tests pin down that the cache split now survives parsing on
+    // both paths, that a genuinely absent `input_tokens_details` reads as
+    // "unknown" rather than "0", and that the cached portion is billed at the
+    // cache-read rate instead of the full input rate.
+
+    #[test]
+    fn test_get_responses_usage_preserves_cache_read_tokens() {
+        let response: ResponsesApiResponse = serde_json::from_value(serde_json::json!({
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 0,
+            "status": "completed",
+            "model": "gpt-5.4-mini",
+            "output": [],
+            "usage": {
+                "input_tokens": 10000,
+                "output_tokens": 200,
+                "total_tokens": 10200,
+                "input_tokens_details": { "cached_tokens": 8000 }
+            }
+        }))
+        .unwrap();
+
+        let usage = get_responses_usage(&response);
+        assert_eq!(usage.input_tokens, Some(10000));
+        assert_eq!(usage.output_tokens, Some(200));
+        assert_eq!(usage.total_tokens, Some(10200));
+        assert_eq!(usage.cache_read_input_tokens, Some(8000));
+    }
+
+    #[tokio::test]
+    async fn test_responses_stream_completed_preserves_cache_read_tokens() -> anyhow::Result<()> {
+        let lines = vec![
+            r#"data: {"type":"response.created","sequence_number":1,"response":{"id":"resp_1","object":"response","created_at":0,"status":"in_progress","model":"gpt-5.4-mini","output":[]}}"#.to_string(),
+            r#"data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_1","object":"response","created_at":0,"status":"completed","model":"gpt-5.4-mini","output":[],"usage":{"input_tokens":10000,"output_tokens":200,"total_tokens":10200,"input_tokens_details":{"cached_tokens":8000}}}}"#.to_string(),
+            "data: [DONE]".to_string(),
+        ];
+
+        let response_stream = tokio_stream::iter(lines.into_iter().map(Ok));
+        let messages = responses_api_to_streaming_message(response_stream);
+        futures::pin_mut!(messages);
+
+        let mut usage: Option<ProviderUsage> = None;
+        while let Some(item) = messages.next().await {
+            let (_, maybe_usage) = item?;
+            if let Some(final_usage) = maybe_usage {
+                usage = Some(final_usage);
+            }
+        }
+
+        let usage = usage.expect("usage should be present at completion").usage;
+        assert_eq!(usage.input_tokens, Some(10000));
+        assert_eq!(usage.output_tokens, Some(200));
+        assert_eq!(usage.total_tokens, Some(10200));
+        assert_eq!(usage.cache_read_input_tokens, Some(8000));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_responses_usage_without_details_is_unknown_not_zero() {
+        let response: ResponsesApiResponse = serde_json::from_value(serde_json::json!({
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 0,
+            "status": "completed",
+            "model": "gpt-5.4-mini",
+            "output": [],
+            "usage": {
+                "input_tokens": 500,
+                "output_tokens": 50,
+                "total_tokens": 550
+            }
+        }))
+        .unwrap();
+
+        let usage = get_responses_usage(&response);
+        // No `input_tokens_details` at all in this fixture (older responses, or
+        // an OpenAI-compatible host that doesn't send it) — the cache read
+        // count must come back `None`, not `Some(0)`. Coercing to zero here is
+        // exactly how a real cache hit reads as "0% cached" on the ledger.
+        assert_eq!(usage.cache_read_input_tokens, None);
+    }
+
+    #[test]
+    fn test_cached_portion_priced_at_cache_read_rate() {
+        use crate::providers::canonical::{cost_breakdown, Pricing};
+
+        let response: ResponsesApiResponse = serde_json::from_value(serde_json::json!({
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 0,
+            "status": "completed",
+            "model": "gpt-5.4-mini",
+            "output": [],
+            "usage": {
+                "input_tokens": 10000,
+                "output_tokens": 0,
+                "total_tokens": 10000,
+                "input_tokens_details": { "cached_tokens": 8000 }
+            }
+        }))
+        .unwrap();
+
+        let usage = get_responses_usage(&response);
+
+        // Real published rate for gpt-5.4-mini (USD per 1M tokens): input
+        // 0.75, cache read 0.075 — a 10x discount. If the cached count were
+        // dropped (or coerced to 0), all 10,000 tokens would bill at the
+        // fresh-input rate instead of 2,000 fresh + 8,000 at the cheap rate.
+        let pricing = Pricing {
+            input: Some(0.75),
+            output: Some(4.5),
+            cache_read: Some(0.075),
+            cache_write: None,
+        };
+
+        let breakdown = cost_breakdown(&usage, &pricing).expect("pricing is fully specified");
+
+        let expected_fresh_input_cost = 2000.0 / 1_000_000.0 * 0.75;
+        let expected_cache_read_cost = 8000.0 / 1_000_000.0 * 0.075;
+        assert!((breakdown.input_cost - expected_fresh_input_cost).abs() < 1e-12);
+        assert!((breakdown.cache_read_cost - expected_cache_read_cost).abs() < 1e-12);
+
+        // Sanity: pricing the whole 10,000 tokens at the plain input rate
+        // would cost noticeably more than what we actually bill once the
+        // cache discount is applied to the 8,000 cached tokens.
+        let naive_full_price_cost = 10000.0 / 1_000_000.0 * 0.75;
+        assert!(breakdown.total_cost < naive_full_price_cost);
     }
 }
