@@ -86,6 +86,11 @@ pub fn maybe_get_canonical_model(provider: &str, model: &str) -> Option<Canonica
             found.cost = published;
         }
     }
+    // ...and a row the generated table gets WRONG is replaced outright. The
+    // backfill above cannot do this: a wrong price is present, not missing.
+    if let Some(corrected) = published_prices::corrected_pricing(canon_provider, canon_model) {
+        found.cost = corrected;
+    }
     Some(found)
 }
 

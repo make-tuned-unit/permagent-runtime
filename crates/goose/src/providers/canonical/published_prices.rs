@@ -75,7 +75,87 @@ const PUBLISHED: &[(&str, &str, Pricing)] = &[
             cache_write: None,
         },
     ),
+    // Anthropic, read from https://platform.claude.com/docs/en/about-claude/pricing
+    // on 2026-09-21. The generated registry carries no row for any of these,
+    // so before this they billed at `worst_case_pricing` — o1-pro's
+    // $150/$600 per Mtok — which both overstates the ledger and inflates
+    // every reservation bound computed from it. One Fable call on
+    // 2026-09-20 was recorded that way.
+    //
+    // `cache_write` is the 5-minute write (1.25x input); the 1-hour write
+    // (2x) is a different product and is not what this pipeline reserves.
+    (
+        "anthropic",
+        "claude-fable-5",
+        Pricing {
+            input: Some(10.0),
+            output: Some(50.0),
+            // Fable 5 reads at the standard 0.1x. Fable 5.1 is 0.025x — a
+            // different number for a different model, not a typo.
+            cache_read: Some(1.0),
+            cache_write: Some(12.50),
+        },
+    ),
+    (
+        "anthropic",
+        "claude-fable-5.1",
+        Pricing {
+            input: Some(10.0),
+            output: Some(50.0),
+            cache_read: Some(0.25),
+            cache_write: Some(12.50),
+        },
+    ),
+    (
+        "anthropic",
+        "claude-opus-5",
+        Pricing {
+            input: Some(5.0),
+            output: Some(25.0),
+            cache_read: Some(0.50),
+            cache_write: Some(6.25),
+        },
+    ),
 ];
+
+/// Prices the generated registry has WRONG, not merely missing.
+///
+/// [`PUBLISHED`] only backfills a row with no price, so it cannot repair one
+/// that is present and wrong — and a wrong row is worse than a missing one,
+/// because nothing flags it. Entries here therefore OVERRIDE the registry.
+///
+/// Each entry must cite where the number came from and when it was read, and
+/// must be deleted the moment a regenerated registry agrees with it: an
+/// override that outlives the defect it fixes is how a stale price gets
+/// pinned forever. `corrections_are_still_needed` in this module's tests
+/// fails when the registry catches up, so the deletion cannot be forgotten.
+const CORRECTIONS: &[(&str, &str, Pricing)] = &[
+    // Read from https://platform.claude.com/docs/en/about-claude/pricing on
+    // 2026-09-21. The registry carries the OLD $3/$15 rate. That page states
+    // the $2/$10 launch price became standard and the increase to $3/$15
+    // scheduled for 2026-09-01 did not happen. Sonnet 5 is this install's
+    // single largest line — 400 calls and a recorded $41.15 in the first
+    // three weeks of September — so a 50% overstatement here distorts the
+    // spend figures the user reads AND every bound derived from them.
+    (
+        "anthropic",
+        "claude-sonnet-5",
+        Pricing {
+            input: Some(2.0),
+            output: Some(10.0),
+            cache_read: Some(0.20),
+            cache_write: Some(2.50),
+        },
+    ),
+];
+
+/// A correction for this canonical `provider`/`model`, if one is recorded.
+pub fn corrected_pricing(provider: &str, model: &str) -> Option<Pricing> {
+    CORRECTIONS
+        .iter()
+        .find(|(p, m, _)| p.eq_ignore_ascii_case(provider) && m.eq_ignore_ascii_case(model))
+        .map(|(_, _, pricing)| *pricing)
+}
 
 /// A published price for this canonical `provider`/`model`, if one is recorded.
 pub fn published_pricing(provider: &str, model: &str) -> Option<Pricing> {
@@ -97,6 +177,83 @@ pub fn published_ids() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every correction must still be needed. When a regenerated registry
+    /// carries the right number, the override has outlived its defect and
+    /// must be deleted — otherwise it silently pins a price that upstream
+    /// has since changed. This test is what makes that deletion happen.
+    #[test]
+    fn corrections_are_still_needed() {
+        let registry = super::super::CanonicalModelRegistry::bundled().unwrap();
+        for (provider, model, corrected) in CORRECTIONS {
+            let row = registry.get(provider, model).unwrap_or_else(|| {
+                panic!("{provider}/{model} left the registry — drop the correction")
+            });
+            assert_ne!(
+                (row.cost.input, row.cost.output),
+                (corrected.input, corrected.output),
+                "the registry now agrees with the correction for {provider}/{model} — delete it",
+            );
+        }
+    }
+
+    /// The published Anthropic rates this install bills against, as read from
+    /// platform.claude.com on 2026-09-21. Spelled out here so a change to the
+    /// table is a deliberate edit with a source, never a silent drift.
+    #[test]
+    fn anthropic_rates_match_the_published_table() {
+        for (model, input, output, cache_read, cache_write) in [
+            ("claude-fable-5", 10.0, 50.0, 1.0, 12.50),
+            ("claude-fable-5.1", 10.0, 50.0, 0.25, 12.50),
+            ("claude-opus-5", 5.0, 25.0, 0.50, 6.25),
+        ] {
+            let p = published_pricing("anthropic", model)
+                .unwrap_or_else(|| panic!("{model} must carry a published price"));
+            assert_eq!(
+                (p.input, p.output, p.cache_read, p.cache_write),
+                (
+                    Some(input),
+                    Some(output),
+                    Some(cache_read),
+                    Some(cache_write)
+                ),
+                "{model}",
+            );
+        }
+        let sonnet =
+            corrected_pricing("anthropic", "claude-sonnet-5").expect("sonnet 5 correction");
+        assert_eq!(
+            (
+                sonnet.input,
+                sonnet.output,
+                sonnet.cache_read,
+                sonnet.cache_write
+            ),
+            (Some(2.0), Some(10.0), Some(0.20), Some(2.50)),
+        );
+    }
+
+    /// The end of the road for both tables: what the pricing pipeline hands
+    /// back for a model that used to fall through to the worst case.
+    ///
+    /// Through `maybe_get_pricing`, deliberately — that is the entry point the
+    /// ledger uses, and it is the ONLY one that reaches a model with no
+    /// registry row at all (`maybe_get_canonical_model` needs a row to exist
+    /// before it can backfill a missing price into it, so Fable never gets
+    /// that far).
+    #[test]
+    fn fable_and_sonnet_price_through_the_public_entry_point() {
+        let fable = super::super::maybe_get_pricing("anthropic", "claude-fable-5")
+            .expect("fable 5 must price, not fall to the worst case");
+        assert_eq!((fable.input, fable.output), (Some(10.0), Some(50.0)));
+        let sonnet = super::super::maybe_get_pricing("anthropic", "claude-sonnet-5")
+            .expect("sonnet 5 must price");
+        assert_eq!(
+            (sonnet.input, sonnet.output),
+            (Some(2.0), Some(10.0)),
+            "the correction must win over the generated row",
+        );
+    }
 
     /// The row the ledger proved was missing on 2026-08-24.
     #[test]
