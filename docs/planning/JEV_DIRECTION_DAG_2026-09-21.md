@@ -322,6 +322,21 @@ the browser's "Done" and the 15 µs tests — and exactly what the evidence ledg
 | **S1** | A **persisted per-fire claim** keyed by `(job_id, scheduled_instant)` in the DB, so the second process loses the race whichever process it is. *Not* an in-process mutex (cannot solve a cross-process bug) and *not* a PID-file owner lock (the CLI subcommands would silently refuse to schedule — worse). | `crates/goose/src/scheduler.rs` + schema migration | coordinator; **the peer edited this file today (`0cafe04c`) — confirm it holds no uncommitted work there before dispatch** | T2 | **it cannot be reproduced in-process — do not accept a fix whose test spawns nothing and only walks the happy path, which already passes today.** Write the competing claim row directly and assert **the second writer loses**; a second test asserts two claims for *different* instants both run; the unique key is on the DB, per the "guards key per database" rule |
 | **S2** *(seam traced by `permagent-runtime-46`)* | **TRACED:** the refusal path is `agent.rs:2658-2666` — it persists the assistant message, yields it, calls `state_guard.mark_error()` and breaks; `mark_error` only sets a flag whose `Drop` emits `record_agent_error` (`agent.rs:2315-2327`), **nothing a caller can read**; the scheduler's stream loop treats `AgentEvent::Message` as ordinary output, so `final_result` is `Ok` and `scheduler.rs:861` writes `last_status: Ok`. **Take seam (b):** the scheduler asserts the run produced **at least one provider call** before recording `ok` — **count `cost_ledger` rows, never cost**, so a free local call still counts and local models are not punished; no change to the agent; it catches *future* silent no-ops, not just this refusal. **Rejected — seam (a):** making the refusal a stream error changes a user-visible chat surface for every caller. **Never key on the refusal text** — a grep-for-a-sentence guard rots. *(Note: free local calls only began being recorded in the ledger on 09-18 — verify a local-only run writes a row before relying on the count.)* A scheduled run that produced **no provider call** is not `ok` — record `refused` / `no_work` with the reason, and show it as such in Automate | `scheduler.rs`; status rendering is `ui/**` (**peer**) | coordinator + peer | T1 | replay of 09-19 → 09-21: those runs show as refused, not green; assert on the recorded provider-call count, not on `Ok`; **and the honest direction too — a run that DID make a call still records `ok`** |
 
+**Carried into S1/S2 from `permagent-runtime-46` (2026-09-21 evening; `scheduler.rs` confirmed clean, last commit `0cafe04c`):**
+
+- `0cafe04c` (a budget task per scheduled run) is **still unproven in the wild** — committed, built, installed and
+  unit-tested, but no schedule has fired since the install. S1 and S2 must not assume it works. An S2 assertion that
+  "a scheduled run records at least one provider call" tests `0cafe04c` at the same time; the node says so rather than
+  presenting it as an S2 property. First natural proof: the 03:20 health-review fire (the peer reads the ledger).
+- **No `permagent schedule` CLI subcommand may be used to construct evidence.** `Scheduler::new` starts the cron loop as a
+  construction side effect and five CLI subcommands call it, so a CLI invocation raises a second live scheduler beside
+  the app's — the very defect S1 exists to prove. Evidence comes from the app's own Run control, a natural fire, or a
+  test that writes the competing claim row directly.
+- **Withdrawn by the peer, do not cite:** "a volatile system suffix defeats prompt caching". Measured on the installed
+  build: two new sessions 22 s apart, cold 73,835 in / 0 read / $0.09231, warm 72,784 read / $0.00862 (10.7x). The
+  remaining cost lever is the **size of the cold prefix** (157 tools, ~39.7k tokens of schema); a daily automation
+  always pays cold. No Phase B node may be justified by the old caching claim.
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
