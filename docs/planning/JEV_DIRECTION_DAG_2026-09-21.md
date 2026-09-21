@@ -472,6 +472,19 @@ from two spaces. Pre-existing cron semantics, *not* S1 regressions: a DST fall-b
 arm, so a `Failed` turn that produced no assistant message ends in **silence**, the same user-visible shape as the 2026-09-21 incident.
 **V4 is widened: never silent after an empty transcript *or a Failed outcome*.**
 
+**S1 stopped a third time (Codex Astra), correctly, and exposed a pre-existing bug.** `missed_fire_at` searches from `last_run:
+DateTime<Utc>`, so it evaluates the cron expression **in UTC**, while the tick is armed in Local or the job's fixed offset
+(`scheduler.rs:~1032`). Converting afterwards names the wrong occurrence (weekly Mon 10:00 at `-02:00`: the tick claims `T10:00:00`, the
+catch-up derives `T08:00:00`). **Independent of S1, this means missed-run detection and catch-up eligibility are off by the UTC offset for
+every non-UTC schedule — a catch-up can fire early.** v4 fixes it at the root (search in the armed clock; return the instant as UTC so
+callers keep their types; fixtures with `tz = None` get an explicit tz so they stop being machine-dependent). The STOP rule is revised for
+this node: the principle is fixed; a derivation that violates it may be corrected without stopping and is listed as a deviation — the three
+stops were flaws in the coordinator's specs, not in the worker's care.
+
+**Gates are now memory-bound, not disk-bound.** The peer's clippy was OOM-killed at 20 % free / 19.4 GB swap / load 14 with no other cargo
+running. `dagJ-gate3.sh`: two build jobs, a `memwait` (≥ 25 % free, or the step does not start) before every step, clippy one crate per
+invocation. A disk kill line does not protect against the OOM killer.
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
