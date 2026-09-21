@@ -222,6 +222,25 @@ judge arm is removed. C2: decided by the peer.
   `Agent::dispatch_tool_call` — `agent.rs`, peer-owned). Shadow only: the journal records what the judge would have done while the existing
   path runs. There is **no dedicated mail-ingest module**; Gmail arrives as tool results.
 
+**Rulings from `permagent-runtime-46`, 2026-09-21 late evening (supersede the lines above where they differ):**
+
+- **Migrations:** the coordinator holds **v56 (S1 claim table) and v57 (B2b journal)**. The peer holds no number; it takes the next free one
+  when A4 actually begins and announces it first — a reserved-but-unused version is how two people both take v58.
+- **Accounting for a paid call that is not a provider completion:** *not* `AccountedFastCompletion` (shaped around input/output token
+  pricing; Jev has no output side), *not* a synthetic provider/model id in the router's pricing table (it would make `jev` look like a
+  provider in the one place that must not lie, and `providers::create` rejecting it is the structural invariant B1 was built around), and
+  *not* "record a ledger row after the fact" (unreserved spend is spend the ceiling cannot see; an always-on judge is not cents per day).
+  Instead a **new, narrow reservation entry point beside the provider one** — same reservations table, same task-identity requirement, same
+  ceilings, priced on a single input-token rate: `reserve_metered_call { kind: MeteredCallKind::Decision, unit_rate_per_mtok,
+  estimated_input_tokens }`, settled against real usage. It lives in `cost_router/**` + `session_manager` and **the peer writes it**; B2b is
+  specified against that interface and **waits for it** — an unreserved judge is worse than a late judge. Search/image/TTS reserving nothing
+  is plausible and deserves its own node.
+- **`0cafe04c` is confirmed in the wild (the peer's observation):** workspace-snapshot triggered through the app chat at 22:07 produced one
+  `session_type=scheduled` session with 2 provider calls ($0.0302), real tool calls and a finished report — one session, no twin.
+- **S1's mechanism, restated:** the S1b audit supersedes the "two cron loops tick together" framing. `Scheduler::new` runs the daemon's
+  startup reconciliation, so any CLI subcommand beside a live daemon *reset the in-process claim from outside the process* — which is why the
+  guard looked correct in source and useless in the data. Same conclusion: the claim must be persisted and cross-process.
+
 ## 4b. Phase V — the voice incident of 2026-09-21 (added at Jesse's request)
 
 *Jesse: "I tried voice and it got stuck on listening and then the iOS app crashed. It might be because it is an old
