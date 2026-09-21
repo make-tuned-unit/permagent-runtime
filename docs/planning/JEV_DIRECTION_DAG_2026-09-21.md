@@ -485,6 +485,21 @@ stops were flaws in the coordinator's specs, not in the worker's care.
 running. `dagJ-gate3.sh`: two build jobs, a `memwait` (≥ 25 % free, or the step does not start) before every step, clippy one crate per
 invocation. A disk kill line does not protect against the OOM killer.
 
+**S2 after its adversarial review (Codex Astra, traces not yet run):**
+
+- **Gated on an `agent.rs` fix (peer's file): the error latch is sticky across recovery.** `ReplyStateGuard.errored` is set at 15 sites and
+  never reset. A successful tool call followed by a dropped stream marks the error and breaks only the inner loop; the outer loop continues,
+  the turn completes — and the outcome is still `Failed`. That already reaches `subagent_handler` and the World View; with S2 it would mark a
+  successful scheduled run red and count toward auto-pause. S2 ships with or after that fix.
+- **No assistant text in the error (coordinator's addition, withdrawn).** `last_error` flows on to logs, the activity event payload and the
+  Decision Inbox; under the sticky latch the last assistant message can be private *success* text. The message is a fixed string plus a
+  pointer to the session.
+- **A typed `Failed` never enters the bounded retry loop** (the peer's ruling): one bit cannot distinguish a pre-wire refusal from a
+  failure after every tool ran, and the retry loop re-executes the whole job. It still records Error and counts toward the three-strike
+  auto-pause. Retries default to zero everywhere today. Splitting the outcome into pre-/post-side-effect is the peer's own node.
+- **Recorded, not fixed here:** failed runs are still written to the Brain by the "Remember scheduled turn" block (a daily refusal becomes a
+  daily memory) — pre-existing.
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
@@ -492,6 +507,7 @@ invocation. A disk kill line does not protect against the OOM killer.
 1b. **V1 needs your phone:** the iOS 27 crash fix is only proven by installing a build and running 25 voice open/close cycles on the device.
 2. **Minimum term/category counts** in the Librarian (they force padding on sparse memories) — a retrieval-quality
    ruling, deliberately left out of A2.
+2z. **RELEASE NOTE + RULING for S2 — auto-pause after an outage.** Once failed scheduled runs are recorded honestly, a provider outage fails each job, the existing breaker pauses it after **three** consecutive failed fires, and **nothing un-pauses it when the provider returns**: resume is manual from Automate, and jobs with no retries configured (all five today) raise no Decision Inbox item, so you are not told. Before S2, those runs were falsely green and kept firing. Options: notify on auto-pause; auto-resume after a successful health probe; or leave manual. Your call — S2 will not ship without the release note.
 2a. **IANA timezones on schedules silently mean "system local".** A job saved with `America/New_York` logs a warning nobody reads and runs on the Mac's clock (`scheduler.rs:319-324`; chrono-tz was never wired). Wire chrono-tz, or reject IANA names at save time with a clear message? Independent of S1.
 2b. **Two processes write one `schedule.json`.** The CLI and the app each rewrite the whole file from their own snapshot; S1b and S1 shrink the damage but the durable fix is daemon-owned storage with the CLI talking to the daemon. Worth a node?
 3. **Phase D** — each item is a product decision and gets its own ruling.
