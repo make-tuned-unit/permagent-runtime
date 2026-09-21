@@ -96,6 +96,8 @@ D*  instructions ledger · graph verification (Spectral) · inbox ranking · typ
 
 ### Phase B — Jev as a configurable judge provider (Jesse's explicit ask)
 
+**Reference for every worker on Phase B:** TypeSafe's own agent skill — installed for Claude Code on 2026-09-21 (`typesafe@typesafe-ai`, user scope; reviewed first: MIT, guidance only, no commands). Codex and Cursor workers do not load Claude plugins, so their prompts must tell them to read `https://raw.githubusercontent.com/typesafe-ai/skills/main/skills/typesafe-ai/SKILL.md` and the docs index `https://docs.typesafe.ai/llms.txt` before writing any request-building code. The key is in the keychain as `TYPESAFE_API_KEY` (name only) and is **verified live**: `docs/research/jev-evidence/jev-live-smoke-2026-09-21.json` is a real response to use as a wire fixture.
+
 **Design, to be confirmed by the peer before B1 starts.** Jev generates no text, so it is **not** a `Provider`
 (`providers/base.rs:590` — `stream`/`complete`); forcing it through that trait would make every caller handle a model
 that cannot answer. It gets its own small seam, and it is registered and configured like a provider:
@@ -213,10 +215,8 @@ V3 anticipated an OS-level isolation trap.**
 
 ## 5. Needs Jesse
 
-1. **A TypeSafe key (or "local only").** B2's end-to-end check needs a real `/v1/systemone` endpoint. Either a hosted
-   key (waitlist, or via Vercel AI Gateway / Cloudflare) — used **only** on public fixtures — or approval to download a
-   ~400 MB local Jev-compatible model to the M1 (heads-up to both peers). Until one exists, B2 is verified against a
-   mock and says so on the board.
+1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
+1b. **V1 needs your phone:** the iOS 27 crash fix is only proven by installing a build and running 25 voice open/close cycles on the device.
 2. **Minimum term/category counts** in the Librarian (they force padding on sparse memories) — a retrieval-quality
    ruling, deliberately left out of A2.
 3. **Phase D** — each item is a product decision and gets its own ruling.
