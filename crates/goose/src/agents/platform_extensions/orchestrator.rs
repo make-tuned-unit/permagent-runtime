@@ -5711,6 +5711,92 @@ fn classify_worker_fallback_reason(last_error: &str) -> Option<WorkerFallbackRea
     None
 }
 
+/// Dispatch-recovery fix: whether a dispatch's failure was the PROVIDER
+/// never actually running the model, or the model running and getting the
+/// work wrong. These are not the same failure and must not be retried the
+/// same way — measured in the incident this whole change fixes, where a
+/// role resolved to a provider whose endpoint is only up part of the day.
+/// An infrastructure failure (dead endpoint, missing model, a call that
+/// never got a response) says NOTHING about whether the model itself is
+/// capable of the task — retrying the identical dispatch a few seconds
+/// later, or on a different provider entirely, can still succeed. A
+/// capability failure (the model answered and the diff was wrong, or
+/// verify caught a real defect) is evidence about the MODEL, and retrying
+/// the same one is throwing good turns after bad. Conflating them is
+/// exactly how a dead endpoint turns into an escalation loop: the
+/// coordinator reads "it failed" without reading "it never even ran,"
+/// pays for a full attempt's worth of retries against a target that was
+/// never going to answer, and only escalates once that budget is spent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchFailureKind {
+    /// The call never reached a running model: connection refused/reset,
+    /// DNS/routing failure, the endpoint timing out before any response,
+    /// or the provider reporting the model itself is missing/unloaded
+    /// (Ollama's 404 "model not found" is the shape `fallback.rs`'s own
+    /// `is_local_provider`/pool-health checks already watch for).
+    Infrastructure,
+    /// Anything else: the call completed and the resulting work — or lack
+    /// of it — is what needs judging, not the transport.
+    Capability,
+}
+
+/// Substrings naming a failure that happened BEFORE any model turn
+/// completed — reused wording from `tool_signals.rs`'s `CRITICAL` list and
+/// `fallback.rs`'s own "unreachable (connection refused or unroutable)"
+/// phrasing, so this classifier recognizes the same failure shapes the
+/// rest of the router already names, rather than inventing a third
+/// vocabulary for the same handful of errors.
+const DISPATCH_INFRASTRUCTURE_SIGNALS: &[&str] = &[
+    "connection refused",
+    "econnrefused",
+    "connection reset",
+    "unreachable",
+    "unroutable",
+    "no route to host",
+    "name or service not known",
+    "dns",
+    "timed out",
+    "timeout",
+    "model not found",
+    "no such model",
+    "endpoint is down",
+    "endpoint down",
+];
+
+/// Dispatch-recovery fix: classify a failure's error text as
+/// [`DispatchFailureKind::Infrastructure`] or [`DispatchFailureKind::
+/// Capability`]. Deliberately separate from [`classify_worker_fallback_
+/// reason`] — that classifier answers "can a local model fix this by
+/// repeating itself" for the THREE shapes it already knows about
+/// (context/wall-ceiling/no-commit), all of which presume the model
+/// actually ran; this one answers a prior, narrower question — did the
+/// call even reach a model — and is meant to gate retry POLICY (same
+/// target vs. a different one, immediate vs. backed-off) rather than tier
+/// escalation. Defaults to `Capability`: an infrastructure read requires a
+/// positive match on a known transport-failure phrase, never the absence
+/// of one, so an unfamiliar error is judged on its content, not waved
+/// through as "probably the network."
+fn classify_dispatch_failure_kind(last_error: &str) -> DispatchFailureKind {
+    let haystack = last_error.to_ascii_lowercase();
+    if DISPATCH_INFRASTRUCTURE_SIGNALS
+        .iter()
+        .any(|s| haystack.contains(s))
+    {
+        DispatchFailureKind::Infrastructure
+    } else {
+        DispatchFailureKind::Capability
+    }
+}
+
+impl DispatchFailureKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Infrastructure => "infrastructure",
+            Self::Capability => "capability",
+        }
+    }
+}
+
 /// R48b (Q5's fallback rule): whether THIS re-dispatch should override its
 /// already-resolved role/model to the coordinator/cloud (`WorkflowRole::
 /// Orchestrate`) tier instead of repeating the local tier the goal started
@@ -5745,6 +5831,50 @@ fn should_fallback_to_coordinator_tier(
         return None;
     }
     classify_worker_fallback_reason(prior_last_error?)
+}
+
+/// Dispatch-recovery fix: pure decision core of the resolved-model
+/// validation at the bottom of `dispatch_goal_fn`'s routing-resolution
+/// block. Pure and IO-free, like `should_fallback_to_coordinator_tier`
+/// above — every input is already sitting in that block's local variables
+/// before this is called, so the decision is table-testable without a
+/// database or a live goal card.
+///
+/// - `resolved_provider`: the provider id THIS dispatch actually resolved
+///   to (`resolved`'s `RoleModel.provider`), whatever role or precedence
+///   path produced it.
+/// - `meets_local_bar`: `cost_router::goal_meets_local_bar`'s answer for
+///   this goal's own title/description/metadata — positive evidence it is
+///   a small, mechanical, single-file change.
+/// - `current_role`: the role that produced `resolved_provider`, so an
+///   already-capable resolution is never redundantly re-resolved at
+///   itself (see the doc comment at the call site for why `Edit`/
+///   `Orchestrate` are excluded).
+/// - `pinned_role`: an explicit per-goal `worker_tier` pin's tier, if any
+///   — `assess_goal`'s "an explicit pin always wins" rule extends here
+///   too: a resolution that still matches what the pin asked for is left
+///   alone.
+///
+/// Returns `true` exactly when the resolved provider is a small on-device
+/// runtime AND the goal carries no positive evidence it fits one AND
+/// neither exemption above applies — i.e. exactly when the caller should
+/// re-resolve this dispatch onto `WorkflowRole::Edit`.
+fn resolved_route_needs_capability_escalation(
+    resolved_provider: &str,
+    meets_local_bar: bool,
+    current_role: Option<crate::cost_router::WorkflowRole>,
+    pinned_role: Option<crate::cost_router::WorkflowRole>,
+) -> bool {
+    let already_capable = matches!(
+        current_role,
+        Some(crate::cost_router::WorkflowRole::Edit)
+            | Some(crate::cost_router::WorkflowRole::Orchestrate)
+    );
+    let respects_explicit_pin = pinned_role.is_some() && pinned_role == current_role;
+    if already_capable || respects_explicit_pin {
+        return false;
+    }
+    crate::cost_router::is_local_provider(resolved_provider) && !meets_local_bar
 }
 
 // ── R55a: the mid-attempt half of the local→cloud fallback ────────────────
@@ -7674,16 +7804,31 @@ pub(crate) async fn dispatch_goal_fn(
                     &derived,
                     policy,
                 ) {
+                    // Dispatch-recovery fix: log WHICH kind of failure
+                    // triggered this fallback — infrastructure (the
+                    // endpoint never answered) or capability (the model
+                    // answered and the work was wrong) — alongside the
+                    // existing `WorkerFallbackReason`. Observability only:
+                    // `should_fallback_to_coordinator_tier`'s own decision
+                    // is unchanged by this read, but the two are easy to
+                    // conflate (see `classify_dispatch_failure_kind`'s own
+                    // doc comment), and this is the exact site where that
+                    // conflation turns into an escalation loop, so the
+                    // audit trail should say which one actually happened.
+                    let failure_kind =
+                        classify_dispatch_failure_kind(prior_last_error.unwrap_or(""));
                     tracing::info!(
                         target: "permagentd::brain",
                         card_id,
                         from = crate::cost_router::WorkflowRole::Local.as_str(),
                         to = crate::cost_router::WorkflowRole::Orchestrate.as_str(),
                         reason = fallback_reason.as_str(),
-                        "worker_fallback from={} to={} reason={}",
+                        failure_kind = failure_kind.as_str(),
+                        "worker_fallback from={} to={} reason={} failure_kind={}",
                         crate::cost_router::WorkflowRole::Local.as_str(),
                         crate::cost_router::WorkflowRole::Orchestrate.as_str(),
-                        fallback_reason.as_str()
+                        fallback_reason.as_str(),
+                        failure_kind.as_str()
                     );
                     role = Some(crate::cost_router::WorkflowRole::Orchestrate);
                     resolved = Some(hit);
@@ -7699,6 +7844,89 @@ pub(crate) async fn dispatch_goal_fn(
                 // dispatch simply proceeds on the local tier it already
                 // resolved — matching every other cost_router rule's
                 // guardrail (never invent a vendor default).
+            }
+        }
+
+        // Dispatch-recovery fix (2026-09-21, measured incident): validate
+        // the RESOLVED provider/model, not the role LABEL that produced it.
+        // A role label alone tells you nothing about capability — a user's
+        // `PERMAGENT_ROLE_MECHANICAL_*`/`PERMAGENT_ROLE_LOCAL_*` (or a pack
+        // pin, or the derived best-fit map) can point BOTH the `Mechanical`
+        // and `Local` roles at the same small on-device runtime, one whose
+        // endpoint is only up part of the day, so "not literally the Local
+        // role" is no guarantee this dispatch isn't still headed for a weak
+        // model. Checked LAST, after every precedence above (explicit pin,
+        // verify-loop escalation, the R48b local-repeat-failure rescue, or
+        // the assessed default) has already set `role`/`resolved` for this
+        // dispatch: whatever actually resolved, if it is a small local
+        // runtime (`cost_router::is_local_provider`) and this goal carries
+        // no positive evidence it fits one (`cost_router::
+        // goal_meets_local_bar` — the same single-file/mechanical-evidence
+        // bar `default_worker_tier_for_goal` now requires), this dispatch
+        // starts on the cheapest eligible stronger worker instead — a
+        // capable edit model (`WorkflowRole::Edit`), not `Orchestrate`,
+        // which stays reserved for the breadth/tag-triggered case. A
+        // capability gap is corrected here, upfront, rather than paying for
+        // a doomed attempt and an escalation loop the way the measured
+        // incident did (`interrupt_agent` refused, `steer_goal` unsupported
+        // for permagent workers, a headless `goal_advance --worker
+        // claude_code` refused, and the goal was finally re-dispatched at
+        // the edit tier after ~38 turns and $2.19 committed with zero files
+        // written). A no-op when nothing resolved at all (`resolved: None`
+        // — an unconfigured role, unchanged from before this lane).
+        // `resolved_route_needs_capability_escalation` (below, table-tested
+        // on its own) carries the two exemptions: already-`Edit`/
+        // `Orchestrate` resolutions (nothing to upgrade FROM) and a
+        // resolution that still matches an EXPLICIT per-goal `worker_tier`
+        // pin (`assess_goal`'s own precedence rule #1 — "an explicit pin
+        // always wins" — extends here too; this validation exists to
+        // correct a role LABEL silently under-delivering, not to
+        // second-guess a human's direct instruction).
+        let pinned_role = explicit_routing.as_ref().map(|rc| rc.tier);
+        // Owned copies, not a borrow of `resolved` — this whole block goes
+        // on to reassign `resolved` itself, and cloning two short strings
+        // up front is cheaper than reasoning about a borrow that would
+        // otherwise span the reassignment.
+        let currently_resolved = resolved
+            .as_ref()
+            .map(|(rm, _)| (rm.provider.clone(), rm.model.clone()));
+        if let Some((from_provider, from_model)) = currently_resolved {
+            let meets_local_bar = crate::cost_router::goal_meets_local_bar(
+                &card.title,
+                &card.description,
+                &card.metadata_json,
+            );
+            if resolved_route_needs_capability_escalation(
+                &from_provider,
+                meets_local_bar,
+                role,
+                pinned_role,
+            ) {
+                if let Some(hit) = resolve_dispatch_role_model(
+                    crate::cost_router::WorkflowRole::Edit,
+                    &derived,
+                    policy,
+                ) {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        card_id,
+                        from_provider = %from_provider,
+                        from_model = %from_model,
+                        to_provider = %hit.0.provider,
+                        to_model = %hit.0.model,
+                        "resolved model was a small local runtime with no positive \
+                         local-bar evidence for this goal; escalating to a capable edit \
+                         model before dispatch",
+                    );
+                    role = Some(crate::cost_router::WorkflowRole::Edit);
+                    resolved = Some(hit);
+                    routing_choice = Some(RoutingChoice {
+                        tier: crate::cost_router::WorkflowRole::Edit,
+                        reason: "resolved provider was a small local runtime and the goal \
+                                 carried no positive local-bar evidence"
+                            .to_string(),
+                    });
+                }
             }
         }
     }
@@ -18596,7 +18824,7 @@ pub async fn drain_dispatched_goals(
     poll_interval: std::time::Duration,
     on_status: impl FnMut(&str, GoalState),
 ) -> Result<DrainSummary, String> {
-    let Some(_drain_guard) = CoordinatorDrainGuard::try_begin(coordinator_session_id) else {
+    let Some(_drain_guard) = CoordinatorDrainGuard::try_begin(pool, coordinator_session_id) else {
         tracing::debug!(
             target: "permagentd::brain",
             session_id = %coordinator_session_id,
@@ -18642,29 +18870,44 @@ static ACTIVE_COORDINATOR_DRAINS: once_cell::sync::Lazy<Mutex<HashSet<String>>> 
 /// panic) always clears the mark, the same "a dead holder can never wedge
 /// this forever" guarantee [`CompletionInFlight`] gives its own registry.
 struct CoordinatorDrainGuard {
-    coordinator_session_id: String,
+    key: String,
 }
 
 impl CoordinatorDrainGuard {
+    /// The key is the DATABASE plus the session id, never the session id
+    /// alone. Session ids are per-day sequences (`20260921_1`), unique inside
+    /// one store but not across stores, so a bare-id key made every store's
+    /// first coordinator the same coordinator: three of this module's own
+    /// drain tests, each on its own tempdir, started failing the moment the
+    /// guard landed because whichever ran second was told a drain was already
+    /// in flight and returned an empty summary in ~5µs.
+    fn key_for(pool: &sqlx::Pool<sqlx::Sqlite>, coordinator_session_id: &str) -> String {
+        let database = pool
+            .connect_options()
+            .get_filename()
+            .to_string_lossy()
+            .into_owned();
+        format!("{database}\u{1}{coordinator_session_id}")
+    }
+
     /// `None` when another drain already holds this coordinator — the
     /// caller's job, not this guard's, to decide what "someone else is
     /// already watching" means for it (`drain_dispatched_goals` treats it as
     /// "nothing new to report").
-    fn try_begin(coordinator_session_id: &str) -> Option<Self> {
+    fn try_begin(pool: &sqlx::Pool<sqlx::Sqlite>, coordinator_session_id: &str) -> Option<Self> {
+        let key = Self::key_for(pool, coordinator_session_id);
         let mut active = ACTIVE_COORDINATOR_DRAINS.lock().ok()?;
-        if !active.insert(coordinator_session_id.to_string()) {
+        if !active.insert(key.clone()) {
             return None;
         }
-        Some(Self {
-            coordinator_session_id: coordinator_session_id.to_string(),
-        })
+        Some(Self { key })
     }
 }
 
 impl Drop for CoordinatorDrainGuard {
     fn drop(&mut self) {
         if let Ok(mut active) = ACTIVE_COORDINATOR_DRAINS.lock() {
-            active.remove(&self.coordinator_session_id);
+            active.remove(&self.key);
         }
     }
 }
@@ -38273,28 +38516,32 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     }
 
     /// X-cost-1, end-to-end: a fresh goal dispatched through a headless
-    /// policy with ONLY `PERMAGENT_PACK_MECHANICAL_*` pinned (no
-    /// `PERMAGENT_ROLE_*`) must record the PACK model on the goal card's
-    /// routing receipt (`capability_snapshot.model_routing`), written
-    /// SYNCHRONOUSLY by `advance_goal_checked` before `engine.spawn` even
-    /// runs — unlike the dispatched child session's own `model_config`,
-    /// which the spawned subagent task updates later and is not safe to
-    /// assert against right after `dispatch_goal_fn` returns. A vanilla
-    /// `setup_goal_in_state` card ("Test goal in ready" / "test") hits
-    /// `assess_goal`'s no-strong-signal default (`Tier::CheapCloud` →
-    /// `WorkflowRole::Mechanical`) on this, its first dispatch — no
-    /// escalation state exists yet — so the assessed-role branch of
-    /// `dispatch_goal_fn`'s InternalSubagent arm is what must consult the
-    /// pack pin. Pre-fix, `role_model_or_derived` never read
-    /// `PERMAGENT_PACK_*` at all, so this pin had zero effect and the
-    /// receipt would have shown the T1 session fallback instead.
+    /// policy with ONLY `PERMAGENT_PACK_EDIT_*` pinned (no `PERMAGENT_ROLE_
+    /// *`) must record the PACK model on the goal card's routing receipt
+    /// (`capability_snapshot.model_routing`), written SYNCHRONOUSLY by
+    /// `advance_goal_checked` before `engine.spawn` even runs — unlike the
+    /// dispatched child session's own `model_config`, which the spawned
+    /// subagent task updates later and is not safe to assert against right
+    /// after `dispatch_goal_fn` returns. A vanilla `setup_goal_in_state`
+    /// card ("Test goal in ready" / "test") carries no `paths`/`tags`
+    /// metadata, so it hits `default_worker_tier_for_goal`'s own
+    /// conservative default on this, its first dispatch — no escalation
+    /// state exists yet: dispatch-recovery fix (2026-09-21), missing scope
+    /// metadata is no longer read as "safe for the free rung" and now
+    /// resolves `WorkflowRole::Edit`, not `Mechanical` — so the
+    /// assessed-role branch of `dispatch_goal_fn`'s InternalSubagent arm is
+    /// what must consult the EDIT pack pin. Pre-fix (the older `role_model_
+    /// or_derived` bug this test originally covered), `role_model_or_
+    /// derived` never read `PERMAGENT_PACK_*` at all, so this pin had zero
+    /// effect and the receipt would have shown the T1 session fallback
+    /// instead.
     #[tokio::test]
     #[serial_test::serial(receipts_global_registry, routing_env)]
     async fn dispatch_goal_fn_honours_a_pack_only_pin_for_a_fresh_headless_goal() {
-        std::env::remove_var("PERMAGENT_ROLE_MECHANICAL_PROVIDER");
-        std::env::remove_var("PERMAGENT_ROLE_MECHANICAL_MODEL");
-        std::env::set_var("PERMAGENT_PACK_MECHANICAL_PROVIDER", "ollama");
-        std::env::set_var("PERMAGENT_PACK_MECHANICAL_MODEL", "qwen3-coder");
+        std::env::remove_var("PERMAGENT_ROLE_EDIT_PROVIDER");
+        std::env::remove_var("PERMAGENT_ROLE_EDIT_MODEL");
+        std::env::set_var("PERMAGENT_PACK_EDIT_PROVIDER", "ollama");
+        std::env::set_var("PERMAGENT_PACK_EDIT_MODEL", "qwen3-coder");
 
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(crate::session::SessionManager::new(
@@ -38343,8 +38590,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         )
         .await;
 
-        std::env::remove_var("PERMAGENT_PACK_MECHANICAL_PROVIDER");
-        std::env::remove_var("PERMAGENT_PACK_MECHANICAL_MODEL");
+        std::env::remove_var("PERMAGENT_PACK_EDIT_PROVIDER");
+        std::env::remove_var("PERMAGENT_PACK_EDIT_MODEL");
 
         let _session_id = result.expect("dispatch must succeed");
 
@@ -38389,8 +38636,10 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// own env-pin/assert-on-the-persisted-receipt shape, but pins the LOCAL
     /// pack: a vanilla `setup_goal_in_state` goal's own default rule
     /// (`default_worker_tier_for_goal`, no `paths`/`tags` set) lands on
-    /// `Mechanical`, a DIFFERENT role/pack from `Local` — so a Local-pinned
-    /// receipt is only possible if the explicit tier actually won.
+    /// `Edit` (dispatch-recovery fix, 2026-09-21 — missing scope metadata
+    /// is conservative now, not `Local`-eligible), a DIFFERENT role/pack
+    /// from `Local` — so a Local-pinned receipt is only possible if the
+    /// explicit tier actually won.
     #[tokio::test]
     #[serial_test::serial(receipts_global_registry, routing_env)]
     async fn dispatch_goal_fn_honours_an_explicit_worker_tier_and_records_it_on_the_audit() {
@@ -38743,6 +38992,140 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         assert_eq!(
             should_fallback_to_coordinator_tier(None, 1, true, false),
             None
+        );
+    }
+
+    /// Dispatch-recovery fix, required test 4 ("a resolved small-local
+    /// model plus a task that fails the bar is redirected to a stronger
+    /// worker"): [`resolved_route_needs_capability_escalation`] is the pure
+    /// decision core of the dispatch-seam validation — no database, no
+    /// live worker, exactly the level this decision can be proven at.
+    #[test]
+    fn resolved_route_needs_capability_escalation_catches_a_mislabeled_local_resolution() {
+        use crate::cost_router::WorkflowRole;
+
+        // The measured incident's shape: SOME role resolved to a small
+        // local runtime (here labeled `Mechanical` — the exact role the
+        // bug report names alongside `Local` as capable of silently
+        // resolving to the same overnight-only endpoint), and the goal
+        // fails the local bar. Must escalate.
+        assert!(resolved_route_needs_capability_escalation(
+            "ollama",
+            false,
+            Some(WorkflowRole::Mechanical),
+            None,
+        ));
+
+        // Also caught when the role IS literally `Local`.
+        assert!(resolved_route_needs_capability_escalation(
+            "ollama",
+            false,
+            Some(WorkflowRole::Local),
+            None,
+        ));
+
+        // The cheap path must keep working: a small local runtime AND a
+        // goal that genuinely meets the local bar must never escalate.
+        assert!(!resolved_route_needs_capability_escalation(
+            "ollama",
+            true,
+            Some(WorkflowRole::Local),
+            None,
+        ));
+
+        // A cloud provider is never "small local" regardless of the bar —
+        // nothing to correct here.
+        assert!(!resolved_route_needs_capability_escalation(
+            "anthropic",
+            false,
+            Some(WorkflowRole::Mechanical),
+            None,
+        ));
+
+        // Already capable: re-resolving `Edit`/`Orchestrate` at themselves
+        // is a no-op this function must never ask for, even against a
+        // local provider and a failing bar (a deliberately-misconfigured
+        // Edit/Orchestrate pin is a user's own choice, not a role LABEL
+        // silently under-delivering).
+        assert!(!resolved_route_needs_capability_escalation(
+            "ollama",
+            false,
+            Some(WorkflowRole::Edit),
+            None,
+        ));
+        assert!(!resolved_route_needs_capability_escalation(
+            "ollama",
+            false,
+            Some(WorkflowRole::Orchestrate),
+            None,
+        ));
+
+        // An explicit per-goal pin that still matches the resolved role
+        // wins outright — the coordinator's own direct instruction is not
+        // second-guessed by this validation.
+        assert!(!resolved_route_needs_capability_escalation(
+            "ollama",
+            false,
+            Some(WorkflowRole::Local),
+            Some(WorkflowRole::Local),
+        ));
+
+        // But a pin for a DIFFERENT tier than what actually resolved (e.g.
+        // escalation or the R48b fallback has since moved `role` away from
+        // the pin) does not exempt anything — the check applies normally.
+        assert!(resolved_route_needs_capability_escalation(
+            "ollama",
+            false,
+            Some(WorkflowRole::Mechanical),
+            Some(WorkflowRole::Local),
+        ));
+    }
+
+    /// Dispatch-recovery fix, required test 5 ("an infrastructure failure
+    /// is classified differently from a capability failure"):
+    /// [`classify_dispatch_failure_kind`] must separate a call that never
+    /// reached a model from one that did and produced wrong work.
+    #[test]
+    fn classify_dispatch_failure_kind_separates_infrastructure_from_capability() {
+        // Infrastructure: the call never reached a running model.
+        for infra in [
+            "Error: connection refused (os error 61)",
+            "ECONNREFUSED 127.0.0.1:11434",
+            "request to http://localhost:11434 timed out",
+            // NOT the retired cheap default's id: `decomposition_default_is_no_longer_qwen`
+            // greps this file for it, and a sample string is still a match.
+            "ollama: model not found: llama3:8b",
+            "dial tcp: no route to host",
+            "dns lookup failed: name or service not known",
+        ] {
+            assert_eq!(
+                classify_dispatch_failure_kind(infra),
+                DispatchFailureKind::Infrastructure,
+                "{infra:?}"
+            );
+        }
+
+        // Capability: the call completed and the WORK is what's in
+        // question — never mistaken for a transport failure just because
+        // something went wrong.
+        for capability in [
+            "verify failed: 2 tests failing",
+            "diff did not apply: context mismatch at line 42",
+            "review REQUEST_CHANGES: off-by-one in discount calculation",
+            "no commits past the dispatch baseline",
+        ] {
+            assert_eq!(
+                classify_dispatch_failure_kind(capability),
+                DispatchFailureKind::Capability,
+                "{capability:?}"
+            );
+        }
+
+        // Defaults to Capability, never Infrastructure, on unfamiliar text
+        // — a positive match is required, absence of one is not evidence.
+        assert_eq!(
+            classify_dispatch_failure_kind("something unexpected happened"),
+            DispatchFailureKind::Capability
         );
     }
 
@@ -39395,7 +39778,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// is asserted against a generous cap so a regression that ignores the
     /// empty wait-set (and sleeps for the whole cap regardless) would show up
     /// as a slow test, not just a wrong count.
-        #[tokio::test]
+    #[tokio::test]
     async fn drain_dispatched_goals_returns_promptly_once_the_dispatched_goal_completes() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(crate::session::SessionManager::new(

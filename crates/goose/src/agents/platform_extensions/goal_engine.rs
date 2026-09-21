@@ -595,10 +595,21 @@ impl GoalEngine for InternalSubagentEngine {
                 self.provider.get_model_config(),
             ),
         };
-        let task_provider =
-            providers::create(&provider_name, model_config, self.extensions.clone())
+        // With no role model to honour, the worker runs on the session's OWN
+        // provider — so reuse the live object rather than asking the registry
+        // to build a second one from its name. Rebuilding by name is not just
+        // wasteful, it can fail outright for a provider that exists as an
+        // instance but not as a registry entry, which is exactly how the
+        // untagged-default change (Mechanical -> Edit, 2026-09-21) turned a
+        // passing dispatch into "Unknown provider: <session's own provider>":
+        // the old default happened to resolve to a registry-creatable model,
+        // and nothing else was holding this path up.
+        let task_provider = match &self.model_override {
+            None => Arc::clone(&self.provider),
+            Some(_) => providers::create(&provider_name, model_config, self.extensions.clone())
                 .await
-                .map_err(|e| format!("Failed to create provider for goal dispatch: {}", e))?;
+                .map_err(|e| format!("Failed to create provider for goal dispatch: {}", e))?,
+        };
 
         // Live cache guard: a cache-heavy role routed by the role map to a
         // non-caching provider forfeits the warm-prefix saving. Fires only when the
@@ -4368,7 +4379,16 @@ mod tests {
             extensions: Vec::new(),
             persona_override: None,
             role: None,
-            model_override: None,
+            // The stop this test leans on is provider creation, which is
+            // reached only through the role-model branch now: with no override
+            // the worker reuses the session's own live provider rather than
+            // rebuilding it from its name. The subject here is the child
+            // session's working_dir, so the override just keeps the same
+            // early, unrelated failure the test was written around.
+            model_override: Some(crate::cost_router::RoleModel {
+                provider: "y3-unregistered-provider".to_string(),
+                model: "y3-test-model".to_string(),
+            }),
             compact_worker_profile: false,
         };
 

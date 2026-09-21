@@ -178,9 +178,22 @@ pub fn assess_goal(title: &str, description: &str, metadata: &serde_json::Value)
 /// `Mechanical` rung instead of `Local`.
 const LOCAL_LANGUAGE_EXTENSIONS: &[&str] = &["py", "js", "ts", "sh"];
 
-/// R55b: the file-count ceiling for the `Local` rung — above this, the
-/// default rule never routes local regardless of language or vocabulary.
-const LOCAL_MAX_FILES: usize = 2;
+/// Dispatch-recovery fix (2026-09-21 measured incident): a two-file
+/// analytics goal, wordless of any mechanical vocabulary, routed to
+/// `ollama/qwen2.5:7b` on file-count and language alone and failed —
+/// recovery was then expensive (`interrupt_agent` refused, `steer_goal`
+/// unsupported for permagent workers, `goal_advance --worker claude_code`
+/// refused headless), and the goal was finally re-dispatched at the
+/// `edit` tier after ~38 turns and $2.19 committed with zero files
+/// written. The old ceiling let ANY goal with up to two files in a known
+/// language default to `Local`, treating "nothing disqualifies it" as
+/// evidence it fit. It doesn't: absence of a build-system/refactor signal
+/// is not the same as the change actually being mechanical. Narrowed to
+/// exactly one file — the local tier's default now requires POSITIVE
+/// evidence ([`goal_meets_local_bar`]), and a single file is the most that
+/// evidence can be asked to cover before "how many files does this touch"
+/// stops being a question a human can answer without reading the diff.
+const LOCAL_MAX_FILES: usize = 1;
 
 /// R55b (`## A52 analysis` point 2, `harness-refactor-shipping-quote-
 /// signature`'s 3-of-6 Local split): free-text markers meaning a goal is
@@ -191,7 +204,7 @@ const LOCAL_MAX_FILES: usize = 2;
 /// existing DOWN-only asymmetry (see the module doc comment), these can
 /// only DENY the `Local` shortcut — never promote a goal to `Orchestrate`
 /// on their own; an untagged goal that merely happens to mention one of
-/// these words still lands on `Mechanical`, not `Orchestrate`.
+/// these words still lands on `Edit`, not `Orchestrate`.
 const LOCAL_INELIGIBLE_TEXT_SIGNALS: &[&str] = &[
     // Build system.
     "makefile",
@@ -244,6 +257,51 @@ fn goal_text_names_build_system_or_cross_file_change(
         .any(|s| haystack.contains(s))
 }
 
+/// Dispatch-recovery fix: whether a goal carries POSITIVE evidence it fits
+/// the small on-device tier, rather than merely lacking evidence AGAINST
+/// it. The old rule asked only "does this avoid the deny-list" (right
+/// language, file count under a ceiling, no build-system/refactor words);
+/// that is an absence-of-a-red-flag test, and the measured incident this
+/// fixes (a two-file analytics goal, no mechanical wording anywhere in it)
+/// sailed through it and still failed on a 7B model. A goal now needs ALL
+/// of: exactly one known file ([`LOCAL_MAX_FILES`] — multi-file and
+/// missing/unknown-scope `paths` metadata are both excluded, since an
+/// empty or multi-entry list is not evidence either way and must be read
+/// conservatively), in a language the on-device tier handles
+/// ([`LOCAL_LANGUAGE_EXTENSIONS`]), whose own text names a MECHANICAL,
+/// concretely-checkable edit ([`MECHANICAL_SIGNALS`] — typo, rename,
+/// formatting, comment, docstring, "add a test", …, the same vocabulary
+/// [`assess_goal`] already trusts for its own local shortcut), and whose
+/// text does not ALSO name a build system or cross-file refactor/rename
+/// ([`goal_text_names_build_system_or_cross_file_change`] — an "add a
+/// docstring while updating every caller" goal names both, and the deny
+/// wins). Reads only the goal's own free text and structured `paths` —
+/// still zero-LLM, for the reason this whole module never asks a model.
+pub fn goal_meets_local_bar(title: &str, description: &str, metadata: &serde_json::Value) -> bool {
+    let paths: Vec<&str> = metadata
+        .get("paths")
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| arr.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    if paths.len() != LOCAL_MAX_FILES {
+        return false;
+    }
+    let is_local_language = paths.iter().all(|p| {
+        p.rsplit('.').next().is_some_and(|ext| {
+            let ext = ext.to_lowercase();
+            LOCAL_LANGUAGE_EXTENSIONS.contains(&ext.as_str())
+        })
+    });
+    if !is_local_language {
+        return false;
+    }
+    if goal_text_names_build_system_or_cross_file_change(title, description, metadata) {
+        return false;
+    }
+    let haystack = format!("{title} {description}").to_lowercase();
+    MECHANICAL_SIGNALS.iter().any(|s| haystack.contains(s))
+}
+
 /// R48d (HARNESS_LOOP_LOG.md "A45 design", Addendum (b)): the default
 /// `WorkflowRole` a dispatch routes to when `goal_advance{action: dispatch}`
 /// carries neither an explicit `worker_tier` nor a worker persona
@@ -251,22 +309,22 @@ fn goal_text_names_build_system_or_cross_file_change(
 /// inference sits today, refining it into a concrete role rather than
 /// replacing its signals. Reuses [`assess_goal`]'s breadth ([`MANY_FILES`])
 /// and vocabulary ([`HARD_SIGNALS`], tags-only — the same no-self-promotion
-/// rule: free text can only route DOWN, never up) checks verbatim, adding
-/// structural signals: file extension and file count, read from
-/// `metadata.paths` when present, plus (R55b) a free-text DENY-only check
-/// ([`goal_text_names_build_system_or_cross_file_change`]) that keeps a
-/// goal off the `Local` rung even when its own `paths` list is short.
-/// Never asks a model, for the same reason `assess_goal` never does (see
-/// this module's doc comment).
+/// rule: free text can only route DOWN, never up) checks verbatim for the
+/// `Orchestrate` cut, then defers to [`goal_meets_local_bar`] for the
+/// `Local` cut. Never asks a model, for the same reason `assess_goal`
+/// never does (see this module's doc comment).
 ///
 /// Precedence: breadth (many files) or tagged hard-signal vocabulary →
-/// `Orchestrate` (the multi-file/refactor/build-system rung); a small
-/// (`paths.len() <= LOCAL_MAX_FILES`) goal in a language the on-device
-/// tier handles well, whose own text names no build system or cross-file
-/// refactor → `Local`; otherwise `Mechanical` — the same cheap-cloud-shaped
-/// rung an unsignalled goal starts on in [`assess_goal`]. Returns the
-/// resolved role together with a static reason string for the dispatch
-/// audit trail.
+/// `Orchestrate` (the multi-file/refactor/build-system rung); positive
+/// evidence of a small, mechanical, single-file change
+/// ([`goal_meets_local_bar`]) → `Local`; otherwise `Edit` — a CAPABLE edit
+/// model, not the weak cheap-cloud rung the old default fell to. Multi-file
+/// work, missing/unknown scope metadata, an API/signature change, or
+/// anything needing cross-file reasoning all land here now: the whole
+/// point of the tightened bar above is that "no strong signal either way"
+/// must no longer read as "safe for a 7B," since that is precisely the gap
+/// the measured incident exploited. Returns the resolved role together
+/// with a static reason string for the dispatch audit trail.
 pub fn default_worker_tier_for_goal(
     title: &str,
     description: &str,
@@ -303,33 +361,17 @@ pub fn default_worker_tier_for_goal(
         return (WorkflowRole::Orchestrate, "tagged as reasoning-heavy work");
     }
 
-    // Language: a small goal in a language the local tier handles well is
-    // the "give the free rung a fair shot" case.
-    let is_local_language = !paths.is_empty()
-        && paths.iter().all(|p| {
-            p.rsplit('.').next().is_some_and(|ext| {
-                let ext = ext.to_lowercase();
-                LOCAL_LANGUAGE_EXTENSIONS.contains(&ext.as_str())
-            })
-        });
-    // R55b: even a small, single/two-file, right-language goal is denied
-    // the Local shortcut when its own text names a build system or a
-    // cross-file refactor/rename — the A52 shape where a single call-site
-    // edit's own `paths` list stayed short while its prose named it as one
-    // caller among several being updated for a changed signature.
-    if paths.len() <= LOCAL_MAX_FILES
-        && is_local_language
-        && !goal_text_names_build_system_or_cross_file_change(title, description, metadata)
-    {
+    if goal_meets_local_bar(title, description, metadata) {
         return (
             WorkflowRole::Local,
-            "small goal, right language, no build-system or cross-file-refactor signal",
+            "single known file, right language, mechanical evidence in its own text",
         );
     }
 
     (
-        WorkflowRole::Mechanical,
-        "no strong signal — start on the cheap rung",
+        WorkflowRole::Edit,
+        "no positive evidence this is a small, mechanical, single-file change — start on a \
+         capable edit model",
     )
 }
 
@@ -462,21 +504,51 @@ mod tests {
 
     // ── R48d: default_worker_tier_for_goal ──────────────────────────────────
 
+    /// The whole point of having a free rung: a single-file, genuinely
+    /// mechanical goal (positive evidence — "typo" is in [`MECHANICAL_
+    /// SIGNALS`]) must still resolve `Local`. Tightening the bar must not
+    /// mean the cheap path stops working for the goals it's actually good
+    /// at.
     #[test]
-    fn a_one_file_python_goal_defaults_to_local() {
+    fn a_one_file_mechanical_python_goal_still_defaults_to_local() {
         let (role, _reason) = default_worker_tier_for_goal(
-            "Fix a small bug",
+            "Fix a typo in app/main.py",
             "",
             &meta(serde_json::json!({ "paths": ["app/main.py"] })),
         );
         assert_eq!(role, WorkflowRole::Local);
     }
 
+    /// Dispatch-recovery fix: the SAME single Python file as above, but
+    /// with no mechanical vocabulary anywhere in its title or body — "fix a
+    /// small bug" names no concretely-checkable edit — no longer defaults
+    /// to `Local`. Right language and a single file is no longer
+    /// sufficient on its own; it is merely the ABSENCE of a disqualifier,
+    /// and the measured incident this fixes is exactly a goal that had no
+    /// disqualifier and still failed on a 7B model.
     #[test]
-    fn a_one_file_js_or_ts_goal_also_defaults_to_local() {
+    fn a_one_file_python_goal_with_no_mechanical_evidence_no_longer_defaults_to_local() {
+        let (role, _reason) = default_worker_tier_for_goal(
+            "Fix a small bug",
+            "",
+            &meta(serde_json::json!({ "paths": ["app/main.py"] })),
+        );
+        assert_eq!(role, WorkflowRole::Edit, "{role:?}");
+    }
+
+    #[test]
+    fn a_one_file_js_or_ts_goal_with_mechanical_evidence_defaults_to_local() {
+        // NOT phrased as a rename, deliberately: "rename" is in both
+        // MECHANICAL_SIGNALS and LOCAL_INELIGIBLE_TEXT_SIGNALS, because a
+        // rename is mechanical in one file and a cross-file sweep in a repo,
+        // and the goal's text alone cannot tell you which. Now that the local
+        // bar requires BOTH a mechanical signal and no ineligible one, the
+        // conservative reading wins and a "rename" goal goes to Edit. That is
+        // the intended outcome — see
+        // `a_rename_stays_off_the_local_path_even_in_a_single_file`.
         for ext in ["app.js", "app.ts"] {
             let (role, _) = default_worker_tier_for_goal(
-                "Small fix",
+                "Fix a typo in a comment",
                 "",
                 &meta(serde_json::json!({ "paths": [ext] })),
             );
@@ -484,10 +556,26 @@ mod tests {
         }
     }
 
+    /// The overlap above, pinned so nobody "fixes" one list without seeing it.
     #[test]
-    fn a_one_file_shell_script_goal_defaults_to_local() {
+    fn a_rename_stays_off_the_local_path_even_in_a_single_file() {
         let (role, _) = default_worker_tier_for_goal(
-            "Fix the deploy script",
+            "Rename a variable for clarity",
+            "",
+            &meta(serde_json::json!({ "paths": ["app.js"] })),
+        );
+        assert_eq!(role, WorkflowRole::Edit, "{role:?}");
+        assert!(
+            MECHANICAL_SIGNALS.contains(&"rename")
+                && LOCAL_INELIGIBLE_TEXT_SIGNALS.contains(&"rename"),
+            "this test exists because 'rename' is deliberately in both lists",
+        );
+    }
+
+    #[test]
+    fn a_one_file_shell_script_goal_with_mechanical_evidence_defaults_to_local() {
+        let (role, _) = default_worker_tier_for_goal(
+            "Fix a typo in the deploy script",
             "",
             &meta(serde_json::json!({ "paths": ["deploy.sh"] })),
         );
@@ -496,32 +584,39 @@ mod tests {
 
     /// R55b: the local language allowlist narrowed to `{py, js, ts, sh}` —
     /// `jsx`/`tsx` dropped, so a React component file now falls through to
-    /// the cheap-cloud `Mechanical` rung instead of `Local`.
+    /// the `Edit` rung instead of `Local`, even with mechanical wording.
     #[test]
     fn a_one_file_tsx_or_jsx_goal_no_longer_defaults_to_local() {
         for ext in ["app.tsx", "app.jsx"] {
             let (role, _) = default_worker_tier_for_goal(
-                "Small fix",
+                "Fix a typo",
                 "",
                 &meta(serde_json::json!({ "paths": [ext] })),
             );
-            assert_eq!(role, WorkflowRole::Mechanical, "{ext}");
+            assert_eq!(role, WorkflowRole::Edit, "{ext}");
         }
     }
 
+    /// Dispatch-recovery fix, the measured incident itself: a two-file
+    /// goal — even a mechanically-worded, no-build-system/refactor-signal
+    /// one — must never resolve `Local`. A multi-file change is a
+    /// coordination problem a single-file bar cannot certify, and this is
+    /// the exact shape that reached a 7B model and failed.
     #[test]
-    fn a_two_file_python_goal_with_no_build_or_refactor_signal_still_defaults_to_local() {
-        let (role, _) = default_worker_tier_for_goal(
-            "Fix the discount rounding bug",
+    fn a_multi_file_goal_never_resolves_local() {
+        let (role, reason) = default_worker_tier_for_goal(
+            "Fix a typo in the discount calculation and its test",
             "Correct the off-by-one in the discount calculation and its test.",
             &meta(serde_json::json!({ "paths": ["discount.py", "test_discount.py"] })),
         );
-        assert_eq!(role, WorkflowRole::Local);
+        assert_ne!(role, WorkflowRole::Local, "{reason}");
+        assert_eq!(role, WorkflowRole::Edit, "{reason}");
     }
 
-    /// R55b: file count above `LOCAL_MAX_FILES` alone (no vocabulary, no
-    /// tag) is enough to deny the Local shortcut — same "structure beats
-    /// wording" principle `assess_goal`'s own breadth check already uses.
+    /// File count above `LOCAL_MAX_FILES` alone (no vocabulary, no tag) is
+    /// enough to deny the Local shortcut and land on a capable edit model
+    /// — same "structure beats wording" principle `assess_goal`'s own
+    /// breadth check already uses.
     #[test]
     fn a_three_file_goal_with_no_other_signal_no_longer_defaults_to_local() {
         let (role, _) = default_worker_tier_for_goal(
@@ -529,7 +624,7 @@ mod tests {
             "",
             &meta(serde_json::json!({ "paths": ["a.py", "b.py", "c.py"] })),
         );
-        assert_eq!(role, WorkflowRole::Mechanical);
+        assert_eq!(role, WorkflowRole::Edit);
     }
 
     /// R55b (`## A52 analysis` point 2): the exact `harness-refactor-
@@ -572,16 +667,19 @@ mod tests {
         assert_ne!(role, WorkflowRole::Local);
     }
 
-    /// R55b: the file-count ceiling AND the free-text refactor signal both
-    /// deny Local here — either alone already would.
+    /// The file-count ceiling AND the free-text refactor signal both deny
+    /// Local here — either alone already would — and an API/signature
+    /// change like this one is exactly the shape the design calls out as
+    /// needing a capable edit model, not a weaker cheap-cloud rung.
     #[test]
-    fn a_three_file_ts_refactor_defaults_to_cloud_not_local() {
+    fn a_three_file_ts_refactor_defaults_to_a_capable_edit_model_not_local() {
         let (role, reason) = default_worker_tier_for_goal(
             "Refactor the shipping quote signature",
             "Update every caller of computeQuote to pass the new discount parameter.",
             &meta(serde_json::json!({ "paths": ["a.ts", "b.ts", "c.ts"] })),
         );
         assert_ne!(role, WorkflowRole::Local, "{reason}");
+        assert_eq!(role, WorkflowRole::Edit, "{reason}");
     }
 
     #[test]
@@ -621,17 +719,25 @@ mod tests {
         assert_ne!(role, WorkflowRole::Orchestrate);
     }
 
+    /// A goal with NO `paths` metadata at all is the "unknown/missing scope"
+    /// case the design calls out explicitly: an empty list is not evidence
+    /// either way, and must be read conservatively — never as `Local`.
+    /// Mixed-language multi-file goals land in the same bucket for the same
+    /// reason (also multi-file, so the breadth-of-one bar already excludes
+    /// them regardless of language).
     #[test]
-    fn a_multi_language_or_pathless_goal_defaults_to_mechanical() {
+    fn a_pathless_or_multi_language_goal_is_treated_conservatively_not_as_local() {
         let (role, _) =
             default_worker_tier_for_goal("Wire the widget", "", &meta(serde_json::json!({})));
-        assert_eq!(role, WorkflowRole::Mechanical);
+        assert_ne!(role, WorkflowRole::Local);
+        assert_eq!(role, WorkflowRole::Edit);
 
         let (role, _) = default_worker_tier_for_goal(
             "Touch two files",
             "",
             &meta(serde_json::json!({ "paths": ["a.py", "b.rs"] })),
         );
-        assert_eq!(role, WorkflowRole::Mechanical);
+        assert_ne!(role, WorkflowRole::Local);
+        assert_eq!(role, WorkflowRole::Edit);
     }
 }

@@ -73,7 +73,7 @@ pub mod snapshot;
 pub mod tier;
 pub mod tool_signals;
 
-pub use assess::{assess_goal, default_worker_tier_for_goal, Assessment};
+pub use assess::{assess_goal, default_worker_tier_for_goal, goal_meets_local_bar, Assessment};
 pub use authorized_attempts::{
     attempt_is_authorized, authorized_attempts, with_authorized_attempts,
     with_authorized_attempts_opt,
