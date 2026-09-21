@@ -2423,6 +2423,7 @@ impl Agent {
                         conversation_with_moim.messages(),
                         &tools,
                         &toolshim_tools,
+                        invocation.reserved_output_tokens,
                     ),
                 )
                 .await
@@ -3499,6 +3500,7 @@ impl Agent {
                                     conversation_with_moim.messages(),
                                     &tools,
                                     &toolshim_tools,
+                                    invocation.reserved_output_tokens,
                                 ),
                             )
                             .await
@@ -5014,6 +5016,7 @@ mod tests {
             cost_tier: CostTier::PaidApi,
             reservation_id: Some("r19c-invocation".to_string()),
             attempts_reserved: Some(reserved),
+            reserved_output_tokens: Some(4_096),
         };
 
         let seen_authorized: Arc<std::sync::Mutex<Option<Option<u32>>>> =
@@ -5065,6 +5068,7 @@ mod tests {
             cost_tier: CostTier::PaidApi,
             reservation_id: None,
             attempts_reserved: None,
+            reserved_output_tokens: None,
         };
 
         let seen_authorized: Arc<std::sync::Mutex<Option<Option<u32>>>> =

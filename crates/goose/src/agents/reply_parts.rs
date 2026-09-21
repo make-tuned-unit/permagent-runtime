@@ -55,6 +55,26 @@ async fn enhance_model_error(error: ProviderError, provider: &Arc<dyn Provider>)
     ))
 }
 
+/// Overrides `model_config`'s own `max_tokens` with `reserved_output_tokens`
+/// when the call took a paid hold, so the request actually sent to the
+/// provider can never ask for more output than the reservation priced.
+///
+/// Without this, `RESERVED_OUTPUT_TOKENS` would only shrink the dollar hold
+/// while the wire request still carried the model's raw (often
+/// multi-hundred-thousand-token) `max_tokens` — a reservation that prices
+/// one number while authorizing a request for a bigger one. `None` (unpaid
+/// work; see `cost_router::reservation::is_free_local_pair`) leaves the
+/// model's own config untouched.
+fn apply_reserved_output_cap(
+    model_config: crate::model::ModelConfig,
+    reserved_output_tokens: Option<usize>,
+) -> crate::model::ModelConfig {
+    match reserved_output_tokens {
+        Some(cap) => model_config.with_max_tokens(Some(cap as i32)),
+        None => model_config,
+    }
+}
+
 fn coerce_value(s: &str, schema: &Value) -> Value {
     let type_str = schema.get("type");
 
@@ -1308,6 +1328,13 @@ impl Agent {
         messages: &[Message],
         tools: &[Tool],
         toolshim_tools: &[Tool],
+        // The output cap `reserve_provider_invocation_for_request` priced
+        // this call's hold against
+        // (`ProviderInvocationContext::reserved_output_tokens`), or `None`
+        // for unpaid work. Applied to the request's own model config below
+        // so the provider is asked to respect the same number the
+        // reservation charged for — see `apply_reserved_output_cap`.
+        reserved_output_tokens: Option<usize>,
     ) -> Result<MessageStream, ProviderError> {
         let config = provider.get_model_config();
 
@@ -1332,7 +1359,16 @@ impl Agent {
 
         // Capture errors during stream creation and return them as part of the stream
         // so they can be handled by the existing error handling logic in the agent
-        let model_config = provider.get_model_config();
+        //
+        // The reservation is only honest if the request cannot ask for more
+        // than it priced: `apply_reserved_output_cap` overrides this
+        // dispatch's own `max_tokens` with the reserved cap (never the
+        // model's raw, possibly much larger, `max_tokens`) before it is
+        // handed to the provider, which is what turns into
+        // `max_output_tokens` on the wire
+        // (`providers::formats::openai_responses::create_responses_request`).
+        let model_config =
+            apply_reserved_output_cap(provider.get_model_config(), reserved_output_tokens);
         debug!("WAITING_LLM_STREAM_START");
         let stream_result = provider
             // permagent-dispatch: seam=agent_primary_stream_transport_v1 class=excluded reason=caller_reservation_settlement authority=agent_primary_stream
@@ -1954,6 +1990,11 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         // which holds no dollars and therefore keeps the retry policy's own
         // budget (see `cost_router::authorized_attempts`).
         attempts_reserved: bound.as_ref().map(|bound| bound.max_physical_attempts),
+        // The exact output cap the hold below (if any) is about to be priced
+        // against, so the dispatch seam can enforce the same number on the
+        // request instead of merely pricing it (see the field's own doc
+        // comment).
+        reserved_output_tokens: bound.as_ref().map(|bound| bound.output_tokens),
     };
 
     // Local and subscription calls retain typed attribution, but never create
@@ -2080,6 +2121,17 @@ pub(crate) struct ProviderInvocationContext {
     /// with an extension authorizer so retries beyond this count require a
     /// new one-attempt reservation grant.
     pub attempts_reserved: Option<u32>,
+    /// The output-token cap this invocation's hold was priced against
+    /// ([`ReservationBound::output_tokens`](crate::cost_router::reservation::ReservationBound::output_tokens),
+    /// `cost_router::reservation::RESERVED_OUTPUT_TOKENS` clamped to the
+    /// model's own `max_tokens`), or `None` for unpaid work that took no
+    /// hold at all. `stream_response_from_provider` applies this to the
+    /// request's own model config before dispatch, so the provider is asked
+    /// to respect the SAME number the reservation priced — a reservation
+    /// that prices one number while the request permits a bigger one is a
+    /// lie (see that constant's doc comment for the measured evidence this
+    /// closes: 63 reservations held $81.35 and settled at $1.23).
+    pub reserved_output_tokens: Option<usize>,
 }
 
 /// One reserved `complete_fast` attempt. It owns an immutable provider and
@@ -2546,6 +2598,140 @@ mod tests {
             let usage = ProviderUsage::new("mock".to_string(), Usage::default());
             Ok(stream_from_single_message(message, usage))
         }
+    }
+
+    /// Records the `ModelConfig` it was actually dispatched with, so a test
+    /// can assert on the exact request-level output cap the provider was
+    /// handed — not merely on the reservation's own bookkeeping.
+    #[derive(Clone)]
+    struct CapturingModelConfigProvider {
+        model_config: ModelConfig,
+        seen: Arc<Mutex<Option<ModelConfig>>>,
+    }
+
+    #[async_trait]
+    impl Provider for CapturingModelConfigProvider {
+        fn get_name(&self) -> &str {
+            "mock"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            self.model_config.clone()
+        }
+
+        async fn stream(
+            &self,
+            model_config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            *self.seen.lock().unwrap() = Some(model_config.clone());
+            let message = Message::assistant().with_text("ok");
+            let usage = ProviderUsage::new("mock".to_string(), Usage::default());
+            Ok(stream_from_single_message(message, usage))
+        }
+    }
+
+    /// The seam this whole fix runs through
+    /// (`Agent::stream_response_from_provider`): the reservation's
+    /// `reserved_output_tokens` must be the SAME number that ends up on the
+    /// request-level `ModelConfig` handed to the provider's `stream`/
+    /// `stream_split` call, not merely a smaller number priced in the
+    /// dollar hold while the wire request still carries the model's raw,
+    /// much larger `max_tokens`. A structured assertion on the config the
+    /// mock provider actually received, not a comment.
+    #[tokio::test]
+    async fn stream_response_from_provider_sends_the_reserved_cap_to_the_provider() {
+        let seen = Arc::new(Mutex::new(None));
+        let provider: Arc<dyn Provider> = Arc::new(CapturingModelConfigProvider {
+            model_config: ModelConfig {
+                model_name: "glm-5.2".to_string(),
+                context_limit: Some(1_000_000),
+                // The model's own raw ceiling is far above the reserved cap;
+                // the request must carry the cap, not this number.
+                max_tokens: Some(128_000),
+                ..ModelConfig::default()
+            },
+            seen: Arc::clone(&seen),
+        });
+        let system_prompt = SystemPromptParts::all_stable(String::new());
+
+        let mut stream = Agent::stream_response_from_provider(
+            provider,
+            "session-id",
+            &system_prompt,
+            &[],
+            &[],
+            &[],
+            Some(4_096),
+        )
+        .await
+        .unwrap();
+        while stream.next().await.is_some() {}
+
+        let captured = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("provider was dispatched");
+        assert_eq!(
+            captured.max_tokens,
+            Some(4_096),
+            "the request must carry the reserved cap, not the model's raw max_tokens"
+        );
+        assert_ne!(captured.max_tokens, Some(128_000));
+
+        // The same value becomes the wire-level `max_output_tokens` the
+        // Responses API request actually serializes — the seam named in the
+        // task (`create_responses_request`, ~line 517).
+        let payload = crate::providers::formats::openai_responses::create_responses_request(
+            &captured,
+            "",
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(payload["max_output_tokens"], serde_json::json!(4_096));
+    }
+
+    /// `None` (unpaid work — see `cost_router::reservation::is_free_local_pair`)
+    /// must leave the model's own config untouched: an unpaid call is never
+    /// capped by a paid-only mechanism.
+    #[tokio::test]
+    async fn stream_response_from_provider_leaves_unpaid_calls_uncapped() {
+        let seen = Arc::new(Mutex::new(None));
+        let provider: Arc<dyn Provider> = Arc::new(CapturingModelConfigProvider {
+            model_config: ModelConfig {
+                model_name: "local-model".to_string(),
+                context_limit: Some(4_096),
+                max_tokens: Some(128),
+                ..ModelConfig::default()
+            },
+            seen: Arc::clone(&seen),
+        });
+        let system_prompt = SystemPromptParts::all_stable(String::new());
+
+        let mut stream = Agent::stream_response_from_provider(
+            provider,
+            "session-id",
+            &system_prompt,
+            &[],
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+        while stream.next().await.is_some() {}
+
+        let captured = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("provider was dispatched");
+        assert_eq!(captured.max_tokens, Some(128));
     }
 
     /// A mock whose provider name is settable, so a test can actually switch
@@ -4818,8 +5004,11 @@ mod tests {
 
     /// End to end through the real tokenizer and the real bound: a ~30k-token
     /// prompt to a 400k-context model reserves input for about that prompt
-    /// plus the margin, not the 272k-token window that produced the reported
-    /// $1.56 hold.
+    /// plus the margin, not the whole window — which is itself now
+    /// 395,904 tokens rather than the 272,000 that produced the reported
+    /// $1.56 hold, because `RESERVED_OUTPUT_TOKENS` caps this model's raw
+    /// 128,000-token `max_tokens` down to 4,096 on the output side, freeing
+    /// the difference for input capacity (`context - output`).
     #[tokio::test]
     async fn a_thirty_thousand_token_prompt_is_not_reserved_as_the_whole_window() {
         let body = "word ".repeat(30_000);
@@ -4858,7 +5047,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(window.input_tokens, 272_000);
+        assert_eq!(
+            window.input_tokens,
+            400_000 - crate::cost_router::reservation::RESERVED_OUTPUT_TOKENS
+        );
         assert!(sized.input_tokens >= counted);
         assert!(
             sized.input_tokens < 60_000,
@@ -4873,11 +5065,18 @@ mod tests {
     /// holds $0.00, requested bound $1.56, ceiling $1.00)", under the
     /// first-cut task ceilings ($0.50/$1/$2) that produced it.
     ///
-    /// The old path (whole window, two attempts) reproduces that exact gate.
-    /// The shipped path (the prompt counted by the tokenizer the streamed turn
-    /// uses, the default reserved-attempt count resolved from the same retry
-    /// envelope, the shipped ceilings) is granted, and so is one retry's
-    /// extension; the hold stays well under the shipped task gate.
+    /// The old path (whole window, two attempts, output priced at this
+    /// model's raw 128,000-token `max_tokens`) reproduces that exact gate —
+    /// reconstructed here as a literal historical bound, because the CURRENT
+    /// `plan_reservation_bound_for_prompt` no longer produces that shape at
+    /// all: `RESERVED_OUTPUT_TOKENS` caps the output side at 4,096 regardless
+    /// of whether the prompt was counted, so even an uncounted call is no
+    /// longer $1.56 today (see `cost_router::reservation::RESERVED_OUTPUT_TOKENS`
+    /// for why). The shipped path (the prompt counted by the tokenizer the
+    /// streamed turn uses, the default reserved-attempt count resolved from
+    /// the same retry envelope, the shipped ceilings, and the enforced output
+    /// cap) is granted, and so is one retry's extension; the hold stays well
+    /// under the shipped task gate.
     ///
     /// What this does not prove: it plans and reserves exactly as
     /// `reserve_provider_invocation_for_model` does, but passes the ceilings
@@ -4940,13 +5139,23 @@ mod tests {
             .unwrap()
         };
 
-        // Before: the whole window at two attempts is the reported gate.
+        // Before: the whole window, two attempts, output priced at this
+        // model's raw max_tokens — a literal reconstruction of the reported
+        // shape, since today's `plan(2, None)` no longer produces it (see
+        // this test's own doc comment).
+        let old_bound = crate::cost_router::reservation::ReservationBound {
+            amount_usd: 1.56,
+            input_tokens: 272_000,
+            output_tokens: 128_000,
+            max_physical_attempts: 2,
+            pricing_provenance: crate::cost_router::reservation::PricingProvenance::CanonicalExact,
+        };
         let old = manager
             .reserve_bounded_provider_invocation(
                 "reported-old",
                 &session.id,
                 Some(&task),
-                plan(2, None),
+                old_bound,
                 lease,
                 &first_cut,
             )

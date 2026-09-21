@@ -148,7 +148,11 @@ pub struct ReservationBound {
     pub amount_usd: f64,
     /// Input-token upper bound reserved for the request.
     pub input_tokens: usize,
-    /// Maximum output tokens per physical attempt.
+    /// Maximum output tokens per physical attempt: [`RESERVED_OUTPUT_TOKENS`],
+    /// clamped down to the model's own `max_tokens` when that is smaller.
+    /// This is also the number the caller must send the provider as its
+    /// request-level output cap, or the reservation prices a number the call
+    /// was never actually limited to.
     pub output_tokens: usize,
     /// Maximum number of physical attempts covered by the bound.
     pub max_physical_attempts: u32,
@@ -275,6 +279,35 @@ pub fn plan_reservation_bound(
 /// message), the wrapper text a provider renders tool schemas into, and any
 /// short instructions an adapter prepends on its own.
 pub const PROMPT_OVERHEAD_TOKENS: usize = 4_096;
+
+/// The output side of a reservation bound, in tokens — an ENFORCED request
+/// cap, not a prediction of what the model will produce.
+///
+/// Measured on the live cost ledger: 63 reservations held $81.35 in total and
+/// settled at $1.23 — every call held roughly $1.50 and settled around $0.02,
+/// 1.1-1.6% of its hold. That gap is `model_config.max_tokens` doing the
+/// pricing: a call was reserved against the model's theoretical maximum
+/// output (e.g. 131,072 for `zai`/`glm-4.7`) when the actual reply was tiny.
+/// Real outputs across 1,329 recorded calls: median 163 tokens, p95 1,858,
+/// p99 5,779, max 14,618. The task budget gate then refused real work
+/// ("spent $0.95, holds $1.24, bound $1.56, ceiling $3.00") while actual
+/// spend was pennies — the user's "the harness fails on simple tasks"
+/// complaint.
+///
+/// 4,096 is a deliberately fixed authorization ceiling: comfortably above the
+/// p95 (1,858) and the overwhelming majority of real replies, while staying
+/// far below the multi-hundred-thousand-token `max_tokens` values that drove
+/// the over-reservation (p99 at 5,779 and the 14,618 max do exceed it — this
+/// is a chosen cap, not a percentile fit, and a reply that would have run
+/// longer is stopped at the cap rather than left unbounded).
+///
+/// A reservation is only honest if the number priced here is the number the
+/// provider is actually told it may spend: this same value is threaded
+/// through to become the request's own `max_output_tokens`
+/// (`agents::reply_parts::stream_response_from_provider`,
+/// `ProviderInvocationContext::reserved_output_tokens`), so the model is
+/// asked to stop at the cap instead of being merely priced as if it would.
+pub const RESERVED_OUTPUT_TOKENS: usize = 4_096;
 
 /// The safety margin a counted prompt is padded by: half again the count, plus
 /// [`PROMPT_OVERHEAD_TOKENS`].
@@ -427,14 +460,24 @@ fn calculate_bound_for_prompt(
     let output_i32 = model_config
         .max_tokens
         .ok_or(ReservationBoundError::MissingMaxOutput)?;
-    let output =
+    let model_max_output =
         usize::try_from(output_i32).map_err(|_| ReservationBoundError::InvalidMaxOutput)?;
-    if output == 0 {
+    if model_max_output == 0 {
         return Err(ReservationBoundError::InvalidMaxOutput);
     }
-    if output > context {
-        return Err(ReservationBoundError::OutputExceedsContext { output, context });
+    if model_max_output > context {
+        return Err(ReservationBoundError::OutputExceedsContext {
+            output: model_max_output,
+            context,
+        });
     }
+    // The reservation prices [`RESERVED_OUTPUT_TOKENS`] — an enforced request
+    // cap — rather than the model's own theoretical maximum, clamped down
+    // further when that maximum is itself smaller (a model that can never
+    // produce more than its own `max_tokens` needs no larger a hold than
+    // that). See `RESERVED_OUTPUT_TOKENS` for the measured evidence this
+    // bound is based on.
+    let output = model_max_output.min(RESERVED_OUTPUT_TOKENS);
     let input_rate = positive_rate(pricing.input, "input")?;
     let output_rate = positive_rate(pricing.output, "output")?;
     let cache_read_rate = optional_positive_rate(pricing.cache_read, "cache_read")?;
@@ -539,8 +582,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(bound.pricing_provenance, PricingProvenance::CanonicalExact);
-        assert_eq!(bound.input_tokens, 900_000);
-        assert_eq!(bound.output_tokens, 100_000);
+        // The reservation reserves RESERVED_OUTPUT_TOKENS (4,096), not this
+        // model's 100,000-token max_tokens — see that constant's doc comment
+        // for the measured evidence. The input side still gets the rest of
+        // the context capacity next to that smaller reserved output.
+        assert_eq!(bound.input_tokens, 1_000_000 - RESERVED_OUTPUT_TOKENS);
+        assert_eq!(bound.output_tokens, RESERVED_OUTPUT_TOKENS);
         assert_eq!(bound.max_physical_attempts, 2);
         assert!(bound.amount_usd.is_finite() && bound.amount_usd > 0.0);
     }
@@ -578,8 +625,7 @@ mod tests {
     fn zai_glm_4_7_has_a_known_price_far_below_the_old_worst_case_constant() {
         // F8's own "what could not be determined" note ties the recurring
         // $1.662976 constant to a max_tokens of 131072; reproduced here as
-        // context == max_tokens so the whole bound is output-cost-driven,
-        // matching that observation's shape.
+        // context == max_tokens so the shape matches that observation.
         let cfg = config(Some(131_072), Some(131_072));
         let bound = plan_reservation_bound("zai", "glm-4.7", CostTier::PaidApi, &cfg, 1)
             .unwrap()
@@ -595,9 +641,14 @@ mod tests {
             "the bound must land well under the old flat worst-case constant, got ${:.6}",
             bound.amount_usd
         );
-        // Sanity: output-only cost at the real $2.20/Mtok rate for 131,072
-        // output tokens (input_tokens is 0 here by construction).
-        let expected = 131_072.0 / 1_000_000.0 * 2.20;
+        // Sanity, post-RESERVED_OUTPUT_TOKENS: output is capped at 4,096 (far
+        // below this model's raw 131,072 max_tokens), so the window opens up
+        // to 126,976 input tokens next to it at the real $0.60/$2.20-per-Mtok
+        // rates — no longer the output-only, zero-input shape this test
+        // pinned before the cap existed.
+        let expected = (126_976.0 / 1_000_000.0 * 0.60) + (4_096.0 / 1_000_000.0 * 2.20);
+        assert_eq!(bound.output_tokens, RESERVED_OUTPUT_TOKENS);
+        assert_eq!(bound.input_tokens, 126_976);
         assert!(
             (bound.amount_usd - expected).abs() < 0.0001,
             "expected ${expected:.6}, got ${:.6}",
@@ -627,7 +678,9 @@ mod tests {
             "the zai-org alias must resolve real zai pricing, not the global worst case: \
              {bound:?}"
         );
-        let expected = 131_072.0 / 1_000_000.0 * 2.20;
+        // Post-RESERVED_OUTPUT_TOKENS shape: see the sibling `"zai"` test
+        // above for why this is no longer output-only.
+        let expected = (126_976.0 / 1_000_000.0 * 0.60) + (4_096.0 / 1_000_000.0 * 2.20);
         assert!(
             (bound.amount_usd - expected).abs() < 0.0001,
             "expected ${expected:.6}, got ${:.6}",
@@ -651,20 +704,22 @@ mod tests {
     /// `OpenAiCompatibleProvider` actually uses — no override exists for
     /// this provider).
     ///
-    /// This reproduces F8/D1/I1/M11's observed `amount_usd =
-    /// 1.6629760000000002` bit-for-bit (verified directly against the M11
+    /// F8/D1/I1/M11 observed `amount_usd = 1.6629760000000002` bit-for-bit on
+    /// this exact live shape (verified directly against the M11
     /// `cost_reservations` rows, not merely "close"). The provenance is
     /// `CanonicalExact`, never `WorstCase` — three straight lanes'
-    /// "flat worst-case constant" diagnosis was wrong. The number IS flat
-    /// across every call only because `context_limit`/`max_tokens`
-    /// (fixed per model) and `max_physical_attempts` (fixed per provider's
-    /// retry policy) never vary call to call for this pair — the bound is a
-    /// correctly-priced authorization ceiling covering up to 5 physical
-    /// attempts of ONE logical turn, not a mispriced fallback. This test
-    /// passes both before and after this lane's changes — it adds no fix,
-    /// only a permanent, exact regression pin so a future lane can check
-    /// this arithmetic in five seconds instead of re-deriving it from raw
-    /// DB rows again.
+    /// "flat worst-case constant" diagnosis was wrong; the number was flat
+    /// only because `context_limit`/`max_tokens`/`max_physical_attempts`
+    /// never varied call to call for this pair, not because it was a
+    /// mispriced fallback.
+    ///
+    /// The $1.66 figure itself is now historical, not reproduced here: this
+    /// is exactly the over-reservation `RESERVED_OUTPUT_TOKENS` exists to
+    /// fix (measured on the live ledger — 63 reservations of roughly this
+    /// shape held $81.35 and settled at $1.23; see that constant's doc
+    /// comment). Post-fix, the bound reserves 4,096 output tokens instead of
+    /// this model's raw 131,072 `max_tokens`, so the number pinned below is
+    /// the NEW correctly-capped bound, not the old one.
     #[test]
     fn zai_glm_4_7_live_reservation_is_canonical_exact_not_worst_case() {
         let cfg = config(Some(204_800), Some(131_072));
@@ -677,9 +732,18 @@ mod tests {
             "the live zai/glm-4.7 reservation must be priced from the canonical registry, \
              not any fallback: {bound:?}"
         );
-        // Bit-exact match to the value observed in every M11 fixture's
-        // cost_reservations.amount_usd for a zai/glm-4.7 invocation.
-        assert_eq!(bound.amount_usd, 1.6629760000000002);
+        assert_eq!(bound.output_tokens, RESERVED_OUTPUT_TOKENS);
+        assert_eq!(bound.input_tokens, 204_800 - RESERVED_OUTPUT_TOKENS);
+        // Bit-exact regression pin for the NEW, output-capped bound: 200,704
+        // input tokens at $0.60/Mtok plus 4,096 output tokens at $2.20/Mtok,
+        // times the 5-attempt envelope.
+        assert_eq!(bound.amount_usd, 0.647168);
+        assert!(
+            bound.amount_usd < 1.6629760000000002,
+            "the new output-capped bound (${:.6}) must land well under the old \
+             max_tokens-based bound ($1.662976)",
+            bound.amount_usd
+        );
         assert_eq!(
             describe_pricing_source(bound.pricing_provenance),
             "canonical_exact"
@@ -688,12 +752,14 @@ mod tests {
 
     /// Y7 pin (harness loop, from Lane A12's Q6 measurement): the hold scales
     /// linearly with the reserved attempt count, for the identical live inputs
-    /// pinned by the test above. One attempt holds exactly one fifth of what
-    /// the same call held before ($1.662976 → $0.3325952), and the SHIPPED
-    /// default of two holds exactly two fifths ($0.6651904) — against a
-    /// *settled* cost measured at $0.005–$0.0234 on the same slice. Nothing
-    /// about pricing changes: the only difference is how many attempts' worth
-    /// of money is held up front.
+    /// pinned by the test above. One attempt holds exactly one fifth of the
+    /// output-capped five-attempt bound, and the SHIPPED default of two holds
+    /// exactly two fifths of it. Nothing about pricing changes here: the only
+    /// difference from the test above is how many attempts' worth of money is
+    /// held up front — see `RESERVED_OUTPUT_TOKENS` for why the underlying
+    /// per-attempt number itself is now far smaller than the historical
+    /// $0.332595 this test used to pin (that figure priced 131,072 raw output
+    /// tokens; this reserves 4,096).
     #[test]
     fn the_reserved_attempt_count_scales_the_hold_off_the_five_attempt_bound() {
         let cfg = config(Some(204_800), Some(131_072));
@@ -704,7 +770,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(one.max_physical_attempts, 1);
-        assert_eq!(one.amount_usd, 0.33259520000000004);
+        assert_eq!(one.amount_usd, 0.12943359999999998);
         assert_eq!(one.amount_usd * 5.0, five.amount_usd);
         // Everything else about the bound is untouched.
         assert_eq!(one.input_tokens, five.input_tokens);
@@ -1042,32 +1108,44 @@ mod tests {
     /// The user-reported deadlock: "task budget gate required before provider
     /// call (spent $0.12, authorization holds $0.00, requested bound $1.56,
     /// ceiling $1.00)". A 400k-context model with a 128k reply cap, two
-    /// reserved attempts (the default then), and no prompt size reproduces
-    /// that $1.56 exactly —
-    /// 272k input tokens priced for a call that sent ~30k.
+    /// reserved attempts (the default then), and no prompt size reproduced
+    /// that $1.56 by pricing all 272k of the window's input tokens against
+    /// the model's raw 128,000-token `max_tokens`.
+    ///
+    /// Post-`RESERVED_OUTPUT_TOKENS`, even an UNCOUNTED prompt (this test
+    /// passes none) no longer prices that raw `max_tokens` on the output
+    /// side: output is capped at 4,096, which both shrinks the output cost
+    /// and — since input capacity is `context - output` — opens up the
+    /// window's input side to 395,904 tokens instead of 272,000. The bound
+    /// drops from the reported $1.56 to about $0.63, well under a $1.00
+    /// ceiling that used to be unreachable for this shape.
     #[test]
     fn the_reported_1_56_bound_is_the_full_window_priced_for_an_unknown_prompt() {
         let cfg = config(Some(400_000), Some(128_000));
         let full = plan_reservation_bound("openai", "gpt-5.4-mini", CostTier::PaidApi, &cfg, 2)
             .unwrap()
             .unwrap();
-        assert_eq!(full.input_tokens, 272_000);
+        assert_eq!(full.output_tokens, RESERVED_OUTPUT_TOKENS);
+        assert_eq!(full.input_tokens, 400_000 - RESERVED_OUTPUT_TOKENS);
         assert!(
-            (full.amount_usd - 1.56).abs() < 1e-9,
-            "expected the reported $1.56, got ${:.6}",
+            (full.amount_usd - 0.63072).abs() < 1e-9,
+            "expected ~$0.63072 (down from the reported $1.56), got ${:.6}",
             full.amount_usd
         );
     }
 
     /// (a) A counted 30k-token prompt reserves input for that prompt plus the
-    /// margin — 49,096 tokens, not the 272,000-token window — so the input
-    /// side of the hold drops from $0.204 to under $0.04 per attempt.
+    /// margin — 49,096 tokens, not the 395,904-token window — so the input
+    /// side of the hold stays under $0.04 per attempt.
     ///
-    /// The whole hold is still dominated by the OUTPUT side (128k reply
-    /// tokens x $4.50/Mtok = $0.576 per attempt), which this change does not
-    /// and must not touch: a call that may produce 128k tokens must hold
-    /// money for them. The assertions pin the input side, where the
-    /// over-reservation was.
+    /// Unlike before `RESERVED_OUTPUT_TOKENS` existed, the OUTPUT side no
+    /// longer prices this model's raw 128,000-token `max_tokens`: it is
+    /// capped at 4,096 (this model's own max is well above the cap, so the
+    /// cap wins), which is also the number now threaded through to become
+    /// the request's own `max_output_tokens`
+    /// (`agents::reply_parts::stream_response_from_provider`). The
+    /// assertions pin both sides: input bounded by what is actually sent,
+    /// output bounded by the enforced cap rather than the model's ceiling.
     #[test]
     fn a_counted_prompt_bounds_input_by_what_is_sent_not_the_window() {
         let cfg = config(Some(400_000), Some(128_000));
@@ -1092,7 +1170,7 @@ mod tests {
             counted.input_tokens,
             30_000 + 15_000 + PROMPT_OVERHEAD_TOKENS
         );
-        assert_eq!(counted.output_tokens, 128_000);
+        assert_eq!(counted.output_tokens, RESERVED_OUTPUT_TOKENS);
         assert_eq!(counted.max_physical_attempts, 2);
         // Never below what is actually sent: the margin only ever adds.
         assert!(counted.input_tokens >= 30_000);
@@ -1100,7 +1178,7 @@ mod tests {
         assert!(counted.input_tokens * 5 < full.input_tokens);
 
         let per_attempt_input = counted.input_tokens as f64 / 1_000_000.0 * 0.75;
-        let per_attempt_output = 128_000.0 / 1_000_000.0 * 4.5;
+        let per_attempt_output = RESERVED_OUTPUT_TOKENS as f64 / 1_000_000.0 * 4.5;
         let expected = (per_attempt_input + per_attempt_output) * 2.0;
         assert!(
             (counted.amount_usd - expected).abs() < 1e-9,
@@ -1109,7 +1187,8 @@ mod tests {
         );
         assert!(per_attempt_input < 0.04);
         // The saving is exactly the input the window reserved and the prompt
-        // does not need.
+        // does not need (output is identical — RESERVED_OUTPUT_TOKENS — on
+        // both sides of this comparison).
         let saved = (full.input_tokens - counted.input_tokens) as f64 / 1_000_000.0 * 0.75 * 2.0;
         assert!((full.amount_usd - counted.amount_usd - saved).abs() < 1e-9);
     }
@@ -1145,7 +1224,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(unknown.input_tokens, 400_000 - 128_000);
+        assert_eq!(unknown.input_tokens, 400_000 - RESERVED_OUTPUT_TOKENS);
         assert_eq!(
             unknown,
             calculate_bound(
@@ -1174,12 +1253,14 @@ mod tests {
     /// current task gate, read from `BudgetConfig::default()` rather than
     /// written as a literal, so this cannot drift when a ceiling moves.
     ///
-    /// Counting the ~30k-token prompt (30,040 tokens under o200k for the
-    /// reply_parts fixture) takes the two-attempt hold from the full-window
-    /// $1.56 to $1.23. Most of what remains is the 128k reply cap sent as
-    /// `max_completion_tokens`, $0.576 per attempt, which a hold must cover.
-    /// A one-attempt default ($0.61) was proposed to squeeze under the old
-    /// $1.00 gate and was not adopted — see `DEFAULT_RESERVED_ATTEMPTS`.
+    /// This is the requirement `RESERVED_OUTPUT_TOKENS` exists to satisfy: a
+    /// bound for this exact reported shape that leaves real room under the
+    /// gate, not merely a smaller number that still crowds it. Counting the
+    /// ~30k-token prompt (30,040 tokens under o200k for the reply_parts
+    /// fixture) AND capping the output side at 4,096 instead of this model's
+    /// raw 128,000-token `max_tokens` takes the two-attempt hold from the
+    /// reported $1.56 down to about $0.11 — nowhere near the $1.225734 a
+    /// counted-prompt-only fix (no output cap) would still have produced.
     #[test]
     fn the_reported_first_call_fits_the_shipped_gate_at_the_shipped_default() {
         let gate = crate::cost_router::budget::BudgetConfig::default()
@@ -1203,25 +1284,35 @@ mod tests {
 
         let counted = bound(shipped, Some(30_040));
         assert!(
-            (counted - 1.225_734).abs() < 1e-6,
-            "expected $1.225734, got ${counted:.6}"
+            (counted - 0.110_598).abs() < 1e-6,
+            "expected $0.110598, got ${counted:.6}"
         );
         assert!(
             counted < headroom,
             "the reported call must fit the shipped ${gate:.2} gate: ${counted:.4}"
         );
-        // Counting the prompt is what matters: the full window still holds $1.56.
-        assert!((bound(2, None) - 1.56).abs() < 1e-9);
+        // Counting the prompt AND capping the output both matter: even the
+        // uncounted full-window bound is now $0.63072 (down from the
+        // reported $1.56), because RESERVED_OUTPUT_TOKENS shrinks the output
+        // side regardless of whether the prompt was counted at all.
+        assert!((bound(2, None) - 0.63072).abs() < 1e-9);
         assert!(counted < bound(2, None));
     }
 
     /// (c) A counted prompt at or beyond the window is clamped to the input
     /// the window can accept next to a full reply — never more (the provider
     /// cannot bill it) and never an arithmetic overflow.
+    ///
+    /// The window itself is now bigger than before `RESERVED_OUTPUT_TOKENS`
+    /// existed (395,904 rather than 272,000): capping output at 4,096
+    /// instead of this model's raw 128,000-token `max_tokens` frees up the
+    /// difference for input capacity, since input capacity is always
+    /// `context - output`.
     #[test]
     fn a_prompt_larger_than_the_context_is_clamped_to_the_window() {
         let cfg = config(Some(400_000), Some(128_000));
-        for counted in [260_000, 272_000, 400_000, 1_000_000, usize::MAX] {
+        let window_input = 400_000 - RESERVED_OUTPUT_TOKENS;
+        for counted in [280_000, 300_000, 400_000, 1_000_000, usize::MAX] {
             let bound = calculate_bound_for_prompt(
                 &cfg,
                 2,
@@ -1230,7 +1321,7 @@ mod tests {
                 Some(counted),
             )
             .unwrap();
-            assert_eq!(bound.input_tokens, 272_000, "counted = {counted}");
+            assert_eq!(bound.input_tokens, window_input, "counted = {counted}");
         }
         // The margin itself never wraps: half of the largest count plus the
         // fixed overhead still fits, and adding it to that count saturates.
@@ -1282,6 +1373,86 @@ mod tests {
                 Some(1_000),
             ),
             Err(ReservationBoundError::InvalidAttempts)
+        );
+    }
+
+    /// Requirement 3 of the `RESERVED_OUTPUT_TOKENS` fix: a model whose own
+    /// `max_tokens` is smaller than the cap must reserve (and be sent) its
+    /// own smaller number, never inflated up to 4,096. `RESERVED_OUTPUT_TOKENS`
+    /// is a ceiling, not a floor.
+    #[test]
+    fn a_model_with_max_tokens_below_the_cap_reserves_its_own_smaller_number() {
+        let cfg = config(Some(16_000), Some(2_000));
+        let bound = plan_reservation_bound("openai", "gpt-4o", CostTier::PaidApi, &cfg, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bound.output_tokens, 2_000);
+        assert_ne!(bound.output_tokens, RESERVED_OUTPUT_TOKENS);
+        assert_eq!(bound.input_tokens, 16_000 - 2_000);
+    }
+
+    /// The exact pair and shape the task report asks for: `zai`/`glm-5.2`
+    /// (1,000,000-token context, 128,000-token `max_tokens`,
+    /// $1.40/$4.40-per-Mtok published rates) with a ~30k-token prompt at the
+    /// shipped two-attempt default, spent $0.95 and holds $1.24 already
+    /// outstanding against the $3.00 task gate (both drawn from the report's
+    /// own reproduction: "spent $0.95, holds $1.24, bound $1.56 [sic, for a
+    /// different pair], ceiling $3.00" refuses real work).
+    ///
+    /// Pre-fix, pricing the full 128,000-token `max_tokens` on the output
+    /// side produced a bound of ~$1.264 — added to the $2.19 already spent
+    /// and held, that overruns the $3.00 gate by more than 45 cents and the
+    /// call is refused. Post-fix, the same call reserves 4,096 output tokens
+    /// instead and the bound drops to ~$0.174, comfortably inside the
+    /// remaining $0.81 of headroom.
+    #[test]
+    fn the_reported_call_now_fits_for_zai_glm_5_2() {
+        let cfg = config(Some(1_000_000), Some(128_000));
+        let pricing = Pricing {
+            input: Some(1.4),
+            output: Some(4.4),
+            cache_read: Some(0.26),
+            cache_write: None,
+        };
+        let counted = Some(30_000);
+
+        let old_style_output = 128_000usize; // this model's raw max_tokens
+        let margin = 30_000 / 2 + PROMPT_OVERHEAD_TOKENS;
+        let input_tokens = 30_000 + margin;
+        let old_bound = (input_tokens as f64 / 1_000_000.0 * 1.4
+            + old_style_output as f64 / 1_000_000.0 * 4.4)
+            * 2.0;
+
+        let new_bound = calculate_bound_for_prompt(
+            &cfg,
+            DEFAULT_RESERVED_ATTEMPTS,
+            pricing,
+            PricingProvenance::CanonicalExact,
+            counted,
+        )
+        .unwrap();
+
+        let gate = crate::cost_router::budget::BudgetConfig::default()
+            .task
+            .gate;
+        let already_committed = 0.95 + 1.24; // spent + held, from the report
+        let headroom = gate - already_committed;
+
+        assert_eq!(new_bound.output_tokens, RESERVED_OUTPUT_TOKENS);
+        assert!(
+            old_bound > headroom,
+            "the OLD max_tokens-based bound (${old_bound:.6}) must exceed the \
+             remaining ${headroom:.2} headroom, reproducing the reported refusal"
+        );
+        assert!(
+            new_bound.amount_usd < headroom,
+            "the NEW output-capped bound (${:.6}) must fit the remaining ${headroom:.2} \
+             headroom",
+            new_bound.amount_usd
+        );
+        assert!(
+            new_bound.amount_usd < old_bound,
+            "the fix must strictly reduce the bound for this reported shape"
         );
     }
 
