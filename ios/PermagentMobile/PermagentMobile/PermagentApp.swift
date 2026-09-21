@@ -10,8 +10,6 @@ import SwiftUI
 @MainActor
 struct PermagentApp: App {
     @StateObject private var session = HubSession()
-    @ObservedObject private var route = AppRoute.shared
-    @State private var splashDone = false
 
     init() {
         #if DEBUG
@@ -24,43 +22,57 @@ struct PermagentApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
-            ZStack {
-                ChatSurface.bg.ignoresSafeArea()
-                #if DEBUG
-                if let preview = DesignPreview.screen {
-                    DesignPreviewRoot(screen: preview)
-                } else if session.isPaired {
-                    MainTabs().environmentObject(session)
-                } else {
-                    PairingView().environmentObject(session)
-                }
-                #else
-                if session.isPaired {
-                    MainTabs().environmentObject(session)
-                } else {
-                    PairingView().environmentObject(session)
-                }
-                #endif
-                // Splash sits OVER the real UI rather than gating it, so
-                // `bootstrap()` (Keychain read, hub reconnect) runs during the
-                // 2.5s instead of after it — the animation costs no launch time.
-                if !splashDone && !isDesignPreview {
-                    SplashView { splashDone = true }
-                        .transition(.opacity)
-                        .zIndex(1)
-                }
+        // 2026-09-21: Intentionally use the deprecated non-escaping overload:
+        // iOS 27 AsyncRenderer can invoke the escaping builder off the main
+        // actor and hit an isolation trap; do not modernise this to a trailing
+        // closure without re-running the 25-cycle device test.
+        WindowGroup(content: {
+            RootView(session: session)
+        })
+    }
+}
+
+private struct RootView: View {
+    @ObservedObject var session: HubSession
+    @ObservedObject private var route = AppRoute.shared
+    @State private var splashDone = false
+
+    var body: some View {
+        ZStack {
+            ChatSurface.bg.ignoresSafeArea()
+            #if DEBUG
+            if let preview = DesignPreview.screen {
+                DesignPreviewRoot(screen: preview)
+            } else if session.isPaired {
+                MainTabs().environmentObject(session)
+            } else {
+                PairingView().environmentObject(session)
             }
-            // No `.preferredColorScheme` — the app follows the system
-            // appearance, as the desktop app does with its `system` theme
-            // preference. Brand tokens are dynamic colors (Theme.swift), so
-            // both palettes are already in place. The tab bar (and every
-            // stock control) tints to the spark accent.
-            .tint(ChatSurface.spark)
-            .task { if !isDesignPreview { await session.bootstrap() } }
-            .fullScreenCover(isPresented: $route.showVoice) {
-                VoiceView()
+            #else
+            if session.isPaired {
+                MainTabs().environmentObject(session)
+            } else {
+                PairingView().environmentObject(session)
             }
+            #endif
+            // Splash sits OVER the real UI rather than gating it, so
+            // `bootstrap()` (Keychain read, hub reconnect) runs during the
+            // 2.5s instead of after it — the animation costs no launch time.
+            if !splashDone && !isDesignPreview {
+                SplashView { splashDone = true }
+                    .transition(.opacity)
+                    .zIndex(1)
+            }
+        }
+        // No `.preferredColorScheme` — the app follows the system
+        // appearance, as the desktop app does with its `system` theme
+        // preference. Brand tokens are dynamic colors (Theme.swift), so
+        // both palettes are already in place. The tab bar (and every
+        // stock control) tints to the spark accent.
+        .tint(ChatSurface.spark)
+        .task { if !isDesignPreview { await session.bootstrap() } }
+        .fullScreenCover(isPresented: $route.showVoice) {
+            VoiceView()
         }
     }
 
