@@ -8079,6 +8079,19 @@ pub(crate) async fn dispatch_goal_fn(
         super::dispatch_digest::load_dispatch_digest(&pool, &project, &card.id, bridge_available)
             .await
     {
+        // R48c, wired 2026-09-21: the compact profile bounds the digest the
+        // same way it bounds the code map above. The bounds and their test
+        // landed in the R48c lane but this call site never applied them, so
+        // `COMPACT_DIGEST_MAX_*` were referenced only from the test that
+        // called `bound_compact_block` directly — the test proved the helper,
+        // not the brief. `clippy --lib` calling them dead code is what
+        // surfaced it. A no-op when the digest already fits, and always a
+        // no-op for the default profile.
+        let block = if compact_worker_profile {
+            bound_compact_block(&block, COMPACT_DIGEST_MAX_LINES, COMPACT_DIGEST_MAX_CHARS)
+        } else {
+            block
+        };
         instructions = format!("{instructions}\n\n{block}");
     }
 
