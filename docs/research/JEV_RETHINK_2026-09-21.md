@@ -11,6 +11,15 @@ measurements are credited inline.
 "Jev" below means **the typed-decision interface on a local backend** — `choice` / `score` / `noul` with
 probabilities, no text generated — not TypeSafe's hosted service, which remains off-limits for private state.
 
+
+> **CORRECTED AFTER ADVERSARIAL REVIEW (2026-09-21).** Codex Astra (`gpt-6-astra`) attacked this document; I verified its claims against the source. Full exchange and the revised plan: `CODEX_DEBATE_2026-09-21.md`. Errors found here:
+> - **Pattern C's central claim is withdrawn.** `growth/power.rs:274` says of itself *"This is a before/after with an honesty gate, not an experiment."* Its detection threshold is 66 % at 40 weekly views and 8 % at 3,000; a 10 % effect needs ~1,729 events per window; and overlapping changes return `Confounded` (`:317`) — so "five proposals per site per week" would defeat the measurement. **A metric exists; a causal label does not.** Keep the deterministic structural audit (orphans, zero inbound links); drop the calibration loop.
+> - **The 56 % figure is not an addressable-savings estimate.** One mis-priced `deepseek-flash` row ($11.11 for 73k input tokens) is 14 % of the ledger; without it the share is 48.8 %. More fundamentally, a short output is often a tool call that needed the full context — the ledger records no call purpose, so *no individual call has been shown to be skippable.*
+> - **The Watcher row was wrong** — it already gates deterministically before calling the model.
+> - **Pattern F (grant matching) contradicts tighten-only and is cut.** A classifier deciding whether an action falls inside a natural-language grant *is* granting. Scope must be deterministic; a classifier may only veto inside it.
+> - **Pattern D:** "150 elements fit under the 255-option cap" is not feasibility evidence — this document's own predecessor records accuracy falling as option sets grow. The snapshot holds interactive elements only, so a verifier cannot see a success message. And there is a real bug first: `__permagentType()` returns `false` but its caller ignores it and reports `ok: true` (`browser_grounding.js:301,365,381`).
+> - **In the harness, the wake question is a state transition, not a classifier** — `agent.rs:662` already suspends with zero provider turns. Many monitors should likewise be *compiled once* into a reviewed deterministic predicate; a judge is for conditions that cannot compile.
+> - Fail-awake needs coalescing and backoff (an outage must not fire thousands of paid calls) and a *time* bound, not a skip count (10 skips × 3 h = 30 h).
 ---
 
 ## 0. What changed in my thinking
@@ -76,7 +85,7 @@ digest counts them, so "slept 40 times in a row" is visible.
 
 | Loop | Today | With a wake gate |
 |---|---|---|
-| `goose-server/src/proactive.rs:253` `reason()` | `complete_fast("echo-watcher")` every 3 h tick returns `{"pick": n or -1}` — a model call to learn "stay quiet" | `choice` over candidates + `stay_quiet`; the generative message is written **only** when something is picked |
+| `goose-server/src/proactive.rs:253` `reason()` | **Corrected:** NOT every tick — `proactive.rs:125-171` already skips the model for delivery spacing (`MIN_GAP_HOURS`), quiet hours, a missing brain and an empty candidate list. `reason()` runs only when there are candidates and a slot to deliver in. | `choice` over candidates + `stay_quiet`; the generative message is written **only** when something is picked |
 | `watcher_insights.rs:217` `compose` | LLM returns `{"insight": ""}` when there is nothing worth saying, every 4 h | `noul` "is anything here worth saying?" before paying to compose |
 | `concierge.rs` daily mail triage | keyword urgency, then an LLM draft | the typed urgency `score` *is* the wake decision for drafting |
 | `scheduler.rs` | **a scheduled recipe always starts a full agent session** — there is no "is there anything to do?" and no condition on a schedule | a per-schedule precondition (Pattern B) |

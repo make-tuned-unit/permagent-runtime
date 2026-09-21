@@ -11,6 +11,13 @@ Companion: `BONSAI2_27B_REVIEW_2026-09-20.md`.
 > their search budget; gaps are listed in §9, not papered over. Much 2026 agent coverage is SEO paraphrase of press
 > releases — primary docs and named users were preferred.
 
+
+> **CORRECTED AFTER ADVERSARIAL REVIEW (2026-09-21).** Codex Astra (`gpt-6-astra`) attacked this document; I verified its claims against the source. Full exchange and the revised plan: `CODEX_DEBATE_2026-09-21.md`. Errors found here:
+> - **Menlo denominators were misread** (verified against the source): the 72/41/24 % figures are shares of *AI users*; the 92 % is agent users who pay for *AI*, not for agents; the access list is what users *have granted*, not a ranked preference.
+> - **"Prosumer/operator" is a hypothesis, not a finding** — testimonials show possible jobs, not retention or willingness to run a Mac mini.
+> - **The structural claims need qualifying:** no password hand-off is not no credential authority (the agent acts through authenticated cookies); local memory can still be lost to the agent, corruption or disk failure; no VM bill is not no hardware, power or upkeep.
+> - **Build order revised:** one narrowly scoped real-browser workflow moves *earlier* — it is what this document's own evidence says users repeat. Watch approvals are deferred until phone/desktop approval friction is actually measured.
+> - Our browser snapshot is not an accessibility tree; the brain router has two backfill POSTs, not one.
 ---
 
 ## 0. Verdict
@@ -169,13 +176,13 @@ autonomous agentic tasks on consumer hardware" with an Apple-M-series speculativ
 
 ## 3. What the market has actually validated
 
-**Adoption** `[DATA]` Menlo / Morning Consult, N=5,067 US adults, July 2026: **72 % aware of agents, 41 % tried, 24 % use
-regularly.** **92 % of agent users pay** (vs 55 % of AI users); 21 % of them spend $100+/month. Consumer AI users grew
+**Adoption** `[DATA]` Menlo / Morning Consult, N=5,067 US adults, July 2026: **of AI users (not of all adults): 72 % aware of agents, 41 % tried, ~24 % use
+regularly.** **92 % of agent users pay *for AI*** — not necessarily for agents — (vs 55 % of AI users); 21 % of them spend $100+/month. Consumer AI users grew
 11 % YoY while spend tripled. **No cohort-retention number exists for any agent product, anywhere.** Scale check:
 OpenAI's agentic tools reach ~10M weekly users against ChatGPT's 1B — **about 1 % of the base.** METR's 50 %-reliability
 horizon for frontier models is ~2h17m — *at 50 %*.
 
-**What users will grant, in order:** **email 36 % > browser 33 % > messaging 31 % > files 29 % > calendar 27 % >
+**What current agent users *have granted* (not a willingness ranking):** **email 36 % > browser 33 % > messaging 31 % > files 29 % > calendar 27 % >
 finance 20 %.** 32 % have ever let an AI act without approval. **17 % trust AI to complete a purchase; 9 %
 unsupervised.**
 
@@ -257,7 +264,7 @@ Ordering rule: **market-validated × already-half-built.** Every item below stay
 
 | # | Capability | Why the market says so | What exists → what's missing |
 |---|---|---|---|
-| 1 | **Memory you can edit, forget and export** | 85 % demand visibility and control; Grok Bot has none; Muse can't disable memory; Manus deleted users' work | `SafeBrain::forget / forget_scope / forget_keys` written and tested (`brain_handle.rs:224-270`), with internal callers only (document re-ingest `reader/mod.rs:314,601`, noise cleanup `activity/cleanup.rs:195`) — **no HTTP route and no UI** (verified: `routes/brain.rs:1327-1335` is GET plus one backfill POST; nothing under `components/brain/` mentions forget or delete) → a DELETE route, a button, an export. **The strongest differentiator per line of code in this document.** |
+| 1 | **Memory you can edit, forget and export** | 85 % demand visibility and control; Grok Bot has none; Muse can't disable memory; Manus deleted users' work | `SafeBrain::forget / forget_scope / forget_keys` written and tested (`brain_handle.rs:224-270`), with internal callers only (document re-ingest `reader/mod.rs:314,601`, noise cleanup `activity/cleanup.rs:195`) — **no HTTP route and no UI** (verified: `routes/brain.rs:1327-1335` is GET plus two backfill POSTs; nothing under `components/brain/` mentions forget or delete) → a DELETE route, a button, an export. **The strongest differentiator per line of code in this document.** |
 | 2 | **A spend dashboard and a hard cap** | #1 Grok Bot complaint; neither product has a cap; matches the cost-conscious routing principle | **Corrected 2026-09-21 (peer session permagent-runtime-46, verified):** this largely EXISTS — `ui/command-center/src/components/history/SpendPanel.tsx` renders the ledger rollup and sets session and per-task ceilings via `POST /api/governance/budget`; ceilings live in `cost_router/budget.rs` (task 1/3/6, session 5/12/25 USD). The read-only capability map missed it. What was actually broken was the **reservation** side — holds sized from a model's max output meant 63 reservations held $81.35 against $1.23 of real spend, so the gate refused work on money never spent (fixed in `11e5c913`) — and **pricing**: Sonnet 5 was stored at $3/$15 rather than $2/$10, and Fable/Opus 5 had no row and fell through to a $150/$600 worst case (fixed in `18c8de1e`). **Any dollar figure quoted from the ledger before those commits is unreliable.** Remaining gap: surfacing this as a first-run, product-level promise ("see what it costs, and cap it") rather than a History sub-panel, and a cap that covers background sweeps and monitors. |
 | 3 | **User-defined monitors** — "tell me when this page changes / this price drops / mail from Y arrives" | background monitoring is table stakes; this is the no-API long tail people actually repeat | `skill_triggers` table (`spectral_schema.rs:394`) + `proactive.rs` candidate/judge/budget machinery + `rss.rs`. Verified: the table is written only with `trigger_type = 'repetition'` as a provenance record of *why a skill was proposed* (`skills.rs:122`); nothing ever updates `last_triggered_at` and **nothing evaluates a condition**. Copy auto-pause-when-ignored; the scheduler already pauses after three failures |
 | 4 | **Notification budget** | fatigue is measured; Muse ships a dial | `proactive.rs:38-43` already has `MIN_GAP_HOURS 20`, quiet hours, 7-day same-subject suppression → expose as a user dial, cap 3–5/day across all sources |
@@ -294,7 +301,7 @@ Ordering rule: **market-validated × already-half-built.** Every item below stay
   (the write jail knows every path), drafts, calendar entries, memory triples (`brain_handle.rs:1196` already undoes
   those).
 - **Injection defence as a first-class subsystem.** Hostile-by-default framing of retrieved and browsed content;
-  a11y-tree-only browsing (we already do this); no page-context JS; and remember that **encoding-layer attacks beat
+  interactive-element-list browsing (ours is a DOM-derived list of interactive elements built by injected JS — **not** a native accessibility tree, and it runs in page context); no page-context JS; and remember that **encoding-layer attacks beat
   plaintext classifiers**, so the structural controls matter more than any detector — including the typed-decision
   detector proposed in the Jev analysis, which is itself injectable.
 

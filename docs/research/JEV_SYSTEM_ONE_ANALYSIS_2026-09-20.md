@@ -11,6 +11,13 @@ the load-bearing ones are repeated in §12.
 > could not confirm. The ecosystem is five days old (launch 2026-09-15), heavy on repos and thin on evidence; several
 > entries in the community index are AI-generated forks or contain no Jev at all.
 
+
+> **CORRECTED AFTER ADVERSARIAL REVIEW (2026-09-21).** Codex Astra (`gpt-6-astra`) attacked this document; I verified its claims against the source. Full exchange and the revised plan: `CODEX_DEBATE_2026-09-21.md`. Errors found here:
+> - **The decision platform is no longer a prerequisite.** Most proposed sites need only constrained output (an enum with an `unknown` option), which Ollama's `format` already provides. Distributions are justified only where a workload needs *ranking* or *asymmetric thresholds* — build them when one does, not before.
+> - **The ≥100-label gate is a workload estimate, not a statistical gate** (zero failures in 100 trials still leaves a ~3 % upper bound; approving an action does not prove it was safe). Each site needs a named label source, positive-class counts, a held-out split, a review budget and a kill date.
+> - `CATEGORIES` is open vocabulary, not a closed set (§7.3) — that substitution does not work.
+> - "No probability anywhere" was overstated: `security/classification_client.rs` already returns normalised class scores (the doc cites it, then contradicts itself).
+> - The local prefill+logprobs trick needs one suffix pass *per question*; hosted Jev's "latency flat in question count" does not transfer.
 ---
 
 ## 0. Verdict
@@ -338,7 +345,7 @@ Spectral-side conversation (see the Spectral–Permagent harmony work), while th
 | Site | Today | Proposal |
 |---|---|---|
 | `librarian_adjudicator.rs:206` `adjudicate` | **LLM** asked which of N candidates supersedes, reply parsed as `REPLACED <value> <confidence>` / `HOLD` / `UNKNOWN`; confidence is LLM-*verbalised* and clamped (`:152`); already shadow-mode | **The most literally Jev-shaped call in the repo.** One `choice` over {candidates…, HOLD, UNKNOWN} gives a real distribution in place of a verbalised number. Deterministic `predicate_cardinality:77` pre-filter stays. |
-| `librarian.rs:488` `describe_one` | one ~700-token LLM call **per undescribed memory, queue drained nightly** — the dominant local LLM cost; output is `FACTS / TERMS / CATEGORIES` | `CATEGORIES` is multi-label classification masquerading as generation → a batch of nouls over the closed category set. `FACTS` and `TERMS` stay generative. Could shrink the 01:50–06:10 window and the two-mini split's duty cycle. |
+| `librarian.rs:488` `describe_one` | one ~700-token LLM call **per undescribed memory, queue drained nightly** — the dominant local LLM cost; output is `FACTS / TERMS / CATEGORIES` | ~~`CATEGORIES` is multi-label classification over a closed set~~ **WRONG — the prompt asks for freely generated category terms (`librarian.rs:51,56`); there is no closed set to classify into.** `FACTS` and `TERMS` stay generative. Could shrink the 01:50–06:10 window and the two-mini split's duty cycle. |
 | `librarian_atoms.rs:81` | cluster selection deterministic; one LLM call per cluster (flag OFF) | Generation — not a fit. A pre-check `noul` "do these members actually say the same thing?" could skip clusters. |
 | `pruning.rs:87` | SQL + novelty | **Mostly not a fit.** Staleness is a date comparison, which this class of model explicitly cannot do, and pure gate-judge contradiction calls **leak stale facts 25–60 %** (arXiv 2606.26511); the best model on the STALE benchmark manages 55.2 %. Compute recency in code and hand over the computed fact as words ("14 months old"). Selection already never writes (`:241`) — keep it that way. |
 | `routes/librarian/consolidation.rs:16` | duplicates = SQL `GROUP BY content HAVING cnt>1` — **exact matches only** | The `jlink` pattern `[AUTHOR]`: cheap **local blocking** (FTS / shared entities — zero model calls) proposes candidate pairs, the classifier adjudicates *"do these two say the same thing?"*. Precision 0.90–0.99; 45,567 pairs in 176 s. **The blocker owns recall** (0.62 in the published run) — the classifier cannot find a pair it is never shown. Feeds `librarian_atoms` cluster selection. |

@@ -8,6 +8,12 @@ have better hardware and we find the next best open source model for the librari
 **Labels:** `[MODEL-CARD]` vendor's own numbers · `[LOCAL]` observed on our machines · `[CODE]` verified in this repo ·
 `[RECALLED]` from my own background knowledge, not re-fetched · `[UNVERIFIED]`.
 
+
+> **CORRECTED AFTER ADVERSARIAL REVIEW (2026-09-21).** Codex Astra (`gpt-6-astra`) attacked this document; I verified its claims against the source. Full exchange and the revised plan: `CODEX_DEBATE_2026-09-21.md`. Errors found here:
+> - **Fix the contract before blaming the model.** The system prompt's own few-shot example *invents a year* (memory says "April 24"; example FACTS says "April 24, 2026" — `librarian.rs:62`); requests enforce no schema although Ollama supports constrained output; categories are open vocabulary; salvage can pad with generic terms. **Format drift is not yet shown to be a model-capacity problem.**
+> - **Faithfulness ranks above format adherence**, not below — a perfectly formatted invented fact is worse than valid JSON holding the right one. The proposed bench also wrongly penalised JSON, which the primary parser accepts first (`:1432`).
+> - **The bench becomes three arms:** incumbent + current contract · incumbent + schema contract · `qwen3.5:4b` + schema contract — recording which backend actually served.
+> - Two attempts, not two retries; promotion is not one line; the native path sends no thinking-off field.
 ---
 
 ## 0. Recommendation
@@ -77,15 +83,14 @@ nightly window on a machine with no free memory, versus describing opportunistic
 - **Format strictness is the whole game.** The parser accepts labelled lines, JSON, or fenced JSON, and as a last
   resort salvages a "first usable sentence" — logged as a data-quality loss (≈12 memories went unsearchable on
   2026-08-22 from raw dumps). Ranges are clamped post-hoc because an earlier model ignored them (18–23 items). Two
-  retries.
+  **attempts** (`0..2` at `:548` — one retry, not two).
 - **Adjudicate** (`librarian_adjudicator.rs`): supersession — reply parsed as `REPLACED <value> <confidence>` /
   `HOLD` / `UNKNOWN`. **Destructive if wrong** (it retires a fact). Default **off**; "shadow" logs only.
 - **Atoms** (`librarian_atoms.rs`): consolidate clusters of up to 24 memories into cited atom lines. Default **off**.
 - **Backends:** a dedicated OpenAI-compatible endpoint (`PERMAGENT_LIBRARIAN_ENDPOINT`, backend `ollama|llamacpp`) →
   else **Apple on-device first** → else the Ollama pool. **A remote endpoint needs no code change.**
 - **Thinking:** the OpenAI-compatible path already sends `chat_template_kwargs: {"enable_thinking": false}`
-  (`mesh/pool.rs:515`). *Unchecked:* whether the Ollama-native streaming path sends `think: false` — it matters for any
-  Qwen3.x model, which thinks by default. One grep to settle before the bench.
+  (`mesh/pool.rs:515`). **Settled:** the Ollama-native path (`mesh/pool.rs:473` `for_stream`) sends **no** `think` field — any Qwen3.x model would think by default there. This must be fixed before benching one.
 - **Volume:** one call per undescribed memory, queue drained nightly inside a 240-minute window — hundreds of calls.
   Generation speed matters more than prefill.
 
@@ -186,7 +191,7 @@ for every arm.
 `qwen25-16k` are 4.7 GB each, but **the peer session has just pointed the LOCAL and MECHANICAL roles at
 `qwen2.5-coder:7b`, so that one stays**); 6.6 + 5.3 GB on the M1. One evening. No cargo, no daemon change.
 
-**Promotion is one line:** `"model"` in `~/.permagent/librarian_schedule.json`.
+**Promotion is NOT one line:** `"model"` in `librarian_schedule.json` changes the scheduled path, but when a dedicated endpoint is skipped or fails the code falls back to the hard-coded `DEFAULT_MODEL` (`librarian.rs:1551,1660`) regardless. Both must change.
 
 ---
 
