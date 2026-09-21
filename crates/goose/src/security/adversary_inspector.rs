@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::agents::types::SharedProvider;
@@ -9,6 +9,7 @@ use crate::config::paths::Paths;
 use crate::config::GooseMode;
 use crate::conversation::message::{Message, MessageContent, ToolRequest};
 use crate::conversation::Conversation;
+use crate::session::SessionManager;
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 use crate::utils::safe_truncate;
 
@@ -26,6 +27,78 @@ installs packages, runs tests, uses git, etc. Most commands are fine.
 Err on the side of ALLOW — only block truly dangerous things."#;
 
 const MAX_RECENT_USER_MESSAGES: usize = 4;
+
+const MAX_VERDICT_EXCERPT_CHARS: usize = 200;
+
+fn parse_verdict(output: &str) -> (InspectionAction, String) {
+    let mut lines = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or("");
+    let verdict_end = first
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(first.len());
+    let (verdict, rest) = first.split_at(verdict_end);
+    // Permission requires the exact uppercase verdict, with any inline reason
+    // introduced by an explicit separator. Sentence-style "Allow me ..." is not
+    // a verdict. BLOCK intentionally remains case-insensitive and lenient.
+    let suffix = rest.trim_start();
+    let is_allow = verdict == "ALLOW"
+        && (suffix.is_empty() || suffix.starts_with([':', '-', '–', '—', '.', ',', ';']));
+    // Only uppercase verdict tokens on the first line or opposing verdicts
+    // starting later lines conflict; verdict words inside prose do not.
+    let has_conflict = |word: &str| {
+        rest.split(|c: char| !c.is_alphanumeric() && c != '_')
+            .any(|token| token == word)
+            || lines.clone().any(|line| {
+                line.trim_start_matches(|c: char| !c.is_alphanumeric())
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .is_some_and(|token| token.eq_ignore_ascii_case(word))
+            })
+    };
+    let action = if is_allow && !has_conflict("BLOCK") {
+        InspectionAction::Allow
+    } else if verdict.eq_ignore_ascii_case("BLOCK") && !has_conflict("ALLOW") {
+        InspectionAction::Deny
+    } else {
+        let mut chars = output.chars();
+        let mut excerpt: String = chars
+            .by_ref()
+            .take(MAX_VERDICT_EXCERPT_CHARS)
+            .map(|c| {
+                if c.is_whitespace() || c.is_control() {
+                    ' '
+                } else {
+                    c
+                }
+            })
+            .collect();
+        if chars.next().is_some() {
+            excerpt.pop();
+            excerpt.push('…');
+        }
+        let reason = format!("Adversary verdict was unreadable: \"{}\"", excerpt);
+        return (
+            InspectionAction::RequireApproval(Some(reason.clone())),
+            reason,
+        );
+    };
+    let reason = std::iter::once(rest.trim_start_matches(|c: char| {
+        c.is_whitespace() || c.is_ascii_punctuation() || matches!(c, '–' | '—')
+    }))
+    .chain(lines)
+    .filter(|line| !line.is_empty())
+    .collect::<Vec<_>>()
+    .join(" ");
+    let reason = if reason.is_empty() && matches!(action, InspectionAction::Deny) {
+        "Blocked by adversary".to_string()
+    } else {
+        reason
+    };
+    (action, reason)
+}
 
 struct AdversaryConfig {
     tools: Vec<String>,
@@ -48,11 +121,12 @@ struct AdversaryConfig {
 ///
 /// If the `tools:` line is omitted, only `shell` is reviewed by default.
 /// If the file is absent, this inspector is disabled.
-/// If the review fails, the inspector fails open (allows the tool call).
+/// If the review fails, the inspector fails closed (requires user approval).
 pub struct AdversaryInspector {
     provider: SharedProvider,
     config: OnceLock<Option<AdversaryConfig>>,
     config_path: Option<std::path::PathBuf>,
+    session_manager: Option<Arc<SessionManager>>,
 }
 
 impl AdversaryInspector {
@@ -61,6 +135,7 @@ impl AdversaryInspector {
             provider,
             config: OnceLock::new(),
             config_path: None,
+            session_manager: None,
         }
     }
 
@@ -69,7 +144,15 @@ impl AdversaryInspector {
             provider,
             config: OnceLock::new(),
             config_path: Some(config_dir.join("adversary.md")),
+            session_manager: None,
         }
+    }
+
+    /// Use the supplied session store for review lookup and completion accounting.
+    /// Without an override, reviews use the process-wide session manager.
+    pub fn with_session_manager(mut self, session_manager: Arc<SessionManager>) -> Self {
+        self.session_manager = Some(session_manager);
+        self
     }
 
     fn get_config(&self) -> Option<&AdversaryConfig> {
@@ -246,11 +329,15 @@ impl AdversaryInspector {
         original_task: &str,
         recent_messages: &[String],
         rules: &str,
-    ) -> Result<(bool, String)> {
+    ) -> Result<(InspectionAction, String)> {
         let provider_guard = self.provider.lock().await;
         let provider = match provider_guard.clone() {
             Some(p) => p,
-            None => return Ok((true, "No provider available".to_string())),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "No provider available for adversary review"
+                ))
+            }
         };
         drop(provider_guard);
 
@@ -292,7 +379,10 @@ impl AdversaryInspector {
         )];
         let conversation = Conversation::new_unvalidated(check_messages);
 
-        let manager = std::sync::Arc::new(crate::session::SessionManager::instance());
+        let manager = self
+            .session_manager
+            .clone()
+            .unwrap_or_else(|| Arc::new(SessionManager::instance()));
         let session = manager
             .get_session(session_id, false)
             .await
@@ -319,33 +409,7 @@ impl AdversaryInspector {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let output = output.trim();
-        let upper = output.to_uppercase();
-
-        if upper.starts_with("BLOCK") || upper.contains("\nBLOCK") {
-            let reason = output
-                .lines()
-                .skip(1)
-                .collect::<Vec<_>>()
-                .join(" ")
-                .trim()
-                .to_string();
-            let reason = if reason.is_empty() {
-                "Blocked by adversary".to_string()
-            } else {
-                reason
-            };
-            Ok((false, reason))
-        } else {
-            let reason = output
-                .lines()
-                .skip(1)
-                .collect::<Vec<_>>()
-                .join(" ")
-                .trim()
-                .to_string();
-            Ok((true, reason))
-        }
+        Ok(parse_verdict(&output))
     }
 }
 
@@ -403,7 +467,7 @@ impl ToolInspector for AdversaryInspector {
                 )
                 .await
             {
-                Ok((true, reason)) => {
+                Ok((InspectionAction::Allow, reason)) => {
                     tracing::debug!(
                         tool_request_id = %request.id,
                         reason = %reason,
@@ -418,7 +482,7 @@ impl ToolInspector for AdversaryInspector {
                         finding_id: None,
                     });
                 }
-                Ok((false, reason)) => {
+                Ok((InspectionAction::Deny, reason)) => {
                     crate::receipts::record("safety_and_trust", "adversary_blocks");
                     tracing::warn!(
                         tool_request_id = %request.id,
@@ -434,16 +498,32 @@ impl ToolInspector for AdversaryInspector {
                         finding_id: None,
                     });
                 }
+                Ok((action @ InspectionAction::RequireApproval(_), reason)) => {
+                    tracing::warn!(
+                        tool_request_id = %request.id,
+                        reason = %reason,
+                        "Adversary verdict unreadable, requiring approval (fail-closed)"
+                    );
+                    results.push(InspectionResult {
+                        tool_request_id: request.id.clone(),
+                        action,
+                        reason,
+                        confidence: 0.0,
+                        inspector_name: self.name().to_string(),
+                        finding_id: None,
+                    });
+                }
                 Err(e) => {
                     tracing::warn!(
                         tool_request_id = %request.id,
                         error = %e,
-                        "Adversary inspector failed, allowing tool call (fail-open)"
+                        "Adversary inspector failed, requiring approval (fail-closed)"
                     );
+                    let reason = format!("Adversary review failed (fail-closed): {}", e);
                     results.push(InspectionResult {
                         tool_request_id: request.id.clone(),
-                        action: InspectionAction::Allow,
-                        reason: format!("Adversary error (fail-open): {}", e),
+                        action: InspectionAction::RequireApproval(Some(reason.clone())),
+                        reason,
                         confidence: 0.0,
                         inspector_name: self.name().to_string(),
                         finding_id: None,
@@ -470,6 +550,237 @@ mod tests {
         let direct_call = [".", "complete("].concat();
         assert!(source.contains("complete_accounted"));
         assert!(!source.contains(&direct_call));
+    }
+
+    #[test]
+    fn test_parse_verdict() {
+        let cases = [
+            ("ALLOW", InspectionAction::Allow),
+            ("ALLOW.", InspectionAction::Allow),
+            ("ALLOW: looks fine", InspectionAction::Allow),
+            ("ALLOW - looks fine", InspectionAction::Allow),
+            ("ALLOW – looks fine", InspectionAction::Allow),
+            ("ALLOW — looks fine", InspectionAction::Allow),
+            ("ALLOW, looks fine", InspectionAction::Allow),
+            ("ALLOW; looks fine", InspectionAction::Allow),
+            ("ALLOW.looks fine", InspectionAction::Allow),
+            ("ALLOW-looks fine", InspectionAction::Allow),
+            ("ALLOW–looks fine", InspectionAction::Allow),
+            ("ALLOW—looks fine", InspectionAction::Allow),
+            (" \n  ALLOW : looks fine  ", InspectionAction::Allow),
+            ("ALLOW looks fine", InspectionAction::RequireApproval(None)),
+            ("Allow", InspectionAction::RequireApproval(None)),
+            ("allow", InspectionAction::RequireApproval(None)),
+            (
+                "Allow me to explain...",
+                InspectionAction::RequireApproval(None),
+            ),
+            (
+                "Allow me to explain why this is dangerous...",
+                InspectionAction::RequireApproval(None),
+            ),
+            (
+                "ALLOW me to explain",
+                InspectionAction::RequireApproval(None),
+            ),
+            ("ALLOW! looks fine", InspectionAction::RequireApproval(None)),
+            ("ALLOW/looks fine", InspectionAction::RequireApproval(None)),
+            (
+                "ALLOW\nNothing here warrants a block; the command only lists files.",
+                InspectionAction::Allow,
+            ),
+            ("ALLOW - no need to block this", InspectionAction::Allow),
+            ("ALLOW - no need to Block this", InspectionAction::Allow),
+            (
+                " \n  allow: looks fine  ",
+                InspectionAction::RequireApproval(None),
+            ),
+            ("BLOCK", InspectionAction::Deny),
+            ("block because x", InspectionAction::Deny),
+            ("Block this command", InspectionAction::Deny),
+            ("BLOCK: reason", InspectionAction::Deny),
+            ("BLOCK\nreason", InspectionAction::Deny),
+            (
+                "BLOCK\nIt would be wrong to allow this.",
+                InspectionAction::Deny,
+            ),
+            ("BLOCK - do not Allow this", InspectionAction::Deny),
+            ("", InspectionAction::RequireApproval(None)),
+            ("   ", InspectionAction::RequireApproval(None)),
+            ("I am not sure", InspectionAction::RequireApproval(None)),
+            ("This seems fine", InspectionAction::RequireApproval(None)),
+            (
+                "I cannot review this",
+                InspectionAction::RequireApproval(None),
+            ),
+            ("ALLOW and BLOCK", InspectionAction::RequireApproval(None)),
+            ("ALLOW: BLOCK", InspectionAction::RequireApproval(None)),
+            ("BLOCK: ALLOW", InspectionAction::RequireApproval(None)),
+            ("ALLOW\nBLOCK", InspectionAction::RequireApproval(None)),
+            (
+                "ALLOW\n\"BLOCK unsafe\"",
+                InspectionAction::RequireApproval(None),
+            ),
+            (
+                "ALLOW\n#BLOCK unsafe",
+                InspectionAction::RequireApproval(None),
+            ),
+            ("ALLOW\n- BLOCK", InspectionAction::RequireApproval(None)),
+            (
+                "BLOCK\n\"ALLOW safe\"",
+                InspectionAction::RequireApproval(None),
+            ),
+            (
+                "BLOCK\n#ALLOW safe",
+                InspectionAction::RequireApproval(None),
+            ),
+            ("BLOCK\n- ALLOW", InspectionAction::RequireApproval(None)),
+            ("ALLOW\nblock it", InspectionAction::RequireApproval(None)),
+            ("BLOCK\nallow it", InspectionAction::RequireApproval(None)),
+            (
+                "ALLOW\n \n BlOcK: unsafe",
+                InspectionAction::RequireApproval(None),
+            ),
+            ("ALLOW\nBLOCKED", InspectionAction::Allow),
+            ("ALLOW\nBLOCK_ALLOW", InspectionAction::Allow),
+            ("ALLOW\n#BLOCKED", InspectionAction::Allow),
+            ("ALLOW\n- BLOCK_ALLOW", InspectionAction::Allow),
+            ("ALLOW: BLOCKED", InspectionAction::Allow),
+            ("ALLOW: BLOCK_ALLOW", InspectionAction::Allow),
+            ("ALLOW and BLOCKED", InspectionAction::RequireApproval(None)),
+            (
+                "ALLOW and BLOCK_ALLOW",
+                InspectionAction::RequireApproval(None),
+            ),
+            ("Uncertain\nBLOCK", InspectionAction::RequireApproval(None)),
+            ("BLOCK and ALLOW", InspectionAction::RequireApproval(None)),
+            ("ALLOWED", InspectionAction::RequireApproval(None)),
+            ("ALLOW_BLOCK", InspectionAction::RequireApproval(None)),
+            ("BLOCKED", InspectionAction::RequireApproval(None)),
+            ("BLOCK_ALLOW", InspectionAction::RequireApproval(None)),
+        ];
+        for (input, expected) in cases {
+            let (action, reason) = parse_verdict(input);
+            assert_eq!(
+                std::mem::discriminant(&action),
+                std::mem::discriminant(&expected),
+                "input: {input:?}"
+            );
+            if let InspectionAction::RequireApproval(message) = action {
+                assert_eq!(message.as_deref(), Some(reason.as_str()));
+                assert!(reason.starts_with("Adversary verdict was unreadable: \""));
+                assert!(reason.ends_with('"'));
+                assert!(!reason.contains(['\n', '\r']));
+            }
+        }
+        assert_eq!(parse_verdict("ALLOW - looks fine").1, "looks fine");
+        assert_eq!(parse_verdict("ALLOW – looks fine").1, "looks fine");
+        assert_eq!(parse_verdict("ALLOW — looks fine").1, "looks fine");
+        assert_eq!(parse_verdict("block because x").1, "because x");
+        assert_eq!(parse_verdict("BLOCK\nreason").1, "reason");
+    }
+
+    #[test]
+    fn allow_me_to_explain_is_not_a_verdict() {
+        let (action, reason) = parse_verdict("Allow me to explain why this is dangerous...");
+        assert!(matches!(
+            action,
+            InspectionAction::RequireApproval(Some(message)) if !message.is_empty()
+        ));
+        assert!(!reason.is_empty());
+    }
+
+    #[test]
+    fn uppercase_allow_followed_by_prose_is_not_a_verdict() {
+        for input in ["ALLOW me to explain", "ALLOW looks fine"] {
+            let (action, reason) = parse_verdict(input);
+            assert!(matches!(
+                action,
+                InspectionAction::RequireApproval(Some(message)) if !message.is_empty()
+            ));
+            assert!(!reason.is_empty());
+        }
+    }
+
+    #[test]
+    fn lowercase_allow_is_not_a_verdict() {
+        let (action, reason) = parse_verdict("allow");
+        assert!(matches!(
+            action,
+            InspectionAction::RequireApproval(Some(message)) if !message.is_empty()
+        ));
+        assert!(!reason.is_empty());
+    }
+
+    #[test]
+    fn quoted_block_on_a_later_line_is_a_conflict() {
+        let (action, reason) = parse_verdict("ALLOW\n\"BLOCK unsafe\"");
+        assert!(matches!(
+            action,
+            InspectionAction::RequireApproval(Some(message)) if !message.is_empty()
+        ));
+        assert!(!reason.is_empty());
+    }
+
+    #[test]
+    fn hash_prefixed_block_on_a_later_line_is_a_conflict() {
+        let (action, reason) = parse_verdict("ALLOW\n#BLOCK unsafe");
+        assert!(matches!(
+            action,
+            InspectionAction::RequireApproval(Some(message)) if !message.is_empty()
+        ));
+        assert!(!reason.is_empty());
+    }
+
+    #[test]
+    fn empty_reply_is_not_a_verdict() {
+        for input in ["", " \t\r\n "] {
+            let (action, reason) = parse_verdict(input);
+            assert!(matches!(
+                action,
+                InspectionAction::RequireApproval(Some(message)) if !message.is_empty()
+            ));
+            assert!(!reason.is_empty());
+        }
+    }
+
+    #[test]
+    fn prose_block_in_a_reason_does_not_downgrade_allow() {
+        let (action, _) =
+            parse_verdict("ALLOW\nNothing here warrants a block; the command only lists files.");
+        assert!(matches!(action, InspectionAction::Allow));
+    }
+
+    #[test]
+    fn explicit_allow_with_separator_allows() {
+        for input in ["ALLOW", "ALLOW.", "ALLOW: looks fine", "ALLOW - looks fine"] {
+            let (action, _) = parse_verdict(input);
+            assert!(matches!(action, InspectionAction::Allow));
+        }
+    }
+
+    #[test]
+    fn block_is_lenient() {
+        for input in ["BLOCK", "block because x", "Block this command"] {
+            let (action, _) = parse_verdict(input);
+            assert!(matches!(action, InspectionAction::Deny));
+        }
+    }
+
+    #[test]
+    fn test_unreadable_verdict_excerpt_is_bounded() {
+        let input = "garbage\n\r\t\0界".repeat(1_000);
+        let (action, reason) = parse_verdict(&input);
+        assert!(matches!(action, InspectionAction::RequireApproval(Some(_))));
+        let excerpt = reason
+            .strip_prefix("Adversary verdict was unreadable: \"")
+            .unwrap()
+            .strip_suffix('"')
+            .unwrap();
+        assert_eq!(excerpt.chars().count(), MAX_VERDICT_EXCERPT_CHARS);
+        assert!(excerpt.starts_with("garbage    界"));
+        assert!(excerpt.ends_with('…'));
+        assert!(!excerpt.chars().any(char::is_control));
     }
 
     #[test]
