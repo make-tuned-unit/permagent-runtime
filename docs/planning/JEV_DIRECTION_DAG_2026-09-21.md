@@ -1,6 +1,6 @@
 # DAG J — implementing the agreed direction, with Jev as a configurable judge provider
 
-**Date:** 2026-09-21 · **Status:** **AGREED 2026-09-21 15:30** with `permagent-runtime-46` — ownership, gate model and tiers accepted; the judge-role design **amended by the peer** (§4 Phase B); its DoD additions adopted (§3). Dispatch open on every coordinator-owned node.
+**Date:** 2026-09-21 · **Status:** **AGREED 2026-09-21 15:30 · PHASE A CLOSED 18:05 (gate 1 green: `4a195c16`, `6cd4b4c1`, `85e5822f`)** with `permagent-runtime-46` — ownership, gate model and tiers accepted; the judge-role design **amended by the peer** (§4 Phase B); its DoD additions adopted (§3). Dispatch open on every coordinator-owned node.
 **Asked by:** Jesse — *"Coordinate with the other session to create a structured DAG to implement the agreed upon
 direction. Use Codex via plugin and Cursor via CLI as workers. Verify every piece of code end to end for full wiring
 with full regression tests. Add JEV as a model provider so we can have it configured for its new role. Work
@@ -101,6 +101,11 @@ not be able to commit — the coordinator commits after review).
 17. **Every worker report states "NOT BUILT"** when it did not build. *"A worker forbidden from cargo is reasoning
     about compilation from reading, and its prose reads identically either way."* **No node closes on a worker's
     claim.**
+17c. **The coordinator runs rustfmt on exactly the touched files BEFORE the gate** *(gate 1's lesson, adopted by both
+    sessions)*: a worker forbidden from cargo is a worker that never formats, never lints and cannot see anything the
+    toolchain would have told it. Pre-gate is rustfmt plus a grep for any lint pattern a reviewer named; the gate's job
+    is what only a real compile can answer. Process guards use `pgrep -x cargo` — an exact executable match — never a
+    grep of a process list, which matches the guard's own shell.
 18. **Gate order inside a window:** focused target → the module's neighbours → the full lib suite. Gates are batched,
     in windows the peer opens.
 
