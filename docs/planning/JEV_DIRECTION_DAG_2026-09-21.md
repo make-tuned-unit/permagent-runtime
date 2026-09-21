@@ -429,6 +429,19 @@ persisted and yielded, also yield a typed `Err` for `SessionType::Scheduled`. Th
 `permagent-runtime-46` chooses who implements it. Apple on-device and both llama.cpp paths were found to emit terminal usage; mesh
 coverage was not established.
 
+**S1's minute-truncated key is WITHDRAWN (2026-09-21 late evening; stopped at Phase 0 by Codex Astra, no code written).** Counterexample,
+TRACED: catch-up runs sleep a 30 s stagger after startup and then claim at "now" (`scheduler.rs:1323` → `:472` → `:1398`); two processes
+two seconds apart can straddle a minute boundary (12:00:59 / 12:01:01), derive different keys, and **both win**. The 900 s floor does not
+constrain recovery timing. The coordinator found a second case: `every_seconds` jobs are armed relative to *process start*, so two
+processes never tick together — the job just runs at double rate, and no now-based key dedupes that.
+**Proposed replacement (with the peer for attack before re-dispatch): key on the fire's SCHEDULED instant, derived from data both processes
+hold identically.** cron → croner's latest occurrence ≤ now in the job's resolved tz (a pure function of expr/tz/now; identical for any two
+evaluations inside one inter-occurrence gap, and robust to a swap-delayed callback, which truncation is not); interval → epoch-aligned bucket
+`floor(now / every) × every`; one-shot → its `at`; catch-up → `missed_fire_at(job)`, claimed *before* the stagger sleep; manual run-now → no
+fire claim, but refused while an unfinished claim (`finished_at IS NULL`, younger than the stale-run bound) exists for the job — a
+cross-process running guard from the same table. **Also learned:** a FRESH database does not run the migration ladder
+(`init_spectral_db`), so every new table must also be installed by fresh init.
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
