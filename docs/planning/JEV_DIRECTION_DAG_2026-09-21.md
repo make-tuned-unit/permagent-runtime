@@ -442,6 +442,24 @@ fire claim, but refused while an unfinished claim (`finished_at IS NULL`, younge
 cross-process running guard from the same table. **Also learned:** a FRESH database does not run the migration ladder
 (`init_spectral_db`), so every new table must also be installed by fresh init.
 
+**S2, third and final design (2026-09-21 late evening — found by `permagent-runtime-46`, verified by the coordinator): the verdict already
+exists and the scheduler throws it away.** `agent.rs:4477-4484` yields `AgentEvent::RuntimeOutcome(Succeeded | Failed | Cancelled)` at the
+end of every reply stream, driven by the same error latch the six silent-failure exits set; `scheduler.rs` discards it under `Ok(_) => {}`
+and infers `ok` from the absence of a stream `Err`. The fix is entirely in `scheduler.rs`: capture the outcome in the drain; `Failed` →
+the existing Error mapping; `Cancelled` and `Succeeded` unchanged (the kill path keeps ownership of cancelled runs; a hit max-turns ceiling
+reports Succeeded by design). The consumer pattern to mirror already exists in `subagent_handler.rs:265-335` — so orchestrator workers
+were never affected. Both earlier designs (row count; a typed `Err` from `agent.rs`) are withdrawn. **Rule added to Phase 0: before
+designing a signal, grep for whether the fact is already being emitted and dropped.** Still discarding the outcome, probably deliberately:
+`goose-server/src/routes/reply.rs:497` and `routes/session_events.rs:902` (peer-owned).
+
+**S1 design v2 (dispatched):** the key NAMES THE FIRE — cron: the *nominal wall-clock* name of croner's latest occurrence ≤ now, as a naive
+datetime with no offset, so two processes in different clocks (a different `TZ` env var; IANA names, which today silently fall back to
+system local — `scheduler.rs:319-324`) compute the same name without any shared offset state in the race-prone `schedule.json`; interval:
+epoch-aligned bucket; one-shot: its `at`; catch-up: `missed_fire_at`, claimed before the stagger. Manual run-now takes no fire claim but is
+refused while another **live** process holds an unfinished claim — liveness (`kill(pid, 0)`), **not** age: there is deliberately no maximum
+run duration anywhere in the scheduler, so no timeout is invented, and a dead owner's claim is reclaimable at once. The table is installed by
+one shared schema function on **both** the fresh-init and migration paths, with a fresh-database test first.
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
@@ -449,6 +467,8 @@ cross-process running guard from the same table. **Also learned:** a FRESH datab
 1b. **V1 needs your phone:** the iOS 27 crash fix is only proven by installing a build and running 25 voice open/close cycles on the device.
 2. **Minimum term/category counts** in the Librarian (they force padding on sparse memories) — a retrieval-quality
    ruling, deliberately left out of A2.
+2a. **IANA timezones on schedules silently mean "system local".** A job saved with `America/New_York` logs a warning nobody reads and runs on the Mac's clock (`scheduler.rs:319-324`; chrono-tz was never wired). Wire chrono-tz, or reject IANA names at save time with a clear message? Independent of S1.
+2b. **Two processes write one `schedule.json`.** The CLI and the app each rewrite the whole file from their own snapshot; S1b and S1 shrink the damage but the durable fix is daemon-owned storage with the CLI talking to the daemon. Worth a node?
 3. **Phase D** — each item is a product decision and gets its own ruling.
 
 ## 6. Order of execution
