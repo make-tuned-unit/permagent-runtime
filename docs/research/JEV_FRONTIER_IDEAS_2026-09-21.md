@@ -274,7 +274,7 @@ substring table. **Deterministic fast path first — the judge sees only the res
 | Surface | Today (TRACED) | Typed judge | Your correction is the label |
 |---|---|---|---|
 | Finance categories | a **34-entry substring table** (`finance_statements.rs:216`) | `choice` on what the table misses | recategorising |
-| Payees | stored raw, grouped by exact string; recurring computed but **not served** (`routes/finance.rs:364`) | record-linking à la `jlink` — beat tuned string similarity on 4 of 5 benchmarks, $2.49 per 146k pairs `[MEASURED]` | merging / un-merging |
+| Payees | stored raw, grouped by exact string. *(Corrected 2026-09-21: I wrote that recurring charges were computed but not served — wrong. A Phase-0 audit traced it: `routes/finance.rs:355-366` serves `spend_forecast`'s recurring list on success; `recurring: vec![]` is only the fallback when the forecast errors. Located, never traced — the same mistake again.)* | record-linking à la `jlink` — beat tuned string similarity on 4 of 5 benchmarks, $2.49 per 146k pairs `[MEASURED]` | merging / un-merging |
 | Documents inbox | project assignment **100 % manual** (`routes/inbox.rs:197`) | `choice` over ~20 projects + none | moving it |
 | Dictated notes | transcript appended to a body; never typed or dated | note · todo · commitment · reminder — *dates parsed in code, never by the judge* | re-filing |
 | Meetings | one LLM call → summary + todos; decisions, owners and dates stay in prose | verify code-enumerated candidates (idea 0.3) | editing the card |
@@ -322,8 +322,8 @@ go-ahead and a heads-up to both peer sessions. The better hardware you mentioned
 *As revised by `permagent-runtime-46`, whose lane both live instances of the honesty defect were in.*
 
 1. **The deterministic evidence ledger (1.3a) — first, ahead of anything typed.** No model, zero inference cost, and
-   it would have caught both of today's false-success reports. Alongside it, the other no-model wins: hysteresis on
-   desk status (1.8) and serving the recurring charges that are already computed (1.10).
+   it would have caught both of today's false-success reports. Alongside it, the other no-model win: hysteresis on
+   desk status (1.8). *("Serve the recurring charges" was removed — they are already served; see 1.10.)*
 2. **The trajectory controller for cheap-rung runs (1.4).** It has a true label in the verify outcome and, as of
    today's scheduler fix, per-run budget identity — so cost-to-abort is measurable for the first time.
 3. **The one funded Jev experiment: judging tool results at ingest (1.5)**, on the eval bench, scored by exit code and
