@@ -1,0 +1,74 @@
+{
+  "_note": "Live smoke test of TypeSafe's hosted /v1/systemone, 2026-09-21. Input is TypeSafe's own public documentation example - no Permagent or personal data. HTTP 200; total 0.50 s (connect 0.15 s) from Halifax. Kept as a REAL response fixture for the decision module's wire-format tests. Contains no credential.",
+  "endpoint": "POST https://api.typesafe.ai/v1/systemone",
+  "request": {
+    "state": "Help! My payouts have been failing for 3 days.",
+    "model": "jev-latest",
+    "questions": {
+      "is_urgent": {
+        "type": "noul",
+        "instructions": "Does this convey urgency?",
+        "criteria": {
+          "true": "Explicitly time-sensitive",
+          "false": "No urgency expressed"
+        }
+      },
+      "department": {
+        "type": "choice",
+        "instructions": "Which team should handle this?",
+        "criteria": {
+          "billing": "Payments, invoicing, refunds",
+          "technical": "Bugs, outages, integrations",
+          "sales": "Pricing, upgrades, new accounts"
+        }
+      },
+      "frustration": {
+        "type": "score",
+        "instructions": "How frustrated is the customer?",
+        "criteria": [
+          "Calm",
+          "Frustrated",
+          "Very angry"
+        ]
+      }
+    }
+  },
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "is_urgent": {
+        "type": "noul",
+        "noul": 0.95
+      },
+      "department": {
+        "type": "choice",
+        "choice": "billing",
+        "confidence": 0.81,
+        "probabilities": {
+          "billing": 0.88,
+          "sales": 0.0,
+          "technical": 0.12
+        }
+      },
+      "frustration": {
+        "type": "score",
+        "score": 1.04,
+        "confidence": 0.94,
+        "legend": {
+          "0": "Calm",
+          "1": "Frustrated",
+          "2": "Very angry"
+        },
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.96,
+          "2": 0.04
+        }
+      }
+    },
+    "usage": {
+      "input_tokens": 426,
+      "output_tokens": 73
+    }
+  }
+}
