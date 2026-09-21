@@ -24,8 +24,8 @@ have better hardware and we find the next best open source model for the librari
    find a published number for on any candidate — so it earns a slot on reputation, to be settled by our own bench.
 4. **Keep the architecture we already have:** Apple's on-device model first, a small Ollama model as fallback. It is
    already wired that way `[CODE]`.
-5. **Before any of it: confirm the Librarian is actually running** (§1). On this machine its schedule appears to have
-   been disabled since 2026-09-08.
+5. **The nightly *window* is switched off, but the Librarian is still describing memories** (§1c, corrected). Whether
+   to turn the window back on is Jesse's call.
 
 **None of the candidates publishes a faithfulness or hallucination number for its small sizes.** Every figure below is
 the vendor's own. The bench in §5 is the decision; this document only chooses what to put into it.
@@ -45,11 +45,21 @@ start slot on 27 nights and had not served since 2026-08-25.
 session: `WorkflowRole::Mechanical`'s capability floor is byte-identical to `Local`'s (0.75/0.45), so "Mechanical" was
 never a more capable fallback.
 
-**(c) The Librarian's nightly schedule looks disabled on this machine.** `~/.permagent/librarian_schedule.json` reads
-`"enabled": false, "model": "qwen2.5:7b", "start_time": "02:00", "duration_minutes": 240`, last modified **2026-09-08**
-`[LOCAL]`. The last log line I can find with the schedule *enabled* is 2026-09-05. I could not locate the live launchd
-daemon's current log to confirm, and I do not know who turned it off or why. **If it is off, no model choice matters
-until it is back on** — and memories created since then have had no describe pass at all.
+**(c) The nightly window is off; the Librarian is not.** *Corrected 2026-09-21 by peer session permagent-runtime-46,
+then verified.* `~/.permagent/librarian_schedule.json` reads `"enabled": false` (mtime 2026-09-08). My first reading —
+that the Librarian had stopped — was wrong. That flag gates exactly one thing: at
+`crates/goose-server/src/routes/librarian/scheduling.rs:545` the per-minute loop does `if !schedule.enabled { continue; }`
+**before** `is_in_window`, so there is no warm-load and no scheduled nightly sweep — and nothing else is disabled
+`[CODE]`. Describe work is running outside the window: the live ledger (`cost_ledger` in
+`~/.permagent/spectral/permagent.db`) shows `ollama / qwen2.5:7b` calls on 09-18 (29), 09-19 (51), 09-20 (120) and
+09-21 (10 so far) `[LOCAL]` verified; the peer also reports a daemon log line from 11:05 today reading
+`described: 3572, annotations: 3571` (`librarian.rs:2795`), which I could not locate myself. The ledger has **no**
+`qwen2.5:7b` rows for 09-08 → 09-17; I do not know whether that is no calls or no recording.
+**Do not read state from the JSON files:** `librarian_checkpoint.json` says `described_total: 56` as of 09-04 against a
+live count of 3,572, and `librarian_state.json` is frozen at 09-04/05. The source of truth is the brain DB
+(`~/.permagent/brain/memory.db`) and the ledger — file mtimes are what misled me. Nobody in either session turned the
+window off; the mtime predates both. **Whether to re-enable it is Jesse's decision**, and the trade is real: a 240-minute
+nightly window on a machine with no free memory, versus describing opportunistically as it does now.
 
 ---
 
@@ -179,6 +189,6 @@ for every arm.
 Two research agents died on usage limits; this was finished with targeted reads. **Not established:** any faithfulness
 or hallucination figure for a small candidate; Granite 4.2's benchmark tables (HF returned 401) and whether any 4.2
 size is a hybrid-Mamba variant; base-M-series tok/s for any candidate; Gemma 4 12B's disk size and licence detail;
-LFM 2.5's licence; whether Ollama 0.32.9 honours thinking-off for `qwen3.5` on the path the Librarian uses; whether the
-Librarian is currently running at all (§1c); how often the Apple on-device path serves. The `[RECALLED]` Qwen2.5-7B
+LFM 2.5's licence; whether Ollama 0.32.9 honours thinking-off for `qwen3.5` on the path the Librarian uses; who switched the
+nightly window off on 2026-09-08 and why (§1c), and why the ledger shows no `qwen2.5:7b` rows for 09-08 → 09-17; how often the Apple on-device path serves. The `[RECALLED]` Qwen2.5-7B
 figures are from memory and should be re-checked before being quoted anywhere.
