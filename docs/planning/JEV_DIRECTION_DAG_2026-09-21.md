@@ -241,6 +241,23 @@ judge arm is removed. C2: decided by the peer.
   startup reconciliation, so any CLI subcommand beside a live daemon *reset the in-process claim from outside the process* — which is why the
   guard looked correct in source and useless in the data. Same conclusion: the claim must be persisted and cross-process.
 
+**B2b interface, agreed with `permagent-runtime-46` (2026-09-21):**
+
+- **Hosted judge call:** reserved through the peer's `reserve_metered_call` — refusable before the wire under the *same* task-identity
+  check completions get. The peer's error enum distinguishes **no durable task identity** from **ceiling exhausted**; the decision module
+  maps both to a typed `FallbackReason` (`BudgetRefused`, later split) and fails awake to the deterministic rules. Settlement is input
+  tokens only; `is_estimated=1` when System One omits usage and the count is estimated from the state length.
+- **Local backends (loopback `systemone`, the deterministic backend): a ledger row, no reservation.** Reserving $0.00 protects nothing and
+  would make a local call refusable for budget reasons — backwards, since local is where the system should fall *when* budget is short. But
+  the ledger records what the system **did**, not only what it spent: `is_chargeable=0`, `cost_usd=0`, real `input_tokens`, a local
+  `cost_tier`, and **different provider names for the loopback model and the deterministic backend** — a judge's output is a decision someone
+  may later have to justify, and one day we will want to know which of them decided.
+- **Rate limit, not spend limit (new requirement, the peer's catch):** a free local judge still consumes the machine, and no budget ceiling
+  bounds a runaway local judge loop — every ledger row would read $0.00 and every ceiling healthy while the Mac goes down (618 MiB swap free
+  on the night this was written). The **decision module** owns a per-site rate limit (token bucket; over-limit → deterministic fallback with
+  `FallbackReason::RateLimitedLocally`, never a queue). It lands in B2b with a test that a tight loop of decisions degrades to the
+  deterministic path instead of saturating the backend.
+
 ## 4b. Phase V — the voice incident of 2026-09-21 (added at Jesse's request)
 
 *Jesse: "I tried voice and it got stuck on listening and then the iOS app crashed. It might be because it is an old
