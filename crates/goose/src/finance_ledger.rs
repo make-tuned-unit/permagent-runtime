@@ -800,6 +800,21 @@ mod tests {
         pool
     }
 
+    async fn finance_spend_pool() -> Pool<Sqlite> {
+        let pool = pool().await;
+        crate::session::spectral_schema::apply_finance_spend_schema(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    fn days_ago(n: i64) -> String {
+        (chrono::Utc::now() - chrono::Duration::days(n))
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string()
+    }
+
     #[tokio::test]
     async fn watchlist_add_is_idempotent_on_symbol() {
         let pool = pool().await;
@@ -931,6 +946,119 @@ mod tests {
         let f = spend_forecast(&pool).await.unwrap();
         assert!(f.spend_90d > 0.0);
         assert!(f.method.contains("run-rate"));
+    }
+
+    #[tokio::test]
+    async fn spend_forecast_recurring_includes_repeat_payees_with_typical_amount() {
+        let pool = finance_spend_pool().await;
+        let rows = vec![
+            crate::finance_statements::ParsedTxn {
+                date: days_ago(5),
+                amount: -10.0,
+                payee: "Netflix".into(),
+                category: "subscriptions".into(),
+            },
+            crate::finance_statements::ParsedTxn {
+                date: days_ago(20),
+                amount: -15.0,
+                payee: "Netflix".into(),
+                category: "subscriptions".into(),
+            },
+        ];
+        assert_eq!(
+            insert_transactions(&pool, &rows, Some("visa"), "recurring.csv")
+                .await
+                .unwrap(),
+            2
+        );
+        let f = spend_forecast(&pool).await.unwrap();
+        assert_eq!(f.method, "trailing run-rate, not a model");
+        assert_eq!(f.recurring.len(), 1);
+        assert_eq!(f.recurring[0].payee, "Netflix");
+        assert_eq!(f.recurring[0].count, 2);
+        assert_eq!(f.recurring[0].typical_amount, 12.5);
+    }
+
+    #[tokio::test]
+    async fn spend_forecast_recurring_omits_single_visit_payees() {
+        let pool = finance_spend_pool().await;
+        let rows = vec![
+            crate::finance_statements::ParsedTxn {
+                date: days_ago(3),
+                amount: -42.0,
+                payee: "OneOff Cafe".into(),
+                category: "dining".into(),
+            },
+            crate::finance_statements::ParsedTxn {
+                date: days_ago(7),
+                amount: -20.0,
+                payee: "Gym Co".into(),
+                category: "health".into(),
+            },
+            crate::finance_statements::ParsedTxn {
+                date: days_ago(14),
+                amount: -20.0,
+                payee: "Gym Co".into(),
+                category: "health".into(),
+            },
+        ];
+        insert_transactions(&pool, &rows, Some("visa"), "mix.csv")
+            .await
+            .unwrap();
+        let f = spend_forecast(&pool).await.unwrap();
+        assert!(f
+            .recurring
+            .iter()
+            .any(|r| r.payee == "Gym Co" && r.count == 2 && r.typical_amount == 20.0));
+        assert!(!f.recurring.iter().any(|r| r.payee == "OneOff Cafe"));
+    }
+
+    #[tokio::test]
+    async fn spend_forecast_recurring_truncates_to_twelve() {
+        let pool = finance_spend_pool().await;
+        let mut rows = Vec::new();
+        for i in 0..13 {
+            let payee = format!("RecurringPayee{:02}", i);
+            rows.push(crate::finance_statements::ParsedTxn {
+                date: days_ago(1 + i as i64),
+                amount: -5.0,
+                payee: payee.clone(),
+                category: "misc".into(),
+            });
+            rows.push(crate::finance_statements::ParsedTxn {
+                date: days_ago(40 + i as i64),
+                amount: -5.0,
+                payee,
+                category: "misc".into(),
+            });
+        }
+        assert_eq!(
+            insert_transactions(&pool, &rows, Some("visa"), "many_recurring.csv")
+                .await
+                .unwrap(),
+            26
+        );
+        let f = spend_forecast(&pool).await.unwrap();
+        assert_eq!(f.recurring.len(), 12);
+        for r in &f.recurring {
+            assert!(r.count >= 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn spend_forecast_method_label_is_trailing_run_rate() {
+        let pool = finance_spend_pool().await;
+        let rows = vec![crate::finance_statements::ParsedTxn {
+            date: days_ago(2),
+            amount: -1.0,
+            payee: "Any".into(),
+            category: "misc".into(),
+        }];
+        insert_transactions(&pool, &rows, Some("visa"), "tiny.csv")
+            .await
+            .unwrap();
+        let f = spend_forecast(&pool).await.unwrap();
+        assert_eq!(f.method, "trailing run-rate, not a model");
     }
 
     #[tokio::test]
