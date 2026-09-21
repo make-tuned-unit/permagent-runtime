@@ -46,6 +46,12 @@ methodically… use the cheapest workers capable for the job."*
 | **Plan, review, gate, merge** | — | Fable (this session). Never the implementer. |
 
 Start every node one tier lower than it looks; escalate only on a failed gate, carrying the failure forward.
+**Watch rounds per node, not price per token** *(agreed with `permagent-runtime-46` after the first reviews)*: a cheap
+author plus a strong adversarial reviewer does work neither does alone, and two correction rounds at T0 is still
+cheaper than opening at T2 — but **a third correction round is the signal to re-tier THAT NODE**, not the worker.
+**A reviewer's confidence carries no signal in either direction:** the same review that found a real security bypass
+also reported a "CERTAIN" compile error that is false (`matches!` against a unit-like pattern binds nothing and moves
+nothing). Reports are inputs; the gate decides.
 Invocations: `cursor-agent -p --force --trust --workspace <worktree> --model <m> "<prompt>"`;
 Codex via the `codex:codex-rescue` subagent, run with the worktree as cwd (a worktree-rooted Codex job can edit but may
 not be able to commit — the coordinator commits after review).
@@ -85,6 +91,13 @@ not be able to commit — the coordinator commits after review).
 16. **No tool schema may carry a top-level `oneOf` / `allOf` / `anyOf`** — Anthropic rejects the whole request. (Live
     outage 2026-09-21: `extensionmanager__get_memory`, `ext_manager.rs:505`; fixed by the peer with a guard test over
     `all_possible_tools()`. **No worker touches that schema.**)
+17a. **Security-relevant inputs become NAMED tests, verbatim** — e.g. `allow_me_to_explain_is_not_a_verdict`, the
+    `"BLOCK unsafe"` and `#BLOCK` later-line cases — so a later "simplification" has to delete a test with an obvious
+    name rather than quietly widen a parser.
+17b. **An operator-visible behaviour change goes in the release note, not discovered at 03:20.** A1's: with
+    `adversary.md` enabled, a provider outage or an off-format reply now HOLDS reviewed tools; in a headless session a
+    held call is auto-denied (`tool_execution.rs:118-138`), so an outage can silently stall automations. Correct
+    default — but it must be announced.
 17. **Every worker report states "NOT BUILT"** when it did not build. *"A worker forbidden from cargo is reasoning
     about compilation from reading, and its prose reads identically either way."* **No node closes on a worker's
     claim.**
