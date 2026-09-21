@@ -460,6 +460,18 @@ refused while another **live** process holds an unfinished claim — liveness (`
 run duration anywhere in the scheduler, so no timeout is invented, and a dead owner's claim is reclaimable at once. The table is installed by
 one shared schema function on **both** the fresh-init and migration paths, with a fresh-database test first.
 
+**S1 v2 amended before any code was reviewed (two holes found by `permagent-runtime-46`):** (1) the coordinator's spec keyed a cron tick as a
+naive nominal name but a catch-up as `missed:<UTC>` — the same occurrence under two names, so a tick in one process and a catch-up in
+another would both win: **one function names a cron occurrence for both paths**, with a test that `key_for_tick(o) == key_for_catch_up(o)`
+(non-zero seconds, midnight, a fixed offset) and an end-to-end test in both directions; (2) every key is **prefixed by kind** (`cron:`,
+`interval:`, `at:`, `manual:`, `fallback:`), because the generalized reschedule can change a job's kind and one job id can then emit keys
+from two spaces. Pre-existing cron semantics, *not* S1 regressions: a DST fall-back 01:30 that occurs twice runs once; a spring-forward
+02:30 that never occurs does not fire that day.
+
+**Voice (for V4, found by the peer):** `routes/voice.rs` drains only `AgentEvent::Message` and stream errors — there is no `RuntimeOutcome`
+arm, so a `Failed` turn that produced no assistant message ends in **silence**, the same user-visible shape as the 2026-09-21 incident.
+**V4 is widened: never silent after an empty transcript *or a Failed outcome*.**
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
