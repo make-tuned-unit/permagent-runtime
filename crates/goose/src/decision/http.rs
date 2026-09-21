@@ -136,10 +136,11 @@ impl DecisionBackend for SystemOneHttpBackend {
         validate_questions(questions)?;
         let mut answers = Vec::with_capacity(questions.len());
         for batch in questions.chunks(MAX_QUESTIONS_PER_STATE) {
-            let mut response = self
-                .client
-                .post(self.request_url()?)
-                .bearer_auth(&self.api_key)
+            let mut request = self.client.post(self.request_url()?);
+            if !self.api_key.trim().is_empty() {
+                request = request.bearer_auth(&self.api_key);
+            }
+            let mut response = request
                 .json(&WireRequest {
                     state: &state.text,
                     model: &self.model,

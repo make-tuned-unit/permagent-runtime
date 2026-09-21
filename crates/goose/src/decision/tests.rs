@@ -46,10 +46,14 @@ fn questions() -> Vec<Question> {
 }
 
 fn backend(endpoint: String) -> SystemOneHttpBackend {
+    backend_with_key(endpoint, "test-secret")
+}
+
+fn backend_with_key(endpoint: String, api_key: &str) -> SystemOneHttpBackend {
     SystemOneHttpBackend::new(
         endpoint,
         "jev-latest".into(),
-        "test-secret".into(),
+        api_key.into(),
         HttpTimeouts::default(),
     )
     .unwrap()
@@ -432,6 +436,57 @@ async fn http_status_mapping_and_secret_redaction() {
         assert!(!format!("{error:?}").contains("test-secret"));
         assert_eq!(error, expected);
     }
+}
+
+#[tokio::test]
+async fn authorization_header_is_absent_for_empty_key_and_exact_for_secret_key() {
+    let no_auth_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(single_noul_response_with_padding(0)),
+        )
+        .expect(1)
+        .mount(&no_auth_server)
+        .await;
+    assert_eq!(
+        backend_with_key(no_auth_server.uri(), "")
+            .decide(&state(StateClass::Public), &noul_questions(1))
+            .await
+            .unwrap(),
+        vec![Answer::Noul { noul: 0.75 }]
+    );
+    let no_auth_requests = no_auth_server.received_requests().await.unwrap();
+    assert_eq!(no_auth_requests.len(), 1);
+    assert!(no_auth_requests[0].headers.get("authorization").is_none());
+
+    let auth_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(single_noul_response_with_padding(0)),
+        )
+        .expect(1)
+        .mount(&auth_server)
+        .await;
+    assert_eq!(
+        backend_with_key(auth_server.uri(), "test-secret")
+            .decide(&state(StateClass::Public), &noul_questions(1))
+            .await
+            .unwrap(),
+        vec![Answer::Noul { noul: 0.75 }]
+    );
+    let auth_requests = auth_server.received_requests().await.unwrap();
+    assert_eq!(auth_requests.len(), 1);
+    assert_eq!(
+        auth_requests[0]
+            .headers
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "Bearer test-secret"
+    );
 }
 
 #[tokio::test]

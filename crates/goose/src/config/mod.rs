@@ -111,6 +111,45 @@ pub fn librarian_backend() -> String {
         .unwrap_or_else(|| "llamacpp".to_string())
 }
 
+/// Optional decision-judge provider id (`PERMAGENT_DECISION_JUDGE_PROVIDER`).
+///
+/// This key space is the decision module's **own namespace**. It is
+/// deliberately not a `WorkflowRole`, and the ids configured here are never
+/// registered through `providers::create`.
+pub fn decision_judge_provider() -> Option<String> {
+    resolve_decision_judge_provider(
+        Config::global()
+            .get_param::<String>("PERMAGENT_DECISION_JUDGE_PROVIDER")
+            .ok(),
+    )
+}
+
+/// Optional decision-judge model id (`PERMAGENT_DECISION_JUDGE_MODEL`).
+///
+/// This key space is the decision module's **own namespace**. It is
+/// deliberately not a `WorkflowRole`, and the ids configured here are never
+/// registered through `providers::create`.
+pub fn decision_judge_model() -> Option<String> {
+    resolve_decision_judge_model(
+        Config::global()
+            .get_param::<String>("PERMAGENT_DECISION_JUDGE_MODEL")
+            .ok(),
+    )
+}
+
+/// Optional decision-judge endpoint (`PERMAGENT_DECISION_JUDGE_ENDPOINT`).
+///
+/// This key space is the decision module's **own namespace**. It is
+/// deliberately not a `WorkflowRole`, and the ids configured here are never
+/// registered through `providers::create`.
+pub fn decision_judge_endpoint() -> Option<String> {
+    resolve_decision_judge_endpoint(
+        Config::global()
+            .get_param::<String>("PERMAGENT_DECISION_JUDGE_ENDPOINT")
+            .ok(),
+    )
+}
+
 /// Is the Apple on-device Foundation Models backend allowed to serve work
 /// (`PERMAGENT_APPLE_FM_ENABLED`)?
 ///
@@ -156,6 +195,20 @@ fn resolve_ollama_host(raw: Option<String>) -> String {
         .unwrap_or_else(|| "http://localhost:11434".to_string())
 }
 
+fn resolve_decision_judge_provider(raw: Option<String>) -> Option<String> {
+    raw.map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+}
+
+fn resolve_decision_judge_model(raw: Option<String>) -> Option<String> {
+    raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn resolve_decision_judge_endpoint(raw: Option<String>) -> Option<String> {
+    raw.map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+}
+
 #[cfg(test)]
 mod ollama_host_tests {
     use super::resolve_ollama_host;
@@ -178,6 +231,50 @@ mod ollama_host_tests {
         assert_eq!(
             resolve_ollama_host(Some("  http://box:11434 ".to_string())),
             "http://box:11434"
+        );
+    }
+}
+
+#[cfg(test)]
+mod decision_judge_config_tests {
+    use super::{
+        resolve_decision_judge_endpoint, resolve_decision_judge_model,
+        resolve_decision_judge_provider,
+    };
+
+    #[test]
+    fn provider_is_lowercased_and_blank_is_unset() {
+        assert_eq!(resolve_decision_judge_provider(None), None);
+        assert_eq!(
+            resolve_decision_judge_provider(Some("   ".to_string())),
+            None
+        );
+        assert_eq!(
+            resolve_decision_judge_provider(Some("  JeV  ".to_string())),
+            Some("jev".to_string())
+        );
+    }
+
+    #[test]
+    fn model_is_trimmed_and_blank_is_unset() {
+        assert_eq!(resolve_decision_judge_model(None), None);
+        assert_eq!(resolve_decision_judge_model(Some("   ".to_string())), None);
+        assert_eq!(
+            resolve_decision_judge_model(Some("  jev-latest  ".to_string())),
+            Some("jev-latest".to_string())
+        );
+    }
+
+    #[test]
+    fn endpoint_trims_trailing_slashes_and_blank_is_unset() {
+        assert_eq!(resolve_decision_judge_endpoint(None), None);
+        assert_eq!(
+            resolve_decision_judge_endpoint(Some("   ".to_string())),
+            None
+        );
+        assert_eq!(
+            resolve_decision_judge_endpoint(Some("http://127.0.0.1:8000/".to_string())),
+            Some("http://127.0.0.1:8000".to_string())
         );
     }
 }

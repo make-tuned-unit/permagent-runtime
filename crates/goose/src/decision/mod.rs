@@ -4,14 +4,19 @@
 //! caller's deterministic answer with an explicit reason, never inventing one.
 
 mod http;
+mod role;
 mod types;
 
 pub use http::{endpoint_locality, HttpTimeouts, SystemOneHttpBackend};
+pub use role::{
+    build_judge_backend, configured_judge, resolve_judge, JudgeConfigError, JudgeProvider,
+    JudgeResolution, JudgeSettings,
+};
 pub use types::{
     Answer, ChoiceBuilder, DecisionError, DecisionState, Question, QuestionKind, StateClass,
 };
 
-use crate::sovereignty::DataLocality;
+use crate::sovereignty::{DataLocality, EgressKind, EgressRecord};
 use async_trait::async_trait;
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
@@ -64,7 +69,31 @@ pub async fn decide_guarded(
     if state.text.trim().is_empty() {
         return Err(DecisionError::Validation("empty state".into()));
     }
-    check_locality(state, backend.data_locality())?;
+    let locality = backend.data_locality();
+    if let Err(error) = check_locality(state, locality) {
+        if state.class == StateClass::Private && locality == DataLocality::Cloud {
+            let audit = crate::sovereignty::record_egress(EgressRecord {
+                provider: backend.name().to_string(),
+                model: "decision_judge".to_string(),
+                session_id: "-".to_string(),
+                project_id: None,
+                kind: EgressKind::Inference,
+                blocked: true,
+                content_hash: crate::sovereignty::hash_texts(std::slice::from_ref(&state.text)),
+                prompt: None,
+            })
+            .await;
+            if let Err(audit_error) = audit {
+                tracing::warn!(
+                    target: "sovereignty",
+                    backend = backend.name(),
+                    error = %format!("{audit_error:#}"),
+                    "failed to write decision refusal egress audit row"
+                );
+            }
+        }
+        return Err(error);
+    }
     validate_questions(questions)?;
     let answers = tokio::time::timeout(DECISION_DEADLINE, backend.decide(state, questions))
         .await
