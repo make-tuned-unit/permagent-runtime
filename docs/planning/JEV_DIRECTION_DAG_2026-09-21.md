@@ -337,6 +337,28 @@ the browser's "Done" and the 15 µs tests — and exactly what the evidence ledg
   remaining cost lever is the **size of the cold prefix** (157 tools, ~39.7k tokens of schema); a daily automation
   always pays cold. No Phase B node may be justified by the old caching claim.
 
+**Phase-0 audit of S1/S2 (Cursor `composer-2.5`, 2026-09-21; a worker's claims until the build) and the rulings agreed with `permagent-runtime-46`:**
+
+- **S2 seam corrected.** The status is decided in `scheduler.rs` (`:861-871` cron, `:1647-1653` run-now): `execute_job` Ok → `last_status = Ok`.
+  `execute_job_inner` returns Err only when the agent stream yields an Err. The refusal at `agent.rs:2658-2666` emits assistant text and
+  breaks — no Err reaches the stream — so the whole S2 change stays in `scheduler.rs`; `agent.rs` and the chat rendering are untouched.
+- **S2 must not ship on the row count alone.** The live ledger's providers are anthropic, custom_deepseek, minimax, moonshot, ollama
+  (rows only since the 09-18 fix), openai, zai. **Apple on-device, llama.cpp and mesh/pool are not represented at all**, and absence proves
+  nothing. The canonical insert (`session_manager.rs:3589`) runs on the settlement path, reached through a reservation; anything that skips
+  reservation skips the row. For each provider a *scheduled* job can be routed to, S2 must show a real ledger row or a traced path to that
+  insert. **Mitigation if any does not append:** scope the assertion to runs whose resolved provider is known-appending and log-not-fail
+  otherwise — a false "your automation did nothing" auto-pauses real jobs and is worse than today's silence.
+- **S1 takes migration `v55 → v56`** (highest today is `migrate_v54_to_v55`; the live DB reports 55). The peer's A4 takes `v56 → v57` and
+  waits for S1's number to be committed. **Trap:** `SPECTRAL_SCHEMA_VERSION` is 14 and is the fresh-init BASE stamp, not "latest" — do
+  not bump it and do not read it as the current version.
+- **S1's scheduled instant = `Utc::now()` truncated to the minute**, not croner's previous occurrence: re-evaluating the cron expression
+  at fire time lets a DST boundary or a timezone-config change make two processes derive different instants and both win the claim.
+  Truncation makes them agree by construction; guard it with the minimum-interval rule so it cannot collide with a legitimate adjacent fire.
+- **S1b (new, lands first if quick):** a no-cron constructor for the read-only CLI subcommands (`goose-cli/src/commands/schedule.rs`
+  list/remove/sessions) — `Scheduler::new` `start()`s a cron loop as a construction side effect. **S1b shrinks the population of second
+  schedulers; it does NOT close the defect** (two app processes, or an app plus a subcommand that legitimately needs a scheduler, still
+  double-fire). Only S1's persisted claim does.
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
