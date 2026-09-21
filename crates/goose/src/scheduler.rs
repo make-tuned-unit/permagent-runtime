@@ -624,10 +624,21 @@ pub struct Scheduler {
         Arc<tokio::sync::RwLock<Option<crate::config::agent_identity::SharedAgentConfig>>>,
 }
 
+/// Storage load behavior at constructor time.
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum StorageLoadMode {
+    /// Full daemon path: reconcile stale persisted state and spawn catch-up runs.
+    ReconcileAndCatchUp,
+    /// Inspection path: load the file into memory without persisting any reconciliation.
+    NoReconcile,
+}
+
 impl Scheduler {
-    pub async fn new(
+    async fn build(
         storage_path: PathBuf,
         session_manager: Arc<SessionManager>,
+        load_mode: StorageLoadMode,
+        start_cron: bool,
     ) -> Result<Arc<Self>, SchedulerError> {
         let internal_scheduler = TokioJobScheduler::new()
             .await
@@ -647,14 +658,42 @@ impl Scheduler {
             agent_config: Arc::new(tokio::sync::RwLock::new(None)),
         });
 
-        arc_self.load_jobs_from_storage().await;
-        arc_self
-            .tokio_scheduler
-            .start()
-            .await
-            .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
+        arc_self.load_jobs_from_storage(load_mode).await;
+        if start_cron {
+            arc_self
+                .tokio_scheduler
+                .start()
+                .await
+                .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
+        }
 
         Ok(arc_self)
+    }
+
+    pub async fn new(
+        storage_path: PathBuf,
+        session_manager: Arc<SessionManager>,
+    ) -> Result<Arc<Self>, SchedulerError> {
+        Self::build(
+            storage_path,
+            session_manager,
+            StorageLoadMode::ReconcileAndCatchUp,
+            true,
+        )
+        .await
+    }
+
+    pub async fn new_without_cron(
+        storage_path: PathBuf,
+        session_manager: Arc<SessionManager>,
+    ) -> Result<Arc<Self>, SchedulerError> {
+        Self::build(
+            storage_path,
+            session_manager,
+            StorageLoadMode::NoReconcile,
+            false,
+        )
+        .await
     }
 
     /// Build a `tokio_cron_scheduler` job for `job`, dispatching on its kind:
@@ -1139,7 +1178,7 @@ impl Scheduler {
         id
     }
 
-    async fn load_jobs_from_storage(self: &Arc<Self>) {
+    async fn load_jobs_from_storage(self: &Arc<Self>, mode: StorageLoadMode) {
         if !self.storage_path.exists() {
             return;
         }
@@ -1185,7 +1224,7 @@ impl Scheduler {
             // only covers jobs created after the guard shipped, and schedule.json
             // is hand-editable. Violators are paused (not dropped) so the user
             // sees them in Automate with the reason, instead of them firing.
-            if !job_to_load.paused {
+            if mode == StorageLoadMode::ReconcileAndCatchUp && !job_to_load.paused {
                 if let Some(violation) = schedule_floor_violation(&job_to_load) {
                     job_to_load.paused = true;
                     job_to_load.last_error = Some(format!(
@@ -1216,7 +1255,10 @@ impl Scheduler {
             // `at`, and the re-arm below clamps a past `at` to a zero delay. Drop
             // it: it already ran exactly once. `reconciled` persists the cleaned
             // list below so it does not resurface on the next boot.
-            if job_to_load.at.is_some() && job_to_load.last_run.is_some() {
+            if mode == StorageLoadMode::ReconcileAndCatchUp
+                && job_to_load.at.is_some()
+                && job_to_load.last_run.is_some()
+            {
                 tracing::warn!(
                     target: "durability",
                     "One-shot job '{}' already fired before a prior process exited; \
@@ -1233,7 +1275,7 @@ impl Scheduler {
             // flag is definitionally stale — and there is no other reset path, so
             // it would otherwise wedge Librarian/Steward/etc. forever. Clear it so
             // the job can fire again.
-            if job_to_load.currently_running {
+            if mode == StorageLoadMode::ReconcileAndCatchUp && job_to_load.currently_running {
                 tracing::warn!(
                     target: "durability",
                     "Reconciling stale currently_running=true for job '{}' left by a prior process; resetting so it can run again",
@@ -1245,6 +1287,12 @@ impl Scheduler {
                 reconciled = true;
             }
 
+            // Normalized in memory in BOTH modes. `create_job_task` converts a
+            // 5-field cron on its own, so this is not what keeps a legacy job
+            // loadable; it decides the canonical form held in memory, which an
+            // inspection-mode `add`/`remove` later persists for every job. Keeping
+            // it mode-independent means the CLI writes the same form the daemon
+            // would. Only the write-back on load is gated on the mode (below).
             if let Some(normalized) = normalize_cron_to_6field(&job_to_load.cron) {
                 tracing::info!(
                     "Normalizing legacy 5-field cron for job '{}' to 6-field once: '{}' -> '{}'",
@@ -1273,31 +1321,33 @@ impl Scheduler {
             // job late is still worth exactly as much as running it on time.
             // Collapse the problem instead of monitoring it — bounded by
             // `should_catch_up`, once, and marked as a catch-up in the record.
-            let now = Utc::now();
-            if is_run_missed(&job_to_load, now) {
-                let catch_up = job_to_load.at.is_none()
-                    && job_to_load.every_seconds.is_none()
-                    && missed_fire_at(&job_to_load)
-                        .zip(cron_period(&job_to_load.cron, now))
-                        .is_some_and(|(due, period)| should_catch_up(period, now - due));
-                if catch_up {
-                    tracing::warn!(
-                        target: "durability",
-                        "Job '{}' missed its window during downtime; running it once as a \
-                         catch-up (its cadence is longer than a day, so the next natural \
-                         tick is too far away to wait for)",
-                        job_to_load.id
-                    );
-                    catch_up_ids.push(job_to_load.id.clone());
-                } else {
-                    tracing::warn!(
-                        target: "durability",
-                        "Job '{}' missed a scheduled run during downtime; marking Missed",
-                        job_to_load.id
-                    );
+            if mode == StorageLoadMode::ReconcileAndCatchUp {
+                let now = Utc::now();
+                if is_run_missed(&job_to_load, now) {
+                    let catch_up = job_to_load.at.is_none()
+                        && job_to_load.every_seconds.is_none()
+                        && missed_fire_at(&job_to_load)
+                            .zip(cron_period(&job_to_load.cron, now))
+                            .is_some_and(|(due, period)| should_catch_up(period, now - due));
+                    if catch_up {
+                        tracing::warn!(
+                            target: "durability",
+                            "Job '{}' missed its window during downtime; running it once as a \
+                             catch-up (its cadence is longer than a day, so the next natural \
+                             tick is too far away to wait for)",
+                            job_to_load.id
+                        );
+                        catch_up_ids.push(job_to_load.id.clone());
+                    } else {
+                        tracing::warn!(
+                            target: "durability",
+                            "Job '{}' missed a scheduled run during downtime; marking Missed",
+                            job_to_load.id
+                        );
+                    }
+                    job_to_load.last_status = Some(ScheduleRunStatus::Missed);
+                    reconciled = true;
                 }
-                job_to_load.last_status = Some(ScheduleRunStatus::Missed);
-                reconciled = true;
             }
 
             let cron_task = match self.create_job_task(job_to_load.clone()) {
@@ -1330,13 +1380,13 @@ impl Scheduler {
 
         // Persist once if we normalized crons and/or reconciled stale run-flags,
         // so the next load is a no-op.
-        if crons_normalized || reconciled {
+        if mode == StorageLoadMode::ReconcileAndCatchUp && (crons_normalized || reconciled) {
             if let Err(e) = persist_jobs(&self.storage_path, &self.jobs).await {
                 tracing::warn!("Failed to persist scheduler reconciliation: {}", e);
             }
         }
 
-        if !catch_up_ids.is_empty() {
+        if mode == StorageLoadMode::ReconcileAndCatchUp && !catch_up_ids.is_empty() {
             self.clone().spawn_catch_up_runs(catch_up_ids);
         }
     }
@@ -2899,6 +2949,7 @@ impl SchedulerTrait for Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
     use tempfile::tempdir;
     use tokio::time::{sleep, Duration};
 
@@ -3678,6 +3729,268 @@ prompt: 'collect {{ hours }}h from {{ log_dir }} with {{ recipe_dir }}/collector
 
         let jobs = scheduler.list_scheduled_jobs().await;
         assert!(jobs[0].last_run.is_some(), "Job should have run");
+    }
+
+    #[tokio::test]
+    async fn new_without_cron_loads_jobs_but_does_not_run_them() {
+        let _guard = env_lock::lock_env([
+            ("GOOSE_PROVIDER", Some("openai")),
+            ("GOOSE_MODEL", Some("gpt-4o")),
+            ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
+            ("OPENAI_CUSTOM_HEADERS", Some("")),
+            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
+        ]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "inspection_job");
+        let seeded_jobs = vec![ScheduledJob {
+            id: "inspection_job".to_string(),
+            source: recipe_path.to_string_lossy().to_string(),
+            cron: "* * * * * *".to_string(),
+            ..Default::default()
+        }];
+        fs::write(
+            &storage_path,
+            serde_json::to_string_pretty(&seeded_jobs).unwrap(),
+        )
+        .unwrap();
+
+        let no_cron_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let no_cron = Scheduler::new_without_cron(storage_path.clone(), no_cron_manager)
+            .await
+            .unwrap();
+        // Fixed wait only on the negative half: extra delay can only make a false
+        // positive (still none) more likely, never turn a true negative into a failure.
+        sleep(Duration::from_millis(1500)).await;
+        let inspection_jobs = no_cron.list_scheduled_jobs().await;
+        let inspection_job = inspection_jobs
+            .iter()
+            .find(|job| job.id == "inspection_job")
+            .unwrap();
+        assert!(
+            inspection_job.last_run.is_none(),
+            "read-only constructor must not execute jobs"
+        );
+        drop(no_cron);
+
+        let live_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let live_scheduler = Scheduler::new(storage_path, live_manager).await.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut saw_last_run = false;
+        while Instant::now() < deadline {
+            let live_jobs = live_scheduler.list_scheduled_jobs().await;
+            let live_job = live_jobs
+                .iter()
+                .find(|job| job.id == "inspection_job")
+                .unwrap();
+            if live_job.last_run.is_some() {
+                saw_last_run = true;
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            saw_last_run,
+            "live constructor should execute scheduled jobs"
+        );
+        drop(live_scheduler);
+    }
+
+    #[tokio::test]
+    async fn new_without_cron_lists_the_same_jobs_as_new() {
+        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "same_jobs");
+        let seeded_jobs = vec![
+            ScheduledJob {
+                id: "same_jobs_hourly".to_string(),
+                source: recipe_path.to_string_lossy().to_string(),
+                cron: "0 0 * * * *".to_string(),
+                ..Default::default()
+            },
+            ScheduledJob {
+                id: "same_jobs_daily".to_string(),
+                source: recipe_path.to_string_lossy().to_string(),
+                cron: "0 0 0 * * *".to_string(),
+                ..Default::default()
+            },
+        ];
+        fs::write(
+            &storage_path,
+            serde_json::to_string_pretty(&seeded_jobs).unwrap(),
+        )
+        .unwrap();
+
+        let inspect_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let inspect_scheduler = Scheduler::new_without_cron(storage_path.clone(), inspect_manager)
+            .await
+            .unwrap();
+        let mut inspect_pairs: Vec<(String, String)> = inspect_scheduler
+            .list_scheduled_jobs()
+            .await
+            .into_iter()
+            .map(|job| (job.id, job.cron))
+            .collect();
+        inspect_pairs.sort();
+
+        let live_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let live_scheduler = Scheduler::new(storage_path, live_manager).await.unwrap();
+        let mut live_pairs: Vec<(String, String)> = live_scheduler
+            .list_scheduled_jobs()
+            .await
+            .into_iter()
+            .map(|job| (job.id, job.cron))
+            .collect();
+        live_pairs.sort();
+
+        assert_eq!(
+            inspect_pairs, live_pairs,
+            "inspection constructor should read the same persisted job set"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_without_cron_does_not_rewrite_schedule_json_on_open() {
+        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "no_rewrite");
+        let seeded_jobs = vec![ScheduledJob {
+            id: "no_rewrite".to_string(),
+            source: recipe_path.to_string_lossy().to_string(),
+            cron: "0 0 * * * *".to_string(),
+            currently_running: true,
+            current_session_id: Some("stale-session".to_string()),
+            process_start_time: Some(Utc::now()),
+            ..Default::default()
+        }];
+        fs::write(
+            &storage_path,
+            serde_json::to_vec_pretty(&seeded_jobs).unwrap(),
+        )
+        .unwrap();
+        let before = fs::read(&storage_path).unwrap();
+
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let _scheduler = Scheduler::new_without_cron(storage_path.clone(), session_manager)
+            .await
+            .unwrap();
+
+        let after = fs::read(&storage_path).unwrap();
+        assert_eq!(
+            before, after,
+            "inspection open must not reconcile or rewrite schedule.json"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_without_cron_preserves_legacy_job_after_removing_another_job() {
+        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let legacy_recipe = create_test_recipe(temp_dir.path(), "legacy-job");
+        let other_recipe = create_test_recipe(temp_dir.path(), "same_jobs_hourly");
+        // Cron input and expected normalization are copied from
+        // normalize_cron_converts_5field_and_is_idempotent above.
+        let seeded_jobs = vec![
+            ScheduledJob {
+                id: "legacy-job".to_string(),
+                source: legacy_recipe.to_string_lossy().to_string(),
+                cron: "0 6 * * 1-5".to_string(),
+                paused: true,
+                ..Default::default()
+            },
+            ScheduledJob {
+                id: "same_jobs_hourly".to_string(),
+                source: other_recipe.to_string_lossy().to_string(),
+                cron: "0 0 * * * *".to_string(),
+                paused: true,
+                ..Default::default()
+            },
+        ];
+        let before = serde_json::to_vec_pretty(&seeded_jobs).unwrap();
+        fs::write(&storage_path, &before).unwrap();
+
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new_without_cron(storage_path.clone(), session_manager)
+            .await
+            .unwrap();
+        assert_eq!(fs::read(&storage_path).unwrap(), before);
+
+        let listed = scheduler.list_scheduled_jobs().await;
+        assert_eq!(listed.len(), 2);
+        let legacy = listed
+            .iter()
+            .find(|job| job.id == seeded_jobs[0].id)
+            .unwrap();
+        assert_eq!(legacy.cron, "0 0 6 * * 1-5");
+        assert!(listed.iter().any(|job| job.id == seeded_jobs[1].id));
+        assert_eq!(fs::read(&storage_path).unwrap(), before);
+
+        scheduler
+            .remove_scheduled_job(&seeded_jobs[1].id, true)
+            .await
+            .unwrap();
+        let persisted: Vec<ScheduledJob> =
+            serde_json::from_slice(&fs::read(&storage_path).unwrap()).unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].id, seeded_jobs[0].id);
+        assert_eq!(persisted[0].source, seeded_jobs[0].source);
+        assert_eq!(persisted[0].cron, "0 0 6 * * 1-5");
+        assert!(legacy_recipe.exists());
+        assert!(!other_recipe.exists());
+    }
+
+    #[tokio::test]
+    async fn only_live_constructor_clears_persisted_running_flag() {
+        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "no_rewrite");
+        // Reuse new_without_cron_does_not_rewrite_schedule_json_on_open's
+        // stale-flag fixture. Pausing prevents a cron tick from racing the checks.
+        let seeded_jobs = vec![ScheduledJob {
+            id: "no_rewrite".to_string(),
+            source: recipe_path.to_string_lossy().to_string(),
+            cron: "0 0 * * * *".to_string(),
+            currently_running: true,
+            paused: true,
+            current_session_id: Some("stale-session".to_string()),
+            process_start_time: Some(Utc::now()),
+            ..Default::default()
+        }];
+        let before = serde_json::to_vec_pretty(&seeded_jobs).unwrap();
+        fs::write(&storage_path, &before).unwrap();
+
+        let inspect_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let inspect_scheduler = Scheduler::new_without_cron(storage_path.clone(), inspect_manager)
+            .await
+            .unwrap();
+        let after_inspect = fs::read(&storage_path).unwrap();
+        assert_eq!(after_inspect, before);
+        let inspect_disk: Vec<ScheduledJob> = serde_json::from_slice(&after_inspect).unwrap();
+        assert_eq!(inspect_disk.len(), 1);
+        assert!(inspect_disk[0].currently_running);
+        let inspect_jobs = inspect_scheduler.list_scheduled_jobs().await;
+        assert_eq!(inspect_jobs.len(), 1);
+        assert!(inspect_jobs[0].currently_running);
+        drop(inspect_scheduler);
+
+        let live_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let live_scheduler = Scheduler::new(storage_path.clone(), live_manager)
+            .await
+            .unwrap();
+        let live_disk: Vec<ScheduledJob> =
+            serde_json::from_slice(&fs::read(&storage_path).unwrap()).unwrap();
+        assert_eq!(live_disk.len(), 1);
+        assert_eq!(live_disk[0].id, seeded_jobs[0].id);
+        assert!(!live_disk[0].currently_running);
+        assert!(live_disk[0].current_session_id.is_none());
+        assert!(live_disk[0].process_start_time.is_none());
+        let live_jobs = live_scheduler.list_scheduled_jobs().await;
+        assert_eq!(live_jobs.len(), 1);
+        assert!(!live_jobs[0].currently_running);
     }
 
     /// D11, on the real cron path: a fire of a worker-persona job must put an

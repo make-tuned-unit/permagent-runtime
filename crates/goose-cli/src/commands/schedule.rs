@@ -99,7 +99,7 @@ pub async fn handle_schedule_add(
     let scheduler_storage_path =
         get_default_scheduler_storage_path().context("Failed to get scheduler storage path")?;
     let session_manager = Arc::new(SessionManager::instance());
-    let scheduler = Scheduler::new(scheduler_storage_path, session_manager)
+    let scheduler = Scheduler::new_without_cron(scheduler_storage_path, session_manager)
         .await
         .context("Failed to initialize scheduler")?;
 
@@ -146,7 +146,7 @@ pub async fn handle_schedule_list() -> Result<()> {
     let scheduler_storage_path =
         get_default_scheduler_storage_path().context("Failed to get scheduler storage path")?;
     let session_manager = Arc::new(SessionManager::instance());
-    let scheduler = Scheduler::new(scheduler_storage_path, session_manager)
+    let scheduler = Scheduler::new_without_cron(scheduler_storage_path, session_manager)
         .await
         .context("Failed to initialize scheduler")?;
 
@@ -182,7 +182,7 @@ pub async fn handle_schedule_remove(schedule_id: String) -> Result<()> {
     let scheduler_storage_path =
         get_default_scheduler_storage_path().context("Failed to get scheduler storage path")?;
     let session_manager = Arc::new(SessionManager::instance());
-    let scheduler = Scheduler::new(scheduler_storage_path, session_manager)
+    let scheduler = Scheduler::new_without_cron(scheduler_storage_path, session_manager)
         .await
         .context("Failed to initialize scheduler")?;
 
@@ -210,7 +210,7 @@ pub async fn handle_schedule_sessions(schedule_id: String, limit: Option<usize>)
     let scheduler_storage_path =
         get_default_scheduler_storage_path().context("Failed to get scheduler storage path")?;
     let session_manager = Arc::new(SessionManager::instance());
-    let scheduler = Scheduler::new(scheduler_storage_path, session_manager)
+    let scheduler = Scheduler::new_without_cron(scheduler_storage_path, session_manager)
         .await
         .context("Failed to initialize scheduler")?;
 
@@ -345,4 +345,85 @@ pub async fn handle_schedule_cron_help() -> Result<()> {
     println!("  goose schedule add --schedule-id weekly-summary --cron \"0 9 * * 1\" --recipe-source summary.yaml");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn read_only_schedule_handlers_do_not_construct_live_scheduler() {
+        let src = include_str!("schedule.rs");
+
+        let (_, add_and_after) = src
+            .split_once("pub async fn handle_schedule_add(")
+            .expect("add handler should exist");
+        let (add_body, _) = add_and_after
+            .split_once("pub async fn handle_schedule_list()")
+            .expect("list handler should follow add");
+        assert!(
+            !add_body.contains("Scheduler::new("),
+            "add must not start a live cron loop"
+        );
+        assert!(
+            add_body.contains("Scheduler::new_without_cron("),
+            "add should use inspection constructor"
+        );
+
+        let (_, list_and_after) = src
+            .split_once("pub async fn handle_schedule_list()")
+            .expect("list handler should exist");
+        let (list_body, _) = list_and_after
+            .split_once("pub async fn handle_schedule_remove")
+            .expect("remove handler should follow list");
+        assert!(
+            !list_body.contains("Scheduler::new("),
+            "list must not start a live cron loop"
+        );
+        assert!(
+            list_body.contains("Scheduler::new_without_cron("),
+            "list should use inspection constructor"
+        );
+
+        let (_, remove_and_after) = src
+            .split_once("pub async fn handle_schedule_remove")
+            .expect("remove handler should exist");
+        let (remove_body, _) = remove_and_after
+            .split_once("pub async fn handle_schedule_sessions")
+            .expect("sessions handler should follow remove");
+        assert!(
+            !remove_body.contains("Scheduler::new("),
+            "remove must not start a live cron loop"
+        );
+        assert!(
+            remove_body.contains("Scheduler::new_without_cron("),
+            "remove should use inspection constructor"
+        );
+
+        let (_, sessions_and_after) = src
+            .split_once("pub async fn handle_schedule_sessions")
+            .expect("sessions handler should exist");
+        let (sessions_body, _) = sessions_and_after
+            .split_once("pub async fn handle_schedule_run_now")
+            .expect("run_now handler should follow sessions");
+        assert!(
+            !sessions_body.contains("Scheduler::new("),
+            "sessions must not start a live cron loop"
+        );
+        assert!(
+            sessions_body.contains("Scheduler::new_without_cron("),
+            "sessions should use inspection constructor"
+        );
+
+        let (_, run_now_and_after) = src
+            .split_once("pub async fn handle_schedule_run_now")
+            .expect("run_now handler should exist");
+        let (run_now_body, _) = run_now_and_after
+            .split_once("pub async fn handle_schedule_services_status()")
+            .expect("services_status handler should follow run_now");
+        // run-now legitimately executes a job; S1b (read-only CLI paths on
+        // new_without_cron) is a mitigation, not the fix for that path.
+        assert!(
+            run_now_body.contains("Scheduler::new("),
+            "run_now must use the live constructor to execute a job"
+        );
+    }
 }
