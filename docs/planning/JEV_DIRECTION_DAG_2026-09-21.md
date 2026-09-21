@@ -136,6 +136,81 @@ that cannot answer. It gets its own small seam, and it is registered and configu
 **Kill dates.** C1: if no arm beats head/tail on task success at equal-or-lower tokens after one full bench round, the
 judge arm is removed. C2: decided by the peer.
 
+## 4b. Phase V — the voice incident of 2026-09-21 (added at Jesse's request)
+
+*Jesse: "I tried voice and it got stuck on listening and then the iOS app crashed. It might be because it is an old
+build." Reviewed from the daemon log and the crash report pulled off the phone. Raw evidence (kept out of the repo —
+the crash report carries device identifiers): `permagent-worktrees/evidence/voice-incident-2026-09-21/`.*
+
+### What happened — TRACED from logs, second by second (local time)
+
+| Time | Event | Evidence |
+|---|---|---|
+| 13:30:11 | App launched on the iPhone 14 Pro Max, **iOS 27.0 (24A435)**, Permagent **1.31.0 build 945** | crash report header |
+| 13:30:19 | Voice socket connected — `client=ios_voice`, session `20260910_1`. **The connect line carries no build id.** | `daemon.err` |
+| 13:30:20–27 | **Turn 1 worked.** 2.1 s of speech → STT 294 ms → *"I can hear you just fine. What do you need?"* Speech-end → first audio **5.57 s**: TTFT **2,540 ms** (`custom_deepseek / deepseek-chat`) + a **cold first TTS chunk 2,153 ms** (RTF 0.88; the next chunk took 522 ms) | `voice_latency_summary` turn 1 |
+| 13:30:32 | Turn 2 capture starts, ~1.3 s after the reply finished playing | |
+| 13:30:32–57 | **"Stuck on Listening": the phone streamed audio for 25.8 s** before its end-of-turn fired (`stop_reason: client_stop`). Real signal, not a dead mic: 412,912 samples, none zero or non-finite, **mean RMS 0.037, peak 0.80** (turn 1's speech: mean 0.057, peak 0.28) | `voice_capture_health` turn 2 |
+| 13:30:58 | STT returns **empty** in 227 ms → `outcome: empty_stt`, `empty_reason: finite_signal_no_words`, `classification: critical_stall` | `voice_latency_summary` turn 2 |
+| 13:30:58 | **The server says nothing.** By design: *"Return to ready with no toast"* (`routes/voice.rs:2410-2422`). The phone goes back to Listening with no sign that 25 s of audio produced nothing | code |
+| 13:31:01.04 | Phone sends a **clean Close frame** — the voice screen was closed deliberately, not torn down by a crash | `close_reason: client_close_frame` |
+| 13:31:01.81 | **App crashes, 0.8 s later** | `Permagent-2026-09-21-133102.ips` |
+
+### Finding V-1 — the crash is a Swift-6 actor-isolation trap on iOS 27, and a rebuild alone will NOT fix it
+
+`EXC_BREAKPOINT / SIGTRAP` on thread **`com.apple.SwiftUI.AsyncRenderer`**:
+`_dispatch_assert_queue_fail ← dispatch_assert_queue ← _swift_task_checkIsolatedSwift ←
+swift_task_isCurrentExecutor ← ` **`closure #1 in PermagentApp.body.getter`** ` ← SwiftUICore LazyView.body.getter ←
+ViewGraph.updateOutputsAsync ← displayLinkTimer`. *(Symbolicated with `atos` against the matching dSYM, UUID
+`266C5672-…`.)* SwiftUI evaluated the app's root scene content on its **background async renderer**; that closure is
+main-actor isolated, and in Swift 6 language mode (`SWIFT_VERSION = 6.0`) the runtime asserts the executor and traps.
+The closure is the `WindowGroup { ZStack { … } }` content in `ios/PermagentMobile/PermagentMobile/PermagentApp.swift`,
+which reads `session.isPaired`, `splashDone` and `route.showVoice` — and the trigger fits: closing voice flips
+`route.showVoice`, the root re-renders, the app dies 0.8 s after the Close frame.
+
+- **"Old build" — confirmed, and not the cause.** The matching dSYM is in the Xcode archive dated **2026-09-08 19:59**:
+  the phone runs a **13-day-old build.** But `PermagentApp.swift` has **no commits since that archive**, so today's
+  source has the same closure. *Located, not yet traced:* whether building against a newer SDK changes the inserted
+  check. **No fix is proven until it survives the device.**
+- **What changed is the OS.** iOS 27.0 shipped this month; the build predates it.
+- Only one Permagent crash report is on the phone, so frequency is unknown.
+
+### Finding V-2 — "stuck on Listening" is end-of-turn detection that never fires, then a silent empty result
+
+- The phone decides when a turn ends (`VoiceVAD.swift`): `keepalive 0.006`, `silenceMs 1400`, `maxTurnMs 60000`. Turn
+  2's **mean** level over 25.8 s was **0.037 — six times the keepalive floor** — so the VAD never saw 1.4 s of
+  "silence". Either the room was noisy (then the floor is too low for it) or Jesse was speaking (then STT returning
+  nothing for 25 s of speech is its own bug). **The log cannot tell which: it records no input route, no noise-floor
+  estimate and no end-of-turn reason.** Hypothesis, not finding.
+- **It recurs.** 2026-09-19 15:38 — a **19.6 s** capture → `empty_stt / finite_signal_no_words`; the same session has
+  turns of 76 s, 42 s and 30 s flagged `critical_stall`.
+- The server windows audio over 14 s into ≤ 12 s segments (`sherpa_backend.rs:63-70`), so length alone should not
+  produce an empty transcript — *located, not traced* through the windowing path with real audio.
+- **The silence after an empty transcript is the part that reads as "stuck".** The 2026-09-01 forensics already
+  specified the fix — *empty-transcript feedback after two strikes* and a *ready-state stall detector that fails open* —
+  as V2a / V2b of the voice DAG. **Neither is in the running build or in this source path.**
+
+### Finding V-3 — latency, again
+
+First audio 5.57 s after speech end. Avoidable today: the **cold first TTS chunk (2.15 s vs 0.52 s warm)** — pre-warming
+Kokoro on socket connect was V2c on 2026-09-01. TTFT 2.54 s is the model thinking; no classifier fixes that.
+
+### Nodes
+
+| Node | What | Files | Tier | Acceptance (on the device — nothing here is done on a simulator) |
+|---|---|---|---|---|
+| **V1 — P0** | Stop the iOS 27 crash. Phase 0 first: reproduce (open voice → close → crash within ~1 s?), check whether it also fires without voice, and pull any further `.ips`. Candidates, **all hypotheses**: move the scene content into a `RootView: View` so the `App.body` closure touches no isolated state; rebuild against the iOS 27 SDK; `-Xfrontend -disable-dynamic-actor-isolation` as a stopgap only. | `ios/PermagentMobile/PermagentMobile/PermagentApp.swift`, project settings | T2 — Codex Astra; review by a second worker | 25 consecutive voice open/close cycles on the iPhone on iOS 27.0 with no crash and no new `.ips`; the same on the watch relay path. CI runs Xcode 16.4 and this machine 26.x — a local green is **not** evidence CI passes |
+| **V2** | **Telemetry before tuning** — the phone reports per turn: input route (built-in / wired / Bluetooth HFP / A2DP), the VAD's noise-floor estimate, and the **end-of-turn reason** (`silence` / `max_turn` / `user_tap` / `barge`). The server logs them on `voice_capture_health`. | `ios/…/VoiceVAD.swift`, `ios/…/Voice*`, `routes/voice.rs` | T1 | a replay of today's turn would have said *why* it ran 25.8 s |
+| **V3** | **Build identity on the wire** — app version, build number and git sha in the voice socket hello, logged on connect. Today `client=ios_voice` is all the server knows, so "is it an old build?" took a crash report and a dSYM to answer. | iOS voice client hello, `routes/voice.rs` | T0 | the connect line shows `1.31.0 (945) <sha>` |
+| **V4** | **Never silent after an empty transcript** — after an `empty_stt` on a capture longer than N seconds, or two in a row, say so (*"I didn't catch that"*, naming the input device); hands-free auto-started turns get a much shorter cap than 60 s; a ready-state stall detector that fails open. This is V2a/V2b from 2026-09-01, unshipped. | `routes/voice.rs`, `ios/…/VoiceVAD.swift` | T1 | deliberate-silence and deliberate-noise drills on the device both end with spoken feedback |
+| **V5** | Pre-warm Kokoro on socket connect (V2c, unshipped) | `routes/voice.rs` / voice TTS | T0 | first chunk ≤ 700 ms on a fresh connection |
+| **V6 — later** | Semantic end-of-turn on ASR partials (`JEV_FRONTIER_IDEAS` §1.6). **Blocked on V2's telemetry** and on a resident scorer having somewhere to live; not a substitute for V4 | — | — | — |
+
+**Order: V1 → V3 → V2 → V4 → V5.** V1 is the only P0 in this DAG: it takes the app down. The existing voice programme
+(`docs/orchestrator/VOICE_V3_END_TO_END_DAG.md`, branch `feat/voice-v3-dag`) owns W0–W9; V2, V4 and V5 belong inside it
+rather than beside it — to be reconciled with whoever holds that lane before dispatch. **V1 is new — nothing in V2 or
+V3 anticipated an OS-level isolation trap.**
+
 ## 5. Needs Jesse
 
 1. **A TypeSafe key (or "local only").** B2's end-to-end check needs a real `/v1/systemone` endpoint. Either a hosted
@@ -148,5 +223,5 @@ judge arm is removed. C2: decided by the peer.
 
 ## 6. Order of execution
 
-`A1 ‖ A2a ‖ A5` (three independent T0–T2 lanes, edits in parallel, gates serialised) → `A2b, A2c` → `B1` → `B2` →
+**V1 (the iOS 27 crash) goes first — it is the only P0.** Then: `A1 ‖ A2a ‖ A5` (three independent T0–T2 lanes, edits in parallel, gates serialised) → `A2b, A2c` → `B1` → `B2` →
 `B4` → `C1`. Peer-owned `A3`, `A4`, `B3`, `C2` run on the peer's schedule; `C1` waits for `A4`, `C2` for `A3`.
