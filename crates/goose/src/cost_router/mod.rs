@@ -59,6 +59,7 @@ pub mod fallback;
 pub mod hold_done;
 pub mod knowledge;
 pub mod mesh;
+pub mod metered;
 pub mod packs;
 pub mod planner_complexity;
 pub mod provider_circuit;
@@ -130,6 +131,10 @@ pub use knowledge::{
 };
 pub use mesh::{
     gate as mesh_gate, MeshGateInputs, MeshIneligible, MeshRoute, MeshWorkload, PoolHealth,
+};
+pub use metered::{
+    finish_metered_call, reserve_metered_call, unreserved_local_call, MeteredCallContext,
+    MeteredCallError, MeteredCallFinish, MeteredCallKind, MeteredCallRequest,
 };
 pub use packs::{
     configured_pack_pin, configured_review_pack_pin, load_packs, pack_pin,
