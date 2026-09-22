@@ -37,8 +37,11 @@ CoreML builds (`aac6fef/laya-coreml`, `FluidInference/laya-coreml`).
 | **ggmlc Metal binary** (`laya-macos-arm64-metal.tar.gz`, v0.9.1 of 2026-09-21 and v0.9.0 of 09-20) | Loads the GGUF on Metal, then **crashes on every decision** — `libc++abi: terminating due to uncaught exception of type std::regex_error: The expression contained an invalid escaped character, or a trailing escape.` Same in `serve` (every POST → 500) and `decide`. Fails *after* load, so it looks like a model problem and is a packaging one (a libc++ `std::regex` incompatibility, most likely the tokenizer's pre-tokenizer pattern). Unusable on macOS as shipped; worth an upstream issue. |
 | **Official Python package** (`uv venv` + `laya`, torch 2.14, MPS) | Works. 843 MB weights + 703 MB venv under `~/.permagent/models/laya/`. Cold load 62 s (first MPS compile), first predict 2.4 s, then **61–134 ms median** per multi-question call. |
 
-The evaluation below used the Python path. For an always-on server the M1 mini (headless, 14 GiB free, no Colima)
-is the better host, reached from this Mac over an SSH tunnel so the endpoint is loopback for the locality guard.
+The evaluation below used the Python path. **Astra's ruling (2026-09-22):** an SSH tunnel does *not* establish locality —
+loopback transport says nothing about where private data is processed — so a Laya server on the M1 needs explicit
+endpoint/host trust in the decision module, not a tunnel that makes it look like `127.0.0.1`. Always-on Laya,
+fine-tuning and automatic promotion are deferred; one bounded C1 shadow experiment is the funded step, and
+"agreement with another model is not ground truth.
 
 ## 3. Head to head on the real Jev fixture (the captured 2026-09-21 request)
 
