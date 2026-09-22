@@ -600,6 +600,30 @@ once. Tiers: V3 T0, V2 T1, V4 T1 + independent state-machine review, V5 T0. Reje
 version-only identity, optional web parity, speaking on every automatic noise turn, LLM-controlled recovery, synthesis per socket open.
 The incident's phone build and daemon **both already had** the text notice (git-verified); V1's device test remains a release gate.
 
+**K1 — Council convene budget: Astra's ruling (2026-09-22, session `01a0cb5b`; full text at `permagent-worktrees/dagJ-reports/k1/K1-astra-ruling.txt`,
+Phase-0 audit beside it).** The DAG's sketch ("request one task budget, fail early") is ruled **insufficient**: a preflight-only check
+secures nothing. Rulings: (1) the amount is the **SUM** over the whole frozen plan — round 1 + round 2 + chair + one possible verdict re-ask,
+each seat's bound including its permitted retries, free/subscription seats at zero, via `plan_reservation_bound`; MAX and synthetic probes
+rejected. (2) "One task budget" = one **durable envelope** whose real invocations consume their own bounded allocation without double
+counting — a seam the current reservation arithmetic does not have. (3) Approval durably authorizes the frozen plan once; **explicit
+re-convene, no auto-resume**; replay cannot authorize a second run; any scope change (roster, chair, models, bounds) needs fresh
+authorization. (4) The card lives in the Decision Inbox only and must say "Authorize up to $B for one Council convene: N seats, two rounds,
+chair synthesis and one possible verdict re-ask; approval does not start it — convene again to run", with settled spend, existing holds and
+the request shown separately; no ineffective "incremental" option. (5) Refuse **before** `store::insert_session` and before the "working"
+announcement; persist the request + card; dedupe by durable convene-request identity including the scheduled occurrence, so repeated weekly
+sweeps reuse the pending card. (6) The convene gets its own harness child session with one `begin_budget_task`, reused across approval and
+retry — never reset the coordinator's task. (7) **Hard-exclude the `permagent-test-*` namespace** (hyphen-delimited prefix) with one
+Council-local predicate applied to roster, execution and chair; keep `council_exclude` for real providers. (8) HTTP admission is
+**synchronous before 202**: 409 with `accepted:false, code, request_id, decision_id, message, retryable_after_approval` (codes
+`council_budget_approval_required` / `council_budget_refused` / `council_budget_unknown`), 503 if the decision cannot be persisted.
+(9) The envelope allocation is a **missing shared-budget seam owned by the peer** (cost_router / session_manager), to be sequenced after U1;
+K1 must not build a parallel budget engine and must not mistake `grant_reservation_after_gate_approval` (bypasses gate AND hard-limit
+arithmetic for one call) for it. (10) Carry the approved output/retry bounds into the actual provider request — the adapter today passes
+the provider's original model config. **Split adopted by the sessions:** K1a (council-local, permagent-runtime-42): plan freeze + SUM,
+synchronous admission + 409 shape, inbox card copy, refuse-before-row + occurrence dedupe, child session/task identity, test-namespace
+exclusion, adapter bound wiring. K1b (peer, after U1): the envelope allocation/consumption seam. K1 is not "done" until K1b lands and the
+eleven acceptance tests named in the ruling execute with non-zero counts.
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
