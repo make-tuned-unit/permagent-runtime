@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { FiExternalLink, FiVolume2, FiVolumeX, FiX } from 'react-icons/fi';
 import { Button } from '../common/Button';
-import { hardScrollEdgeSurface } from '../common/ViewHeader';
+import { hardScrollEdgeSurface, VIEW_HEADER_MIN_HEIGHT, VIEW_HEADER_PADDING_Y } from '../common/ViewHeader';
 import { ChatView } from './ChatView';
 import { useCommandCenter } from '../../lib/store';
 import { createChatWindow } from '../../lib/chatWindow';
@@ -208,7 +208,12 @@ export function ChatDock() {
             display: 'flex',
             alignItems: 'center',
             gap: space.md,
-            padding: `${space.lg}px ${space.xl}px`,
+            // Same reserved height and vertical padding as <ViewHeader>, so the
+            // dock's bar lines up with the view header beside it instead of
+            // sitting a few pixels shorter (the two read as one bar).
+            padding: `${VIEW_HEADER_PADDING_Y}px ${space.xl}px`,
+            minHeight: VIEW_HEADER_MIN_HEIGHT,
+            boxSizing: 'border-box',
             borderBottom: `1px solid ${colors.border}`,
             flexShrink: 0,
             ...hardScrollEdgeSurface(colors.surface),

@@ -36,6 +36,12 @@ import { useGlass } from './Glass';
  * the header on that screen (`colors.bg`, `colors.surface`, a gradient
  * stand-in, …), so callers always pass their own.
  */
+/** The bar's reserved height and vertical padding. Exported so a sibling pane's
+ *  header (the chat dock's) can take the same numbers: two headers side by
+ *  side at different heights read as two apps, not one (Jesse, 2026-09-21). */
+export const VIEW_HEADER_MIN_HEIGHT = 64;
+export const VIEW_HEADER_PADDING_Y = space.xxl;
+
 export function hardScrollEdgeSurface(background: string): CSSProperties {
   return { background, position: 'relative', zIndex: 1 };
 }
@@ -114,7 +120,7 @@ export function ViewHeader({ title, subtitle, leading, afterTitle, actions, surf
         // pixels wide. Let title/actions form a second row instead of
         // allowing controls to paint outside the workspace.
         flexWrap: 'wrap',
-        padding: `${space.xxl}px ${space.huge}px`,
+        padding: `${VIEW_HEADER_PADDING_Y}px ${space.huge}px`,
         // The bar is a fixed sibling ABOVE the scroll container, never inside
         // it — a header that scrolls away takes the view's identity with it.
         flexShrink: 0,
@@ -122,7 +128,7 @@ export function ViewHeader({ title, subtitle, leading, afterTitle, actions, surf
         color: colors.text,
         // Reserve a stable height whether or not a subtitle is present, so
         // switching tabs doesn't shift the content below by a few pixels.
-        minHeight: 64,
+        minHeight: VIEW_HEADER_MIN_HEIGHT,
         boxSizing: 'border-box',
         ...chrome,
       }}
