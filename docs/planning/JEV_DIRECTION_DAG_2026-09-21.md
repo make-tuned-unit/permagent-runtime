@@ -500,6 +500,29 @@ invocation. A disk kill line does not protect against the OOM killer.
 - **Recorded, not fixed here:** failed runs are still written to the Brain by the "Remember scheduled turn" block (a daily refusal becomes a
   daily memory) — pre-existing.
 
+**Council verdicts, session `1f34fc48` (convened by Jesse through the app chat, 2026-09-21; four seats answered — Haiku 4.5 chair,
+DeepSeek, MiniMax-M2.7, GLM-4.7 — seven seats failed, see below). Adopted as rulings unless Jesse overrules:**
+
+1. **Judge's first call site → Watcher candidate scoring, shadow mode** (low risk, observable), *not* the large tool-result ingest the plan
+   had for C1. Promotion to memory-relevance on chat ingest once shadow precision exceeds **85 %**. Dissent (DeepSeek): shadow Watcher
+   scoring yields no behaviour change and little feedback; chat-ingest relevance is higher leverage despite the blast radius. **C1 is
+   re-pointed:** the shadow hook goes inside the Watcher's `reason()` after candidates are built and before `complete_fast`
+   (`proactive.rs`), never in the existing budget/quiet-hours gate at `:125-171`; the journal records what the judge would have scored.
+2. **Auto-paused jobs after an outage → notify + auto-resume after a health probe** (consensus), with MiniMax's dissent that auto-resume is
+   premature while the monitoring layer is unverified. **Synthesis for S2's release note: ship the notification with S2; auto-resume is its
+   own later node, gated on a real provider health probe existing.**
+3. **Media generation must not spend before its cost-ledger rows and sovereignty audit exist** (unanimous; 1–2 weeks); a shadow-mode cost
+   tracker may unblock it if time-critical. → The peer's image programme runs **Q2 (plumbing) before Q3–Q5**.
+
+**Council health — the convene was `partial`:** of eleven seats, `llama_swap`, `lmstudio` and `permagent-test-custom-headers` were refused as
+"not priced safely: context limit is required for a paid reservation", `openai gpt-5.6-terra` for a missing maximum output tokens, `moonshot
+kimi-k2.6` was blocked before dispatch by `NeedsGate { scope: Task }`, the `local` seat names a model Ollama no longer has
+(`bartowski/Llama-3.2-1B-Instruct-GGUF`), and `qwen38_split` points at the paused 27B endpoint (`127.0.0.1:8081`). The Council currently has
+**four voices**. The four refusals are the reservation layer doing its job on unpriced providers — the fix is pricing/seat hygiene, not a
+bypass. Also surfaced, **unverified by either session**: a "daemon restart cascade" blamed for goals abandoned across four projects, a
+"verifier/retry cap miscalibrated" claim (trivial edits failing 3/3), and "Docker credential guard offline" — the last was wrong the previous
+time a health report said it (the real blocker was a model rate limit), so treat it as a claim to check, not a fact.
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
@@ -507,7 +530,7 @@ invocation. A disk kill line does not protect against the OOM killer.
 1b. **V1 needs your phone:** the iOS 27 crash fix is only proven by installing a build and running 25 voice open/close cycles on the device.
 2. **Minimum term/category counts** in the Librarian (they force padding on sparse memories) — a retrieval-quality
    ruling, deliberately left out of A2.
-2z. **RELEASE NOTE + RULING for S2 — auto-pause after an outage.** Once failed scheduled runs are recorded honestly, a provider outage fails each job, the existing breaker pauses it after **three** consecutive failed fires, and **nothing un-pauses it when the provider returns**: resume is manual from Automate, and jobs with no retries configured (all five today) raise no Decision Inbox item, so you are not told. Before S2, those runs were falsely green and kept firing. Options: notify on auto-pause; auto-resume after a successful health probe; or leave manual. Your call — S2 will not ship without the release note.
+2z. **~~RULING~~ RULED BY THE COUNCIL (session `1f34fc48`): notify with S2, auto-resume as a later node behind a real health probe. Overrule if you disagree.** Original question — auto-pause after an outage. Once failed scheduled runs are recorded honestly, a provider outage fails each job, the existing breaker pauses it after **three** consecutive failed fires, and **nothing un-pauses it when the provider returns**: resume is manual from Automate, and jobs with no retries configured (all five today) raise no Decision Inbox item, so you are not told. Before S2, those runs were falsely green and kept firing. Options: notify on auto-pause; auto-resume after a successful health probe; or leave manual. Your call — S2 will not ship without the release note.
 2a. **IANA timezones on schedules silently mean "system local".** A job saved with `America/New_York` logs a warning nobody reads and runs on the Mac's clock (`scheduler.rs:319-324`; chrono-tz was never wired). Wire chrono-tz, or reject IANA names at save time with a clear message? Independent of S1.
 2b. **Two processes write one `schedule.json`.** The CLI and the app each rewrite the whole file from their own snapshot; S1b and S1 shrink the damage but the durable fix is daemon-owned storage with the CLI talking to the daemon. Worth a node?
 3. **Phase D** — each item is a product decision and gets its own ruling.
