@@ -783,6 +783,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // `cost_ledger`; this adjunct only serializes authorization across sibling
     // workers and survives a daemon restart.
     apply_cost_reservations_schema(pool).await?;
+    apply_schedule_fire_claims_schema(pool).await?;
 
     // Egress audit log (schema v29, sovereignty). Idempotent; shared with
     // migrate_v28_to_v29. Append-only, purely additive, base-independent.
@@ -2023,6 +2024,35 @@ pub async fn migrate_v54_to_v55(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v55 (cost_reservations provider/model/reuse columns)");
+    Ok(())
+}
+
+/// Shared by fresh initialization and the v55 -> v56 migration. The database,
+/// rather than schedule.json's whole-file writes, arbitrates each named fire.
+pub async fn apply_schedule_fire_claims_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS schedule_fire_claims (
+            job_id TEXT NOT NULL,
+            fire_key TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('cron','interval','at','catch_up','manual')),
+            claimed_at TEXT NOT NULL,
+            owner_pid INTEGER NOT NULL,
+            owner_token TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            PRIMARY KEY (job_id, fire_key)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn migrate_v55_to_v56(pool: &Pool<Sqlite>) -> Result<()> {
+    apply_schedule_fire_claims_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (56)")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -7198,5 +7228,52 @@ mod inbox_schema_tests {
             .await
             .unwrap();
         assert_eq!(still_there, "session_gate");
+    }
+}
+
+#[cfg(test)]
+mod schedule_fire_claims_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn v55_to_v56_installs_composite_primary_key_idempotently() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (55)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        migrate_v55_to_v56(&pool).await.unwrap();
+        migrate_v55_to_v56(&pool).await.unwrap();
+        let version: i32 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(version, 56);
+        // Column names/order copied from apply_schedule_fire_claims_schema.
+        let pk: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT name, pk FROM pragma_table_info('schedule_fire_claims') WHERE pk > 0 ORDER BY pk",
+        ).fetch_all(&pool).await.unwrap();
+        assert_eq!(
+            pk,
+            vec![("job_id".to_string(), 1), ("fire_key".to_string(), 2)]
+        );
+        let stamps: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM schema_version WHERE version = 56")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stamps, 1);
+        let column: (String, String, i32) = sqlx::query_as(
+            "SELECT name, type, [notnull] FROM pragma_table_info('schedule_fire_claims') WHERE name = 'started_at'",
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(column, ("started_at".to_string(), "TEXT".to_string(), 0));
     }
 }

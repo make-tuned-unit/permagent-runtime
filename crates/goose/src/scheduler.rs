@@ -471,6 +471,411 @@ const CATCH_UP_MAX_LATENESS: Duration = Duration::days(3);
 /// all at once — the wake-storm the original ruling was written to avoid.
 const CATCH_UP_STAGGER_SECS: u64 = 30;
 
+const CLAIM_TICK_TOLERANCE: Duration = Duration::seconds(900);
+// A seconds-granularity cron has at most 901 occurrences in the inclusive
+// window, even when tests disable the production 900-second interval floor.
+const CLAIM_TICK_MAX_OCCURRENCES: usize = 902;
+const CLAIM_EXTENDED_LOOKBACK: Duration = Duration::hours(24);
+// The production 900-second interval floor permits at most 97 inclusive fires.
+const CLAIM_EXTENDED_MAX_OCCURRENCES: usize = 100;
+// A wedge detector for manual admission, NOT a timeout or cancellation policy.
+const CLAIM_WEDGE_AGE: Duration = Duration::days(7);
+
+/// Name the nominal wall-clock occurrence, never the callback's arrival time.
+/// IANA names currently fall back to Local (chrono-tz is not yet wired): two
+/// processes with different TZ environments must still contend for the same
+/// nominal 09:00, even when they reach it at different instants. Local remains
+/// a dynamic zone, not a snapshot of today's offset. Pre-existing cron
+/// semantics: a repeated fall-back 01:30 runs once; a nonexistent spring-forward
+/// 02:30 does not fire that day.
+fn cron_fire_key(job: &ScheduledJob, occurrence: DateTime<Utc>) -> String {
+    let naive = match resolve_cron_timezone(job.tz.as_deref()) {
+        CronTimezone::Local => occurrence.with_timezone(&Local).naive_local(),
+        CronTimezone::Fixed(offset) => occurrence.with_timezone(&offset).naive_local(),
+    };
+    format!("cron:{}", naive.format("%Y-%m-%dT%H:%M:%S"))
+}
+
+fn recent_cron_occurrence<T: chrono::TimeZone>(
+    cron: &croner::Cron,
+    now: DateTime<T>,
+) -> Option<DateTime<Utc>> {
+    let start = now.clone() - CLAIM_TICK_TOLERANCE;
+    cron.iter_from(start)
+        .take(CLAIM_TICK_MAX_OCCURRENCES)
+        .take_while(|at| at <= &now)
+        .last()
+        .map(|at| at.with_timezone(&Utc))
+        .or_else(|| {
+            cron.iter_from(now.clone() - CLAIM_EXTENDED_LOOKBACK)
+                .take(CLAIM_EXTENDED_MAX_OCCURRENCES)
+                .take_while(|at| at <= &now)
+                .last()
+                .map(|at| at.with_timezone(&Utc))
+        })
+}
+
+fn key_for_tick(job: &ScheduledJob, now: DateTime<Utc>) -> (String, &'static str) {
+    if let Some(at) = job.at {
+        return (format!("at:{}", at.to_rfc3339()), "at");
+    }
+    if let Some(every) = job.every_seconds.filter(|every| *every > 0) {
+        // Validated intervals fit i64 (MAX_INTERVAL_SECS). Euclidean division
+        // also gives the correct epoch bucket for instants before the epoch.
+        let every = i64::try_from(every).unwrap_or(i64::MAX);
+        return (
+            format!("interval:{}", now.timestamp().div_euclid(every) * every),
+            "interval",
+        );
+    }
+    let occurrence = parse_cron_schedule(&job.cron).and_then(|cron| {
+        match resolve_cron_timezone(job.tz.as_deref()) {
+            CronTimezone::Local => recent_cron_occurrence(&cron, now.with_timezone(&Local)),
+            CronTimezone::Fixed(offset) => {
+                recent_cron_occurrence(&cron, now.with_timezone(&offset))
+            }
+        }
+    });
+    if let Some(at) = occurrence {
+        return (cron_fire_key(job, at), "cron");
+    }
+    // Neither bounded search found an occurrence. This fail-awake fallback is
+    // the one remaining key-derivation case where two processes can both win.
+    tracing::warn!(job = %job.id,
+        "No cron occurrence in either claim search window; fallback key may let two processes both win");
+    let minute = DateTime::<Utc>::from_timestamp(now.timestamp().div_euclid(60) * 60, 0)
+        .expect("minute containing a valid callback timestamp");
+    (format!("fallback:{}", minute.to_rfc3339()), "cron")
+}
+
+fn key_for_catch_up(job: &ScheduledJob) -> Option<String> {
+    missed_fire_at(job).map(|at| cron_fire_key(job, at))
+}
+
+#[derive(Clone)]
+struct ClaimOwner {
+    pid: i64,
+    token: String,
+}
+
+fn claim_owner() -> &'static ClaimOwner {
+    static OWNER: std::sync::OnceLock<ClaimOwner> = std::sync::OnceLock::new();
+    OWNER.get_or_init(|| ClaimOwner {
+        pid: i64::from(std::process::id()),
+        token: uuid::Uuid::new_v4().to_string(),
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ClaimOutcome {
+    Won,
+    Lost,
+    StoreUnavailable(String),
+}
+
+async fn prune_claims(pool: &sqlx::SqlitePool, now: DateTime<Utc>, alive: fn(i64) -> bool) {
+    let cutoff = (now - Duration::days(7)).to_rfc3339();
+    let _ = sqlx::query(
+        "DELETE FROM schedule_fire_claims WHERE finished_at IS NOT NULL
+         AND julianday(finished_at) < julianday(?)",
+    )
+    .bind(&cutoff)
+    .execute(pool)
+    .await;
+    let rows = sqlx::query_as::<_, (String, String, i64, String, String)>(
+        "SELECT job_id, fire_key, owner_pid, owner_token, claimed_at FROM schedule_fire_claims
+         WHERE finished_at IS NULL AND started_at IS NULL
+         AND julianday(claimed_at) < julianday(?)",
+    )
+    .bind(&cutoff)
+    .fetch_all(pool)
+    .await;
+    if let Ok(rows) = rows {
+        for (job_id, fire_key, pid, token, claimed_at) in rows {
+            if alive(pid) {
+                continue;
+            }
+            // Preserve any takeover or start that raced the liveness probe.
+            let _ = sqlx::query(
+                "DELETE FROM schedule_fire_claims
+                 WHERE job_id = ? AND fire_key = ? AND owner_pid = ? AND owner_token = ?
+                 AND claimed_at = ? AND finished_at IS NULL AND started_at IS NULL
+                 AND julianday(claimed_at) < julianday(?)",
+            )
+            .bind(job_id)
+            .bind(fire_key)
+            .bind(pid)
+            .bind(token)
+            .bind(claimed_at)
+            .bind(&cutoff)
+            .execute(pool)
+            .await;
+        }
+    }
+}
+
+async fn try_claim_fire(
+    pool: &sqlx::SqlitePool,
+    job_id: &str,
+    fire_key: &str,
+    kind: &str,
+    owner: &ClaimOwner,
+) -> ClaimOutcome {
+    try_claim_fire_with_probe(
+        pool,
+        job_id,
+        fire_key,
+        kind,
+        owner,
+        Utc::now(),
+        owner_is_alive,
+    )
+    .await
+}
+
+async fn try_claim_fire_with_probe(
+    pool: &sqlx::SqlitePool,
+    job_id: &str,
+    fire_key: &str,
+    kind: &str,
+    owner: &ClaimOwner,
+    now: DateTime<Utc>,
+    alive: fn(i64) -> bool,
+) -> ClaimOutcome {
+    let result = sqlx::query(
+        "INSERT INTO schedule_fire_claims
+         (job_id, fire_key, kind, claimed_at, owner_pid, owner_token)
+         VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(job_id, fire_key) DO NOTHING",
+    )
+    .bind(job_id)
+    .bind(fire_key)
+    .bind(kind)
+    .bind(now.to_rfc3339())
+    .bind(owner.pid)
+    .bind(&owner.token)
+    .execute(pool)
+    .await;
+    match result {
+        Ok(result) if result.rows_affected() == 1 => {
+            prune_claims(pool, now, alive).await;
+            ClaimOutcome::Won
+        }
+        Ok(_) => {
+            let row = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>)>(
+                "SELECT owner_pid, owner_token, started_at, finished_at
+                 FROM schedule_fire_claims WHERE job_id = ? AND fire_key = ?",
+            )
+            .bind(job_id)
+            .bind(fire_key)
+            .fetch_optional(pool)
+            .await;
+            let (pid, token, started, finished) = match row {
+                Ok(Some(row)) => row,
+                Ok(None) => return ClaimOutcome::Lost,
+                Err(error) => return ClaimOutcome::StoreUnavailable(error.to_string()),
+            };
+            if finished.is_some() || token == owner.token || pid == owner.pid || alive(pid) {
+                return ClaimOutcome::Lost;
+            }
+            if started.is_some() {
+                tracing::warn!(job = %job_id, fire_key = %fire_key,
+                    "Dead claim owner started this occurrence; it may be half-done; human review required");
+                return ClaimOutcome::Lost;
+            }
+            // Only an unstarted occurrence can change hands. Both racing takers
+            // compare the old token; SQLite allows exactly one guarded update.
+            match sqlx::query(
+                "UPDATE schedule_fire_claims SET owner_pid = ?, owner_token = ?, claimed_at = ?
+                 WHERE job_id = ? AND fire_key = ? AND owner_token = ?
+                 AND finished_at IS NULL AND started_at IS NULL",
+            )
+            .bind(owner.pid)
+            .bind(&owner.token)
+            .bind(now.to_rfc3339())
+            .bind(job_id)
+            .bind(fire_key)
+            .bind(token)
+            .execute(pool)
+            .await
+            {
+                Ok(result) if result.rows_affected() == 1 => ClaimOutcome::Won,
+                Ok(_) => ClaimOutcome::Lost,
+                Err(error) => ClaimOutcome::StoreUnavailable(error.to_string()),
+            }
+        }
+        Err(error) => ClaimOutcome::StoreUnavailable(error.to_string()),
+    }
+}
+
+#[derive(Clone)]
+struct FireClaim {
+    pool: sqlx::SqlitePool,
+    job_id: String,
+    fire_key: String,
+    owner: ClaimOwner,
+}
+
+impl FireClaim {
+    async fn start(&self) -> anyhow::Result<()> {
+        // Fail awake on a store error after admission: a missing durable start
+        // mark risks replay if we die mid-run, but a database hiccup must not
+        // skip the automation. A successful write matching no row still means
+        // ownership was lost and does not authorize execution.
+        let result = sqlx::query(
+            "UPDATE schedule_fire_claims SET started_at = ?
+             WHERE job_id = ? AND fire_key = ? AND owner_token = ? AND owner_pid = ?
+             AND finished_at IS NULL AND started_at IS NULL",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(&self.job_id)
+        .bind(&self.fire_key)
+        .bind(&self.owner.token)
+        .bind(self.owner.pid)
+        .execute(&self.pool)
+        .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::warn!(job = %self.job_id, fire_key = %self.fire_key, %error,
+                    "Start-marker write failed; running fail-awake risks replay by takeover if this process dies mid-run");
+                return Ok(());
+            }
+        };
+        if result.rows_affected() != 1 {
+            return Err(anyhow!(
+                "Fire claim no longer admits execution for '{}' ({})",
+                self.job_id,
+                self.fire_key
+            ));
+        }
+        Ok(())
+    }
+
+    async fn finish(&self) {
+        let _ = sqlx::query(
+            "UPDATE schedule_fire_claims SET finished_at = ?
+             WHERE job_id = ? AND fire_key = ? AND owner_token = ? AND owner_pid = ?
+             AND finished_at IS NULL",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(&self.job_id)
+        .bind(&self.fire_key)
+        .bind(&self.owner.token)
+        .bind(self.owner.pid)
+        .execute(&self.pool)
+        .await;
+    }
+}
+
+// Some(None) means fail awake; None means another process already owns the
+// fire. Carry Some(claim) through retries/catch-up, never re-claim a continuation.
+async fn admit_fire(
+    manager: &SessionManager,
+    job_id: &str,
+    key: String,
+    kind: &str,
+) -> Option<Option<FireClaim>> {
+    let pool = match manager.pool_clone().await {
+        Ok(pool) => pool,
+        Err(error) => {
+            tracing::warn!(job = %job_id, %error, "Fire claim store unavailable; running fail-awake");
+            return Some(None);
+        }
+    };
+    match try_claim_fire(&pool, job_id, &key, kind, claim_owner()).await {
+        ClaimOutcome::Won => Some(Some(FireClaim {
+            pool,
+            job_id: job_id.to_string(),
+            fire_key: key,
+            owner: claim_owner().clone(),
+        })),
+        ClaimOutcome::Lost => {
+            tracing::info!(job = %job_id, fire_key = %key, "Scheduled fire already claimed; skipping");
+            None
+        }
+        ClaimOutcome::StoreUnavailable(error) => {
+            tracing::warn!(job = %job_id, %error, "Fire claim store unavailable; running fail-awake");
+            Some(None)
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn owner_is_alive(pid: i64) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    // Signal zero probes existence/permission without delivering a signal.
+    (unsafe { libc::kill(pid, 0) == 0 })
+        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn owner_is_alive(_pid: i64) -> bool {
+    false
+}
+
+/// Serialize the liveness read and manual row insertion with a write lock.
+/// A plain SELECT followed by INSERT lets two manual requests both pass. The
+/// first (no-op) write acquires SQLite's reserved lock before taking a snapshot.
+/// A transaction also rolls back on cancellation/errors, returning a clean pool
+/// connection. The seven-day wedge detector does not cancel a running job.
+async fn try_claim_manual(
+    pool: &sqlx::SqlitePool,
+    job_id: &str,
+    key: &str,
+    owner: &ClaimOwner,
+    now: DateTime<Utc>,
+    alive: fn(i64) -> bool,
+) -> ClaimOutcome {
+    let result: Result<bool, sqlx::Error> = async {
+        let mut tx = pool.begin().await?;
+        sqlx::query("UPDATE schedule_fire_claims SET finished_at = finished_at WHERE 0")
+            .execute(&mut *tx).await?;
+        let rows = sqlx::query_as::<_, (String, i64, String, String)>(
+            "SELECT fire_key, owner_pid, owner_token, claimed_at FROM schedule_fire_claims
+             WHERE job_id = ? AND finished_at IS NULL",
+        ).bind(job_id).fetch_all(&mut *tx).await?;
+        for (fire_key, pid, token, claimed_at) in rows {
+            let wedged = DateTime::parse_from_rfc3339(&claimed_at)
+                .is_ok_and(|claimed| now.signed_duration_since(claimed) > CLAIM_WEDGE_AGE);
+            if wedged {
+                tracing::error!(job = %job_id, fire_key = %fire_key,
+                    "Seven-day wedge detector: finishing unfinished claim so run-now is not blocked; this is not a run timeout");
+            } else if pid == owner.pid && token == owner.token {
+                continue;
+            }
+            if !wedged && alive(pid) {
+                return Ok(false);
+            }
+            sqlx::query(
+                "UPDATE schedule_fire_claims SET finished_at = ?
+                 WHERE job_id = ? AND fire_key = ? AND finished_at IS NULL",
+            ).bind(now.to_rfc3339()).bind(job_id).bind(fire_key)
+                .execute(&mut *tx).await?;
+        }
+        sqlx::query(
+            "INSERT INTO schedule_fire_claims
+             (job_id, fire_key, kind, claimed_at, owner_pid, owner_token)
+             VALUES (?, ?, 'manual', ?, ?, ?)",
+        ).bind(job_id).bind(key).bind(now.to_rfc3339())
+            .bind(owner.pid).bind(&owner.token).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(true)
+    }.await;
+    match result {
+        Ok(true) => {
+            prune_claims(pool, now, alive).await;
+            ClaimOutcome::Won
+        }
+        Ok(false) => ClaimOutcome::Lost,
+        Err(error) => ClaimOutcome::StoreUnavailable(error.to_string()),
+    }
+}
+
 /// Should this missed job be run once, late, at startup?
 ///
 /// Pure so the bound is testable without a scheduler: `period` is the job's
@@ -515,15 +920,24 @@ fn cron_period(cron: &str, from: DateTime<Utc>) -> Option<Duration> {
 /// `last_run`. `None` when the job has never run or the cron will not parse.
 fn missed_fire_at(job: &ScheduledJob) -> Option<DateTime<Utc>> {
     let last_run = job.last_run?;
-    parse_cron_schedule(&job.cron)?
-        .find_next_occurrence(&last_run, false)
-        .ok()
+    let schedule = parse_cron_schedule(&job.cron)?;
+    // Search IN the armed clock; converting a UTC search afterwards changes
+    // which occurrence a non-UTC expression names.
+    match resolve_cron_timezone(job.tz.as_deref()) {
+        CronTimezone::Local => schedule
+            .find_next_occurrence(&last_run.with_timezone(&Local), false)
+            .ok()
+            .map(|at| at.with_timezone(&Utc)),
+        CronTimezone::Fixed(offset) => schedule
+            .find_next_occurrence(&last_run.with_timezone(&offset), false)
+            .ok()
+            .map(|at| at.with_timezone(&Utc)),
+    }
 }
 
 /// Pure missed-run predicate: was a scheduled fire due in the window since
 /// `last_run` that did not run? Used at startup to flag `Missed`. Paused jobs are
-/// never "missed". Evaluated in UTC (a small skew vs the job's local firing tz is
-/// immaterial to multi-hour-downtime detection).
+/// never "missed". Cron occurrences are evaluated in the job's armed clock.
 fn is_run_missed(job: &ScheduledJob, now: DateTime<Utc>) -> bool {
     if job.paused {
         return false;
@@ -546,16 +960,7 @@ fn is_run_missed(job: &ScheduledJob, now: DateTime<Utc>) -> bool {
     }
     // Cron: the next scheduled fire strictly after last_run is already in the
     // past. Requires a known last_run (a never-run cron can't be judged missed).
-    match job.last_run {
-        None => false,
-        Some(lr) => match parse_cron_schedule(&job.cron) {
-            Some(cron) => cron
-                .find_next_occurrence(&lr, false)
-                .map(|next| next <= now)
-                .unwrap_or(false),
-            None => false,
-        },
-    }
+    missed_fire_at(job).is_some_and(|next| next <= now)
 }
 
 /// Parse a (normalized) cron string the SAME way `tokio_cron_scheduler` does, so
@@ -617,6 +1022,7 @@ pub struct Scheduler {
     jobs: Arc<Mutex<JobsMap>>,
     storage_path: PathBuf,
     running_tasks: Arc<Mutex<RunningTasksMap>>,
+    active_claims: Arc<Mutex<HashMap<String, FireClaim>>>,
     session_manager: Arc<SessionManager>,
     brain: Arc<tokio::sync::RwLock<Option<crate::brain_handle::SafeBrain>>>,
     persona: Arc<tokio::sync::RwLock<Option<crate::config::agent_identity::SharedPersona>>>,
@@ -652,12 +1058,16 @@ impl Scheduler {
             jobs,
             storage_path,
             running_tasks,
+            active_claims: Arc::new(Mutex::new(HashMap::new())),
             session_manager,
             brain: Arc::new(tokio::sync::RwLock::new(None)),
             persona: Arc::new(tokio::sync::RwLock::new(None)),
             agent_config: Arc::new(tokio::sync::RwLock::new(None)),
         });
 
+        arc_self
+            .sweep_claims_at_startup(load_mode, Utc::now(), owner_is_alive)
+            .await;
         arc_self.load_jobs_from_storage(load_mode).await;
         if start_cron {
             arc_self
@@ -668,6 +1078,54 @@ impl Scheduler {
         }
 
         Ok(arc_self)
+    }
+
+    async fn sweep_claims_at_startup(
+        &self,
+        mode: StorageLoadMode,
+        now: DateTime<Utc>,
+        alive: fn(i64) -> bool,
+    ) {
+        if mode == StorageLoadMode::NoReconcile {
+            return;
+        }
+        let result: anyhow::Result<()> = async {
+            let pool = self.session_manager.pool_clone().await?;
+            let rows = sqlx::query_as::<_, (String, String, i64, String)>(
+                "SELECT job_id, fire_key, owner_pid, owner_token FROM schedule_fire_claims
+                 WHERE finished_at IS NULL AND started_at IS NOT NULL",
+            )
+            .fetch_all(&pool)
+            .await?;
+            let owner = claim_owner();
+            // A started run cannot safely resume; retire it to unblock run-now.
+            // Leave unstarted dead-owner claims available for guarded takeover.
+            for (job_id, fire_key, pid, token) in rows {
+                if (pid == owner.pid && token != owner.token) || !alive(pid) {
+                    let result = sqlx::query(
+                        "UPDATE schedule_fire_claims SET finished_at = ?
+                         WHERE job_id = ? AND fire_key = ? AND owner_token = ?
+                         AND owner_pid = ? AND finished_at IS NULL AND started_at IS NOT NULL",
+                    )
+                    .bind(now.to_rfc3339())
+                    .bind(&job_id)
+                    .bind(&fire_key)
+                    .bind(token)
+                    .bind(pid)
+                    .execute(&pool)
+                    .await?;
+                    if result.rows_affected() == 1 {
+                        tracing::warn!(job = %job_id, fire_key = %fire_key,
+                            "Startup finished claim belonging to a dead owner or our recycled PID");
+                    }
+                }
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            tracing::warn!(%error, "Claim startup sweep failed; continuing startup");
+        }
     }
 
     pub async fn new(
@@ -696,15 +1154,17 @@ impl Scheduler {
         .await
     }
 
-    /// Build a `tokio_cron_scheduler` job for `job`, dispatching on its kind:
-    /// `at` → one-shot, `every_seconds` → interval, else cron (tz-aware). The
-    /// fired closure is identical across kinds; only the arming differs. Renamed
-    /// from `create_cron_task` now that it builds non-cron jobs too.
-    fn create_job_task(&self, job: ScheduledJob) -> Result<Job, SchedulerError> {
+    /// The production callback, shared by every armed kind. Passing its arrival
+    /// instant explicitly lets tests exercise admission without a live cron tick.
+    fn task_for_job(
+        &self,
+        job: ScheduledJob,
+    ) -> impl Fn(DateTime<Utc>) -> ScheduledTaskFuture + Send + Sync + 'static {
         let job_for_task = job.clone();
         let jobs_arc = self.jobs.clone();
         let storage_path = self.storage_path.clone();
         let running_tasks_arc = self.running_tasks.clone();
+        let active_claims_arc = self.active_claims.clone();
         let brain_arc = self.brain.clone();
         let persona_arc = self.persona.clone();
         let agent_config_arc = self.agent_config.clone();
@@ -720,13 +1180,14 @@ impl Scheduler {
         // would otherwise infer a concrete `Pin<Box<{async block}>>` that won't
         // unify with the `Pin<Box<dyn Future>>` the three constructors expect —
         // annotating drives the unsizing coercion at the `Box::pin` below.
-        let task_closure = move |_uuid: uuid::Uuid, _l: TokioJobScheduler| -> ScheduledTaskFuture {
+        move |current_time: DateTime<Utc>| -> ScheduledTaskFuture {
             tracing::info!("Scheduled task triggered for job '{}'", job_for_task.id);
             let task_job_id = job_for_task.id.clone();
             let current_jobs_arc = jobs_arc.clone();
             let local_storage_path = storage_path.clone();
             let job_to_execute = job_for_task.clone();
             let running_tasks = running_tasks_arc.clone();
+            let active_claims = active_claims_arc.clone();
             let brain_for_task = brain_arc.clone();
             let persona_for_task = persona_arc.clone();
             let agent_config_for_task = agent_config_arc.clone();
@@ -745,7 +1206,12 @@ impl Scheduler {
                     return;
                 }
 
-                let current_time = Utc::now();
+                let (key, kind) = key_for_tick(&job_to_execute, current_time);
+                let Some(fire_claim) =
+                    admit_fire(&session_manager_for_task, &task_job_id, key, kind).await
+                else {
+                    return;
+                };
                 // Atomically CLAIM this fire under the jobs lock — mirroring the
                 // guard `run_now` already uses. If the job is still marked
                 // `currently_running` (a prior scheduled fire, or a manual
@@ -760,7 +1226,13 @@ impl Scheduler {
                 let prior_status = {
                     let mut jobs_guard = current_jobs_arc.lock().await;
                     match jobs_guard.get_mut(&task_job_id) {
-                        Some((_, job)) if !job.currently_running => {
+                        Some((_, job)) if !job.currently_running && !job.paused => {
+                            if let Some(claim) = &fire_claim {
+                                active_claims
+                                    .lock()
+                                    .await
+                                    .insert(task_job_id.clone(), claim.clone());
+                            }
                             let prior = job.last_status;
                             job.last_run = Some(current_time);
                             // A fire at the job's own scheduled instant clears
@@ -776,6 +1248,9 @@ impl Scheduler {
                     }
                 };
                 let Some(prior_status) = prior_status else {
+                    if let Some(claim) = &fire_claim {
+                        claim.finish().await;
+                    }
                     tracing::info!(
                         "Scheduled job '{}' skipped this tick: a prior run is still in flight \
                          (or the job was unscheduled)",
@@ -814,6 +1289,7 @@ impl Scheduler {
                 // job can never storm. Default max_retries=0 → a single attempt,
                 // exactly today's behavior.
                 let mut attempt: u32 = 0;
+                let mut execution_started = false;
                 let final_result = loop {
                     let brain_snapshot = brain_for_task.read().await.clone();
                     let persona_snapshot = persona_for_task.read().await.clone();
@@ -821,15 +1297,24 @@ impl Scheduler {
                     // Isolate a job panic (durability F3): a panic inside
                     // execute_job is converted to an Err so cleanup still runs and
                     // other jobs keep firing.
-                    let attempt_result = std::panic::AssertUnwindSafe(execute_job(
-                        job_to_execute.clone(),
-                        current_jobs_arc.clone(),
-                        task_job_id.clone(),
-                        cancel_token.clone(),
-                        brain_snapshot,
-                        persona_snapshot,
-                        ac_snapshot,
-                    ))
+                    let attempt_result = std::panic::AssertUnwindSafe(async {
+                        if !execution_started {
+                            if let Some(claim) = &fire_claim {
+                                claim.start().await?;
+                            }
+                            execution_started = true;
+                        }
+                        execute_job(
+                            job_to_execute.clone(),
+                            current_jobs_arc.clone(),
+                            task_job_id.clone(),
+                            cancel_token.clone(),
+                            brain_snapshot,
+                            persona_snapshot,
+                            ac_snapshot,
+                        )
+                        .await
+                    })
                     .catch_unwind()
                     .await
                     .unwrap_or_else(|panic| {
@@ -938,6 +1423,19 @@ impl Scheduler {
                     }
                 };
 
+                if let Some(claim) = &fire_claim {
+                    claim.finish().await;
+                }
+                if let Some(claim) = &fire_claim {
+                    let mut active = active_claims.lock().await;
+                    if active
+                        .get(&task_job_id)
+                        .is_some_and(|current| current.fire_key == claim.fire_key)
+                    {
+                        active.remove(&task_job_id);
+                    }
+                }
+
                 // One-shot jobs are done the moment they fire — remove so they
                 // never re-run on restart (the durable "fire exactly once").
                 if is_one_shot {
@@ -994,7 +1492,14 @@ impl Scheduler {
                     }
                 }
             })
-        };
+        }
+    }
+
+    /// Build a `tokio_cron_scheduler` job, dispatching on its kind:
+    /// `at` → one-shot, `every_seconds` → interval, else cron (tz-aware).
+    fn create_job_task(&self, job: ScheduledJob) -> Result<Job, SchedulerError> {
+        let task = self.task_for_job(job.clone());
+        let task_closure = move |_uuid: uuid::Uuid, _l: TokioJobScheduler| task(Utc::now());
 
         // ── Kind dispatch ── one-shot / interval / cron(tz). ──────────────────
         let build_result = if let Some(at) = job.at {
@@ -1217,7 +1722,7 @@ impl Scheduler {
         let mut reconciled = false;
         // Long-cadence jobs whose window was slept through, to be run once
         // after the job map is populated (see `should_catch_up`).
-        let mut catch_up_ids: Vec<String> = Vec::new();
+        let mut catch_up_jobs: Vec<ScheduledJob> = Vec::new();
 
         for mut job_to_load in list {
             // Interval floor applies to persisted jobs too: add-time validation
@@ -1337,16 +1842,17 @@ impl Scheduler {
                              tick is too far away to wait for)",
                             job_to_load.id
                         );
-                        catch_up_ids.push(job_to_load.id.clone());
+                        catch_up_jobs.push(job_to_load.clone());
                     } else {
                         tracing::warn!(
                             target: "durability",
                             "Job '{}' missed a scheduled run during downtime; marking Missed",
                             job_to_load.id
                         );
+                        job_to_load.last_status = Some(ScheduleRunStatus::Missed);
+                        reconciled = true;
                     }
-                    job_to_load.last_status = Some(ScheduleRunStatus::Missed);
-                    reconciled = true;
+                    // Catch-up changes no status until its durable claim wins.
                 }
             }
 
@@ -1386,31 +1892,38 @@ impl Scheduler {
             }
         }
 
-        if mode == StorageLoadMode::ReconcileAndCatchUp && !catch_up_ids.is_empty() {
-            self.clone().spawn_catch_up_runs(catch_up_ids);
+        if mode == StorageLoadMode::ReconcileAndCatchUp && !catch_up_jobs.is_empty() {
+            self.clone().spawn_catch_up_runs(catch_up_jobs);
         }
     }
 
-    /// Run each slept-through long-cadence job exactly once, staggered, off the
-    /// load path. Deliberately after the job map is populated and persisted:
-    /// `run_now` looks the job up there, and a catch-up must not race the load
-    /// it belongs to.
-    fn spawn_catch_up_runs(self: Arc<Self>, ids: Vec<String>) {
+    /// Admit the missed occurrence captured at load time, before the stagger
+    /// and before touching any of the job's run-state fields.
+    async fn claim_catch_up(&self, missed_job: &ScheduledJob) -> Option<Option<FireClaim>> {
+        {
+            let jobs = self.jobs.lock().await;
+            match jobs.get(&missed_job.id) {
+                Some((_, job)) if !job.paused && !job.currently_running => {}
+                _ => return None,
+            }
+        }
+        let key = key_for_catch_up(missed_job)?;
+        admit_fire(&self.session_manager, &missed_job.id, key, "catch_up").await
+    }
+
+    /// Run slept-through long-cadence jobs staggered, off the load path, after
+    /// the job map is populated. A continuation carries its original claim.
+    fn spawn_catch_up_runs(self: Arc<Self>, missed_jobs: Vec<ScheduledJob>) {
         tokio::spawn(async move {
-            for id in ids {
+            // Keep the occurrence identified at load time. Re-reading last_run
+            // after a stagger could accidentally name the NEXT occurrence.
+            for job in missed_jobs {
+                let id = job.id.clone();
+                let Some(claim) = self.claim_catch_up(&job).await else {
+                    continue;
+                };
                 tokio::time::sleep(std::time::Duration::from_secs(CATCH_UP_STAGGER_SECS)).await;
-                {
-                    let mut jobs = self.jobs.lock().await;
-                    match jobs.get_mut(&id) {
-                        // Re-check under the lock: the job may have been paused,
-                        // removed, or already fired naturally in the interim.
-                        Some((_, job)) if !job.paused && !job.currently_running => {
-                            job.last_run_was_catch_up = true;
-                        }
-                        _ => continue,
-                    }
-                }
-                match self.run_now(&id).await {
+                match self.run_claimed(&id, claim, true).await {
                     Ok(session) => tracing::info!(
                         target: "durability",
                         "Catch-up run started for '{}' (session {})",
@@ -1589,6 +2102,74 @@ impl Scheduler {
     }
 
     pub async fn run_now(&self, sched_id: &str) -> Result<String, SchedulerError> {
+        self.run_now_with_liveness(sched_id, Utc::now(), owner_is_alive)
+            .await
+    }
+
+    async fn run_now_with_liveness(
+        &self,
+        sched_id: &str,
+        now: DateTime<Utc>,
+        alive: fn(i64) -> bool,
+    ) -> Result<String, SchedulerError> {
+        let key = format!("manual:{}", uuid::Uuid::new_v4());
+        let claim = match self.session_manager.pool_clone().await {
+            Ok(pool) => {
+                match try_claim_manual(&pool, sched_id, &key, claim_owner(), now, alive).await {
+                    ClaimOutcome::Won => Some(FireClaim {
+                        pool,
+                        job_id: sched_id.to_string(),
+                        fire_key: key,
+                        owner: claim_owner().clone(),
+                    }),
+                    ClaimOutcome::Lost => {
+                        tracing::info!(job = %sched_id, "Manual run refused: another process is alive");
+                        return Err(SchedulerError::AnyhowError(anyhow!(
+                            "Job '{}' is already running",
+                            sched_id
+                        )));
+                    }
+                    ClaimOutcome::StoreUnavailable(error) => {
+                        tracing::warn!(job = %sched_id, %error, "Manual claim store unavailable; running fail-awake");
+                        None
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(job = %sched_id, %error, "Manual claim store unavailable; running fail-awake");
+                None
+            }
+        };
+        self.run_claimed(sched_id, claim, false).await
+    }
+
+    async fn run_claimed(
+        &self,
+        sched_id: &str,
+        claim: Option<FireClaim>,
+        catch_up: bool,
+    ) -> Result<String, SchedulerError> {
+        let result = self.run_now_inner(sched_id, claim.as_ref(), catch_up).await;
+        if let Some(claim) = &claim {
+            claim.finish().await;
+            // An early refusal must not remove a different run's claim.
+            let mut active = self.active_claims.lock().await;
+            if active
+                .get(sched_id)
+                .is_some_and(|current| current.fire_key == claim.fire_key)
+            {
+                active.remove(sched_id);
+            }
+        }
+        result
+    }
+
+    async fn run_now_inner(
+        &self,
+        sched_id: &str,
+        claim: Option<&FireClaim>,
+        catch_up: bool,
+    ) -> Result<String, SchedulerError> {
         let job_to_run = {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {
@@ -1607,12 +2188,19 @@ impl Scheduler {
                             sched_id
                         )));
                     }
-                    if job.currently_running {
+                    if job.currently_running || (catch_up && job.paused) {
                         return Err(SchedulerError::AnyhowError(anyhow!(
                             "Job '{}' is already running",
                             sched_id
                         )));
                     }
+                    if let Some(claim) = claim {
+                        self.active_claims
+                            .lock()
+                            .await
+                            .insert(sched_id.to_string(), claim.clone());
+                    }
+                    job.last_run_was_catch_up = catch_up;
                     job.currently_running = true;
                     job.process_start_time = Some(Utc::now());
                     job.clone()
@@ -1647,15 +2235,21 @@ impl Scheduler {
         // running_tasks and `currently_running` stayed true, wedging the
         // schedule as "running" with a Stop button that cancelled a token
         // nobody was watching.
-        let result = std::panic::AssertUnwindSafe(execute_job(
-            job_to_run,
-            self.jobs.clone(),
-            sched_id.to_string(),
-            cancel_token.clone(),
-            brain_snapshot,
-            persona_snapshot,
-            ac_snapshot,
-        ))
+        let result = std::panic::AssertUnwindSafe(async {
+            if let Some(claim) = claim {
+                claim.start().await?;
+            }
+            execute_job(
+                job_to_run,
+                self.jobs.clone(),
+                sched_id.to_string(),
+                cancel_token.clone(),
+                brain_snapshot,
+                persona_snapshot,
+                ac_snapshot,
+            )
+            .await
+        })
         .catch_unwind()
         .await
         .unwrap_or_else(|panic| {
@@ -1692,6 +2286,10 @@ impl Scheduler {
                 // failed Run Now used to leave last_status untouched, so the
                 // Automate view showed stale health for exactly the runs the
                 // user was watching most closely.
+                // A manual or catch-up run is a run: count it the way the cron
+                // path does. It never was before, so Automate's run count
+                // undercounted every job that had ever been run by hand.
+                job.run_count = job.run_count.saturating_add(1);
                 match &result {
                     Ok(_) => {
                         job.last_status = Some(ScheduleRunStatus::Ok);
@@ -1963,6 +2561,7 @@ impl Scheduler {
             }
         }
 
+        let stopping_claim = self.active_claims.lock().await.get(sched_id).cloned();
         let cancelled_live_token = {
             let tasks = self.running_tasks.lock().await;
             match tasks.get(sched_id) {
@@ -1995,6 +2594,9 @@ impl Scheduler {
                     job.last_status = Some(ScheduleRunStatus::Error);
                     job.last_error = Some("run died without cleanup; cleared by Stop".to_string());
                 }
+            }
+            if let Some(claim) = &stopping_claim {
+                claim.finish().await;
             }
             persist_jobs(&self.storage_path, &self.jobs).await?;
         } else {
@@ -2051,6 +2653,9 @@ impl Scheduler {
                         job.last_error =
                             Some("run ignored cancellation; force-cleared by Stop".to_string());
                     }
+                }
+                if let Some(claim) = &stopping_claim {
+                    claim.finish().await;
                 }
                 let _ = persist_jobs(&storage_path, &jobs).await;
             });
@@ -3402,6 +4007,7 @@ prompt: 'collect {{ hours }}h from {{ log_dir }} with {{ recipe_dir }}/collector
         // Cron (hourly at :00): a fire at 01:00 was due by 02:00 → missed.
         let cron_job = ScheduledJob {
             cron: "0 0 * * * *".to_string(),
+            tz: Some("utc".to_string()),
             last_run: Some(last),
             ..Default::default()
         };
@@ -3505,6 +4111,7 @@ prompt: 'collect {{ hours }}h from {{ log_dir }} with {{ recipe_dir }}/collector
 
         let job = ScheduledJob {
             cron: "0 0 19 * * 0".to_string(),
+            tz: Some("utc".to_string()),
             last_run: Some(anchor),
             ..Default::default()
         };
@@ -4228,5 +4835,1105 @@ prompt: 'collect {{ hours }}h from {{ log_dir }} with {{ recipe_dir }}/collector
             .await
             .unwrap();
         assert_eq!(changes(&mut rx), vec!["deleted"], "delete was silent");
+    }
+}
+
+#[cfg(test)]
+mod fire_claim_tests {
+    use super::*;
+
+    fn instant(text: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(text)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn weekly_job(id: &str) -> ScheduledJob {
+        ScheduledJob {
+            id: id.to_string(),
+            cron: "0 0 10 * * 1".to_string(),
+            tz: Some("-02:00".to_string()),
+            last_run: Some(instant("2026-09-14T12:00:00Z")),
+            ..Default::default()
+        }
+    }
+
+    async fn scheduler_at(dir: &Path) -> Arc<Scheduler> {
+        Scheduler::new_without_cron(
+            dir.join("schedule.json"),
+            Arc::new(SessionManager::new(dir.to_path_buf())),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn install_job(scheduler: &Scheduler, job: ScheduledJob) {
+        scheduler
+            .jobs
+            .lock()
+            .await
+            .insert(job.id.clone(), (uuid::Uuid::new_v4(), job));
+        persist_jobs(&scheduler.storage_path, &scheduler.jobs)
+            .await
+            .unwrap();
+    }
+
+    async fn snapshot(scheduler: &Scheduler, id: &str) -> serde_json::Value {
+        serde_json::to_value(&scheduler.jobs.lock().await.get(id).unwrap().1).unwrap()
+    }
+
+    async fn insert_competitor(pool: &sqlx::SqlitePool, job: &str, key: &str) {
+        // Deliberately seed a competing process's row directly, not by walking
+        // this scheduler's happy path. Columns/shape copied from the schema.
+        sqlx::query(
+            "INSERT INTO schedule_fire_claims
+             (job_id, fire_key, kind, claimed_at, owner_pid, owner_token)
+             VALUES (?, ?, 'cron', ?, ?, ?)",
+        )
+        .bind(job)
+        .bind(key)
+        .bind(Utc::now().to_rfc3339())
+        .bind(claim_owner().pid)
+        .bind(uuid::Uuid::new_v4().to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn missed_occurrence_uses_armed_clock_and_one_cron_formatter() {
+        let job = weekly_job("clock");
+        let due = instant("2026-09-21T12:00:00Z");
+        assert_eq!(missed_fire_at(&job), Some(due));
+        assert!(!is_run_missed(&job, instant("2026-09-21T10:00:00Z")));
+        assert!(is_run_missed(&job, due));
+        // Prefix and complete seconds field copied from cron_fire_key's format.
+        let expected = "cron:2026-09-21T10:00:00";
+        assert_eq!(key_for_tick(&job, due).0, expected);
+        assert_eq!(key_for_catch_up(&job).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn fire_key_table_preserves_occurrences_seconds_midnight_and_kind() {
+        for (cron, tz, last, due, expected) in [
+            (
+                "17 0 10 * * 1",
+                "utc",
+                "2026-09-14T10:00:17Z",
+                "2026-09-21T10:00:17Z",
+                "cron:2026-09-21T10:00:17",
+            ),
+            (
+                "0 0 0 * * 1",
+                "utc",
+                "2026-09-14T00:00:00Z",
+                "2026-09-21T00:00:00Z",
+                "cron:2026-09-21T00:00:00",
+            ),
+            (
+                "0 0 10 * * 1",
+                "-02:00",
+                "2026-09-14T12:00:00Z",
+                "2026-09-21T12:00:00Z",
+                "cron:2026-09-21T10:00:00",
+            ),
+        ] {
+            let job = ScheduledJob {
+                cron: cron.to_string(),
+                tz: Some(tz.to_string()),
+                last_run: Some(instant(last)),
+                ..Default::default()
+            };
+            let due = instant(due);
+            for delay in [
+                Duration::milliseconds(5),
+                Duration::seconds(61),
+                Duration::minutes(14),
+            ] {
+                assert_eq!(key_for_tick(&job, due + delay).0, expected);
+            }
+            assert_eq!(key_for_catch_up(&job).as_deref(), Some(expected));
+            assert_ne!(key_for_tick(&job, due + Duration::days(7)).0, expected);
+            let mut advanced = job.clone();
+            advanced.last_run = Some(due);
+            assert_ne!(key_for_catch_up(&advanced), key_for_catch_up(&job));
+        }
+        let west = weekly_job("tz");
+        let mut east = west.clone();
+        east.tz = Some("+02:00".to_string());
+        assert_eq!(
+            key_for_tick(&west, instant("2026-09-21T12:00:00Z")).0,
+            key_for_tick(&east, instant("2026-09-21T08:00:00Z")).0,
+        );
+        let interval = ScheduledJob {
+            every_seconds: Some(900),
+            ..Default::default()
+        };
+        for seconds in [5, 61, 899] {
+            assert_eq!(
+                key_for_tick(&interval, DateTime::from_timestamp(seconds, 0).unwrap()).0,
+                "interval:0"
+            );
+        }
+        assert_eq!(
+            key_for_tick(&interval, DateTime::from_timestamp(900, 0).unwrap()).0,
+            "interval:900"
+        );
+        let at = ScheduledJob {
+            at: Some(instant("2026-09-21T12:00:00Z")),
+            ..Default::default()
+        };
+        assert_eq!(
+            key_for_tick(&at, instant("2026-09-22T12:00:00Z")).0,
+            "at:2026-09-21T12:00:00+00:00"
+        );
+        let seconds = ScheduledJob {
+            cron: "* * * * * *".to_string(),
+            tz: Some("utc".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            key_for_tick(&seconds, instant("2026-09-21T12:00:01Z")).0,
+            "cron:2026-09-21T12:00:01"
+        );
+    }
+
+    #[test]
+    fn sparse_cron_searches_forward_and_falls_back_outside_tolerance() {
+        // Expression copied from cron_period_and_missed_fire_read_the_real_schedule.
+        let job = ScheduledJob {
+            cron: "0 0 10 * * 1,4".to_string(),
+            tz: Some("utc".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            key_for_tick(&job, instant("2026-09-24T10:00:05Z")).0,
+            "cron:2026-09-24T10:00:00"
+        );
+        for arrival in [
+            "2026-09-24T10:16:59Z",
+            "2026-09-24T10:17:01Z",
+            "2026-09-25T09:59:00Z",
+        ] {
+            assert_eq!(
+                key_for_tick(&job, instant(arrival)).0,
+                "cron:2026-09-24T10:00:00"
+            );
+        }
+        // Derivation correction: Thursday is 72h01m before Sunday 10:01,
+        // outside the specified 24h search. Friday 09:59 above tests stage two.
+        assert_eq!(
+            key_for_tick(&job, instant("2026-09-27T10:01:00Z")).0,
+            "fallback:2026-09-27T10:01:00+00:00"
+        );
+    }
+
+    // These production-path tests are not redundant with key/schema/claim-unit tests.
+    // Removing production admission is caught by:
+    // direct_competitor_blocks_production_tick_without_state_mutation;
+    // tick_and_catch_up_contend_in_both_directions_and_across_minutes;
+    // manual_liveness_guard_refuses_alive_and_finishes_dead_owners;
+    // retry_is_a_continuation_of_one_claim_and_failure_finishes_it.
+    #[tokio::test]
+    async fn direct_competitor_blocks_production_tick_without_state_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let job = weekly_job("competing");
+        install_job(&scheduler, job.clone()).await;
+        let before = snapshot(&scheduler, &job.id).await;
+        let disk_before = fs::read(&scheduler.storage_path).unwrap();
+        let pool = scheduler.session_manager.pool_clone().await.unwrap();
+        let due = instant("2026-09-21T12:00:00Z");
+        let key = key_for_tick(&job, due).0;
+        insert_competitor(&pool, &job.id, &key).await;
+        assert_eq!(
+            try_claim_fire(&pool, &job.id, &key, "cron", claim_owner()).await,
+            ClaimOutcome::Lost
+        );
+        scheduler.task_for_job(job.clone())(due).await;
+        assert_eq!(snapshot(&scheduler, &job.id).await, before);
+        assert_eq!(fs::read(&scheduler.storage_path).unwrap(), disk_before);
+        assert!(scheduler.running_tasks.lock().await.is_empty());
+        assert_eq!(
+            try_claim_fire(
+                &pool,
+                &job.id,
+                &key_for_tick(&job, due + Duration::days(7)).0,
+                "cron",
+                claim_owner()
+            )
+            .await,
+            ClaimOutcome::Won
+        );
+        assert_eq!(
+            try_claim_fire(&pool, "different-job", &key, "cron", claim_owner()).await,
+            ClaimOutcome::Won
+        );
+    }
+
+    #[tokio::test]
+    async fn separate_pools_race_for_one_database_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(dir.path().join("claims.db"))
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(30));
+        let first = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_with(options.clone())
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_schedule_fire_claims_schema(&first)
+            .await
+            .unwrap();
+        let second = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_with(options)
+            .await
+            .unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let spawn = |pool: sqlx::SqlitePool, barrier: Arc<tokio::sync::Barrier>| {
+            tokio::spawn(async move {
+                let owner = ClaimOwner {
+                    pid: claim_owner().pid,
+                    token: uuid::Uuid::new_v4().to_string(),
+                };
+                barrier.wait().await;
+                try_claim_fire(&pool, "race", "interval:0", "interval", &owner).await
+            })
+        };
+        let a = spawn(first, barrier.clone());
+        let b = spawn(second, barrier);
+        let results = [a.await.unwrap(), b.await.unwrap()];
+        assert_eq!(
+            results
+                .iter()
+                .filter(|outcome| **outcome == ClaimOutcome::Won)
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|outcome| **outcome == ClaimOutcome::Lost)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_claim_store_fails_awake_in_production_callback() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let job = weekly_job("unavailable");
+        install_job(&scheduler, job.clone()).await;
+        let pool = scheduler.session_manager.pool_clone().await.unwrap();
+        sqlx::query("DROP TABLE schedule_fire_claims")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            try_claim_fire(&pool, &job.id, "interval:0", "interval", claim_owner()).await,
+            ClaimOutcome::StoreUnavailable(_)
+        ));
+        scheduler.task_for_job(job.clone())(instant("2026-09-21T12:00:00Z")).await;
+        let jobs = scheduler.jobs.lock().await;
+        let result = &jobs.get(&job.id).unwrap().1;
+        assert_eq!(result.run_count, 1);
+        assert_eq!(result.last_status, Some(ScheduleRunStatus::Ok));
+        assert!(!result.currently_running);
+    }
+
+    #[tokio::test]
+    async fn start_marker_store_error_still_executes_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let job = weekly_job("start-unavailable");
+        install_job(&scheduler, job.clone()).await;
+        let claim = scheduler.claim_catch_up(&job).await.unwrap().unwrap();
+        // Reuse the missing-store seam, but fail AFTER successful admission.
+        sqlx::query("DROP TABLE schedule_fire_claims")
+            .execute(&claim.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            scheduler
+                .run_claimed(&job.id, Some(claim), true)
+                .await
+                .unwrap(),
+            job.id
+        );
+        let jobs = scheduler.jobs.lock().await;
+        let result = &jobs.get(&job.id).unwrap().1;
+        assert_eq!(result.run_count, 1);
+        assert_eq!(result.last_status, Some(ScheduleRunStatus::Ok));
+        assert!(!result.currently_running);
+    }
+
+    #[tokio::test]
+    async fn tick_and_catch_up_contend_in_both_directions_and_across_minutes() {
+        for catch_up_first in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let scheduler = scheduler_at(dir.path()).await;
+            let job = weekly_job("same-fire");
+            install_job(&scheduler, job.clone()).await;
+            let due = instant("2026-09-21T12:00:00Z");
+            if catch_up_first {
+                let claim = scheduler.claim_catch_up(&job).await.unwrap();
+                let before = snapshot(&scheduler, &job.id).await;
+                scheduler.task_for_job(job.clone())(due + Duration::seconds(61)).await;
+                assert_eq!(snapshot(&scheduler, &job.id).await, before);
+                // The own catch-up claim is a continuation, never a manual
+                // admission (which would create a second row).
+                assert_eq!(
+                    scheduler.run_claimed(&job.id, claim, true).await.unwrap(),
+                    job.id
+                );
+            } else {
+                scheduler.task_for_job(job.clone())(due + Duration::seconds(59)).await;
+                let before = snapshot(&scheduler, &job.id).await;
+                assert!(scheduler.claim_catch_up(&job).await.is_none());
+                assert_eq!(snapshot(&scheduler, &job.id).await, before);
+            }
+            let pool = scheduler.session_manager.pool_clone().await.unwrap();
+            let count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM schedule_fire_claims WHERE job_id = ?")
+                    .bind(&job.id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(count, 1);
+            assert_eq!(
+                try_claim_fire(&pool, &job.id, "interval:0", "interval", claim_owner()).await,
+                ClaimOutcome::Won
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let first = scheduler_at(dir.path()).await;
+        let job = weekly_job("minute-boundary");
+        install_job(&first, job.clone()).await;
+        let second = scheduler_at(dir.path()).await;
+        // Simulated arrivals straddle a minute. Neither enters the derivation:
+        // both production catch-up paths use the same persisted job snapshot.
+        for arrival in [
+            instant("2026-09-21T12:00:59Z"),
+            instant("2026-09-21T12:01:01Z"),
+        ] {
+            assert!(is_run_missed(&job, arrival));
+        }
+        let first_claim = first.claim_catch_up(&job).await.unwrap().unwrap();
+        assert!(second.claim_catch_up(&job).await.is_none());
+        first_claim.finish().await;
+    }
+
+    #[tokio::test]
+    async fn manual_liveness_guard_refuses_alive_and_finishes_dead_owners() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let job = weekly_job("manual-guard");
+        install_job(&scheduler, job.clone()).await;
+        let pool = scheduler.session_manager.pool_clone().await.unwrap();
+        let key = key_for_catch_up(&job).unwrap();
+        insert_competitor(&pool, &job.id, &key).await;
+        // A live owner below the seven-day wedge threshold still blocks.
+        sqlx::query("UPDATE schedule_fire_claims SET claimed_at = ? WHERE job_id = ?")
+            .bind((Utc::now() - Duration::days(6)).to_rfc3339())
+            .bind(&job.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let before = snapshot(&scheduler, &job.id).await;
+        let error = scheduler
+            .run_now_with_liveness(&job.id, Utc::now(), |_| true)
+            .await
+            .unwrap_err();
+        match error {
+            SchedulerError::AnyhowError(error) => assert_eq!(
+                error.to_string(),
+                format!("Job '{}' is already running", job.id)
+            ),
+            other => panic!("unexpected refusal: {other:?}"),
+        }
+        assert_eq!(snapshot(&scheduler, &job.id).await, before);
+        assert_eq!(
+            scheduler
+                .run_now_with_liveness(&job.id, Utc::now(), |_| false)
+                .await
+                .unwrap(),
+            job.id
+        );
+        assert_eq!(
+            scheduler
+                .run_now_with_liveness(&job.id, Utc::now(), |_| true)
+                .await
+                .unwrap(),
+            job.id
+        );
+        let unfinished: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM schedule_fire_claims WHERE finished_at IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(unfinished, 0);
+        let manual: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM schedule_fire_claims WHERE kind = 'manual'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(manual, 2, "two deliberate presses are two requests");
+    }
+
+    #[tokio::test]
+    async fn retry_is_a_continuation_of_one_claim_and_failure_finishes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let mut job = weekly_job("retry-claim");
+        // A missing local recipe fails before any provider/network work.
+        job.source = dir
+            .path()
+            .join("missing.yaml")
+            .to_string_lossy()
+            .into_owned();
+        job.max_retries = 1;
+        job.last_status = Some(ScheduleRunStatus::Error); // no escalation for this existing streak
+        install_job(&scheduler, job.clone()).await;
+        scheduler.task_for_job(job.clone())(instant("2026-09-21T12:00:00Z")).await;
+        let jobs = scheduler.jobs.lock().await;
+        let result = &jobs.get(&job.id).unwrap().1;
+        assert_eq!(result.run_count, 1);
+        assert_eq!(result.retry_count, 1);
+        assert_eq!(result.last_status, Some(ScheduleRunStatus::Error));
+        assert!(!result.currently_running);
+        drop(jobs);
+        let pool = scheduler.session_manager.pool_clone().await.unwrap();
+        let rows: (i64, i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COUNT(started_at), COUNT(finished_at) FROM schedule_fire_claims WHERE job_id = ?",
+        ).bind(&job.id).fetch_one(&pool).await.unwrap();
+        assert_eq!(rows, (1, 1, 1));
+    }
+
+    #[tokio::test]
+    async fn manual_admission_serializes_liveness_and_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(dir.path().join("manual.db"))
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(30));
+        let first = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_with(options.clone())
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_schedule_fire_claims_schema(&first)
+            .await
+            .unwrap();
+        let second = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_with(options)
+            .await
+            .unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let spawn = |pool: sqlx::SqlitePool, barrier: Arc<tokio::sync::Barrier>| {
+            tokio::spawn(async move {
+                let owner = ClaimOwner {
+                    pid: claim_owner().pid + 1,
+                    token: uuid::Uuid::new_v4().to_string(),
+                };
+                let key = format!("manual:{}", uuid::Uuid::new_v4());
+                barrier.wait().await;
+                try_claim_manual(&pool, "manual-race", &key, &owner, Utc::now(), |_| true).await
+            })
+        };
+        let a = spawn(first, barrier.clone());
+        let b = spawn(second, barrier);
+        let results = [a.await.unwrap(), b.await.unwrap()];
+        assert_eq!(
+            results
+                .iter()
+                .filter(|outcome| **outcome == ClaimOutcome::Won)
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|outcome| **outcome == ClaimOutcome::Lost)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn dead_unstarted_owner_is_taken_over_once_by_racing_production_callbacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = scheduler_at(dir.path()).await;
+        let second = scheduler_at(dir.path()).await;
+        let job = weekly_job("takeover-race");
+        install_job(&first, job.clone()).await;
+        install_job(&second, job.clone()).await;
+        let pool = first.session_manager.pool_clone().await.unwrap();
+        let other_pool = second.session_manager.pool_clone().await.unwrap();
+        let due = instant("2026-09-21T12:00:00Z");
+        let key = key_for_tick(&job, due).0;
+        insert_competitor(&pool, &job.id, &key).await;
+        sqlx::query("UPDATE schedule_fire_claims SET owner_pid = -1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let spawn =
+            |scheduler: Arc<Scheduler>, job: ScheduledJob, barrier: Arc<tokio::sync::Barrier>| {
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    scheduler.task_for_job(job)(due).await;
+                })
+            };
+        let a = spawn(first.clone(), job.clone(), barrier.clone());
+        let b = spawn(second.clone(), job.clone(), barrier);
+        a.await.unwrap();
+        b.await.unwrap();
+        let first_runs = first.jobs.lock().await.get(&job.id).unwrap().1.run_count;
+        let second_runs = second.jobs.lock().await.get(&job.id).unwrap().1.run_count;
+        assert_eq!(first_runs + second_runs, 1);
+        let row: (String, bool, bool) = sqlx::query_as(
+            "SELECT owner_token, started_at IS NOT NULL, finished_at IS NOT NULL
+             FROM schedule_fire_claims WHERE job_id = ? AND fire_key = ?",
+        )
+        .bind(&job.id)
+        .bind(&key)
+        .fetch_one(&other_pool)
+        .await
+        .unwrap();
+        assert_eq!(row, (claim_owner().token.clone(), true, true));
+        assert_eq!(
+            try_claim_fire(&other_pool, &job.id, &key, "cron", claim_owner()).await,
+            ClaimOutcome::Lost
+        );
+    }
+
+    #[tokio::test]
+    async fn separate_owner_takeover_race_has_one_winner_and_one_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let job = weekly_job("takeover-owners");
+        install_job(&scheduler, job.clone()).await;
+        let first = scheduler.session_manager.pool_clone().await.unwrap();
+        let other_manager = SessionManager::new(dir.path().to_path_buf());
+        let second = other_manager.pool_clone().await.unwrap();
+        let key = key_for_catch_up(&job).unwrap();
+        insert_competitor(&first, &job.id, &key).await;
+        sqlx::query("UPDATE schedule_fire_claims SET owner_pid = -1")
+            .execute(&first)
+            .await
+            .unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let spawn = |pool: sqlx::SqlitePool, pid: i64| {
+            let barrier = barrier.clone();
+            let job_id = job.id.clone();
+            let fire_key = key.clone();
+            tokio::spawn(async move {
+                let owner = ClaimOwner {
+                    pid,
+                    token: uuid::Uuid::new_v4().to_string(),
+                };
+                barrier.wait().await;
+                let outcome = try_claim_fire_with_probe(
+                    &pool,
+                    &job_id,
+                    &fire_key,
+                    "catch_up",
+                    &owner,
+                    Utc::now(),
+                    |pid| pid != -1,
+                )
+                .await;
+                (
+                    outcome,
+                    FireClaim {
+                        pool,
+                        job_id,
+                        fire_key,
+                        owner,
+                    },
+                )
+            })
+        };
+        let a = spawn(first, 101);
+        let b = spawn(second, 102);
+        let results = [a.await.unwrap(), b.await.unwrap()];
+        assert_eq!(
+            results
+                .iter()
+                .filter(|(outcome, _)| *outcome == ClaimOutcome::Won)
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|(outcome, _)| *outcome == ClaimOutcome::Lost)
+                .count(),
+            1
+        );
+        for (outcome, claim) in results {
+            if outcome == ClaimOutcome::Won {
+                scheduler
+                    .run_claimed(&job.id, Some(claim), true)
+                    .await
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            scheduler
+                .jobs
+                .lock()
+                .await
+                .get(&job.id)
+                .unwrap()
+                .1
+                .run_count,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn dead_started_and_live_unstarted_owners_never_run_again() {
+        for started in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let scheduler = scheduler_at(dir.path()).await;
+            let job = weekly_job("no-takeover");
+            install_job(&scheduler, job.clone()).await;
+            let pool = scheduler.session_manager.pool_clone().await.unwrap();
+            let due = instant("2026-09-21T12:00:00Z");
+            let key = key_for_tick(&job, due).0;
+            insert_competitor(&pool, &job.id, &key).await;
+            if started {
+                sqlx::query("UPDATE schedule_fire_claims SET owner_pid = -1, started_at = ?")
+                    .bind(due.to_rfc3339())
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            let before = snapshot(&scheduler, &job.id).await;
+            let other = ClaimOwner {
+                pid: -2,
+                token: uuid::Uuid::new_v4().to_string(),
+            };
+            let alive: fn(i64) -> bool = if started { |_| false } else { |_| true };
+            assert_eq!(
+                try_claim_fire_with_probe(&pool, &job.id, &key, "cron", &other, due, alive).await,
+                ClaimOutcome::Lost
+            );
+            assert_eq!(
+                try_claim_fire(&pool, &job.id, &key, "cron", claim_owner()).await,
+                ClaimOutcome::Lost
+            );
+            scheduler.task_for_job(job.clone())(due).await;
+            assert_eq!(snapshot(&scheduler, &job.id).await, before);
+            let unfinished: bool =
+                sqlx::query_scalar("SELECT finished_at IS NULL FROM schedule_fire_claims")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert!(unfinished);
+        }
+    }
+
+    #[tokio::test]
+    async fn catch_up_stays_unstarted_until_execution_and_stale_owner_cannot_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let job = weekly_job("stagger-start");
+        install_job(&scheduler, job.clone()).await;
+        let claim = scheduler.claim_catch_up(&job).await.unwrap().unwrap();
+        let unstarted: bool =
+            sqlx::query_scalar("SELECT started_at IS NULL FROM schedule_fire_claims")
+                .fetch_one(&claim.pool)
+                .await
+                .unwrap();
+        assert!(unstarted);
+        let stale = FireClaim {
+            owner: ClaimOwner {
+                pid: -1,
+                token: uuid::Uuid::new_v4().to_string(),
+            },
+            ..claim.clone()
+        };
+        assert!(stale.start().await.is_err());
+        scheduler
+            .run_claimed(&job.id, Some(claim.clone()), true)
+            .await
+            .unwrap();
+        let stamps: (bool, bool) = sqlx::query_as(
+            "SELECT started_at IS NOT NULL, finished_at IS NOT NULL FROM schedule_fire_claims",
+        )
+        .fetch_one(&claim.pool)
+        .await
+        .unwrap();
+        assert_eq!(stamps, (true, true));
+        assert_eq!(
+            scheduler
+                .jobs
+                .lock()
+                .await
+                .get(&job.id)
+                .unwrap()
+                .1
+                .run_count,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_startup_retires_started_claims_and_preserves_unstarted_takeover() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let pool = manager.pool_clone().await.unwrap();
+        for key in ["dead", "recycled", "recycled-unstarted", "ours", "finished"] {
+            insert_competitor(&pool, "startup", key).await;
+        }
+        sqlx::query("UPDATE schedule_fire_claims SET owner_pid = -1 WHERE fire_key = 'dead'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE schedule_fire_claims SET owner_token = ? WHERE fire_key = 'ours'")
+            .bind(&claim_owner().token)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let job = weekly_job("startup-takeover");
+        let key = key_for_catch_up(&job).unwrap();
+        insert_competitor(&pool, &job.id, &key).await;
+        sqlx::query("UPDATE schedule_fire_claims SET owner_pid = -1 WHERE job_id = ?")
+            .bind(&job.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE schedule_fire_claims SET started_at = ? WHERE fire_key IN ('dead', 'recycled', 'ours')")
+            .bind(Utc::now().to_rfc3339()).execute(&pool).await.unwrap();
+        let old_finish = instant("2026-09-21T12:00:00Z").to_rfc3339();
+        sqlx::query("UPDATE schedule_fire_claims SET finished_at = ? WHERE fire_key = 'finished'")
+            .bind(&old_finish)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let inspection =
+            Scheduler::new_without_cron(dir.path().join("schedule.json"), manager.clone())
+                .await
+                .unwrap();
+        let unfinished: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM schedule_fire_claims WHERE finished_at IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(unfinished, 5);
+        drop(inspection);
+        let daemon = Scheduler::build(
+            dir.path().join("schedule.json"),
+            manager,
+            StorageLoadMode::ReconcileAndCatchUp,
+            false,
+        )
+        .await
+        .unwrap();
+        let rows: Vec<(String, bool)> = sqlx::query_as(
+            "SELECT fire_key, finished_at IS NOT NULL FROM schedule_fire_claims WHERE job_id = 'startup' ORDER BY fire_key",
+        ).fetch_all(&pool).await.unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("dead".to_string(), true),
+                ("finished".to_string(), true),
+                ("ours".to_string(), false),
+                ("recycled".to_string(), true),
+                ("recycled-unstarted".to_string(), false)
+            ]
+        );
+        let surviving: (i64, bool, bool) = sqlx::query_as(
+            "SELECT owner_pid, started_at IS NULL, finished_at IS NULL
+             FROM schedule_fire_claims WHERE job_id = ? AND fire_key = ?",
+        )
+        .bind(&job.id)
+        .bind(&key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(surviving, (-1, true, true));
+        install_job(&daemon, job.clone()).await;
+        let claim = daemon.claim_catch_up(&job).await.unwrap().unwrap();
+        daemon
+            .run_claimed(&job.id, Some(claim), true)
+            .await
+            .unwrap();
+        assert!(daemon.claim_catch_up(&job).await.is_none());
+        assert_eq!(
+            daemon.jobs.lock().await.get(&job.id).unwrap().1.run_count,
+            1
+        );
+        let taken_over: (String, bool, bool) = sqlx::query_as(
+            "SELECT owner_token, started_at IS NOT NULL, finished_at IS NOT NULL
+             FROM schedule_fire_claims WHERE job_id = ? AND fire_key = ?",
+        )
+        .bind(&job.id)
+        .bind(&key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(taken_over, (claim_owner().token.clone(), true, true));
+        let preserved: String = sqlx::query_scalar(
+            "SELECT finished_at FROM schedule_fire_claims WHERE fire_key = 'finished'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(preserved, old_finish);
+        // Probe seam: another live PID survives; sweep errors cannot fail build.
+        insert_competitor(&pool, "startup", "live").await;
+        sqlx::query(
+            "UPDATE schedule_fire_claims SET owner_pid = ?, started_at = ? WHERE fire_key = 'live'",
+        )
+        .bind(claim_owner().pid + 1)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        daemon
+            .sweep_claims_at_startup(StorageLoadMode::ReconcileAndCatchUp, Utc::now(), |_| true)
+            .await;
+        let live: bool = sqlx::query_scalar(
+            "SELECT finished_at IS NULL FROM schedule_fire_claims WHERE fire_key = 'live'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(live);
+        sqlx::query("DROP TABLE schedule_fire_claims")
+            .execute(&pool)
+            .await
+            .unwrap();
+        Scheduler::build(
+            dir.path().join("schedule.json"),
+            daemon.session_manager.clone(),
+            StorageLoadMode::ReconcileAndCatchUp,
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn seven_day_wedge_detector_unblocks_manual_even_when_pid_is_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let job = weekly_job("wedge");
+        install_job(&scheduler, job.clone()).await;
+        let pool = scheduler.session_manager.pool_clone().await.unwrap();
+        let key = key_for_catch_up(&job).unwrap();
+        insert_competitor(&pool, &job.id, &key).await;
+        let claimed = Utc::now();
+        sqlx::query("UPDATE schedule_fire_claims SET claimed_at = ?, started_at = ?")
+            .bind(claimed.to_rfc3339())
+            .bind(claimed.to_rfc3339())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let boundary = claimed + CLAIM_WEDGE_AGE;
+        assert!(scheduler
+            .run_now_with_liveness(&job.id, boundary, |_| true)
+            .await
+            .is_err());
+        assert_eq!(
+            scheduler
+                .jobs
+                .lock()
+                .await
+                .get(&job.id)
+                .unwrap()
+                .1
+                .run_count,
+            0
+        );
+        let now = boundary + Duration::seconds(1);
+        scheduler
+            .run_now_with_liveness(&job.id, now, |_| true)
+            .await
+            .unwrap();
+        let finished: String = sqlx::query_scalar(
+            "SELECT finished_at FROM schedule_fire_claims WHERE job_id = ? AND fire_key = ?",
+        )
+        .bind(&job.id)
+        .bind(&key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(finished, now.to_rfc3339());
+        assert_eq!(
+            scheduler
+                .jobs
+                .lock()
+                .await
+                .get(&job.id)
+                .unwrap()
+                .1
+                .run_count,
+            1
+        );
+        let stamps: (bool, bool) = sqlx::query_as(
+            "SELECT started_at IS NOT NULL, finished_at IS NOT NULL FROM schedule_fire_claims WHERE kind = 'manual'",
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(stamps, (true, true));
+    }
+
+    #[tokio::test]
+    async fn retention_deletes_old_finished_and_dead_unstarted_claims_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let pool = scheduler.session_manager.pool_clone().await.unwrap();
+        let old = (Utc::now() - Duration::days(8)).to_rfc3339();
+        for key in [
+            "interval:0",
+            "interval:900",
+            "interval:1800",
+            "interval:3600",
+            "interval:4500",
+            "interval:5400",
+            "interval:6300",
+        ] {
+            insert_competitor(&pool, "retention", key).await;
+        }
+        sqlx::query("UPDATE schedule_fire_claims SET claimed_at = ?")
+            .bind(&old)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE schedule_fire_claims SET finished_at = ? WHERE fire_key = ?")
+            .bind(&old)
+            .bind("interval:0")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE schedule_fire_claims SET finished_at = ? WHERE fire_key = ?")
+            .bind(Utc::now().to_rfc3339())
+            .bind("interval:900")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let now = Utc::now();
+        sqlx::query("UPDATE schedule_fire_claims SET owner_pid = -1 WHERE fire_key IN ('interval:3600', 'interval:4500', 'interval:5400', 'interval:6300')")
+            .execute(&pool).await.unwrap();
+        sqlx::query(
+            "UPDATE schedule_fire_claims SET started_at = ? WHERE fire_key = 'interval:4500'",
+        )
+        .bind(&old)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE schedule_fire_claims SET claimed_at = ? WHERE fire_key = 'interval:5400'",
+        )
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE schedule_fire_claims SET claimed_at = ? WHERE fire_key = 'interval:6300'",
+        )
+        .bind((now - Duration::days(7)).to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            try_claim_fire_with_probe(
+                &pool,
+                "retention",
+                "interval:2700",
+                "interval",
+                claim_owner(),
+                now,
+                |pid| pid != -1
+            )
+            .await,
+            ClaimOutcome::Won
+        );
+        let keys: Vec<String> =
+            sqlx::query_scalar("SELECT fire_key FROM schedule_fire_claims ORDER BY fire_key")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            keys,
+            vec![
+                "interval:1800",
+                "interval:2700",
+                "interval:4500",
+                "interval:5400",
+                "interval:6300",
+                "interval:900"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_paths_finish_only_the_claim_of_the_stopped_run() {
+        for live_token in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let scheduler = scheduler_at(dir.path()).await;
+            let mut job = weekly_job("stopped");
+            job.currently_running = true;
+            job.process_start_time = Some(Utc::now());
+            install_job(&scheduler, job.clone()).await;
+            let claim = admit_fire(
+                &scheduler.session_manager,
+                &job.id,
+                key_for_catch_up(&job).unwrap(),
+                "catch_up",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            scheduler
+                .active_claims
+                .lock()
+                .await
+                .insert(job.id.clone(), claim.clone());
+            let pool = scheduler.session_manager.pool_clone().await.unwrap();
+            assert_eq!(
+                try_claim_fire(&pool, &job.id, "interval:0", "interval", claim_owner()).await,
+                ClaimOutcome::Won
+            );
+            if live_token {
+                scheduler
+                    .running_tasks
+                    .lock()
+                    .await
+                    .insert(job.id.clone(), CancellationToken::new());
+            }
+            scheduler.kill_running_job(&job.id).await.unwrap();
+            // The watchdog uses the existing shortened cfg(test) grace.
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let finished: bool = sqlx::query_scalar(
+                        "SELECT finished_at IS NOT NULL FROM schedule_fire_claims WHERE job_id = ? AND fire_key = ?",
+                    ).bind(&job.id).bind(&claim.fire_key).fetch_one(&pool).await.unwrap();
+                    if finished { break; }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
+            let unrelated_finished: bool = sqlx::query_scalar(
+                "SELECT finished_at IS NOT NULL FROM schedule_fire_claims WHERE job_id = ? AND fire_key = ?",
+            ).bind(&job.id).bind("interval:0").fetch_one(&pool).await.unwrap();
+            assert!(!unrelated_finished);
+            assert_eq!(
+                scheduler
+                    .jobs
+                    .lock()
+                    .await
+                    .get(&job.id)
+                    .unwrap()
+                    .1
+                    .last_status,
+                Some(ScheduleRunStatus::Error)
+            );
+        }
     }
 }

@@ -1954,6 +1954,10 @@ impl SessionStorage {
                     if version < 55 {
                         spectral_schema::migrate_v54_to_v55(&self.pool).await?;
                     }
+                    // v56: cross-process arbitration of a named scheduled fire.
+                    if version < 56 {
+                        spectral_schema::migrate_v55_to_v56(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB
@@ -8718,5 +8722,68 @@ mod tests {
                 .accumulated_total_tokens,
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod schedule_fire_claims_boot_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn first_boot_and_v55_reopen_install_fire_claims() {
+        let dir = tempfile::tempdir().unwrap();
+        // pool_clone takes the production first-boot branch through
+        // SessionStorage::pool -> init_spectral_db, not the migration helper.
+        let manager = SessionManager::new(dir.path().to_path_buf());
+        let pool = manager.pool_clone().await.unwrap();
+        let expected = vec![
+            ("job_id".to_string(), 1_i32),
+            ("fire_key".to_string(), 2_i32),
+        ];
+        let pk: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT name, pk FROM pragma_table_info('schedule_fire_claims') WHERE pk > 0 ORDER BY pk",
+        ).fetch_all(&pool).await.unwrap();
+        assert_eq!(pk, expected);
+        let column: (String, String, i32) = sqlx::query_as(
+            "SELECT name, type, [notnull] FROM pragma_table_info('schedule_fire_claims') WHERE name = 'started_at'",
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(column, ("started_at".to_string(), "TEXT".to_string(), 0));
+        let version: i32 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            version,
+            super::super::spectral_schema::SPECTRAL_SCHEMA_VERSION
+        );
+        sqlx::query("DROP TABLE schedule_fire_claims")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_version")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (55)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        drop(manager);
+        let reopened = SessionManager::new(dir.path().to_path_buf());
+        let pool = reopened.pool_clone().await.unwrap();
+        let pk: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT name, pk FROM pragma_table_info('schedule_fire_claims') WHERE pk > 0 ORDER BY pk",
+        ).fetch_all(&pool).await.unwrap();
+        assert_eq!(pk, expected);
+        let column: (String, String, i32) = sqlx::query_as(
+            "SELECT name, type, [notnull] FROM pragma_table_info('schedule_fire_claims') WHERE name = 'started_at'",
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(column, ("started_at".to_string(), "TEXT".to_string(), 0));
+        let version: i32 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(version, 56);
     }
 }
