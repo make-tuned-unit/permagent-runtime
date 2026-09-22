@@ -366,6 +366,92 @@ pub enum AgentRuntimeOutcome {
     Cancelled,
 }
 
+/// #348 — real agent lifecycle hook for the World View. This Drop guard ties the
+/// primary agent's runtime state to the ACTUAL reply turn: `working` on entry,
+/// and on drop `error` (a real provider failure that set the latch) or else
+/// `done` → available. Covers every exit path — clean break, max-turns,
+/// cancellation, panic. The status poll and the agent-state tick read this
+/// registry, so a real error survives instead of being clobbered by the 2s
+/// session-activity derive.
+///
+/// TWO FACTS, NOT ONE. `errored` is deliberately STICKY for the whole turn —
+/// that stickiness is what the HUD needs, per the paragraph above. But the
+/// turn's [`AgentRuntimeOutcome`] answers a different question: how did the turn
+/// END. Reading the sticky latch for that was wrong. `mark_error` breaks only
+/// the INNER stream loop; when tools were already called the outer loop
+/// iterates again and can succeed, so a turn that recovered still reported
+/// `Failed` — to `subagent_handler` (a recovered worker read by its coordinator
+/// as failed), to the HUD, and, once the scheduler starts reading the outcome,
+/// to the three-strike auto-pause, which would pause a working job.
+///
+/// So `iteration_errored` is cleared by [`Self::begin_iteration`] at the top of
+/// every outer-loop iteration and is what the outcome reads. Keeping both in
+/// the guard means the 15 `mark_error` call sites need no edits and a new
+/// failure path gets the correct behaviour for free.
+///
+/// Hoisted out of `reply_internal` so the contract is testable; it was a
+/// function-local type with no test coverage at all.
+pub(crate) struct ReplyStateGuard {
+    errored: bool,
+    iteration_errored: bool,
+}
+
+impl ReplyStateGuard {
+    pub(crate) fn start() -> Self {
+        crate::events::record_agent_working("henry");
+        Self {
+            errored: false,
+            iteration_errored: false,
+        }
+    }
+
+    /// Called at the top of each outer-loop turn iteration. Clears ONLY the
+    /// per-iteration fact; the HUD's sticky latch survives on purpose.
+    pub(crate) fn begin_iteration(&mut self) {
+        self.iteration_errored = false;
+    }
+
+    pub(crate) fn mark_error(&mut self) {
+        self.errored = true;
+        self.iteration_errored = true;
+    }
+
+    /// Did the LAST iteration fail? This — not the sticky latch — is the turn's
+    /// outcome.
+    pub(crate) fn iteration_errored(&self) -> bool {
+        self.iteration_errored
+    }
+
+    #[cfg(test)]
+    pub(crate) fn errored_for_hud(&self) -> bool {
+        self.errored
+    }
+}
+
+impl Drop for ReplyStateGuard {
+    fn drop(&mut self) {
+        if self.errored {
+            crate::events::record_agent_error("henry");
+        } else {
+            crate::events::record_agent_done("henry");
+        }
+    }
+}
+
+/// The turn's verdict. Cancellation outranks a clean iteration because the
+/// scheduler's kill path records the outcome of a cancelled run itself — two
+/// writers for one fact is worse than one coarse one. Pure so the truth table
+/// is testable without a provider.
+pub(crate) fn runtime_outcome(iteration_errored: bool, cancelled: bool) -> AgentRuntimeOutcome {
+    if iteration_errored {
+        AgentRuntimeOutcome::Failed
+    } else if cancelled {
+        AgentRuntimeOutcome::Cancelled
+    } else {
+        AgentRuntimeOutcome::Succeeded
+    }
+}
+
 impl Default for Agent {
     fn default() -> Self {
         Self::new()
@@ -2297,35 +2383,6 @@ impl Agent {
         cancel_token: Option<CancellationToken>,
         recognition_retrieval_id: Option<String>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
-        // #348 — real agent lifecycle hook for the World View. This Drop guard ties
-        // the primary agent's runtime state to the ACTUAL reply turn: `working` on
-        // entry, and on drop `error` (a real provider failure that set the latch) or
-        // else `done` → available. Covers every exit path — clean break, max-turns,
-        // cancellation, panic. The `/api/henry/status` poll and the agent-state tick
-        // read this registry, so a real error survives instead of being clobbered by
-        // the 2s session-activity derive. Replaces the #288 interim-A simulated error.
-        struct ReplyStateGuard {
-            errored: bool,
-        }
-        impl ReplyStateGuard {
-            fn start() -> Self {
-                crate::events::record_agent_working("henry");
-                Self { errored: false }
-            }
-            fn mark_error(&mut self) {
-                self.errored = true;
-            }
-        }
-        impl Drop for ReplyStateGuard {
-            fn drop(&mut self) {
-                if self.errored {
-                    crate::events::record_agent_error("henry");
-                } else {
-                    crate::events::record_agent_done("henry");
-                }
-            }
-        }
-
         let context = self
             .prepare_reply_context(&session.id, conversation, session.working_dir.as_path())
             .await?;
@@ -2436,6 +2493,10 @@ impl Agent {
             let mut dispatch_poll_guard = DispatchPollGuard::default();
 
             loop {
+                // Only the per-iteration fact is cleared; the HUD's sticky
+                // latch survives the whole turn. See `ReplyStateGuard`.
+                state_guard.begin_iteration();
+
                 if is_token_cancelled(&cancel_token) {
                     break;
                 }
@@ -4475,13 +4536,10 @@ impl Agent {
             if !last_assistant_text.is_empty() {
                 tracing::info!(target: "permagent::agents::agent", trace_output = last_assistant_text.as_str());
             }
-            let outcome = if state_guard.errored {
-                AgentRuntimeOutcome::Failed
-            } else if is_token_cancelled(&cancel_token) {
-                AgentRuntimeOutcome::Cancelled
-            } else {
-                AgentRuntimeOutcome::Succeeded
-            };
+            let outcome = runtime_outcome(
+                state_guard.iteration_errored(),
+                is_token_cancelled(&cancel_token),
+            );
             yield AgentEvent::RuntimeOutcome(outcome);
         }.instrument(reply_stream_span));
         Ok(inner)
@@ -5221,6 +5279,95 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The bug this fixes: `mark_error` breaks only the INNER stream loop, so a
+    /// turn that failed once, recovered, and completed still reported Failed —
+    /// to a coordinator reading a worker's outcome, to the HUD, and (once the
+    /// scheduler reads it) to the three-strike auto-pause.
+    #[test]
+    fn a_failure_latched_then_recovered_reports_succeeded() {
+        let mut g = ReplyStateGuard::start();
+        g.begin_iteration();
+        g.mark_error();
+        assert!(
+            g.iteration_errored(),
+            "the failing iteration must be Failed"
+        );
+
+        g.begin_iteration(); // the outer loop goes round and this one succeeds
+        assert_eq!(
+            runtime_outcome(g.iteration_errored(), false),
+            AgentRuntimeOutcome::Succeeded,
+            "a turn that recovered must not report Failed"
+        );
+    }
+
+    /// The other half: the HUD's latch is sticky ON PURPOSE (it must survive the
+    /// 2s session-activity derive). This is what stops someone collapsing the
+    /// two fields back into one and silently restoring the bug.
+    #[test]
+    fn the_hud_latch_stays_sticky_across_a_recovered_iteration() {
+        let mut g = ReplyStateGuard::start();
+        g.begin_iteration();
+        g.mark_error();
+        g.begin_iteration();
+        assert!(
+            !g.iteration_errored(),
+            "the per-iteration fact is cleared each time round"
+        );
+        assert!(
+            g.errored_for_hud(),
+            "the HUD latch must still report the real error that happened"
+        );
+    }
+
+    #[test]
+    fn a_failure_in_the_final_iteration_reports_failed() {
+        let mut g = ReplyStateGuard::start();
+        g.begin_iteration();
+        g.mark_error();
+        assert_eq!(
+            runtime_outcome(g.iteration_errored(), false),
+            AgentRuntimeOutcome::Failed
+        );
+    }
+
+    /// Cancellation belongs to the scheduler's kill path, which records the
+    /// outcome itself. A cancelled run must not ALSO be called Failed, or two
+    /// writers race for one fact.
+    #[test]
+    fn a_cancelled_turn_is_cancelled_not_failed() {
+        let mut g = ReplyStateGuard::start();
+        g.begin_iteration();
+        assert_eq!(
+            runtime_outcome(g.iteration_errored(), true),
+            AgentRuntimeOutcome::Cancelled
+        );
+    }
+
+    /// A failure LATCHED earlier must not turn a later cancellation into a
+    /// failure either — the last iteration is what the outcome describes.
+    #[test]
+    fn a_cancellation_after_a_recovered_failure_is_still_cancelled() {
+        let mut g = ReplyStateGuard::start();
+        g.begin_iteration();
+        g.mark_error();
+        g.begin_iteration();
+        assert_eq!(
+            runtime_outcome(g.iteration_errored(), true),
+            AgentRuntimeOutcome::Cancelled
+        );
+    }
+
+    #[test]
+    fn a_clean_turn_reports_succeeded() {
+        let mut g = ReplyStateGuard::start();
+        g.begin_iteration();
+        assert_eq!(
+            runtime_outcome(g.iteration_errored(), false),
+            AgentRuntimeOutcome::Succeeded
+        );
+    }
+
     use crate::permission::permission_confirmation::PrincipalType;
     use crate::providers::base::PermissionRouting;
     use crate::recipe::Response;
