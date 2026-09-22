@@ -41,7 +41,7 @@ The evaluation below used the Python path. **Astra's ruling (2026-09-22):** an S
 loopback transport says nothing about where private data is processed — so a Laya server on the M1 needs explicit
 endpoint/host trust in the decision module, not a tunnel that makes it look like `127.0.0.1`. Always-on Laya,
 fine-tuning and automatic promotion are deferred; one bounded C1 shadow experiment is the funded step, and
-"agreement with another model is not ground truth.
+"agreement with another model is not ground truth."
 
 ## 3. Head to head on the real Jev fixture (the captured 2026-09-21 request)
 
