@@ -30,6 +30,8 @@
 //!     Text: {"type":"navigate",...}            (after narration; desktop only)
 //!     Text: {"type":"reply_end","sample_rate":24000}
 //!     Text: {"type":"turn_outcome","outcome":"empty_stt","reason":"near_silent_pcm"}
+//!     Text: {"type":"feedback_start"}             (capability-gated empty-STT recovery)
+//!     Text: {"type":"feedback_end","sample_rate":24000}
 //!     Text: {"type":"idle"}                    (legacy ready/reset signal)
 //!
 //! `audio_segment` is additive framing for clients that want synchronized
@@ -473,6 +475,8 @@ async fn download_voice_models(
         if state.voice_tts.read().await.is_none() {
             if let Some(tts) = build_kokoro_tts() {
                 *state.voice_tts.write().await = Some(tts);
+                bump_feedback_provider_generation();
+                clear_feedback_utterance_cache().await;
             }
         }
         return Ok((StatusCode::OK, Json(current_status(&state).await)));
@@ -499,6 +503,8 @@ async fn download_voice_models(
             match tokio::task::spawn_blocking(build_kokoro_tts).await {
                 Ok(Some(tts)) => {
                     *tts_slot.write().await = Some(tts);
+                    bump_feedback_provider_generation();
+                    clear_feedback_utterance_cache().await;
                     tracing::info!(
                         target: "permagentd::voice",
                         "Kokoro TTS hot-loaded after on-demand download — voice enabled"
@@ -929,6 +935,14 @@ fn encode_wav_pcm16(audio: &crate::voice::provider::AudioOutput) -> anyhow::Resu
     Ok(cursor.into_inner())
 }
 
+/// What one poll of the client socket produced while a turn is recording:
+/// a real receive result (including `None` = the socket closed), or a
+/// 200 ms tick used only to check the server-side capture deadline.
+enum RecvPoll {
+    Received(Option<Result<Message, axum::Error>>),
+    Tick,
+}
+
 #[derive(Deserialize)]
 struct VoiceQuery {
     session_id: Option<String>,
@@ -1123,12 +1137,75 @@ enum ClientMessage {
     /// whichever side gave up first.
     #[serde(rename = "teach_skip")]
     TeachSkip,
+    #[serde(rename = "feedback_cancel")]
+    FeedbackCancel { turn_id: Option<String> },
 }
 
 const HELLO_MAX_STRING_CHARS: usize = 256;
 const HELLO_MAX_CAPABILITIES: usize = 8;
 const HELLO_MAX_INPUTS: usize = 8;
 const TURN_ID_MAX_CHARS: usize = 128;
+const FEEDBACK_PLAYBACK_CAPABILITY: &str = "feedback_playback";
+const FEEDBACK_CACHE_MAX_ENTRIES: usize = 16;
+const AUTOMATIC_FEEDBACK_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
+const QUALIFYING_EMPTY_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
+const QUALIFYING_EMPTY_MIN_CAPTURE_MS: u64 = 5_000;
+const AUTOMATIC_CAPTURE_CAP_MS: u64 = 15_000;
+const USER_CAPTURE_CAP_MS: u64 = 60_000;
+const LEGACY_CAPTURE_CAP_MS: u64 = 60_000;
+const AUTOMATIC_REARM_QUIET_MS: u64 = 500;
+
+#[derive(Clone, Default)]
+struct SessionFeedbackPolicyState {
+    last_automatic_feedback_at: Option<std::time::Instant>,
+    last_qualifying_empty_at: Option<std::time::Instant>,
+    qualifying_empty_streak: u8,
+}
+
+#[derive(Clone)]
+struct FeedbackCachedUtterance {
+    audio: AudioOutput,
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct FeedbackUtteranceCacheKey {
+    generation: String,
+    copy: String,
+}
+
+static FEEDBACK_POLICY_BY_SESSION: tokio::sync::OnceCell<
+    tokio::sync::Mutex<std::collections::HashMap<String, SessionFeedbackPolicyState>>,
+> = tokio::sync::OnceCell::const_new();
+static FEEDBACK_UTTERANCE_CACHE: tokio::sync::OnceCell<
+    tokio::sync::Mutex<
+        std::collections::HashMap<FeedbackUtteranceCacheKey, FeedbackCachedUtterance>,
+    >,
+> = tokio::sync::OnceCell::const_new();
+static FEEDBACK_PROVIDER_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+async fn feedback_policy_store(
+) -> &'static tokio::sync::Mutex<std::collections::HashMap<String, SessionFeedbackPolicyState>> {
+    FEEDBACK_POLICY_BY_SESSION
+        .get_or_init(|| async { tokio::sync::Mutex::new(std::collections::HashMap::new()) })
+        .await
+}
+
+async fn feedback_utterance_cache() -> &'static tokio::sync::Mutex<
+    std::collections::HashMap<FeedbackUtteranceCacheKey, FeedbackCachedUtterance>,
+> {
+    FEEDBACK_UTTERANCE_CACHE
+        .get_or_init(|| async { tokio::sync::Mutex::new(std::collections::HashMap::new()) })
+        .await
+}
+
+fn bump_feedback_provider_generation() {
+    FEEDBACK_PROVIDER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+async fn clear_feedback_utterance_cache() {
+    feedback_utterance_cache().await.lock().await.clear();
+}
 
 fn is_forbidden_control_char(ch: char) -> bool {
     let codepoint = ch as u32;
@@ -1201,6 +1278,101 @@ fn note_missing_hello_warning(hello_seen: bool, warned_missing_hello: &mut bool)
     }
     *warned_missing_hello = true;
     true
+}
+
+fn client_supports_feedback_playback(hello: Option<&VoiceClientHello>) -> bool {
+    hello
+        .and_then(|hello| hello.capabilities.as_ref())
+        .is_some_and(|caps| caps.iter().any(|cap| cap == FEEDBACK_PLAYBACK_CAPABILITY))
+}
+
+fn capture_cap_ms_for_trigger(trigger: Option<VoiceTurnTrigger>) -> u64 {
+    match trigger {
+        Some(VoiceTurnTrigger::Vad) | Some(VoiceTurnTrigger::Barge) => AUTOMATIC_CAPTURE_CAP_MS,
+        Some(VoiceTurnTrigger::UserTap) | Some(VoiceTurnTrigger::Unknown) => USER_CAPTURE_CAP_MS,
+        None => LEGACY_CAPTURE_CAP_MS,
+    }
+}
+
+fn next_capture_limit(trigger: Option<VoiceTurnTrigger>, sample_rate: u32) -> (u64, usize) {
+    let cap_ms = capture_cap_ms_for_trigger(trigger);
+    if sample_rate == 0 {
+        return (cap_ms, 0);
+    }
+    let capped_sample_rate = u64::from(sample_rate);
+    let sample_budget_u64 = capped_sample_rate
+        .saturating_mul(cap_ms)
+        .saturating_div(1_000);
+    let max_samples = sample_budget_u64.min(4_000_000) as usize;
+    (cap_ms, max_samples)
+}
+
+fn capture_exceeds_sample_budget(
+    samples: usize,
+    incoming_bytes: usize,
+    max_samples: usize,
+) -> bool {
+    samples > max_samples || incoming_bytes > max_samples.saturating_sub(samples).saturating_mul(4)
+}
+
+/// Test-only composition of the two production primitives above: the
+/// production path precomputes the budget once per turn and calls
+/// `capture_exceeds_sample_budget` per frame, so this helper is not part of
+/// the library.
+#[cfg(test)]
+fn capture_exceeds_limit(
+    samples: usize,
+    incoming_bytes: usize,
+    sample_rate: u32,
+    trigger: Option<VoiceTurnTrigger>,
+) -> bool {
+    let (_, max_samples) = next_capture_limit(trigger, sample_rate);
+    capture_exceeds_sample_budget(samples, incoming_bytes, max_samples)
+}
+
+fn hello_snapshot_for_turn(
+    turn_audio_revision: Option<u64>,
+    latest_hello: Option<&VoiceClientHello>,
+    hello_by_revision: &std::collections::BTreeMap<u64, VoiceClientHello>,
+) -> Option<VoiceClientHello> {
+    turn_audio_revision
+        .and_then(|revision| hello_by_revision.get(&revision).cloned())
+        .or_else(|| latest_hello.cloned())
+}
+
+fn select_empty_feedback_copy(inputs: Option<&Vec<VoiceHelloInput>>) -> &'static str {
+    let port_type = inputs
+        .and_then(|list| list.first())
+        .and_then(|input| input.port_type.as_deref())
+        .unwrap_or("");
+    let port_type_lower = port_type.to_ascii_lowercase();
+    if port_type_lower.contains("bluetooth") {
+        "I didn't catch that on the Bluetooth mic. Please try again."
+    } else if port_type == "MicrophoneBuiltIn" {
+        "I didn't catch that on the phone mic. Please try again."
+    } else if port_type_lower.contains("headset")
+        || port_type_lower.contains("headphone")
+        || port_type_lower.contains("usb")
+        || port_type_lower.contains("line")
+    {
+        "I didn't catch that on the headset mic. Please try again."
+    } else {
+        "I didn't catch that. Please try again."
+    }
+}
+
+fn automatic_feedback_end_reason_allows(reason: Option<VoiceTurnEndReason>) -> bool {
+    matches!(
+        reason,
+        Some(VoiceTurnEndReason::Silence | VoiceTurnEndReason::MaxTurn)
+    )
+}
+
+fn feedback_generation_rank(key: &FeedbackUtteranceCacheKey) -> u64 {
+    key.generation
+        .split_once(':')
+        .and_then(|(prefix, _)| prefix.parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 enum StreamingSttCommand {
@@ -1344,6 +1516,15 @@ enum ServerMessage {
     TurnOutcome {
         outcome: VoiceTurnOutcome,
         reason: VoiceTurnOutcomeReason,
+    },
+    /// Deterministic spoken recovery for a no-reply terminal outcome.
+    #[serde(rename = "feedback_start")]
+    FeedbackStart { turn_id: Option<String> },
+    #[serde(rename = "feedback_end")]
+    FeedbackEnd {
+        turn_id: Option<String>,
+        sample_rate: u32,
+        cancelled: bool,
     },
     #[serde(rename = "ready")]
     Ready,
@@ -1491,6 +1672,117 @@ async fn send_terminal_idle(
     }
 }
 
+async fn reset_qualifying_empty_streak(session_id: &str) {
+    let mut guard = feedback_policy_store().await.lock().await;
+    let entry = guard.entry(session_id.to_string()).or_default();
+    entry.qualifying_empty_streak = 0;
+    entry.last_qualifying_empty_at = None;
+}
+
+#[derive(Clone, Copy)]
+struct EmptyFeedbackDecision {
+    should_speak: bool,
+}
+
+fn should_send_feedback_playback(
+    supports_feedback: bool,
+    decision: EmptyFeedbackDecision,
+    superseded_by_newer_start: bool,
+) -> bool {
+    supports_feedback && decision.should_speak && !superseded_by_newer_start
+}
+
+async fn evaluate_empty_feedback_policy(
+    session_id: &str,
+    trigger: Option<VoiceTurnTrigger>,
+    stop: Option<&VoiceClientStop>,
+    health: &CaptureHealth,
+) -> EmptyFeedbackDecision {
+    evaluate_empty_feedback_policy_at(session_id, trigger, stop, health, std::time::Instant::now())
+        .await
+}
+
+async fn evaluate_empty_feedback_policy_at(
+    session_id: &str,
+    trigger: Option<VoiceTurnTrigger>,
+    stop: Option<&VoiceClientStop>,
+    health: &CaptureHealth,
+    now: std::time::Instant,
+) -> EmptyFeedbackDecision {
+    let Some(trigger) = trigger else {
+        return EmptyFeedbackDecision {
+            should_speak: false,
+        };
+    };
+    match trigger {
+        VoiceTurnTrigger::UserTap => {
+            return EmptyFeedbackDecision { should_speak: true };
+        }
+        VoiceTurnTrigger::Unknown => {
+            return EmptyFeedbackDecision {
+                should_speak: false,
+            };
+        }
+        VoiceTurnTrigger::Vad | VoiceTurnTrigger::Barge => {}
+    }
+
+    let stop = match stop {
+        Some(stop) => stop,
+        None => {
+            return EmptyFeedbackDecision {
+                should_speak: false,
+            };
+        }
+    };
+    if !automatic_feedback_end_reason_allows(stop.end_reason) {
+        return EmptyFeedbackDecision {
+            should_speak: false,
+        };
+    }
+    let committed = stop.vad_committed.unwrap_or(false);
+    let capture_duration_ms = stop.capture_duration_ms.unwrap_or(0);
+    let finite_signal = health.label() == "finite_signal_pcm";
+    let qualifies = finite_signal && committed;
+    let mut store = feedback_policy_store().await.lock().await;
+    let entry = store.entry(session_id.to_string()).or_default();
+    if !qualifies {
+        entry.qualifying_empty_streak = 0;
+        entry.last_qualifying_empty_at = None;
+        return EmptyFeedbackDecision {
+            should_speak: false,
+        };
+    }
+
+    let within_window = entry
+        .last_qualifying_empty_at
+        .is_some_and(|last| now.duration_since(last) <= QUALIFYING_EMPTY_WINDOW);
+    entry.qualifying_empty_streak = if within_window {
+        entry.qualifying_empty_streak.saturating_add(1).min(2)
+    } else {
+        1
+    };
+    entry.last_qualifying_empty_at = Some(now);
+
+    let long_enough = capture_duration_ms >= QUALIFYING_EMPTY_MIN_CAPTURE_MS;
+    let second_qualifying = entry.qualifying_empty_streak >= 2;
+    if !(long_enough || second_qualifying) {
+        return EmptyFeedbackDecision {
+            should_speak: false,
+        };
+    }
+
+    if entry
+        .last_automatic_feedback_at
+        .is_some_and(|at| now.duration_since(at) < AUTOMATIC_FEEDBACK_COOLDOWN)
+    {
+        return EmptyFeedbackDecision {
+            should_speak: false,
+        };
+    }
+    entry.last_automatic_feedback_at = Some(now);
+    EmptyFeedbackDecision { should_speak: true }
+}
+
 enum StreamFinalResult {
     Final(String),
     Fallback,
@@ -1520,6 +1812,7 @@ fn classify_stt_wait_message(message: Message) -> SttWaitDisposition {
                         message,
                         ClientMessage::Start { .. }
                             | ClientMessage::Hello { .. }
+                            | ClientMessage::FeedbackCancel { .. }
                             | ClientMessage::WakeStart { .. }
                             | ClientMessage::WakeStop
                             | ClientMessage::EnrollStart
@@ -2033,6 +2326,8 @@ async fn handle_voice_socket(
     // and the batch path remains the fallback when no online model is loaded.
     let mut recording_turn_id: Option<u64> = None;
     let mut recording_started_at: Option<std::time::Instant> = None;
+    let mut recording_deadline: Option<tokio::time::Instant> = None;
+    let mut capture_sample_budget: usize = 4_000_000;
     let mut capture_first_received_at: Option<std::time::Instant> = None;
     let mut capture_last_received_at: Option<std::time::Instant> = None;
     // Keep a turn clock from Start through Stop so a socket that disappears
@@ -2057,7 +2352,11 @@ async fn handle_voice_socket(
         crate::voice::kws::WakeSession,
     )> = None;
     let mut client_hello: Option<VoiceClientHello> = None;
+    let mut hello_by_revision: std::collections::BTreeMap<u64, VoiceClientHello> =
+        std::collections::BTreeMap::new();
+    let mut recording_hello_snapshot: Option<VoiceClientHello> = None;
     let mut warned_missing_hello = false;
+    let mut quiet_rearm_until: Option<std::time::Instant> = None;
 
     let mut socket_close_reason = "peer_eof";
     tracing::info!(target: "permagentd::voice", "Entering message loop");
@@ -2100,14 +2399,85 @@ async fn handle_voice_socket(
                     }
                     None => {
                         streaming_output_closed = true;
-                        socket.recv().await
+                        if recording {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_millis(200),
+                                socket.recv(),
+                            )
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(_) => {
+                                    if recording_deadline
+                                        .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                                    {
+                                        Some(Ok(Message::Text(
+                                            r#"{"type":"stop","end_reason":"max_turn"}"#.into(),
+                                        )))
+                                    } else {
+                                        continue 'voice_loop;
+                                    }
+                                }
+                            }
+                        } else {
+                            socket.recv().await
+                        }
                     }
                 }
             }
-            result = socket.recv() => result,
+            result = async {
+                // A timeout tick with no deadline reached is NOT a closed
+                // socket: `socket.recv()` returning `None` means disconnect and
+                // must keep meaning that, so the two are kept apart here.
+                if recording {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(200),
+                        socket.recv(),
+                    )
+                    .await
+                    {
+                        Ok(received) => RecvPoll::Received(received),
+                        Err(_) => {
+                            if recording_deadline
+                                .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                            {
+                                RecvPoll::Received(Some(Ok(Message::Text(
+                                    r#"{"type":"stop","end_reason":"max_turn"}"#.into(),
+                                ))))
+                            } else {
+                                RecvPoll::Tick
+                            }
+                        }
+                    }
+                } else {
+                    RecvPoll::Received(socket.recv().await)
+                }
+            } => {
+                match result {
+                    RecvPoll::Received(received) => received,
+                    RecvPoll::Tick => continue 'voice_loop,
+                }
+            },
         }
     } else {
-        socket.recv().await
+        if recording {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), socket.recv()).await {
+                Ok(result) => result,
+                Err(_) => {
+                    if recording_deadline
+                        .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                    {
+                        Some(Ok(Message::Text(
+                            r#"{"type":"stop","end_reason":"max_turn"}"#.into(),
+                        )))
+                    } else {
+                        continue 'voice_loop;
+                    }
+                }
+            }
+        } else {
+            socket.recv().await
+        }
     } {
         let msg = match result {
             Ok(m) => m,
@@ -2158,6 +2528,17 @@ async fn handle_voice_socket(
                                 .unwrap_or(0),
                             "voice client hello received"
                         );
+                        if let Some(revision) = hello.audio_revision {
+                            hello_by_revision.insert(revision, hello.clone());
+                            while hello_by_revision.len() > 32 {
+                                let Some(first_key) =
+                                    hello_by_revision.first_key_value().map(|(k, _)| *k)
+                                else {
+                                    break;
+                                };
+                                hello_by_revision.remove(&first_key);
+                            }
+                        }
                         client_hello = Some(hello);
                     }
                     Ok(ClientMessage::Start { payload: start_raw }) => {
@@ -2188,19 +2569,32 @@ async fn handle_voice_socket(
                         recording_turn_id = Some(turn_id);
                         let started_at = std::time::Instant::now();
                         recording_started_at = Some(started_at);
+                        let (cap_ms, sample_budget) = next_capture_limit(
+                            start.trigger,
+                            start.sample_rate.unwrap_or(16000).max(1),
+                        );
+                        capture_sample_budget = sample_budget;
+                        let deadline_ms = std::time::Duration::from_millis(cap_ms);
+                        recording_deadline = Some(tokio::time::Instant::now() + deadline_ms);
                         active_telemetry = Some(VoiceTurnTelemetry::new(
                             turn_id,
                             socket_epoch,
                             session_id.as_deref(),
                             started_at,
                         ));
+                        let start_audio_revision = start.audio_revision.or_else(|| {
+                            client_hello.as_ref().and_then(|hello| hello.audio_revision)
+                        });
+                        recording_hello_snapshot = hello_snapshot_for_turn(
+                            start_audio_revision,
+                            client_hello.as_ref(),
+                            &hello_by_revision,
+                        );
                         if let Some(telemetry) = active_telemetry.as_mut() {
                             telemetry.set_client_start(
                                 start.turn_id.as_deref(),
                                 start.trigger,
-                                start.audio_revision.or_else(|| {
-                                    client_hello.as_ref().and_then(|hello| hello.audio_revision)
-                                }),
+                                start_audio_revision,
                             );
                         }
                         capture_first_received_at = None;
@@ -2261,12 +2655,14 @@ async fn handle_voice_socket(
                             socket_epoch,
                             session_id = session_id.as_deref().unwrap_or("voice-anon"),
                             sample_rate = client_sample_rate,
+                            capture_cap_ms = cap_ms,
                             "voice capture started"
                         );
                     }
                     Ok(ClientMessage::Stop { payload: stop_raw }) if recording => {
                         let stop = sanitize_stop(stop_raw);
                         recording = false;
+                        recording_deadline = None;
                         let pipeline_start = std::time::Instant::now();
                         let turn_id = recording_turn_id.take().unwrap_or_else(next_voice_turn_id);
                         let generation_at_stop = turn_generation;
@@ -2675,14 +3071,76 @@ async fn handle_voice_socket(
                             // Return to ready with no toast.
                             telemetry.set_empty_reason(empty_stt_reason(&completed_health));
                             telemetry.log_outcome("empty_stt");
-                            send_terminal_idle(
-                                &mut socket,
-                                VoiceTurnOutcome::EmptyStt,
-                                empty_stt_wire_reason(&completed_health),
+                            let outcome_reason = empty_stt_wire_reason(&completed_health);
+                            let _ = socket
+                                .send(send_json(&ServerMessage::TurnOutcome {
+                                    outcome: VoiceTurnOutcome::EmptyStt,
+                                    reason: outcome_reason,
+                                }))
+                                .await;
+                            let supports_feedback =
+                                client_supports_feedback_playback(client_hello.as_ref());
+                            let decision = evaluate_empty_feedback_policy(
+                                remainder_key,
+                                telemetry.client_trigger,
+                                telemetry.client_stop.as_ref(),
+                                &completed_health,
                             )
                             .await;
+                            let superseded_feedback = turn_generation != generation_at_stop;
+                            if should_send_feedback_playback(
+                                supports_feedback,
+                                decision,
+                                superseded_feedback,
+                            ) {
+                                let copy = select_empty_feedback_copy(
+                                    recording_hello_snapshot
+                                        .as_ref()
+                                        .and_then(|hello| hello.inputs.as_ref()),
+                                );
+                                let feedback_turn_id = telemetry.client_turn_id.clone();
+                                let feedback_result = maybe_send_feedback_playback(
+                                    &state,
+                                    tts.clone(),
+                                    &mut socket,
+                                    copy,
+                                    feedback_turn_id,
+                                    cancelled.clone(),
+                                )
+                                .await;
+                                if let Some(message) = feedback_result.deferred_message {
+                                    deferred_message = Some(message);
+                                }
+                                if feedback_result.cancelled && deferred_message.is_some() {
+                                    telemetry.log_outcome("capture_replaced");
+                                    continue 'voice_loop;
+                                }
+                            }
+                            recording_hello_snapshot = None;
+                            let _ = socket.send(send_json(&ServerMessage::Idle)).await;
+                            if matches!(
+                                telemetry.client_trigger,
+                                Some(VoiceTurnTrigger::Vad | VoiceTurnTrigger::Barge)
+                            ) && (telemetry
+                                .client_stop
+                                .as_ref()
+                                .and_then(|stop| stop.end_reason)
+                                .is_some_and(|reason| {
+                                    reason == VoiceTurnEndReason::MaxTurn
+                                        || reason == VoiceTurnEndReason::NoiseAbort
+                                }))
+                            {
+                                quiet_rearm_until = Some(
+                                    std::time::Instant::now()
+                                        + std::time::Duration::from_millis(
+                                            AUTOMATIC_REARM_QUIET_MS,
+                                        ),
+                                );
+                            }
                             continue;
                         }
+                        recording_hello_snapshot = None;
+                        reset_qualifying_empty_streak(remainder_key).await;
 
                         // Post-STT proper-noun correction against Brain entities
                         let transcript = crate::voice::proper_noun_corrector::correct_proper_nouns(
@@ -2939,6 +3397,7 @@ async fn handle_voice_socket(
                         }
                     }
                     Ok(ClientMessage::Stop { .. }) => {} // Not recording, ignore
+                    Ok(ClientMessage::FeedbackCancel { .. }) => {}
                     Ok(ClientMessage::WakeStart { sample_rate }) => {
                         if let Some(sr) = sample_rate {
                             client_sample_rate = sr;
@@ -3010,6 +3469,7 @@ async fn handle_voice_socket(
                     Ok(ClientMessage::EnrollStart) => {
                         audio_buffer.clear();
                         recording = false;
+                        recording_deadline = None;
                         speaker_gate = None;
                         if state.speaker_verifier.read().await.is_none() {
                             if let Err(e) = start_speaker_model_download(&state).await {
@@ -3102,6 +3562,7 @@ async fn handle_voice_socket(
                     Ok(ClientMessage::EnrollSkip) => {
                         enroll = None;
                         recording = false;
+                        recording_deadline = None;
                         audio_buffer.clear();
                         tracing::info!(
                             target: "permagentd::voice",
@@ -3112,6 +3573,7 @@ async fn handle_voice_socket(
                     Ok(ClientMessage::EnrollClear) => {
                         enroll = None;
                         recording = false;
+                        recording_deadline = None;
                         audio_buffer.clear();
                         if let Err(e) = crate::voice::speaker_print::clear() {
                             tracing::warn!(
@@ -3206,13 +3668,18 @@ async fn handle_voice_socket(
                 // Enforce the capture bound on the server, before allocating
                 // decoded PCM. A missing client stop must not grow memory or
                 // leave an arbitrarily expensive offline STT job behind.
-                if capture_exceeds_limit(audio_buffer.len(), data.len(), client_sample_rate) {
+                if capture_exceeds_sample_budget(
+                    audio_buffer.len(),
+                    data.len(),
+                    capture_sample_budget,
+                ) {
                     if let Some(mut telemetry) = active_telemetry.take() {
                         telemetry.set_stop_reason("capture_limit");
                         telemetry.record_capture_health(std::mem::take(&mut capture_health));
                         telemetry.log_outcome("capture_rejected_limit");
                     }
                     recording = false;
+                    recording_deadline = None;
                     cancel_streaming_stt_worker(
                         &mut streaming_command_tx,
                         &mut streaming_event_rx,
@@ -3241,6 +3708,7 @@ async fn handle_voice_socket(
                         telemetry.log_outcome("capture_rejected_malformed");
                     }
                     recording = false;
+                    recording_deadline = None;
                     cancel_streaming_stt_worker(
                         &mut streaming_command_tx,
                         &mut streaming_event_rx,
@@ -3338,6 +3806,7 @@ async fn handle_voice_socket(
                                 telemetry.log_outcome("speaker_rejected_early");
                             }
                             recording = false;
+                            recording_deadline = None;
                             cancel_streaming_stt_worker(
                                 &mut streaming_command_tx,
                                 &mut streaming_event_rx,
@@ -3361,6 +3830,7 @@ async fn handle_voice_socket(
                                 telemetry.log_outcome("speaker_gate_unavailable");
                             }
                             recording = false;
+                            recording_deadline = None;
                             cancel_streaming_stt_worker(
                                 &mut streaming_command_tx,
                                 &mut streaming_event_rx,
@@ -3411,6 +3881,11 @@ async fn handle_voice_socket(
                         Some(crate::voice::kws::Detection::Stop) => "stop",
                         None => continue,
                     };
+                    if kind == "wake"
+                        && quiet_rearm_until.is_some_and(|until| std::time::Instant::now() < until)
+                    {
+                        continue;
+                    }
                     tracing::info!(target: "permagentd::voice", "keyword detected: {kind}");
                     if socket
                         .send(send_json(&ServerMessage::Wake { kind: kind.into() }))
@@ -4872,6 +5347,211 @@ async fn speak_canned_reply(
         .await;
 }
 
+struct FeedbackPlaybackResult {
+    cancelled: bool,
+    deferred_message: Option<Message>,
+}
+
+async fn maybe_send_feedback_playback(
+    state: &Arc<AppState>,
+    tts: Arc<dyn crate::voice::TextToSpeech>,
+    socket: &mut WebSocket,
+    copy: &str,
+    turn_id: Option<String>,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> FeedbackPlaybackResult {
+    let mut deferred_message: Option<Message> = None;
+    let mut playback_cancelled = false;
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        return FeedbackPlaybackResult {
+            cancelled: true,
+            deferred_message: None,
+        };
+    }
+    if socket
+        .send(send_json(&ServerMessage::FeedbackStart {
+            turn_id: turn_id.clone(),
+        }))
+        .await
+        .is_err()
+    {
+        return FeedbackPlaybackResult {
+            cancelled: true,
+            deferred_message: None,
+        };
+    }
+    let voice_id = state.persona.read().await.voice_id.clone();
+    let generation = format!(
+        "{}:{}",
+        FEEDBACK_PROVIDER_GENERATION.load(std::sync::atomic::Ordering::Relaxed),
+        voice_id.clone().unwrap_or_else(|| "default".to_string())
+    );
+    let key = FeedbackUtteranceCacheKey {
+        generation,
+        copy: copy.to_string(),
+    };
+    let plan = crate::voice::prosody::plan(copy);
+    let speech =
+        crate::voice::speakable::speakable(&plan.speech).unwrap_or_else(|| copy.to_string());
+    let metadata_text = speech.clone();
+    let mut cached_hit = feedback_utterance_cache()
+        .await
+        .lock()
+        .await
+        .get(&key)
+        .cloned();
+
+    let synth_audio = if let Some(hit) = cached_hit.take() {
+        Some(hit.audio)
+    } else {
+        let mut synth_task =
+            spawn_synth(tts.clone(), speech, voice_id, plan.speed, cancelled.clone());
+        loop {
+            tokio::select! {
+                result = &mut synth_task => {
+                    match result {
+                        Ok(Ok(audio)) => {
+                            let synthesized = FeedbackCachedUtterance {
+                                audio: audio.clone(),
+                            };
+                            let mut cache = feedback_utterance_cache().await.lock().await;
+                            cache.insert(key.clone(), synthesized);
+                            while cache.len() > FEEDBACK_CACHE_MAX_ENTRIES {
+                                let Some(oldest_key) = cache
+                                    .keys()
+                                    .min_by_key(|candidate| (feedback_generation_rank(candidate), candidate.copy.clone()))
+                                    .cloned()
+                                else {
+                                    break;
+                                };
+                                cache.remove(&oldest_key);
+                            }
+                            break Some(audio);
+                        }
+                        Ok(Err(_)) | Err(_) => {
+                            break None;
+                        }
+                    }
+                }
+                message = socket.recv() => {
+                    match message {
+                        Some(Ok(Message::Ping(payload))) => {
+                            if socket.send(Message::Pong(payload)).await.is_err() {
+                                playback_cancelled = true;
+                                synth_task.abort();
+                                break None;
+                            }
+                        }
+                        Some(Ok(Message::Text(text))) => {
+                            if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {
+                                match client_msg {
+                                    ClientMessage::FeedbackCancel { turn_id: cancel_turn_id } => {
+                                        if cancel_turn_id.is_none() || cancel_turn_id == turn_id {
+                                            playback_cancelled = true;
+                                            synth_task.abort();
+                                            break None;
+                                        }
+                                    }
+                                    ClientMessage::Start { .. }
+                                    | ClientMessage::Hello { .. }
+                                    | ClientMessage::WakeStart { .. }
+                                    | ClientMessage::WakeStop
+                                    | ClientMessage::EnrollStart
+                                    | ClientMessage::EnrollDone
+                                    | ClientMessage::EnrollSkip
+                                    | ClientMessage::EnrollClear
+                                    | ClientMessage::TeachSkip => {
+                                        playback_cancelled = true;
+                                        deferred_message = Some(Message::Text(text));
+                                        synth_task.abort();
+                                        break None;
+                                    }
+                                    ClientMessage::Stop { .. } => {}
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
+                            playback_cancelled = true;
+                            synth_task.abort();
+                            break None;
+                        }
+                        Some(Ok(Message::Binary(_))) | Some(Ok(Message::Pong(_))) => {}
+                    }
+                }
+            }
+        }
+    };
+
+    if let Some(audio) = synth_audio {
+        if !playback_cancelled {
+            let _ = send_tts_segment(socket, &audio, metadata_text, 0, cancelled.as_ref()).await;
+        }
+    } else {
+        playback_cancelled = true;
+    }
+
+    use futures::FutureExt;
+    loop {
+        match socket.recv().now_or_never() {
+            None => break,
+            Some(None) | Some(Some(Err(_))) | Some(Some(Ok(Message::Close(_)))) => {
+                playback_cancelled = true;
+                break;
+            }
+            Some(Some(Ok(Message::Ping(payload)))) => {
+                if socket.send(Message::Pong(payload)).await.is_err() {
+                    playback_cancelled = true;
+                    break;
+                }
+            }
+            Some(Some(Ok(Message::Text(text)))) => {
+                if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {
+                    match client_msg {
+                        ClientMessage::FeedbackCancel {
+                            turn_id: cancel_turn_id,
+                        } => {
+                            if cancel_turn_id.is_none() || cancel_turn_id == turn_id {
+                                playback_cancelled = true;
+                                break;
+                            }
+                        }
+                        ClientMessage::Start { .. }
+                        | ClientMessage::Hello { .. }
+                        | ClientMessage::WakeStart { .. }
+                        | ClientMessage::WakeStop
+                        | ClientMessage::EnrollStart
+                        | ClientMessage::EnrollDone
+                        | ClientMessage::EnrollSkip
+                        | ClientMessage::EnrollClear
+                        | ClientMessage::TeachSkip => {
+                            playback_cancelled = true;
+                            deferred_message = Some(Message::Text(text));
+                            break;
+                        }
+                        ClientMessage::Stop { .. } => {}
+                    }
+                }
+            }
+            Some(Some(Ok(Message::Binary(_)))) | Some(Some(Ok(Message::Pong(_)))) => {}
+        }
+    }
+
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        playback_cancelled = true;
+    }
+    let _ = socket
+        .send(send_json(&ServerMessage::FeedbackEnd {
+            turn_id,
+            sample_rate: tts.sample_rate(),
+            cancelled: playback_cancelled,
+        }))
+        .await;
+    FeedbackPlaybackResult {
+        cancelled: playback_cancelled,
+        deferred_message,
+    }
+}
+
 fn spawn_synth(
     tts: Arc<dyn crate::voice::TextToSpeech>,
     text: String,
@@ -5203,13 +5883,6 @@ fn period_is_mid_sentence_initialism(text: &str, period_at: usize) -> bool {
         .is_some_and(|ch| ch.is_lowercase())
 }
 
-/// Match the client's maximum turn duration with an independent absolute PCM
-/// memory ceiling. The byte check also rejects trailing overflow before decode.
-fn capture_exceeds_limit(samples: usize, incoming_bytes: usize, sample_rate: u32) -> bool {
-    let allowed = (u64::from(sample_rate) * 60).min(4_000_000) as usize;
-    samples > allowed || incoming_bytes > allowed.saturating_sub(samples).saturating_mul(4)
-}
-
 #[cfg(test)]
 mod tests {
     struct FakeStream {
@@ -5335,6 +6008,12 @@ mod tests {
             super::SttWaitDisposition::Deferred(Message::Text(_))
         ));
         assert!(matches!(
+            super::classify_stt_wait_message(Message::Text(
+                r#"{"type":"feedback_cancel","turn_id":"ios-3"}"#.into()
+            )),
+            super::SttWaitDisposition::Deferred(Message::Text(_))
+        ));
+        assert!(matches!(
             super::classify_stt_wait_message(Message::Close(None)),
             super::SttWaitDisposition::Disconnected
         ));
@@ -5411,17 +6090,524 @@ mod tests {
 
     #[test]
     fn capture_limit_bounds_duration_memory_and_overflow_before_decode() {
-        assert!(!super::capture_exceeds_limit(959_999, 4, 16_000));
-        assert!(super::capture_exceeds_limit(960_000, 4, 16_000));
-        assert!(super::capture_exceeds_limit(0, 3_840_001, 16_000));
-        assert!(!super::capture_exceeds_limit(2_879_999, 4, 48_000));
-        assert!(super::capture_exceeds_limit(4_000_000, 4, u32::MAX));
+        assert!(!super::capture_exceeds_limit(
+            239_999,
+            4,
+            16_000,
+            Some(super::VoiceTurnTrigger::Vad)
+        ));
+        assert!(super::capture_exceeds_limit(
+            240_000,
+            4,
+            16_000,
+            Some(super::VoiceTurnTrigger::Vad)
+        ));
+        assert!(!super::capture_exceeds_limit(
+            959_999,
+            4,
+            16_000,
+            Some(super::VoiceTurnTrigger::UserTap)
+        ));
+        assert!(super::capture_exceeds_limit(
+            960_000,
+            4,
+            16_000,
+            Some(super::VoiceTurnTrigger::UserTap)
+        ));
+        assert!(super::capture_exceeds_limit(
+            0,
+            3_840_001,
+            16_000,
+            Some(super::VoiceTurnTrigger::UserTap)
+        ));
+        assert!(!super::capture_exceeds_limit(
+            2_879_999,
+            4,
+            48_000,
+            Some(super::VoiceTurnTrigger::Unknown)
+        ));
+        assert!(super::capture_exceeds_limit(
+            4_000_000,
+            4,
+            u32::MAX,
+            Some(super::VoiceTurnTrigger::Unknown)
+        ));
         assert!(super::capture_exceeds_limit(
             usize::MAX,
             usize::MAX,
-            u32::MAX
+            u32::MAX,
+            Some(super::VoiceTurnTrigger::UserTap)
         ));
-        assert!(super::capture_exceeds_limit(0, 4, 0));
+        assert!(super::capture_exceeds_limit(
+            0,
+            4,
+            0,
+            Some(super::VoiceTurnTrigger::Vad)
+        ));
+    }
+
+    fn finite_signal_health() -> super::CaptureHealth {
+        super::CaptureHealth {
+            frame_count: 1,
+            payload_bytes: 4,
+            trailing_bytes: 0,
+            decoded_samples: 1,
+            finite_samples: 1,
+            nonfinite_samples: 0,
+            zero_samples: 0,
+            sum_squares: 1.0,
+            peak_abs: 1.0,
+        }
+    }
+
+    fn near_silent_health() -> super::CaptureHealth {
+        super::CaptureHealth {
+            frame_count: 1,
+            payload_bytes: 4,
+            trailing_bytes: 0,
+            decoded_samples: 1,
+            finite_samples: 1,
+            nonfinite_samples: 0,
+            zero_samples: 0,
+            sum_squares: 1e-8,
+            peak_abs: 0.0001,
+        }
+    }
+
+    fn automatic_stop_with_reason(
+        capture_duration_ms: u64,
+        committed: bool,
+        end_reason: super::VoiceTurnEndReason,
+    ) -> super::VoiceClientStop {
+        super::VoiceClientStop {
+            turn_id: Some("auto".into()),
+            audio_revision: Some(1),
+            trigger: Some(super::VoiceTurnTrigger::Vad),
+            end_reason: Some(end_reason),
+            capture_duration_ms: Some(capture_duration_ms),
+            preroll_duration_ms: Some(0),
+            vad_noise_floor_rms: Some(0.0),
+            vad_onset_rms: Some(0.0),
+            vad_keepalive_rms: Some(0.0),
+            vad_committed: Some(committed),
+            vad_voiced_ms: Some(capture_duration_ms),
+            vad_trailing_silence_ms: Some(0),
+            vad_silence_window_ms: Some(0),
+            vad_max_turn_ms: Some(15_000),
+            vad_max_keepalive_gap_ms: Some(0),
+            capture_frames: Some(0),
+            voiced_frames: Some(0),
+            dropped_input_samples: None,
+            wire_samples_sent: Some(0),
+            send_failures: Some(0),
+        }
+    }
+
+    fn automatic_stop(capture_duration_ms: u64, committed: bool) -> super::VoiceClientStop {
+        automatic_stop_with_reason(
+            capture_duration_ms,
+            committed,
+            super::VoiceTurnEndReason::Silence,
+        )
+    }
+
+    #[tokio::test]
+    async fn empty_feedback_policy_user_tap_speaks() {
+        let decision = super::evaluate_empty_feedback_policy(
+            "policy-user-tap",
+            Some(super::VoiceTurnTrigger::UserTap),
+            None,
+            &finite_signal_health(),
+        )
+        .await;
+        assert!(decision.should_speak);
+    }
+
+    #[tokio::test]
+    async fn empty_user_tap_turn_emits_feedback_when_client_supports_it() {
+        let decision = super::evaluate_empty_feedback_policy(
+            "policy-user-tap-feedback",
+            Some(super::VoiceTurnTrigger::UserTap),
+            None,
+            &finite_signal_health(),
+        )
+        .await;
+        assert!(super::should_send_feedback_playback(true, decision, false));
+    }
+
+    #[tokio::test]
+    async fn short_automatic_empty_turn_does_not_emit_feedback() {
+        let decision = super::evaluate_empty_feedback_policy(
+            "policy-short-vad-feedback",
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(3_000, true)),
+            &finite_signal_health(),
+        )
+        .await;
+        assert!(!super::should_send_feedback_playback(true, decision, false));
+    }
+
+    #[tokio::test]
+    async fn legacy_client_never_gets_feedback_playback_frames() {
+        let decision = super::evaluate_empty_feedback_policy(
+            "policy-legacy-feedback",
+            Some(super::VoiceTurnTrigger::UserTap),
+            None,
+            &finite_signal_health(),
+        )
+        .await;
+        assert!(!super::should_send_feedback_playback(
+            false, decision, false
+        ));
+    }
+
+    #[test]
+    fn feedback_capability_is_explicit_and_legacy_defaults_off() {
+        let legacy = super::VoiceClientHello {
+            protocol_version: Some(1),
+            client: Some("legacy".into()),
+            app_version: None,
+            build_number: None,
+            git_sha: None,
+            git_dirty: None,
+            capabilities: None,
+            audio_revision: None,
+            inputs: None,
+            capture_sample_rate: None,
+            capture_channels: None,
+            wire_sample_rate: None,
+            wire_channels: None,
+            wire_encoding: None,
+            io_buffer_duration_ms: None,
+        };
+        let updated = super::VoiceClientHello {
+            capabilities: Some(vec![super::FEEDBACK_PLAYBACK_CAPABILITY.to_string()]),
+            ..legacy.clone()
+        };
+        assert!(!super::client_supports_feedback_playback(Some(&legacy)));
+        assert!(super::client_supports_feedback_playback(Some(&updated)));
+    }
+
+    #[test]
+    fn feedback_send_gate_requires_capability_and_policy() {
+        assert!(!super::should_send_feedback_playback(
+            false,
+            super::EmptyFeedbackDecision { should_speak: true },
+            false
+        ));
+        assert!(!super::should_send_feedback_playback(
+            true,
+            super::EmptyFeedbackDecision {
+                should_speak: false
+            },
+            false
+        ));
+        assert!(!super::should_send_feedback_playback(
+            true,
+            super::EmptyFeedbackDecision { should_speak: true },
+            true
+        ));
+        assert!(super::should_send_feedback_playback(
+            true,
+            super::EmptyFeedbackDecision { should_speak: true },
+            false
+        ));
+    }
+
+    #[tokio::test]
+    async fn empty_feedback_policy_automatic_requires_duration_or_streak() {
+        let sid = "policy-auto-duration";
+        super::reset_qualifying_empty_streak(sid).await;
+        let short = super::evaluate_empty_feedback_policy(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(3_000, true)),
+            &finite_signal_health(),
+        )
+        .await;
+        assert!(!short.should_speak);
+        let long = super::evaluate_empty_feedback_policy(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(6_000, true)),
+            &finite_signal_health(),
+        )
+        .await;
+        assert!(long.should_speak);
+    }
+
+    #[tokio::test]
+    async fn empty_feedback_policy_second_short_automatic_turn_can_qualify() {
+        let sid = "policy-auto-streak";
+        super::reset_qualifying_empty_streak(sid).await;
+        let first = super::evaluate_empty_feedback_policy(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(3_000, true)),
+            &finite_signal_health(),
+        )
+        .await;
+        let second = super::evaluate_empty_feedback_policy(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(3_000, true)),
+            &finite_signal_health(),
+        )
+        .await;
+        assert!(!first.should_speak);
+        assert!(second.should_speak);
+    }
+
+    #[tokio::test]
+    async fn successful_transcript_reset_clears_short_empty_streak() {
+        let sid = "policy-reset-after-transcript";
+        super::reset_qualifying_empty_streak(sid).await;
+        let _ = super::evaluate_empty_feedback_policy(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(3_000, true)),
+            &finite_signal_health(),
+        )
+        .await;
+        super::reset_qualifying_empty_streak(sid).await;
+        let after_reset = super::evaluate_empty_feedback_policy(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(3_000, true)),
+            &finite_signal_health(),
+        )
+        .await;
+        assert!(!after_reset.should_speak);
+    }
+
+    #[tokio::test]
+    async fn empty_feedback_policy_cooldown_blocks_second_automatic_speak() {
+        let sid = "policy-auto-cooldown";
+        super::reset_qualifying_empty_streak(sid).await;
+        let first = super::evaluate_empty_feedback_policy(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(6_000, true)),
+            &finite_signal_health(),
+        )
+        .await;
+        let second = super::evaluate_empty_feedback_policy(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(6_000, true)),
+            &finite_signal_health(),
+        )
+        .await;
+        assert!(first.should_speak);
+        assert!(!second.should_speak);
+    }
+
+    #[tokio::test]
+    async fn empty_feedback_policy_near_silent_never_speaks_automatic() {
+        let sid = "policy-near-silent";
+        super::reset_qualifying_empty_streak(sid).await;
+        let decision = super::evaluate_empty_feedback_policy(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(6_000, true)),
+            &near_silent_health(),
+        )
+        .await;
+        assert!(!decision.should_speak);
+    }
+
+    #[tokio::test]
+    async fn empty_feedback_policy_automatic_requires_silence_or_max_turn_end_reason() {
+        let sid = "policy-auto-end-reason";
+        super::reset_qualifying_empty_streak(sid).await;
+        let interrupted = super::evaluate_empty_feedback_policy(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop_with_reason(
+                6_000,
+                true,
+                super::VoiceTurnEndReason::Interruption,
+            )),
+            &finite_signal_health(),
+        )
+        .await;
+        assert!(!interrupted.should_speak);
+    }
+
+    #[tokio::test]
+    async fn empty_feedback_policy_uses_injected_clock_for_streak_and_cooldown() {
+        let sid = "policy-injected-clock";
+        super::reset_qualifying_empty_streak(sid).await;
+        let base = std::time::Instant::now();
+        let first = super::evaluate_empty_feedback_policy_at(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(3_000, true)),
+            &finite_signal_health(),
+            base,
+        )
+        .await;
+        let second = super::evaluate_empty_feedback_policy_at(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(3_000, true)),
+            &finite_signal_health(),
+            base + std::time::Duration::from_secs(5),
+        )
+        .await;
+        assert!(!first.should_speak);
+        assert!(second.should_speak);
+        let blocked_by_cooldown = super::evaluate_empty_feedback_policy_at(
+            sid,
+            Some(super::VoiceTurnTrigger::Vad),
+            Some(&automatic_stop(6_000, true)),
+            &finite_signal_health(),
+            base + std::time::Duration::from_secs(20),
+        )
+        .await;
+        assert!(!blocked_by_cooldown.should_speak);
+    }
+
+    #[test]
+    fn feedback_copy_is_selected_from_input_route_only() {
+        let bt = vec![super::VoiceHelloInput {
+            port_type: Some("BluetoothHFP".into()),
+            port_name: Some("AirPods".into()),
+            uid: Some("airpods".into()),
+        }];
+        let built_in = vec![super::VoiceHelloInput {
+            port_type: Some("MicrophoneBuiltIn".into()),
+            port_name: Some("iPhone Microphone".into()),
+            uid: Some("built-in".into()),
+        }];
+        let wired = vec![super::VoiceHelloInput {
+            port_type: Some("HeadsetMic".into()),
+            port_name: Some("USB Headset".into()),
+            uid: Some("usb".into()),
+        }];
+        assert_eq!(
+            super::select_empty_feedback_copy(Some(&bt)),
+            "I didn't catch that on the Bluetooth mic. Please try again."
+        );
+        assert_eq!(
+            super::select_empty_feedback_copy(Some(&built_in)),
+            "I didn't catch that on the phone mic. Please try again."
+        );
+        assert_eq!(
+            super::select_empty_feedback_copy(Some(&wired)),
+            "I didn't catch that on the headset mic. Please try again."
+        );
+        assert_eq!(
+            super::select_empty_feedback_copy(None),
+            "I didn't catch that. Please try again."
+        );
+    }
+
+    #[test]
+    fn route_snapshot_uses_turn_audio_revision_not_latest_hello() {
+        let mut by_revision = std::collections::BTreeMap::new();
+        by_revision.insert(
+            1,
+            super::VoiceClientHello {
+                protocol_version: Some(1),
+                client: Some("ios_voice".into()),
+                app_version: None,
+                build_number: None,
+                git_sha: None,
+                git_dirty: None,
+                capabilities: Some(vec![super::FEEDBACK_PLAYBACK_CAPABILITY.to_string()]),
+                audio_revision: Some(1),
+                inputs: Some(vec![super::VoiceHelloInput {
+                    port_type: Some("BluetoothHFP".into()),
+                    port_name: Some("AirPods".into()),
+                    uid: Some("airpods".into()),
+                }]),
+                capture_sample_rate: None,
+                capture_channels: None,
+                wire_sample_rate: None,
+                wire_channels: None,
+                wire_encoding: None,
+                io_buffer_duration_ms: None,
+            },
+        );
+        by_revision.insert(
+            2,
+            super::VoiceClientHello {
+                audio_revision: Some(2),
+                inputs: Some(vec![super::VoiceHelloInput {
+                    port_type: Some("MicrophoneBuiltIn".into()),
+                    port_name: Some("iPhone Microphone".into()),
+                    uid: Some("built-in".into()),
+                }]),
+                ..by_revision.get(&1).cloned().expect("rev1")
+            },
+        );
+        let latest = by_revision.get(&2).cloned().expect("rev2");
+        let turn_hello = super::hello_snapshot_for_turn(Some(1), Some(&latest), &by_revision)
+            .expect("turn hello snapshot");
+        assert_eq!(
+            super::select_empty_feedback_copy(turn_hello.inputs.as_ref()),
+            "I didn't catch that on the Bluetooth mic. Please try again."
+        );
+    }
+
+    #[test]
+    fn feedback_wire_frames_carry_turn_id_and_cancellation_flag() {
+        let start = serde_json::to_value(super::ServerMessage::FeedbackStart {
+            turn_id: Some("ios-9".into()),
+        })
+        .unwrap();
+        assert_eq!(start["type"], "feedback_start");
+        assert_eq!(start["turn_id"], "ios-9");
+        let end = serde_json::to_value(super::ServerMessage::FeedbackEnd {
+            turn_id: Some("ios-9".into()),
+            sample_rate: 24_000,
+            cancelled: true,
+        })
+        .unwrap();
+        assert_eq!(end["type"], "feedback_end");
+        assert_eq!(end["turn_id"], "ios-9");
+        assert_eq!(end["cancelled"], true);
+    }
+
+    #[tokio::test]
+    async fn feedback_utterance_cache_is_bounded() {
+        let mut cache = super::feedback_utterance_cache().await.lock().await;
+        cache.clear();
+        for generation in 1..=20u64 {
+            let key = super::FeedbackUtteranceCacheKey {
+                generation: format!("{generation}:voice"),
+                copy: "I didn't catch that. Please try again.".to_string(),
+            };
+            cache.insert(
+                key,
+                super::FeedbackCachedUtterance {
+                    audio: AudioOutput {
+                        samples: vec![0.0; 4],
+                        sample_rate: 24_000,
+                    },
+                },
+            );
+            while cache.len() > super::FEEDBACK_CACHE_MAX_ENTRIES {
+                let Some(oldest_key) = cache
+                    .keys()
+                    .min_by_key(|candidate| {
+                        (
+                            super::feedback_generation_rank(candidate),
+                            candidate.copy.clone(),
+                        )
+                    })
+                    .cloned()
+                else {
+                    break;
+                };
+                cache.remove(&oldest_key);
+            }
+        }
+        assert_eq!(cache.len(), super::FEEDBACK_CACHE_MAX_ENTRIES);
+        let generations: Vec<u64> = cache.keys().map(super::feedback_generation_rank).collect();
+        assert!(generations.iter().all(|generation| *generation >= 5));
+        cache.clear();
     }
     use super::*;
     use permagent::download_manager::DownloadManager;
@@ -5625,6 +6811,19 @@ mod tests {
         for ty in ["enroll_start", "enroll_done", "enroll_skip", "enroll_clear"] {
             let raw = format!(r#"{{"type":"{ty}"}}"#);
             serde_json::from_str::<ClientMessage>(&raw).unwrap_or_else(|e| panic!("{ty}: {e}"));
+        }
+    }
+
+    #[test]
+    fn feedback_cancel_frame_deserializes() {
+        let raw = r#"{"type":"feedback_cancel","turn_id":"ios-12"}"#;
+        let message =
+            serde_json::from_str::<ClientMessage>(raw).expect("feedback_cancel should decode");
+        match message {
+            ClientMessage::FeedbackCancel { turn_id } => {
+                assert_eq!(turn_id.as_deref(), Some("ios-12"));
+            }
+            _ => panic!("expected feedback_cancel"),
         }
     }
 

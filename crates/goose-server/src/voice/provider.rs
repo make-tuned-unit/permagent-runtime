@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 /// Audio data returned from TTS synthesis.
+#[derive(Clone)]
 pub struct AudioOutput {
     /// PCM samples, mono, f32 normalized [-1, 1].
     pub samples: Vec<f32>,

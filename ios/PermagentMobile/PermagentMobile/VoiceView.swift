@@ -248,6 +248,7 @@ final class VoiceEngine: ObservableObject {
         case listening    // capturing + streaming mic frames
         case thinking     // stop sent, awaiting STT + reply
         case speaking     // TTS audio queued/playing
+        case feedback     // deterministic empty-STT recovery playback
         case failed(String)  // fatal (no pairing / mic denied / audio init)
     }
 
@@ -376,6 +377,15 @@ final class VoiceEngine: ObservableObject {
     private var activeTurnWireSamplesSent = 0
     private var activeTurnSendFailures = 0
     private var activeTurnEndReason: VoiceTurnEndReason = .unknown
+    private var activeCaptureCapMS: Double = VoiceCapturePolicy.userMaxTurnMS
+    private var captureCapTask: Task<Void, Never>?
+    private var feedbackPlaybackActive = false
+    private var activeFeedbackTurnID: String?
+    private var expectedFeedbackTurnID: String?
+    private var lastCompletedTurnID: String?
+    private var waitingForAutomaticQuiet = false
+    private var lastAutomaticVoiceLikeAt: TimeInterval?
+    private var automaticQuietTask: Task<Void, Never>?
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -445,6 +455,10 @@ final class VoiceEngine: ObservableObject {
     func stop() {
         endCaptureMetrics(reason: "stop")
         active = false
+        captureCapTask?.cancel()
+        captureCapTask = nil
+        automaticQuietTask?.cancel()
+        automaticQuietTask = nil
         connectEpoch += 1
         replyLifecycle.invalidate()
         if let routeObserver {
@@ -460,6 +474,12 @@ final class VoiceEngine: ObservableObject {
         playbackRms = 0
         playbackTapAt = nil
         level = 0
+        feedbackPlaybackActive = false
+        activeFeedbackTurnID = nil
+        expectedFeedbackTurnID = nil
+        lastCompletedTurnID = nil
+        waitingForAutomaticQuiet = false
+        lastAutomaticVoiceLikeAt = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         state = .idle
         enrolling = false
@@ -763,6 +783,9 @@ final class VoiceEngine: ObservableObject {
             endTurn(reason: .routeChange)
             return
         }
+        if state == .feedback {
+            cancelFeedbackPlayback(turnID: activeFeedbackTurnID)
+        }
         guard !rebuildingGraph else { return }
         if !graphBuilt {
             try? buildGraph()
@@ -889,6 +912,25 @@ final class VoiceEngine: ObservableObject {
             enrolling: enrolling,
             isListening: state == .listening
         ) {
+            if state == .ready, waitingForAutomaticQuiet {
+                let now = Date().timeIntervalSince1970
+                if rms > vad.effectiveKeepalive || !voiceLike {
+                    lastAutomaticVoiceLikeAt = now
+                    if automaticQuietTask == nil {
+                        armAutomaticQuietTimer()
+                    }
+                }
+                if !VoiceAutomaticQuietRearmer.shouldRearm(
+                    waiting: waitingForAutomaticQuiet,
+                    lastVoiceLikeAt: lastAutomaticVoiceLikeAt,
+                    now: now,
+                    quietMS: VoiceCapturePolicy.automaticRearmQuietMS
+                ) {
+                    return
+                }
+                waitingForAutomaticQuiet = false
+                lastAutomaticVoiceLikeAt = nil
+            }
             vadStep(rms: rms, voiceLike: voiceLike)
         }
     }
@@ -949,7 +991,15 @@ final class VoiceEngine: ObservableObject {
     /// here used to inherit the previous hands-free turn's epoch, and the cap
     /// could end it on the first frame after hands-free came back on.
     func beginTurn() {
-        guard state == .ready, wsTask != nil else { return }
+        guard wsTask != nil else { return }
+        waitingForAutomaticQuiet = false
+        lastAutomaticVoiceLikeAt = nil
+        automaticQuietTask?.cancel()
+        automaticQuietTask = nil
+        if state == .feedback {
+            cancelFeedbackPlayback(turnID: activeFeedbackTurnID)
+        }
+        guard state == .ready else { return }
         vad.noteTurnBegan(at: Date().timeIntervalSince1970)
         enterListening(trigger: .userTap)
     }
@@ -958,6 +1008,8 @@ final class VoiceEngine: ObservableObject {
     /// stamped, by whichever path got here.
     private func enterListening(trigger: VoiceTurnTrigger = .unknown) {
         guard state == .ready, wsTask != nil else { return }
+        activeCaptureCapMS = VoiceCapturePolicy.maxTurnMS(trigger: trigger)
+        armCaptureCapTimer()
         transcriptBuffer.reset()
         transcript = ""
         transcriptPartial = ""
@@ -1002,9 +1054,25 @@ final class VoiceEngine: ObservableObject {
 
     func endTurn(reason: VoiceTurnEndReason = .userTap) {
         guard state == .listening else { return }
+        if activeTurnTrigger == .vad || activeTurnTrigger == .barge {
+            waitingForAutomaticQuiet = reason == .maxTurn || reason == .noiseAbort
+            lastAutomaticVoiceLikeAt = Date().timeIntervalSince1970
+            if waitingForAutomaticQuiet {
+                armAutomaticQuietTimer()
+            } else {
+                automaticQuietTask?.cancel()
+                automaticQuietTask = nil
+            }
+        } else {
+            waitingForAutomaticQuiet = false
+            lastAutomaticVoiceLikeAt = nil
+            automaticQuietTask?.cancel()
+            automaticQuietTask = nil
+        }
         activeTurnEndReason = reason
         endCaptureMetrics(reason: reason.rawValue)
         vad.noteTurnEnded()
+        lastCompletedTurnID = activeTurnID
         let socketEpoch = connectEpoch
         let socket = wsTask
         level = 0
@@ -1028,7 +1096,7 @@ final class VoiceEngine: ObservableObject {
             vad_voiced_ms: Int(metrics.voicedMs.rounded()),
             vad_trailing_silence_ms: Int(metrics.trailingSilenceMs.rounded()),
             vad_silence_window_ms: Int(metrics.silenceWindowMs.rounded()),
-            vad_max_turn_ms: Int(vad.config.maxTurnMs.rounded()),
+            vad_max_turn_ms: Int(activeCaptureCapMS.rounded()),
             vad_max_keepalive_gap_ms: Int(metrics.maxKeepaliveGapMs.rounded()),
             capture_frames: metrics.frameCount,
             voiced_frames: metrics.voicedFrameCount,
@@ -1055,6 +1123,51 @@ final class VoiceEngine: ObservableObject {
         activeTurnAudioRevision = nil
         activeTurnStartedAt = nil
         activeTurnPrerollDurationMS = nil
+        captureCapTask?.cancel()
+        captureCapTask = nil
+    }
+
+    private func armCaptureCapTimer() {
+        captureCapTask?.cancel()
+        let capMS = max(0, activeCaptureCapMS)
+        captureCapTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(Int(capMS.rounded())))
+            guard let self, self.state == .listening else { return }
+            self.endTurn(reason: .maxTurn)
+        }
+    }
+
+    private func armAutomaticQuietTimer() {
+        automaticQuietTask?.cancel()
+        automaticQuietTask = Task { @MainActor [weak self] in
+            defer { self?.automaticQuietTask = nil }
+            while let self, self.waitingForAutomaticQuiet, self.state == .ready {
+                let now = Date().timeIntervalSince1970
+                if VoiceAutomaticQuietRearmer.shouldRearm(
+                    waiting: self.waitingForAutomaticQuiet,
+                    lastVoiceLikeAt: self.lastAutomaticVoiceLikeAt,
+                    now: now,
+                    quietMS: VoiceCapturePolicy.automaticRearmQuietMS
+                ) {
+                    self.waitingForAutomaticQuiet = false
+                    self.lastAutomaticVoiceLikeAt = nil
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    private func cancelFeedbackPlayback(turnID: String?) {
+        if let turnID {
+            sendJSON(VoiceFeedbackCancelMessage(turn_id: turnID))
+        }
+        feedbackPlaybackActive = false
+        activeFeedbackTurnID = nil
+        resetReplyPlayback()
+        playerNode?.stop()
+        level = 0
+        state = .ready
     }
 
     /// `.thinking` has no natural exit if the daemon parks (tool approval
@@ -1078,6 +1191,11 @@ final class VoiceEngine: ObservableObject {
     /// immediately. Automatic VAD candidates that look like speaker echo are
     /// filtered before this method; a confirmed barge cancels immediately.
     func interrupt() {
+        if state == .feedback {
+            cancelFeedbackPlayback(turnID: activeFeedbackTurnID)
+            beginTurn()
+            return
+        }
         interrupt(source: .explicitUser)
     }
 
@@ -1233,7 +1351,9 @@ final class VoiceEngine: ObservableObject {
         let type: String
         let text: String?
         let message: String?
+        let turn_id: String?
         let sample_rate: Int?
+        let cancelled: Bool?
         let segment_id: VoiceWireSegmentID?
         let duration_ms: Int?
         let outcome: String?
@@ -1272,6 +1392,8 @@ final class VoiceEngine: ObservableObject {
                 turnFeedback = .none
                 notice = nil
                 state = .ready
+                expectedFeedbackTurnID = nil
+                activeFeedbackTurnID = nil
                 sendHello(incrementRevision: false)
             case "transcript_partial":
                 transcriptBuffer.acceptPartial(msg.text ?? "")
@@ -1292,9 +1414,24 @@ final class VoiceEngine: ObservableObject {
                     turnFeedback = .error(msg.reason ?? msg.message ?? "Voice stopped — try again.")
                 }
                 notice = turnFeedback.message
-                if state == .thinking || state == .listening || state == .speaking {
+                if state == .thinking || state == .listening || state == .speaking || state == .feedback {
                     state = .ready
                 }
+                expectedFeedbackTurnID = lastCompletedTurnID
+            case "feedback_start":
+                let disposition = voiceFeedbackStartDisposition(
+                    feedbackTurnID: msg.turn_id,
+                    expectedTurnID: expectedFeedbackTurnID,
+                    activeListeningTurnID: state == .listening ? activeTurnID : nil
+                )
+                if disposition == .cancel {
+                    sendJSON(VoiceFeedbackCancelMessage(turn_id: msg.turn_id))
+                    break
+                }
+                feedbackPlaybackActive = true
+                activeFeedbackTurnID = msg.turn_id
+                replyEnded = false
+                state = .feedback
             case "transcript":
                 turnFeedback = .none
                 notice = nil
@@ -1305,7 +1442,7 @@ final class VoiceEngine: ObservableObject {
             case "reply_start":
                 if state == .thinking || state == .ready { state = .thinking }
             case "audio_segment", "reply_segment":
-                guard replyLifecycle.acceptsAudio else { break }
+                guard replyLifecycle.acceptsAudio || feedbackPlaybackActive else { break }
                 guard let segment = msg.replySegment else { break }
                 let timingOrderOK = replySegmentQueue.acceptMetadata(segmentID: segment.segmentID)
                 if !timingOrderOK { timingDisabledForReply = true }
@@ -1396,14 +1533,27 @@ final class VoiceEngine: ObservableObject {
                 preRoll.removeAll(keepingCapacity: true)
                 level = 0
                 notice = nil
-                if state == .thinking || state == .listening || state == .speaking {
+                if state == .thinking || state == .listening || state == .speaking || state == .feedback {
                     state = .ready
                 }
             case "reply_end":
                 replyEnded = true
                 replyLifecycle.receiveReplyEnd()
                 if pendingBuffers == 0, state == .speaking || state == .thinking {
-                    finishSpeaking()
+                    finishPlayback()
+                }
+            case "feedback_end":
+                if let turnID = msg.turn_id,
+                   let activeFeedbackTurnID,
+                   turnID != activeFeedbackTurnID {
+                    break
+                }
+                replyEnded = true
+                feedbackPlaybackActive = false
+                activeFeedbackTurnID = nil
+                expectedFeedbackTurnID = nil
+                if pendingBuffers == 0, state == .feedback {
+                    finishPlayback()
                 }
             case "idle":
                 replyLifecycle.receiveTerminalWithoutReply()
@@ -1424,7 +1574,7 @@ final class VoiceEngine: ObservableObject {
                     notice = nil
                     state = .ready
                     enterListening()
-                } else if state == .thinking || state == .listening || state == .speaking {
+                } else if state == .thinking || state == .listening || state == .speaking || state == .feedback {
                     if turnFeedback == .none { notice = nil }
                     state = .ready
                 }
@@ -1433,7 +1583,7 @@ final class VoiceEngine: ObservableObject {
                 if VoiceIdle.isTransientEmptyTurn(msg.message) {
                     turnFeedback = .emptyCapture
                     notice = turnFeedback.message
-                    if state == .thinking || state == .listening || state == .speaking {
+                    if state == .thinking || state == .listening || state == .speaking || state == .feedback {
                         state = .ready
                     }
                     break
@@ -1442,7 +1592,7 @@ final class VoiceEngine: ObservableObject {
                 notice = turnFeedback.message
                 // Transient recovery on a live socket, like the web hook: return
                 // to ready after a beat so a too-short press can't wedge a turn.
-                if state == .thinking || state == .listening || state == .speaking {
+                if state == .thinking || state == .listening || state == .speaking || state == .feedback {
                     let epoch = connectEpoch
                     Task {
                         try? await Task.sleep(for: .seconds(2))
@@ -1530,7 +1680,11 @@ final class VoiceEngine: ObservableObject {
                 }
                 return nil
             }(),
-            capabilities: ["hello_v1", "turn_telemetry_v2"],
+            capabilities: [
+                VoiceProtocolCapability.helloV1,
+                VoiceProtocolCapability.turnTelemetryV2,
+                VoiceProtocolCapability.feedbackPlayback,
+            ],
             audio_revision: helloAudioRevision,
             inputs: inputs.isEmpty ? nil : Array(inputs),
             capture_sample_rate: captureRate,
@@ -1553,7 +1707,7 @@ final class VoiceEngine: ObservableObject {
     // ── Playback: schedule 24 kHz Float32 chunks in arrival order ────────────
 
     private func playChunk(_ data: Data) {
-        guard replyLifecycle.acceptsAudio else {
+        guard replyLifecycle.acceptsAudio || feedbackPlaybackActive else {
             voiceLogger.info(
                 "voice_audio_frame_dropped lifecycle=\(String(describing: self.replyLifecycle.phase), privacy: .public) generation=\(self.replyLifecycle.generation, privacy: .public) bytes=\(data.count, privacy: .public)"
             )
@@ -1593,7 +1747,7 @@ final class VoiceEngine: ObservableObject {
         // so they are the wrong clock for the orb. The player tap installed in
         // startAudio() drives `level` from the audio actually being heard.
         pendingBuffers += 1
-        state = .speaking
+        state = feedbackPlaybackActive ? .feedback : .speaking
         // Same inherited-isolation trap as the mic tap above: this completion
         // runs on an audio thread, and without @Sendable it would carry a
         // main-actor check that traps the moment a TTS buffer finishes.
@@ -1692,16 +1846,17 @@ final class VoiceEngine: ObservableObject {
             voiceLogger.info(
                 "voice_playback_drained generation=\(self.playbackGeneration.value, privacy: .public) reply_ended=\(self.replyEnded, privacy: .public)"
             )
-            if replyEnded && state == .speaking {
-                finishSpeaking()
+            if replyEnded && (state == .speaking || state == .feedback || state == .thinking) {
+                finishPlayback()
             }
         }
     }
 
     /// After his line finishes: if a word is on the Orb, open the mic.
-    private func finishSpeaking() {
+    private func finishPlayback() {
         stopPlaybackHighlighting()
         state = .ready
+        if feedbackPlaybackActive { return }
         if teachWord != nil {
             enterListening()
         } else if enrolling, enrollPrompt != nil {
@@ -2172,6 +2327,7 @@ struct VoiceView: View {
         case .listening: return "LISTENING…"
         case .thinking: return "THINKING… TAP THE ORB TO CANCEL"
         case .speaking: return "SPEAKING — TAP THE ORB TO INTERRUPT"
+        case .feedback: return "PLAYING FEEDBACK — TAP TO TALK"
         case .failed: return "VOICE UNAVAILABLE"
         }
     }
@@ -2181,6 +2337,7 @@ struct VoiceView: View {
         case .failed: return Brand.danger
         case .listening: return Brand.cyan
         case .speaking: return Brand.cyan
+        case .feedback: return Brand.cyan
         default: return Brand.textMuted
         }
     }

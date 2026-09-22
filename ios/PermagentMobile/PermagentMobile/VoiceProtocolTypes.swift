@@ -1,5 +1,11 @@
 import Foundation
 
+enum VoiceProtocolCapability {
+    static let helloV1 = "hello_v1"
+    static let turnTelemetryV2 = "turn_telemetry_v2"
+    static let feedbackPlayback = "feedback_playback"
+}
+
 struct VoiceHelloInput: Codable, Equatable {
     let port_type: String?
     let port_name: String?
@@ -93,6 +99,7 @@ enum VoiceClientWireMessage: Codable, Equatable {
     case hello(VoiceHelloMessage)
     case start(VoiceStartMessage)
     case stop(VoiceStopMessage)
+    case feedbackCancel(VoiceFeedbackCancelMessage)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -107,6 +114,8 @@ enum VoiceClientWireMessage: Codable, Equatable {
             self = .start(try VoiceStartMessage(from: decoder))
         case "stop":
             self = .stop(try VoiceStopMessage(from: decoder))
+        case "feedback_cancel":
+            self = .feedbackCancel(try VoiceFeedbackCancelMessage(from: decoder))
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .type,
@@ -124,6 +133,8 @@ enum VoiceClientWireMessage: Codable, Equatable {
             try start.encode(to: encoder)
         case .stop(let stop):
             try stop.encode(to: encoder)
+        case .feedbackCancel(let feedbackCancel):
+            try feedbackCancel.encode(to: encoder)
         }
     }
 }
@@ -150,12 +161,31 @@ struct VoiceTurnOutcomeMessage: Codable, Equatable {
     let reason: VoiceTurnOutcomeReason
 }
 
+struct VoiceFeedbackStartMessage: Codable, Equatable {
+    let type = "feedback_start"
+    let turn_id: String?
+}
+
+struct VoiceFeedbackEndMessage: Codable, Equatable {
+    let type = "feedback_end"
+    let turn_id: String?
+    let sample_rate: Int?
+    let cancelled: Bool?
+}
+
+struct VoiceFeedbackCancelMessage: Codable, Equatable {
+    let type = "feedback_cancel"
+    let turn_id: String?
+}
+
 struct VoiceIdleMessage: Codable, Equatable {
     let type = "idle"
 }
 
 enum VoiceServerWireMessage: Codable, Equatable {
     case turnOutcome(VoiceTurnOutcomeMessage)
+    case feedbackStart(VoiceFeedbackStartMessage)
+    case feedbackEnd(VoiceFeedbackEndMessage)
     case idle(VoiceIdleMessage)
 
     private enum CodingKeys: String, CodingKey {
@@ -167,6 +197,10 @@ enum VoiceServerWireMessage: Codable, Equatable {
         switch try container.decode(String.self, forKey: .type) {
         case "turn_outcome":
             self = .turnOutcome(try VoiceTurnOutcomeMessage(from: decoder))
+        case "feedback_start":
+            self = .feedbackStart(try VoiceFeedbackStartMessage(from: decoder))
+        case "feedback_end":
+            self = .feedbackEnd(try VoiceFeedbackEndMessage(from: decoder))
         case "idle":
             self = .idle(try VoiceIdleMessage(from: decoder))
         default:
@@ -182,9 +216,59 @@ enum VoiceServerWireMessage: Codable, Equatable {
         switch self {
         case .turnOutcome(let message):
             try message.encode(to: encoder)
+        case .feedbackStart(let message):
+            try message.encode(to: encoder)
+        case .feedbackEnd(let message):
+            try message.encode(to: encoder)
         case .idle(let message):
             try message.encode(to: encoder)
         }
+    }
+}
+
+enum VoiceCapturePolicy {
+    static let automaticMaxTurnMS: Double = 15_000
+    static let userMaxTurnMS: Double = 60_000
+    static let automaticRearmQuietMS: Double = 500
+
+    static func maxTurnMS(trigger: VoiceTurnTrigger?) -> Double {
+        switch trigger {
+        case .vad, .barge:
+            return automaticMaxTurnMS
+        case .userTap, .unknown, nil:
+            return userMaxTurnMS
+        }
+    }
+}
+
+enum VoiceFeedbackStartDisposition: Equatable {
+    case accept
+    case cancel
+}
+
+func voiceFeedbackStartDisposition(
+    feedbackTurnID: String?,
+    expectedTurnID: String?,
+    activeListeningTurnID: String?
+) -> VoiceFeedbackStartDisposition {
+    guard let feedbackTurnID, !feedbackTurnID.isEmpty else { return .cancel }
+    guard feedbackTurnID == expectedTurnID else { return .cancel }
+    if let activeListeningTurnID, activeListeningTurnID != feedbackTurnID {
+        return .cancel
+    }
+    return .accept
+}
+
+enum VoiceAutomaticQuietRearmer {
+    static func shouldRearm(
+        waiting: Bool,
+        lastVoiceLikeAt: TimeInterval?,
+        now: TimeInterval,
+        quietMS: Double
+    ) -> Bool {
+        guard waiting, now.isFinite, quietMS >= 0 else { return false }
+        guard let lastVoiceLikeAt else { return true }
+        return (now - lastVoiceLikeAt) * 1_000.0 >= quietMS
     }
 }
 

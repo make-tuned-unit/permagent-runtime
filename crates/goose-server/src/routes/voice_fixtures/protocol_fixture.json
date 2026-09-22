@@ -8,7 +8,7 @@
       "build_number": "936",
       "git_sha": "0123456789abcdef0123456789abcdef01234567",
       "git_dirty": false,
-      "capabilities": ["hello_v1", "turn_telemetry_v2"],
+      "capabilities": ["hello_v1", "turn_telemetry_v2", "feedback_playback"],
       "audio_revision": 1,
       "inputs": [
         {
@@ -33,7 +33,7 @@
       "build_number": "936",
       "git_sha": "0123456789abcdef0123456789abcdef01234567",
       "git_dirty": false,
-      "capabilities": ["hello_v1", "turn_telemetry_v2"],
+      "capabilities": ["hello_v1", "turn_telemetry_v2", "feedback_playback"],
       "audio_revision": 2,
       "inputs": [
         {
@@ -102,6 +102,16 @@
       "type": "turn_outcome",
       "outcome": "empty_stt",
       "reason": "finite_signal_no_words"
+    },
+    {
+      "type": "feedback_start",
+      "turn_id": "incident-turn-25800"
+    },
+    {
+      "type": "feedback_end",
+      "turn_id": "incident-turn-25800",
+      "sample_rate": 24000,
+      "cancelled": false
     },
     {
       "type": "idle"
