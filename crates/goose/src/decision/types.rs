@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
@@ -25,8 +25,12 @@ impl fmt::Debug for DecisionState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum DecisionError {
+    #[error("decision budget refused: {0:?}")]
+    BudgetRefused(super::BudgetRefusal),
+    #[error("decision accounting failed")]
+    Accounting,
     #[error("private state refused by locality")]
     RefusedByLocality,
     #[error("decision authentication failed")]
@@ -189,7 +193,7 @@ impl ChoiceBuilder {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Answer {
     Noul {

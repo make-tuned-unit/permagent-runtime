@@ -1958,8 +1958,11 @@ impl SessionStorage {
                     if version < 56 {
                         spectral_schema::migrate_v55_to_v56(&self.pool).await?;
                     }
+                    // v57: durable decision journal rows keyed by call-site.
+                    if version < 57 {
+                        spectral_schema::migrate_v56_to_v57(&self.pool).await?;
+                    }
                     // v58: durable scheduler pause delivery and answer intents.
-                    // (v57 is the decision journal, in flight in another lane.)
                     if version < 58 {
                         spectral_schema::migrate_v57_to_v58(&self.pool).await?;
                     }
@@ -8794,6 +8797,90 @@ mod schedule_fire_claims_boot_tests {
         assert!(
             version >= 56,
             "reopening a v55 database must reach at least v56, got {version}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod decision_journal_boot_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn first_boot_and_v56_reopen_install_decision_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf());
+        let pool = manager.pool_clone().await.unwrap();
+        let cols: Vec<(String, String, i32)> = sqlx::query_as(
+            "SELECT name, type, [notnull]
+             FROM pragma_table_info('decision_journal')
+             WHERE name IN (
+                'id','ts','site','question_version','state_ref','backend',
+                'distribution_json','acted','fallback_reason','latency_ms'
+             )
+             ORDER BY cid",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            cols,
+            vec![
+                ("id".to_string(), "TEXT".to_string(), 0),
+                ("ts".to_string(), "TEXT".to_string(), 1),
+                ("site".to_string(), "TEXT".to_string(), 1),
+                ("question_version".to_string(), "TEXT".to_string(), 1),
+                ("state_ref".to_string(), "TEXT".to_string(), 1),
+                ("backend".to_string(), "TEXT".to_string(), 1),
+                ("distribution_json".to_string(), "TEXT".to_string(), 1),
+                ("acted".to_string(), "INTEGER".to_string(), 1),
+                ("fallback_reason".to_string(), "TEXT".to_string(), 0),
+                ("latency_ms".to_string(), "INTEGER".to_string(), 1),
+            ]
+        );
+        let indexes: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM pragma_index_list('decision_journal') ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(indexes
+            .iter()
+            .any(|name| name == "idx_decision_journal_site_ts"));
+
+        sqlx::query("DROP TABLE decision_journal")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_version")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (56)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        drop(manager);
+
+        let reopened = SessionManager::new(dir.path().to_path_buf());
+        let pool = reopened.pool_clone().await.unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type='table' AND name='decision_journal'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+        let version: i32 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        // Later ladder steps (v58 pause episodes, ...) stamp past 57; this test
+        // owns the journal step and must not break each time one lands.
+        assert!(
+            version >= 57,
+            "reopening a v56 database must reach at least v57, got {version}"
         );
     }
 }

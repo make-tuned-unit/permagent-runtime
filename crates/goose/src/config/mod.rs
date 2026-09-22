@@ -150,6 +150,18 @@ pub fn decision_judge_endpoint() -> Option<String> {
     )
 }
 
+/// Optional billing declaration (`PERMAGENT_DECISION_JUDGE_BILLING`).
+/// Only `systemone` honors `local_free`; otherwise paid accounting applies.
+/// Declaring your server free grants no permission to send private data:
+/// locality is checked separately and is unchanged by this setting.
+pub fn decision_judge_billing() -> Option<String> {
+    resolve_decision_judge_provider(
+        Config::global()
+            .get_param::<String>("PERMAGENT_DECISION_JUDGE_BILLING")
+            .ok(),
+    )
+}
+
 /// Is the Apple on-device Foundation Models backend allowed to serve work
 /// (`PERMAGENT_APPLE_FM_ENABLED`)?
 ///
@@ -241,6 +253,23 @@ mod decision_judge_config_tests {
         resolve_decision_judge_endpoint, resolve_decision_judge_model,
         resolve_decision_judge_provider,
     };
+
+    #[test]
+    #[serial_test::serial]
+    fn billing_reads_its_own_key_and_normalizes() {
+        let key = "PERMAGENT_DECISION_JUDGE_BILLING";
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, "  LOCAL_FREE  ");
+        let free = super::decision_judge_billing();
+        std::env::set_var(key, "   ");
+        let blank = super::decision_judge_billing();
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+        assert_eq!(free, Some("local_free".to_string()));
+        assert_eq!(blank, None);
+    }
 
     #[test]
     fn provider_is_lowercased_and_blank_is_unset() {

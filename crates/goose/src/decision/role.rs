@@ -24,9 +24,18 @@ impl JudgeProvider {
     }
 }
 
+/// Billing is independent of locality. Declaring a server free grants no
+/// permission to send private data; locality is checked separately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JudgeBilling {
+    PaidApi,
+    LocalFree,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct JudgeSettings {
     pub provider: JudgeProvider,
+    pub billing: JudgeBilling,
     pub model: String,
     pub endpoint: String,
     pub api_key: String,
@@ -37,6 +46,7 @@ impl fmt::Debug for JudgeSettings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JudgeSettings")
             .field("provider", &self.provider)
+            .field("billing", &self.billing)
             .field("model", &self.model)
             .field("endpoint", &self.endpoint)
             .field("api_key", &"[REDACTED]")
@@ -52,7 +62,7 @@ pub enum JudgeResolution {
     Configured(JudgeSettings),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum JudgeConfigError {
     #[error("unknown decision judge provider id '{0}' (expected 'jev' or 'systemone')")]
     UnknownProvider(String),
@@ -75,6 +85,17 @@ pub fn resolve_judge(
     api_key: Option<&str>,
     sovereign: bool,
 ) -> Result<JudgeResolution, JudgeConfigError> {
+    resolve_judge_with_billing(provider, model, endpoint, api_key, sovereign, None)
+}
+
+pub fn resolve_judge_with_billing(
+    provider: Option<&str>,
+    model: Option<&str>,
+    endpoint: Option<&str>,
+    api_key: Option<&str>,
+    sovereign: bool,
+    billing: Option<&str>,
+) -> Result<JudgeResolution, JudgeConfigError> {
     let provider = normalize(provider);
     let model = normalize(model);
     let (provider, model) = match (provider, model) {
@@ -91,6 +112,10 @@ pub fn resolve_judge(
     let api_key = resolve_api_key(provider, api_key)?;
     Ok(JudgeResolution::Configured(JudgeSettings {
         provider,
+        billing: match (provider, billing.map(str::trim)) {
+            (JudgeProvider::SystemOne, Some("local_free")) => JudgeBilling::LocalFree,
+            _ => JudgeBilling::PaidApi,
+        },
         model,
         endpoint,
         api_key,
@@ -107,12 +132,14 @@ pub fn configured_judge() -> Result<Option<JudgeSettings>, JudgeConfigError> {
         .ok();
     let sovereign = crate::sovereignty::global_sovereign_mode();
 
-    let resolution = resolve_judge(
+    let billing = crate::config::decision_judge_billing();
+    let resolution = resolve_judge_with_billing(
         provider.as_deref(),
         model.as_deref(),
         endpoint.as_deref(),
         api_key.as_deref(),
         sovereign,
+        billing.as_deref(),
     )?;
     match resolution {
         JudgeResolution::Unconfigured => Ok(None),
@@ -136,7 +163,16 @@ pub fn build_judge_backend(
         settings.api_key.clone(),
         timeouts,
     )
+    .map(|backend| backend.with_billing(settings.billing))
     .map_err(JudgeConfigError::Backend)
+}
+
+pub(super) fn judge_input_usd_per_mtok() -> f64 {
+    Config::global()
+        .get_param::<String>("PERMAGENT_DECISION_JUDGE_USD_PER_MTOK")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<f64>().ok())
+        .unwrap_or(0.042)
 }
 
 fn normalize(raw: Option<&str>) -> Option<String> {
@@ -238,6 +274,7 @@ mod tests {
                 sovereign: false,
                 expected: Ok(JudgeResolution::Configured(JudgeSettings {
                     provider: JudgeProvider::Jev,
+                    billing: JudgeBilling::PaidApi,
                     model: "jev-latest".to_string(),
                     endpoint: DEFAULT_JEV_ENDPOINT.to_string(),
                     api_key: "test-secret".to_string(),
@@ -268,6 +305,7 @@ mod tests {
                 sovereign: false,
                 expected: Ok(JudgeResolution::Configured(JudgeSettings {
                     provider: JudgeProvider::SystemOne,
+                    billing: JudgeBilling::PaidApi,
                     model: "local-judge".to_string(),
                     endpoint: "http://127.0.0.1:9000".to_string(),
                     api_key: "".to_string(),
@@ -298,6 +336,7 @@ mod tests {
                 sovereign: true,
                 expected: Ok(JudgeResolution::Configured(JudgeSettings {
                     provider: JudgeProvider::SystemOne,
+                    billing: JudgeBilling::PaidApi,
                     model: "local-judge".to_string(),
                     endpoint: "http://localhost:7777".to_string(),
                     api_key: "".to_string(),
@@ -330,6 +369,7 @@ mod tests {
     fn judge_settings_debug_redacts_api_key() {
         let settings = JudgeSettings {
             provider: JudgeProvider::Jev,
+            billing: JudgeBilling::PaidApi,
             model: "jev-latest".to_string(),
             endpoint: DEFAULT_JEV_ENDPOINT.to_string(),
             api_key: "test-secret".to_string(),
@@ -413,6 +453,76 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("evil.example"));
+    }
+
+    #[test]
+    fn billing_is_independent_of_locality_and_jev_is_always_paid() {
+        for (provider, endpoint, declared, expected) in [
+            (
+                "jev",
+                DEFAULT_JEV_ENDPOINT,
+                Some("local_free"),
+                JudgeBilling::PaidApi,
+            ),
+            (
+                "systemone",
+                "http://127.0.0.1:9000",
+                None,
+                JudgeBilling::PaidApi,
+            ),
+            (
+                "systemone",
+                "http://127.0.0.1:9000",
+                Some("local_free"),
+                JudgeBilling::LocalFree,
+            ),
+            (
+                "systemone",
+                "https://judge.example",
+                Some("local_free"),
+                JudgeBilling::LocalFree,
+            ),
+            (
+                "systemone",
+                "http://127.0.0.1:9000",
+                Some("unknown"),
+                JudgeBilling::PaidApi,
+            ),
+        ] {
+            let resolved = resolve_judge_with_billing(
+                Some(provider),
+                Some("test"),
+                Some(endpoint),
+                Some("test-secret"),
+                false,
+                declared,
+            )
+            .unwrap();
+            let JudgeResolution::Configured(settings) = resolved else {
+                panic!("expected configured judge");
+            };
+            assert_eq!(settings.billing, expected);
+            assert_eq!(settings.locality, endpoint_locality(endpoint));
+        }
+    }
+
+    #[test]
+    fn jev_loopback_override_is_rejected_even_when_declared_free() {
+        for billing in [None, Some("local_free")] {
+            assert_eq!(
+                resolve_judge_with_billing(
+                    Some("jev"),
+                    Some("jev-latest"),
+                    Some("https://127.0.0.1:9000"),
+                    Some("test-secret"),
+                    false,
+                    billing,
+                ),
+                Err(JudgeConfigError::InvalidJevEndpointHost(
+                    "127.0.0.1".to_string()
+                ))
+            );
+        }
     }
 
     #[test]

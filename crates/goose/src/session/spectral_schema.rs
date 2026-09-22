@@ -785,6 +785,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     apply_cost_reservations_schema(pool).await?;
     apply_schedule_pause_schema(pool).await?;
     apply_schedule_fire_claims_schema(pool).await?;
+    apply_decision_journal_schema(pool).await?;
 
     // Egress audit log (schema v29, sovereignty). Idempotent; shared with
     // migrate_v28_to_v29. Append-only, purely additive, base-independent.
@@ -2081,6 +2082,42 @@ pub async fn apply_schedule_pause_schema(pool: &Pool<Sqlite>) -> Result<()> {
 pub async fn migrate_v57_to_v58(pool: &Pool<Sqlite>) -> Result<()> {
     apply_schedule_pause_schema(pool).await?;
     sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (58)")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Shared by fresh initialization and the v56 -> v57 migration. Stores only a
+/// caller-provided state reference; never the decision-state text itself.
+pub async fn apply_decision_journal_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS decision_journal (
+            id TEXT PRIMARY KEY,
+            ts TEXT NOT NULL,
+            site TEXT NOT NULL,
+            question_version TEXT NOT NULL,
+            state_ref TEXT NOT NULL,
+            backend TEXT NOT NULL,
+            distribution_json TEXT NOT NULL,
+            acted INTEGER NOT NULL DEFAULT 0,
+            fallback_reason TEXT,
+            latency_ms INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_decision_journal_site_ts
+         ON decision_journal(site, ts)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn migrate_v56_to_v57(pool: &Pool<Sqlite>) -> Result<()> {
+    apply_decision_journal_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (57)")
         .execute(pool)
         .await?;
     Ok(())
@@ -7345,5 +7382,71 @@ mod schedule_fire_claims_tests {
                 ("pause_episode_id".to_string(), 2)
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod decision_journal_schema_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn v56_to_v57_installs_journal_table_idempotently() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (56)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        migrate_v56_to_v57(&pool).await.unwrap();
+        migrate_v56_to_v57(&pool).await.unwrap();
+
+        let version: i32 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(version, 57);
+
+        let cols: Vec<(String, String, i32)> = sqlx::query_as(
+            "SELECT name, type, [notnull] FROM pragma_table_info('decision_journal')
+             WHERE name IN (
+                'id','ts','site','question_version','state_ref','backend',
+                'distribution_json','acted','fallback_reason','latency_ms'
+             )
+             ORDER BY cid",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            cols,
+            vec![
+                ("id".to_string(), "TEXT".to_string(), 0),
+                ("ts".to_string(), "TEXT".to_string(), 1),
+                ("site".to_string(), "TEXT".to_string(), 1),
+                ("question_version".to_string(), "TEXT".to_string(), 1),
+                ("state_ref".to_string(), "TEXT".to_string(), 1),
+                ("backend".to_string(), "TEXT".to_string(), 1),
+                ("distribution_json".to_string(), "TEXT".to_string(), 1),
+                ("acted".to_string(), "INTEGER".to_string(), 1),
+                ("fallback_reason".to_string(), "TEXT".to_string(), 0),
+                ("latency_ms".to_string(), "INTEGER".to_string(), 1),
+            ]
+        );
+        let index_exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type='index' AND name='idx_decision_journal_site_ts'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(index_exists, 1);
     }
 }

@@ -1,7 +1,8 @@
 use super::types::QuestionKind;
 use super::{
-    check_locality, validate_questions, Answer, DecisionBackend, DecisionError, DecisionState,
-    Question, MAX_QUESTIONS_PER_STATE,
+    check_locality, validate_questions, Answer, BudgetRefusal, DecisionBackend, DecisionError,
+    DecisionResponse, DecisionState, DecisionUsage, MeteredAccounting, MeteredCallContext,
+    MeteredCallFinish, MeteredCallKind, MeteredCallRequest, Question, MAX_QUESTIONS_PER_STATE,
 };
 use crate::sovereignty::DataLocality;
 use async_trait::async_trait;
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 use url::{Host, Url};
 
@@ -48,11 +50,15 @@ pub fn endpoint_locality(endpoint: &str) -> DataLocality {
     }
 }
 
+#[derive(Clone)]
 pub struct SystemOneHttpBackend {
     endpoint: String,
+    billing: super::JudgeBilling,
     model: String,
     api_key: String,
     client: reqwest::Client,
+    accounting: Option<Arc<dyn MeteredAccounting>>,
+    input_usd_per_mtok: f64,
 }
 
 impl fmt::Debug for SystemOneHttpBackend {
@@ -89,10 +95,43 @@ impl SystemOneHttpBackend {
             .map_err(|_| DecisionError::Unavailable)?;
         Ok(Self {
             endpoint,
+            billing: super::JudgeBilling::PaidApi,
             model,
             api_key,
             client,
+            accounting: None,
+            input_usd_per_mtok: super::role::judge_input_usd_per_mtok(),
         })
+    }
+
+    pub fn with_billing(mut self, billing: super::JudgeBilling) -> Self {
+        self.billing = billing;
+        self
+    }
+
+    pub fn with_accounting(mut self, accounting: Arc<dyn MeteredAccounting>) -> Self {
+        self.accounting = Some(accounting);
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn hosted_test_backend(address: SocketAddr) -> Self {
+        let mut backend = Self::new(
+            format!("http://judge.test:{}", address.port()),
+            "jev-latest".into(),
+            String::new(),
+            HttpTimeouts::default(),
+        )
+        .unwrap();
+        backend.client = reqwest::Client::builder()
+            .resolve("judge.test", address)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        backend
     }
 
     pub(super) fn request_url(&self) -> Result<Url, DecisionError> {
@@ -123,45 +162,176 @@ impl DecisionBackend for SystemOneHttpBackend {
         "systemone"
     }
 
+    fn model_name(&self) -> Option<&str> {
+        Some(&self.model)
+    }
+
+    fn billing(&self) -> super::JudgeBilling {
+        self.billing
+    }
+
     fn data_locality(&self) -> DataLocality {
         endpoint_locality(&self.endpoint)
     }
 
-    async fn decide(
+    async fn decide_with_accounting(
         &self,
         state: &DecisionState,
         questions: &[Question],
-    ) -> Result<Vec<Answer>, DecisionError> {
+        accounting: Arc<dyn MeteredAccounting>,
+    ) -> Result<DecisionResponse, DecisionError> {
+        // A journaled call always uses its own session, never a stale binding.
+        self.clone()
+            .with_accounting(accounting)
+            .decide_with_usage(state, questions)
+            .await
+    }
+
+    async fn decide_with_usage(
+        &self,
+        state: &DecisionState,
+        questions: &[Question],
+    ) -> Result<DecisionResponse, DecisionError> {
         check_locality(state, self.data_locality())?;
         validate_questions(questions)?;
         let mut answers = Vec::with_capacity(questions.len());
+        let mut input_tokens: Option<i64> = None;
         for batch in questions.chunks(MAX_QUESTIONS_PER_STATE) {
             let mut request = self.client.post(self.request_url()?);
             if !self.api_key.trim().is_empty() {
                 request = request.bearer_auth(&self.api_key);
             }
-            let mut response = request
-                .json(&WireRequest {
-                    state: &state.text,
-                    model: &self.model,
-                    questions: WireQuestions(batch),
+            let wire = WireRequest {
+                state: &state.text,
+                model: &self.model,
+                questions: WireQuestions(batch),
+            };
+            let question_text = serde_json::to_string(&wire.questions)
+                .map_err(|_| DecisionError::MalformedResponse)?;
+            let chars = state
+                .text
+                .chars()
+                .count()
+                .saturating_add(question_text.chars().count());
+            let estimate = (chars.saturating_add(3) / 4).max(1) as u64;
+            // Build before reserving: serialization/URL errors cannot have sent bytes.
+            let request = request.json(&wire).build().map_err(transport_error)?;
+            let mut hold = if self.billing == super::JudgeBilling::PaidApi {
+                let accounting = self
+                    .accounting
+                    .as_ref()
+                    .ok_or(DecisionError::BudgetRefused(BudgetRefusal::NoTaskIdentity))?;
+                let call = accounting
+                    .reserve(MeteredCallRequest {
+                        call_id: uuid::Uuid::now_v7().to_string(),
+                        kind: MeteredCallKind::Decision,
+                        backend: self.name().to_string(),
+                        model: Some(self.model.clone()),
+                        estimated_input_tokens: estimate,
+                        // One token per UTF-8 byte is a conservative bound for this text.
+                        input_token_upper_bound: (state
+                            .text
+                            .len()
+                            .saturating_add(question_text.len())
+                            as u64)
+                            .max(estimate),
+                        input_usd_per_mtok: self.input_usd_per_mtok,
+                    })
+                    .await?;
+                Some(PendingCall {
+                    accounting: Arc::clone(accounting),
+                    call: Some(call),
                 })
-                .send()
-                .await
-                .map_err(transport_error)?;
+            } else {
+                None
+            };
+            let mut response = match self.client.execute(request).await {
+                Ok(response) => response,
+                Err(error) => {
+                    // Only connection establishment failures prove no request bytes left.
+                    let finish = if error.is_connect() {
+                        MeteredCallFinish::NotSent
+                    } else {
+                        MeteredCallFinish::UsageUnknown
+                    };
+                    finish_pending(&mut hold, finish).await?;
+                    return Err(transport_error(error));
+                }
+            };
             let status = response.status().as_u16();
-            if status == 422 {
-                return Err(DecisionError::Validation(
-                    "remote rejected the request (HTTP 422)".into(),
-                ));
-            }
             if !(200..300).contains(&status) {
+                // A server response alone does not establish billable token usage.
+                finish_pending(&mut hold, MeteredCallFinish::UsageUnknown).await?;
                 return Err(status_error(status));
             }
-            let body = read_response_body(&mut response).await?;
-            answers.extend(parse_response(&body, batch)?);
+            let body = match read_response_body(&mut response).await {
+                Ok(body) => body,
+                Err(error) => {
+                    finish_pending(&mut hold, MeteredCallFinish::UsageUnknown).await?;
+                    return Err(error);
+                }
+            };
+            // Settle usage even when the answer distribution is malformed.
+            let usage = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| value.get("usage")?.get("input_tokens")?.as_u64());
+            finish_pending(
+                &mut hold,
+                MeteredCallFinish::Usage {
+                    input_tokens: usage.unwrap_or(estimate),
+                    is_estimated: usage.is_none(),
+                },
+            )
+            .await?;
+            let parsed = parse_wire_response(&body, batch)?;
+            answers.extend(parsed.answers);
+            if let Some(batch_tokens) = parsed.usage.input_tokens {
+                input_tokens = Some(input_tokens.unwrap_or(0).saturating_add(batch_tokens));
+            }
         }
-        Ok(answers)
+        Ok(DecisionResponse {
+            answers,
+            usage: DecisionUsage { input_tokens },
+        })
+    }
+}
+
+struct PendingCall {
+    accounting: Arc<dyn MeteredAccounting>,
+    call: Option<MeteredCallContext>,
+}
+
+async fn finish_pending(
+    pending: &mut Option<PendingCall>,
+    finish: MeteredCallFinish,
+) -> Result<(), DecisionError> {
+    if let Some(pending) = pending {
+        if let Some(call) = pending.call.take() {
+            // Settlement failures belong to metered reconciliation, never a second finish.
+            if let Err(error) = pending.accounting.finish(&call, finish).await {
+                tracing::warn!("failed to finish decision accounting");
+                return Err(error.into());
+            }
+        }
+    }
+    Ok(())
+}
+
+impl Drop for PendingCall {
+    fn drop(&mut self) {
+        // The overall guard can cancel a batch after sending. Preserve its hold.
+        if let Some(call) = self.call.take() {
+            let accounting = Arc::clone(&self.accounting);
+            tokio::spawn(async move {
+                if accounting
+                    .finish(&call, MeteredCallFinish::UsageUnknown)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("failed to mark cancelled decision accounting unknown");
+                }
+            });
+        }
     }
 }
 
@@ -269,25 +439,33 @@ struct WireResponse {
     #[serde(rename = "model")]
     _model: String,
     answers: BTreeMap<String, Answer>,
-    #[serde(rename = "usage")]
-    _usage: WireUsage,
+    #[serde(default)]
+    usage: Option<WireUsage>,
 }
 
 #[derive(Deserialize)]
 struct WireUsage {
     #[serde(rename = "input_tokens")]
-    _input_tokens: u64,
-    #[serde(rename = "output_tokens")]
+    input_tokens: Option<u64>,
+    #[serde(default, rename = "output_tokens")]
     _output_tokens: u64,
 }
 
+#[cfg(test)]
 pub(super) fn parse_response(
     body: &str,
     questions: &[Question],
 ) -> Result<Vec<Answer>, DecisionError> {
+    Ok(parse_wire_response(body, questions)?.answers)
+}
+
+fn parse_wire_response(
+    body: &str,
+    questions: &[Question],
+) -> Result<DecisionResponse, DecisionError> {
     let mut response: WireResponse =
         serde_json::from_str(body).map_err(|_| DecisionError::MalformedResponse)?;
-    questions
+    let answers: Vec<Answer> = questions
         .iter()
         .map(|question| {
             let answer = response
@@ -297,5 +475,13 @@ pub(super) fn parse_response(
             answer.validate(question)?;
             Ok(answer)
         })
-        .collect()
+        .collect::<Result<Vec<Answer>, DecisionError>>()?;
+    let input_tokens = response
+        .usage
+        .and_then(|usage| usage.input_tokens)
+        .map(|tokens| i64::try_from(tokens).unwrap_or(i64::MAX));
+    Ok(DecisionResponse {
+        answers,
+        usage: DecisionUsage { input_tokens },
+    })
 }
