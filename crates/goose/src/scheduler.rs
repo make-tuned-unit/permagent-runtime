@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, FixedOffset, Local, Utc};
 use futures::future::FutureExt as _;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio_cron_scheduler::{job::JobId, Job, JobScheduler as TokioJobScheduler};
 use tokio_util::sync::CancellationToken;
@@ -61,8 +62,8 @@ pub const RUN_ROSTER_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         teaching: &[],
     };
 
-use crate::agents::AgentEvent;
 use crate::agents::{Agent, SessionConfig};
+use crate::agents::{AgentEvent, AgentRuntimeOutcome};
 use crate::config::paths::Paths;
 use crate::config::{resolve_extensions_for_new_session, Config};
 use crate::conversation::message::Message;
@@ -1338,7 +1339,16 @@ impl Scheduler {
                                 let g = current_jobs_arc.lock().await;
                                 g.get(&task_job_id).map(|(_, j)| j.max_retries).unwrap_or(0)
                             };
-                            if attempt < max_retries && !cancel_token.is_cancelled() {
+                            // A typed `RuntimeOutcome::Failed` is never retried. It
+                            // is one bit: a spend refusal before the wire and an
+                            // accounting failure after every tool ran set it
+                            // identically, and this loop re-executes the WHOLE job —
+                            // so "don't know" is read as "don't repeat". It still
+                            // records Error and counts toward the auto-pause breaker
+                            // below. Splitting the outcome belongs in agent.rs. A
+                            // real stream `Err` retries exactly as before.
+                            let retryable = is_retryable_failure(&e);
+                            if attempt < max_retries && !cancel_token.is_cancelled() && retryable {
                                 attempt += 1;
                                 {
                                     let mut g = current_jobs_arc.lock().await;
@@ -3184,6 +3194,7 @@ async fn execute_job_inner(
     let mut stream = std::pin::pin!(stream);
 
     let mut stream_error: Option<String> = None;
+    let mut runtime_outcome: Option<AgentRuntimeOutcome> = None;
     while let Some(message_result) = stream.next().await {
         tokio::task::yield_now().await;
 
@@ -3194,12 +3205,42 @@ async fn execute_job_inner(
             Ok(AgentEvent::HistoryReplaced(updated)) => {
                 conversation = updated;
             }
-            Ok(_) => {}
+            Ok(event) => {
+                if let Some(outcome) = runtime_outcome_of(&event) {
+                    runtime_outcome = Some(outcome);
+                }
+            }
             Err(e) => {
                 tracing::error!("Error in agent stream: {}", e);
                 stream_error = Some(e.to_string());
                 break;
             }
+        }
+    }
+    let has_runtime_outcome = runtime_outcome.is_some();
+    let had_stream_error = stream_error.is_some();
+    // Reported at the SAME terminal point as a stream error (end of this fn),
+    // so the post-drain phases run for it exactly as they do for that path.
+    let mut agent_turn_failed = false;
+    // Do not copy assistant text into failure surfaces: this error fans out to
+    // retry and terminal logs, activity payloads, and optional inbox decisions;
+    // the last assistant message can contain private success text in sticky
+    // mid-stream failure cases. Report only a fixed pointer to the session.
+    match decide_stream_completion(runtime_outcome, stream_error.take()) {
+        StreamCompletionDecision::Complete => {
+            if !has_runtime_outcome && !had_stream_error {
+                tracing::debug!(
+                    "Scheduled job '{}' stream ended without a RuntimeOutcome event; \
+                     preserving legacy success behavior",
+                    job_id
+                );
+            }
+        }
+        StreamCompletionDecision::StreamError(err) => {
+            stream_error = Some(err);
+        }
+        StreamCompletionDecision::FailedOutcome => {
+            agent_turn_failed = true;
         }
     }
 
@@ -3415,8 +3456,59 @@ async fn execute_job_inner(
             err
         ));
     }
+    if agent_turn_failed {
+        return Err(anyhow::Error::new(AgentTurnFailed {
+            session_id: session.id.clone(),
+        }));
+    }
 
     Ok(session.id)
+}
+
+fn failed_outcome_message(session_id: &str) -> String {
+    format!("agent turn reported a failed outcome; open session {session_id} for the agent's explanation")
+}
+
+#[derive(Debug, Error)]
+#[error("{}", failed_outcome_message(session_id))]
+struct AgentTurnFailed {
+    session_id: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StreamCompletionDecision {
+    Complete,
+    StreamError(String),
+    FailedOutcome,
+}
+
+fn runtime_outcome_of(event: &AgentEvent) -> Option<AgentRuntimeOutcome> {
+    match event {
+        AgentEvent::RuntimeOutcome(outcome) => Some(*outcome),
+        _ => None,
+    }
+}
+
+fn is_retryable_failure(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<AgentTurnFailed>().is_none()
+}
+
+fn decide_stream_completion(
+    runtime_outcome: Option<AgentRuntimeOutcome>,
+    stream_error: Option<String>,
+) -> StreamCompletionDecision {
+    if let Some(err) = stream_error {
+        return StreamCompletionDecision::StreamError(err);
+    }
+
+    match runtime_outcome {
+        // If max-turns was hit, the agent emits Succeeded by design; keep
+        // treating that as a successful stream completion.
+        Some(AgentRuntimeOutcome::Succeeded) => StreamCompletionDecision::Complete,
+        Some(AgentRuntimeOutcome::Cancelled) => StreamCompletionDecision::Complete,
+        Some(AgentRuntimeOutcome::Failed) => StreamCompletionDecision::FailedOutcome,
+        None => StreamCompletionDecision::Complete,
+    }
 }
 
 #[async_trait]
@@ -3599,6 +3691,115 @@ mod tests {
         assert!(
             begins < next_fn,
             "the budget task must be opened in the same function that creates the run",
+        );
+    }
+
+    #[test]
+    fn stream_completion_decision_table() {
+        assert_eq!(
+            decide_stream_completion(Some(AgentRuntimeOutcome::Failed), None),
+            StreamCompletionDecision::FailedOutcome
+        );
+        assert_eq!(
+            decide_stream_completion(Some(AgentRuntimeOutcome::Succeeded), None),
+            StreamCompletionDecision::Complete
+        );
+        assert_eq!(
+            decide_stream_completion(Some(AgentRuntimeOutcome::Cancelled), None),
+            StreamCompletionDecision::Complete
+        );
+        assert_eq!(
+            decide_stream_completion(None, None),
+            StreamCompletionDecision::Complete
+        );
+        assert_eq!(
+            decide_stream_completion(Some(AgentRuntimeOutcome::Succeeded), None,),
+            StreamCompletionDecision::Complete
+        );
+
+        let preserved = "stream transport failed".to_string();
+        for outcome in [
+            Some(AgentRuntimeOutcome::Failed),
+            Some(AgentRuntimeOutcome::Succeeded),
+            Some(AgentRuntimeOutcome::Cancelled),
+            None,
+        ] {
+            assert_eq!(
+                decide_stream_completion(outcome, Some(preserved.clone())),
+                StreamCompletionDecision::StreamError(preserved.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn retryability_predicate_treats_typed_failed_outcome_as_non_retryable() {
+        let wrapped = anyhow::Error::new(AgentTurnFailed {
+            session_id: "sess-123".to_string(),
+        })
+        .context("wrapped");
+        // anyhow's `Display` of a contexted error is the context alone; the
+        // pointer message is in the chain (`{:#}`) and the typed value is what
+        // the retry loop downcasts — both must survive `.context()`.
+        assert_eq!(
+            wrapped.root_cause().to_string(),
+            failed_outcome_message("sess-123"),
+            "typed failed outcome text must remain the fixed session pointer"
+        );
+        assert!(
+            !is_retryable_failure(&wrapped),
+            "typed failed outcome must not be retried even when wrapped in context"
+        );
+
+        let plain = anyhow!("stream transport failed");
+        assert!(
+            is_retryable_failure(&plain),
+            "plain stream errors remain retryable"
+        );
+    }
+
+    #[test]
+    fn runtime_outcome_extractor_only_captures_runtime_outcome_events() {
+        assert_eq!(
+            runtime_outcome_of(&AgentEvent::RuntimeOutcome(AgentRuntimeOutcome::Failed)),
+            Some(AgentRuntimeOutcome::Failed)
+        );
+        assert_eq!(
+            runtime_outcome_of(&AgentEvent::Message(Message::user().with_text("noop"))),
+            None
+        );
+    }
+
+    #[test]
+    fn scheduled_drain_captures_runtime_outcome_and_retry_checks_predicate() {
+        let src = include_str!("scheduler.rs");
+        let production = src
+            .split_once("#[cfg(test)]\nmod tests")
+            .map(|(before, _)| before)
+            .unwrap_or(src);
+        let loop_ix = production
+            .find("while let Some(message_result) = stream.next().await")
+            .expect("scheduler drain loop must exist");
+        let extract_ix = production
+            .find("runtime_outcome_of(&event)")
+            .expect("drain loop must capture RuntimeOutcome through extractor");
+        let assign_ix = production
+            .find("runtime_outcome = Some(outcome);")
+            .expect("drain loop must retain RuntimeOutcome values");
+        let retry_ix = production
+            .find("is_retryable_failure(&e)")
+            .expect("bounded retry loop must check retryability predicate");
+
+        assert!(
+            loop_ix < extract_ix,
+            "RuntimeOutcome handling must stay inside the drain loop"
+        );
+        assert!(
+            extract_ix < assign_ix,
+            "RuntimeOutcome handling must assign runtime_outcome after extraction"
+        );
+        assert!(
+            retry_ix < loop_ix,
+            "bounded retry loop should call is_retryable_failure before stream draining"
         );
     }
 
