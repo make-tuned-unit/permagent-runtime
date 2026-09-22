@@ -582,6 +582,24 @@ model roles, the Librarian, Laya, the image model), looks for newer versions of 
 (Hugging Face and Ollama library APIs, no key needed), and files **suggestions** in the Decision Inbox with evidence — never swaps a
 model itself. Needs a Phase-0 audit of the model roster sources and the starter pattern, then Astra's shape ruling.
 
+**Voice programme — Astra's ruling (2026-09-22, session `01a0c949`; full text at `permagent-worktrees/dagJ-reports/voice/astra-ruling.txt`).**
+Order V3 → V2 → V4 → V5; V3+V2 may share a worker but keep separate ordered gates. Two corrections to the audit: 16 kHz **is** the right
+wire rate (the phone converts; hardware rate belongs in a separate field), and empty-STT *text* feedback already exists — V4 adds
+**spoken** recovery and capture policy. **V3:** a `hello` after `ready` and before any audio (protocol_version, app_version, build_number,
+**git_sha + git_dirty embedded at build**, capabilities, audio_revision, real inputs, capture vs wire format, buffer duration); server
+emits `voice_client_hello`; missing hello → warn once, never refuse; web parity required; **one shared wire fixture** decoded by the
+production Rust and Swift types. **V2:** `start` carries turn_id/trigger/audio_revision; `stop` carries the end reason recorded *at the
+decision branch* plus the VAD's thresholds, floor, committed/voiced ms, cap applied, drops (null when unmeasured); acceptance = a
+deterministic 25.8 s reproduction that says what started it, what kept resetting the silence timer, and what ended it. **V4:** speak on
+every empty user-tapped turn; on automatic turns only when health is `finite_signal_pcm`, VAD committed, and (≥ 5 s or second qualifying
+empty within 30 s), at most once per 30 s per session; fixed copy chosen from the captured *input* route ("…on the Bluetooth mic / phone
+mic / headset mic…"), Kokoro through the cancellable transport, cached per voice generation, no LLM; **automatic-turn cap 15 s**, user-tapped
+stays 60 s; an explicit feedback-playback state — code owns the state machine. **V5:** warm the *resident provider* once per
+provider/voice generation after `ready`, not per socket; p95 ≤ 700 ms first chunk over 20 fresh sockets after warm; reconnect bursts warm
+once. Tiers: V3 T0, V2 T1, V4 T1 + independent state-machine review, V5 T0. Rejected: hardware rate in `start`, refusing old clients,
+version-only identity, optional web parity, speaking on every automatic noise turn, LLM-controlled recovery, synthesis per socket open.
+The incident's phone build and daemon **both already had** the text notice (git-verified); V1's device test remains a release gate.
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
