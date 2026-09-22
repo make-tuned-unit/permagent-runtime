@@ -16,6 +16,7 @@ use super::utils::ImageFormat;
 use crate::config::declarative_providers::DeclarativeProviderConfig;
 use crate::conversation::message::Message;
 use crate::cost_router::cache::SystemPromptParts;
+use crate::session::CostTier;
 use anyhow::Result;
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -81,6 +82,13 @@ pub struct OpenAiProvider {
     name: String,
     custom_models: Option<Vec<String>>,
     skip_canonical_filtering: bool,
+    /// Resolved billing class for this provider instance. Internal state for the
+    /// reservation path, not part of the provider's serialized form — and
+    /// `CostTier` deliberately carries no serde derives, because it is already
+    /// validated in Rust and stored as TEXT (see its doc comment on the
+    /// widen-in-two-places footgun).
+    #[serde(skip)]
+    cost_tier: CostTier,
 }
 
 impl OpenAiProvider {
@@ -158,6 +166,7 @@ impl OpenAiProvider {
             name: OPEN_AI_PROVIDER_NAME.to_string(),
             custom_models: None,
             skip_canonical_filtering: false,
+            cost_tier: CostTier::PaidApi,
         })
     }
 
@@ -174,6 +183,7 @@ impl OpenAiProvider {
             name: OPEN_AI_PROVIDER_NAME.to_string(),
             custom_models: None,
             skip_canonical_filtering: false,
+            cost_tier: CostTier::PaidApi,
         }
     }
 
@@ -261,6 +271,10 @@ impl OpenAiProvider {
             name: config.name.clone(),
             custom_models,
             skip_canonical_filtering: config.skip_canonical_filtering,
+            cost_tier: config
+                .cost_tier
+                .map(Into::into)
+                .unwrap_or(CostTier::PaidApi),
         })
     }
 
@@ -517,6 +531,10 @@ impl Provider for OpenAiProvider {
 
     fn skip_canonical_filtering(&self) -> bool {
         self.skip_canonical_filtering
+    }
+
+    fn cost_tier(&self) -> crate::session::CostTier {
+        self.cost_tier
     }
 
     fn get_model_config(&self) -> ModelConfig {
@@ -830,6 +848,7 @@ mod tests {
             name: name.to_string(),
             custom_models: None,
             skip_canonical_filtering: false,
+            cost_tier: CostTier::PaidApi,
         }
     }
 
@@ -908,6 +927,43 @@ mod tests {
 
         let result = provider.sanitize_request_for_compat(payload.clone());
         assert_eq!(result, payload);
+    }
+
+    #[test]
+    fn declarative_provider_without_cost_tier_defaults_to_paid_api() {
+        let config: DeclarativeProviderConfig = serde_json::from_value(json!({
+            "name": "custom_openai",
+            "engine": "openai",
+            "display_name": "Custom OpenAI",
+            "api_key_env": "",
+            "base_url": "http://localhost:1234/v1/chat/completions",
+            "models": [],
+            "requires_auth": false
+        }))
+        .expect("fixture should parse");
+        let provider =
+            OpenAiProvider::from_custom_config(ModelConfig::new_or_fail("test-model"), config)
+                .expect("provider should construct");
+        assert_eq!(provider.cost_tier(), CostTier::PaidApi);
+    }
+
+    #[test]
+    fn declarative_provider_uses_configured_local_free_cost_tier() {
+        let config: DeclarativeProviderConfig = serde_json::from_value(json!({
+            "name": "custom_openai",
+            "engine": "openai",
+            "display_name": "Custom OpenAI",
+            "api_key_env": "",
+            "base_url": "http://localhost:1234/v1/chat/completions",
+            "models": [],
+            "requires_auth": false,
+            "cost_tier": "local_free"
+        }))
+        .expect("fixture should parse");
+        let provider =
+            OpenAiProvider::from_custom_config(ModelConfig::new_or_fail("test-model"), config)
+                .expect("provider should construct");
+        assert_eq!(provider.cost_tier(), CostTier::LocalFree);
     }
 
     #[test]

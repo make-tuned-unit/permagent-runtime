@@ -9,6 +9,7 @@ use anyhow::Result;
 use include_dir::{include_dir, Dir};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Deserializer, Serialize};
+use url::Url;
 
 /// Deserialize an optional string, treating empty/whitespace-only values as None.
 fn deserialize_non_empty_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -35,6 +36,30 @@ pub enum ProviderEngine {
     OpenAI,
     Ollama,
     Anthropic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeclarativeCostTier {
+    LocalFree,
+    Subscription,
+    PaidApi,
+}
+
+impl From<DeclarativeCostTier> for crate::session::CostTier {
+    fn from(value: DeclarativeCostTier) -> Self {
+        match value {
+            DeclarativeCostTier::LocalFree => crate::session::CostTier::LocalFree,
+            DeclarativeCostTier::Subscription => crate::session::CostTier::Subscription,
+            DeclarativeCostTier::PaidApi => crate::session::CostTier::PaidApi,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProviderBillingOverride {
+    pub endpoint: String,
+    pub cost_tier: DeclarativeCostTier,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -74,6 +99,8 @@ pub struct DeclarativeProviderConfig {
     pub env_vars: Option<Vec<EnvVarConfig>>,
     #[serde(default)]
     pub dynamic_models: Option<bool>,
+    #[serde(default)]
+    pub cost_tier: Option<DeclarativeCostTier>,
     #[serde(default)]
     pub skip_canonical_filtering: bool,
     #[serde(default, deserialize_with = "deserialize_non_empty_string")]
@@ -232,6 +259,7 @@ pub fn create_custom_provider(
         base_path: params.base_path,
         env_vars: None,
         dynamic_models: None,
+        cost_tier: None,
         skip_canonical_filtering: false,
         fast_model: None,
     };
@@ -299,6 +327,7 @@ pub fn update_custom_provider(params: UpdateCustomProviderParams) -> Result<()> 
             base_path: params.base_path,
             env_vars: existing_config.env_vars,
             dynamic_models: existing_config.dynamic_models,
+            cost_tier: existing_config.cost_tier,
             skip_canonical_filtering: existing_config.skip_canonical_filtering,
             fast_model: existing_config.fast_model.clone(),
         };
@@ -443,6 +472,14 @@ pub fn register_declarative_providers(
 /// runtime overrides from env_vars. Called lazily (at provider instantiation)
 /// so values configured through the UI after startup are picked up.
 fn resolve_config(config: &mut DeclarativeProviderConfig) -> Result<()> {
+    let overrides = crate::config::provider_billing_overrides();
+    resolve_config_with_overrides(config, &overrides)
+}
+
+fn resolve_config_with_overrides(
+    config: &mut DeclarativeProviderConfig,
+    overrides: &HashMap<String, ProviderBillingOverride>,
+) -> Result<()> {
     if let Some(ref env_vars) = config.env_vars {
         config.base_url = expand_env_vars(&config.base_url, env_vars)?;
 
@@ -463,6 +500,53 @@ fn resolve_config(config: &mut DeclarativeProviderConfig) -> Result<()> {
                 }
             }
         }
+    }
+    apply_provider_billing_overrides(config, overrides)?;
+    validate_billing_metadata_support(config)?;
+    Ok(())
+}
+
+fn normalize_endpoint_for_billing(endpoint: &str) -> Result<String> {
+    let parsed = Url::parse(endpoint.trim())
+        .map_err(|e| anyhow::anyhow!("Invalid endpoint '{}': {}", endpoint, e))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid endpoint '{}': missing host", endpoint))?
+        .to_ascii_lowercase();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("Invalid endpoint '{}': missing port", endpoint))?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    let path = match parsed.path().trim_end_matches('/') {
+        "" => "/".to_string(),
+        p => p.to_string(),
+    };
+    let query = parsed.query().map(|q| format!("?{q}")).unwrap_or_default();
+    Ok(format!("{scheme}://{host}:{port}{path}{query}"))
+}
+
+fn apply_provider_billing_overrides(
+    config: &mut DeclarativeProviderConfig,
+    overrides: &HashMap<String, ProviderBillingOverride>,
+) -> Result<()> {
+    let Some(override_cfg) = overrides.get(&config.name) else {
+        return Ok(());
+    };
+    let expected = normalize_endpoint_for_billing(&override_cfg.endpoint)?;
+    let effective = normalize_endpoint_for_billing(&config.base_url)?;
+    if expected == effective {
+        config.cost_tier = Some(override_cfg.cost_tier);
+    }
+    Ok(())
+}
+
+fn validate_billing_metadata_support(config: &DeclarativeProviderConfig) -> Result<()> {
+    if config.cost_tier.is_some() && !matches!(config.engine, ProviderEngine::OpenAI) {
+        return Err(anyhow::anyhow!(
+            "Provider '{}' declares billing metadata but engine '{:?}' does not support it",
+            config.name,
+            config.engine
+        ));
     }
     Ok(())
 }
@@ -540,6 +624,7 @@ pub fn register_declarative_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_tanzu_json_deserializes() {
@@ -582,6 +667,7 @@ mod tests {
         assert!(!config.requires_auth);
         assert!(config.skip_canonical_filtering);
         assert_eq!(config.dynamic_models, Some(true));
+        assert_eq!(config.cost_tier, Some(DeclarativeCostTier::PaidApi));
         assert_eq!(config.supports_streaming, Some(true));
         assert_eq!(config.base_url, "${LLAMA_SWAP_HOST}/v1/chat/completions");
         assert!(config.models.is_empty());
@@ -620,6 +706,107 @@ mod tests {
         assert_eq!(
             env_vars[0].default,
             Some("http://127.0.0.1:8081".to_string())
+        );
+    }
+
+    #[test]
+    fn test_lmstudio_json_deserializes_with_local_free_tier() {
+        let json = include_str!("../providers/declarative/lmstudio.json");
+        let config: DeclarativeProviderConfig =
+            serde_json::from_str(json).expect("lmstudio.json should parse");
+        assert_eq!(config.name, "lmstudio");
+        assert_eq!(config.cost_tier, Some(DeclarativeCostTier::LocalFree));
+    }
+
+    #[test]
+    fn test_ollama_cloud_json_deserializes_with_paid_api_tier() {
+        let json = include_str!("../providers/declarative/ollama_cloud.json");
+        let config: DeclarativeProviderConfig =
+            serde_json::from_str(json).expect("ollama_cloud.json should parse");
+        assert_eq!(config.name, "ollama_cloud");
+        assert_eq!(config.cost_tier, Some(DeclarativeCostTier::PaidApi));
+    }
+
+    #[test]
+    fn test_unknown_cost_tier_value_is_rejected() {
+        let json = serde_json::json!({
+            "name": "bad_tier_provider",
+            "engine": "openai",
+            "display_name": "Bad Tier",
+            "api_key_env": "",
+            "base_url": "http://localhost:1234/v1/chat/completions",
+            "models": [],
+            "cost_tier": "local"
+        });
+        let parsed = serde_json::from_value::<DeclarativeProviderConfig>(json);
+        assert!(parsed.is_err(), "unknown cost_tier must be rejected");
+    }
+
+    #[test]
+    fn test_billing_override_applies_only_on_exact_endpoint_match() {
+        let mut config: DeclarativeProviderConfig = serde_json::from_value(serde_json::json!({
+            "name": "lmstudio",
+            "engine": "openai",
+            "display_name": "LM Studio",
+            "api_key_env": "",
+            "base_url": "${LMSTUDIO_HOST}/v1/chat/completions",
+            "models": [],
+            "cost_tier": "local_free",
+            "supports_streaming": true,
+            "requires_auth": false,
+            "env_vars": [{
+                "name": "LMSTUDIO_HOST",
+                "required": false,
+                "secret": false,
+                "default": "http://localhost:1234"
+            }]
+        }))
+        .expect("fixture should parse");
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "lmstudio".to_string(),
+            ProviderBillingOverride {
+                endpoint: "http://localhost:1234/v1/chat/completions".to_string(),
+                cost_tier: DeclarativeCostTier::PaidApi,
+            },
+        );
+
+        resolve_config_with_overrides(&mut config, &overrides).expect("resolve should succeed");
+        assert_eq!(
+            config.cost_tier,
+            Some(DeclarativeCostTier::PaidApi),
+            "exact endpoint match must apply override"
+        );
+
+        config.base_url = "http://localhost:9999/v1/chat/completions".to_string();
+        config.cost_tier = Some(DeclarativeCostTier::LocalFree);
+        resolve_config_with_overrides(&mut config, &overrides).expect("resolve should succeed");
+        assert_eq!(
+            config.cost_tier,
+            Some(DeclarativeCostTier::LocalFree),
+            "endpoint change must invalidate override"
+        );
+    }
+
+    #[test]
+    fn test_billing_metadata_on_unsupported_engine_is_rejected_explicitly() {
+        let mut config: DeclarativeProviderConfig = serde_json::from_value(serde_json::json!({
+            "name": "custom_ollama",
+            "engine": "ollama",
+            "display_name": "Custom Ollama",
+            "api_key_env": "",
+            "base_url": "http://localhost:11434",
+            "models": [],
+            "cost_tier": "local_free"
+        }))
+        .expect("fixture should parse");
+        let overrides = HashMap::new();
+        let err = resolve_config_with_overrides(&mut config, &overrides).expect_err(
+            "billing metadata on a non-openai declarative engine must be rejected explicitly",
+        );
+        assert!(
+            err.to_string().contains("does not support"),
+            "unexpected error: {err}"
         );
     }
 

@@ -16,6 +16,7 @@
     }
   ],
   "dynamic_models": true,
+  "cost_tier": "paid_api",
   "models": [],
   "supports_streaming": true,
   "requires_auth": false,

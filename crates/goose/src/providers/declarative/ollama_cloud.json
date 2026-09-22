@@ -6,6 +6,7 @@
   "api_key_env": "OLLAMA_CLOUD_API_KEY",
   "base_url": "https://ollama.com/v1/chat/completions",
   "models": [],
+  "cost_tier": "paid_api",
   "dynamic_models": true,
   "headers": null,
   "timeout_seconds": null,

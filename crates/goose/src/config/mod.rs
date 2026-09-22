@@ -20,10 +20,12 @@ pub mod signup_openrouter;
 pub mod signup_tetrate;
 pub mod voice_model;
 pub mod worker_probe;
+use std::collections::HashMap;
 
 pub use crate::agents::ExtensionConfig;
 pub use base::{Config, ConfigError};
 pub use declarative_providers::DeclarativeProviderConfig;
+pub use declarative_providers::{DeclarativeCostTier, ProviderBillingOverride};
 pub use experiments::ExperimentManager;
 pub use extensions::{
     extension_is_grantable, get_all_extension_names, get_all_extensions, get_enabled_extensions,
@@ -160,6 +162,16 @@ pub fn decision_judge_billing() -> Option<String> {
             .get_param::<String>("PERMAGENT_DECISION_JUDGE_BILLING")
             .ok(),
     )
+}
+
+/// Optional per-provider billing overrides (`provider_billing_overrides`).
+///
+/// Each entry is keyed by declarative provider id and applies only when
+/// `endpoint` exactly matches the resolved effective endpoint.
+pub fn provider_billing_overrides() -> HashMap<String, ProviderBillingOverride> {
+    Config::global()
+        .get_param::<HashMap<String, ProviderBillingOverride>>("provider_billing_overrides")
+        .unwrap_or_default()
 }
 
 /// Is the Apple on-device Foundation Models backend allowed to serve work

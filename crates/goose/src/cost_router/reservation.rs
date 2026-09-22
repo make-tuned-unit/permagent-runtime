@@ -885,6 +885,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn arbitrary_model_name_on_a_local_free_provider_is_free() {
+        let cfg = config(None, None);
+        assert_eq!(
+            plan_reservation_bound(
+                "lmstudio",
+                "runtime-discovered-model",
+                CostTier::LocalFree,
+                &cfg,
+                DEFAULT_RESERVED_ATTEMPTS
+            )
+            .unwrap(),
+            None
+        );
+    }
+
     /// 2026-09-18 user-reported blocker, `permagent run --recipe
     /// permagent-coding`: OpenAI's stream dropped before any reply started,
     /// the pre-commit failover switched the session to the LOCAL split

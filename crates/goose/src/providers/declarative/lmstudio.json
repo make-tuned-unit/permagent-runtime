@@ -6,6 +6,7 @@
   "api_key_env": "",
   "base_url": "http://localhost:1234/v1/chat/completions",
   "models": [],
+  "cost_tier": "local_free",
   "supports_streaming": true,
   "requires_auth": false,
   "skip_canonical_filtering": true
