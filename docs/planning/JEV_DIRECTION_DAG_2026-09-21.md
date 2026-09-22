@@ -523,6 +523,25 @@ bypass. Also surfaced, **unverified by either session**: a "daemon restart casca
 "verifier/retry cap miscalibrated" claim (trivial edits failing 3/3), and "Docker credential guard offline" — the last was wrong the previous
 time a health report said it (the real blocker was a model rate limit), so treat it as a claim to check, not a fact.
 
+**C1 re-specified after the Council (Watcher candidate scoring, shadow):** hook in `goose-server/src/proactive.rs::reason()` after the
+candidate list is built and before `complete_fast("echo-watcher", …)`. The state is the candidate list (memory content → **Private**, so only
+a loopback `systemone` or the deterministic backend can ever serve it; hosted Jev is refused by the locality guard by construction). One
+`choice` question over the candidates plus "none", `question_version = "watcher.pick.v1"`, journalled through B2b-i's `decide_journaled`
+with `acted = 0`; the existing model pick runs unchanged. **Feedback signal (DeepSeek's dissent, adopted):** the journal stores the Watcher
+model's own pick beside the judge's, so shadow precision = agreement with the model pick today and with "the user acted on the nudge"
+later; the 85 % promotion bar is measured against that, not asserted. **C1 needs a local backend to say anything** — with none configured
+every row is a deterministic fallback — so it is gated on Jesse's approval of the local Jev-compatible model download (§5).
+
+**Council seat failures, diagnosed by `permagent-runtime-46` from `cost_router/reservation.rs:186-225`:** five of the seven dead seats are
+one missing-data defect — `Provider::cost_tier` defaults fail-closed to `PaidApi`, a local runtime on an OpenAI-compatible socket inherits
+it, and the only escape is a **pair-scoped** row in `cost_router::knowledge`'s `is_local` table, which has rows for `ollama` pairs and none
+for `llama_swap` / `lmstudio`; `gpt-5.6-terra` lacks a canonical max-output row. Curated data, the peer's module, folded into its
+`reserve_metered_call` gate. It must stay pair-scoped: a provider-name rule would hand the metered `ollama_cloud` a free pass.
+**New node K1 (coordinator):** the `moonshot` seat's `NeedsGate { scope: Task, spent_usd: 0.0 }` is a convene design gap — a Council convene
+fans out to eleven providers with **no task budget granted up front and no surface to approve one**. Fix: request ONE task budget before
+the fan-out (`council/debate.rs` already carries `budget_task_id` and a `BudgetConfig` seam), fail the convene early with a Decision Inbox
+item if it is refused, and drop `permagent-test-custom-headers` from the roster.
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
