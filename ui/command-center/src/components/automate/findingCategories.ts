@@ -37,69 +37,51 @@ export interface FindingLike {
   action_taken: string | null;
   category?: string | null;
   consequence?: string | null;
+  available?: boolean;
+  availability_reason?: string;
+  protection?: string;
+  profiles?: Array<{ status: string; bytes: number }>;
 }
 
-/**
- * Resolve a finding's category, honoring the server value when present and
- * known. A legacy ledger (predating this fix) omits `category` entirely —
- * for those we trust the old `recommendation` string ONLY for the exact
- * "Safe to remove" match; anything else (including an absent or unrecognized
- * category) defaults to `review_before_removing`, never to a destructive
- * default.
- */
+/** Unknown and legacy labels never supply deletion authority. */
 export function categoryOf(f: FindingLike): CategoryKey {
-  if (f.category != null) {
-    return KNOWN_CATEGORIES.has(f.category) ? (f.category as CategoryKey) : 'review_before_removing';
-  }
-  return f.recommendation === 'Safe to remove' ? 'safe_to_remove' : 'review_before_removing';
+  return f.category && KNOWN_CATEGORIES.has(f.category)
+    ? f.category as CategoryKey : 'review_before_removing';
 }
 
-/** Individual Trash of this finding must show `consequence` and get a second
- *  explicit confirmation before the request is sent (rule: in_use / managed
- *  _by_macos items are never a one-click delete). */
+export const REGENERABLE_ACK = 'Include rebuildable caches and build outputs — future builds or downloads may take longer.';
+export const REVIEW_ACK = 'Include these reviewed files — they may contain data that cannot be recreated.';
+
+/** Legacy presentation hint retained for callers. A second confirmation is
+ * never authority to remove a busy or managed item; current server checks win. */
 export function requiresSecondConfirm(f: FindingLike): boolean {
   const c = categoryOf(f);
   return c === 'in_use' || c === 'managed_by_macos';
 }
 
-/**
- * Partition PENDING findings (already-actioned findings are dropped
- * entirely — in neither list) into what a bulk action may touch and what it
- * must not.
- *
- * - `in_use` / `managed_by_macos`: always excluded, never opt-in.
- * - `regenerable_costly`: excluded unless `includeRegenerable` is true.
- * - `safe_to_remove`: always eligible.
- * - `review_before_removing`: neither list — bulk action does not touch it
- *   at all (it is not "safe by default" and it is not one of the two
- *   categories with a mandatory excluded-with-consequence callout).
- */
+/** Every pending item belongs to exactly one bucket; acknowledgments never
+ * bypass the server's current availability veto. */
 export function bulkEligible<T extends FindingLike>(
-  findings: T[],
-  includeRegenerable: boolean,
-): { eligible: T[]; excluded: T[] } {
+  findings: T[], includeRegenerable: boolean, includeReview = false,
+): { eligible: T[]; optional: T[]; excluded: T[] } {
   const eligible: T[] = [];
+  const optional: T[] = [];
   const excluded: T[] = [];
   for (const f of findings) {
     if (f.action_taken) continue;
-    const category = categoryOf(f);
-    switch (category) {
+    if (f.available === false || !f.category || !KNOWN_CATEGORIES.has(f.category)) {
+      excluded.push(f);
+      continue;
+    }
+    switch (categoryOf(f)) {
       case 'in_use':
-      case 'managed_by_macos':
-        excluded.push(f);
-        break;
-      case 'regenerable_costly':
-        (includeRegenerable ? eligible : excluded).push(f);
-        break;
-      case 'safe_to_remove':
-        eligible.push(f);
-        break;
-      case 'review_before_removing':
-        // Not part of bulk action, in either direction.
-        break;
+      case 'managed_by_macos': excluded.push(f); break;
+      case 'regenerable_costly': (includeRegenerable ? eligible : optional).push(f); break;
+      case 'review_before_removing': (includeReview ? eligible : optional).push(f); break;
+      case 'safe_to_remove': eligible.push(f); break;
     }
   }
-  return { eligible, excluded };
+  return { eligible, optional, excluded };
 }
 
 /** Per-category count + byte totals for a set of findings, sorted by bytes
@@ -119,4 +101,11 @@ export function categoryBreakdown<T extends FindingLike>(
   return Array.from(totals.entries())
     .map(([category, { count, bytes }]) => ({ category, label: CATEGORY_LABELS[category], count, bytes }))
     .sort((a, b) => b.bytes - a.bytes);
+}
+
+/** Selected bytes never include busy profiles, unsupported layouts or roots. */
+export function cleanupBytes(f: FindingLike): number {
+  return f.protection === 'cargo-profile-locks'
+    ? (f.profiles || []).filter(p => p.status === 'eligible').reduce((sum, p) => sum + p.bytes, 0)
+    : f.size_bytes;
 }

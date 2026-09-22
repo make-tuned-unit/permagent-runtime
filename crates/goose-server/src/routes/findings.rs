@@ -4,8 +4,8 @@
 //! Insights. Users act on them via Trash/Keep buttons in the Automate tab.
 //!
 //! Files go to native macOS Trash via the `trash` crate — NOT shell rm or
-//! filesystem mv to ~/.Trash. Native Trash preserves the original path for
-//! restoration, integrates with iCloud/Time Machine, and supports Finder undo.
+//! filesystem mv to ~/.Trash. The ledger retains the original path; native
+//! Trash receives a verified staging path, so Finder restoration uses staging.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,6 +18,9 @@ use axum::{
 };
 use chrono::Utc;
 use permagent::storage_health::classify;
+use permagent::storage_health::inuse::action::{
+    self, ActionProbe, ActivityProbe, CargoLocks, CleanupLock, LockProvider,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
@@ -58,7 +61,13 @@ fn is_icloud_evicted_nsurl(path: &Path) -> bool {
                 return false; // Not an iCloud-managed file — allow trash
             }
         }
-        _ => return false,
+        // A nil value is what NSURL returns for every ordinary local file
+        // (verified on a real ~/Downloads file, 2026-09-22): it means "not an
+        // iCloud item", not "status unavailable". Treating nil as evicted
+        // refused every cleanup on the machine. Only a REAL read error below
+        // fails closed.
+        (true, None) => return false,
+        (false, _) => return true,
     }
 
     // NSURLUbiquitousItemDownloadingStatusKey
@@ -75,7 +84,7 @@ fn is_icloud_evicted_nsurl(path: &Path) -> bool {
                 NSString::from_str("NSURLUbiquitousItemDownloadingStatusNotDownloaded");
             status_str.isEqualToString(&not_downloaded)
         }
-        _ => false, // Can't determine — allow trash
+        _ => true, // Unknown downloading status is not deletion authority
     }
 }
 
@@ -124,12 +133,21 @@ fn findings_dir() -> PathBuf {
 }
 
 fn findings_path(run_id: &str) -> PathBuf {
+    if run_id.is_empty()
+        || !run_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return findings_dir().join("invalid-run-id");
+    }
     findings_dir().join(format!("{}.json", run_id))
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Finding {
     pub id: String,
+    #[serde(default)]
+    pub observed_at: Option<String>,
     #[serde(rename = "type")]
     pub finding_type: String,
     pub path: String,
@@ -160,6 +178,365 @@ pub struct Finding {
 /// about them was ever verified, so they read as "review", not as "safe".
 fn default_category() -> String {
     classify::CAT_REVIEW.to_string()
+}
+
+/// Current observation returned for every named pending finding.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct Eligibility {
+    pub finding_id: String,
+    pub category: String,
+    pub eligible: bool,
+    pub reason: String,
+    pub protection: String,
+    pub observed_at: String,
+    pub profiles: Vec<ProfileResult>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct ProfileResult {
+    pub path: String,
+    pub status: String,
+    pub reason: String,
+    pub bytes: u64,
+    pub moved_bytes: u64,
+    pub moved: usize,
+    pub skipped: usize,
+    pub failed: usize,
+}
+
+fn profile_availability(
+    target: &Path,
+    probe: &dyn ActivityProbe,
+    locks: &dyn LockProvider,
+    release_verified: bool,
+) -> Result<Vec<ProfileResult>, String> {
+    action::cargo_profiles(target)?.into_iter().map(|profile| {
+        let mut result = ProfileResult { path: profile.path.to_string_lossy().into_owned(),
+            status: "eligible".into(), reason: "Available build outputs".into(),
+            bytes: profile.size_bytes, moved_bytes: 0, moved: 0, skipped: 0, failed: 0 };
+        let outcome = (|| {
+            if let Some(reason) = profile.reason { return Err(reason); }
+            if !probe.check(&profile.path)?.is_empty() { return Err("Profile in use: active process".into()); }
+            let _guard = locks.acquire(&profile.path)?;
+            if !release_verified { return Err("Unsupported layout: real Cargo coordination acceptance is not yet verified".into()); }
+            Ok(())
+        })();
+        if let Err(reason) = outcome {
+            result.status = if reason.starts_with("Profile in use:") { "busy" } else { "unsupported" }.into();
+            result.reason = reason;
+        }
+        Ok(result)
+    }).collect()
+}
+
+fn eligibility(
+    f: &mut Finding,
+    include_regenerable: bool,
+    include_review: bool,
+    home: &Path,
+    probe: &dyn ActivityProbe,
+) -> Eligibility {
+    let mut result = Eligibility {
+        finding_id: f.id.clone(),
+        category: f.category.clone(),
+        eligible: false,
+        reason: String::new(),
+        protection: if classify::is_rust_target(Path::new(&f.path)) {
+            "cargo-lock-required".into()
+        } else {
+            "probe-only".into()
+        },
+        observed_at: Utc::now().to_rfc3339(),
+        profiles: Vec::new(),
+    };
+    let check = || -> Result<classify::Classification, String> {
+        if !classify::ALL_CATEGORIES.contains(&f.category.as_str()) {
+            return Err("Unknown category".into());
+        }
+        if f.action_taken.is_some() {
+            return Err("Already actioned".into());
+        }
+        let path = Path::new(&f.path);
+        action::validate_path(&f.finding_type, path, home)?;
+        if is_sensitive_path(path) {
+            return Err("Sensitive path is excluded".into());
+        }
+        #[cfg(target_os = "macos")]
+        if is_icloud_evicted_nsurl(path) {
+            return Err("iCloud content is not downloaded or its status is unavailable".into());
+        }
+        if classify::is_rust_target(path) {
+            return Ok(classify::Classification {
+                category: classify::CAT_REGENERABLE,
+                recommendation: classify::category_label(classify::CAT_REGENERABLE).into(),
+                consequence: Some("Cleaned outputs will need rebuilding.".into()),
+            });
+        }
+        action::current_classification(&f.finding_type, path, f.size_bytes, probe)
+    };
+    match check() {
+        Err(reason) => {
+            result.reason = reason;
+            return result;
+        }
+        Ok(c) => {
+            f.category = c.category.into();
+            f.recommendation = c.recommendation;
+            f.consequence = c.consequence;
+            f.observed_at = Some(result.observed_at.clone());
+            result.category = f.category.clone();
+            result.eligible = match c.category {
+                classify::CAT_SAFE => true,
+                classify::CAT_REGENERABLE => include_regenerable,
+                classify::CAT_REVIEW => include_review,
+                _ => false,
+            };
+            result.reason = match c.category {
+                classify::CAT_REGENERABLE if !include_regenerable => {
+                    "Rebuildable items require acknowledgment".into()
+                }
+                classify::CAT_REVIEW if !include_review => {
+                    "Reviewed files require acknowledgment".into()
+                }
+                classify::CAT_MACOS => {
+                    "Managed by macOS; use System Settings > General > Storage".into()
+                }
+                _ => f
+                    .consequence
+                    .clone()
+                    .unwrap_or_else(|| classify::category_label(c.category).into()),
+            };
+        }
+    }
+    if result.category == classify::CAT_REGENERABLE
+        && classify::is_rust_target(Path::new(&f.path))
+        && action::validate_path(&f.finding_type, Path::new(&f.path), home).is_ok()
+    {
+        result.protection = "cargo-profile-locks".into();
+        match profile_availability(
+            Path::new(&f.path),
+            probe,
+            &CargoLocks,
+            action::CARGO_PROFILE_RELEASE_VERIFIED,
+        ) {
+            Ok(profiles) => {
+                result.eligible =
+                    include_regenerable && profiles.iter().any(|p| p.status == "eligible");
+                if profiles.iter().any(|p| p.status == "busy")
+                    && !profiles.iter().any(|p| p.status == "eligible")
+                {
+                    result.reason =
+                        "Profiles in use are skipped; other unsupported profiles remain excluded"
+                            .into();
+                } else if !profiles.iter().any(|p| p.status == "eligible") {
+                    result.reason =
+                        "Unsupported layout: no verified eligible Cargo profiles".into();
+                }
+                result.profiles = profiles;
+            }
+            Err(reason) => {
+                result.eligible = false;
+                result.reason = format!("Unsupported layout: {reason}");
+            }
+        }
+    }
+    result
+}
+
+/// One action boundary shared by the HTTP routes and hermetic race tests.
+struct ActionChecks<'a> {
+    run_id: &'a str,
+    selected_profiles: &'a [String],
+    home: &'a Path,
+    probe: &'a dyn ActivityProbe,
+    locks: &'a dyn LockProvider,
+    include_regenerable: bool,
+    include_review: bool,
+}
+
+fn checked_trash(
+    f: &mut Finding,
+    checks: &ActionChecks<'_>,
+    mut trash: impl FnMut(&mut Finding) -> Result<u64, String>,
+) -> (Eligibility, Result<u64, String>) {
+    let identity = std::fs::symlink_metadata(&f.path);
+    let mut current = eligibility(
+        f,
+        checks.include_regenerable,
+        checks.include_review,
+        checks.home,
+        checks.probe,
+    );
+    let result = (|| {
+        if !current.eligible {
+            for profile in &mut current.profiles {
+                if checks.selected_profiles.contains(&profile.path) {
+                    profile.skipped += 1;
+                }
+            }
+            return Err(current.reason.clone());
+        }
+        if classify::is_rust_target(Path::new(&f.path)) {
+            return clean_profiles(f, checks, &mut current.profiles, &mut trash);
+        }
+        let _guard = lock_finding(f, checks.locks)?;
+        action::validate_path(&f.finding_type, Path::new(&f.path), checks.home)?;
+        let before = identity.map_err(|e| e.to_string())?;
+        let after = std::fs::symlink_metadata(&f.path).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if before.dev() != after.dev() || before.ino() != after.ino() {
+                return Err("Path changed during availability check".into());
+            }
+        }
+        #[cfg(not(unix))]
+        if before.file_type() != after.file_type() || before.len() != after.len() {
+            return Err("Path changed during availability check".into());
+        }
+        let original = f.path.clone();
+        let staged_result = permagent::storage_health::inuse::staging::with_staged(
+            checks.home,
+            checks.run_id,
+            &f.id.clone(),
+            Path::new(&original),
+            &before,
+            || {},
+            |staged| {
+                f.path = staged.to_string_lossy().into_owned();
+                trash(f)
+            },
+        );
+        f.path = original;
+        staged_result
+    })();
+    if let Err(reason) = &result {
+        current.eligible = false;
+        current.reason = reason.clone();
+    }
+    (current, result)
+}
+
+/// Selection is the exact profile snapshot confirmed by the user. Newly
+/// created custom profiles never join it, and the root itself is never moved.
+fn clean_profiles(
+    f: &mut Finding,
+    checks: &ActionChecks<'_>,
+    profiles: &mut Vec<ProfileResult>,
+    trash: &mut impl FnMut(&mut Finding) -> Result<u64, String>,
+) -> Result<u64, String> {
+    if checks.selected_profiles.is_empty() {
+        return Err("Exact profile_paths are required for Cargo cleanup".into());
+    }
+    for path in checks.selected_profiles {
+        if !profiles.iter().any(|p| &p.path == path) {
+            profiles.push(ProfileResult {
+                path: path.clone(),
+                status: "unsupported".into(),
+                reason: "Selected profile is absent from the current supported layout".into(),
+                bytes: 0,
+                moved_bytes: 0,
+                moved: 0,
+                skipped: 0,
+                failed: 0,
+            });
+        }
+    }
+    let mut moved_bytes = 0;
+    let mut moved_items = 0;
+    for profile in profiles {
+        if !checks.selected_profiles.contains(&profile.path) {
+            continue;
+        }
+        if profile.status != "eligible" {
+            profile.skipped += 1;
+            continue;
+        }
+        let outcome = (|| {
+            action::validate_path(&f.finding_type, Path::new(&f.path), checks.home)?;
+            if !checks.probe.check(Path::new(&profile.path))?.is_empty() {
+                return Err("Profile in use: active process".into());
+            }
+            let _guard = checks.locks.acquire(Path::new(&profile.path))?;
+            let contents = action::profile_contents(Path::new(&profile.path))?;
+            for path in contents {
+                let before = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                let bytes = action::measured_bytes(&path)?;
+                let mut item = f.clone();
+                item.size_bytes = bytes;
+                let result = permagent::storage_health::inuse::staging::with_staged(
+                    checks.home,
+                    checks.run_id,
+                    &f.id,
+                    &path,
+                    &before,
+                    || {},
+                    |staged| {
+                        item.path = staged.to_string_lossy().into_owned();
+                        trash(&mut item)
+                    },
+                );
+                match result {
+                    Ok(actual) => {
+                        profile.moved += 1;
+                        moved_items += 1;
+                        profile.moved_bytes += actual;
+                        moved_bytes += actual;
+                        f.actioned_at = item.actioned_at;
+                        f.action_source = item.action_source;
+                    }
+                    Err(reason) => {
+                        profile.failed += 1;
+                        profile.reason = reason;
+                    }
+                }
+            }
+            Ok(())
+        })();
+        match outcome {
+            Ok(()) => {
+                profile.status = if profile.failed == 0 {
+                    "moved"
+                } else {
+                    "failed"
+                }
+                .into();
+                if profile.failed == 0 {
+                    profile.reason =
+                        "Selected profile outputs moved; profile and coordination files remain"
+                            .into();
+                }
+            }
+            Err(reason) => {
+                profile.skipped += 1;
+                profile.status = "skipped".into();
+                profile.reason = reason;
+            }
+        }
+    }
+    // Root remains pending for future scans; actual partial movement is reported
+    // per profile and the action ledger accumulates only bytes actually moved.
+    f.size_recovered_bytes = Some(f.size_recovered_bytes.unwrap_or(0) + moved_bytes);
+    if moved_items == 0 {
+        return Err("No selected profile outputs were moved".into());
+    }
+    Ok(moved_bytes)
+}
+
+fn action_home() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+}
+
+fn lock_finding(f: &Finding, locks: &dyn LockProvider) -> Result<Box<dyn CleanupLock>, String> {
+    if classify::is_rust_target(Path::new(&f.path)) {
+        // Never delegate a target root to a per-profile LockProvider.
+        let _ = locks;
+        Err("Unsupported layout: whole Cargo target removal is excluded".into())
+    } else {
+        Ok(Box::new(Vec::<std::fs::File>::new()))
+    }
 }
 
 // ── Action sources ─────────────────────────────────────────────────
@@ -226,8 +603,8 @@ fn bulk_refusal(f: &Finding) -> Option<BlockedItem> {
     })
 }
 
-/// Refuse an individual trash of an in-use / macOS-managed item that has not
-/// been confirmed a second time, and say why in the user's words.
+/// Legacy callers receive a recheck hint for a saved busy category. Even a
+/// confirmed request must pass the fresh checked_trash boundary below.
 fn confirmation_refusal(f: &Finding, confirmed: bool) -> Option<(StatusCode, Json<ErrorBody>)> {
     if confirmed || !classify::needs_second_confirmation(&f.category) {
         return None;
@@ -240,7 +617,7 @@ fn confirmation_refusal(f: &Finding, confirmed: bool) -> Option<(StatusCode, Jso
         StatusCode::CONFLICT,
         Json(ErrorBody {
             error: format!(
-                "{} is {} — {}. Re-send with confirmed=true to trash it anyway.",
+                "{} is {} — {}. Recheck availability before trying again.",
                 f.path,
                 classify::category_label(&f.category),
                 consequence
@@ -281,8 +658,15 @@ pub(crate) fn atomic_write_json(dir: &Path, file_name: &str, json: &str) -> Resu
 }
 
 fn save_findings_to(dir: &Path, data: &FindingsFile) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(data)
-        .map_err(|e| format!("serialize findings for run {}: {}", data.run_id, e))?;
+    let path = dir.join(format!("{}.json", data.run_id));
+    let mut ledger = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    ledger["run_id"] = serde_json::json!(data.run_id);
+    ledger["findings"] = serde_json::to_value(&data.findings).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(&ledger).map_err(|e| e.to_string())?;
     atomic_write_json(dir, &format!("{}.json", data.run_id), &json)
 }
 
@@ -290,7 +674,7 @@ fn save_findings(data: &FindingsFile) -> Result<(), String> {
     save_findings_to(&findings_dir(), data)
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct ErrorBody {
     error: String,
 }
@@ -383,16 +767,12 @@ fn trash_one(
         }
     }
 
-    // Use the scan-time size_bytes (recursive for directories) rather
-    // than re-computing from metadata — metadata.len() on a directory
-    // returns only the inode size (~256 bytes), not its content.
-    let size = f.size_bytes;
+    let size = action::measured_bytes(file_path)
+        .map_err(|error| (StatusCode::CONFLICT, Json(ErrorBody { error })))?;
 
     // Native macOS Trash via the `trash` crate.
-    // This preserves original path for Finder restoration, integrates
-    // with iCloud-synced Trash, and works with Time Machine. Do NOT
-    // replace with shell rm or mv to ~/.Trash — those bypass native
-    // Trash metadata and break restoration/undo.
+    // The original path remains in our ledger; Finder sees the staging path.
+    // Staging is required to close the source-path substitution race.
     trash::delete(file_path).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -482,7 +862,20 @@ async fn perform_action(
                 .unwrap_or("unknown")
                 .to_string();
 
-            let size = trash_one(&mut data.findings[idx], &source, &now)?;
+            let home = action_home();
+            let checks = ActionChecks {
+                home: &home,
+                run_id: &req.run_id,
+                selected_profiles: &[],
+                probe: &ActionProbe,
+                locks: &CargoLocks,
+                include_regenerable: true,
+                include_review: true,
+            };
+            let (_, result) = checked_trash(&mut data.findings[idx], &checks, |f| {
+                trash_one(f, &source, &now).map_err(|(_, body)| body.0.error)
+            });
+            let size = result.map_err(|error| (StatusCode::CONFLICT, Json(ErrorBody { error })))?;
 
             // The destructive step already happened — if recording it fails,
             // tell the truth (file IS in the Trash, ledger was not updated)
@@ -566,18 +959,23 @@ async fn perform_action(
 // A sweep is now one request the server can reason about:
 //   * it must carry an explicit `confirmed` — the UI sets it only after
 //     showing the total size and the per-category counts;
-//   * it REFUSES outright, taking nothing, if any item is "In use" or
-//     "Managed by macOS". Not "skips them" — refuses, so the caller has to
-//     look at what it nearly did;
+//   * it rechecks exact identities and reports skipped items with reasons;
+//     no newly eligible finding silently joins a confirmed selection;
 //   * it writes the ledger once, stamped with `action_source`.
 
 #[derive(Deserialize)]
 pub struct BulkActionRequest {
+    #[serde(default)]
+    include_regenerable: bool,
+    #[serde(default)]
+    include_review: bool,
     /// "trash" | "keep" | "skip".
     action: String,
-    /// The findings to act on. Empty means every un-actioned finding.
+    /// Exact identities for trash. Empty is permitted only for keep/skip.
     #[serde(default)]
     finding_ids: Vec<String>,
+    #[serde(default)]
+    profile_paths: std::collections::HashMap<String, Vec<String>>,
     /// Must be true for a bulk trash. The UI sets it from the confirmation
     /// dialog, never by default.
     #[serde(default)]
@@ -596,18 +994,13 @@ pub struct BulkItemResult {
 
 #[derive(Serialize)]
 pub struct BulkActionResponse {
+    pub availability: Vec<Eligibility>,
     pub run_id: String,
     pub action_source: String,
     pub total_recovered_bytes: u64,
     pub results: Vec<BulkItemResult>,
-    /// Always empty on success: a blocked item aborts the whole batch.
+    /// Skipped items, each with the current reason; other selections proceed.
     pub blocked: Vec<BlockedItem>,
-}
-
-#[derive(Serialize)]
-struct BulkRefusalBody {
-    error: String,
-    blocked: Vec<BlockedItem>,
 }
 
 /// Resolve the request's target set: the named findings, or every un-actioned
@@ -628,7 +1021,11 @@ fn resolve_bulk_targets(
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
         match data.findings.iter().position(|f| &f.id == id) {
-            Some(i) => out.push(i),
+            Some(i) => {
+                if !out.contains(&i) {
+                    out.push(i);
+                }
+            }
             None => {
                 return Err((
                     StatusCode::NOT_FOUND,
@@ -696,32 +1093,12 @@ async fn perform_bulk_action(
             ));
         }
 
-        // Refuse the WHOLE batch if it contains anything a bulk action must
-        // never touch. Silently dropping them would let a sweep look clean
-        // while the user never learns what it nearly deleted.
-        let blocked: Vec<BlockedItem> = targets
-            .iter()
-            .filter_map(|i| bulk_refusal(&data.findings[*i]))
-            .collect();
-        if !blocked.is_empty() {
-            let names: Vec<&str> = blocked.iter().map(|b| b.path.as_str()).take(3).collect();
-            let body = BulkRefusalBody {
-                error: format!(
-                    "Refusing the whole batch: {} item(s) cannot be trashed in bulk ({}{}). \
-                     Trash them one at a time if you really mean to.",
-                    blocked.len(),
-                    names.join(", "),
-                    if blocked.len() > names.len() {
-                        ", …"
-                    } else {
-                        ""
-                    }
-                ),
-                blocked,
-            };
+        if req.finding_ids.is_empty() {
             return Err((
-                StatusCode::CONFLICT,
-                axum::Json(serde_json::to_value(body).unwrap_or_else(|_| serde_json::json!({}))),
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Bulk trash requires exact finding_ids"
+                })),
             ));
         }
     }
@@ -729,10 +1106,19 @@ async fn perform_bulk_action(
     let now = Utc::now().to_rfc3339();
     let mut results = Vec::with_capacity(targets.len());
     let mut total = 0u64;
+    let mut availability = Vec::new();
+    let mut blocked = Vec::new();
 
     for i in targets {
         let id = data.findings[i].id.clone();
         if data.findings[i].action_taken.is_some() {
+            availability.push(eligibility(
+                &mut data.findings[i],
+                req.include_regenerable,
+                req.include_review,
+                &action_home(),
+                &ActionProbe,
+            ));
             results.push(BulkItemResult {
                 finding_id: id,
                 action_taken: data.findings[i].action_taken.clone(),
@@ -742,22 +1128,44 @@ async fn perform_bulk_action(
             continue;
         }
         if is_trash {
-            match trash_one(&mut data.findings[i], &source, &now) {
+            let home = action_home();
+            let checks = ActionChecks {
+                home: &home,
+                run_id: &run_id,
+                selected_profiles: req.profile_paths.get(&id).map(Vec::as_slice).unwrap_or(&[]),
+                probe: &ActionProbe,
+                locks: &CargoLocks,
+                include_regenerable: req.include_regenerable,
+                include_review: req.include_review,
+            };
+            let (current, result) = checked_trash(&mut data.findings[i], &checks, |f| {
+                trash_one(f, &source, &now).map_err(|(_, body)| body.0.error)
+            });
+            if !current.eligible {
+                blocked.push(BlockedItem {
+                    finding_id: id.clone(),
+                    path: data.findings[i].path.clone(),
+                    category: current.category.clone(),
+                    consequence: Some(current.reason.clone()),
+                });
+            }
+            availability.push(current);
+            match result {
                 Ok(size) => {
                     total += size;
                     results.push(BulkItemResult {
                         finding_id: id,
-                        action_taken: Some("trashed".into()),
+                        action_taken: data.findings[i].action_taken.clone(),
                         size_recovered_bytes: Some(size),
                         error: None,
                     });
                 }
                 // One failure does not abort the rest — but it IS reported.
-                Err((_, body)) => results.push(BulkItemResult {
+                Err(error) => results.push(BulkItemResult {
                     finding_id: id,
                     action_taken: None,
                     size_recovered_bytes: None,
-                    error: Some(body.0.error),
+                    error: Some(error),
                 }),
             }
         } else {
@@ -798,7 +1206,8 @@ async fn perform_bulk_action(
         action_source: source,
         total_recovered_bytes: total,
         results,
-        blocked: Vec::new(),
+        blocked,
+        availability,
     }))
 }
 
@@ -821,13 +1230,15 @@ pub struct CategorySummary {
 
 #[derive(Serialize, Debug, PartialEq)]
 pub struct BulkPreviewResponse {
+    pub availability: Vec<Eligibility>,
+    pub findings: Vec<Finding>,
     pub run_id: String,
     pub pending_count: usize,
     pub pending_bytes: u64,
     /// What a bulk trash would take with nothing opted in — safe only.
     pub default_selected_count: usize,
     pub default_selected_bytes: u64,
-    /// What a bulk trash could take at most, with regenerable caches opted in.
+    /// Currently eligible under this request's acknowledgments.
     pub eligible_count: usize,
     pub eligible_bytes: u64,
     pub by_category: Vec<CategorySummary>,
@@ -873,6 +1284,8 @@ fn bulk_preview(data: &FindingsFile) -> BulkPreviewResponse {
     let (eligible_count, eligible_bytes) = sum(classify::bulk_trashable);
 
     BulkPreviewResponse {
+        availability: Vec::new(),
+        findings: data.findings.clone(),
         run_id: data.run_id.clone(),
         pending_count: pending.len(),
         pending_bytes: pending.iter().map(|f| f.size_bytes).sum(),
@@ -885,11 +1298,22 @@ fn bulk_preview(data: &FindingsFile) -> BulkPreviewResponse {
     }
 }
 
+#[derive(Default, Deserialize)]
+struct PreviewOptions {
+    #[serde(default)]
+    include_regenerable: bool,
+    #[serde(default)]
+    include_review: bool,
+    /// Comma-separated exact identities; absent means all pending for display.
+    finding_ids: Option<String>,
+}
+
 async fn get_bulk_preview(
     State(_state): State<Arc<AppState>>,
     AxumPath(run_id): AxumPath<String>,
+    axum::extract::Query(options): axum::extract::Query<PreviewOptions>,
 ) -> Result<Json<BulkPreviewResponse>, (StatusCode, Json<ErrorBody>)> {
-    let data = load_findings(&run_id).ok_or_else(|| {
+    let mut data = load_findings(&run_id).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             Json(ErrorBody {
@@ -897,7 +1321,77 @@ async fn get_bulk_preview(
             }),
         )
     })?;
-    Ok(Json(bulk_preview(&data)))
+    let ids: Vec<String> = options
+        .finding_ids
+        .as_deref()
+        .map(|s| s.split(',').map(str::to_owned).collect())
+        .unwrap_or_default();
+    let targets = resolve_bulk_targets(&data, &ids)?;
+    let mut availability = Vec::new();
+    for i in targets {
+        if data.findings[i].action_taken.is_some() {
+            continue;
+        }
+        let current = eligibility(
+            &mut data.findings[i],
+            options.include_regenerable,
+            options.include_review,
+            &action_home(),
+            &ActionProbe,
+        );
+        availability.push(current);
+    }
+    let mut response = bulk_preview(&data);
+    response.default_selected_count = availability
+        .iter()
+        .filter(|e| e.eligible && e.category == classify::CAT_SAFE)
+        .count();
+    response.default_selected_bytes = data
+        .findings
+        .iter()
+        .filter(|f| {
+            availability
+                .iter()
+                .any(|e| e.finding_id == f.id && e.eligible && e.category == classify::CAT_SAFE)
+        })
+        .map(|f| f.size_bytes)
+        .sum();
+    response.eligible_count = availability.iter().filter(|e| e.eligible).count();
+    response.eligible_bytes = availability
+        .iter()
+        .filter(|e| e.eligible)
+        .map(|e| {
+            if e.protection == "cargo-profile-locks" {
+                e.profiles
+                    .iter()
+                    .filter(|p| p.status == "eligible")
+                    .map(|p| p.bytes)
+                    .sum()
+            } else {
+                data.findings
+                    .iter()
+                    .find(|f| f.id == e.finding_id)
+                    .map_or(0, |f| f.size_bytes)
+            }
+        })
+        .sum();
+    response.blocked = availability
+        .iter()
+        .filter(|e| !e.eligible)
+        .filter_map(|e| {
+            data.findings
+                .iter()
+                .find(|f| f.id == e.finding_id)
+                .map(|f| BlockedItem {
+                    finding_id: f.id.clone(),
+                    path: f.path.clone(),
+                    category: e.category.clone(),
+                    consequence: Some(e.reason.clone()),
+                })
+        })
+        .collect();
+    response.availability = availability;
+    Ok(Json(response))
 }
 
 // ── GET /automation/recovery/total ──────────────────────────────────
@@ -947,7 +1441,10 @@ fn sum_recovery(dir: &Path) -> RecoveryTotalResponse {
         };
         let mut run_bytes = 0u64;
         for f in &data.findings {
-            if f.action_taken.as_deref() == Some("trashed") {
+            if f.action_taken.as_deref() == Some("trashed")
+                || (classify::is_rust_target(Path::new(&f.path))
+                    && f.size_recovered_bytes.unwrap_or(0) > 0)
+            {
                 run_bytes += f.size_recovered_bytes.unwrap_or(0);
                 total.items_trashed += 1;
             }
@@ -970,23 +1467,57 @@ async fn recovery_total(State(_state): State<Arc<AppState>>) -> Json<RecoveryTot
 pub struct FindingsResponse {
     run_id: String,
     findings: Vec<Finding>,
+    /// Missing/corrupt files are never an explicitly empty successful scan.
+    ledger_state: &'static str,
+    created_at: Option<String>,
+}
+
+fn findings_response(dir: &Path, run_id: &str) -> FindingsResponse {
+    let missing = || FindingsResponse {
+        run_id: run_id.into(),
+        findings: Vec::new(),
+        ledger_state: "missing",
+        created_at: None,
+    };
+    if run_id.is_empty()
+        || !run_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return missing();
+    }
+    let Some(value) = std::fs::read(dir.join(format!("{run_id}.json")))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    else {
+        return missing();
+    };
+    let Ok(data) = serde_json::from_value::<FindingsFile>(value.clone()) else {
+        return missing();
+    };
+    if data.run_id != run_id {
+        return missing();
+    }
+    FindingsResponse {
+        run_id: data.run_id,
+        findings: data.findings,
+        ledger_state: if value.get("validated").and_then(|v| v.as_bool()) == Some(true) {
+            "valid"
+        } else {
+            "unverified"
+        },
+        created_at: value
+            .get("created_at")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+    }
 }
 
 async fn get_findings(
     State(_state): State<Arc<AppState>>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<Json<FindingsResponse>, (StatusCode, Json<ErrorBody>)> {
-    // No auth required for read-only findings (localhost daemon)
-    match load_findings(&run_id) {
-        Some(data) => Ok(Json(FindingsResponse {
-            run_id: data.run_id,
-            findings: data.findings,
-        })),
-        None => Ok(Json(FindingsResponse {
-            run_id,
-            findings: vec![],
-        })),
-    }
+    Ok(Json(findings_response(&findings_dir(), &run_id)))
 }
 
 // ── POST /automation/run/:run_id/findings (create/update findings) ──
@@ -996,12 +1527,27 @@ async fn save_findings_endpoint(
     AxumPath(run_id): AxumPath<String>,
     Json(findings): Json<Vec<Finding>>,
 ) -> Result<Json<FindingsResponse>, (StatusCode, Json<ErrorBody>)> {
+    if run_id.is_empty()
+        || !run_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "Invalid run id".into(),
+            }),
+        ));
+    }
     // No auth for localhost daemon
     let data = FindingsFile {
         run_id: run_id.clone(),
         findings,
     };
-    if let Err(e) = save_findings(&data) {
+    let saved = serde_json::to_string_pretty(&data)
+        .map_err(|e| e.to_string())
+        .and_then(|json| atomic_write_json(&findings_dir(), &format!("{run_id}.json"), &json));
+    if let Err(e) = saved {
         tracing::error!("Failed to persist findings for run {}: {}", run_id, e);
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1011,10 +1557,7 @@ async fn save_findings_endpoint(
         ));
     }
 
-    Ok(Json(FindingsResponse {
-        run_id: data.run_id,
-        findings: data.findings,
-    }))
+    Ok(Json(findings_response(&findings_dir(), &run_id)))
 }
 
 // ── Routes ─────────────────────────────────────────────────────────
@@ -1091,6 +1634,7 @@ mod tests {
         FindingsFile {
             run_id: run_id.to_string(),
             findings: vec![Finding {
+                observed_at: None,
                 id: "f-1".to_string(),
                 finding_type: "old_download".to_string(),
                 path: "/tmp/does-not-matter.dmg".to_string(),
@@ -1165,6 +1709,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, bytes)| Finding {
+                observed_at: None,
                 id: format!("{}-t{}", run_id, i),
                 finding_type: "old_download".to_string(),
                 path: format!("/tmp/{}-{}.dmg", run_id, i),
@@ -1181,6 +1726,7 @@ mod tests {
             .collect();
         for i in 0..pending {
             findings.push(Finding {
+                observed_at: None,
                 id: format!("{}-p{}", run_id, i),
                 finding_type: "old_download".to_string(),
                 path: format!("/tmp/{}-pending-{}.dmg", run_id, i),
@@ -1266,6 +1812,7 @@ mod tests {
 
     fn categorized(id: &str, path: &str, category: &str, size: u64) -> Finding {
         Finding {
+            observed_at: None,
             id: id.to_string(),
             finding_type: "dev_cache".to_string(),
             path: path.to_string(),
@@ -1369,7 +1916,7 @@ mod tests {
     }
 
     #[test]
-    fn a_confirmed_in_use_trash_is_allowed_through() {
+    fn a_confirmed_request_still_requires_action_time_checks() {
         let f = categorized("x", "/tmp/target", classify::CAT_IN_USE, 1);
         assert!(confirmation_refusal(&f, true).is_none());
     }
@@ -1569,39 +2116,27 @@ mod tests {
             };
         }
 
-        /// THE regression. A bulk trash that includes the live target dir and
-        /// an Apple cache takes NOTHING — not "skips them", refuses the batch.
+        /// ST1 requires exact identities; an empty selection can no longer
+        /// silently expand to all pending findings.
         #[tokio::test(flavor = "multi_thread")]
         #[serial]
-        async fn bulk_trash_refuses_the_whole_batch_when_an_in_use_item_is_included() {
+        async fn acceptance_6_bulk_trash_requires_exact_identities() {
             seeded_run!(_home, _guard, "run-bulk-blocked");
             let state = AppState::new(true).await.unwrap();
             let app = routes(state);
-
             let (status, body) = bulk_request(
                 &app,
                 "run-bulk-blocked",
                 r#"{"action":"trash","confirmed":true,"action_source":"ui_bulk"}"#,
             )
             .await;
-
-            assert_eq!(status, StatusCode::CONFLICT, "{}", body);
-            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-            let blocked = json["blocked"].as_array().expect("blocked list");
-            assert_eq!(blocked.len(), 2, "{}", body);
-            assert_eq!(blocked[0]["finding_id"], "finding-008");
-            assert_eq!(
-                blocked[0]["consequence"],
-                "5 rustc processes are compiling here"
-            );
-            assert_eq!(blocked[1]["category"], classify::CAT_MACOS);
-
-            // And nothing was touched.
-            let persisted = load_findings("run-bulk-blocked").unwrap();
-            assert!(
-                persisted.findings.iter().all(|f| f.action_taken.is_none()),
-                "a refused batch must take no action at all"
-            );
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{}", body);
+            assert!(body.contains("Bulk trash requires exact finding_ids"));
+            assert!(load_findings("run-bulk-blocked")
+                .unwrap()
+                .findings
+                .iter()
+                .all(|f| f.action_taken.is_none()));
         }
 
         /// A bulk trash without an explicit confirmation is refused before it
@@ -1677,7 +2212,7 @@ mod tests {
                 "the refusal must state the consequence: {}",
                 body
             );
-            assert!(body.contains("confirmed=true"), "{}", body);
+            assert!(body.contains("Recheck availability"), "{}", body);
 
             let persisted = load_findings("run-single-inuse").unwrap();
             assert_eq!(persisted.findings[0].action_taken, None);
@@ -1756,9 +2291,11 @@ mod tests {
                 .unwrap();
             let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(body["pending_count"], 4);
-            assert_eq!(body["default_selected_count"], 1);
-            assert_eq!(body["eligible_count"], 2);
-            assert_eq!(body["blocked"].as_array().unwrap().len(), 2);
+            // Fixture paths do not exist: a fresh check must exclude all four.
+            assert_eq!(body["default_selected_count"], 0);
+            assert_eq!(body["eligible_count"], 0);
+            assert_eq!(body["blocked"].as_array().unwrap().len(), 4);
+            assert_eq!(body["availability"].as_array().unwrap().len(), 4);
             assert_eq!(body["by_category"].as_array().unwrap().len(), 4);
         }
 
@@ -1801,5 +2338,560 @@ mod tests {
             let persisted = load_findings("run-fail").expect("ledger readable");
             assert_eq!(persisted.findings[0].action_taken, None);
         }
+    }
+}
+
+#[cfg(test)]
+mod st1_acceptance {
+    use super::*;
+    use permagent::storage_health::inuse::ProcessRef;
+
+    struct Probe(Result<Vec<ProcessRef>, String>);
+    impl ActivityProbe for Probe {
+        fn check(&self, _: &Path) -> Result<Vec<ProcessRef>, String> {
+            self.0.clone()
+        }
+    }
+    struct IdleLock;
+    impl LockProvider for IdleLock {
+        fn acquire(&self, _: &Path) -> Result<Box<dyn CleanupLock>, String> {
+            Ok(Box::new(Vec::<std::fs::File>::new()))
+        }
+    }
+    fn fixture(home: &Path, relative: &str, kind: &str, category: &str) -> Finding {
+        let path = home.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        if kind == "stale_file" || kind == "large_file" {
+            std::fs::write(&path, "fixture").unwrap();
+        } else {
+            std::fs::create_dir_all(&path).unwrap();
+        }
+        if path.file_name().is_some_and(|n| n == "target") {
+            std::fs::write(path.parent().unwrap().join("Cargo.toml"), "[package]").unwrap();
+            std::fs::create_dir_all(path.join("debug/deps")).unwrap();
+            for name in action::CARGO_COORDINATION_FILES {
+                std::fs::write(path.join("debug").join(name), "").unwrap();
+            }
+            std::fs::write(path.join("debug/deps/artifact"), "fixture").unwrap();
+        }
+        Finding {
+            observed_at: None,
+            id: relative.into(),
+            path: path.to_str().unwrap().into(),
+            finding_type: kind.into(),
+            size_bytes: 100,
+            age_days: None,
+            recommendation: "Safe to remove".into(),
+            category: category.into(),
+            consequence: None,
+            action_taken: None,
+            actioned_at: None,
+            size_recovered_bytes: None,
+            action_source: None,
+        }
+    }
+    fn idle() -> Probe {
+        Probe(Ok(Vec::new()))
+    }
+    fn busy() -> Probe {
+        Probe(Ok(vec![ProcessRef {
+            pid: 7,
+            command: "rustc".into(),
+        }]))
+    }
+
+    #[test]
+    fn acceptance_2_profile_execution_counts_contents_and_preserves_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let mut f = fixture(&home, "repo/target", "dev_cache", classify::CAT_REGENERABLE);
+        let target = PathBuf::from(&f.path);
+        for name in ["release", "custom", "aarch64-apple-darwin/custom"] {
+            let profile = target.join(name);
+            std::fs::create_dir_all(profile.join("deps")).unwrap();
+            for lock in action::CARGO_COORDINATION_FILES {
+                std::fs::write(profile.join(lock), "").unwrap();
+            }
+            std::fs::write(profile.join("deps/artifact"), "output").unwrap();
+        }
+        std::fs::write(target.join(".rustc_info.json"), "root metadata").unwrap();
+        // Bypass only the release gate in this hermetic unit of execution.
+        // This is not evidence that the production Cargo release gate can open.
+        let mut profiles = profile_availability(&target, &idle(), &IdleLock, true).unwrap();
+        let selected: Vec<_> = profiles.iter().map(|p| p.path.clone()).collect();
+        let expected: u64 = profiles.iter().map(|p| p.bytes).sum();
+        let checks = ActionChecks {
+            home: &home,
+            run_id: "profiles",
+            selected_profiles: &selected,
+            probe: &idle(),
+            locks: &IdleLock,
+            include_regenerable: true,
+            include_review: false,
+        };
+        let moved = clean_profiles(&mut f, &checks, &mut profiles, &mut |item| {
+            let size = permagent::storage_health::size::dir_size(Path::new(&item.path));
+            std::fs::remove_dir_all(&item.path).map_err(|e| e.to_string())?;
+            Ok(size)
+        })
+        .unwrap();
+        assert_eq!(moved, expected);
+        assert_eq!(f.size_recovered_bytes, Some(expected));
+        assert!(f.action_taken.is_none());
+        assert_eq!(profiles.len(), 4);
+        for p in profiles {
+            assert_eq!((p.moved, p.skipped, p.failed), (1, 0, 0));
+            assert_eq!(p.status, "moved");
+            assert!(Path::new(&p.path).is_dir());
+            for lock in action::CARGO_COORDINATION_FILES {
+                assert!(Path::new(&p.path).join(lock).is_file());
+            }
+        }
+        assert!(target.join("aarch64-apple-darwin").is_dir());
+        assert_eq!(
+            std::fs::read_to_string(target.join(".rustc_info.json")).unwrap(),
+            "root metadata"
+        );
+    }
+
+    #[test]
+    fn acceptance_3_profile_becomes_busy_after_preview_without_source_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let mut f = fixture(&home, "repo/target", "dev_cache", classify::CAT_REGENERABLE);
+        let mut profiles =
+            profile_availability(Path::new(&f.path), &idle(), &IdleLock, true).unwrap();
+        let selected = vec![profiles[0].path.clone()];
+        let checks = ActionChecks {
+            home: &home,
+            run_id: "busy",
+            selected_profiles: &selected,
+            probe: &busy(),
+            locks: &IdleLock,
+            include_regenerable: true,
+            include_review: false,
+        };
+        assert!(
+            clean_profiles(&mut f, &checks, &mut profiles, &mut |_| panic!(
+                "busy outputs must survive"
+            ))
+            .is_err()
+        );
+        assert_eq!(profiles[0].skipped, 1);
+        assert_eq!(profiles[0].reason, "Profile in use: active process");
+        assert!(Path::new(&selected[0]).join("deps/artifact").is_file());
+    }
+
+    #[test]
+    fn acceptance_7_profile_trash_failure_restores_contents_and_reports_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let mut f = fixture(&home, "repo/target", "dev_cache", classify::CAT_REGENERABLE);
+        let mut profiles =
+            profile_availability(Path::new(&f.path), &idle(), &IdleLock, true).unwrap();
+        let selected = vec![profiles[0].path.clone()];
+        let checks = ActionChecks {
+            home: &home,
+            run_id: "failed",
+            selected_profiles: &selected,
+            probe: &idle(),
+            locks: &IdleLock,
+            include_regenerable: true,
+            include_review: false,
+        };
+        assert!(clean_profiles(&mut f, &checks, &mut profiles, &mut |_| Err(
+            "Native Trash failed".into()
+        ))
+        .is_err());
+        assert_eq!(
+            (profiles[0].moved, profiles[0].skipped, profiles[0].failed),
+            (0, 0, 1)
+        );
+        assert_eq!(profiles[0].moved_bytes, 0);
+        assert_eq!(profiles[0].reason, "Native Trash failed");
+        assert!(Path::new(&selected[0]).join("deps/artifact").is_file());
+    }
+
+    #[test]
+    fn acceptance_6_already_actioned_target_cannot_regain_eligibility() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let mut f = fixture(&home, "repo/target", "dev_cache", classify::CAT_REGENERABLE);
+        f.action_taken = Some("kept".into());
+        let result = eligibility(&mut f, true, true, &home, &idle());
+        assert!(!result.eligible);
+        assert_eq!(result.reason, "Already actioned");
+        assert!(result.profiles.is_empty());
+    }
+
+    #[test]
+    fn acceptance_8_missing_ledger_is_not_a_valid_empty_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = findings_response(dir.path(), "09-22");
+        assert_eq!(missing.ledger_state, "missing");
+        assert!(missing.findings.is_empty());
+        std::fs::write(dir.path().join("09-22.json"), "broken").unwrap();
+        assert_eq!(
+            findings_response(dir.path(), "09-22").ledger_state,
+            "missing"
+        );
+        std::fs::write(
+            dir.path().join("09-22.json"),
+            r#"{"run_id":"09-22","findings":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            findings_response(dir.path(), "09-22").ledger_state,
+            "unverified"
+        );
+        let home = dir.path().canonicalize().unwrap();
+        permagent::storage_health::scanner::persist_report(
+            "<findings>[]</findings>",
+            "09-15",
+            dir.path(),
+            &home,
+            &idle(),
+        )
+        .unwrap();
+        let previous = std::fs::read(dir.path().join("09-15.json")).unwrap();
+        let valid = findings_response(dir.path(), "09-15");
+        assert_eq!(valid.ledger_state, "valid");
+        assert!(valid.findings.is_empty());
+        assert!(valid.created_at.is_some());
+        assert_eq!(
+            std::fs::read(dir.path().join("09-15.json")).unwrap(),
+            previous
+        );
+        assert_eq!(
+            findings_response(dir.path(), "../09-15").ledger_state,
+            "missing"
+        );
+    }
+
+    #[test]
+    fn acceptance_1_live_build_and_forged_safe_metadata_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let target = home.join("repo/target");
+        std::fs::create_dir_all(target.join("debug/deps")).unwrap();
+        std::fs::write(target.parent().unwrap().join("Cargo.toml"), "[package]").unwrap();
+        for name in action::CARGO_COORDINATION_FILES {
+            std::fs::write(target.join("debug").join(name), "").unwrap();
+        }
+        std::fs::write(target.join("debug/deps/artifact"), "fixture-bytes").unwrap();
+        let mut f = Finding {
+            observed_at: None,
+            id: "repo/target".into(),
+            path: target
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            finding_type: "dev_cache".into(),
+            size_bytes: 100,
+            age_days: None,
+            recommendation: "Safe to remove".into(),
+            category: classify::CAT_SAFE.into(),
+            consequence: None,
+            action_taken: None,
+            actioned_at: None,
+            size_recovered_bytes: None,
+            action_source: None,
+        };
+        let checks = ActionChecks {
+            home: &home,
+            run_id: "action",
+            selected_profiles: &[],
+            probe: &busy(),
+            locks: &IdleLock,
+            include_regenerable: true,
+            include_review: true,
+        };
+        let (current, result) =
+            checked_trash(&mut f, &checks, |_| panic!("live build must survive"));
+        assert!(result.is_err());
+        assert_eq!(
+            current.reason,
+            "Profiles in use are skipped; other unsupported profiles remain excluded"
+        );
+        assert_eq!(current.profiles.len(), 1);
+        assert_eq!(current.profiles[0].status, "busy");
+        assert_eq!(current.profiles[0].reason, "Profile in use: active process");
+        assert!(Path::new(&f.path).exists());
+    }
+
+    #[test]
+    fn acceptance_2_and_4_shipping_gate_never_moves_a_whole_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let target = home.join("repo/target");
+        std::fs::create_dir_all(target.join("debug/deps")).unwrap();
+        std::fs::write(target.parent().unwrap().join("Cargo.toml"), "[package]").unwrap();
+        for name in action::CARGO_COORDINATION_FILES {
+            std::fs::write(target.join("debug").join(name), "").unwrap();
+        }
+        std::fs::write(target.join("debug/deps/artifact"), "fixture-bytes").unwrap();
+        let mut f = Finding {
+            observed_at: None,
+            id: "repo/target".into(),
+            path: target
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            finding_type: "dev_cache".into(),
+            size_bytes: 100,
+            age_days: None,
+            recommendation: "Safe to remove".into(),
+            category: classify::CAT_IN_USE.into(),
+            consequence: None,
+            action_taken: None,
+            actioned_at: None,
+            size_recovered_bytes: None,
+            action_source: None,
+        };
+        let checks = ActionChecks {
+            run_id: "fixture",
+            home: &home,
+            selected_profiles: &[],
+            probe: &idle(),
+            locks: &IdleLock,
+            include_regenerable: true,
+            include_review: true,
+        };
+        let (current, result) =
+            checked_trash(&mut f, &checks, |_| panic!("whole target must survive"));
+        assert!(result.is_err());
+        assert_eq!(current.category, classify::CAT_REGENERABLE);
+        if action::CARGO_PROFILE_RELEASE_VERIFIED {
+            // Gate on (real-cargo acceptance demonstrated 2026-09-22): the whole
+            // tree is still never trashed; cleanup is offered per profile.
+            assert!(current.profiles.iter().any(|p| p.status == "eligible"));
+        } else {
+            assert!(current.reason.contains("Unsupported layout"));
+        }
+        assert!(Path::new(&f.path).exists());
+    }
+
+    #[test]
+    fn acceptance_5_probe_failures_never_mean_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        for reason in [
+            "Activity check timed out",
+            "Activity information is incomplete or permission was denied",
+            "Activity information is incomplete",
+        ] {
+            let path = home.join("Downloads/old.zip");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "fixture-bytes").unwrap();
+            let mut f = Finding {
+                observed_at: None,
+                id: "Downloads/old.zip".into(),
+                path: path.canonicalize().unwrap().to_string_lossy().into_owned(),
+                finding_type: "stale_file".into(),
+                size_bytes: 100,
+                age_days: None,
+                recommendation: "Safe to remove".into(),
+                category: classify::CAT_SAFE.into(),
+                consequence: None,
+                action_taken: None,
+                actioned_at: None,
+                size_recovered_bytes: None,
+                action_source: None,
+            };
+            let checks = ActionChecks {
+                home: &home,
+                run_id: "action",
+                selected_profiles: &[],
+                probe: &Probe(Err(reason.into())),
+                locks: &IdleLock,
+                include_regenerable: true,
+                include_review: true,
+            };
+            let (_, result) =
+                checked_trash(&mut f, &checks, |_| panic!("failed probe must exclude"));
+            assert_eq!(result.unwrap_err(), reason);
+            assert!(Path::new(&f.path).exists());
+        }
+    }
+
+    #[test]
+    fn acceptance_6_category_acknowledgment_and_containment_matrix() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        for (relative, kind, saved, regen, review, eligible) in [
+            (
+                "Downloads/old.zip",
+                "stale_file",
+                classify::CAT_SAFE,
+                false,
+                false,
+                true,
+            ),
+            (".npm", "app_cache", classify::CAT_SAFE, false, false, false),
+            (".npm", "app_cache", classify::CAT_SAFE, true, false, true),
+            (
+                "Documents/photo.raw",
+                "large_file",
+                classify::CAT_REVIEW,
+                true,
+                false,
+                false,
+            ),
+            (
+                "Documents/photo.raw",
+                "large_file",
+                classify::CAT_REVIEW,
+                false,
+                true,
+                true,
+            ),
+            (
+                "Library/Caches/com.apple.cache",
+                "app_cache",
+                classify::CAT_SAFE,
+                true,
+                true,
+                false,
+            ),
+            (
+                "Downloads/.env",
+                "stale_file",
+                classify::CAT_SAFE,
+                true,
+                true,
+                false,
+            ),
+            (
+                "Library/Mobile Documents/photo",
+                "large_file",
+                classify::CAT_SAFE,
+                true,
+                true,
+                false,
+            ),
+            (
+                "Downloads/unknown",
+                "stale_file",
+                "invented",
+                true,
+                true,
+                false,
+            ),
+            (
+                "source.rs",
+                "large_file",
+                classify::CAT_SAFE,
+                true,
+                true,
+                false,
+            ),
+        ] {
+            let path = home.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            if kind == "stale_file" || kind == "large_file" {
+                std::fs::write(&path, "fixture-bytes").unwrap();
+            } else {
+                std::fs::create_dir_all(&path).unwrap();
+            }
+            let mut f = Finding {
+                observed_at: None,
+                id: relative.into(),
+                path: path.canonicalize().unwrap().to_string_lossy().into_owned(),
+                finding_type: kind.into(),
+                size_bytes: 100,
+                age_days: None,
+                recommendation: "Safe to remove".into(),
+                category: saved.into(),
+                consequence: None,
+                action_taken: None,
+                actioned_at: None,
+                size_recovered_bytes: None,
+                action_source: None,
+            };
+            let current = eligibility(&mut f, regen, review, &home, &idle());
+            assert_eq!(current.eligible, eligible, "{relative}: {}", current.reason);
+        }
+        #[cfg(unix)]
+        {
+            let real = home.join("Downloads/real");
+            std::fs::write(&real, "data").unwrap();
+            let alias = home.join("Downloads/alias");
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            assert!(action::validate_path("stale_file", &alias, &home).is_err());
+        }
+    }
+
+    #[test]
+    fn acceptance_6_path_substitution_during_probe_is_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let path = home.join("Downloads/old.zip");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "fixture-bytes").unwrap();
+        let mut f = Finding {
+            observed_at: None,
+            id: "Downloads/old.zip".into(),
+            path: path.canonicalize().unwrap().to_string_lossy().into_owned(),
+            finding_type: "stale_file".into(),
+            size_bytes: 100,
+            age_days: None,
+            recommendation: "Safe to remove".into(),
+            category: classify::CAT_SAFE.into(),
+            consequence: None,
+            action_taken: None,
+            actioned_at: None,
+            size_recovered_bytes: None,
+            action_source: None,
+        };
+        struct Replace;
+        impl ActivityProbe for Replace {
+            fn check(&self, path: &Path) -> Result<Vec<ProcessRef>, String> {
+                std::fs::rename(path, path.with_extension("saved")).unwrap();
+                std::fs::write(path, "replacement").unwrap();
+                Ok(Vec::new())
+            }
+        }
+        let checks = ActionChecks {
+            home: &home,
+            run_id: "action",
+            selected_profiles: &[],
+            probe: &Replace,
+            locks: &IdleLock,
+            include_regenerable: true,
+            include_review: true,
+        };
+        let (_, result) =
+            checked_trash(&mut f, &checks, |_| panic!("substituted path must survive"));
+        assert_eq!(
+            result.unwrap_err(),
+            "Path changed during availability check"
+        );
+        assert!(Path::new(&f.path).exists());
+    }
+
+    #[test]
+    fn acceptance_6_exact_selection_deduplicates_and_never_adds_newly_eligible() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let first = fixture(&home, "Downloads/first", "stale_file", classify::CAT_SAFE);
+        let second = fixture(&home, "Downloads/second", "stale_file", classify::CAT_SAFE);
+        let id = first.id.clone();
+        let data = FindingsFile {
+            run_id: "fixture".into(),
+            findings: vec![first, second],
+        };
+        let ledger_dir = home.join("ledger");
+        save_findings_to(&ledger_dir, &data).unwrap();
+        assert_eq!(
+            resolve_bulk_targets(&data, &[id.clone(), id]).unwrap(),
+            vec![0]
+        );
+        assert!(resolve_bulk_targets(&data, &["unknown".into()]).is_err());
+        let saved: FindingsFile =
+            serde_json::from_slice(&std::fs::read(ledger_dir.join("fixture.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved.findings.len(), 2);
     }
 }

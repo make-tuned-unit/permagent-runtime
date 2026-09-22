@@ -16,8 +16,6 @@ import {
   formatBytes,
   sumRunRecovered,
   sumPendingBytes,
-  recoveryHeadline,
-  lifetimeRecoveryLine,
   type RecoveryTotals,
 } from '../../lib/cleanupRecovery';
 import { usePersona } from '../settings/useSettings';
@@ -31,10 +29,11 @@ import { AsOf } from '../common/AsOf';
 import { getApiBaseUrl, loadDaemonToken } from '../../lib/api';
 import {
   bulkEligible,
-  categoryBreakdown,
+  cleanupBytes,
   categoryOf,
   CATEGORY_LABELS,
-  requiresSecondConfirm,
+  REGENERABLE_ACK,
+  REVIEW_ACK,
   type CategoryKey,
 } from './findingCategories';
 
@@ -100,6 +99,10 @@ export interface Finding {
   // guarantees these fields drive.
   category?: string | null;
   consequence?: string | null;
+  available?: boolean;
+  availability_reason?: string;
+  protection?: string;
+  profiles?: CargoProfile[];
   action_source?: string | null;
 }
 
@@ -291,7 +294,7 @@ function categoryColor(category: CategoryKey, colors: ThemeColors): string {
 
 export interface BulkActionResult {
   finding_id: string;
-  action_taken: string;
+  action_taken: string | null;
   size_recovered_bytes: number | null;
   error: string | null;
 }
@@ -302,7 +305,22 @@ export interface BulkActionBlocked {
   consequence: string | null;
 }
 
+interface CategoryAcknowledgments { include_regenerable: boolean; include_review: boolean; profile_paths?: Record<string, string[]> }
+interface CargoProfile {
+  path: string; bytes: number; status: 'eligible' | 'busy' | 'unsupported' | 'moved' | 'skipped' | 'failed';
+  reason: string; moved_bytes: number; moved: number; skipped: number; failed: number;
+}
+interface Availability {
+  finding_id: string; category: string; eligible: boolean; reason: string; protection: string; profiles?: CargoProfile[];
+}
+interface BulkPreview { findings: Finding[]; availability: Availability[] }
+
+async function previewFindings(runId: string, ids: string[]): Promise<BulkPreview> {
+  return apiFetch<BulkPreview>(`/automation/run/${encodeURIComponent(runId)}/bulk-preview?include_regenerable=true&include_review=true&finding_ids=${encodeURIComponent(ids.join(','))}`);
+}
+
 export interface BulkActionResponse {
+  availability?: Availability[];
   run_id: string;
   results: BulkActionResult[];
   blocked: BulkActionBlocked[];
@@ -315,6 +333,7 @@ export interface BulkSweepSummary {
   cleaned: number;
   failed: number;
   bytes: number;
+  profiles?: CargoProfile[];
 }
 
 export class BulkActionBlockedError extends Error {
@@ -326,14 +345,14 @@ export class BulkActionBlockedError extends Error {
   }
 }
 
-async function bulkTrashFindings(runId: string, findingIds: string[]): Promise<BulkActionResponse> {
+async function bulkTrashFindings(runId: string, findingIds: string[], acknowledgments: CategoryAcknowledgments): Promise<BulkActionResponse> {
   const token = await loadDaemonToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
   const response = await fetch(`${getApiBaseUrl()}/automation/run/${encodeURIComponent(runId)}/bulk-action`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ action: 'trash', finding_ids: findingIds, confirmed: true, action_source: 'ui_bulk' }),
+    body: JSON.stringify({ action: 'trash', finding_ids: findingIds, confirmed: true, action_source: 'ui_bulk', ...acknowledgments }),
   });
   if (response.status === 409) {
     const body = await response.json().catch(() => ({ error: 'Blocked', blocked: [] }));
@@ -1135,7 +1154,10 @@ export function AutomateView() {
 
       {/* ── Detail panel (slides in from right) ── */}
       {currentDetail && (
-        <DetailPanel detail={currentDetail} onClose={() => setDetail(null)}
+        <DetailPanel detail={currentDetail}
+          lastStatus={currentDetail.kind === 'run' && sessions.get(currentDetail.run.jobId)?.[0]?.id === currentDetail.run.id
+            ? jobs.find(job => job.id === currentDetail.run.jobId)?.last_status : undefined}
+          onClose={() => setDetail(null)}
           onRunNow={handleRunNow} onPause={handlePause} onUnpause={handleUnpause}
           onDelete={handleDelete} onKill={handleKill} onResetToDefault={handleResetToDefault}
           actionStates={actionStates} onActionDone={handleActionDone} />
@@ -1329,8 +1351,9 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
 // ═══════════════════════════════════════════════════════════════════════
 
 function DetailPanel({
-detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone }: {
+detail, lastStatus, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone }: {
   detail: DetailTarget;
+  lastStatus?: ScheduleRunStatus | null;
   onClose: () => void;
   onRunNow: (id: string) => Promise<void>;
   onPause: (id: string) => Promise<void>;
@@ -1397,7 +1420,7 @@ detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefaul
           actionStates={actionStates} onActionDone={onActionDone} />
       )}
       {detail.kind === 'extension' && <ExtensionDetail ext={detail.ext} />}
-      {detail.kind === 'run' && <RunDetail run={detail.run} displayName={detail.displayName} />}
+      {detail.kind === 'run' && <RunDetail run={detail.run} displayName={detail.displayName} lastStatus={lastStatus} />}
     </div>
   );
 }
@@ -1491,7 +1514,22 @@ function ExtensionDetail({ ext }: { ext: ExtensionInfo }) {
   );
 }
 
-function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string }; displayName: string }) {
+interface RunFindings {
+  findings: Finding[];
+  ledger_state?: 'valid' | 'missing' | 'unverified';
+  created_at?: string | null;
+}
+
+export function findingsReportNotice(data: RunFindings, status?: ScheduleRunStatus | null): string | null {
+  if (status === 'error' || data.ledger_state !== 'valid') {
+    return 'Report incomplete — cleanup findings could not be saved.';
+  }
+  return data.findings.length === 0 ? 'Scan complete — no cleanup candidates found.' : null;
+}
+
+export function RunDetail({ run, displayName, lastStatus }: {
+  run: SessionInfo & { jobId: string }; displayName: string; lastStatus?: ScheduleRunStatus | null;
+}) {
   const { colors } = useTheme();
   const switchToSession = useCommandCenter(s => s.switchToSession);
   const openChatDock = useCommandCenter(s => s.openChatDock);
@@ -1501,6 +1539,8 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
     openChatDock();
   }, [switchToSession, openChatDock, run.id]);
   const [reportText, setReportText] = useState<string | null>(null);
+  const [reportNotice, setReportNotice] = useState<string | null>(null);
+  const [previousReport, setPreviousReport] = useState<{ date: string; text: string; findings: Finding[] } | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [actionInFlight, setActionInFlight] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1523,6 +1563,10 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
     let cancelled = false;
     setLoading(true);
     setLoadError(false);
+    setFindings([]);
+    setReportText(null);
+    setReportNotice(null);
+    setPreviousReport(null);
     (async () => {
       let reportOk = false;
       let findingsOk = false;
@@ -1537,17 +1581,48 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
         }
         reportOk = true;
       } catch {}
+      let notice: string | null = null;
       try {
-        const data = await apiFetch<{ findings: Finding[] }>(`/automation/run/${encodeURIComponent(run.id)}/findings`);
-        if (!cancelled) setFindings(data.findings || []);
+        const data = await apiFetch<RunFindings>(`/automation/run/${encodeURIComponent(run.id)}/findings`);
+        notice = findingsReportNotice(data, lastStatus);
+        if (!cancelled) {
+          setFindings(data.findings || []);
+          setReportNotice(notice);
+        }
         findingsOk = true;
-      } catch {}
+      } catch {
+        notice = 'Report incomplete — cleanup findings could not be saved.';
+        if (!cancelled) setReportNotice(notice);
+      }
+      try {
+        if (notice === 'Report incomplete — cleanup findings could not be saved.') {
+          // Only consider this job's earlier runs; preserve the ledger's original date.
+          const history = await apiFetch<SessionInfo[]>(`/schedule/${encodeURIComponent(run.jobId)}/sessions?limit=100`);
+          const earlier = history.filter(candidate => candidate.id !== run.id && candidate.createdAt < run.createdAt)
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+          for (const candidate of earlier) {
+            try {
+              const ledger = await apiFetch<RunFindings>(`/automation/run/${encodeURIComponent(candidate.id)}/findings`);
+              if (ledger.ledger_state !== 'valid' || !ledger.created_at) continue;
+              let text = findingsReportNotice(ledger) || '';
+              try {
+                const prior = await apiFetch<{ conversation?: Array<{ role: string; content?: Array<{ type: string; text?: string }> }> }>(`/api/sessions/${encodeURIComponent(candidate.id)}`);
+                text = (prior.conversation || []).filter(m => m.role === 'assistant')
+                  .flatMap(m => (m.content || []).filter(c => c.type === 'text').map(c => c.text || ''))
+                  .join('\n\n').replace(/<findings>[\s\S]*?<\/findings>/g, '').trim() || text;
+              } catch { /* The valid ledger remains available even without conversation text. */ }
+              if (!cancelled) setPreviousReport({ date: ledger.created_at, text, findings: ledger.findings });
+              break;
+            } catch { /* A missing older ledger does not hide the next valid report. */ }
+          }
+        }
+      } catch { /* History failure must not hide the current report notice. */ }
       // Only an error if we got nothing at all — a partial load still shows a report.
       if (!cancelled) { setLoadError(!reportOk && !findingsOk); setLoading(false); }
     })();
     void refreshLifetime();
     return () => { cancelled = true; };
-  }, [run.id, reloadTick, refreshLifetime]);
+  }, [run.id, run.jobId, run.createdAt, lastStatus, reloadTick, refreshLifetime]);
 
   const handleAction = async (findingId: string, action: string, confirmed?: boolean) => {
     setActionInFlight(findingId);
@@ -1572,8 +1647,8 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
   // of single actions, which is the exact shape of the incident this fix
   // closes). Updates local state from `results`; blocked entries are the
   // server's own veto and are surfaced rather than silently dropped.
-  const handleBulkAction = async (findingIds: string[]): Promise<BulkSweepSummary> => {
-    const response = await bulkTrashFindings(run.id, findingIds);
+  const handleBulkAction = async (findingIds: string[], acknowledgments: CategoryAcknowledgments): Promise<BulkSweepSummary> => {
+    const response = await bulkTrashFindings(run.id, findingIds, acknowledgments);
     if (response.results.length > 0) {
       const byId = new Map(response.results.map(r => [r.finding_id, r]));
       setFindings(prev => prev.map(f => {
@@ -1583,20 +1658,35 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
           ...f,
           action_taken: r.action_taken,
           actioned_at: new Date().toISOString(),
-          size_recovered_bytes: r.size_recovered_bytes,
+          size_recovered_bytes: response.availability?.find(a => a.finding_id === f.id)?.protection === 'cargo-profile-locks'
+            ? (f.size_recovered_bytes ?? 0) + (r.size_recovered_bytes ?? 0) : r.size_recovered_bytes,
           error_message: r.error ?? null,
+          category: response.availability?.find(a => a.finding_id === f.id)?.category ?? f.category,
+          profiles: response.availability?.find(a => a.finding_id === f.id)?.profiles ?? f.profiles,
+          protection: response.availability?.find(a => a.finding_id === f.id)?.protection ?? f.protection,
+          availability_reason: r.error ?? undefined,
+          available: r.error ? false : f.available,
         };
       }));
       void refreshLifetime();
     }
     return {
-      cleaned: response.results.filter(r => !r.error).length,
-      failed: response.results.filter(r => r.error).length,
+      cleaned: response.results.reduce((total, r) => {
+        const profiles = response.availability?.find(a => a.finding_id === r.finding_id)?.profiles;
+        return total + (profiles?.length ? profiles.reduce((n, p) => n + p.moved, 0) : r.error ? 0 : 1);
+      }, 0),
+      failed: response.results.reduce((total, r) => {
+        const profiles = response.availability?.find(a => a.finding_id === r.finding_id)?.profiles;
+        return total + (profiles?.length ? Math.max(r.error ? 1 : 0, profiles.reduce((n, p) => n + p.failed + p.skipped, 0)) : r.error ? 1 : 0);
+      }, 0),
       bytes: response.results.reduce((n, r) => n + (r.size_recovered_bytes ?? 0), 0),
+      profiles: response.availability?.flatMap(a => a.profiles || []),
     };
   };
 
-  const totalRecovered = sumRunRecovered(findings);
+  const totalRecovered = sumRunRecovered(findings) + findings
+    .filter(f => f.action_taken !== 'trashed' && (f.protection === 'cargo-profile-locks' || /\/(target|cargo-target)$/.test(f.path) || f.path.includes('/.shared-target/')))
+    .reduce((sum, f) => sum + (f.size_recovered_bytes ?? 0), 0);
   const allActioned = findings.length > 0 && findings.every(f => f.action_taken !== null);
 
   return (
@@ -1636,11 +1726,29 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
           {' '}Open conversation
         </Button>
       </Tooltip>
+      {!loading && reportNotice && (
+        <div role="status" style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.lg, overflowWrap: 'anywhere' }}>
+          {reportNotice}
+        </div>
+      )}
+      {!loading && previousReport && (
+        <div style={{ minWidth: 0, maxWidth: '100%', overflow: 'hidden', overflowWrap: 'anywhere', marginBottom: space.xl }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.md }}>
+            Previous valid report — <time dateTime={previousReport.date}>{previousReport.date}</time>
+          </div>
+          {previousReport.text && <RenderedReport text={previousReport.text} />}
+          {previousReport.findings.map(f => (
+            <div key={f.id} style={{ fontSize: textSize.caption, marginBottom: space.sm }}>
+              {f.path} — {f.consequence || f.recommendation}
+            </div>
+          ))}
+        </div>
+      )}
       {loading ? (
         <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading results...</div>
       ) : findings.length > 0 ? (
         <>
-          <FindingsPanel findings={findings} actionInFlight={actionInFlight} onAction={handleAction} onBulkAction={handleBulkAction} totalRecovered={totalRecovered} allActioned={allActioned} lifetime={lifetime} />
+          <FindingsPanel runId={run.id} findings={findings} actionInFlight={actionInFlight} onAction={handleAction} onBulkAction={handleBulkAction} totalRecovered={totalRecovered} allActioned={allActioned} lifetime={lifetime} />
           {reportText && <ReportToggle text={reportText} createdAt={run.createdAt} tokens={run.totalTokens} />}
         </>
       ) : reportText ? (
@@ -1925,11 +2033,11 @@ function groupFindings(findings: Finding[]): Map<string, Finding[]> {
   return groups;
 }
 
-function FindingsPanel({
-findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, lifetime }: {
-  findings: Finding[]; actionInFlight: string | null;
+export function FindingsPanel({
+runId, findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, lifetime }: {
+  runId: string; findings: Finding[]; actionInFlight: string | null;
   onAction: (findingId: string, action: string, confirmed?: boolean) => Promise<void>;
-  onBulkAction: (findingIds: string[]) => Promise<BulkSweepSummary>;
+  onBulkAction: (findingIds: string[], acknowledgments: CategoryAcknowledgments) => Promise<BulkSweepSummary>;
   totalRecovered: number; allActioned: boolean;
   lifetime: RecoveryTotals | null;
 }) {
@@ -1938,7 +2046,47 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
   const [previewGroup, setPreviewGroup] = useState<string | null>(null);
   const [includeRegenerable, setIncludeRegenerable] = useState(false);
+  const [includeReview, setIncludeReview] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const [observations, setObservations] = useState<Map<string, Finding>>(new Map());
+  const checkGeneration = useRef(0);
+  useEffect(() => {
+    setObservations(new Map());
+    ++checkGeneration.current;
+    setChecking(false);
+  }, [findings, runId]);
+  const currentFindings = findings.map(f => ({ ...f, ...observations.get(f.id), action_taken: f.action_taken }));
+  const recheck = async () => {
+    const generation = ++checkGeneration.current;
+    setChecking(true);
+    setCheckError(null);
+    setCompletedProfiles([]);
+    try {
+      const response = await previewFindings(runId, findings.filter(f => !f.action_taken).map(f => f.id));
+      if (generation !== checkGeneration.current) return;
+      const byId = new Map(response.availability.map(a => [a.finding_id, a]));
+      setObservations(new Map(response.findings.map(f => {
+        const a = byId.get(f.id);
+        return [f.id, { ...f, category: a?.category ?? f.category, available: a?.eligible ?? false,
+          availability_reason: a?.reason ?? 'Availability was not returned', protection: a?.protection, profiles: a?.profiles }];
+      })));
+    } catch (error) {
+      if (generation === checkGeneration.current) setCheckError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (generation === checkGeneration.current) setChecking(false);
+    }
+  };
+  const openCleanup = (group: string) => {
+    setCompletedProfiles([]);
+    setPreviewGroup(group);
+    setIncludeRegenerable(false);
+    setIncludeReview(false);
+    void recheck();
+  };
+  const [completedProfiles, setCompletedProfiles] = useState<CargoProfile[]>([]);
   const sweepTargets = useRef<Finding[]>([]);
+  const sweepAcknowledgments = useRef<CategoryAcknowledgments>({ include_regenerable: false, include_review: false });
 
   /**
    * The cleanup sweep, on the app's one long-running-job machine.
@@ -1947,7 +2095,7 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
    * `cleaning` boolean and the word "Cleaning..." — the same sentence for two
    * files and for two thousand, and a success that was only visible as the
    * dialog disappearing. Now the terminal phases are written out: the success
-   * line names how much came back, and a server veto keeps the dialog open
+   * line names what moved to Trash, and a server veto keeps the dialog open
    * with the server's own words in it rather than vanishing like a success.
    *
    * The sweep is one request with no progress channel, so there is no size to
@@ -1958,7 +2106,9 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
       const items = sweepTargets.current;
       report({ stage: 'trashing', status: `Moving ${items.length} item${items.length === 1 ? '' : 's'} to Trash` });
       try {
-        return await onBulkAction(items.map(f => f.id));
+        const result = await onBulkAction(items.map(f => f.id), sweepAcknowledgments.current);
+        setCompletedProfiles(result.profiles || []);
+        return result;
       } catch (err) {
         if (err instanceof BulkActionBlockedError) {
           // The server vetoed something the client thought was eligible (a
@@ -1974,25 +2124,30 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
     summarize: (s) =>
       s.failed > 0
         ? `Moved ${s.cleaned} to Trash · ${s.failed} could not be removed`
-        : `Moved ${s.cleaned} to Trash — ${formatBytes(s.bytes)} recovered`,
+        : `Moved ${s.cleaned} to Trash — ${formatBytes(s.bytes)} estimated; space is not freed until Trash is emptied`,
     onSuccess: (s) => {
       // Only a clean sweep closes the dialog; anything the server refused
       // stays on screen next to the list it refused it from.
-      if (s.failed === 0) { setPreviewGroup(null); setIncludeRegenerable(false); }
+      if (s.failed === 0 && !s.profiles?.length) { setPreviewGroup(null); setIncludeRegenerable(false); setIncludeReview(false); }
     },
   });
 
-  const closeDialog = () => { setPreviewGroup(null); setIncludeRegenerable(false); sweep.reset(); };
+  const closeDialog = () => { ++checkGeneration.current; setChecking(false); setPreviewGroup(null); setIncludeRegenerable(false); setIncludeReview(false); sweep.reset(); };
 
   const confirmBulk = (eligible: Finding[]) => {
-    if (eligible.length === 0) return;
+    if (eligible.length === 0 || checking || checkError) return;
+    sweepAcknowledgments.current = { include_regenerable: includeRegenerable, include_review: includeReview };
+    const profilePaths = Object.fromEntries(eligible.filter(f => f.protection === 'cargo-profile-locks').map(f =>
+      [f.id, (f.profiles || []).filter(p => p.status === 'eligible').map(p => p.path)]));
+    if (Object.keys(profilePaths).length) sweepAcknowledgments.current.profile_paths = profilePaths;
     sweepTargets.current = eligible;
     void sweep.start();
   };
 
   const totalPending = findings.filter(f => !f.action_taken).length;
   const totalPendingBytes = sumPendingBytes(findings);
-  const lifetimeLine = lifetimeRecoveryLine(lifetime);
+  const defaultBytes = bulkEligible(currentFindings, false).eligible.reduce((n, f) => n + cleanupBytes(f), 0);
+  const lifetimeLine = lifetime ? `${formatBytes(lifetime.total_recovered_bytes)} moved to Trash across reports (estimate)` : null;
 
   return (
     <div style={{ marginTop: space.xl }}>
@@ -2001,11 +2156,11 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
         background: allActioned ? `linear-gradient(135deg, ${withAlpha(colors.success, 0.12)}, ${withAlpha(colors.success, 0.04)})` : `linear-gradient(135deg, ${withAlpha(colors.cyan, 0.1)}, ${withAlpha(colors.purple, 0.06)})`,
         border: `1px solid ${allActioned ? withAlpha(colors.success, 0.25) : colors.borderHi}`,
       }}>
-        <div style={{ fontSize: 22, fontWeight: 700, fontFamily: font.display, color: allActioned ? colors.success : colors.text }}>
-          {recoveryHeadline(allActioned, totalRecovered, totalPendingBytes)}
+        <div style={{ fontSize: textSize.heading, fontWeight: 700, fontFamily: font.display, color: allActioned ? colors.success : colors.text }}>
+          {allActioned ? `${formatBytes(totalRecovered)} moved to Trash (estimate)` : `${formatBytes(totalPendingBytes)} found (estimate)`}
         </div>
         <div style={{ fontSize: textSize.small, color: colors.textMuted, marginTop: space.xs }}>
-          {allActioned ? `All ${findings.length} items cleaned.` : `${totalPending} items across ${groups.size} locations.`}
+          {allActioned ? `All ${findings.length} items reviewed.` : `${totalPending} items across ${groups.size} locations.`}
         </div>
         {lifetimeLine && (
           <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: space.sm, fontVariantNumeric: 'tabular-nums' }}>
@@ -2016,17 +2171,20 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
           <Button
             colors={colors}
             variant="primary"
-            onClick={() => setPreviewGroup('__all__')}
+            onClick={() => openCleanup('__all__')}
             style={{
               '--pa-btn-pad': '12px 32px',
               '--pa-btn-radius': `${radius.md}px`,
               '--pa-btn-weight': 700,
               fontFamily: font.body,
               fontSize: textSize.body,
-              marginTop: 14,
+              marginTop: space.lg,
+              maxWidth: '100%',
+              whiteSpace: 'normal',
+              overflowWrap: 'anywhere',
             } as CSSProperties}
           >
-            Clean Up All — {formatBytes(totalPendingBytes)}
+            {defaultBytes > 0 ? `Review cleanup — ${formatBytes(defaultBytes)} selected` : 'Review cleanup options'}
           </Button>
         )}
         {/* The sweep outlives its dialog: a clean run closes the dialog, and
@@ -2036,12 +2194,18 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
         )}
       </div>
       {previewGroup && (() => {
-        const pool = (previewGroup === '__all__' ? findings : (groups.get(previewGroup) || [])).filter(f => !f.action_taken);
+        const pool = (previewGroup === '__all__' ? currentFindings : currentFindings.filter(f => (groups.get(previewGroup) || []).some(g => g.id === f.id))).filter(f => !f.action_taken);
         return (
           <BulkConfirmDialog
+            completedProfiles={completedProfiles}
             pending={pool}
             includeRegenerable={includeRegenerable}
             onToggleRegenerable={setIncludeRegenerable}
+            includeReview={includeReview}
+            onToggleReview={setIncludeReview}
+            checking={checking}
+            checkError={checkError}
+            onRecheck={() => void recheck()}
             onCancel={closeDialog}
             onConfirm={confirmBulk}
             sweep={sweep}
@@ -2057,7 +2221,7 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
           const allDone = pending.length === 0;
           return (
             <div key={groupName} style={{ borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${allDone ? withAlpha(colors.success, 0.2) : colors.border}`, background: allDone ? withAlpha(colors.success, 0.03) : colors.surface }}>
-              <div style={{ padding: `${space.xxl}px ${space.xxxl}px`, display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ padding: `${space.xxl}px ${space.xxxl}px`, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: space.lg }}>
                 {/* Disclosure: the folder tile opens and closes the item list
                     below it and does nothing else, so it keeps the element and
                     the aria pairing, and takes the `.pa-btn` rules. It had no
@@ -2079,15 +2243,15 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
                     <FiFolder size={18} color={colors.textMuted} />
                   </div>
                 </button>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
                   <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, color: allDone ? colors.success : colors.text }}>{groupName}</div>
-                  <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: space.xxs }}>{allDone ? `Cleaned — ${formatBytes(groupRecovered)}` : `${pending.length} items · ${formatBytes(pendingBytes)}`}</div>
+                  <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: space.xxs }}>{allDone ? `Moved to Trash — ${formatBytes(groupRecovered)} estimated` : `${pending.length} items · ${formatBytes(pendingBytes)}`}</div>
                 </div>
                 {allDone ? <div style={{ padding: `${space.md}px ${space.xxl}px`, borderRadius: radius.md, background: withAlpha(colors.success, 0.1), color: colors.success, fontSize: textSize.caption, fontWeight: 600 }}>Done</div> : (
                   <Button
                     colors={colors}
                     variant="primary"
-                    onClick={() => setPreviewGroup(groupName)}
+                    onClick={() => openCleanup(groupName)}
                     style={{
                       '--pa-btn-pad': '10px 22px',
                       '--pa-btn-radius': `${radius.md}px`,
@@ -2095,12 +2259,12 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
                       fontFamily: font.body,
                       fontSize: textSize.small,
                     } as CSSProperties}
-                  >Clean — {formatBytes(pendingBytes)}</Button>
+                  >Review cleanup options</Button>
                 )}
               </div>
               {isExpanded && (
                 <div style={{ padding: '0 20px 16px', borderTop: `1px solid ${colors.border}` }}>
-                  {items.map(f => <FindingRow key={f.id} finding={f} loading={actionInFlight === f.id} onAction={(a, confirmed) => onAction(f.id, a, confirmed)} />)}
+                  {items.map(f => <FindingRow key={f.id} finding={currentFindings.find(item => item.id === f.id) || f} loading={actionInFlight === f.id || checking} onRecheck={() => openCleanup(groupName)} onAction={(a, confirmed) => onAction(f.id, a, confirmed)} />)}
                 </div>
               )}
             </div>
@@ -2117,116 +2281,87 @@ function CategoryBadge({ category }: { category: CategoryKey }) {
   const { colors } = useTheme();
   const color = categoryColor(category, colors);
   return (
-    <span style={{ fontSize: 9, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: withAlpha(color, 0.15), color, flexShrink: 0, whiteSpace: 'nowrap' }}>
+    <span style={{ fontSize: textSize.micro, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: withAlpha(color, 0.15), color, flexShrink: 0, whiteSpace: 'nowrap' }}>
       {CATEGORY_LABELS[category]}
     </span>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Bulk confirm dialog — the ONE place that decides what a bulk action does.
-// Replaces the old "Review (N items, X)" preview, which showed every
-// pending finding regardless of category and let a single click trash all
-// of them — the exact shape of the incident this fix closes. Now: the
-// eligible set is derived by bulkEligible() (safe_to_remove always,
-// regenerable_costly only opt-in), in_use/managed_by_macos are ALWAYS
-// listed as excluded with their consequence, and the total shown is the
-// total that will actually be trashed.
-// ═══════════════════════════════════════════════════════════════════════
+// Bulk confirmation presents current server observations. Every pending item
+// appears once, and opting in never overrides a current server exclusion.
 
 export function BulkConfirmDialog({
-pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, sweep }: {
-  pending: Finding[];
-  includeRegenerable: boolean;
+  pending, includeRegenerable, onToggleRegenerable, includeReview = false,
+  onToggleReview, checking = false, checkError = null, onRecheck,
+  onCancel, onConfirm, sweep, completedProfiles = [],
+}: {
+  pending: Finding[]; includeRegenerable: boolean; completedProfiles?: CargoProfile[];
   onToggleRegenerable: (v: boolean) => void;
-  onCancel: () => void;
-  onConfirm: (eligible: Finding[]) => void;
-  /** The sweep this dialog arms. Owned by the caller, because a clean run
-   *  closes the dialog and the run still has something to say afterwards. */
+  includeReview?: boolean; onToggleReview?: (v: boolean) => void;
+  checking?: boolean; checkError?: string | null; onRecheck?: () => void;
+  onCancel: () => void; onConfirm: (eligible: Finding[]) => void;
   sweep: LongRunningJob<BulkSweepSummary>;
 }) {
   const { colors } = useTheme();
-  const { eligible, excluded } = bulkEligible(pending, includeRegenerable);
-  const totalBytes = eligible.reduce((s, f) => s + f.size_bytes, 0);
-  const breakdown = categoryBreakdown(eligible);
-  const regenerablePending = pending.filter(f => categoryOf(f) === 'regenerable_costly');
-  const regenerableBytes = regenerablePending.reduce((s, f) => s + f.size_bytes, 0);
-
+  const { eligible, optional, excluded } = bulkEligible(pending, includeRegenerable, includeReview);
+  const rustTargets = pending.filter(f => f.protection?.startsWith('cargo-') || /\/(target|cargo-target)$/.test(f.path));
+  const profiles = completedProfiles.length ? completedProfiles : rustTargets.flatMap(f => f.profiles || []);
+  const profileBytes = (status: CargoProfile['status']) => profiles.filter(p => p.status === status).reduce((total, p) => total + p.bytes, 0);
+  const sum = (items: Finding[]) => items.reduce((n, f) => n + cleanupBytes(f), 0);
+  const renderItems = (label: string, items: Finding[]) => (
+    <div style={{ padding: space.xl, minWidth: 0, borderBottom: `1px solid ${colors.border}` }}>
+      <div style={{ fontSize: textSize.caption, fontWeight: 600 }}>{label} — {items.length} items · {formatBytes(sum(items))} estimated</div>
+      {items.map(f => <div key={f.id} style={{ marginTop: space.md, minWidth: 0, overflowWrap: 'anywhere' }}>
+        <CategoryBadge category={categoryOf(f)} />
+        <div style={{ fontSize: textSize.caption }}>{f.path}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>
+          {formatBytes(f.size_bytes)} estimated · {f.availability_reason || f.consequence || f.recommendation}
+          {f.protection === 'probe-only' ? ' · probe-only' : ''}
+        </div>
+      </div>)}
+    </div>
+  );
   return (
-    <div style={{ marginBottom: space.xxl, borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${colors.borderHi}`, background: colors.bgDeeper }}>
-      <div style={{ padding: `${space.xxl}px ${space.xxxl}px`, borderBottom: `1px solid ${colors.border}` }}>
-        <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display }}>
-          Review — {eligible.length} item{eligible.length === 1 ? '' : 's'}, {formatBytes(totalBytes)} total
-        </div>
-        {breakdown.length > 0 && (
-          <div style={{ marginTop: space.md, display: 'flex', flexDirection: 'column', gap: space.xxs }}>
-            {breakdown.map(b => (
-              <div key={b.category} style={{ display: 'flex', justifyContent: 'space-between', fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono }}>
-                <span style={{ color: categoryColor(b.category, colors) }}>{b.label}</span>
-                <span>{b.count} item{b.count === 1 ? '' : 's'} &middot; {formatBytes(b.bytes)}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {regenerablePending.length > 0 && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: space.md, marginTop: space.xl, cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={includeRegenerable}
-              onChange={e => onToggleRegenerable(e.target.checked)}
-              style={{ accentColor: colors.warning }}
-            />
-            <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>
-              also remove regenerable caches (re-downloads {formatBytes(regenerableBytes)})
-            </span>
-          </label>
-        )}
+    <div style={{ marginBottom: space.xxl, borderRadius: radius.lg, overflow: 'hidden', minWidth: 0, border: `1px solid ${colors.borderHi}`, background: colors.bgDeeper }}>
+      <div style={{ padding: space.xl, fontSize: textSize.body, fontWeight: 600 }}>
+        {checking ? 'Checking availability…' : 'Review cleanup options'}
       </div>
-      {excluded.length > 0 && (
-        <div style={{ padding: `${space.xl}px ${space.xxxl}px`, borderBottom: `1px solid ${colors.border}`, maxHeight: 220, overflowY: 'auto' }}>
-          <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '0.05em', color: colors.textDim, marginBottom: space.md }}>
-            Excluded — will not be removed
+      {rustTargets.length > 0 && (
+        <div style={{ padding: space.xl, minWidth: 0, overflowWrap: 'anywhere', fontSize: textSize.caption, color: colors.textMuted }}>
+          <div>Build outputs are cleaned per profile. Profiles in use are skipped. Profile folders and Cargo lock files remain. Cleaned outputs will need rebuilding.</div>
+          <div style={{ marginTop: space.md }}>
+            Eligible profile contents — {formatBytes(profileBytes('eligible'))} estimated · Busy profile contents — {formatBytes(profileBytes('busy'))} estimated · Unsupported profile contents — {formatBytes(profileBytes('unsupported'))} estimated
           </div>
-          {excluded.map(f => {
-            const category = categoryOf(f);
-            return (
-              <div key={f.id} style={{ padding: '6px 0', borderTop: `1px solid ${colors.border}` }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
-                  <CategoryBadge category={category} />
-                  <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.path}</span>
-                  <span style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono, flexShrink: 0 }}>{formatBytes(f.size_bytes)}</span>
-                </div>
-                {f.consequence && (
-                  <div style={{ fontSize: textSize.micro, color: colors.danger, marginTop: space.xxs, marginLeft: space.xxs }}>{f.consequence}</div>
-                )}
-              </div>
-            );
-          })}
+          {profiles.map(profile => <div key={profile.path} style={{ marginTop: space.md }}>
+            {profile.path} — {profile.reason} · {formatBytes(profile.bytes)} estimated
+            {(profile.moved > 0 || profile.skipped > 0 || profile.failed > 0) && <span> · {profile.moved} moved · {profile.skipped} skipped · {profile.failed} failed · {formatBytes(profile.moved_bytes)} moved</span>}
+          </div>)}
         </div>
       )}
-      {sweep.phase !== 'idle' && (
-        <div style={{ padding: `${space.lg}px ${space.xxxl}px` }}>
-          {/* Retry is the Move button below — a second one here would be two
-              answers to "how do I try again". */}
-          <JobProgress job={sweep} label="Cleanup sweep" onRetry={null} />
-        </div>
-      )}
-      <div style={{ padding: `${space.xl}px ${space.xxxl}px`, display: 'flex', gap: space.md, justifyContent: 'flex-end', borderTop: `1px solid ${colors.border}` }}>
-        <Button colors={colors} onClick={onCancel} style={actionVars(colors)}>Cancel</Button>
-        {/* The work runs in the caller's sweep, not in this click, so the
-            in-flight state arrives on the job — same shape as a form submit.
-            The button's own spinner is off: the job strip above is the one
-            in-flight indicator, and two would be one too many. */}
-        <Button
-          colors={colors}
-          variant="primary"
-          disabled={sweep.running}
-          minPendingMs={0}
-          flashSuccess={false}
-          onClick={() => onConfirm(eligible)}
-          style={PRIMARY_ACTION_VARS}
-        >
-          {sweep.running ? 'Cleaning...' : `Move ${eligible.length} to Trash`}
+      {checkError && <div role="alert" style={{ padding: space.xl, fontSize: textSize.caption, color: colors.danger, overflowWrap: 'anywhere' }}>{checkError}</div>}
+      {renderItems('Selected', eligible)}
+      {renderItems('Optional — rebuildable', optional.filter(f => categoryOf(f) === 'regenerable_costly'))}
+      {renderItems('Optional — requiring review', optional.filter(f => categoryOf(f) === 'review_before_removing'))}
+      <div style={{ padding: space.xl, display: 'flex', flexDirection: 'column', gap: space.md }}>
+        <label style={{ display: 'flex', gap: space.md, fontSize: textSize.caption }}>
+          <input type="checkbox" checked={includeRegenerable} disabled={checking || sweep.running} onChange={e => onToggleRegenerable(e.target.checked)} />
+          <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{REGENERABLE_ACK}</span>
+        </label>
+        <label style={{ display: 'flex', gap: space.md, fontSize: textSize.caption }}>
+          <input type="checkbox" checked={includeReview} disabled={checking || sweep.running || !onToggleReview} onChange={e => onToggleReview?.(e.target.checked)} />
+          <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{REVIEW_ACK}</span>
+        </label>
+      </div>
+      {renderItems('Excluded — will not be removed', excluded)}
+      {onRecheck && <Button colors={colors} disabled={checking || sweep.running} onClick={onRecheck} style={actionVars(colors)}>Recheck availability</Button>}
+      {sweep.phase !== 'idle' && <JobProgress job={sweep} label="Cleanup sweep" onRetry={null} />}
+      <div style={{ padding: space.xl, display: 'flex', flexWrap: 'wrap', gap: space.md, justifyContent: 'flex-end' }}>
+        <Button colors={colors} disabled={sweep.running} onClick={onCancel} style={actionVars(colors)}>Cancel</Button>
+        <Button colors={colors} variant="primary" disabled={checking || !!checkError || sweep.running || completedProfiles.length > 0 || eligible.length === 0}
+          minPendingMs={0} flashSuccess={false} onClick={() => onConfirm(eligible)}
+          style={{ ...PRIMARY_ACTION_VARS, maxWidth: '100%', whiteSpace: 'normal', overflowWrap: 'anywhere' } as CSSProperties}>
+          {checking ? 'Checking availability…' : sweep.running ? 'Moving to Trash…' : `Move ${eligible.length} items to Trash — ${formatBytes(sum(eligible))}`}
         </Button>
       </div>
     </div>
@@ -2234,63 +2369,39 @@ pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, sweep }: 
 }
 
 export function FindingRow({
-finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a: string, confirmed?: boolean) => void }) {
+finding, loading, onAction, onRecheck }: { finding: Finding; loading: boolean; onRecheck?: () => void; onAction: (a: string, confirmed?: boolean) => void }) {
   const { colors } = useTheme();
   const fileName = finding.path.split('/').pop() || finding.path;
   const category = categoryOf(finding);
-  const needsSecondConfirm = requiresSecondConfirm(finding);
-  const [confirming, setConfirming] = useState(false);
 
-  if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, background: withAlpha(colors.success, 0.05), border: `1px solid ${withAlpha(colors.success, 0.12)}` }}><span style={{ fontSize: textSize.caption, color: colors.success }}>Trashed</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: textSize.micro, color: colors.success, fontFamily: font.mono, fontVariantNumeric: 'tabular-nums' }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
-  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: textSize.caption, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><Tooltip content={finding.error_message || undefined}><span tabIndex={0} style={{ outline: 'none' }}><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{finding.error_message || fileName}</span></span></Tooltip><Button colors={colors} onClick={() => onAction('trash', needsSecondConfirm || undefined)} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '2px 6px', fontSize: 10, flexShrink: 0 } as CSSProperties}>Retry</Button></div>;
+
+  if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, background: withAlpha(colors.success, 0.05), border: `1px solid ${withAlpha(colors.success, 0.12)}` }}><span style={{ fontSize: textSize.caption, color: colors.success }}>Trashed</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: textSize.micro, color: colors.success, fontFamily: font.mono, fontVariantNumeric: 'tabular-nums' }}>{formatBytes(finding.size_recovered_bytes)} estimated</span>}</div>;
+  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: textSize.caption, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><Tooltip content={finding.error_message || undefined}><span tabIndex={0} style={{ outline: 'none' }}><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{finding.error_message || fileName}</span></span></Tooltip><Button colors={colors} onClick={() => onAction('trash')} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '2px 6px', fontSize: textSize.micro, flexShrink: 0 } as CSSProperties}>Retry</Button></div>;
   if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: textSize.caption, color: colors.textMuted }}>Kept</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
 
   const handleTrashClick = () => {
-    if (needsSecondConfirm) { setConfirming(true); return; }
     onAction('trash');
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, padding: `${space.md}px ${space.lg}px`, borderRadius: radius.sm, background: colors.surface, border: `1px solid ${colors.border}`, marginTop: space.xs }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: space.md }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
             <div style={{ fontSize: textSize.caption, fontWeight: 500, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</div>
             <CategoryBadge category={category} />
           </div>
-          <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginTop: space.xxs, fontVariantNumeric: 'tabular-nums' }}>{formatBytes(finding.size_bytes)}{finding.age_days != null && <> &middot; {finding.age_days}d old</>}</div>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, marginTop: space.xxs, fontVariantNumeric: 'tabular-nums' }}>{formatBytes(finding.size_bytes)}{finding.age_days != null && <> &middot; {finding.age_days}d old</>}</div>
           {(category === 'in_use' || category === 'managed_by_macos') && finding.consequence && (
             <div style={{ fontSize: textSize.micro, color: categoryColor(category, colors), marginTop: space.xxs }}>{finding.consequence}</div>
           )}
         </div>
         <div style={{ display: 'flex', gap: space.xs, flexShrink: 0 }}>
-          <Button colors={colors} onClick={handleTrashClick} disabled={loading} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '3px 8px', '--pa-btn-weight': 600, fontSize: 10 } as CSSProperties}>{loading ? '...' : 'Trash'}</Button>
-          <Button colors={colors} onClick={() => onAction('keep')} disabled={loading} style={{ ...actionVars(colors), '--pa-btn-pad': '3px 8px', fontSize: 10 } as CSSProperties}>Keep</Button>
+          <Button colors={colors} onClick={category === 'in_use' ? onRecheck : handleTrashClick} disabled={loading || category === 'managed_by_macos' || (category === 'in_use' && !onRecheck)} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '3px 8px', '--pa-btn-weight': 600, fontSize: textSize.micro } as CSSProperties}>{loading ? 'Checking availability…' : category === 'in_use' ? 'Recheck availability' : category === 'managed_by_macos' ? 'Managed by macOS' : 'Trash'}</Button>
+          <Button colors={colors} onClick={() => onAction('keep')} disabled={loading} style={{ ...actionVars(colors), '--pa-btn-pad': '3px 8px', fontSize: textSize.micro } as CSSProperties}>Keep</Button>
         </div>
       </div>
-      {confirming && (
-        <div style={{ padding: `${space.lg}px ${space.xl}px`, borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.25)}` }}>
-          <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600, marginBottom: space.xs }}>Are you sure?</div>
-          {finding.consequence && <div style={{ fontSize: textSize.caption, color: colors.danger, marginBottom: space.md }}>{finding.consequence}</div>}
-          <div style={{ display: 'flex', gap: space.sm, justifyContent: 'flex-end' }}>
-            <Button colors={colors} onClick={() => setConfirming(false)} style={{ ...actionVars(colors), '--pa-btn-pad': '3px 10px' } as CSSProperties}>Cancel</Button>
-            <Button
-              colors={colors}
-              variant="primary"
-              onClick={() => { setConfirming(false); onAction('trash', true); }}
-              style={{
-                '--pa-btn-bg': colors.danger,
-                '--pa-btn-fg': colors.bg,
-                '--pa-btn-bg-hover': colors.danger,
-                '--pa-btn-bg-active': colors.danger,
-                '--pa-btn-pad': '3px 10px',
-                '--pa-btn-radius': `${radius.sm}px`,
-                fontFamily: font.body,
-              } as CSSProperties}
-            >Trash anyway</Button>
-          </div>
-        </div>
-      )}
+
     </div>
   );
 }

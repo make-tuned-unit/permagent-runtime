@@ -1,14 +1,7 @@
 /** @vitest-environment jsdom
- *
- * Storage-safety bulk/second-confirm UI — component tests.
- *
- * Covers the two guarantees the incident (a bulk "Clean Up All" click that
- * trashed a live 133 GB cargo target dir alongside 32 genuinely-safe
- * findings) demands from the UI layer: the bulk confirm dialog must show an
- * honest total + per-category breakdown + an excluded list with the
- * consequence of NOT trashing an in_use/managed_by_macos item, and a single
- * Trash click on one of those two categories must never fire the request
- * without a second, explicit confirmation.
+ * ST1: current eligibility controls cleanup; busy and managed rows offer no
+ * override. Existing assertions were updated because a second confirmation
+ * cannot make a live build safe to remove.
  */
 
 import { act } from 'react-dom/test-utils';
@@ -169,75 +162,39 @@ describe('BulkConfirmDialog', () => {
         />,
       );
     });
-    const move = [...container.querySelectorAll('button')].find(b => b.textContent?.includes('Cleaning'));
+    const move = [...container.querySelectorAll('button')].find(b => b.textContent?.includes('Moving to Trash…'));
     expect(move).toBeTruthy();
     expect((move as HTMLButtonElement).disabled).toBe(true);
     expect(container.textContent).toContain('Moving 2 items to Trash');
   });
 });
 
-describe('FindingRow — second confirmation for in_use / managed_by_macos', () => {
-  it('clicking Trash on an in_use row does NOT fire the action until the second confirmation is accepted', async () => {
+describe('acceptance 1: FindingRow has no busy or managed override', () => {
+  it('offers Recheck availability for a busy finding without issuing Trash', async () => {
     const onAction = vi.fn();
-    const inUseFinding = finding({
-      id: 'inuse-1',
-      path: '/Users/j/dev/permagent-runtime/target',
-      category: 'in_use',
-      consequence: '5 rustc processes are compiling here',
-    });
-    await act(async () => {
-      root.render(<FindingRow finding={inUseFinding} loading={false} onAction={onAction} />);
-    });
-
-    const trashBtn = [...container.querySelectorAll('button')].find(b => b.textContent === 'Trash');
-    expect(trashBtn).toBeTruthy();
-    await act(async () => trashBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-
-    // First click only reveals the inline second-confirm — no request yet.
+    const onRecheck = vi.fn();
+    await act(async () => root.render(<FindingRow finding={finding({ id: 'busy', path: '/repo/target', category: 'in_use' })}
+      loading={false} onAction={onAction} onRecheck={onRecheck} />));
+    const button = [...container.querySelectorAll('button')].find(b => b.textContent === 'Recheck availability');
+    await act(async () => button!.click());
+    expect(onRecheck).toHaveBeenCalledOnce();
     expect(onAction).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('Are you sure?');
-    expect(container.textContent).toContain('5 rustc processes are compiling here');
-
-    const confirmBtn = [...container.querySelectorAll('button')].find(b => b.textContent === 'Trash anyway');
-    expect(confirmBtn).toBeTruthy();
-    await act(async () => confirmBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-
-    expect(onAction).toHaveBeenCalledTimes(1);
-    expect(onAction).toHaveBeenCalledWith('trash', true);
+    expect(container.textContent).not.toContain('Trash anyway');
   });
-
-  it('clicking Trash on a plain safe_to_remove row fires the action immediately with no second confirm', async () => {
+  it('keeps the per-item Trash flow for an eligible finding', async () => {
     const onAction = vi.fn();
-    const safeFinding = finding({ id: 'safe-1', path: '/Users/j/Downloads/old.zip', category: 'safe_to_remove' });
-    await act(async () => {
-      root.render(<FindingRow finding={safeFinding} loading={false} onAction={onAction} />);
-    });
-    const trashBtn = [...container.querySelectorAll('button')].find(b => b.textContent === 'Trash');
-    await act(async () => trashBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    expect(onAction).toHaveBeenCalledTimes(1);
+    await act(async () => root.render(<FindingRow finding={finding({ id: 'safe', path: '/Downloads/old.zip', category: 'safe_to_remove' })}
+      loading={false} onAction={onAction} />));
+    const button = [...container.querySelectorAll('button')].find(b => b.textContent === 'Trash');
+    await act(async () => button!.click());
     expect(onAction).toHaveBeenCalledWith('trash');
-    expect(container.textContent).not.toContain('Are you sure?');
   });
-
-  it('Cancel on the second confirmation dismisses it without ever calling onAction', async () => {
+  it('never offers a managed-path override', async () => {
     const onAction = vi.fn();
-    const macosFinding = finding({
-      id: 'macos-1',
-      path: '/Library/Caches/com.apple.something',
-      category: 'managed_by_macos',
-      consequence: 'macOS maintains this cache',
-    });
-    await act(async () => {
-      root.render(<FindingRow finding={macosFinding} loading={false} onAction={onAction} />);
-    });
-    const trashBtn = [...container.querySelectorAll('button')].find(b => b.textContent === 'Trash');
-    await act(async () => trashBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    expect(container.textContent).toContain('Are you sure?');
-
-    const cancelBtn = [...container.querySelectorAll('button')].find(b => b.textContent === 'Cancel');
-    await act(async () => cancelBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-
-    expect(onAction).not.toHaveBeenCalled();
-    expect(container.textContent).not.toContain('Are you sure?');
+    await act(async () => root.render(<FindingRow finding={finding({ id: 'managed', path: '/Library/Caches/com.apple.cache', category: 'managed_by_macos' })}
+      loading={false} onAction={onAction} />));
+    const button = [...container.querySelectorAll('button')].find(b => b.textContent === 'Managed by macOS');
+    expect(button?.disabled).toBe(true);
+    expect(container.textContent).not.toContain('Trash anyway');
   });
 });

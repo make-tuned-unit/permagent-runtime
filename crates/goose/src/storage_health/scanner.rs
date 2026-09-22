@@ -99,6 +99,11 @@ fn make_finding(
     size_bytes: u64,
     age_days: Option<u64>,
 ) -> ScanFinding {
+    // WHY: macOS TMPDIR commonly uses /var -> /private/var. Emit the actual
+    // path so action-time rejection of symlink aliases does not invalidate
+    // the scanner's explicitly supported Cursor sandbox targets.
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let path = canonical.as_path();
     let c = ctx.classify(finding_type, path, size_bytes);
     *counter += 1;
     ScanFinding {
@@ -906,5 +911,209 @@ mod tests {
         assert!(scan_xcode_derived_in(tmp.path(), &ctx, &mut counter).is_empty());
         assert!(scan_stale_downloads_in(tmp.path(), &ctx, &mut counter).is_empty());
         assert!(scan_large_user_files_in(tmp.path(), &ctx, &mut counter).is_empty());
+    }
+}
+
+/// Validate a complete emitted ledger before making a new report visible.
+/// The previous run is never overwritten, including on extraction/write failure.
+pub fn persist_report(
+    output: &str,
+    run_id: &str,
+    dir: &Path,
+    home: &Path,
+    probe: &dyn super::inuse::action::ActivityProbe,
+) -> anyhow::Result<usize> {
+    use super::inuse::action::{current_classification, validate_path};
+    anyhow::ensure!(
+        !run_id.is_empty()
+            && run_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+        "invalid run id"
+    );
+    let (_, rest) = output
+        .split_once("<findings>")
+        .ok_or_else(|| anyhow::anyhow!("missing findings"))?;
+    let (json, tail) = rest
+        .split_once("</findings>")
+        .ok_or_else(|| anyhow::anyhow!("unclosed findings"))?;
+    anyhow::ensure!(
+        !tail.contains("<findings>") && !json.contains("<findings>"),
+        "ambiguous findings"
+    );
+    let mut rows: Vec<serde_json::Value> = serde_json::from_str(json)?;
+    let mut ids = std::collections::HashSet::new();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let observed_at = chrono::Utc::now().to_rfc3339();
+    for row in &mut rows {
+        let f: ScanFinding = serde_json::from_value(row.clone())?;
+        anyhow::ensure!(
+            !f.id.is_empty() && ids.insert(f.id.clone()),
+            "duplicate or empty finding id"
+        );
+        anyhow::ensure!(
+            row.get("category")
+                .and_then(|v| v.as_str())
+                .is_some_and(|c| classify::ALL_CATEGORIES.contains(&c)),
+            "unknown or missing category"
+        );
+        anyhow::ensure!(
+            row.get("action_taken")
+                .is_none_or(serde_json::Value::is_null),
+            "pre-actioned finding"
+        );
+        let path = PathBuf::from(&f.path);
+        validate_path(&f.finding_type, &path, home).map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            !paths
+                .iter()
+                .any(|p| path.starts_with(p) || p.starts_with(&path)),
+            "duplicate or overlapping paths"
+        );
+        paths.push(path.clone());
+        let mut c = current_classification(&f.finding_type, &path, f.size_bytes, probe)
+            .map_err(anyhow::Error::msg)?;
+        // WHY: an agent must not erase a scanner's live-use observation while
+        // narrating it. Only the explicit action-time recheck may release it.
+        if f.category == classify::CAT_IN_USE {
+            c.category = classify::CAT_IN_USE;
+            c.recommendation = classify::category_label(classify::CAT_IN_USE).into();
+            c.consequence = f.consequence.or(Some(
+                "Scanner observed activity; recheck availability".into(),
+            ));
+        }
+        row["category"] = serde_json::json!(c.category);
+        row["recommendation"] = serde_json::json!(c.recommendation);
+        row["consequence"] = serde_json::json!(c.consequence);
+        row["observed_at"] = serde_json::json!(observed_at);
+    }
+    let count = rows.len();
+    let ledger = serde_json::json!({
+        "run_id": run_id, "created_at": observed_at, "findings": rows, "validated": true,
+        "message": if count == 0 { "Scan complete — no cleanup candidates found" } else { "Scan complete" },
+    });
+    fs::create_dir_all(dir)?;
+    let mut pending = tempfile::NamedTempFile::new_in(dir)?;
+    use std::io::Write;
+    pending.write_all(&serde_json::to_vec_pretty(&ledger)?)?;
+    pending.as_file().sync_all()?;
+    pending.persist_noclobber(dir.join(format!("{run_id}.json")))?;
+    Ok(count)
+}
+
+#[cfg(test)]
+mod st1_report_tests {
+    use super::*;
+    use crate::storage_health::inuse::{action::ActivityProbe, ProcessRef};
+    struct Idle;
+    impl ActivityProbe for Idle {
+        fn check(&self, _: &Path) -> Result<Vec<ProcessRef>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn acceptance_8_missing_malformed_and_unpersistable_reports_fail_without_replacing_previous() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let dir = home.join("findings");
+        assert_eq!(
+            persist_report("<findings>[]</findings>", "previous", &dir, &home, &Idle).unwrap(),
+            0
+        );
+        let previous = fs::read(dir.join("previous.json")).unwrap();
+        for output in [
+            "no report",
+            "<findings>oops</findings>",
+            "<findings>{}</findings>",
+            "<findings>[]",
+            "<findings>[]</findings><findings>[]</findings>",
+        ] {
+            assert!(persist_report(output, "new", &dir, &home, &Idle).is_err());
+            assert!(!dir.join("new.json").exists());
+            assert_eq!(fs::read(dir.join("previous.json")).unwrap(), previous);
+        }
+        let unwritable = home.join("file-not-directory");
+        fs::write(&unwritable, "fixture").unwrap();
+        assert!(
+            persist_report("<findings>[]</findings>", "new", &unwritable, &home, &Idle).is_err()
+        );
+        assert!(persist_report("<findings>[]</findings>", "previous", &dir, &home, &Idle).is_err());
+        assert_eq!(fs::read(dir.join("previous.json")).unwrap(), previous);
+        let saved: serde_json::Value = serde_json::from_slice(&previous).unwrap();
+        assert_eq!(
+            saved["message"],
+            "Scan complete — no cleanup candidates found"
+        );
+        assert!(saved["created_at"].is_string());
+    }
+
+    #[test]
+    fn acceptance_8_persist_reclassifies_and_rejects_unknown_duplicate_overlapping_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let path = home.join("repo/target");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(home.join("repo/Cargo.toml"), "[package]").unwrap();
+        let row = serde_json::json!({ "id": "target", "type": "dev_cache", "path": path,
+            "size_bytes": 100, "age_days": null, "category": "in_use", "recommendation": "Safe to remove" });
+        let emit = |rows: serde_json::Value| format!("<findings>{rows}</findings>");
+        let dir = home.join("findings");
+        persist_report(
+            &emit(serde_json::json!([row.clone()])),
+            "valid",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("valid.json")).unwrap()).unwrap();
+        assert_eq!(ledger["findings"][0]["category"], "in_use");
+        assert!(ledger["findings"][0]["observed_at"].is_string());
+        assert!(persist_report(
+            &emit(serde_json::json!([row.clone(), row.clone()])),
+            "duplicate",
+            &dir,
+            &home,
+            &Idle
+        )
+        .is_err());
+        for category in [serde_json::Value::Null, serde_json::json!("unknown")] {
+            let mut invalid = row.clone();
+            invalid["category"] = category;
+            assert!(persist_report(
+                &emit(serde_json::json!([invalid])),
+                "unknown",
+                &dir,
+                &home,
+                &Idle
+            )
+            .is_err());
+        }
+        let mut outside = row.clone();
+        outside["path"] = serde_json::json!(home);
+        assert!(persist_report(
+            &emit(serde_json::json!([outside])),
+            "outside",
+            &dir,
+            &home,
+            &Idle
+        )
+        .is_err());
+        let child = path.join("nested/target");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(path.join("nested/Cargo.toml"), "[package]").unwrap();
+        let mut overlapping = row.clone();
+        overlapping["id"] = serde_json::json!("child");
+        overlapping["path"] = serde_json::json!(child);
+        assert!(persist_report(
+            &emit(serde_json::json!([row, overlapping])),
+            "overlap",
+            &dir,
+            &home,
+            &Idle
+        )
+        .is_err());
     }
 }

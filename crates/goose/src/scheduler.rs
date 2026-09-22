@@ -3809,10 +3809,41 @@ async fn execute_job_inner(
         }
     }
 
-    // ── Phase 5: Extract structured findings from agent output ──
-    // If the agent's response contains a <findings>[...]</findings> block,
-    // parse it and store as actionable findings for the Automate tab UI.
-    {
+    // ── Phase 5: Persist a valid report before this run can succeed. ──
+    // Only recipes explicitly declaring this output contract are affected.
+    // Read the raw declaration: Recipe intentionally ignores extension keys.
+    let declares_findings = serde_yaml::from_str::<serde_json::Value>(&recipe_content)
+        .ok()
+        .and_then(|v| v.get("produces_findings").and_then(|v| v.as_bool()))
+        .unwrap_or(false);
+    if declares_findings {
+        let full_output = conversation
+            .messages()
+            .iter()
+            .filter(|m| m.role == rmcp::model::Role::Assistant)
+            .map(|m| m.as_concat_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let saved = std::env::var("HOME")
+            .map_err(anyhow::Error::from)
+            .and_then(|home| {
+                let home = std::path::PathBuf::from(home);
+                crate::storage_health::scanner::persist_report(
+                    &full_output,
+                    &session.id,
+                    &home.join(".permagent/automation/findings"),
+                    &home,
+                    &crate::storage_health::inuse::action::ActionProbe,
+                )
+            });
+        if let Err(error) = saved {
+            tracing::warn!(target: "permagentd::automation", %error, "Findings report was not saved");
+            return Err(anyhow!(
+                "Report incomplete — cleanup findings could not be saved."
+            ));
+        }
+    } else {
+        // Other automations keep their existing optional extraction contract.
         let full_output = conversation
             .messages()
             .iter()

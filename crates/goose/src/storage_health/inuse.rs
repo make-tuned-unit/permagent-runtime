@@ -585,3 +585,8 @@ mod tests {
         );
     }
 }
+
+/// Action-time checks and Cargo lock coordination.
+pub mod action;
+
+pub mod staging;

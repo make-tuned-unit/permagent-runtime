@@ -28,9 +28,9 @@ function finding(overrides: Partial<FindingLike> & Pick<FindingLike, 'id'>): Fin
 }
 
 describe('categoryOf', () => {
-  it('falls back to safe_to_remove for a legacy finding with no category and the exact "Safe to remove" recommendation', () => {
+  it('acceptance 6: legacy recommendation cannot supply deletion authority', () => {
     const f = finding({ id: 'f1', category: undefined, recommendation: 'Safe to remove' });
-    expect(categoryOf(f)).toBe('safe_to_remove');
+    expect(categoryOf(f)).toBe('review_before_removing');
   });
 
   it('falls back to review_before_removing for a legacy finding with no category and any other recommendation', () => {
@@ -83,7 +83,7 @@ describe('bulkEligible', () => {
   it('excludes regenerable by default and includes it once opted in', () => {
     const optedOut = bulkEligible(pool, false);
     expect(optedOut.eligible.map(f => f.id)).not.toContain('regen-1');
-    expect(optedOut.excluded.map(f => f.id)).toContain('regen-1');
+    expect(optedOut.optional.map(f => f.id)).toContain('regen-1');
 
     const optedIn = bulkEligible(pool, true);
     expect(optedIn.eligible.map(f => f.id)).toContain('regen-1');
@@ -97,10 +97,12 @@ describe('bulkEligible', () => {
     expect(excluded.map(f => f.id)).not.toContain('safe-2');
   });
 
-  it('places review_before_removing findings in neither list', () => {
+  it('acceptance 6: review files remain visible and require their own acknowledgment', () => {
     const { eligible, excluded } = bulkEligible(pool, true);
     expect(eligible.map(f => f.id)).not.toContain('review-1');
     expect(excluded.map(f => f.id)).not.toContain('review-1');
+    expect(bulkEligible(pool, true).optional.map(f => f.id)).toContain('review-1');
+    expect(bulkEligible(pool, false, true).eligible.map(f => f.id)).toContain('review-1');
   });
 
   it('drops already-actioned findings from both lists', () => {
@@ -133,5 +135,27 @@ describe('categoryBreakdown', () => {
     expect(categoryBreakdown(findings)).toEqual([
       { category: 'safe_to_remove', label: CATEGORY_LABELS.safe_to_remove, count: 1, bytes: 100 },
     ]);
+  });
+});
+
+
+describe('acceptance 7: September 15 ledger accounting', () => {
+  const ledger = [
+    ...Array.from({ length: 12 }, (_, i) => finding({ id: `busy-${i}`, category: 'in_use', size_bytes: 2_000_000_000 })),
+    ...Array.from({ length: 5 }, (_, i) => finding({ id: `review-${i}`, category: 'review_before_removing', size_bytes: 480_000_000 })),
+    ...Array.from({ length: 4 }, (_, i) => finding({ id: `regen-${i}`, category: 'regenerable_costly', size_bytes: 275_000_000 })),
+    finding({ id: 'managed', category: 'managed_by_macos', size_bytes: 7_500_000_000 }),
+  ];
+  it('accounts for every pending finding exactly once with zero selected', () => {
+    const { eligible, optional, excluded } = bulkEligible(ledger, false, false);
+    expect(eligible).toHaveLength(0);
+    expect(optional).toHaveLength(9);
+    expect(excluded).toHaveLength(13);
+    expect(new Set([...eligible, ...optional, ...excluded].map(f => f.id)).size).toBe(22);
+  });
+  it('acknowledgments cannot override a server exclusion', () => {
+    const blocked = ledger.map(f => ({ ...f, available: false }));
+    expect(bulkEligible(blocked, true, true).eligible).toHaveLength(0);
+    expect(bulkEligible(blocked, true, true).excluded).toHaveLength(22);
   });
 });

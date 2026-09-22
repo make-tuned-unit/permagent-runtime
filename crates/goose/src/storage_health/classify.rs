@@ -19,7 +19,7 @@
 //! | category | what it means |
 //! |---|---|
 //! | [`CAT_SAFE`] | rebuilt locally, cheaply, from code already on this disk |
-//! | [`CAT_REGENERABLE`] | rebuilt only by re-downloading gigabytes over the network |
+//! | [`CAT_REGENERABLE`] | costly builds or re-downloading gigabytes over the network |
 //! | [`CAT_IN_USE`] | a live process is writing here **right now** |
 //! | [`CAT_MACOS`] | an Apple system cache macOS maintains and refills itself |
 //!
@@ -40,7 +40,7 @@ use std::path::Path;
 
 /// Rebuilt locally and cheaply. The only category in a default bulk selection.
 pub const CAT_SAFE: &str = "safe_to_remove";
-/// Rebuilt only by re-downloading. Never in a default bulk selection.
+/// Costly builds or downloads. Never in a default bulk selection.
 pub const CAT_REGENERABLE: &str = "regenerable_costly";
 /// A live process is using this. Never bulk-removable at all.
 pub const CAT_IN_USE: &str = "in_use";
@@ -58,7 +58,7 @@ pub const ALL_CATEGORIES: &[&str] = &[CAT_SAFE, CAT_REGENERABLE, CAT_IN_USE, CAT
 /// and "Managed by macOS" are not merely deselected by default — a bulk action
 /// refuses them outright, so no click sequence can sweep them up.
 pub fn bulk_trashable(category: &str) -> bool {
-    !matches!(category, CAT_IN_USE | CAT_MACOS)
+    matches!(category, CAT_SAFE | CAT_REGENERABLE | CAT_REVIEW)
 }
 
 /// True when a category belongs in the *pre-checked* bulk selection.
@@ -149,6 +149,13 @@ pub fn classify(
         );
     }
 
+    if is_rust_target(path) {
+        return Classification::new(
+            CAT_REGENERABLE,
+            Some("future builds may take longer — a full Cargo rebuild".into()),
+        );
+    }
+
     // 3. Toolchain and package caches — regenerable, but only over the wire.
     if let Some(what) = costly_cache_label(path) {
         let mut c = Classification::new(CAT_REGENERABLE, None);
@@ -173,6 +180,14 @@ pub fn classify(
     } else {
         Classification::new(CAT_REVIEW, None)
     }
+}
+
+/// Scanner-supported Rust target shapes, including shared target farms.
+pub fn is_rust_target(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    name == "target"
+        || name.ends_with("cargo-target")
+        || path.components().any(|c| c.as_os_str() == ".shared-target")
 }
 
 /// Which finding types are worth probing for live use.
@@ -563,16 +578,16 @@ mod tests {
     // ── Safe, with its price named ───────────────────────────────────
 
     #[test]
-    fn an_idle_target_dir_is_safe_and_says_what_it_costs() {
+    fn acceptance_2_idle_target_is_regenerable_and_requires_opt_in() {
         let c = classify_path(
             "dev_cache",
             "/Users/j/Documents/dev/spectral/target",
             1_839_452_160,
         );
-        assert_eq!(c.category, CAT_SAFE);
+        assert_eq!(c.category, CAT_REGENERABLE);
         assert_eq!(
             c.consequence.as_deref(),
-            Some("a full cargo rebuild of spectral")
+            Some("future builds may take longer — a full Cargo rebuild")
         );
     }
 

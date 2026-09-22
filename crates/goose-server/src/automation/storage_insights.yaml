@@ -1,6 +1,8 @@
-version: "2.1.0"
+version: "2.2.0"
 title: "Weekly Storage Report"
 description: "Scans your Mac for cleanup opportunities — dev caches, app caches, stale downloads, and large files — and reports them for your review. Deletes nothing."
+
+produces_findings: true
 
 prompt: |
   Run a storage health scan to find cleanup opportunities on this Mac.
@@ -19,9 +21,9 @@ prompt: |
      they are the whole point of the scan, not decoration:
 
      - "Safe to remove" — rebuilt locally and cheaply. The consequence still
-       says what it costs ("a full cargo rebuild of spectral").
+       says what it costs. Cargo target directories are not in this bucket.
      - "Regenerable but costly" — a toolchain or package cache that can only be
-       rebuilt by re-downloading. The consequence names the download size
+       rebuilt by costly compilation or re-downloading. The consequence names the build cost or download size
        ("re-downloads 1.2 GB the next time cargo is used"). Never present these
        as safe, and never lump them into a total the user might sweep.
      - "In use — do not remove" — a live process is writing here right now. The
