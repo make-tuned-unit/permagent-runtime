@@ -783,6 +783,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // `cost_ledger`; this adjunct only serializes authorization across sibling
     // workers and survives a daemon restart.
     apply_cost_reservations_schema(pool).await?;
+    apply_schedule_pause_schema(pool).await?;
     apply_schedule_fire_claims_schema(pool).await?;
 
     // Egress audit log (schema v29, sovereignty). Idempotent; shared with
@@ -2051,6 +2052,35 @@ pub async fn apply_schedule_fire_claims_schema(pool: &Pool<Sqlite>) -> Result<()
 pub async fn migrate_v55_to_v56(pool: &Pool<Sqlite>) -> Result<()> {
     apply_schedule_fire_claims_schema(pool).await?;
     sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (56)")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Pause delivery is separate from effect_outbox: that queue resolves decisions
+/// before effects, whereas scheduler answers must persist the effect first.
+pub async fn apply_schedule_pause_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query("INSERT OR IGNORE INTO risk_policy(action_class, tier, rationale)
+        VALUES ('automation_resume_schedule', 2, 'Only an authenticated user resumes a stopped automation')")
+        .execute(pool).await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS schedule_pause_episodes (
+        job_id TEXT NOT NULL, pause_episode_id TEXT NOT NULL,
+        decision_id TEXT NOT NULL UNIQUE, payload_json TEXT NOT NULL,
+        headline TEXT NOT NULL, job_json TEXT NOT NULL, notification_json TEXT,
+        answer TEXT, actor TEXT, principal TEXT, requested_at TEXT,
+        effect_json TEXT, resolved_at TEXT,
+        PRIMARY KEY(job_id, pause_episode_id)
+    )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn migrate_v57_to_v58(pool: &Pool<Sqlite>) -> Result<()> {
+    apply_schedule_pause_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (58)")
         .execute(pool)
         .await?;
     Ok(())
@@ -7275,5 +7305,45 @@ mod schedule_fire_claims_tests {
             "SELECT name, type, [notnull] FROM pragma_table_info('schedule_fire_claims') WHERE name = 'started_at'",
         ).fetch_one(&pool).await.unwrap();
         assert_eq!(column, ("started_at".to_string(), "TEXT".to_string(), 0));
+    }
+    #[tokio::test]
+    async fn acceptance_05_pause_episode_migration_is_additive_and_idempotent() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE schema_version(version INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schema_version VALUES (57)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE risk_policy(action_class TEXT PRIMARY KEY, tier INTEGER, rationale TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        migrate_v57_to_v58(&pool).await.unwrap();
+        migrate_v57_to_v58(&pool).await.unwrap();
+        let version: i32 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(version, 58);
+        // Expected names copied from apply_schedule_pause_schema's primary key.
+        let pk: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT name, pk FROM pragma_table_info('schedule_pause_episodes') WHERE pk > 0 ORDER BY pk",
+        ).fetch_all(&pool).await.unwrap();
+        assert_eq!(
+            pk,
+            vec![
+                ("job_id".to_string(), 1),
+                ("pause_episode_id".to_string(), 2)
+            ]
+        );
     }
 }

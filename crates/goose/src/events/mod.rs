@@ -75,6 +75,11 @@ static EVENT_BUS: LazyLock<EventBusInner> = LazyLock::new(|| {
 pub fn emit(event: PermagentEvent) {
     // Buffer for replay
     if let Ok(mut buf) = EVENT_BUS.buffer.lock() {
+        // Durable notification replay uses stable IDs. Replaying an already
+        // buffered event must not create a second live interruption.
+        if buf.iter().any(|existing| existing.id == event.id) {
+            return;
+        }
         buf.push_back(event.clone());
         while buf.len() > EVENT_BUFFER_SIZE {
             buf.pop_front();

@@ -106,6 +106,16 @@ fn status_for_answer_error(err: &AnswerError) -> StatusCode {
     }
 }
 
+fn scheduler_answer_error(error: permagent::scheduler::SchedulerError) -> (StatusCode, String) {
+    let status = match &error {
+        permagent::scheduler::SchedulerError::AnswerRefused(error) => {
+            status_for_answer_error(error)
+        }
+        _ => StatusCode::CONFLICT,
+    };
+    (status, error.to_string())
+}
+
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 async fn list_decisions_handler(
@@ -207,6 +217,51 @@ pub(crate) async fn apply_jesse_answer(
     audit_principal: &str,
 ) -> Result<AnswerResponse, (StatusCode, String)> {
     let pool = pool_of(state).await?;
+    if let Some(pending) = decisions::get_decision(&pool, decision_id)
+        .await
+        .map_err(internal)?
+    {
+        if pending.kind == "unblock"
+            && pending.payload["reason"] == decisions::CONSECUTIVE_FAILURE_LIMIT
+        {
+            let payload: decisions::ScheduledJobUnblockPayload =
+                serde_json::from_value(pending.payload.clone())
+                    .map_err(|error| internal(error.to_string()))?;
+            payload.validate().map_err(internal)?;
+            let decisions::UnblockTarget::ScheduledJob { job_id } = &payload.target;
+            permagent::scheduler::scheduled_job_resume(
+                state.scheduler().as_ref(),
+                &pool,
+                job_id,
+                &payload.pause_episode_id,
+                permagent::scheduler::SchedulePauseAnswer {
+                    decision_id,
+                    answer: &answer.answer,
+                    acted_by: decisions::ACTOR_JESSE,
+                    principal: audit_principal,
+                    from_automate: false,
+                },
+            )
+            .await
+            .map_err(scheduler_answer_error)?;
+            let decision = decisions::get_decision(&pool, decision_id)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| (StatusCode::NOT_FOUND, "decision not found".to_string()))?;
+            return Ok(AnswerResponse {
+                decision,
+                effect: Some(
+                    if answer.answer == "approve" {
+                        "scheduled_job_resume"
+                    } else {
+                        "keep_paused"
+                    }
+                    .to_string(),
+                ),
+                effect_error: None,
+            });
+        }
+    }
     // Verification runs asynchronously after a goal enters Review. Refuse the
     // tap before answering/auditing the decision when proof is not ready, so a
     // fast user cannot consume the only approval while the verifier is still
@@ -1131,6 +1186,55 @@ mod tests {
             StatusCode::FORBIDDEN,
             "Tier-2 with acted_by != 'jesse' must map to 403: {:?}",
             err
+        );
+    }
+
+    #[tokio::test]
+    async fn correction_scheduled_authority_refusal_keeps_existing_http_shape() {
+        let pool = permagent::sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        permagent::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        permagent::session::spectral_schema::apply_schedule_pause_schema(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO decisions(id, kind, tier, headline, detail, payload_json, created_at)
+            VALUES ('paused', 'unblock', 0, 'pause', 'fixture', ?, '2026-09-22')",
+        )
+        .bind(serde_json::json!({"reason": decisions::CONSECUTIVE_FAILURE_LIMIT}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let answer = DecisionAnswer {
+            answer: "approve".to_string(),
+            ..Default::default()
+        };
+        for (actor, principal) in [
+            (decisions::ACTOR_JESSE, ""),
+            (decisions::ACTOR_HENRY, "master"),
+        ] {
+            let error = decisions::answer_decision_with_principal(
+                &pool, "paused", &answer, actor, principal,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(&error, AnswerError::Forbidden(_)));
+            let expected = error.to_string(); // AnswerError::Display is the response contract.
+            let response =
+                scheduler_answer_error(permagent::scheduler::SchedulerError::AnswerRefused(error));
+            assert_eq!(response, (StatusCode::FORBIDDEN, expected));
+        }
+        assert_eq!(
+            decisions::get_decision(&pool, "paused")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "open"
         );
     }
 

@@ -6,7 +6,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, post, put},
-    Json, Router,
+    Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
 
@@ -582,11 +582,47 @@ async fn pause_schedule(
 #[axum::debug_handler]
 async fn unpause_schedule(
     State(state): State<Arc<AppState>>,
+    Extension(principal): Extension<crate::middleware::auth::AuthPrincipal>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ErrorResponse> {
     let scheduler = state.scheduler();
 
-    scheduler.unpause_schedule(&id).await.map_err(|e| match e {
+    let job = scheduler
+        .list_scheduled_jobs()
+        .await
+        .into_iter()
+        .find(|job| job.id == id);
+    let result = if let Some(episode) = job.as_ref().and_then(|job| job.pause_episode.as_ref()) {
+        let principal = match &principal {
+            crate::middleware::auth::AuthPrincipal::Master => "master",
+            crate::middleware::auth::AuthPrincipal::Device(id) => id,
+        };
+        let pool = permagent::session::SessionManager::instance()
+            .pool_clone()
+            .await
+            .map_err(|error| ErrorResponse::internal(error.to_string()))?;
+        let decision_id: String = sqlx::query_scalar(
+            "SELECT decision_id FROM schedule_pause_episodes WHERE job_id = ? AND pause_episode_id = ?",
+        ).bind(&id).bind(&episode.id).fetch_one(&pool).await
+            .map_err(|error| ErrorResponse::internal(error.to_string()))?;
+        permagent::scheduler::scheduled_job_resume(
+            scheduler.as_ref(),
+            &pool,
+            &id,
+            &episode.id,
+            permagent::scheduler::SchedulePauseAnswer {
+                decision_id: &decision_id,
+                answer: "approve",
+                acted_by: permagent::decisions::ACTOR_JESSE,
+                principal,
+                from_automate: true,
+            },
+        )
+        .await
+    } else {
+        scheduler.unpause_schedule(&id).await
+    };
+    result.map_err(|e| match e {
         permagent::scheduler::SchedulerError::JobNotFound(msg) => {
             ErrorResponse::not_found(format!("Schedule not found: {}", msg))
         }
@@ -594,6 +630,20 @@ async fn unpause_schedule(
         // request, not a server fault — a 500 here would read as a bug.
         permagent::scheduler::SchedulerError::InvalidScheduleSpec(msg) => {
             ErrorResponse::bad_request(format!("Cannot resume schedule: {}", msg))
+        }
+        permagent::scheduler::SchedulerError::AnswerRefused(error) => {
+            let status = match &error {
+                permagent::decisions::AnswerError::NotFound => StatusCode::NOT_FOUND,
+                permagent::decisions::AnswerError::AlreadyResolved(_) => StatusCode::CONFLICT,
+                permagent::decisions::AnswerError::Forbidden(_)
+                | permagent::decisions::AnswerError::SelfReference(_) => StatusCode::FORBIDDEN,
+                permagent::decisions::AnswerError::Invalid(_) => StatusCode::BAD_REQUEST,
+                permagent::decisions::AnswerError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            ErrorResponse {
+                status,
+                message: error.to_string(),
+            }
         }
         _ => ErrorResponse::internal(format!("Error unpausing schedule: {}", e)),
     })?;

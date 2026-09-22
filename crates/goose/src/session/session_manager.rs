@@ -1958,6 +1958,11 @@ impl SessionStorage {
                     if version < 56 {
                         spectral_schema::migrate_v55_to_v56(&self.pool).await?;
                     }
+                    // v58: durable scheduler pause delivery and answer intents.
+                    // (v57 is the decision journal, in flight in another lane.)
+                    if version < 58 {
+                        spectral_schema::migrate_v57_to_v58(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB
@@ -8784,6 +8789,11 @@ mod schedule_fire_claims_boot_tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(version, 56);
+        // The ladder keeps growing (v57 journal, v58 pause episodes, ...); this
+        // test owns v56 and must not break every time a later step lands.
+        assert!(
+            version >= 56,
+            "reopening a v55 database must reach at least v56, got {version}"
+        );
     }
 }

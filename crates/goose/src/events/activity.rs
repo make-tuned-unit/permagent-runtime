@@ -382,6 +382,23 @@ pub fn automation_job_failed(job_id: &str, job_name: &str, error: &str) -> Activ
     )
 }
 
+/// Scheduler pause activity uses the extensible event envelope: adding an enum
+/// variant would force unrelated exhaustive onboarding consumers to change.
+pub fn automation_job_auto_paused(job_id: &str, episode: &str, decision: &str) {
+    emit(PermagentEvent::new(
+        PermagentEventType::Activity,
+        serde_json::json!({
+            "channel": "activity",
+            "event": {
+                "event_id": format!("schedule-pause-activity:{job_id}:{episode}"),
+                "event_type": "automation_job_auto_paused",
+                "source_surface": "scheduler", "timestamp": Utc::now(), "tier": "always",
+                "payload": {"job_id": job_id, "pause_episode_id": episode, "decision_id": decision}
+            }
+        }),
+    ));
+}
+
 pub fn starter_recipe_upgraded(
     starter_id: &str,
     from_version: &str,

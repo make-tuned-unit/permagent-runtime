@@ -108,6 +108,7 @@ pub enum SchedulerError {
     InvalidScheduleSpec(String),
     SchedulerInternalError(String),
     AnyhowError(anyhow::Error),
+    AnswerRefused(crate::decisions::AnswerError),
 }
 
 impl std::fmt::Display for SchedulerError {
@@ -125,6 +126,7 @@ impl std::fmt::Display for SchedulerError {
                 write!(f, "Scheduler internal error: {}", e)
             }
             SchedulerError::AnyhowError(e) => write!(f, "Scheduler operation failed: {}", e),
+            SchedulerError::AnswerRefused(e) => write!(f, "{}", e),
         }
     }
 }
@@ -170,6 +172,25 @@ pub enum ScheduleRunStatus {
     Skipped,
     /// A scheduled fire was due during downtime and did not run.
     Missed,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, utoipa::ToSchema)]
+pub struct FailedScheduleRun {
+    pub run_number: u64,
+    pub timestamp: DateTime<Utc>,
+    pub session_id: Option<String>,
+    pub error: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, utoipa::ToSchema)]
+pub struct SchedulePauseEpisode {
+    pub id: String,
+    pub decision_id: String,
+    pub failed_runs: Vec<FailedScheduleRun>,
+    pub failure_count: u32,
+    pub last_error: String,
+    pub headline: String,
+    pub effect: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Default, utoipa::ToSchema)]
@@ -260,6 +281,14 @@ pub struct ScheduledJob {
     /// instant. Recorded so a catch-up is never passed off as an on-time run.
     #[serde(default)]
     pub last_run_was_catch_up: bool,
+    /// Persisted with the breaker, so inbox/delivery failure cannot lose work.
+    #[serde(default)]
+    pub pause_episode: Option<SchedulePauseEpisode>,
+    #[serde(default)]
+    pub failed_runs: Vec<FailedScheduleRun>,
+    /// Catch-up starts here after resume; failure history keeps its real dates.
+    #[serde(default)]
+    pub resumed_at: Option<DateTime<Utc>>,
 }
 
 /// Reliability + kind constants. Retry backoff is exponential and capped so a
@@ -920,7 +949,7 @@ fn cron_period(cron: &str, from: DateTime<Utc>) -> Option<Duration> {
 /// The fire this job missed: the first scheduled occurrence strictly after
 /// `last_run`. `None` when the job has never run or the cron will not parse.
 fn missed_fire_at(job: &ScheduledJob) -> Option<DateTime<Utc>> {
-    let last_run = job.last_run?;
+    let last_run = job.last_run.into_iter().chain(job.resumed_at).max()?;
     let schedule = parse_cron_schedule(&job.cron)?;
     // Search IN the armed clock; converting a UTC search afterwards changes
     // which occurrence a non-UTC expression names.
@@ -952,7 +981,7 @@ fn is_run_missed(job: &ScheduledJob, now: DateTime<Utc>) -> bool {
         if secs == 0 {
             return false;
         }
-        return match job.last_run {
+        return match job.last_run.into_iter().chain(job.resumed_at).max() {
             // Never run → interval anchors from arm time (unknown at load); don't
             // claim a miss.
             None => false,
@@ -976,10 +1005,65 @@ fn parse_cron_schedule(cron: &str) -> Option<croner::Cron> {
         .ok()
 }
 
+fn lock_schedule_file(storage_path: &Path) -> Result<fs::File, SchedulerError> {
+    if let Some(parent) = storage_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut lock_path = storage_path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(PathBuf::from(lock_path))?;
+    fs2::FileExt::lock_exclusive(&lock)?;
+    Ok(lock)
+}
+
 /// Write a jobs snapshot to `storage_path` atomically (temp file + rename), so a
 /// concurrent reader (`sync_from_storage`, another instance) never observes a
 /// half-written file. Takes no lock — callers pass an already-snapshotted list.
 fn write_jobs_to_disk(storage_path: &Path, list: &[ScheduledJob]) -> Result<(), SchedulerError> {
+    let _lock = lock_schedule_file(storage_path)?;
+    let disk: Vec<ScheduledJob> = fs::read_to_string(storage_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let merged: Vec<_> = list
+        .iter()
+        .map(|job| {
+            disk.iter()
+                .find(|stored| stored.id == job.id && newer_schedule_state(stored, job))
+                .unwrap_or(job)
+                .clone()
+        })
+        .collect();
+    write_locked_jobs_to_disk(storage_path, &merged)
+}
+
+fn newer_schedule_state(stored: &ScheduledJob, live: &ScheduledJob) -> bool {
+    stored.run_count > live.run_count || stored.resumed_at > live.resumed_at
+}
+
+fn refresh_schedule_state(storage_path: &Path, jobs: &mut JobsMap) {
+    let disk: Vec<ScheduledJob> = fs::read_to_string(storage_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    for stored in disk {
+        if let Some((_, live)) = jobs.get_mut(&stored.id) {
+            if !live.currently_running && newer_schedule_state(&stored, live) {
+                *live = stored;
+            }
+        }
+    }
+}
+
+fn write_locked_jobs_to_disk(
+    storage_path: &Path,
+    list: &[ScheduledJob],
+) -> Result<(), SchedulerError> {
     if let Some(parent) = storage_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -988,8 +1072,18 @@ fn write_jobs_to_disk(storage_path: &Path, list: &[ScheduledJob]) -> Result<(), 
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
     fs::write(&tmp, data)?;
+    fs::OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
     fs::rename(&tmp, storage_path)?;
+    #[cfg(unix)]
+    if let Some(parent) = storage_path.parent() {
+        fs::File::open(parent)?.sync_all()?;
+    }
     Ok(())
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static FAIL_PAUSE_PERSIST: bool;
 }
 
 async fn persist_jobs(
@@ -1002,7 +1096,300 @@ async fn persist_jobs(
     // unlocked would let a fire's stale snapshot clobber a concurrent add.
     let jobs_guard = jobs.lock().await;
     let list: Vec<ScheduledJob> = jobs_guard.values().map(|(_, j)| j.clone()).collect();
+    #[cfg(test)]
+    if FAIL_PAUSE_PERSIST.try_with(|fail| *fail).unwrap_or(false)
+        && list.iter().any(|job| job.pause_episode.is_some())
+    {
+        return Err(SchedulerError::PersistError(
+            "injected pause persist failure".to_string(),
+        ));
+    }
     write_jobs_to_disk(storage_path, &list)
+}
+
+fn record_failed_fire(job: &mut ScheduledJob, result: &anyhow::Result<String>) {
+    if let Err(error) = result {
+        job.failed_runs.push(FailedScheduleRun {
+            run_number: job.run_count.saturating_add(1),
+            timestamp: Utc::now(),
+            session_id: job.current_session_id.clone(),
+            error: error.to_string(),
+        });
+    }
+}
+
+fn begin_pause_episode(job: &mut ScheduledJob) {
+    let name = fs::read_to_string(&job.source)
+        .ok()
+        .and_then(|text| serde_yaml::from_str::<Recipe>(&text).ok())
+        .map(|recipe| recipe.title)
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| job.id.clone());
+    let suffix = " paused after 3 failed runs";
+    let headline = format!(
+        "{}{}",
+        name.chars()
+            .take(80 - suffix.chars().count())
+            .collect::<String>(),
+        suffix
+    );
+    let mut failed_runs: Vec<_> = job.failed_runs.iter().rev().take(3).cloned().collect();
+    failed_runs.reverse();
+    job.pause_episode = Some(SchedulePauseEpisode {
+        id: uuid::Uuid::now_v7().to_string(),
+        decision_id: uuid::Uuid::now_v7().to_string(),
+        failed_runs,
+        failure_count: job.consecutive_failures,
+        last_error: job.last_error.clone().unwrap_or_default(),
+        headline,
+        effect: None,
+    });
+}
+
+async fn recover_pause_job(
+    manager: &SessionManager,
+    job: &mut ScheduledJob,
+) -> Result<(), SchedulerError> {
+    let pool = manager.pool_clone().await?;
+    let raw: Option<String> = sqlx::query_scalar(
+        "SELECT job_json FROM schedule_pause_episodes WHERE job_id = ? AND (answer IS NULL OR answer = 'reject' OR resolved_at IS NULL)
+         ORDER BY pause_episode_id DESC LIMIT 1",
+    ).bind(&job.id).fetch_optional(&pool).await.map_err(|e| SchedulerError::PersistError(e.to_string()))?;
+    if let Some(raw) = raw {
+        let persisted: ScheduledJob = serde_json::from_str(&raw)?;
+        if persisted.run_count > job.run_count {
+            *job = persisted;
+        }
+    }
+    Ok(())
+}
+
+async fn stage_pause_jobs(
+    manager: &SessionManager,
+    jobs: &Arc<Mutex<JobsMap>>,
+) -> Result<(), SchedulerError> {
+    let snapshot: Vec<_> = jobs
+        .lock()
+        .await
+        .values()
+        .filter(|(_, job)| job.pause_episode.is_some())
+        .map(|(_, job)| job.clone())
+        .collect();
+    if snapshot.is_empty() {
+        return Ok(());
+    }
+    let pool = manager.pool_clone().await?;
+    for job in snapshot {
+        crate::decisions::stage_schedule_pause(&pool, &job)
+            .await
+            .map_err(SchedulerError::PersistError)?;
+    }
+    Ok(())
+}
+
+async fn reconcile_pause_jobs(
+    manager: &SessionManager,
+    storage_path: &Path,
+) -> Result<(), SchedulerError> {
+    let snapshot: Vec<ScheduledJob> = match fs::read_to_string(storage_path) {
+        Ok(raw) => serde_json::from_str(&raw)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !snapshot.iter().any(|job| job.pause_episode.is_some()) {
+        return Ok(());
+    }
+    let pool = manager.pool_clone().await?;
+    for job in snapshot {
+        crate::decisions::reconcile_schedule_pause(&pool, &job)
+            .await
+            .map_err(SchedulerError::PersistError)?;
+        if let Some(episode) = &job.pause_episode {
+            if let Some(effect) = &episode.effect {
+                crate::decisions::resolve_schedule_pause(&pool, &job.id, &episode.id, effect)
+                    .await
+                    .map_err(SchedulerError::PersistError)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct ResumeAuthority {
+    episode: String,
+    audit: serde_json::Value,
+}
+
+tokio::task_local! {
+    // Carries authenticated authority across the existing SchedulerTrait seam;
+    // agent-facing unpause cannot manufacture a pending episode answer.
+    static RESUME_AUTHORITY: ResumeAuthority;
+}
+
+/// Authentication is supplied by the HTTP principal boundary, never inferred
+/// from decision payload. The decision id binds the answer to its ledger row.
+pub struct SchedulePauseAnswer<'a> {
+    pub decision_id: &'a str,
+    pub answer: &'a str,
+    pub acted_by: &'a str,
+    pub principal: &'a str,
+    pub from_automate: bool,
+}
+
+/// Shared by the authenticated Inbox and Automate routes. An intent survives a
+/// crash; a matching file effect makes retry safe without replaying a resume.
+pub async fn scheduled_job_resume(
+    scheduler: &dyn SchedulerTrait,
+    pool: &sqlx::SqlitePool,
+    job_id: &str,
+    episode_id: &str,
+    request: SchedulePauseAnswer<'_>,
+) -> Result<(), SchedulerError> {
+    let SchedulePauseAnswer {
+        decision_id,
+        answer,
+        acted_by,
+        principal,
+        from_automate,
+    } = request;
+    let decision = crate::decisions::get_decision(pool, decision_id)
+        .await
+        .map_err(SchedulerError::PersistError)?
+        .ok_or(SchedulerError::AnswerRefused(
+            crate::decisions::AnswerError::NotFound,
+        ))?;
+    if let Err(error) =
+        crate::decisions::check_answer_authority(pool, &decision, acted_by, Some(principal)).await
+    {
+        crate::decisions::audit_schedule_refusal(pool, &decision, acted_by, principal)
+            .await
+            .map_err(SchedulerError::PersistError)?;
+        return Err(SchedulerError::AnswerRefused(error));
+    }
+    if !matches!(answer, "approve" | "reject") {
+        return Err(SchedulerError::AnswerRefused(
+            crate::decisions::AnswerError::Invalid(
+                "authenticated scheduler answer required".to_string(),
+            ),
+        ));
+    }
+    let job = scheduler
+        .list_scheduled_jobs()
+        .await
+        .into_iter()
+        .find(|j| j.id == job_id)
+        .ok_or_else(|| SchedulerError::JobNotFound(job_id.to_string()))?;
+    let episode = job
+        .pause_episode
+        .as_ref()
+        .filter(|e| e.id == episode_id)
+        .ok_or_else(|| SchedulerError::AnyhowError(anyhow!("stale pause episode")))?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| SchedulerError::PersistError(e.to_string()))?;
+    let row: (Option<String>, Option<String>, String) = sqlx::query_as(
+        "SELECT answer, resolved_at, decision_id FROM schedule_pause_episodes WHERE job_id = ? AND pause_episode_id = ?",
+    ).bind(job_id).bind(episode_id).fetch_one(&mut *tx).await.map_err(|e| SchedulerError::PersistError(e.to_string()))?;
+    if row.2 != decision_id
+        || decision.kind != "unblock"
+        || decision.payload["reason"] != crate::decisions::CONSECUTIVE_FAILURE_LIMIT
+    {
+        tx.rollback()
+            .await
+            .map_err(|e| SchedulerError::PersistError(e.to_string()))?;
+        crate::decisions::audit_schedule_refusal(pool, &decision, acted_by, principal)
+            .await
+            .map_err(SchedulerError::PersistError)?;
+        return Err(SchedulerError::AnswerRefused(
+            crate::decisions::AnswerError::Forbidden(
+                "answered decision does not own this pause episode".to_string(),
+            ),
+        ));
+    }
+    if decision.status != "open" && row.0.is_none() {
+        return Err(SchedulerError::AnswerRefused(
+            crate::decisions::AnswerError::AlreadyResolved(decision.status),
+        ));
+    }
+    if let Some(prior) = &row.0 {
+        if prior != answer {
+            if from_automate && prior == "reject" && answer == "approve" && row.1.is_some() {
+                // A later explicit Automate resume supersedes acknowledgement,
+                // retaining the original answer in the append-only audit.
+                sqlx::query("UPDATE schedule_pause_episodes SET answer = NULL, resolved_at = NULL, effect_json = NULL
+                    WHERE job_id = ? AND pause_episode_id = ?")
+                    .bind(job_id).bind(episode_id).execute(&mut *tx).await
+                    .map_err(|e| SchedulerError::PersistError(e.to_string()))?;
+            } else {
+                return Err(SchedulerError::AnyhowError(anyhow!(
+                    "pause episode already has a different answer"
+                )));
+            }
+        } else if row.1.is_some() {
+            return Ok(());
+        }
+    }
+    sqlx::query(
+        "UPDATE schedule_pause_episodes SET answer = ?, actor = ?, principal = ?, requested_at = ?
+        WHERE job_id = ? AND pause_episode_id = ? AND answer IS NULL",
+    )
+    .bind(answer)
+    .bind(acted_by)
+    .bind(principal)
+    .bind(Utc::now().to_rfc3339())
+    .bind(job_id)
+    .bind(episode_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| SchedulerError::PersistError(e.to_string()))?;
+    let audit: (String, String, String) = sqlx::query_as(
+        "SELECT actor, principal, requested_at FROM schedule_pause_episodes WHERE job_id = ? AND pause_episode_id = ?",
+    ).bind(job_id).bind(episode_id).fetch_one(&mut *tx).await.map_err(|e| SchedulerError::PersistError(e.to_string()))?;
+    tx.commit()
+        .await
+        .map_err(|e| SchedulerError::PersistError(e.to_string()))?;
+    let effect = serde_json::json!({
+        "operation": if answer == "approve" { "scheduled_job_resume" } else { "keep_paused" },
+        "actor": audit.0, "principal": audit.1, "time": audit.2,
+        "decision_id": row.2, "pause_episode_id": episode_id,
+        "before": {"paused": job.paused, "consecutive_failures": job.consecutive_failures, "retry_count": job.retry_count},
+        "after": {"paused": answer != "approve", "consecutive_failures": if answer == "approve" { 0 } else { job.consecutive_failures },
+                  "retry_count": if answer == "approve" { 0 } else { job.retry_count }},
+    });
+    if answer == "approve" && episode.effect.is_none() {
+        RESUME_AUTHORITY
+            .scope(
+                ResumeAuthority {
+                    episode: episode_id.to_string(),
+                    audit: effect.clone(),
+                },
+                scheduler.unpause_schedule(job_id),
+            )
+            .await?;
+    }
+    let effect = if answer == "approve" {
+        let applied = scheduler
+            .list_scheduled_jobs()
+            .await
+            .into_iter()
+            .find(|job| job.id == job_id)
+            .ok_or_else(|| SchedulerError::JobNotFound(job_id.to_string()))?;
+        applied
+            .pause_episode
+            .as_ref()
+            .filter(|episode| episode.id == episode_id)
+            .and_then(|episode| episode.effect.clone())
+            .ok_or_else(|| {
+                SchedulerError::PersistError("resume effect was not durably recorded".to_string())
+            })?
+    } else {
+        effect
+    };
+    crate::decisions::resolve_schedule_pause(pool, job_id, episode_id, &effect)
+        .await
+        .map_err(SchedulerError::PersistError)
 }
 
 /// Normalize a cron expression to 6-field (seconds-prefixed) form.
@@ -1070,6 +1457,9 @@ impl Scheduler {
             .sweep_claims_at_startup(load_mode, Utc::now(), owner_is_alive)
             .await;
         arc_self.load_jobs_from_storage(load_mode).await;
+        if let Err(error) = arc_self.reconcile_pause_decisions().await {
+            tracing::warn!(%error, "pause delivery remains pending at startup");
+        }
         if start_cron {
             arc_self
                 .tokio_scheduler
@@ -1196,7 +1586,8 @@ impl Scheduler {
 
             Box::pin(async move {
                 let should_execute = {
-                    let jobs_guard = current_jobs_arc.lock().await;
+                    let mut jobs_guard = current_jobs_arc.lock().await;
+                    refresh_schedule_state(&local_storage_path, &mut jobs_guard);
                     jobs_guard
                         .get(&task_job_id)
                         .map(|(_, j)| !j.paused)
@@ -1388,6 +1779,7 @@ impl Scheduler {
                 let (max_retries, retry_spent) = {
                     let mut jobs_guard = current_jobs_arc.lock().await;
                     if let Some((_, job)) = jobs_guard.get_mut(&task_job_id) {
+                        record_failed_fire(job, &final_result);
                         job.currently_running = false;
                         job.current_session_id = None;
                         job.process_start_time = None;
@@ -1413,11 +1805,7 @@ impl Scheduler {
                                     && !job.paused
                                 {
                                     job.paused = true;
-                                    job.last_error = Some(format!(
-                                        "auto-paused after {} consecutive failures \
-                                         (resume from Automate once fixed). Last error: {}",
-                                        job.consecutive_failures, e
-                                    ));
+                                    begin_pause_episode(job);
                                     tracing::error!(
                                         target: "durability",
                                         job = %task_job_id,
@@ -1433,6 +1821,33 @@ impl Scheduler {
                     }
                 };
 
+                // One-shot jobs are done the moment they fire — remove so they
+                // never re-run on restart (the durable "fire exactly once").
+                if is_one_shot {
+                    current_jobs_arc.lock().await.remove(&task_job_id);
+                }
+
+                if let Err(error) =
+                    stage_pause_jobs(&session_manager_for_task, &current_jobs_arc).await
+                {
+                    tracing::error!(%error, "failed to stage pause intent; keeping in-memory pause");
+                }
+                match persist_jobs(&local_storage_path, &current_jobs_arc).await {
+                    Ok(()) => {
+                        if let Err(error) =
+                            reconcile_pause_jobs(&session_manager_for_task, &local_storage_path)
+                                .await
+                        {
+                            tracing::warn!(%error, "pause delivery remains pending");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "Failed to persist job completion; pause delivery remains pending")
+                    }
+                }
+
+                // Retire the claim after recording the terminal outcome and
+                // pause intent; a finished claim must not precede its evidence.
                 if let Some(claim) = &fire_claim {
                     claim.finish().await;
                 }
@@ -1444,16 +1859,6 @@ impl Scheduler {
                     {
                         active.remove(&task_job_id);
                     }
-                }
-
-                // One-shot jobs are done the moment they fire — remove so they
-                // never re-run on restart (the durable "fire exactly once").
-                if is_one_shot {
-                    current_jobs_arc.lock().await.remove(&task_job_id);
-                }
-
-                if let Err(e) = persist_jobs(&local_storage_path, &current_jobs_arc).await {
-                    tracing::error!("Failed to persist job completion: {}", e);
                 }
 
                 let duration_ms = job_start_instant.elapsed().as_millis() as u64;
@@ -1735,6 +2140,13 @@ impl Scheduler {
         let mut catch_up_jobs: Vec<ScheduledJob> = Vec::new();
 
         for mut job_to_load in list {
+            let original_run_count = job_to_load.run_count;
+            if let Err(error) = recover_pause_job(&self.session_manager, &mut job_to_load).await {
+                // Fail closed if the durable pause ledger cannot be checked.
+                job_to_load.paused = true;
+                tracing::warn!(%error, "pause recovery unavailable; keeping schedule paused");
+            }
+            reconciled |= job_to_load.run_count != original_run_count;
             // Interval floor applies to persisted jobs too: add-time validation
             // only covers jobs created after the guard shipped, and schedule.json
             // is hand-editable. Violators are paused (not dropped) so the user
@@ -1754,7 +2166,7 @@ impl Scheduler {
                     );
                 }
             }
-            if !Path::new(&job_to_load.source).exists() {
+            if job_to_load.pause_episode.is_none() && !Path::new(&job_to_load.source).exists() {
                 tracing::warn!(
                     "Recipe file {} not found, skipping job '{}'",
                     job_to_load.source,
@@ -1898,7 +2310,7 @@ impl Scheduler {
         // so the next load is a no-op.
         if mode == StorageLoadMode::ReconcileAndCatchUp && (crons_normalized || reconciled) {
             if let Err(e) = persist_jobs(&self.storage_path, &self.jobs).await {
-                tracing::warn!("Failed to persist scheduler reconciliation: {}", e);
+                tracing::error!("Failed to persist scheduler reconciliation; pause delivery remains pending: {}", e);
             }
         }
 
@@ -1988,6 +2400,10 @@ impl Scheduler {
         };
 
         for mut job in jobs_to_add {
+            if let Err(error) = recover_pause_job(&self.session_manager, &mut job).await {
+                job.paused = true;
+                tracing::warn!(%error, "pause recovery unavailable; keeping schedule paused");
+            }
             // Same floor treatment as the startup loader, for the same reason:
             // schedule.json is hand-editable and this path arms whatever it finds
             // there — on every list_scheduled_jobs, not just at boot. Pausing in
@@ -2003,7 +2419,7 @@ impl Scheduler {
                     tracing::warn!("Scheduled job '{}' paused at load: {}", job.id, violation);
                 }
             }
-            if !Path::new(&job.source).exists() {
+            if job.pause_episode.is_none() && !Path::new(&job.source).exists() {
                 tracing::warn!(
                     "Skipping sync of job '{}': recipe file not found at {}",
                     job.id,
@@ -2038,8 +2454,16 @@ impl Scheduler {
         }
     }
 
+    pub async fn reconcile_pause_decisions(&self) -> Result<(), SchedulerError> {
+        reconcile_pause_jobs(&self.session_manager, &self.storage_path).await
+    }
+
     pub async fn list_scheduled_jobs(&self) -> Vec<ScheduledJob> {
         self.sync_from_storage().await;
+        refresh_schedule_state(&self.storage_path, &mut *self.jobs.lock().await);
+        if let Err(error) = self.reconcile_pause_decisions().await {
+            tracing::warn!(%error, "pause delivery remains pending");
+        }
         self.jobs
             .lock()
             .await
@@ -2182,6 +2606,7 @@ impl Scheduler {
     ) -> Result<String, SchedulerError> {
         let job_to_run = {
             let mut jobs_guard = self.jobs.lock().await;
+            refresh_schedule_state(&self.storage_path, &mut jobs_guard);
             match jobs_guard.get_mut(sched_id) {
                 Some((_, job)) => {
                     // Approval gate backstop: run_now used to fire an
@@ -2288,6 +2713,7 @@ impl Scheduler {
         {
             let mut jobs_guard = self.jobs.lock().await;
             if let Some((_, job)) = jobs_guard.get_mut(sched_id) {
+                record_failed_fire(job, &result);
                 job.currently_running = false;
                 job.current_session_id = None;
                 job.process_start_time = None;
@@ -2305,6 +2731,7 @@ impl Scheduler {
                         job.last_status = Some(ScheduleRunStatus::Ok);
                         job.last_success = job.last_run;
                         job.last_error = None;
+                        job.retry_count = 0;
                         job.consecutive_failures = 0;
                     }
                     Err(e) => {
@@ -2319,11 +2746,7 @@ impl Scheduler {
                             && !job.paused
                         {
                             job.paused = true;
-                            job.last_error = Some(format!(
-                                "auto-paused after {} consecutive failures \
-                                 (resume from Automate once fixed). Last error: {}",
-                                job.consecutive_failures, e
-                            ));
+                            begin_pause_episode(job);
                             tracing::error!(
                                 target: "durability",
                                 job = %sched_id,
@@ -2336,7 +2759,16 @@ impl Scheduler {
             }
         }
 
-        persist_jobs(&self.storage_path, &self.jobs).await?;
+        if let Err(error) = stage_pause_jobs(&self.session_manager, &self.jobs).await {
+            tracing::error!(%error, "failed to stage pause intent; keeping in-memory pause");
+        }
+        if let Err(error) = persist_jobs(&self.storage_path, &self.jobs).await {
+            tracing::error!(%error, "Failed to persist job completion; pause delivery remains pending");
+            return Err(error);
+        }
+        if let Err(error) = self.reconcile_pause_decisions().await {
+            tracing::warn!(%error, "pause delivery remains pending");
+        }
 
         match result {
             Ok(session_id) => {
@@ -2380,6 +2812,15 @@ impl Scheduler {
                         )));
                     }
                     job.paused = true;
+                    // A later manual pause is not the old, already-resumed
+                    // breaker episode. Its evidence remains in the episode table.
+                    if job
+                        .pause_episode
+                        .as_ref()
+                        .is_some_and(|episode| episode.effect.is_some())
+                    {
+                        job.pause_episode = None;
+                    }
                 }
                 None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),
             }
@@ -2391,30 +2832,83 @@ impl Scheduler {
     }
 
     pub async fn unpause_schedule(&self, sched_id: &str) -> Result<(), SchedulerError> {
-        {
-            let mut jobs_guard = self.jobs.lock().await;
-            match jobs_guard.get_mut(sched_id) {
-                Some((_, job)) => {
-                    // Resume is the one path that can un-do a floor pause, so the
-                    // floor is re-checked here or it is only advisory: a job the
-                    // loader paused for firing too often would otherwise resume at
-                    // its illegal cadence on one click.
-                    if let Some(violation) = schedule_floor_violation(job) {
-                        job.last_error = Some(violation.clone());
-                        return Err(SchedulerError::InvalidScheduleSpec(violation));
-                    }
-                    job.paused = false;
-                    // Unpausing IS the approval: the only route here for an
-                    // approval-pending job is the user's Automate UI — the
-                    // agent-facing resume path refuses while the flag is set.
-                    job.requires_approval = false;
-                    job.consecutive_failures = 0;
-                }
-                None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),
-            }
+        self.sync_from_storage().await;
+        let mut jobs = self.jobs.lock().await;
+        let (_, current) = jobs
+            .get(sched_id)
+            .ok_or_else(|| SchedulerError::JobNotFound(sched_id.to_string()))?;
+        let mut candidate = current.clone();
+        let _file_lock = lock_schedule_file(&self.storage_path)?;
+        let disk_jobs: Vec<ScheduledJob> =
+            serde_json::from_str(&fs::read_to_string(&self.storage_path)?)?;
+        let disk_job = disk_jobs
+            .iter()
+            .find(|job| job.id == sched_id)
+            .ok_or_else(|| SchedulerError::JobNotFound(sched_id.to_string()))?;
+        // The file lock also covers the comparison: a stale inbox tap cannot
+        // overwrite a newer episode persisted by another scheduler process.
+        if disk_job.run_count > candidate.run_count || disk_job.resumed_at > candidate.resumed_at {
+            candidate = disk_job.clone();
         }
-
-        persist_jobs(&self.storage_path, &self.jobs).await?;
+        // Resume is the one path that can un-do a floor pause, so the floor
+        // must be checked here or the guard would be merely advisory. The
+        // refusal is recorded on the live job as before, so Automate shows why.
+        if let Some(violation) = schedule_floor_violation(&candidate) {
+            if let Some((_, live)) = jobs.get_mut(sched_id) {
+                live.last_error = Some(violation.clone());
+            }
+            return Err(SchedulerError::InvalidScheduleSpec(violation));
+        }
+        if candidate.currently_running {
+            return Err(SchedulerError::AnyhowError(anyhow!(
+                "cannot resume a running job"
+            )));
+        }
+        if candidate.at.is_some_and(|at| at <= Utc::now()) {
+            return Err(SchedulerError::InvalidScheduleSpec(
+                "one-time schedule needs a future occurrence".to_string(),
+            ));
+        }
+        if let Some(episode) = &mut candidate.pause_episode {
+            let authority = RESUME_AUTHORITY.try_with(Clone::clone).map_err(|_| {
+                SchedulerError::AnyhowError(anyhow!(
+                    "auto-paused jobs require an authenticated episode answer"
+                ))
+            })?;
+            if episode.id != authority.episode {
+                return Err(SchedulerError::AnyhowError(anyhow!("stale pause episode")));
+            }
+            if episode.effect.is_some() {
+                return Ok(());
+            }
+            let mut audit = authority.audit;
+            audit["applied_at"] = serde_json::json!(Utc::now());
+            episode.effect = Some(audit);
+        }
+        candidate.paused = false;
+        // Unpausing IS approval: agent tools refuse approval-pending jobs;
+        // the authenticated Automate path is the user's approval surface.
+        candidate.requires_approval = false;
+        candidate.consecutive_failures = 0;
+        candidate.retry_count = 0;
+        candidate.resumed_at = Some(Utc::now());
+        // Write the candidate before publishing it to fired tasks. A failed
+        // write leaves the live job paused and the inbox request unresolved.
+        let list: Vec<_> = disk_jobs
+            .iter()
+            .map(|job| {
+                if job.id == sched_id {
+                    candidate.clone()
+                } else {
+                    job.clone()
+                }
+            })
+            .collect();
+        write_locked_jobs_to_disk(&self.storage_path, &list)?;
+        if let Some((_, job)) = jobs.get_mut(sched_id) {
+            *job = candidate;
+        }
+        drop(jobs);
         crate::events::emit(crate::events::schedule_changed(sched_id, "unpaused"));
         Ok(())
     }
@@ -6136,5 +6630,872 @@ mod fire_claim_tests {
                 Some(ScheduleRunStatus::Error)
             );
         }
+    }
+    async fn s2n_fixture(dir: &Path) -> (Arc<Scheduler>, ScheduledJob, sqlx::SqlitePool) {
+        let scheduler = scheduler_at(dir).await;
+        let mut job = weekly_job("s2n-pause");
+        job.source = dir
+            .join("missing-recipe.yaml")
+            .to_string_lossy()
+            .into_owned();
+        install_job(&scheduler, job.clone()).await;
+        let pool = scheduler.session_manager.pool_clone().await.unwrap();
+        (scheduler, job, pool)
+    }
+
+    async fn s2n_fail_three(scheduler: &Scheduler, job: &ScheduledJob) -> SchedulePauseEpisode {
+        for _ in 0..3 {
+            assert!(scheduler.run_now(&job.id).await.is_err());
+        }
+        scheduler
+            .jobs
+            .lock()
+            .await
+            .get(&job.id)
+            .unwrap()
+            .1
+            .pause_episode
+            .clone()
+            .unwrap()
+    }
+
+    async fn s2n_request_count(pool: &sqlx::SqlitePool) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM schedule_pause_episodes
+            WHERE EXISTS (SELECT 1 FROM decisions WHERE id = decision_id)",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn acceptance_01_zero_retries_third_failure_persists_one_valid_decision() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        for count in 1..=3 {
+            scheduler.task_for_job(job.clone())(
+                instant("2026-09-21T12:00:00Z") + Duration::weeks(count),
+            )
+            .await;
+            assert_eq!(
+                s2n_request_count(&pool).await,
+                if count == 3 { 1 } else { 0 }
+            );
+        }
+        let saved: Vec<ScheduledJob> =
+            serde_json::from_str(&fs::read_to_string(&scheduler.storage_path).unwrap()).unwrap();
+        let paused = saved.iter().find(|j| j.id == job.id).unwrap();
+        assert!(paused.paused);
+        let episode = paused.pause_episode.as_ref().unwrap();
+        let decision = crate::decisions::get_decision(&pool, &episode.decision_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let payload: crate::decisions::ScheduledJobUnblockPayload =
+            serde_json::from_value(decision.payload).unwrap();
+        payload.validate().unwrap();
+        assert_eq!(payload.last_error, paused.last_error.clone().unwrap());
+        assert_eq!(payload.failed_runs.len(), 3);
+        assert!(payload
+            .failed_runs
+            .iter()
+            .all(|run| run.session_id.is_none()));
+        assert_eq!(decision.detail, crate::decisions::AUTO_PAUSE_BODY);
+    }
+
+    #[tokio::test]
+    async fn acceptance_02_cron_catch_up_manual_count_terminal_fires() {
+        for path in 0..3 {
+            let dir = tempfile::tempdir().unwrap();
+            let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+            for count in 1..=3 {
+                match path {
+                    0 => {
+                        scheduler.task_for_job(job.clone())(
+                            instant("2026-09-21T12:00:00Z") + Duration::weeks(count),
+                        )
+                        .await
+                    }
+                    1 => {
+                        assert!(scheduler.run_claimed(&job.id, None, true).await.is_err());
+                    }
+                    _ => {
+                        assert!(scheduler.run_now(&job.id).await.is_err());
+                    }
+                }
+            }
+            let jobs = scheduler.jobs.lock().await;
+            let finished = &jobs.get(&job.id).unwrap().1;
+            assert_eq!(finished.consecutive_failures, 3);
+            assert_eq!(finished.run_count, 3);
+            assert_eq!(s2n_request_count(&pool).await, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn acceptance_03_success_resets_streak_already_paused_keeps_episode() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        for _ in 0..2 {
+            assert!(scheduler.run_now(&job.id).await.is_err());
+        }
+        scheduler
+            .jobs
+            .lock()
+            .await
+            .get_mut(&job.id)
+            .unwrap()
+            .1
+            .source
+            .clear();
+        scheduler.run_now(&job.id).await.unwrap();
+        assert_eq!(
+            scheduler
+                .jobs
+                .lock()
+                .await
+                .get(&job.id)
+                .unwrap()
+                .1
+                .consecutive_failures,
+            0
+        );
+        scheduler
+            .jobs
+            .lock()
+            .await
+            .get_mut(&job.id)
+            .unwrap()
+            .1
+            .source = job.source.clone();
+        let episode = s2n_fail_three(&scheduler, &job).await;
+        assert!(scheduler.run_now(&job.id).await.is_err());
+        assert_eq!(
+            scheduler
+                .jobs
+                .lock()
+                .await
+                .get(&job.id)
+                .unwrap()
+                .1
+                .pause_episode
+                .as_ref()
+                .unwrap()
+                .id,
+            episode.id
+        );
+        assert_eq!(s2n_request_count(&pool).await, 1);
+    }
+
+    #[tokio::test]
+    async fn acceptance_04_retry_escalation_is_promoted_with_three_fire_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        // Producer fixture copied from escalation_creates_unblock_decision.
+        escalate_persistent_failure(
+            &scheduler.session_manager,
+            &job.id,
+            3,
+            3,
+            "provider timeout",
+        )
+        .await;
+        let prior: String = sqlx::query_scalar("SELECT id FROM decisions WHERE kind = 'unblock'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO decisions (id, kind, tier, headline, detail, payload_json, created_at)
+            SELECT 'legacy-extra', kind, tier, headline, detail, payload_json, '9999' FROM decisions WHERE id = ?")
+            .bind(&prior).execute(&pool).await.unwrap();
+        s2n_fail_three(&scheduler, &job).await;
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE kind = 'unblock' AND status = 'open'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+        let decision = crate::decisions::get_decision(&pool, &prior)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            decision.payload["reason"],
+            crate::decisions::CONSECUTIVE_FAILURE_LIMIT
+        );
+        assert_eq!(decision.payload["failed_runs"].as_array().unwrap().len(), 3);
+        let duplicate = crate::decisions::get_decision(&pool, "legacy-extra")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(duplicate.status, "superseded"); // reconciliation UPDATE
+        assert!(duplicate.resolved_at.is_some());
+        let outcome: String = sqlx::query_scalar(
+            "SELECT outcome FROM decision_audit WHERE decision_id = 'legacy-extra'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(outcome, "superseded");
+        scheduler.reconcile_pause_decisions().await.unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE kind = 'unblock' AND status = 'open'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+        // The promoted row, rather than the provisional episode id, is authoritative.
+        let episode = scheduler
+            .jobs
+            .lock()
+            .await
+            .get(&job.id)
+            .unwrap()
+            .1
+            .pause_episode
+            .clone()
+            .unwrap();
+        scheduled_job_resume(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &episode.id,
+            SchedulePauseAnswer {
+                decision_id: &prior,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!scheduler.jobs.lock().await.get(&job.id).unwrap().1.paused);
+    }
+
+    #[tokio::test]
+    async fn acceptance_05_concurrent_reconciliation_and_restart_deduplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        s2n_fail_three(&scheduler, &job).await;
+        let (a, b) = tokio::join!(
+            scheduler.reconcile_pause_decisions(),
+            scheduler.reconcile_pause_decisions()
+        );
+        a.unwrap();
+        b.unwrap();
+        let reopened = scheduler_at(dir.path()).await;
+        reopened.reconcile_pause_decisions().await.unwrap();
+        assert_eq!(s2n_request_count(&pool).await, 1);
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM decisions WHERE kind = 'unblock'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn acceptance_06_delivery_and_resume_persistence_failures_remain_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        sqlx::query("CREATE TRIGGER s2n_reject_decision BEFORE INSERT ON decisions BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+            .execute(&pool).await.unwrap();
+        let episode = s2n_fail_three(&scheduler, &job).await;
+        assert!(scheduler.jobs.lock().await.get(&job.id).unwrap().1.paused);
+        assert_eq!(s2n_request_count(&pool).await, 0);
+        sqlx::query("DROP TRIGGER s2n_reject_decision")
+            .execute(&pool)
+            .await
+            .unwrap();
+        scheduler.reconcile_pause_decisions().await.unwrap();
+        // A directory at the temporary-file path deterministically rejects writes.
+        let tmp = scheduler.storage_path.with_file_name("schedule.json.tmp");
+        fs::create_dir(&tmp).unwrap();
+        assert!(scheduled_job_resume(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &episode.id,
+            SchedulePauseAnswer {
+                decision_id: &episode.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false
+            }
+        )
+        .await
+        .is_err());
+        assert!(scheduler.jobs.lock().await.get(&job.id).unwrap().1.paused);
+        let decision = crate::decisions::get_decision(&pool, &episode.decision_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(decision.status, "open"); // decisions schema default / reconciliation query
+        fs::remove_dir(tmp).unwrap();
+        scheduled_job_resume(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &episode.id,
+            SchedulePauseAnswer {
+                decision_id: &episode.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!scheduler.jobs.lock().await.get(&job.id).unwrap().1.paused);
+    }
+
+    #[tokio::test]
+    async fn correction_persist_failure_defers_delivery_in_both_paths_and_restart() {
+        for cron in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+            for _ in 0..2 {
+                assert!(scheduler.run_now(&job.id).await.is_err());
+            }
+            FAIL_PAUSE_PERSIST
+                .scope(true, async {
+                    if cron {
+                        scheduler.task_for_job(job.clone())(instant("2026-09-21T12:00:00Z")).await;
+                    } else {
+                        assert!(scheduler.run_now(&job.id).await.is_err());
+                    }
+                })
+                .await;
+            assert!(scheduler.jobs.lock().await.get(&job.id).unwrap().1.paused);
+            scheduler.list_scheduled_jobs().await;
+            assert_eq!(s2n_request_count(&pool).await, 0);
+            let decisions: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM decisions WHERE kind = 'unblock'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(decisions, 0);
+            let pending: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM schedule_pause_episodes
+                WHERE notification_json IS NULL AND answer IS NULL",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(pending, 1);
+            if cron {
+                // Startup recovers the pending pause and persists it before delivery.
+                let reopened = Scheduler::build(
+                    scheduler.storage_path.clone(),
+                    scheduler.session_manager.clone(),
+                    StorageLoadMode::ReconcileAndCatchUp,
+                    false,
+                )
+                .await
+                .unwrap();
+                reopened.reconcile_pause_decisions().await.unwrap();
+                assert!(reopened.jobs.lock().await.get(&job.id).unwrap().1.paused);
+            } else {
+                persist_jobs(&scheduler.storage_path, &scheduler.jobs)
+                    .await
+                    .unwrap();
+                scheduler.reconcile_pause_decisions().await.unwrap();
+            }
+            scheduler.reconcile_pause_decisions().await.unwrap();
+            assert_eq!(s2n_request_count(&pool).await, 1);
+            let decisions: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM decisions WHERE kind = 'unblock'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(decisions, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn correction_forged_decision_cannot_resume_or_resolve_another_episode() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let episode = s2n_fail_three(&scheduler, &job).await;
+        let before = scheduler.jobs.lock().await.get(&job.id).unwrap().1.clone();
+        sqlx::query("INSERT INTO decisions (id, kind, tier, headline, detail, payload_json, created_at)
+            SELECT 'D_fake', kind, tier, headline, detail, payload_json, created_at FROM decisions WHERE id = ?")
+            .bind(&episode.decision_id).execute(&pool).await.unwrap();
+        let result = scheduled_job_resume(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &episode.id,
+            SchedulePauseAnswer {
+                decision_id: "D_fake",
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false,
+            },
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SchedulerError::AnswerRefused(
+                crate::decisions::AnswerError::Forbidden(_)
+            ))
+        ));
+        let after = scheduler.jobs.lock().await.get(&job.id).unwrap().1.clone();
+        assert!(after.paused);
+        assert_eq!(after.run_count, before.run_count);
+        assert_eq!(after.consecutive_failures, before.consecutive_failures);
+        assert_eq!(after.retry_count, before.retry_count);
+        assert!(after.pause_episode.as_ref().unwrap().effect.is_none());
+        for id in ["D_fake", episode.decision_id.as_str()] {
+            let decision = crate::decisions::get_decision(&pool, id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(decision.status, "open"); // decisions schema default
+        }
+        let untouched: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM schedule_pause_episodes
+            WHERE answer IS NULL AND resolved_at IS NULL AND effect_json IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(untouched, 1);
+        let outcome: String =
+            sqlx::query_scalar("SELECT outcome FROM decision_audit WHERE decision_id = 'D_fake'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(outcome, "refused"); // audit_schedule_refusal
+        assert!(
+            crate::decisions::verify_audit_chain(&pool)
+                .await
+                .unwrap()
+                .intact
+        );
+    }
+
+    #[tokio::test]
+    async fn correction_schedule_answer_uses_user_only_policy_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let episode = s2n_fail_three(&scheduler, &job).await;
+        // A downgraded stored decision cannot bypass the live action policy.
+        sqlx::query("UPDATE decisions SET tier = 0 WHERE id = ?")
+            .bind(&episode.decision_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let answer = crate::decisions::DecisionAnswer {
+            answer: "approve".to_string(),
+            note: None,
+            choice_id: None,
+            input_text: None,
+        };
+        for (actor, principal) in [
+            (crate::decisions::ACTOR_JESSE, ""),
+            (crate::decisions::ACTOR_HENRY, "master"),
+        ] {
+            let ordinary = crate::decisions::answer_decision_with_principal(
+                &pool,
+                &episode.decision_id,
+                &answer,
+                actor,
+                principal,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(
+                &ordinary,
+                crate::decisions::AnswerError::Forbidden(_)
+            ));
+            let result = scheduled_job_resume(
+                scheduler.as_ref(),
+                &pool,
+                &job.id,
+                &episode.id,
+                SchedulePauseAnswer {
+                    decision_id: &episode.decision_id,
+                    answer: "approve",
+                    acted_by: actor,
+                    principal,
+                    from_automate: false,
+                },
+            )
+            .await;
+            match result {
+                Err(SchedulerError::AnswerRefused(
+                    error @ crate::decisions::AnswerError::Forbidden(_),
+                )) => {
+                    assert_eq!(error.to_string(), ordinary.to_string());
+                }
+                other => panic!("expected the shared answer refusal, got {other:?}"),
+            }
+        }
+        // Lowering the risk-policy row cannot grant automation user authority.
+        sqlx::query("UPDATE risk_policy SET tier = 0 WHERE action_class = ?")
+            .bind(crate::decisions::AUTOMATION_RESUME_SCHEDULE)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let decision = crate::decisions::get_decision(&pool, &episode.decision_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            crate::decisions::check_answer_authority(
+                &pool,
+                &decision,
+                crate::decisions::ACTOR_HENRY,
+                Some("master")
+            )
+            .await,
+            Err(crate::decisions::AnswerError::Forbidden(_))
+        ));
+        assert_eq!(decision.status, "open");
+        assert!(scheduler.jobs.lock().await.get(&job.id).unwrap().1.paused);
+        let untouched: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schedule_pause_episodes WHERE answer IS NULL AND resolved_at IS NULL")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(untouched, 1);
+        let refusals: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decision_audit WHERE decision_id = ? AND outcome = 'refused'",
+        )
+        .bind(&episode.decision_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(refusals, 2);
+    }
+
+    #[tokio::test]
+    async fn acceptance_07_scheduled_unblock_cannot_use_goal_answer_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let episode = s2n_fail_three(&scheduler, &job).await;
+        let answer = crate::decisions::DecisionAnswer {
+            answer: "approve".to_string(),
+            note: None,
+            choice_id: None,
+            input_text: None,
+        };
+        assert!(crate::decisions::answer_decision(
+            &pool,
+            &episode.decision_id,
+            &answer,
+            crate::decisions::ACTOR_JESSE
+        )
+        .await
+        .is_err());
+        let decision = crate::decisions::get_decision(&pool, &episode.decision_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let parsed: crate::decisions::UnblockContract =
+            serde_json::from_value(decision.payload).unwrap();
+        match parsed {
+            crate::decisions::UnblockContract::ScheduledJob(payload) => {
+                payload.validate().unwrap();
+                assert_eq!(payload.pause_episode_id, episode.id);
+            }
+            crate::decisions::UnblockContract::Goal(_) => {
+                panic!("scheduled unblock decoded as a goal")
+            }
+        }
+        let goal = crate::decisions::UnblockPayload {
+            reason: crate::decisions::UnblockReason::AttemptCap,
+            spent: Some(3),
+            cap: Some(3),
+        };
+        let parsed: crate::decisions::UnblockContract =
+            serde_json::from_value(serde_json::to_value(goal).unwrap()).unwrap();
+        assert!(matches!(parsed, crate::decisions::UnblockContract::Goal(_)));
+    }
+
+    #[tokio::test]
+    async fn acceptance_09_resume_resets_audits_preserves_evidence_without_catch_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let episode = s2n_fail_three(&scheduler, &job).await;
+        let before = scheduler.jobs.lock().await.get(&job.id).unwrap().1.clone();
+        scheduled_job_resume(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &episode.id,
+            SchedulePauseAnswer {
+                decision_id: &episode.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false,
+            },
+        )
+        .await
+        .unwrap();
+        let after = scheduler.jobs.lock().await.get(&job.id).unwrap().1.clone();
+        assert!(!after.paused);
+        assert_eq!(after.consecutive_failures, 0);
+        assert_eq!(after.retry_count, 0);
+        assert_eq!(after.run_count, before.run_count);
+        assert_eq!(after.last_error, before.last_error);
+        assert_eq!(after.failed_runs.len(), before.failed_runs.len());
+        assert!(!is_run_missed(&after, after.resumed_at.unwrap()));
+        assert!(missed_fire_at(&after).unwrap() > after.resumed_at.unwrap());
+        let effect: String = sqlx::query_scalar(
+            "SELECT effect_json FROM schedule_pause_episodes WHERE pause_episode_id = ?",
+        )
+        .bind(&episode.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let effect: serde_json::Value = serde_json::from_str(&effect).unwrap();
+        assert_eq!(effect["actor"], crate::decisions::ACTOR_JESSE);
+        assert_eq!(effect["decision_id"], episode.decision_id);
+        assert_eq!(effect["before"]["paused"], true);
+        assert_eq!(effect["after"]["paused"], false);
+    }
+
+    #[tokio::test]
+    async fn acceptance_10_keep_paused_once_then_automate_resumes_same_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let episode = s2n_fail_three(&scheduler, &job).await;
+        for _ in 0..2 {
+            scheduled_job_resume(
+                scheduler.as_ref(),
+                &pool,
+                &job.id,
+                &episode.id,
+                SchedulePauseAnswer {
+                    decision_id: &episode.decision_id,
+                    answer: "reject",
+                    acted_by: crate::decisions::ACTOR_JESSE,
+                    principal: "master",
+                    from_automate: false,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        assert!(scheduler.jobs.lock().await.get(&job.id).unwrap().1.paused);
+        let audits: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decision_audit WHERE decision_id = ? AND outcome = 'reject'",
+        )
+        .bind(&episode.decision_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audits, 1);
+        scheduled_job_resume(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &episode.id,
+            SchedulePauseAnswer {
+                decision_id: &episode.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!scheduler.jobs.lock().await.get(&job.id).unwrap().1.paused);
+        assert_eq!(s2n_request_count(&pool).await, 1);
+    }
+
+    #[tokio::test]
+    async fn acceptance_11_duplicate_stale_deleted_and_unauthorized_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let first = s2n_fail_three(&scheduler, &job).await;
+        assert!(scheduled_job_resume(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &first.id,
+            SchedulePauseAnswer {
+                decision_id: &first.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "",
+                from_automate: false
+            }
+        )
+        .await
+        .is_err());
+        for _ in 0..2 {
+            scheduled_job_resume(
+                scheduler.as_ref(),
+                &pool,
+                &job.id,
+                &first.id,
+                SchedulePauseAnswer {
+                    decision_id: &first.decision_id,
+                    answer: "approve",
+                    acted_by: crate::decisions::ACTOR_JESSE,
+                    principal: "master",
+                    from_automate: false,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let second = s2n_fail_three(&scheduler, &job).await;
+        assert!(scheduled_job_resume(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &first.id,
+            SchedulePauseAnswer {
+                decision_id: &first.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false
+            }
+        )
+        .await
+        .is_err());
+        assert!(scheduler.jobs.lock().await.get(&job.id).unwrap().1.paused);
+        scheduler.jobs.lock().await.remove(&job.id);
+        persist_jobs(&scheduler.storage_path, &scheduler.jobs)
+            .await
+            .unwrap();
+        assert!(scheduled_job_resume(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &second.id,
+            SchedulePauseAnswer {
+                decision_id: &second.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false
+            }
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn acceptance_12_three_new_failed_fires_create_new_episode() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let first = s2n_fail_three(&scheduler, &job).await;
+        scheduled_job_resume(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &first.id,
+            SchedulePauseAnswer {
+                decision_id: &first.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false,
+            },
+        )
+        .await
+        .unwrap();
+        let second = s2n_fail_three(&scheduler, &job).await;
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.decision_id, second.decision_id);
+        assert_eq!(s2n_request_count(&pool).await, 2);
+        assert!(second.failed_runs.iter().all(|run| run.run_number > 3));
+    }
+
+    #[tokio::test]
+    async fn acceptance_02_internal_retry_is_not_another_failed_fire() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, mut job, pool) = s2n_fixture(dir.path()).await;
+        job.max_retries = 1;
+        install_job(&scheduler, job.clone()).await;
+        // Missing recipe fails before a provider is constructed. The production
+        // ten-second backoff is intentional; no cron clock or network is used.
+        scheduler.task_for_job(job.clone())(instant("2026-09-21T12:00:00Z")).await;
+        let jobs = scheduler.jobs.lock().await;
+        let finished = &jobs.get(&job.id).unwrap().1;
+        assert_eq!(finished.retry_count, 1);
+        assert_eq!(finished.run_count, 1);
+        assert_eq!(finished.consecutive_failures, 1);
+        assert_eq!(finished.failed_runs.len(), 1);
+        assert_eq!(s2n_request_count(&pool).await, 0);
+    }
+
+    #[tokio::test]
+    async fn acceptance_06_resolution_failure_replays_durable_effect_without_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let episode = s2n_fail_three(&scheduler, &job).await;
+        sqlx::query(
+            "CREATE TRIGGER s2n_reject_resolution BEFORE UPDATE OF status ON decisions
+            BEGIN SELECT RAISE(ABORT, 'test failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(scheduled_job_resume(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &episode.id,
+            SchedulePauseAnswer {
+                decision_id: &episode.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false
+            }
+        )
+        .await
+        .is_err());
+        let saved = scheduler.jobs.lock().await.get(&job.id).unwrap().1.clone();
+        assert!(!saved.paused);
+        assert!(saved.pause_episode.as_ref().unwrap().effect.is_some());
+        assert_eq!(saved.run_count, 3);
+        sqlx::query("DROP TRIGGER s2n_reject_resolution")
+            .execute(&pool)
+            .await
+            .unwrap();
+        scheduler.reconcile_pause_decisions().await.unwrap();
+        let decision = crate::decisions::get_decision(&pool, &episode.decision_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(decision.status, "answered"); // resolve_schedule_pause update
+        assert_eq!(
+            scheduler
+                .jobs
+                .lock()
+                .await
+                .get(&job.id)
+                .unwrap()
+                .1
+                .run_count,
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn acceptance_05_duplicate_fire_delivery_counts_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let task = scheduler.task_for_job(job.clone());
+        let due = instant("2026-09-21T12:00:00Z");
+        tokio::join!(task(due), task(due));
+        let jobs = scheduler.jobs.lock().await;
+        let finished = &jobs.get(&job.id).unwrap().1;
+        assert_eq!(finished.run_count, 1);
+        assert_eq!(finished.failed_runs.len(), 1);
+        assert_eq!(s2n_request_count(&pool).await, 0);
     }
 }

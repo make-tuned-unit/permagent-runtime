@@ -93,6 +93,12 @@ pub fn classify(event: &PermagentEvent) -> Option<Severity> {
         PermagentEventType::TaskFailed | PermagentEventType::IntegrationError => {
             Some(Severity::Critical)
         }
+        // Severity describes the interruption, independently of execution risk.
+        PermagentEventType::DecisionCreated
+            if event.payload["reason"] == permagent::decisions::CONSECUTIVE_FAILURE_LIMIT =>
+        {
+            Some(Severity::Warning)
+        }
         PermagentEventType::DecisionCreated => match event.payload["tier"].as_i64() {
             Some(2..) => Some(Severity::Critical),
             Some(_) => Some(Severity::Warning),
@@ -112,7 +118,7 @@ pub fn classify(event: &PermagentEvent) -> Option<Severity> {
     }
 }
 
-pub fn spawn(_state: Arc<AppState>) {
+pub fn spawn(state: Arc<AppState>) {
     // Subscribe synchronously before spawning so startup cannot lose an event
     // in the gap between task creation and its first poll.
     let mut receiver = events::subscribe();
@@ -127,6 +133,18 @@ pub fn spawn(_state: Arc<AppState>) {
                 return;
             }
         };
+        // Rehydrate durable in-app events before maintenance. A crash between
+        // receipt commit and emit is recovered with the same logical event ID.
+        let stored: Vec<String> = sqlx::query_scalar(
+            "SELECT notification_json FROM schedule_pause_episodes WHERE notification_json IS NOT NULL AND resolved_at IS NULL",
+        ).fetch_all(&pool).await.unwrap_or_default();
+        for raw in stored {
+            if let Ok(event) = serde_json::from_str::<PermagentEvent>(&raw) {
+                if event.event_type == PermagentEventType::NotificationRouted {
+                    events::emit(event);
+                }
+            }
+        }
         let mut digest_tick = tokio::time::interval(DIGEST_TICK);
         loop {
             tokio::select! {
@@ -142,6 +160,32 @@ pub fn spawn(_state: Arc<AppState>) {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
                 _ = digest_tick.tick() => {
+                    // Listing reconciles schedule-file pause intents before routing.
+                    let scheduler = state.scheduler();
+                    let jobs = scheduler.list_scheduled_jobs().await;
+                    for job in jobs {
+                        if let Some(episode) = &job.pause_episode {
+                            let pending: Option<(String, String, String)> = sqlx::query_as(
+                                "SELECT answer, principal, decision_id FROM schedule_pause_episodes WHERE job_id = ? AND pause_episode_id = ?
+                                 AND answer IS NOT NULL AND resolved_at IS NULL",
+                            ).bind(&job.id).bind(&episode.id).fetch_optional(&pool).await.ok().flatten();
+                            if let Some((answer, principal, decision_id)) = pending {
+                                if let Err(error) = permagent::scheduler::scheduled_job_resume(
+                                    scheduler.as_ref(), &pool, &job.id, &episode.id,
+                                    permagent::scheduler::SchedulePauseAnswer {
+                                        decision_id: &decision_id, answer: &answer, acted_by: permagent::decisions::ACTOR_JESSE,
+                                        principal: &principal, from_automate: false,
+                                    },
+                                ).await {
+                                    tracing::warn!(%error, "scheduler answer remains pending");
+                                }
+                            }
+                        }
+                    }
+                    if let Err(error) = reconcile_pause_notifications(&pool).await {
+                        tracing::warn!(%error, "scheduler notification remains pending");
+                    }
+
                     if let Err(error) = permagent::decisions_effects::drain_effect_outbox(&pool).await {
                         tracing::warn!(target: "permagentd::notifications", %error, "decision effect outbox drain failed");
                     }
@@ -207,6 +251,22 @@ async fn route_with_push_outcome(
     let Some(severity) = classify(&event) else {
         return Ok(());
     };
+    let pause = event.payload["reason"] == permagent::decisions::CONSECUTIVE_FAILURE_LIMIT;
+    if pause {
+        let materialized: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM schedule_pause_episodes e JOIN decisions d ON d.id = e.decision_id
+             WHERE e.decision_id = ?)",
+        ).bind(event.payload["decision_id"].as_str().unwrap_or_default()).fetch_one(pool).await?;
+        if !materialized {
+            return Ok(());
+        }
+        let recorded: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM schedule_pause_episodes WHERE decision_id = ? AND notification_json IS NOT NULL)",
+        ).bind(event.payload["decision_id"].as_str().unwrap_or_default()).fetch_one(pool).await?;
+        if recorded {
+            return Ok(());
+        }
+    }
     let user_id = event.payload["user_id"].as_str().unwrap_or(DEFAULT_USER);
     let source_type = serde_json::to_value(&event.event_type)?
         .as_str()
@@ -224,14 +284,30 @@ async fn route_with_push_outcome(
                 }
             }
             Channel::InApp => {
-                events::emit(events::notification_routed(
+                let mut routed = events::notification_routed(
                     &event.id,
                     user_id,
                     severity.as_str(),
                     channel.as_str(),
                     &source_type,
                     &event.payload,
-                ));
+                );
+                if pause {
+                    routed.id = format!("{}:in_app", event.id);
+                    let changed = sqlx::query(
+                        "UPDATE schedule_pause_episodes SET notification_json = ?
+                        WHERE decision_id = ? AND notification_json IS NULL",
+                    )
+                    .bind(serde_json::to_string(&routed)?)
+                    .bind(event.payload["decision_id"].as_str().unwrap_or_default())
+                    .execute(pool)
+                    .await?
+                    .rows_affected();
+                    if changed == 0 {
+                        return Ok(());
+                    }
+                }
+                events::emit(routed);
                 break;
             }
             Channel::Digest => {
@@ -250,6 +326,31 @@ async fn route_with_push_outcome(
                 break;
             }
         }
+    }
+    if pause {
+        sqlx::query(
+            "UPDATE schedule_pause_episodes SET notification_json = ?
+            WHERE decision_id = ? AND notification_json IS NULL",
+        )
+        .bind(serde_json::to_string(&event)?)
+        .bind(event.payload["decision_id"].as_str().unwrap_or_default())
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn reconcile_pause_notifications(pool: &Pool<Sqlite>) -> anyhow::Result<()> {
+    let pending: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT job_id, pause_episode_id, decision_id FROM schedule_pause_episodes WHERE notification_json IS NULL
+         AND EXISTS (SELECT 1 FROM decisions WHERE id = decision_id)",
+    ).fetch_all(pool).await?;
+    for (job, episode, decision) in pending {
+        route(
+            pool,
+            permagent::decisions::schedule_pause_event(&job, &episode, &decision),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -827,5 +928,173 @@ mod tests {
         })
         .await;
         assert!(emitted.is_err(), "rolled-back rows must not be emitted");
+    }
+    async fn pause_routing_pool() -> Pool<Sqlite> {
+        let pool = routing_pool().await;
+        sqlx::query(
+            "CREATE TABLE risk_policy(action_class TEXT PRIMARY KEY, tier INTEGER, rationale TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        permagent::session::spectral_schema::apply_schedule_pause_schema(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE decisions(id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO decisions(id) VALUES ('decision')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schedule_pause_episodes(job_id, pause_episode_id, decision_id, payload_json, headline, job_json)
+            VALUES ('job', 'episode', 'decision', '{}', 'pause', '{}')").execute(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn pending_pause_intent_cannot_deliver_before_decision_materializes() {
+        let pool = pause_routing_pool().await;
+        sqlx::query("DELETE FROM decisions")
+            .execute(&pool)
+            .await
+            .unwrap();
+        reconcile_pause_notifications(&pool).await.unwrap();
+        let receipt: Option<String> =
+            sqlx::query_scalar("SELECT notification_json FROM schedule_pause_episodes")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(receipt.is_none());
+        sqlx::query("INSERT INTO decisions(id) VALUES ('decision')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        reconcile_pause_notifications(&pool).await.unwrap();
+        let receipt: Option<String> =
+            sqlx::query_scalar("SELECT notification_json FROM schedule_pause_episodes")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(receipt.is_some());
+    }
+
+    #[tokio::test]
+    async fn correction_pending_pause_cannot_notify_until_decision_materializes() {
+        let pool = pause_routing_pool().await;
+        sqlx::query("DELETE FROM decisions")
+            .execute(&pool)
+            .await
+            .unwrap();
+        reconcile_pause_notifications(&pool).await.unwrap();
+        route(
+            &pool,
+            permagent::decisions::schedule_pause_event("job", "episode", "decision"),
+        )
+        .await
+        .unwrap();
+        let receipt: Option<String> =
+            sqlx::query_scalar("SELECT notification_json FROM schedule_pause_episodes")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(receipt.is_none());
+        sqlx::query("INSERT INTO decisions VALUES ('decision')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        reconcile_pause_notifications(&pool).await.unwrap();
+        let first: String =
+            sqlx::query_scalar("SELECT notification_json FROM schedule_pause_episodes")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        reconcile_pause_notifications(&pool).await.unwrap();
+        let second: String =
+            sqlx::query_scalar("SELECT notification_json FROM schedule_pause_episodes")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn acceptance_01_and_08_pause_routes_one_in_app_warning_independent_of_risk() {
+        let pool = pause_routing_pool().await;
+        let source = permagent::decisions::schedule_pause_event("job", "episode", "decision");
+        assert_eq!(source.payload["tier"], 2);
+        assert_eq!(classify(&source), Some(Severity::Warning));
+        route(&pool, source.clone()).await.unwrap();
+        let first: String =
+            sqlx::query_scalar("SELECT notification_json FROM schedule_pause_episodes")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let routed: PermagentEvent = serde_json::from_str(&first).unwrap();
+        // Expected values copied from Severity::as_str and Channel::as_str.
+        assert_eq!(routed.payload["severity"], "warning");
+        assert_eq!(routed.payload["channel"], "in_app");
+        assert_eq!(routed.payload["source_event_id"], source.id);
+        route(&pool, source).await.unwrap();
+        reconcile_pause_notifications(&pool).await.unwrap();
+        let second: String =
+            sqlx::query_scalar("SELECT notification_json FROM schedule_pause_episodes")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            classify(&event(
+                PermagentEventType::Activity,
+                serde_json::json!({"event": {"event_type": "automation_job_auto_paused"}})
+            )),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn acceptance_06_notification_failure_reconciles_durable_pending_row() {
+        let pool = pause_routing_pool().await;
+        sqlx::query("CREATE TRIGGER s2n_reject_receipt BEFORE UPDATE OF notification_json ON schedule_pause_episodes
+            BEGIN SELECT RAISE(ABORT, 'test failure'); END").execute(&pool).await.unwrap();
+        let source = permagent::decisions::schedule_pause_event("job", "episode", "decision");
+        assert!(route(&pool, source).await.is_err());
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM schedule_pause_episodes WHERE notification_json IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, 1);
+        sqlx::query("DROP TRIGGER s2n_reject_receipt")
+            .execute(&pool)
+            .await
+            .unwrap();
+        reconcile_pause_notifications(&pool).await.unwrap();
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM schedule_pause_episodes WHERE notification_json IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, 0);
+    }
+
+    #[tokio::test]
+    async fn acceptance_08_pause_respects_channel_override() {
+        let pool = pause_routing_pool().await;
+        sqlx::query("UPDATE notification_preferences SET push_min_severity = NULL, in_app_min_severity = NULL WHERE user_id = 'default'")
+            .execute(&pool).await.unwrap();
+        let source = permagent::decisions::schedule_pause_event("job", "episode", "decision");
+        route(&pool, source.clone()).await.unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notification_digest_entries WHERE source_event_id = ?",
+        )
+        .bind(source.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
     }
 }

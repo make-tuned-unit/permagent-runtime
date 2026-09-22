@@ -267,6 +267,64 @@ pub struct UnblockPayload {
     pub cap: Option<u64>,
 }
 
+/// The unblock wire contract accepts either the unchanged goal payload or the
+/// scheduler payload. Keeping goal constructors intact avoids changing callers
+/// that are unrelated to scheduler intervention.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum UnblockContract {
+    ScheduledJob(Box<ScheduledJobUnblockPayload>),
+    Goal(UnblockPayload),
+}
+
+pub const AUTOMATION_RESUME_SCHEDULE: &str = "automation_resume_schedule";
+pub const CONSECUTIVE_FAILURE_LIMIT: &str = "consecutive_failure_limit";
+pub const AUTO_PAUSE_BODY: &str = "Scheduled runs are paused. Review the last error and failed runs, then resume when the cause is fixed. Resuming waits for the next scheduled run.";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum UnblockTarget {
+    ScheduledJob { job_id: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduledJobUnblockPayload {
+    pub target: UnblockTarget,
+    pub reason: String,
+    pub pause_episode_id: String,
+    pub failure_count: u32,
+    pub threshold: u32,
+    pub last_error: String,
+    pub failed_runs: Vec<crate::scheduler::FailedScheduleRun>,
+    pub action_class: String,
+    pub answers: Vec<ChoiceOption>,
+    pub automation_label: String,
+}
+
+impl ScheduledJobUnblockPayload {
+    pub fn validate(&self) -> Result<(), String> {
+        let UnblockTarget::ScheduledJob { job_id } = &self.target;
+        if job_id.is_empty()
+            || self.pause_episode_id.is_empty()
+            || self.reason != CONSECUTIVE_FAILURE_LIMIT
+            || self.threshold != 3
+            || self.failure_count < self.threshold
+            || self.failed_runs.len() != 3
+            || self.action_class != AUTOMATION_RESUME_SCHEDULE
+            || self.answers.len() != 2
+            || self.answers[0].id != "approve"
+            || self.answers[0].label != "Resume schedule"
+            || self.answers[1].id != "reject"
+            || self.answers[1].label != "Keep paused"
+            || self.automation_label != "Open automation"
+        {
+            return Err("invalid scheduled-job unblock contract".to_string());
+        }
+        Ok(())
+    }
+}
+
 /// One selectable option in a `choice` decision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1559,6 +1617,9 @@ fn resolve_action_class(req: &NewDecision) -> String {
     }
     match req.kind.as_str() {
         "approve_review" => "goal_approve_standard".to_string(),
+        "unblock" if req.payload["reason"] == CONSECUTIVE_FAILURE_LIMIT => {
+            AUTOMATION_RESUME_SCHEDULE.to_string()
+        }
         "unblock" => "goal_retry_within_budget".to_string(),
         "risk_gate" => req
             .payload
@@ -1627,9 +1688,12 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "approve_review" => serde_json::from_value::<ApproveReviewPayload>(req.payload.clone())
             .map(|_| ())
             .map_err(|e| e.to_string()),
-        "unblock" => serde_json::from_value::<UnblockPayload>(req.payload.clone())
-            .map(|_| ())
-            .map_err(|e| e.to_string()),
+        "unblock" => serde_json::from_value::<UnblockContract>(req.payload.clone())
+            .map_err(|e| e.to_string())
+            .and_then(|p| match p {
+                UnblockContract::ScheduledJob(p) => p.validate(),
+                UnblockContract::Goal(_) => Ok(()),
+            }),
         "choice" => match serde_json::from_value::<ChoicePayload>(req.payload.clone()) {
             Ok(p) if (2..=8).contains(&p.options.len()) => Ok(()),
             Ok(p) => Err(format!(
@@ -1848,6 +1912,234 @@ pub async fn create_decision(pool: &Pool<Sqlite>, req: NewDecision) -> Result<De
     get_decision(pool, &id)
         .await?
         .ok_or_else(|| "Failed to read created decision".to_string())
+}
+
+fn schedule_pause_payload(
+    job: &crate::scheduler::ScheduledJob,
+    episode: &crate::scheduler::SchedulePauseEpisode,
+) -> Result<String, String> {
+    let payload = ScheduledJobUnblockPayload {
+        target: UnblockTarget::ScheduledJob {
+            job_id: job.id.clone(),
+        },
+        reason: CONSECUTIVE_FAILURE_LIMIT.to_string(),
+        pause_episode_id: episode.id.clone(),
+        failure_count: episode.failure_count,
+        threshold: 3,
+        last_error: episode.last_error.clone(),
+        failed_runs: episode.failed_runs.clone(),
+        action_class: AUTOMATION_RESUME_SCHEDULE.to_string(),
+        answers: vec![
+            ChoiceOption {
+                id: "approve".to_string(),
+                label: "Resume schedule".to_string(),
+            },
+            ChoiceOption {
+                id: "reject".to_string(),
+                label: "Keep paused".to_string(),
+            },
+        ],
+        automation_label: "Open automation".to_string(),
+    };
+    payload.validate()?;
+    serde_json::to_string(&payload).map_err(|e| e.to_string())
+}
+
+/// A row without a matching decision is PENDING: recoverable pause intent,
+/// never permission to deliver an inbox item before the schedule file commits.
+pub(crate) async fn stage_schedule_pause(
+    pool: &Pool<Sqlite>,
+    job: &crate::scheduler::ScheduledJob,
+) -> Result<(), String> {
+    let Some(episode) = &job.pause_episode else {
+        return Ok(());
+    };
+    let payload_json = schedule_pause_payload(job, episode)?;
+    sqlx::query("INSERT OR IGNORE INTO schedule_pause_episodes
+        (job_id, pause_episode_id, decision_id, payload_json, headline, job_json) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(&job.id).bind(&episode.id).bind(&episode.decision_id).bind(payload_json).bind(&episode.headline)
+        .bind(serde_json::to_string(job).map_err(|e| e.to_string())?)
+        .execute(pool).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Materialize delivery only from a successfully persisted schedule snapshot.
+pub async fn reconcile_schedule_pause(
+    pool: &Pool<Sqlite>,
+    job: &crate::scheduler::ScheduledJob,
+) -> Result<(), String> {
+    let Some(episode) = &job.pause_episode else {
+        return Ok(());
+    };
+    let payload_json = schedule_pause_payload(job, episode)?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT decision_id FROM schedule_pause_episodes WHERE job_id = ? AND pause_episode_id = ?
+         AND EXISTS (SELECT 1 FROM decisions WHERE id = decision_id)",
+    )
+    .bind(&job.id)
+    .bind(&episode.id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if existing.is_some() {
+        tx.commit().await.map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    // Legacy escalation has no typed job target. Match its exact producer
+    // prefix and only its open, goal-less AttemptCap rows; never a goal retry.
+    let prefix = format!("Scheduled job '{}' failed after exhausting ", job.id);
+    let prior: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM decisions WHERE kind = 'unblock' AND status = 'open'
+         AND goal_id IS NULL AND json_extract(payload_json, '$.reason') = 'attempt_cap'
+         AND instr(detail, ?) = 1 ORDER BY created_at, id",
+    )
+    .bind(prefix)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    let id = prior
+        .first()
+        .cloned()
+        .unwrap_or_else(|| episode.decision_id.clone());
+    if !prior.is_empty() {
+        sqlx::query("UPDATE decisions SET headline = ?, detail = ?, payload_json = ?, tier = 2 WHERE id = ?")
+            .bind(&episode.headline).bind(AUTO_PAUSE_BODY).bind(&payload_json).bind(&id)
+            .execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    } else {
+        sqlx::query("INSERT INTO decisions (id, kind, project_id, tier, headline, detail, payload_json, created_at)
+                     VALUES (?, 'unblock', ?, 2, ?, ?, ?, ?)")
+            .bind(&id).bind(crate::projects::PERSONAL_PROJECT_ID).bind(&episode.headline)
+            .bind(AUTO_PAUSE_BODY).bind(&payload_json).bind(now_timestamp())
+            .execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    }
+    for duplicate in prior.iter().skip(1) {
+        sqlx::query("UPDATE decisions SET status = 'superseded', resolved_at = ?, staged_answer_json = NULL WHERE id = ? AND status = 'open'")
+            .bind(now_timestamp()).bind(duplicate).execute(&mut *tx).await.map_err(|e| e.to_string())?;
+        append_audit_tx(
+            &mut tx,
+            duplicate,
+            None,
+            ACTOR_SYSTEM,
+            2,
+            "superseded",
+            None,
+        )
+        .await?;
+    }
+    append_audit_tx(&mut tx, &id, None, ACTOR_SYSTEM, 2, "auto_paused", None).await?;
+    sqlx::query("INSERT INTO schedule_pause_episodes
+        (job_id, pause_episode_id, decision_id, payload_json, headline, job_json) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(job_id, pause_episode_id) DO UPDATE SET decision_id = excluded.decision_id,
+        payload_json = excluded.payload_json, headline = excluded.headline, job_json = excluded.job_json")
+        .bind(&job.id).bind(&episode.id).bind(&id).bind(&payload_json).bind(&episode.headline)
+        .bind(serde_json::to_string(job).map_err(|e| e.to_string())?)
+        .execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    // The journal indexes evidence instead of duplicating its body. Commit
+    // this history pointer with the decision so an event-bus crash cannot lose it.
+    sqlx::query(
+        "INSERT OR IGNORE INTO activity_journal
+        (id, ts, kind, actor, title, detail, ref_kind, ref_id)
+        VALUES (?, ?, 'automation_job_auto_paused', 'system', ?, ?, 'decision', ?)",
+    )
+    .bind(format!("schedule-pause-activity:{}:{}", job.id, episode.id))
+    .bind(now_timestamp())
+    .bind(&episode.headline)
+    .bind(
+        serde_json::json!({"job_id": job.id, "pause_episode_id": episode.id, "decision_id": id})
+            .to_string(),
+    )
+    .bind(&id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    crate::events::activity::automation_job_auto_paused(&job.id, &episode.id, &id);
+    crate::events::emit(schedule_pause_event(&job.id, &episode.id, &id));
+    Ok(())
+}
+
+pub fn schedule_pause_event(
+    job: &str,
+    episode: &str,
+    decision: &str,
+) -> crate::events::PermagentEvent {
+    let mut event = crate::events::decision_created(decision, "unblock", 2);
+    // Stable identity is shared by live delivery and restart reconciliation.
+    event.id = format!("schedule-pause:{job}:{episode}");
+    event.payload["reason"] = serde_json::json!(CONSECUTIVE_FAILURE_LIMIT);
+    event.payload["job_id"] = serde_json::json!(job);
+    event.payload["pause_episode_id"] = serde_json::json!(episode);
+    event
+}
+
+/// Only called after the scheduler has durably written the answer effect (or
+/// for a keep-paused acknowledgement). Audit and resolution commit together.
+pub async fn resolve_schedule_pause(
+    pool: &Pool<Sqlite>,
+    job: &str,
+    episode: &str,
+    effect: &serde_json::Value,
+) -> Result<(), String> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+    let row: (String, String, String, String) = sqlx::query_as(
+        "SELECT decision_id, answer, actor, principal FROM schedule_pause_episodes
+         WHERE job_id = ? AND pause_episode_id = ? AND answer IS NOT NULL",
+    )
+    .bind(job)
+    .bind(episode)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    let changed = sqlx::query(
+        "UPDATE schedule_pause_episodes SET effect_json = ?, resolved_at = ?
+        WHERE job_id = ? AND pause_episode_id = ? AND resolved_at IS NULL",
+    )
+    .bind(effect.to_string())
+    .bind(now_timestamp())
+    .bind(job)
+    .bind(episode)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?
+    .rows_affected();
+    if changed > 0 {
+        sqlx::query(
+            "UPDATE decisions SET status = 'answered', answer = ?, acted_by = ?, resolved_at = ?,
+            staged_answer_json = NULL WHERE id = ?",
+        )
+        .bind(&row.1)
+        .bind(&row.2)
+        .bind(now_timestamp())
+        .bind(&row.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        append_audit_tx_with_principal(
+            &mut tx,
+            &row.0,
+            None,
+            &row.2,
+            2,
+            &row.1,
+            None,
+            Some(&row.3),
+        )
+        .await?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    if changed > 0 {
+        crate::events::emit(crate::events::decision_resolved(
+            &row.0, "unblock", &row.1, &row.2, 2,
+        ));
+    }
+    Ok(())
 }
 
 pub async fn get_decision(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Decision>, String> {
@@ -3201,6 +3493,80 @@ pub async fn self_reference_conflict(
     None
 }
 
+/// Shared answer authority gate. Scheduler effects use this before recording
+/// intent, while ordinary answers use it before resolving the decision.
+pub(crate) async fn check_answer_authority(
+    pool: &Pool<Sqlite>,
+    decision: &Decision,
+    acted_by: &str,
+    principal: Option<&str>,
+) -> Result<(), AnswerError> {
+    if !VALID_ACTORS.contains(&acted_by) {
+        return Err(AnswerError::Invalid(format!(
+            "unknown actor '{}'",
+            acted_by
+        )));
+    }
+    let scheduled =
+        decision.kind == "unblock" && decision.payload["reason"] == CONSECUTIVE_FAILURE_LIMIT;
+    let tier = if scheduled {
+        decision
+            .tier
+            .max(tier_for_action_class(pool, AUTOMATION_RESUME_SCHEDULE).await)
+            .max(2)
+    } else {
+        decision.tier
+    };
+    match tier {
+        tier if tier >= 2 && acted_by != ACTOR_JESSE => {
+            return Err(AnswerError::Forbidden(format!(
+                "Tier-2 decisions require acted_by='jesse' (got '{}')",
+                acted_by
+            )));
+        }
+        1 if acted_by != ACTOR_JESSE && acted_by != ACTOR_HENRY => {
+            return Err(AnswerError::Forbidden(format!(
+                "Tier-1 decisions require acted_by 'jesse' or 'henry-policy' (got '{}')",
+                acted_by
+            )));
+        }
+        _ => {}
+    }
+
+    if scheduled && principal.is_none_or(str::is_empty) {
+        return Err(AnswerError::Forbidden(
+            "authenticated scheduler answer required".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Record refused scheduler authority or target binding without consuming the
+/// decision or touching another episode's answer.
+pub(crate) async fn audit_schedule_refusal(
+    pool: &Pool<Sqlite>,
+    decision: &Decision,
+    acted_by: &str,
+    principal: &str,
+) -> Result<(), String> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+    append_audit_tx_with_principal(
+        &mut tx,
+        &decision.id,
+        decision.goal_id.as_deref(),
+        acted_by,
+        decision.tier,
+        "refused",
+        None,
+        Some(principal),
+    )
+    .await?;
+    tx.commit().await.map_err(|e| e.to_string())
+}
+
 async fn answer_decision_inner(
     pool: &Pool<Sqlite>,
     decision_id: &str,
@@ -3209,12 +3575,6 @@ async fn answer_decision_inner(
     principal: Option<&str>,
     answering_session_id: Option<&str>,
 ) -> Result<(Decision, DecisionProof), AnswerError> {
-    if !VALID_ACTORS.contains(&acted_by) {
-        return Err(AnswerError::Invalid(format!(
-            "unknown actor '{}'",
-            acted_by
-        )));
-    }
     if !VALID_ANSWERS.contains(&answer.answer.as_str()) {
         return Err(AnswerError::Invalid(format!(
             "answer must be one of approve|reject|choice|input|edit, got '{}'",
@@ -3231,21 +3591,12 @@ async fn answer_decision_inner(
         return Err(AnswerError::AlreadyResolved(decision.status));
     }
 
-    // Tier gate (S5).
-    match decision.tier {
-        2 if acted_by != ACTOR_JESSE => {
-            return Err(AnswerError::Forbidden(format!(
-                "Tier-2 decisions require acted_by='jesse' (got '{}')",
-                acted_by
-            )));
-        }
-        1 if acted_by != ACTOR_JESSE && acted_by != ACTOR_HENRY => {
-            return Err(AnswerError::Forbidden(format!(
-                "Tier-1 decisions require acted_by 'jesse' or 'henry-policy' (got '{}')",
-                acted_by
-            )));
-        }
-        _ => {}
+    check_answer_authority(pool, &decision, acted_by, principal).await?;
+
+    if decision.kind == "unblock" && decision.payload["reason"] == CONSECUTIVE_FAILURE_LIMIT {
+        return Err(AnswerError::Forbidden(
+            "scheduled-job answers require scheduled_job_resume".to_string(),
+        ));
     }
 
     // Separation of duties (D30). Runs for every declared answering session,
