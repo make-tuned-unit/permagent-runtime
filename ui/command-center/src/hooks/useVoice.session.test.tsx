@@ -75,10 +75,10 @@ class MockWebSocket {
   }
 
   /** JSON frames sent by the client (start/stop control messages). */
-  jsonSent(): Array<{ type: string }> {
+  jsonSent(): Array<Record<string, unknown> & { type: string }> {
     return this.sent
       .filter((d): d is string => typeof d === 'string')
-      .map(d => JSON.parse(d) as { type: string });
+      .map(d => JSON.parse(d) as Record<string, unknown> & { type: string });
   }
 }
 
@@ -170,6 +170,85 @@ afterEach(() => {
 });
 
 describe('useVoice — session rebinding', () => {
+  it("sends hello immediately after server ready with null hardware fields", async () => {
+    const ws = await activateTo('session-A');
+    const hello = ws.jsonSent().find(
+      (m): m is Record<string, unknown> & {
+        type: 'hello';
+        protocol_version: number;
+        client: string;
+        capture_sample_rate: null;
+        capture_channels: null;
+        io_buffer_duration_ms: null;
+      } => m.type === 'hello',
+    );
+    expect(hello).toBeDefined();
+    if (!hello) throw new Error('missing hello frame');
+    expect(hello.protocol_version).toBe(1);
+    expect(hello.client).toBe('desktop_voice');
+    expect(hello.capture_sample_rate).toBeNull();
+    expect(hello.capture_channels).toBeNull();
+    expect(hello.io_buffer_duration_ms).toBeNull();
+  });
+
+  it('sends V2 start/stop envelope for user-tap turns (with explicit null VAD fields)', async () => {
+    const ws = await activateTo('session-A');
+
+    act(() => hook.current!.startRecording());
+    act(() => hook.current!.stopRecording());
+
+    const start = ws.jsonSent().find(
+      (m): m is Record<string, unknown> & {
+        type: 'start';
+        turn_id: string;
+        trigger: 'user_tap' | 'unknown';
+        audio_revision: number;
+      } => m.type === 'start',
+    );
+    expect(start).toBeDefined();
+    if (!start) throw new Error('missing start frame');
+    expect(start.turn_id).toMatch(/^web-\d+$/);
+    expect(start.trigger).toBe('user_tap');
+    expect(start.audio_revision).toBe(1);
+
+    const stop = ws.jsonSent().find(
+      (m): m is Record<string, unknown> & {
+        type: 'stop';
+        turn_id: string;
+        trigger: 'user_tap' | 'unknown';
+        audio_revision: number;
+        end_reason: string;
+        capture_duration_ms: number;
+        vad_noise_floor_rms: null;
+        vad_onset_rms: null;
+        vad_keepalive_rms: null;
+        vad_committed: null;
+        vad_voiced_ms: null;
+        vad_trailing_silence_ms: null;
+        vad_silence_window_ms: null;
+        vad_max_turn_ms: null;
+        vad_max_keepalive_gap_ms: null;
+      } => m.type === 'stop',
+    );
+    expect(stop).toBeDefined();
+    if (!stop) throw new Error('missing stop frame');
+    expect(stop.turn_id).toBe(start.turn_id);
+    expect(stop.trigger).toBe('user_tap');
+    expect(stop.audio_revision).toBe(1);
+    expect(stop.end_reason).toBe('user_tap');
+    expect(stop.capture_duration_ms).toBeGreaterThanOrEqual(0);
+    expect(stop.vad_noise_floor_rms).toBeNull();
+    expect(stop.vad_onset_rms).toBeNull();
+    expect(stop.vad_keepalive_rms).toBeNull();
+    expect(stop.vad_committed).toBeNull();
+    expect(stop.vad_voiced_ms).toBeNull();
+    expect(stop.vad_trailing_silence_ms).toBeNull();
+    expect(stop.vad_silence_window_ms).toBeNull();
+    expect(stop.vad_max_turn_ms).toBeNull();
+    expect(stop.vad_max_keepalive_gap_ms).toBeNull();
+    expect(Object.prototype.hasOwnProperty.call(stop, 'dropped_input_samples')).toBe(false);
+  });
+
   it('sends exactly one wake_start while hands-free activation awaits acknowledgement', async () => {
     render('session-A');
     act(() => { void hook.current!.setHandsFree(true); });

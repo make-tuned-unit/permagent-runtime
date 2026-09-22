@@ -180,6 +180,14 @@ export interface VadTurnTiming {
   turnStartedAt: number;
 }
 
+export type VoiceTurnEndReason =
+  | 'silence'
+  | 'max_turn'
+  | 'user_tap'
+  | 'client_error'
+  | 'interruption'
+  | 'unknown';
+
 /**
  * Initialize every clock used by hands-free endpointing.
  *
@@ -222,6 +230,24 @@ export function shouldEndVadTurn(
   const silentFor = Math.max(0, now - timing.lastVoiceAt);
   const voicedFor = Math.max(0, timing.lastVoiceAt - effectiveStart);
   return silentFor > endpointWindowMs(voicedFor);
+}
+
+export function classifyVadTurnEnd(
+  timing: VadTurnTiming,
+  now: number,
+  opts: { maxTurnMs?: number; recordingStartedAt?: number } = {},
+): VoiceTurnEndReason | null {
+  const maxTurnMs = opts.maxTurnMs ?? VAD_MAX_TURN_MS;
+  const effectiveStart =
+    opts.recordingStartedAt !== undefined
+      ? Math.max(timing.turnStartedAt, opts.recordingStartedAt)
+      : timing.turnStartedAt;
+  const turnFor = Math.max(0, now - effectiveStart);
+  if (turnFor > maxTurnMs) return 'max_turn';
+  if (!timing.heardSpeech) return null;
+  const silentFor = Math.max(0, now - timing.lastVoiceAt);
+  const voicedFor = Math.max(0, timing.lastVoiceAt - effectiveStart);
+  return silentFor > endpointWindowMs(voicedFor) ? 'silence' : null;
 }
 
 // ── Mic-input watchdog ────────────────────────────────────────────────────
@@ -695,6 +721,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const turnSequenceRef = useRef(0);
+  const activeTurnIdRef = useRef<string | null>(null);
+  const activeTurnTriggerRef = useRef<'user_tap' | 'unknown'>('unknown');
+  const activeTurnAudioRevisionRef = useRef(1);
+  const activeTurnStartedAtMonotonicRef = useRef<number | null>(null);
+  const voiceHelloSentRef = useRef(false);
   // Persistent mic stream — acquired at activation, released at deactivation.
   // Eliminates the getUserMedia async gap that caused the press-release race.
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -862,7 +894,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
           flushNavIfIdle();
           flushTeachIfIdle();
           if (teachWordRef.current) {
-            startRecordingRef.current?.();
+            startRecordingRef.current?.('unknown');
           }
         }
       }
@@ -926,6 +958,27 @@ export function useVoice(options: UseVoiceOptions = {}) {
         switch (msg.type) {
           case 'ready':
             setStateAndEmit('ready');
+            if (!voiceHelloSentRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({
+                type: 'hello',
+                protocol_version: 1,
+                client: 'desktop_voice',
+                app_version: null,
+                build_number: null,
+                git_sha: null,
+                git_dirty: null,
+                capabilities: ['hello_v1', 'turn_telemetry_v2'],
+                audio_revision: 1,
+                inputs: null,
+                capture_sample_rate: null,
+                capture_channels: null,
+                wire_sample_rate: sampleRate,
+                wire_channels: 1,
+                wire_encoding: 'pcm_f32le',
+                io_buffer_duration_ms: null,
+              }));
+              voiceHelloSentRef.current = true;
+            }
             readyResolveRef.current?.();
             readyResolveRef.current = null;
             readyRejectRef.current = null;
@@ -985,7 +1038,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
               // FIX 2: startRecording itself arms the VAD turn clocks now —
               // a single seam every recording start goes through, so there
               // is nothing to duplicate here.
-              startRecordingRef.current?.();
+              startRecordingRef.current?.('unknown');
             } else if (action === 'halt-playback') {
               haltPlayback();
             }
@@ -1037,7 +1090,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
               // teach-driven recording.
               flushTeachIfIdle();
               if (teachWordRef.current) {
-                startRecordingRef.current?.();
+                startRecordingRef.current?.('unknown');
               }
             }
             // Covers a reply whose audio already drained before reply_end.
@@ -1091,7 +1144,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
                 setTeachWord(null);
                 wsRef.current?.send(JSON.stringify({ type: 'teach_skip' }));
               } else {
-                startRecordingRef.current?.();
+                startRecordingRef.current?.('unknown');
               }
             }
             break;
@@ -1130,7 +1183,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
         emit({ type: 'reply_audio', audio: { samples, sampleRate: 24000 } });
       }
     }
-  }, [setStateAndEmit, emit, playNextChunk, flushNavIfIdle, flushTeachIfIdle, haltPlayback, sessionId]);
+  }, [setStateAndEmit, emit, playNextChunk, flushNavIfIdle, flushTeachIfIdle, haltPlayback, sessionId, sampleRate]);
 
   // Monotonic connect epoch. Each connectSocket call claims a new epoch; a
   // call that gets superseded while awaiting the daemon token (e.g. the
@@ -1146,6 +1199,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       wsRef.current.close();
       wsRef.current = null;
     }
+    voiceHelloSentRef.current = false;
     // A new socket means a new daemon handler with no wake session; the
     // 'ready' handler re-requests it once the connection is up.
     wakeActiveRef.current = false;
@@ -1192,6 +1246,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
         const detail = `code=${ev.code} reason=${ev.reason || '(none)'} wasClean=${ev.wasClean}`;
         console.log(`[useVoice] ws.onclose: ${detail}`);
         wsRef.current = null;
+        voiceHelloSentRef.current = false;
 
         if (readyRejectRef.current) {
           readyRejectRef.current(new Error(`WebSocket closed: ${detail}`));
@@ -1343,6 +1398,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
   }, [sessionId, forceRecover]);
 
   // --- Public API ---
+  const monotonicNowMs = useCallback((): number => {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+      return performance.now();
+    }
+    return Date.now();
+  }, []);
 
   const ensureReady = useCallback(async (): Promise<void> => {
     if (wsRef.current?.readyState === WebSocket.OPEN && stateRef.current === 'ready') {
@@ -1447,11 +1508,15 @@ export function useVoice(options: UseVoiceOptions = {}) {
   /** Deactivate voice: release mic + disconnect socket. */
   const deactivate = useCallback(() => {
     activeRef.current = false;
-    // Stop recording
-    processorRef.current?.disconnect();
-    processorRef.current = null;
-    audioCtxRef.current?.close().catch(() => {});
-    audioCtxRef.current = null;
+    if (stateRef.current === 'recording') {
+      stopRecordingRef.current?.('interruption');
+    } else {
+      // Stop recording
+      processorRef.current?.disconnect();
+      processorRef.current = null;
+      audioCtxRef.current?.close().catch(() => {});
+      audioCtxRef.current = null;
+    }
     // Release mic
     mediaStreamRef.current?.getTracks().forEach(t => t.stop());
     mediaStreamRef.current = null;
@@ -1518,7 +1583,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
    * one place every start goes through instead of duplicated (and
    * incompletely applied) at each call site.
    */
-  const startRecording = useCallback(() => {
+  const startRecording = useCallback((trigger: 'user_tap' | 'unknown' = 'user_tap') => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (stateRef.current !== 'ready') return;
@@ -1543,7 +1608,19 @@ export function useVoice(options: UseVoiceOptions = {}) {
     processorRef.current = processor;
     frameCountRef.current = 0;
 
-    ws.send(JSON.stringify({ type: 'start', sample_rate: sampleRate }));
+    turnSequenceRef.current += 1;
+    const turnId = `web-${turnSequenceRef.current}`;
+    activeTurnIdRef.current = turnId;
+    activeTurnTriggerRef.current = trigger;
+    activeTurnAudioRevisionRef.current = 1;
+    activeTurnStartedAtMonotonicRef.current = monotonicNowMs();
+    ws.send(JSON.stringify({
+      type: 'start',
+      sample_rate: sampleRate,
+      turn_id: turnId,
+      trigger,
+      audio_revision: activeTurnAudioRevisionRef.current,
+    }));
     setStateAndEmit('recording');
 
     processor.onaudioprocess = (e) => {
@@ -1558,10 +1635,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
     source.connect(processor);
     processor.connect(audioCtx.destination);
-  }, [sampleRate, setStateAndEmit]);
+  }, [monotonicNowMs, sampleRate, setStateAndEmit]);
 
   /** Stop recording and send audio for processing. */
-  const stopRecording = useCallback(() => {
+  const stopRecording = useCallback((endReason: VoiceTurnEndReason = 'user_tap') => {
     processorRef.current?.disconnect();
     processorRef.current = null;
     audioCtxRef.current?.close().catch(() => {});
@@ -1585,12 +1662,38 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN && stateRef.current === 'recording') {
-      ws.send(JSON.stringify({ type: 'stop' }));
+      const startedAtMonotonic = activeTurnStartedAtMonotonicRef.current;
+      const captureDurationMs = startedAtMonotonic === null
+        ? null
+        : Math.max(0, Math.round(monotonicNowMs() - startedAtMonotonic));
+      const stopPayload: Record<string, unknown> = {
+        type: 'stop',
+        turn_id: activeTurnIdRef.current ?? undefined,
+        audio_revision: activeTurnAudioRevisionRef.current,
+        trigger: activeTurnTriggerRef.current,
+        end_reason: endReason,
+        vad_noise_floor_rms: null,
+        vad_onset_rms: null,
+        vad_keepalive_rms: null,
+        vad_committed: null,
+        vad_voiced_ms: null,
+        vad_trailing_silence_ms: null,
+        vad_silence_window_ms: null,
+        vad_max_turn_ms: null,
+        vad_max_keepalive_gap_ms: null,
+      };
+      if (captureDurationMs !== null) {
+        stopPayload.capture_duration_ms = captureDurationMs;
+      }
+      ws.send(JSON.stringify(stopPayload));
       // Start the watchdog clock fresh as we enter the busy phase.
       lastActivityRef.current = Date.now();
       setStateAndEmit('processing');
     }
-  }, [sampleRate, setStateAndEmit]);
+    activeTurnStartedAtMonotonicRef.current = null;
+    activeTurnIdRef.current = null;
+    activeTurnTriggerRef.current = 'unknown';
+  }, [monotonicNowMs, sampleRate, setStateAndEmit]);
 
   // Reconcile daemon-side wake listening with what the client wants
   // (hands-free on + preference enabled). Safe to call any time; no-ops
@@ -1864,7 +1967,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
             vadOnsetStreakRef.current = 0;
             // FIX 2: startRecording itself arms the VAD turn clocks now —
             // single seam, nothing to duplicate here.
-            startRecordingRef.current?.();
+            startRecordingRef.current?.('unknown');
           }
         } else {
           // DECAY, don't reset. A hard reset meant one legitimately bright
@@ -1879,13 +1982,14 @@ export function useVoice(options: UseVoiceOptions = {}) {
           vadHeardSpeechRef.current = true;
           vadLastVoiceRef.current = now;
         }
-        if (shouldEndVadTurn({
+        const endReason = classifyVadTurnEnd({
           heardSpeech: vadHeardSpeechRef.current,
           lastVoiceAt: vadLastVoiceRef.current,
           turnStartedAt: vadTurnStartRef.current,
-        }, now, { recordingStartedAt: recordingStartedAtRef.current })) {
+        }, now, { recordingStartedAt: recordingStartedAtRef.current });
+        if (endReason) {
           vadHeardSpeechRef.current = false;
-          stopRecordingRef.current?.();
+          stopRecordingRef.current?.(endReason);
         }
       } else if (s === 'playing' || s === 'processing') {
         // Barge-in: demand a sustained loud signal (2 consecutive ~128ms
@@ -1935,7 +2039,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       }
       // A VAD-started recording without its monitor would never end — close
       // the turn normally so anything already said still gets processed.
-      if (stateRef.current === 'recording') stopRecordingRef.current?.();
+      if (stateRef.current === 'recording') stopRecordingRef.current?.('interruption');
     }
     // Wake listening follows hands-free (on: start spotting if enabled;
     // off: tell the daemon to stop).
@@ -1944,8 +2048,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   // Late-bound refs so the monitor callback (created once) always calls the
   // freshest versions without re-wiring the audio graph.
-  const startRecordingRef = useRef<(() => void) | null>(null);
-  const stopRecordingRef = useRef<(() => void) | null>(null);
+  const startRecordingRef = useRef<((trigger?: 'user_tap' | 'unknown') => void) | null>(null);
+  const stopRecordingRef = useRef<((reason?: VoiceTurnEndReason) => void) | null>(null);
   const interruptRef = useRef<(() => void) | null>(null);
 
   // ── Mic-input watchdog ───────────────────────────────────────────────────
@@ -2086,7 +2190,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     // can only end from the VAD callback that just stopped firing, so it would
     // otherwise sit on "Listening" forever. Close it normally (whatever was
     // captured still gets processed).
-    if (s === 'recording') stopRecordingRef.current?.();
+    if (s === 'recording') stopRecordingRef.current?.('client_error');
 
     if (action === 'rebuild') {
       // A silent input is re-acquired too: a fresh getUserMedia is what gets

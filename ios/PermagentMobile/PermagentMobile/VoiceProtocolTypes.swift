@@ -1,5 +1,193 @@
 import Foundation
 
+struct VoiceHelloInput: Codable, Equatable {
+    let port_type: String?
+    let port_name: String?
+    let uid: String?
+}
+
+struct VoiceHelloMessage: Codable, Equatable {
+    let type = "hello"
+    let protocol_version: Int
+    let client: String?
+    let app_version: String?
+    let build_number: String?
+    let git_sha: String?
+    let git_dirty: Bool?
+    let capabilities: [String]?
+    let audio_revision: Int?
+    let inputs: [VoiceHelloInput]?
+    let capture_sample_rate: Int?
+    let capture_channels: Int?
+    let wire_sample_rate: Int?
+    let wire_channels: Int?
+    let wire_encoding: String?
+    let io_buffer_duration_ms: Int?
+}
+
+enum VoiceTurnTrigger: String, Codable, Equatable {
+    case userTap = "user_tap"
+    case vad
+    case barge
+    case unknown
+}
+
+enum VoiceTurnEndReason: String, Codable, Equatable {
+    case silence
+    case maxTurn = "max_turn"
+    case userTap = "user_tap"
+    case barge
+    case noiseAbort = "noise_abort"
+    case routeChange = "route_change"
+    case interruption
+    case clientError = "client_error"
+    case unknown
+}
+
+enum VoiceEnrollmentControlAction: Equatable {
+    case beginEnroll
+    case skipEnroll
+    case clearEnroll
+}
+
+func voiceEndReasonForEnrollmentAction(_ action: VoiceEnrollmentControlAction) -> VoiceTurnEndReason {
+    switch action {
+    case .beginEnroll, .skipEnroll, .clearEnroll:
+        return .interruption
+    }
+}
+
+struct VoiceStartMessage: Codable, Equatable {
+    let type = "start"
+    let sample_rate: Int
+    let turn_id: String?
+    let trigger: VoiceTurnTrigger?
+    let audio_revision: Int?
+}
+
+struct VoiceStopMessage: Codable, Equatable {
+    let type = "stop"
+    let turn_id: String?
+    let audio_revision: Int?
+    let trigger: VoiceTurnTrigger?
+    let end_reason: VoiceTurnEndReason?
+    let capture_duration_ms: Int?
+    let preroll_duration_ms: Int?
+    let vad_noise_floor_rms: Float?
+    let vad_onset_rms: Float?
+    let vad_keepalive_rms: Float?
+    let vad_committed: Bool?
+    let vad_voiced_ms: Int?
+    let vad_trailing_silence_ms: Int?
+    let vad_silence_window_ms: Int?
+    let vad_max_turn_ms: Int?
+    let vad_max_keepalive_gap_ms: Int?
+    let capture_frames: Int?
+    let voiced_frames: Int?
+    let dropped_input_samples: Int?
+    let wire_samples_sent: Int?
+    let send_failures: Int?
+}
+
+enum VoiceClientWireMessage: Codable, Equatable {
+    case hello(VoiceHelloMessage)
+    case start(VoiceStartMessage)
+    case stop(VoiceStopMessage)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .type) {
+        case "hello":
+            self = .hello(try VoiceHelloMessage(from: decoder))
+        case "start":
+            self = .start(try VoiceStartMessage(from: decoder))
+        case "stop":
+            self = .stop(try VoiceStopMessage(from: decoder))
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .type,
+                in: container,
+                debugDescription: "unsupported client wire type"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        switch self {
+        case .hello(let hello):
+            try hello.encode(to: encoder)
+        case .start(let start):
+            try start.encode(to: encoder)
+        case .stop(let stop):
+            try stop.encode(to: encoder)
+        }
+    }
+}
+
+enum VoiceTurnOutcome: String, Codable, Equatable {
+    case captureRejectedMalformed = "capture_rejected_malformed"
+    case captureRejectedShort = "capture_rejected_short"
+    case emptyStt = "empty_stt"
+    case sttBusy = "stt_busy"
+}
+
+enum VoiceTurnOutcomeReason: String, Codable, Equatable {
+    case malformedPcm = "malformed_pcm"
+    case shortCapture = "short_capture"
+    case zeroPcm = "zero_pcm"
+    case nearSilentPcm = "near_silent_pcm"
+    case finiteSignalNoWords = "finite_signal_no_words"
+    case sttBusy = "stt_busy"
+}
+
+struct VoiceTurnOutcomeMessage: Codable, Equatable {
+    let type = "turn_outcome"
+    let outcome: VoiceTurnOutcome
+    let reason: VoiceTurnOutcomeReason
+}
+
+struct VoiceIdleMessage: Codable, Equatable {
+    let type = "idle"
+}
+
+enum VoiceServerWireMessage: Codable, Equatable {
+    case turnOutcome(VoiceTurnOutcomeMessage)
+    case idle(VoiceIdleMessage)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .type) {
+        case "turn_outcome":
+            self = .turnOutcome(try VoiceTurnOutcomeMessage(from: decoder))
+        case "idle":
+            self = .idle(try VoiceIdleMessage(from: decoder))
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .type,
+                in: container,
+                debugDescription: "unsupported server wire type"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        switch self {
+        case .turnOutcome(let message):
+            try message.encode(to: encoder)
+        case .idle(let message):
+            try message.encode(to: encoder)
+        }
+    }
+}
+
 /// Playback completions must represent audible drain, not merely that the
 /// player accepted/consumed a buffer. VoiceView maps this contract to
 /// AVAudioPlayerNode's `.dataPlayedBack` callback without making the

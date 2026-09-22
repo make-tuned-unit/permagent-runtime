@@ -149,6 +149,8 @@ private final class MicPipe: @unchecked Sendable {
     /// The format the converter was built for. A tap buffer in any OTHER format
     /// must be dropped, never fed in — see `convert`.
     private let inFormat: AVAudioFormat
+    var wireSampleRate: Int { Int(outFormat.sampleRate.rounded()) }
+    var wireChannels: Int { Int(outFormat.channelCount) }
 
     init?(from inputFormat: AVAudioFormat) {
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else { return nil }
@@ -285,7 +287,7 @@ final class VoiceEngine: ObservableObject {
     /// conversation with the agent already listening, not into a screen you
     /// have to hold a button on to be heard. Push-to-talk is still one tap
     /// away. Turning it off mid-turn ends that turn rather than stranding it.
-    @Published var handsFree = true { didSet { if !handsFree && state == .listening { endTurn() } } }
+    @Published var handsFree = true { didSet { if !handsFree && state == .listening { endTurn(reason: .userTap) } } }
 
     /// Hands-free turn-taking. The state machine (thresholds, silence window,
     /// 60 s turn cap) lives in VoiceVAD.swift, pure and unit-tested — this
@@ -361,6 +363,19 @@ final class VoiceEngine: ObservableObject {
     private var replyWaitStartedAt: CFTimeInterval?
     private var firstAudioLogged = false
     private var transcriptLogged = false
+    private var serverReady = false
+    private var helloAudioRevision = 1
+    private var turnSequence = 0
+    private var wireSampleRateHz = 16_000
+    private var wireChannelCount = 1
+    private var activeTurnID: String?
+    private var activeTurnTrigger: VoiceTurnTrigger?
+    private var activeTurnAudioRevision: Int?
+    private var activeTurnStartedAt: CFTimeInterval?
+    private var activeTurnPrerollDurationMS: Int?
+    private var activeTurnWireSamplesSent = 0
+    private var activeTurnSendFailures = 0
+    private var activeTurnEndReason: VoiceTurnEndReason = .unknown
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -606,6 +621,8 @@ final class VoiceEngine: ObservableObject {
         guard let pipe = MicPipe(from: inFormat) else {
             throw AudioSetupError.converterUnavailable(inFormat.sampleRate)
         }
+        wireSampleRateHz = pipe.wireSampleRate
+        wireChannelCount = pipe.wireChannels
         // Touching `mainMixerNode` is itself what wires the mixer to the output
         // node, at the HARDWARE format — so it has to be sound before anything
         // is connected to it.
@@ -741,6 +758,11 @@ final class VoiceEngine: ObservableObject {
     private func applyCurrentRoute() {
         applySpeakerOverride()
         applyVADConfigForCurrentRoute()
+        sendHello(incrementRevision: true)
+        if state == .listening {
+            endTurn(reason: .routeChange)
+            return
+        }
         guard !rebuildingGraph else { return }
         if !graphBuilt {
             try? buildGraph()
@@ -848,7 +870,7 @@ final class VoiceEngine: ObservableObject {
             level = min(1, rms * 12)
         }
         if state == .listening {
-            wsTask?.send(.data(data)) { _ in }
+            sendAudioFrame(data)
         } else if state == .ready {
             preRoll.append(data)
             if preRoll.count > Self.preRollFrames { preRoll.removeFirst() }
@@ -883,8 +905,8 @@ final class VoiceEngine: ObservableObject {
         default: phase = .inactive
         }
         switch vad.step(rms: rms, phase: phase, now: Date().timeIntervalSince1970, voiceLike: voiceLike) {
-        case .beginTurn: enterListening()  // NOT beginTurn(): the VAD stamped its own clocks
-        case .endTurn: endTurn()
+        case .beginTurn: enterListening(trigger: .vad)  // NOT beginTurn(): the VAD stamped its own clocks
+        case .endTurn(let reason): endTurn(reason: reason)
         case .interrupt:
             // Don't barge-in the teach prompt. Kitchen speakerphone hears
             // ASK_FIRST and would reconnect, dropping the word off the orb
@@ -929,12 +951,12 @@ final class VoiceEngine: ObservableObject {
     func beginTurn() {
         guard state == .ready, wsTask != nil else { return }
         vad.noteTurnBegan(at: Date().timeIntervalSince1970)
-        enterListening()
+        enterListening(trigger: .userTap)
     }
 
     /// Send `start` and switch to `.listening`. The VAD's clocks are already
     /// stamped, by whichever path got here.
-    private func enterListening() {
+    private func enterListening(trigger: VoiceTurnTrigger = .unknown) {
         guard state == .ready, wsTask != nil else { return }
         transcriptBuffer.reset()
         transcript = ""
@@ -942,23 +964,46 @@ final class VoiceEngine: ObservableObject {
         resetReplyForTurn()
         turnFeedback = .none
         notice = nil
-        sendText(#"{"type":"start","sample_rate":16000}"#)
+        turnSequence &+= 1
+        activeTurnID = "ios-\(turnSequence)"
+        activeTurnTrigger = trigger
+        activeTurnAudioRevision = helloAudioRevision
+        activeTurnStartedAt = CACurrentMediaTime()
+        activeTurnWireSamplesSent = 0
+        activeTurnSendFailures = 0
+        activeTurnEndReason = .unknown
+        let startMessage = VoiceStartMessage(
+            sample_rate: wireSampleRateHz,
+            turn_id: activeTurnID,
+            trigger: trigger,
+            audio_revision: activeTurnAudioRevision
+        )
+        sendJSON(startMessage)
         // Flush the lead-in BEFORE any live frame, so the hub hears the word
         // from its beginning rather than from the moment it got loud enough
         // to notice. Ordering matters: these are older than everything the
         // tap will deliver next.
         let lead = preRoll
         preRoll.removeAll(keepingCapacity: true)
+        let preRollSamples = lead.reduce(0) { partialResult, frame in
+            partialResult + (frame.count / MemoryLayout<Float>.size)
+        }
+        if wireSampleRateHz > 0 {
+            activeTurnPrerollDurationMS = Int((Double(preRollSamples) * 1_000.0 / Double(wireSampleRateHz)).rounded())
+        } else {
+            activeTurnPrerollDurationMS = nil
+        }
         for frame in lead {
-            wsTask?.send(.data(frame)) { _ in }
+            sendAudioFrame(frame)
         }
         state = .listening
         beginCaptureMetrics()
     }
 
-    func endTurn() {
+    func endTurn(reason: VoiceTurnEndReason = .userTap) {
         guard state == .listening else { return }
-        endCaptureMetrics(reason: "user_stop")
+        activeTurnEndReason = reason
+        endCaptureMetrics(reason: reason.rawValue)
         vad.noteTurnEnded()
         let socketEpoch = connectEpoch
         let socket = wsTask
@@ -968,7 +1013,32 @@ final class VoiceEngine: ObservableObject {
         let turnEpoch = thinkingEpoch
         // The stop send used to discard its error: a failed send left the
         // daemon recording forever and this client in .thinking with no exit.
-        socket?.send(.string(#"{"type":"stop"}"#)) { [weak self] error in
+        let metrics = vad.metrics
+        let stopMessage = VoiceStopMessage(
+            turn_id: activeTurnID,
+            audio_revision: activeTurnAudioRevision,
+            trigger: activeTurnTrigger,
+            end_reason: activeTurnEndReason,
+            capture_duration_ms: activeTurnStartedAt.map { Int(max(0, (CACurrentMediaTime() - $0) * 1_000.0).rounded()) },
+            preroll_duration_ms: activeTurnPrerollDurationMS,
+            vad_noise_floor_rms: metrics.noiseFloorRMS,
+            vad_onset_rms: vad.effectiveOnset,
+            vad_keepalive_rms: vad.effectiveKeepalive,
+            vad_committed: metrics.committed,
+            vad_voiced_ms: Int(metrics.voicedMs.rounded()),
+            vad_trailing_silence_ms: Int(metrics.trailingSilenceMs.rounded()),
+            vad_silence_window_ms: Int(metrics.silenceWindowMs.rounded()),
+            vad_max_turn_ms: Int(vad.config.maxTurnMs.rounded()),
+            vad_max_keepalive_gap_ms: Int(metrics.maxKeepaliveGapMs.rounded()),
+            capture_frames: metrics.frameCount,
+            voiced_frames: metrics.voicedFrameCount,
+            dropped_input_samples: nil,
+            wire_samples_sent: activeTurnWireSamplesSent,
+            send_failures: activeTurnSendFailures
+        )
+        let stopPayload = (try? JSONEncoder().encode(stopMessage)).flatMap { String(data: $0, encoding: .utf8) }
+        let stopText = stopPayload ?? #"{"type":"stop"}"#
+        socket?.send(.string(stopText)) { [weak self] error in
             guard error != nil else { return }
             Task { @MainActor [weak self] in
                 guard let self,
@@ -980,6 +1050,11 @@ final class VoiceEngine: ObservableObject {
                 self.state = .ready
             }
         }
+        activeTurnID = nil
+        activeTurnTrigger = nil
+        activeTurnAudioRevision = nil
+        activeTurnStartedAt = nil
+        activeTurnPrerollDurationMS = nil
     }
 
     /// `.thinking` has no natural exit if the daemon parks (tool approval
@@ -1044,6 +1119,7 @@ final class VoiceEngine: ObservableObject {
     private func connect() async {
         let epoch = connectEpoch
         state = .connecting
+        serverReady = false
         guard let config = await APIClient.shared.currentConfig(),
               var comps = URLComponents(url: config.baseURL, resolvingAgainstBaseURL: false)
         else {
@@ -1094,6 +1170,7 @@ final class VoiceEngine: ObservableObject {
             "voice_socket_disconnect transport=1 state=\(String(describing: self.state), privacy: .public) reply_ended=\(self.replyEnded, privacy: .public) pending_buffers=\(self.pendingBuffers, privacy: .public)"
         )
         wsTask = nil
+        serverReady = false
         replyLifecycle.invalidate()
         resetReplyPlayback()
         playerNode?.stop()
@@ -1191,9 +1268,11 @@ final class VoiceEngine: ObservableObject {
                   let msg = try? JSONDecoder().decode(ServerMsg.self, from: data) else { return }
             switch msg.type {
             case "ready":
+                serverReady = true
                 turnFeedback = .none
                 notice = nil
                 state = .ready
+                sendHello(incrementRevision: false)
             case "transcript_partial":
                 transcriptBuffer.acceptPartial(msg.text ?? "")
                 transcriptPartial = transcriptBuffer.partial
@@ -1384,7 +1463,91 @@ final class VoiceEngine: ObservableObject {
     }
 
     private func sendText(_ text: String) {
-        wsTask?.send(.string(text)) { _ in }
+        wsTask?.send(.string(text)) { [weak self] error in
+            guard error != nil else { return }
+            Task { @MainActor [weak self] in
+                self?.activeTurnSendFailures += 1
+            }
+        }
+    }
+
+    private func sendJSON<T: Encodable>(_ payload: T) {
+        guard let data = try? JSONEncoder().encode(payload),
+              let text = String(data: data, encoding: .utf8) else { return }
+        sendText(text)
+    }
+
+    private func sendAudioFrame(_ data: Data) {
+        guard !data.isEmpty else { return }
+        let samples = data.count / MemoryLayout<Float>.size
+        activeTurnWireSamplesSent += samples
+        wsTask?.send(.data(data)) { [weak self] error in
+            guard error != nil else { return }
+            Task { @MainActor [weak self] in
+                self?.activeTurnSendFailures += 1
+            }
+        }
+    }
+
+    private func bundleValue(_ key: String) -> String? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: key) else { return nil }
+        if let string = value as? String, !string.isEmpty { return string }
+        if let number = value as? NSNumber { return number.stringValue }
+        return nil
+    }
+
+    private func makeHelloMessage() -> VoiceHelloMessage {
+        let session = AVAudioSession.sharedInstance()
+        let inputs = session.currentRoute.inputs.prefix(8).map { input in
+            VoiceHelloInput(
+                port_type: input.portType.rawValue,
+                port_name: input.portName,
+                uid: input.uid
+            )
+        }
+        let ioBufferDurationMS: Int? = {
+            let ms = Int((session.ioBufferDuration * 1_000.0).rounded())
+            return ms > 0 ? ms : nil
+        }()
+        let captureRate = captureSampleRate > 0 ? Int(captureSampleRate.rounded()) : nil
+        let captureCh = captureChannels > 0 ? Int(captureChannels) : nil
+        return VoiceHelloMessage(
+            protocol_version: 1,
+            client: "ios_voice",
+            app_version: bundleValue("CFBundleShortVersionString"),
+            build_number: bundleValue("CFBundleVersion"),
+            git_sha: bundleValue("PermagentGitSHA"),
+            git_dirty: {
+                guard let raw = Bundle.main.object(forInfoDictionaryKey: "PermagentGitDirty") else {
+                    return nil
+                }
+                if let value = raw as? Bool { return value }
+                if let value = raw as? NSNumber { return value.boolValue }
+                if let value = raw as? String {
+                    let lowered = value.lowercased()
+                    if lowered == "true" || lowered == "1" { return true }
+                    if lowered == "false" || lowered == "0" { return false }
+                }
+                return nil
+            }(),
+            capabilities: ["hello_v1", "turn_telemetry_v2"],
+            audio_revision: helloAudioRevision,
+            inputs: inputs.isEmpty ? nil : Array(inputs),
+            capture_sample_rate: captureRate,
+            capture_channels: captureCh,
+            wire_sample_rate: wireSampleRateHz > 0 ? wireSampleRateHz : nil,
+            wire_channels: wireChannelCount > 0 ? wireChannelCount : nil,
+            wire_encoding: "pcm_f32le",
+            io_buffer_duration_ms: ioBufferDurationMS
+        )
+    }
+
+    private func sendHello(incrementRevision: Bool) {
+        guard serverReady, wsTask != nil else { return }
+        if incrementRevision {
+            helloAudioRevision &+= 1
+        }
+        sendJSON(makeHelloMessage())
     }
 
     // ── Playback: schedule 24 kHz Float32 chunks in arrival order ────────────
@@ -1554,18 +1717,26 @@ final class VoiceEngine: ObservableObject {
     private func beginEnrollmentTake() {
         guard enrolling, enrollPrompt != nil, state == .ready else { return }
         VoiceEnroll.openTake(&vad, now: Date().timeIntervalSince1970)
-        enterListening()
+        enterListening(trigger: .unknown)
+    }
+
+    /// Non-mic UI actions can abandon a live capture. Those exits must emit
+    /// the same `stop` envelope as any other turn completion so the server sees
+    /// an explicit endpoint reason instead of a silent state reset.
+    private func stopListeningForEnrollAction(_ action: VoiceEnrollmentControlAction) {
+        guard state == .listening else { return }
+        // Branch reasons:
+        // - beginEnroll: interruption (user switched modes mid-capture)
+        // - skipEnroll: interruption (user intentionally abandoned enrollment)
+        // - clearEnroll: interruption (user cleared enrollment state mid-capture)
+        endTurn(reason: voiceEndReasonForEnrollmentAction(action))
     }
 
     func beginEnroll() {
         guard teachWord == nil, wsTask != nil else { return }
-        // enroll_start on the hub drops any in-flight recording so a leftover
-        // Stop cannot STT the kitchen into a chat turn.
-        if state == .listening {
-            vad.noteTurnEnded()
-            level = 0
-            state = .ready
-        }
+        // Switch to enrollment through the same stop path used everywhere
+        // else, so the abandoned chat capture is explicit telemetry.
+        stopListeningForEnrollAction(.beginEnroll)
         enrolling = true
         enrollHave = 0
         enrollNeed = VoiceEnroll.need
@@ -1578,11 +1749,7 @@ final class VoiceEngine: ObservableObject {
         enrolling = false
         enrollPrompt = nil
         enrollHave = 0
-        if state == .listening {
-            vad.noteTurnEnded()
-            level = 0
-            state = .ready
-        }
+        stopListeningForEnrollAction(.skipEnroll)
         sendText(#"{"type":"enroll_skip"}"#)
     }
 
@@ -1590,11 +1757,7 @@ final class VoiceEngine: ObservableObject {
         enrolling = false
         enrollPrompt = nil
         enrollHave = 0
-        if state == .listening {
-            vad.noteTurnEnded()
-            level = 0
-            state = .ready
-        }
+        stopListeningForEnrollAction(.clearEnroll)
         sendText(#"{"type":"enroll_clear"}"#)
     }
 }

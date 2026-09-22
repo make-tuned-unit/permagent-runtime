@@ -1,0 +1,111 @@
+{
+  "client_messages": [
+    {
+      "type": "hello",
+      "protocol_version": 1,
+      "client": "ios_voice",
+      "app_version": "1.31.0",
+      "build_number": "936",
+      "git_sha": "0123456789abcdef0123456789abcdef01234567",
+      "git_dirty": false,
+      "capabilities": ["hello_v1", "turn_telemetry_v2"],
+      "audio_revision": 1,
+      "inputs": [
+        {
+          "port_type": "MicrophoneBuiltIn",
+          "port_name": "iPhone Microphone",
+          "uid": "built-in-mic"
+        }
+      ],
+      "capture_sample_rate": 48000,
+      "capture_channels": 1,
+      "wire_sample_rate": 16000,
+      "wire_channels": 1,
+      "wire_encoding": "pcm_f32le",
+      "io_buffer_duration_ms": 85,
+      "future_field": "ignore-me"
+    },
+    {
+      "type": "hello",
+      "protocol_version": 1,
+      "client": "ios_voice",
+      "app_version": "1.31.0",
+      "build_number": "936",
+      "git_sha": "0123456789abcdef0123456789abcdef01234567",
+      "git_dirty": false,
+      "capabilities": ["hello_v1", "turn_telemetry_v2"],
+      "audio_revision": 2,
+      "inputs": [
+        {
+          "port_type": "BluetoothHFP",
+          "port_name": "AirPods",
+          "uid": "airpods-mic"
+        }
+      ],
+      "capture_sample_rate": 48000,
+      "capture_channels": 1,
+      "wire_sample_rate": 16000,
+      "wire_channels": 1,
+      "wire_encoding": "pcm_f32le",
+      "io_buffer_duration_ms": 85
+    },
+    {
+      "type": "start",
+      "sample_rate": 16000,
+      "turn_id": "incident-turn-25800",
+      "trigger": "vad",
+      "audio_revision": 2,
+      "unknown_extension": true
+    },
+    {
+      "type": "stop",
+      "turn_id": "incident-turn-25800",
+      "audio_revision": 2,
+      "trigger": "vad",
+      "end_reason": "max_turn",
+      "capture_duration_ms": 25800,
+      "preroll_duration_ms": 510,
+      "vad_noise_floor_rms": 0.0032,
+      "vad_onset_rms": 0.008,
+      "vad_keepalive_rms": 0.0055,
+      "vad_committed": true,
+      "vad_voiced_ms": 17300,
+      "vad_trailing_silence_ms": 425,
+      "vad_silence_window_ms": 1400,
+      "vad_max_turn_ms": 15000,
+      "vad_max_keepalive_gap_ms": 640,
+      "capture_frames": 304,
+      "voiced_frames": 198,
+      "dropped_input_samples": null,
+      "wire_samples_sent": 412800,
+      "send_failures": 0
+    },
+    {
+      "type": "start",
+      "sample_rate": 16000
+    },
+    {
+      "type": "stop"
+    },
+    { "type": "stop", "end_reason": "silence" },
+    { "type": "stop", "end_reason": "max_turn" },
+    { "type": "stop", "end_reason": "user_tap" },
+    { "type": "stop", "end_reason": "barge" },
+    { "type": "stop", "end_reason": "noise_abort" },
+    { "type": "stop", "end_reason": "route_change" },
+    { "type": "stop", "end_reason": "interruption" },
+    { "type": "stop", "end_reason": "client_error" },
+    { "type": "stop", "end_reason": "unknown" }
+  ],
+  "server_messages": [
+    {
+      "type": "turn_outcome",
+      "outcome": "empty_stt",
+      "reason": "finite_signal_no_words"
+    },
+    {
+      "type": "idle"
+    }
+  ],
+  "legacy_frames": []
+}

@@ -156,13 +156,17 @@ struct VoiceVAD {
     /// it never acts on (idle / connecting / failed).
     enum Phase { case ready, listening, thinking, speaking, inactive }
 
-    enum Action: Equatable { case none, beginTurn, endTurn, interrupt }
+    enum Action: Equatable { case none, beginTurn, endTurn(VoiceTurnEndReason), interrupt }
 
     /// Counters safe to emit to os.Logger: no microphone samples, transcript,
     /// or words are retained. The engine uses this for local latency debugging.
     struct TurnMetrics: Equatable {
         let elapsedMs: Double
         let voicedMs: Double
+        let committed: Bool
+        let trailingSilenceMs: Double
+        let silenceWindowMs: Double
+        let maxKeepaliveGapMs: Double
         let frameCount: Int
         let voicedFrameCount: Int
         let noiseFloorRMS: Float
@@ -178,14 +182,22 @@ struct VoiceVAD {
     private var voicedAccumMs: Double = 0
     private var frameCount = 0
     private var voicedFrameCount = 0
+    private var trailingSilenceMs: Double = 0
+    private var silenceWindowMs: Double = 0
+    private var maxKeepaliveGapMs: Double = 0
     private var noiseFloorRMS: Float = 0
     private var noiseFloorSamples = 0
 
     var metrics: TurnMetrics {
         let now = max(lastStep, turnStart)
+        let committed = voicedAccumMs >= config.minCommitMs
         return TurnMetrics(
             elapsedMs: max(0, (now - turnStart) * 1_000),
             voicedMs: max(0, voicedAccumMs),
+            committed: committed,
+            trailingSilenceMs: trailingSilenceMs,
+            silenceWindowMs: silenceWindowMs,
+            maxKeepaliveGapMs: maxKeepaliveGapMs,
             frameCount: frameCount,
             voicedFrameCount: voicedFrameCount,
             noiseFloorRMS: noiseFloorRMS
@@ -227,6 +239,9 @@ struct VoiceVAD {
         voicedAccumMs = 0
         frameCount = 0
         voicedFrameCount = 0
+        trailingSilenceMs = 0
+        silenceWindowMs = 0
+        maxKeepaliveGapMs = 0
     }
 
     /// Clear endpoint state when a turn ends for any reason outside `step`
@@ -330,6 +345,9 @@ struct VoiceVAD {
                     voicedAccumMs = 0
                     frameCount = 0
                     voicedFrameCount = 0
+                    trailingSilenceMs = 0
+                    silenceWindowMs = 0
+                    maxKeepaliveGapMs = 0
                     return .beginTurn
                 }
             } else {
@@ -340,6 +358,9 @@ struct VoiceVAD {
             let frameMs = lastStep > 0 ? (now - lastStep) * 1_000 : 85
             lastStep = now
             if rms > effectiveKeepalive && voiceLike {
+                if heardSpeech {
+                    maxKeepaliveGapMs = max(maxKeepaliveGapMs, max(0, (now - lastVoice) * 1_000))
+                }
                 heardSpeech = true
                 lastVoice = now
                 voicedAccumMs += frameMs
@@ -362,10 +383,17 @@ struct VoiceVAD {
             } else {
                 window = config.silenceMs
             }
-            if (heardSpeech && silentMs > window) || turnMs > config.maxTurnMs {
+            trailingSilenceMs = max(0, silentMs)
+            silenceWindowMs = window
+            if turnMs > config.maxTurnMs {
                 heardSpeech = false
                 onsetStreak = 0
-                return .endTurn
+                return .endTurn(.maxTurn)
+            }
+            if heardSpeech && silentMs > window {
+                heardSpeech = false
+                onsetStreak = 0
+                return .endTurn(committed ? .silence : .noiseAbort)
             }
         case .speaking, .thinking:
             // Barge-in demands a sustained loud signal so residual TTS bleed

@@ -29,6 +29,18 @@ final class VoiceVADTests: XCTestCase {
         return nil
     }
 
+    private func assertEndTurn(
+        _ action: VoiceVAD.Action,
+        reason expectedReason: VoiceTurnEndReason,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard case let .endTurn(reason) = action else {
+            return XCTFail("expected .endTurn, got \(action)", file: file, line: line)
+        }
+        XCTAssertEqual(reason, expectedReason, file: file, line: line)
+    }
+
     /// Open a turn the way the live machine does: two consecutive onset frames.
     @discardableResult
     private func beginTurn(
@@ -83,7 +95,7 @@ final class VoiceVADTests: XCTestCase {
         guard let end = run(&vad, rms: 0.03, phase: .listening, duration: 70, from: &now) else {
             return XCTFail("the 60 s turn cap never fired")
         }
-        XCTAssertEqual(end.action, .endTurn)
+        assertEndTurn(end.action, reason: .maxTurn)
         XCTAssertGreaterThan(end.at, 59.9, "turn ended early, at +\(end.at)s — premature cutoff")
         XCTAssertLessThan(end.at, 60.2, "turn cap fired late, at +\(end.at)s")
     }
@@ -120,7 +132,7 @@ final class VoiceVADTests: XCTestCase {
         guard let end = run(&vad, rms: 0.0005, phase: .listening, duration: 5, from: &now) else {
             return XCTFail("trailing silence never ended the turn")
         }
-        XCTAssertEqual(end.action, .endTurn)
+        assertEndTurn(end.action, reason: .silence)
         XCTAssertGreaterThan(end.at, 0.4, "quick-ask endpoint got tighter than the 300-800ms band")
         XCTAssertLessThan(end.at, 0.75, "quick-ask endpoint drifted — lag is back")
     }
@@ -227,7 +239,7 @@ final class VoiceVADTests: XCTestCase {
         guard let end = run(&vad, rms: 0.0005, phase: .listening, duration: 5, from: &now) else {
             return XCTFail("trailing silence never ended the turn")
         }
-        XCTAssertEqual(end.action, .endTurn)
+        assertEndTurn(end.action, reason: .silence)
         XCTAssertGreaterThan(end.at, 1.2, "a long turn ended on the quick window — dictation pauses would cut again")
         XCTAssertLessThan(end.at, 1.65, "silence window drifted — turn-taking would feel sluggish")
     }
@@ -391,7 +403,7 @@ final class VoiceVADTests: XCTestCase {
         guard let end = run(&vad, rms: 0.0035, phase: .listening, duration: 8, from: &now) else {
             return XCTFail("room hiss held the turn — the 41s Listening hang is back")
         }
-        XCTAssertEqual(end.action, .endTurn)
+        assertEndTurn(end.action, reason: .silence)
         XCTAssertLessThan(end.at, 1.2, "hiss-held endpoint at +\(end.at)s — Listening hang is back")
     }
 
@@ -404,7 +416,7 @@ final class VoiceVADTests: XCTestCase {
         guard let end = run(&vad, rms: 0.0005, phase: .listening, duration: 3, from: &now) else {
             return XCTFail("noise-only turn never ended")
         }
-        XCTAssertEqual(end.action, .endTurn)
+        assertEndTurn(end.action, reason: .noiseAbort)
         XCTAssertLessThan(end.at, 0.85, "uncommitted abort drifted to +\(end.at)s")
     }
 
@@ -432,7 +444,7 @@ final class VoiceVADTests: XCTestCase {
         guard let end = ended else {
             return XCTFail("keepalive hiss rode the turn — kitchen music would sit to the 60 s cap")
         }
-        XCTAssertEqual(end.action, .endTurn)
+        assertEndTurn(end.action, reason: .noiseAbort)
         XCTAssertLessThan(end.at, 1.0, "hiss-held endpoint at +\(end.at)s — must abort uncommitted, not ride")
     }
 

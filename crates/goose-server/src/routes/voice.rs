@@ -974,13 +974,134 @@ async fn voice_ws_handler(
     Ok(ws.on_upgrade(move |socket| handle_voice_socket(socket, state, session_id, origin)))
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum VoiceTurnTrigger {
+    UserTap,
+    Vad,
+    Barge,
+    #[serde(other)]
+    Unknown,
+}
+
+impl VoiceTurnTrigger {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UserTap => "user_tap",
+            Self::Vad => "vad",
+            Self::Barge => "barge",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum VoiceTurnEndReason {
+    Silence,
+    MaxTurn,
+    UserTap,
+    Barge,
+    NoiseAbort,
+    RouteChange,
+    Interruption,
+    ClientError,
+    #[serde(other)]
+    Unknown,
+}
+
+impl VoiceTurnEndReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Silence => "silence",
+            Self::MaxTurn => "max_turn",
+            Self::UserTap => "user_tap",
+            Self::Barge => "barge",
+            Self::NoiseAbort => "noise_abort",
+            Self::RouteChange => "route_change",
+            Self::Interruption => "interruption",
+            Self::ClientError => "client_error",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VoiceHelloInput {
+    port_type: Option<String>,
+    port_name: Option<String>,
+    uid: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VoiceClientHello {
+    protocol_version: Option<u32>,
+    client: Option<String>,
+    app_version: Option<String>,
+    build_number: Option<String>,
+    git_sha: Option<String>,
+    git_dirty: Option<bool>,
+    capabilities: Option<Vec<String>>,
+    audio_revision: Option<u64>,
+    inputs: Option<Vec<VoiceHelloInput>>,
+    capture_sample_rate: Option<u32>,
+    capture_channels: Option<u32>,
+    wire_sample_rate: Option<u32>,
+    wire_channels: Option<u32>,
+    wire_encoding: Option<String>,
+    io_buffer_duration_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VoiceClientStart {
+    sample_rate: Option<u32>,
+    turn_id: Option<String>,
+    trigger: Option<VoiceTurnTrigger>,
+    audio_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VoiceClientStop {
+    turn_id: Option<String>,
+    audio_revision: Option<u64>,
+    trigger: Option<VoiceTurnTrigger>,
+    end_reason: Option<VoiceTurnEndReason>,
+    capture_duration_ms: Option<u64>,
+    preroll_duration_ms: Option<u64>,
+    vad_noise_floor_rms: Option<f64>,
+    vad_onset_rms: Option<f64>,
+    vad_keepalive_rms: Option<f64>,
+    vad_committed: Option<bool>,
+    vad_voiced_ms: Option<u64>,
+    vad_trailing_silence_ms: Option<u64>,
+    vad_silence_window_ms: Option<u64>,
+    vad_max_turn_ms: Option<u64>,
+    vad_max_keepalive_gap_ms: Option<u64>,
+    capture_frames: Option<u64>,
+    voiced_frames: Option<u64>,
+    dropped_input_samples: Option<u64>,
+    wire_samples_sent: Option<u64>,
+    send_failures: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum ClientMessage {
     #[serde(rename = "start")]
-    Start { sample_rate: Option<u32> },
+    Start {
+        #[serde(flatten)]
+        payload: VoiceClientStart,
+    },
     #[serde(rename = "stop")]
-    Stop,
+    Stop {
+        #[serde(flatten)]
+        payload: VoiceClientStop,
+    },
+    #[serde(rename = "hello")]
+    Hello {
+        #[serde(flatten)]
+        payload: VoiceClientHello,
+    },
     /// Enter wake-listening: subsequent binary frames (outside a recording)
     /// feed the on-device keyword spotter.
     #[serde(rename = "wake_start")]
@@ -1002,6 +1123,84 @@ enum ClientMessage {
     /// whichever side gave up first.
     #[serde(rename = "teach_skip")]
     TeachSkip,
+}
+
+const HELLO_MAX_STRING_CHARS: usize = 256;
+const HELLO_MAX_CAPABILITIES: usize = 8;
+const HELLO_MAX_INPUTS: usize = 8;
+const TURN_ID_MAX_CHARS: usize = 128;
+
+fn is_forbidden_control_char(ch: char) -> bool {
+    let codepoint = ch as u32;
+    (0x00..=0x1F).contains(&codepoint) || codepoint == 0x7F
+}
+
+fn bounded_string(value: Option<String>, max_chars: usize) -> Option<String> {
+    value.map(|v| {
+        v.chars()
+            .filter(|ch| !is_forbidden_control_char(*ch))
+            .take(max_chars)
+            .collect()
+    })
+}
+
+fn bounded_vec_strings(
+    values: Option<Vec<String>>,
+    max_items: usize,
+    max_chars: usize,
+) -> Option<Vec<String>> {
+    values.map(|list| {
+        list.into_iter()
+            .take(max_items)
+            .filter_map(|item| bounded_string(Some(item), max_chars))
+            .collect()
+    })
+}
+
+fn bounded_hello_inputs(inputs: Option<Vec<VoiceHelloInput>>) -> Option<Vec<VoiceHelloInput>> {
+    inputs.map(|list| {
+        list.into_iter()
+            .take(HELLO_MAX_INPUTS)
+            .map(|input| VoiceHelloInput {
+                port_type: bounded_string(input.port_type, HELLO_MAX_STRING_CHARS),
+                port_name: bounded_string(input.port_name, HELLO_MAX_STRING_CHARS),
+                uid: bounded_string(input.uid, HELLO_MAX_STRING_CHARS),
+            })
+            .collect()
+    })
+}
+
+fn sanitize_hello(mut hello: VoiceClientHello) -> VoiceClientHello {
+    hello.client = bounded_string(hello.client, HELLO_MAX_STRING_CHARS);
+    hello.app_version = bounded_string(hello.app_version, HELLO_MAX_STRING_CHARS);
+    hello.build_number = bounded_string(hello.build_number, HELLO_MAX_STRING_CHARS);
+    hello.git_sha = bounded_string(hello.git_sha, HELLO_MAX_STRING_CHARS);
+    hello.capabilities = bounded_vec_strings(
+        hello.capabilities,
+        HELLO_MAX_CAPABILITIES,
+        HELLO_MAX_STRING_CHARS,
+    );
+    hello.inputs = bounded_hello_inputs(hello.inputs);
+    hello.wire_encoding = bounded_string(hello.wire_encoding, HELLO_MAX_STRING_CHARS);
+    hello
+}
+
+fn sanitize_start(mut start: VoiceClientStart) -> VoiceClientStart {
+    start.turn_id = bounded_string(start.turn_id, TURN_ID_MAX_CHARS);
+    start
+}
+
+fn sanitize_stop(mut stop: VoiceClientStop) -> VoiceClientStop {
+    stop.turn_id = bounded_string(stop.turn_id, TURN_ID_MAX_CHARS);
+    stop
+}
+
+fn note_missing_hello_warning(hello_seen: bool, warned_missing_hello: &mut bool) -> bool {
+    if hello_seen || *warned_missing_hello {
+        return false;
+    }
+    *warned_missing_hello = true;
+    true
 }
 
 enum StreamingSttCommand {
@@ -1087,7 +1286,7 @@ fn native_stt_workers_are_available(
     streaming_worker_is_available(streaming_worker) && batch_worker_is_available(batch_worker)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum ServerMessage {
     #[serde(rename = "transcript")]
@@ -1105,7 +1304,7 @@ enum ServerMessage {
         text: String,
         sample_rate: u32,
         duration_ms: u64,
-        timing_source: &'static str,
+        timing_source: String,
         word_timings: Vec<WordTiming>,
     },
     #[serde(rename = "reply_end")]
@@ -1197,7 +1396,7 @@ enum ServerMessage {
 /// Closed terminal outcomes exposed to voice clients. Keep this intentionally
 /// small: the wire frame communicates state, never raw PCM, thresholds, or
 /// transcript content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum VoiceTurnOutcome {
     CaptureRejectedMalformed,
@@ -1207,7 +1406,7 @@ enum VoiceTurnOutcome {
 }
 
 /// Closed, privacy-safe evidence for a no-reply terminal outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum VoiceTurnOutcomeReason {
     MalformedPcm,
@@ -1224,7 +1423,7 @@ enum VoiceTurnOutcomeReason {
 /// by `NSString`/`NSRange` on iOS. `end_utf16` is exclusive. The server keeps
 /// this type deliberately independent of any TTS implementation: once a
 /// backend exposes alignments, the same wire shape can carry measured values.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct WordTiming {
     word: String,
     start_ms: u64,
@@ -1320,6 +1519,7 @@ fn classify_stt_wait_message(message: Message) -> SttWaitDisposition {
                     matches!(
                         message,
                         ClientMessage::Start { .. }
+                            | ClientMessage::Hello { .. }
                             | ClientMessage::WakeStart { .. }
                             | ClientMessage::WakeStop
                             | ClientMessage::EnrollStart
@@ -1592,7 +1792,7 @@ fn audio_segment_metadata(audio: &AudioOutput, text: &str, segment_id: u64) -> S
         text: text.to_string(),
         sample_rate: audio.sample_rate,
         duration_ms,
-        timing_source: "estimated_proportional",
+        timing_source: "estimated_proportional".to_string(),
         word_timings: estimate_word_timings(text, duration_ms),
     }
 }
@@ -1856,6 +2056,8 @@ async fn handle_voice_socket(
         Arc<crate::voice::kws::WakeWordSpotter>,
         crate::voice::kws::WakeSession,
     )> = None;
+    let mut client_hello: Option<VoiceClientHello> = None;
+    let mut warned_missing_hello = false;
 
     let mut socket_close_reason = "peer_eof";
     tracing::info!(target: "permagentd::voice", "Entering message loop");
@@ -1924,7 +2126,56 @@ async fn handle_voice_socket(
             Message::Text(text) => {
                 let text_str: &str = &text;
                 match serde_json::from_str::<ClientMessage>(text_str) {
-                    Ok(ClientMessage::Start { sample_rate }) => {
+                    Ok(ClientMessage::Hello { payload: hello_raw }) => {
+                        let hello = sanitize_hello(hello_raw);
+                        tracing::info!(
+                            target: "permagentd::voice",
+                            event = "voice_client_hello",
+                            socket_epoch,
+                            session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                            resolved_client = origin.client.wire_name(),
+                            identity = if hello.git_sha.is_some() || hello.app_version.is_some() {
+                                "declared"
+                            } else {
+                                "unknown"
+                            },
+                            declared_client = hello.client.as_deref().unwrap_or("unknown"),
+                            app_version = hello.app_version.as_deref().unwrap_or("unknown"),
+                            build_number = hello.build_number.as_deref().unwrap_or("unknown"),
+                            git_sha = hello.git_sha.as_deref().unwrap_or("unknown"),
+                            git_dirty = hello.git_dirty,
+                            audio_revision = hello.audio_revision,
+                            capture_sample_rate = hello.capture_sample_rate,
+                            capture_channels = hello.capture_channels,
+                            wire_sample_rate = hello.wire_sample_rate,
+                            wire_channels = hello.wire_channels,
+                            wire_encoding = hello.wire_encoding.as_deref().unwrap_or("unknown"),
+                            input_count = hello.inputs.as_ref().map(std::vec::Vec::len).unwrap_or(0),
+                            capability_count = hello
+                                .capabilities
+                                .as_ref()
+                                .map(std::vec::Vec::len)
+                                .unwrap_or(0),
+                            "voice client hello received"
+                        );
+                        client_hello = Some(hello);
+                    }
+                    Ok(ClientMessage::Start { payload: start_raw }) => {
+                        let start = sanitize_start(start_raw);
+                        if note_missing_hello_warning(
+                            client_hello.is_some(),
+                            &mut warned_missing_hello,
+                        ) {
+                            tracing::warn!(
+                                target: "permagentd::voice",
+                                event = "voice_client_hello_missing",
+                                socket_epoch,
+                                session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                                resolved_client = origin.client.wire_name(),
+                                identity = "unknown",
+                                "legacy client started capture without hello"
+                            );
+                        }
                         turn_generation = turn_generation.wrapping_add(1);
                         if let Some(mut prior) = active_telemetry.take() {
                             prior.set_stop_reason("replaced_by_start");
@@ -1943,6 +2194,15 @@ async fn handle_voice_socket(
                             session_id.as_deref(),
                             started_at,
                         ));
+                        if let Some(telemetry) = active_telemetry.as_mut() {
+                            telemetry.set_client_start(
+                                start.turn_id.as_deref(),
+                                start.trigger,
+                                start.audio_revision.or_else(|| {
+                                    client_hello.as_ref().and_then(|hello| hello.audio_revision)
+                                }),
+                            );
+                        }
                         capture_first_received_at = None;
                         capture_last_received_at = None;
                         speaker_gate = None;
@@ -1952,7 +2212,7 @@ async fn handle_voice_socket(
                             // the handle and fail closed at the next Stop.
                             batch_worker = None;
                         }
-                        client_sample_rate = sample_rate.unwrap_or(16000).max(1);
+                        client_sample_rate = start.sample_rate.unwrap_or(16000).max(1);
                         let streaming_blocked = !native_stt_workers_are_available(
                             streaming_worker.as_ref(),
                             batch_worker.as_ref(),
@@ -2004,7 +2264,8 @@ async fn handle_voice_socket(
                             "voice capture started"
                         );
                     }
-                    Ok(ClientMessage::Stop) if recording => {
+                    Ok(ClientMessage::Stop { payload: stop_raw }) if recording => {
+                        let stop = sanitize_stop(stop_raw);
                         recording = false;
                         let pipeline_start = std::time::Instant::now();
                         let turn_id = recording_turn_id.take().unwrap_or_else(next_voice_turn_id);
@@ -2020,6 +2281,7 @@ async fn handle_voice_socket(
                                 turn_started_at,
                             )
                         });
+                        telemetry.set_client_stop(stop.clone());
                         telemetry.set_stop_reason("client_stop");
                         let completed_health = std::mem::take(&mut capture_health);
                         telemetry.record_capture_health(completed_health.clone());
@@ -2676,7 +2938,7 @@ async fn handle_voice_socket(
                                 .await;
                         }
                     }
-                    Ok(ClientMessage::Stop) => {} // Not recording, ignore
+                    Ok(ClientMessage::Stop { .. }) => {} // Not recording, ignore
                     Ok(ClientMessage::WakeStart { sample_rate }) => {
                         if let Some(sr) = sample_rate {
                             client_sample_rate = sr;
@@ -3401,6 +3663,12 @@ struct VoiceTurnTelemetry {
     capture_health: Option<CaptureHealth>,
     stop_reason: Option<&'static str>,
     empty_reason: Option<&'static str>,
+    client_turn_id: Option<String>,
+    client_trigger: Option<VoiceTurnTrigger>,
+    client_stop_trigger: Option<VoiceTurnTrigger>,
+    trigger_disagreement: bool,
+    client_audio_revision: Option<u64>,
+    client_stop: Option<VoiceClientStop>,
     outcome_logged: bool,
 }
 
@@ -3426,6 +3694,12 @@ impl VoiceTurnTelemetry {
             capture_health: None,
             stop_reason: None,
             empty_reason: None,
+            client_turn_id: None,
+            client_trigger: None,
+            client_stop_trigger: None,
+            trigger_disagreement: false,
+            client_audio_revision: None,
+            client_stop: None,
             outcome_logged: false,
         }
     }
@@ -3451,6 +3725,7 @@ impl VoiceTurnTelemetry {
     fn record_capture_health(&mut self, health: CaptureHealth) {
         self.capture_health = Some(health);
         let health = self.capture_health.as_ref().expect("set above");
+        let client_stop = self.client_stop.as_ref();
         tracing::info!(
             target: "permagentd::voice",
             event = "voice_capture_health",
@@ -3467,8 +3742,97 @@ impl VoiceTurnTelemetry {
             capture_zero_samples = health.zero_samples,
             capture_rms_millionths = health.rms_millionths(),
             capture_peak_millionths = health.peak_millionths(),
+            client_turn_id = self.client_turn_id.as_deref().unwrap_or("unknown"),
+            client_trigger = self.client_trigger.map(VoiceTurnTrigger::as_str).unwrap_or("unknown"),
+            client_start_trigger = self.client_trigger.map(VoiceTurnTrigger::as_str).unwrap_or("unknown"),
+            client_stop_trigger = self.client_stop_trigger.map(VoiceTurnTrigger::as_str).unwrap_or("unknown"),
+            trigger_disagreement = self.trigger_disagreement,
+            client_audio_revision = self.client_audio_revision,
+            client_stop_present = client_stop.is_some(),
+            client_end_reason = client_stop
+                .and_then(|stop| stop.end_reason)
+                .map(VoiceTurnEndReason::as_str)
+                .unwrap_or("unknown"),
+            client_capture_duration_ms = client_stop.and_then(|stop| stop.capture_duration_ms),
+            client_preroll_duration_ms = client_stop.and_then(|stop| stop.preroll_duration_ms),
+            client_vad_noise_floor_rms = client_stop.and_then(|stop| stop.vad_noise_floor_rms),
+            client_vad_onset_rms = client_stop.and_then(|stop| stop.vad_onset_rms),
+            client_vad_keepalive_rms = client_stop.and_then(|stop| stop.vad_keepalive_rms),
+            client_vad_committed = client_stop.and_then(|stop| stop.vad_committed),
+            client_vad_voiced_ms = client_stop.and_then(|stop| stop.vad_voiced_ms),
+            client_vad_trailing_silence_ms = client_stop
+                .and_then(|stop| stop.vad_trailing_silence_ms),
+            client_vad_silence_window_ms = client_stop.and_then(|stop| stop.vad_silence_window_ms),
+            client_vad_max_turn_ms = client_stop.and_then(|stop| stop.vad_max_turn_ms),
+            client_vad_max_keepalive_gap_ms = client_stop
+                .and_then(|stop| stop.vad_max_keepalive_gap_ms),
+            client_capture_frames = client_stop.and_then(|stop| stop.capture_frames),
+            client_voiced_frames = client_stop.and_then(|stop| stop.voiced_frames),
+            client_dropped_input_samples = client_stop.and_then(|stop| stop.dropped_input_samples),
+            client_wire_samples_sent = client_stop.and_then(|stop| stop.wire_samples_sent),
+            client_send_failures = client_stop.and_then(|stop| stop.send_failures),
             "voice capture health"
         );
+    }
+
+    fn set_client_start(
+        &mut self,
+        turn_id: Option<&str>,
+        trigger: Option<VoiceTurnTrigger>,
+        audio_revision: Option<u64>,
+    ) {
+        self.client_turn_id = turn_id.map(str::to_string);
+        self.client_trigger = trigger;
+        self.client_stop_trigger = None;
+        self.trigger_disagreement = false;
+        self.client_audio_revision = audio_revision;
+    }
+
+    fn set_client_stop(&mut self, stop: VoiceClientStop) {
+        if stop.turn_id.is_some() {
+            self.client_turn_id = stop.turn_id.clone();
+        }
+        if stop.trigger.is_some() {
+            self.client_stop_trigger = stop.trigger;
+        }
+        if stop.audio_revision.is_some() {
+            self.client_audio_revision = stop.audio_revision;
+        }
+        self.trigger_disagreement = match (self.client_trigger, self.client_stop_trigger) {
+            (Some(start), Some(stop_trigger)) => start != stop_trigger,
+            _ => false,
+        };
+        self.client_stop = Some(stop);
+    }
+
+    #[cfg(test)]
+    fn capture_health_fields_for_test(&self) -> serde_json::Value {
+        let stop = self.client_stop.as_ref();
+        serde_json::json!({
+            "client_turn_id": self.client_turn_id.as_deref().unwrap_or("unknown"),
+            "client_trigger": self.client_trigger.map(VoiceTurnTrigger::as_str).unwrap_or("unknown"),
+            "client_start_trigger": self.client_trigger.map(VoiceTurnTrigger::as_str).unwrap_or("unknown"),
+            "client_stop_trigger": self.client_stop_trigger.map(VoiceTurnTrigger::as_str).unwrap_or("unknown"),
+            "trigger_disagreement": self.trigger_disagreement,
+            "client_audio_revision": self.client_audio_revision,
+            "client_end_reason": stop.and_then(|value| value.end_reason).map(VoiceTurnEndReason::as_str).unwrap_or("unknown"),
+            "client_capture_duration_ms": stop.and_then(|value| value.capture_duration_ms),
+            "client_preroll_duration_ms": stop.and_then(|value| value.preroll_duration_ms),
+            "client_vad_noise_floor_rms": stop.and_then(|value| value.vad_noise_floor_rms),
+            "client_vad_onset_rms": stop.and_then(|value| value.vad_onset_rms),
+            "client_vad_keepalive_rms": stop.and_then(|value| value.vad_keepalive_rms),
+            "client_vad_committed": stop.and_then(|value| value.vad_committed),
+            "client_vad_voiced_ms": stop.and_then(|value| value.vad_voiced_ms),
+            "client_vad_trailing_silence_ms": stop.and_then(|value| value.vad_trailing_silence_ms),
+            "client_vad_silence_window_ms": stop.and_then(|value| value.vad_silence_window_ms),
+            "client_vad_max_turn_ms": stop.and_then(|value| value.vad_max_turn_ms),
+            "client_vad_max_keepalive_gap_ms": stop.and_then(|value| value.vad_max_keepalive_gap_ms),
+            "client_capture_frames": stop.and_then(|value| value.capture_frames),
+            "client_voiced_frames": stop.and_then(|value| value.voiced_frames),
+            "client_dropped_input_samples": stop.and_then(|value| value.dropped_input_samples),
+            "client_wire_samples_sent": stop.and_then(|value| value.wire_samples_sent),
+            "client_send_failures": stop.and_then(|value| value.send_failures),
+        })
     }
 
     fn set_stop_reason(&mut self, reason: &'static str) {
@@ -3508,6 +3872,15 @@ impl VoiceTurnTelemetry {
                 .map(CaptureHealth::label)
                 .unwrap_or("not_recorded"),
             stop_reason = self.stop_reason.unwrap_or("not_recorded"),
+            client_trigger = self.client_trigger.map(VoiceTurnTrigger::as_str).unwrap_or("unknown"),
+            client_audio_revision = self.client_audio_revision,
+            client_end_reason = self
+                .client_stop
+                .as_ref()
+                .and_then(|stop| stop.end_reason)
+                .map(VoiceTurnEndReason::as_str)
+                .unwrap_or("unknown"),
+            client_stop_present = self.client_stop.is_some(),
             empty_reason = self.empty_reason.unwrap_or("not_applicable"),
             outcome,
             classification,
@@ -5448,6 +5821,307 @@ mod tests {
         // already classified the turn; the summary must remain single-shot.
         telemetry.log_outcome("reply_error");
         assert!(telemetry.outcome_logged);
+    }
+
+    #[derive(Deserialize)]
+    struct ProtocolFixture {
+        client_messages: Vec<serde_json::Value>,
+        server_messages: Vec<serde_json::Value>,
+        #[serde(default)]
+        legacy_frames: Vec<serde_json::Value>,
+    }
+
+    fn protocol_fixture() -> ProtocolFixture {
+        serde_json::from_str(include_str!("voice_fixtures/protocol_fixture.json"))
+            .expect("fixture must parse")
+    }
+
+    #[test]
+    fn protocol_fixture_round_trips_through_production_wire_types() {
+        let fixture = protocol_fixture();
+        let client: Vec<ClientMessage> = fixture
+            .client_messages
+            .iter()
+            .cloned()
+            .map(serde_json::from_value)
+            .collect::<Result<_, _>>()
+            .expect("client fixture must decode through production types");
+        let server: Vec<ServerMessage> = fixture
+            .server_messages
+            .iter()
+            .cloned()
+            .map(serde_json::from_value)
+            .collect::<Result<_, _>>()
+            .expect("server fixture must decode through production types");
+        let legacy: Vec<serde_json::Value> = fixture.legacy_frames.clone();
+
+        let client_semantic = serde_json::to_value(&client).expect("client fixture must encode");
+        let server_semantic = serde_json::to_value(&server).expect("server fixture must encode");
+        // Unknown extension fields are ignored on decode by design (the hello
+        // contract says so), so they cannot survive a round trip: the fixture
+        // marks them with a `future_` or `unknown_` prefix and they are dropped from the
+        // expectation, not from the fixture.
+        // Semantic equality: an absent optional field and an explicit null are
+        // the same wire fact ("unmeasured"), so both sides are compared with
+        // nulls removed — a legacy `{"type":"start","sample_rate":16000}`
+        // re-encodes with the V2 fields as null, which is not a change.
+        fn without_future_fields(value: serde_json::Value) -> serde_json::Value {
+            match value {
+                serde_json::Value::Object(map) => serde_json::Value::Object(
+                    map.into_iter()
+                        .filter(|(key, inner)| {
+                            !(key.starts_with("future_") || key.starts_with("unknown_"))
+                                && !inner.is_null()
+                        })
+                        .map(|(key, inner)| (key, without_future_fields(inner)))
+                        .collect(),
+                ),
+                serde_json::Value::Array(items) => {
+                    serde_json::Value::Array(items.into_iter().map(without_future_fields).collect())
+                }
+                other => other,
+            }
+        }
+        assert_eq!(
+            without_future_fields(client_semantic),
+            without_future_fields(serde_json::Value::Array(fixture.client_messages)),
+            "client fixture changed semantic wire output"
+        );
+        assert_eq!(
+            without_future_fields(server_semantic),
+            without_future_fields(serde_json::Value::Array(fixture.server_messages)),
+            "server fixture changed semantic wire output"
+        );
+        assert!(
+            legacy.is_empty(),
+            "protocol fixture has legacy-only frames; keep them under legacy_frames explicitly"
+        );
+    }
+
+    #[test]
+    fn hello_fields_are_bounded_and_ignore_unknown_extensions() {
+        let overlong = "x".repeat(400);
+        let inputs = (0..16)
+            .map(|_| {
+                serde_json::json!({
+                    "port_type": "pt",
+                    "port_name": "pn",
+                    "uid": "uid"
+                })
+            })
+            .collect::<Vec<_>>();
+        let raw = serde_json::json!({
+            "type": "hello",
+            "protocol_version": 1,
+            "client": overlong,
+            "app_version": "1.0",
+            "capabilities": vec!["c"; 16],
+            "inputs": inputs,
+            "wire_encoding": "pcm_f32le",
+            "unknown_extension": true
+        });
+        let message: ClientMessage = serde_json::from_value(raw).expect("hello should decode");
+        let hello = match message {
+            ClientMessage::Hello { payload: hello } => sanitize_hello(hello),
+            _ => panic!("expected hello frame"),
+        };
+        assert_eq!(
+            hello.client.expect("client"),
+            "x".repeat(HELLO_MAX_STRING_CHARS)
+        );
+        assert_eq!(
+            hello.capabilities.expect("capabilities").len(),
+            HELLO_MAX_CAPABILITIES
+        );
+        assert_eq!(hello.inputs.expect("inputs").len(), HELLO_MAX_INPUTS);
+    }
+
+    #[test]
+    fn legacy_missing_hello_warns_once_and_turn_proceeds() {
+        let mut warned = false;
+        assert!(note_missing_hello_warning(false, &mut warned));
+        assert!(!note_missing_hello_warning(false, &mut warned));
+        assert!(!note_missing_hello_warning(true, &mut warned));
+    }
+
+    #[test]
+    fn fixture_keeps_48khz_capture_and_16khz_wire_distinct() {
+        let fixture = protocol_fixture();
+        let first_hello = fixture
+            .client_messages
+            .iter()
+            .find_map(|value| serde_json::from_value::<ClientMessage>(value.clone()).ok())
+            .expect("fixture hello");
+        let hello = match first_hello {
+            ClientMessage::Hello { payload: hello } => hello,
+            _ => panic!("first client message must be hello"),
+        };
+        assert_eq!(hello.capture_sample_rate, Some(48_000));
+        assert_eq!(hello.wire_sample_rate, Some(16_000));
+    }
+
+    #[test]
+    fn stop_telemetry_carries_audio_revision_trigger_and_endpoint_fields() {
+        let stop = VoiceClientStop {
+            turn_id: Some("incident-turn-25800".into()),
+            audio_revision: Some(2),
+            trigger: Some(VoiceTurnTrigger::Vad),
+            end_reason: Some(VoiceTurnEndReason::MaxTurn),
+            capture_duration_ms: Some(25_800),
+            preroll_duration_ms: Some(510),
+            vad_noise_floor_rms: Some(0.0032),
+            vad_onset_rms: Some(0.008),
+            vad_keepalive_rms: Some(0.0055),
+            vad_committed: Some(true),
+            vad_voiced_ms: Some(17_300),
+            vad_trailing_silence_ms: Some(425),
+            vad_silence_window_ms: Some(1_400),
+            vad_max_turn_ms: Some(15_000),
+            vad_max_keepalive_gap_ms: Some(640),
+            capture_frames: Some(304),
+            voiced_frames: Some(198),
+            dropped_input_samples: None,
+            wire_samples_sent: Some(412_800),
+            send_failures: Some(0),
+        };
+        let mut telemetry =
+            VoiceTurnTelemetry::new(11, 7, Some("voice-anon"), std::time::Instant::now());
+        telemetry.set_client_start(
+            Some("incident-turn-25800"),
+            Some(VoiceTurnTrigger::Vad),
+            Some(2),
+        );
+        telemetry.set_client_stop(stop);
+        let fields = telemetry.capture_health_fields_for_test();
+        assert_eq!(fields["client_trigger"], "vad");
+        assert_eq!(fields["client_start_trigger"], "vad");
+        assert_eq!(fields["client_stop_trigger"], "vad");
+        assert_eq!(fields["trigger_disagreement"], false);
+        assert_eq!(fields["client_audio_revision"], 2);
+        assert_eq!(fields["client_end_reason"], "max_turn");
+        assert_eq!(fields["client_capture_duration_ms"], 25_800);
+        assert_eq!(fields["client_vad_noise_floor_rms"], 0.0032);
+        assert_eq!(fields["client_vad_onset_rms"], 0.008);
+        assert_eq!(fields["client_vad_keepalive_rms"], 0.0055);
+        assert_eq!(fields["client_vad_max_turn_ms"], 15_000);
+        assert_eq!(fields["client_wire_samples_sent"], 412_800);
+        assert_eq!(fields["client_send_failures"], 0);
+        for key in [
+            "client_turn_id",
+            "client_trigger",
+            "client_start_trigger",
+            "client_stop_trigger",
+            "trigger_disagreement",
+            "client_audio_revision",
+            "client_end_reason",
+            "client_capture_duration_ms",
+            "client_preroll_duration_ms",
+            "client_vad_noise_floor_rms",
+            "client_vad_onset_rms",
+            "client_vad_keepalive_rms",
+            "client_vad_committed",
+            "client_vad_voiced_ms",
+            "client_vad_trailing_silence_ms",
+            "client_vad_silence_window_ms",
+            "client_vad_max_turn_ms",
+            "client_vad_max_keepalive_gap_ms",
+            "client_capture_frames",
+            "client_voiced_frames",
+            "client_dropped_input_samples",
+            "client_wire_samples_sent",
+            "client_send_failures",
+        ] {
+            assert!(fields.get(key).is_some(), "missing field: {key}");
+        }
+    }
+
+    #[test]
+    fn stop_trigger_disagreement_is_preserved_and_flagged() {
+        let stop = VoiceClientStop {
+            turn_id: Some("incident-turn-disagree".into()),
+            audio_revision: Some(3),
+            trigger: Some(VoiceTurnTrigger::UserTap),
+            end_reason: Some(VoiceTurnEndReason::UserTap),
+            capture_duration_ms: Some(1_000),
+            preroll_duration_ms: None,
+            vad_noise_floor_rms: None,
+            vad_onset_rms: None,
+            vad_keepalive_rms: None,
+            vad_committed: None,
+            vad_voiced_ms: None,
+            vad_trailing_silence_ms: None,
+            vad_silence_window_ms: None,
+            vad_max_turn_ms: None,
+            vad_max_keepalive_gap_ms: None,
+            capture_frames: None,
+            voiced_frames: None,
+            dropped_input_samples: None,
+            wire_samples_sent: None,
+            send_failures: None,
+        };
+        let mut telemetry =
+            VoiceTurnTelemetry::new(12, 7, Some("voice-anon"), std::time::Instant::now());
+        telemetry.set_client_start(
+            Some("incident-turn-disagree"),
+            Some(VoiceTurnTrigger::Vad),
+            Some(3),
+        );
+        telemetry.set_client_stop(stop);
+        let fields = telemetry.capture_health_fields_for_test();
+        assert_eq!(fields["client_start_trigger"], "vad");
+        assert_eq!(fields["client_stop_trigger"], "user_tap");
+        assert_eq!(fields["trigger_disagreement"], true);
+    }
+
+    #[test]
+    fn sanitize_frames_strip_control_chars_from_client_strings() {
+        let sanitized_hello = sanitize_hello(VoiceClientHello {
+            protocol_version: Some(1),
+            client: Some("ios_voice\nforged_field=1".into()),
+            app_version: None,
+            build_number: None,
+            git_sha: None,
+            git_dirty: None,
+            capabilities: None,
+            audio_revision: None,
+            inputs: None,
+            capture_sample_rate: None,
+            capture_channels: None,
+            wire_sample_rate: None,
+            wire_channels: None,
+            wire_encoding: None,
+            io_buffer_duration_ms: None,
+        });
+        assert_eq!(
+            sanitized_hello.client.as_deref(),
+            Some("ios_voiceforged_field=1")
+        );
+        let sanitized_stop = sanitize_stop(VoiceClientStop {
+            turn_id: Some("ios_voice\nforged_field=1".into()),
+            audio_revision: None,
+            trigger: None,
+            end_reason: None,
+            capture_duration_ms: None,
+            preroll_duration_ms: None,
+            vad_noise_floor_rms: None,
+            vad_onset_rms: None,
+            vad_keepalive_rms: None,
+            vad_committed: None,
+            vad_voiced_ms: None,
+            vad_trailing_silence_ms: None,
+            vad_silence_window_ms: None,
+            vad_max_turn_ms: None,
+            vad_max_keepalive_gap_ms: None,
+            capture_frames: None,
+            voiced_frames: None,
+            dropped_input_samples: None,
+            wire_samples_sent: None,
+            send_failures: None,
+        });
+        assert_eq!(
+            sanitized_stop.turn_id.as_deref(),
+            Some("ios_voiceforged_field=1")
+        );
     }
 
     fn pcm_bytes(samples: &[f32]) -> Vec<u8> {
