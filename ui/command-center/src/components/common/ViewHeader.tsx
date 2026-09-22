@@ -38,7 +38,7 @@ import { useGlass } from './Glass';
  */
 /** The bar's reserved height and vertical padding. Exported so a sibling pane's
  *  header (the chat dock's) can take the same numbers: two headers side by
- *  side at different heights read as two apps, not one (Jesse, 2026-09-21). */
+ *  side at different heights read as two apps, not one (ruling 2026-09-21). */
 export const VIEW_HEADER_MIN_HEIGHT = 64;
 export const VIEW_HEADER_PADDING_Y = space.xxl;
 

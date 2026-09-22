@@ -222,7 +222,7 @@ describe('grow/ and chat/ adopted the shared hard-scroll-edge mechanic', () => {
 
   it('the chat dock header is the same height as the view header beside it', () => {
     // Side by side, a dock bar a few pixels shorter than the view header reads
-    // as two apps (Jesse, 2026-09-21). The dock takes ViewHeader's numbers by
+    // as two apps (ruling 2026-09-21). The dock takes ViewHeader's numbers by
     // name, so the two cannot drift apart again without this failing.
     const source = readFileSync(join(__dirname, '..', 'chat', 'ChatDock.tsx'), 'utf8');
     expect(source).toMatch(/minHeight: VIEW_HEADER_MIN_HEIGHT/);
