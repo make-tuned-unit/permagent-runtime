@@ -624,6 +624,33 @@ synchronous admission + 409 shape, inbox card copy, refuse-before-row + occurren
 exclusion, adapter bound wiring. K1b (peer, after U1): the envelope allocation/consumption seam. K1 is not "done" until K1b lands and the
 eleven acceptance tests named in the ruling execute with non-zero counts.
 
+**W1 — local-model review automation: Astra's ruling (2026-09-22, session `01a0cb75`; full text at
+`permagent-worktrees/dagJ-reports/w1/W1-astra-ruling.txt`, Phase-0 audit beside it).** A weekly **"Model Review"**: inventory → verified
+discovery → evidence → findings → explicit decisions; deterministic, no model inference in the scan. (1) Inventory EVERY local model and
+consumer (Ollama tags, local-inference registry, voice assets, roles, packs, harvester, hard-coded helpers, paused split references) with
+consumer state active/configured/paused/absent/unknown; discovery never starts a service or loads a model; MiniCPM5-2B and Laya are
+candidates, not replacements. (2) Under today's sovereign policy W1 makes **no external metadata requests** — public model names do not
+override `plan_outbound_egress`; it compares against a provenance-bearing local knowledge snapshot and says so in the report. (3) **No
+allowlist extension is authorized**; if Jesse authorizes live discovery it is a separate metadata permission (HTTPS GET, exact approved
+repos: HF `/api/models/{owner}/{repo}` and revisions, GitHub `/repos/{owner}/{repo}/releases`; Ollama registry stays off; only public
+identifiers leave) — never a wider DownloadManager. (4) "Newer version" needs an authoritative, attributable comparison (release identity +
+chronology, HF revision + artifact identity, Ollama manifest identity, pinned voice checksums); a changed digest is changed bytes, not a
+newer or better model; every record carries source, snapshot time, incumbent/candidate identity, quantization, compatibility, size and
+explicit uncertainty. (5) **Approval never downloads** — Settings remains the install entry point, then a fresh separately-approved switch;
+W1 never calls `/api/ollama/pull` or DownloadManager. (6) One switch decision = one consumer + its exact configuration pair (table in the
+ruling: `model_upgrade`→`GOOSE_MODEL` only for the global default; roles → `PERMAGENT_ROLE_*` pair; packs → `PERMAGENT_PACK_*` pair;
+Librarian fallback → `librarian_schedule.model` via the schedule writer; voice binaries/signed bundles → findings with manual instructions;
+paused split → no action); revalidate install/identity/expected-old-value immediately before applying, atomic paired writes, idempotent,
+stale-proposal refusal, previous value recorded. (7) One **findings ledger** (bulk dismiss/defer) linked to Decision Inbox approvals — no
+new screen; typed mandatory persistence including empty/partial/stale/policy-blocked reports; never through the storage serializer or
+Trash/Keep. (8) Weekly **Sunday 19:30 system-local**, 30 min after the storage report, Run-now, no overlap. (9) Three tiers of finding —
+"update available", "candidate worth evaluating", "validated switch recommendation" — and only the third may recommend a switch, backed by
+an executed task-specific comparison (`permagent-eval run` with verified local-only routing; a wired Librarian runner on the production
+prompt/parser; voice tests) — **tier0 is a mock and is never quality evidence**; benches are a separate bounded action with recorded
+identities, hashes, thresholds fixed beforehand and spend. (10) 15 GiB projected free-space floor; the 12 GiB kill line applies to any
+authorized install/bench. Done = the scheduled path demonstrably executes and persists a truthful report, and each supported approval
+demonstrably changes the named consumer; local-snapshot mode may ship as explicitly limited. **Needs Jesse (§5 item 4).**
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
@@ -635,6 +662,7 @@ eleven acceptance tests named in the ruling execute with non-zero counts.
 2a. **IANA timezones on schedules silently mean "system local".** A job saved with `America/New_York` logs a warning nobody reads and runs on the Mac's clock (`scheduler.rs:319-324`; chrono-tz was never wired). Wire chrono-tz, or reject IANA names at save time with a clear message? Independent of S1.
 2b. **Two processes write one `schedule.json`.** The CLI and the app each rewrite the whole file from their own snapshot; S1b and S1 shrink the damage but the durable fix is daemon-owned storage with the CLI talking to the daemon. Worth a node?
 3. **Phase D** — each item is a product decision and gets its own ruling.
+4. **W1 egress (Astra rulings 5–6):** authorize or decline a narrowly scoped sovereign metadata exception (HTTPS GET to exact approved Hugging Face model-API paths and GitHub releases, public identifiers only) so the model review can check upstream; until then W1 ships local-snapshot discovery only and says so. Also: the DownloadManager has a THIRD GitHub asset prefix beyond the two the policy states — confirm it is authorized.
 
 ## 6. Order of execution
 
