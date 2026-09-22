@@ -49,7 +49,7 @@ jobs:
     steps:
       - name: Free disk space (aggressive, ubuntu only)
         if: runner.os == 'Linux'
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
           # Reclaim ~30GB: the workspace debug build (kuzu+candle+v8+llama+
           # sherpa) sits at the runner's disk ceiling and ENOSPC'd at the link
