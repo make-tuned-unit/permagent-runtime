@@ -542,6 +542,46 @@ fans out to eleven providers with **no task budget granted up front and no surfa
 the fan-out (`council/debate.rs` already carries `budget_task_id` and a `BudgetConfig` seam), fail the convene early with a Decision Inbox
 item if it is refused, and drop `permagent-test-custom-headers` from the roster.
 
+## 4d. Nodes added 2026-09-22 (Astra decides; the sessions coordinate)
+
+**Leadership (Jesse, 2026-09-22):** Codex Astra is the decision-maker on design, approach, sequencing and "done"; the two sessions
+decompose rulings into nodes, brief workers, hold the build lock and run gates. A gate that refutes a ruling is a finding sent back to
+Astra verbatim, never worked around.
+
+**ST1 — Weekly Storage Report: restore bulk cleanup (Astra ruling, session `01a0c73f`, from the Phase-0 audit at
+`permagent-worktrees/dagJ-reports/storage/`).** Facts: the machinery exists; the 09-15 ledger's pending items are in_use 12 / 31.3 GB,
+review_before_removing 5 / 2.4 GB, regenerable_costly 4 / 1.1 GB, managed_by_macos 1, safe_to_remove 0 — so "Clean Up All — 35 GB"
+opens a dialog that offers nothing by default. The 09-22 run recorded `ok` and wrote no ledger. Ruling: (1) eligibility is decided by the
+**server at action time**: safe_to_remove selected by default; regenerable_costly and review_before_removing are unchecked opt-in buckets
+with the stated copy; in_use is never trashed while active but gets **"Recheck availability"** (a scan-time verdict must not permanently
+block cleanup; an idle `target/` reclassifies to regenerable_costly, never to safe); managed_by_macos never; unknown categories, failed
+probes, sensitive and iCloud paths excluded with reasons; newly eligible items never join an already-confirmed batch. (2) Copy: **"Review
+cleanup — {selected bytes} selected"** / "Review cleanup options"; "{bytes} found" shown separately; sizes are estimates; Trash ≠ freed.
+(3) The scheduler records `ok` only when a valid ledger (possibly explicitly empty) was persisted; missing/malformed extraction is not
+`ok` and shows "Report incomplete"; the previous valid report stays visible with its date. (4) Eight acceptance tests, of which #4 is the
+hard one: **a build that starts between the activity probe and the trash must be prevented or skipped — a second `lsof` does not satisfy
+it**; coordinator's candidate mechanism: take cargo's own `target/` lock (`.cargo-lock` flock) exclusively for the duration of the trash,
+so a build cannot start under it; targets without such a lock stay out of the guaranteed-safe bulk path. Rejected: unconditional
+trash-everything; trusting Tuesday's verdict on Sunday; hiding review-required files; counting excluded bytes in the button; treating a
+missing extraction as an empty report. Files: `findings.rs`, `classify.rs`, `storage_health/*`, `AutomateView.tsx`, `findingCategories.ts`,
+`scheduler.rs` (after gate 4).
+
+**L1 — Laya as the shadow backend (research + measurements, `docs/research/LAYA_LOCAL_JEV_ALTERNATIVE_2026-09-22.md`).** Measured
+tonight on 14 questions: base 7/14 → fuller criteria 8/14 → `typed-decisions` checkpoint 9/14; hosted Jev 12/14. The two no-training
+levers from the research **did not help** on the meaning-level questions (per-candidate `noul` gave four indistinguishable ~0.39s;
+`{what, not_for, examples}` criteria moved "kind" to *task*). Fine-tuning is the lever: full fine-tune from `laya-typed-decisions`,
+distributional labels, encoder LR 2.5e-5 / head 1e-4, ~1,200 cases in the shipped run (4–5 h on 2×T4; no MPS training path exists —
+train on a cloud GPU, infer on device), then **re-fit temperatures per (type, option-count) bucket on our own held-out set** (shipped
+calibration does not transfer). Row-batching collapses above ~20 candidates; question-batching on one state is free. Moderation-style
+binary judgement stayed ~0.53 across all checkpoints → the injection guard needs a second signal. Runtime: Python/MPS now
+(61–134 ms); FluidInference's CoreML build for production (5 ms median, parity-verified); ggmlc's macOS crash is `[^\s\a-zA-Z0-9]` in
+`runtime/src/pipeline/tokenizer.cpp:395,416` (`\a` is not a libc++ regex escape) — a one-character upstream fix.
+
+**W1 — Local-model watch automation (Jesse, 2026-09-22):** a weekly starter that enumerates every local model in use (Ollama tags, the
+model roles, the Librarian, Laya, the image model), looks for newer versions of the same family and better alternatives per use case
+(Hugging Face and Ollama library APIs, no key needed), and files **suggestions** in the Decision Inbox with evidence — never swaps a
+model itself. Needs a Phase-0 audit of the model roster sources and the starter pattern, then Astra's shape ruling.
+
 ## 5. Needs Jesse
 
 1. ~~A TypeSafe key~~ **RESOLVED 2026-09-21** — Jesse stored one in the keychain (`TYPESAFE_API_KEY`); a live call returned HTTP 200 in 0.50 s. Public inputs only. *Still open:* approval to download a ~400 MB local Jev-compatible model to the M1, which is what the **local** backend — the default for anything private — needs for its own end-to-end check.
