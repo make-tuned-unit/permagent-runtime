@@ -1237,6 +1237,17 @@ pub struct SchedulePauseAnswer<'a> {
     pub from_automate: bool,
 }
 
+fn normalize_schedule_answer_note(note: Option<&str>) -> Option<String> {
+    note.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 /// Shared by the authenticated Inbox and Automate routes. An intent survives a
 /// crash; a matching file effect makes retry safe without replaying a resume.
 pub async fn scheduled_job_resume(
@@ -1246,6 +1257,17 @@ pub async fn scheduled_job_resume(
     episode_id: &str,
     request: SchedulePauseAnswer<'_>,
 ) -> Result<(), SchedulerError> {
+    scheduled_job_resume_with_note(scheduler, pool, job_id, episode_id, request, None).await
+}
+
+pub async fn scheduled_job_resume_with_note(
+    scheduler: &dyn SchedulerTrait,
+    pool: &sqlx::SqlitePool,
+    job_id: &str,
+    episode_id: &str,
+    request: SchedulePauseAnswer<'_>,
+    note: Option<&str>,
+) -> Result<(), SchedulerError> {
     let SchedulePauseAnswer {
         decision_id,
         answer,
@@ -1253,6 +1275,7 @@ pub async fn scheduled_job_resume(
         principal,
         from_automate,
     } = request;
+    let answer_note = normalize_schedule_answer_note(note);
     let decision = crate::decisions::get_decision(pool, decision_id)
         .await
         .map_err(SchedulerError::PersistError)?
@@ -1341,6 +1364,17 @@ pub async fn scheduled_job_resume(
     .bind(Utc::now().to_rfc3339())
     .bind(job_id)
     .bind(episode_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| SchedulerError::PersistError(e.to_string()))?;
+    // Persist note to the same field the generic decision path uses so audit
+    // and history read one source of truth, even if effect resolution retries.
+    sqlx::query(
+        "UPDATE decisions SET answer_note = COALESCE(answer_note, ?)
+        WHERE id = ? AND status = 'open'",
+    )
+    .bind(&answer_note)
+    .bind(decision_id)
     .execute(&mut *tx)
     .await
     .map_err(|e| SchedulerError::PersistError(e.to_string()))?;
@@ -7246,6 +7280,149 @@ mod fire_claim_tests {
         let parsed: crate::decisions::UnblockContract =
             serde_json::from_value(serde_json::to_value(goal).unwrap()).unwrap();
         assert!(matches!(parsed, crate::decisions::UnblockContract::Goal(_)));
+    }
+
+    #[tokio::test]
+    async fn acceptance_08_s2n_resume_persists_trimmed_note_in_decision_answer_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let episode = s2n_fail_three(&scheduler, &job).await;
+        scheduled_job_resume_with_note(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &episode.id,
+            SchedulePauseAnswer {
+                decision_id: &episode.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false,
+            },
+            Some("  unblock after verifying upstream fix  "),
+        )
+        .await
+        .unwrap();
+        let note: Option<String> =
+            sqlx::query_scalar("SELECT answer_note FROM decisions WHERE id = ?")
+                .bind(&episode.decision_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            note.as_deref(),
+            Some("unblock after verifying upstream fix")
+        );
+    }
+
+    #[tokio::test]
+    async fn acceptance_08b_s2n_resume_without_note_keeps_decision_answer_note_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let episode = s2n_fail_three(&scheduler, &job).await;
+        scheduled_job_resume_with_note(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &episode.id,
+            SchedulePauseAnswer {
+                decision_id: &episode.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false,
+            },
+            Some("   "),
+        )
+        .await
+        .unwrap();
+        let note: Option<String> =
+            sqlx::query_scalar("SELECT answer_note FROM decisions WHERE id = ?")
+                .bind(&episode.decision_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(note.is_none());
+    }
+
+    #[tokio::test]
+    async fn acceptance_08c_s2n_keep_paused_persists_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let episode = s2n_fail_three(&scheduler, &job).await;
+        scheduled_job_resume_with_note(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &episode.id,
+            SchedulePauseAnswer {
+                decision_id: &episode.decision_id,
+                answer: "reject",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false,
+            },
+            Some("  keep paused while monitoring downstream alerts  "),
+        )
+        .await
+        .unwrap();
+        let note: Option<String> =
+            sqlx::query_scalar("SELECT answer_note FROM decisions WHERE id = ?")
+                .bind(&episode.decision_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            note.as_deref(),
+            Some("keep paused while monitoring downstream alerts")
+        );
+        assert!(scheduler.jobs.lock().await.get(&job.id).unwrap().1.paused);
+    }
+
+    #[tokio::test]
+    async fn acceptance_08d_s2n_retry_after_recorded_answer_keeps_first_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scheduler, job, pool) = s2n_fixture(dir.path()).await;
+        let episode = s2n_fail_three(&scheduler, &job).await;
+        scheduled_job_resume_with_note(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &episode.id,
+            SchedulePauseAnswer {
+                decision_id: &episode.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false,
+            },
+            Some("first operator note"),
+        )
+        .await
+        .unwrap();
+        scheduled_job_resume_with_note(
+            scheduler.as_ref(),
+            &pool,
+            &job.id,
+            &episode.id,
+            SchedulePauseAnswer {
+                decision_id: &episode.decision_id,
+                answer: "approve",
+                acted_by: crate::decisions::ACTOR_JESSE,
+                principal: "master",
+                from_automate: false,
+            },
+            Some("second operator note"),
+        )
+        .await
+        .unwrap();
+        let note: Option<String> =
+            sqlx::query_scalar("SELECT answer_note FROM decisions WHERE id = ?")
+                .bind(&episode.decision_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(note.as_deref(), Some("first operator note"));
     }
 
     #[tokio::test]

@@ -229,7 +229,7 @@ pub(crate) async fn apply_jesse_answer(
                     .map_err(|error| internal(error.to_string()))?;
             payload.validate().map_err(internal)?;
             let decisions::UnblockTarget::ScheduledJob { job_id } = &payload.target;
-            permagent::scheduler::scheduled_job_resume(
+            permagent::scheduler::scheduled_job_resume_with_note(
                 state.scheduler().as_ref(),
                 &pool,
                 job_id,
@@ -241,6 +241,7 @@ pub(crate) async fn apply_jesse_answer(
                     principal: audit_principal,
                     from_automate: false,
                 },
+                answer.note.as_deref(),
             )
             .await
             .map_err(scheduler_answer_error)?;
