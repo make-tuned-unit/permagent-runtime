@@ -624,6 +624,32 @@ synchronous admission + 409 shape, inbox card copy, refuse-before-row + occurren
 exclusion, adapter bound wiring. K1b (peer, after U1): the envelope allocation/consumption seam. K1 is not "done" until K1b lands and the
 eleven acceptance tests named in the ruling execute with non-zero counts.
 
+**D1 — Decision Review: Astra's ruling (2026-09-22, session `01a0cb95`; full text at `permagent-worktrees/dagJ-reports/ui/D1-astra-ruling.txt`;
+Phase-0 audit at `dagJ-reports/ui/D0-audit-cursor-composer25.txt`; owner-seen mockup https://claude.ai/artifact/Mfrf8F6xtMf5qszT3vraDW).**
+**May start now, ahead of parked A3** (explicit scheduling exception: D1 consumes existing evidence, does not depend on A3's ledger).
+(1) Replace the DecisionInbox list body inside the SAME DetailModal (contained placement when docked), one decision at a time with detail
+beside discussion; every entry point opens it; no route, no third surface. (2) Parked goals become a collapsed count-bearing disclosure
+outside the queue; History stays a tab; focus preserved on return. (3) Queue by decision ID: fetch `all=1`, order tier desc → oldest
+first → id; "3 of 12" derived from the live queue, never a saved index; focus survives polling/SSE/reordering; when the current decision
+resolves elsewhere, announce and advance to the next surviving id; **Later** = local deferred tail for this opening, no server mutation.
+(4) Discussion = an isolated session created lazily on the first send via `createSession` + the existing first-turn `discuss_decision`
+seeding, through a session-scoped controller (never today's session-swapping `discussDecision`); `decisionId → sessionId` for the app
+lifetime; the main chat's session/messages/connection/navigation are never touched; failure → inline error + Retry, draft preserved,
+never fall back to the main chat; tier ≤ 1 + outbox-eligible + `henry-policy` enforced server-side, tier-2 human-only, staged answers keep
+device Commit/Discard; no automatic note editing from assistant prose. (5) "IF YOU APPROVE" from a shared `effectSummaryFor` extracted
+from `effectTextFor`/payload adapters; unknown kinds → "Records your answer; no automatic effect"; known kinds with missing detail say
+so; S2N `unblock` and K1's convene-budget `choice` get real descriptions of their shipped contracts. (6) Evidence via EvidenceDigest with
+exact provenance: council_action → the report of the payload's Council session id, dispatch proof by project/goal, S2N → job + pause
+episode, K1 → budget evidence; absent → explicit state, never a placeholder link. (7) Keyboard: Prev/Next, ←/→ and K/J, disabled ends,
+polite announcements, suppressed in editable controls/IME/modifiers; never single-key approval; tokens, shared Tooltip, opaque bodies,
+reduced motion, containment at narrow docks/large text. (8) Notes per decision through the existing `note` (separate from `inputText`),
+drafts survive failure, no duplicate submits, 409 distinguishes "already resolved" from "verification not ready". **Backend finding:** the
+S2N branch in `routes/decisions.rs` (~220) forwards answer + principal into `SchedulePauseAnswer` but drops `note` — a narrow backend
+brief closes it before "notes persist" can be claimed. (9) Lanes, one writer each: review integration (T2), isolated discussion (T2),
+decision detail (T1), S2N note persistence (T2), mechanical (T0); the integration writer alone mounts the others' components; independent
+review of the integrated diff. Done only with the shipped workflow verified on the installed artifact (open, navigate, discuss, inspect
+evidence, answer, main chat undisturbed) + capability descriptor + release note. Twenty acceptance tests named in the ruling.
+
 **W1 — local-model review automation: Astra's ruling (2026-09-22, session `01a0cb75`; full text at
 `permagent-worktrees/dagJ-reports/w1/W1-astra-ruling.txt`, Phase-0 audit beside it).** A weekly **"Model Review"**: inventory → verified
 discovery → evidence → findings → explicit decisions; deterministic, no model inference in the scan. (1) Inventory EVERY local model and
