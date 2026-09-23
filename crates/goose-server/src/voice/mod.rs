@@ -20,6 +20,7 @@ pub mod speakable;
 pub mod speaker_print;
 pub mod speech_normalize;
 pub mod spoken_verdict;
+pub mod tts_warm;
 pub mod user_lexicon;
 
 // The streaming types are referenced through `voice::provider::*` at every use

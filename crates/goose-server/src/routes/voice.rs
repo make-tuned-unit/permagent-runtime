@@ -1203,6 +1203,22 @@ fn bump_feedback_provider_generation() {
     FEEDBACK_PROVIDER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+fn spawn_resident_tts_warm(state: &AppState) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        let voice_id = state.persona.read().await.voice_id.clone();
+        // Sessions snapshot `voice_tts` at connect for playback; model download swaps
+        // `state.voice_tts` then bumps FEEDBACK_PROVIDER_GENERATION. Warm must read the
+        // live slot and generation here, not the session's snapshot Arc.
+        crate::voice::tts_warm::warm_join_current_tts_slot(
+            &state.voice_tts,
+            || FEEDBACK_PROVIDER_GENERATION.load(std::sync::atomic::Ordering::Relaxed),
+            voice_id,
+        )
+        .await;
+    });
+}
+
 async fn clear_feedback_utterance_cache() {
     feedback_utterance_cache().await.lock().await.clear();
 }
@@ -2272,6 +2288,7 @@ async fn handle_voice_socket(
         session_id = session_id.as_deref().unwrap_or("voice-anon"),
         "Voice WebSocket ready"
     );
+    spawn_resident_tts_warm(state.as_ref());
     let _ = socket.send(send_json(&voice_print_msg(&state).await)).await;
     let remainder_key = session_id.as_deref().unwrap_or("voice-anon");
     if let Some(teach) = pending_teach_msg(remainder_key) {
@@ -2543,6 +2560,7 @@ async fn handle_voice_socket(
                     }
                     Ok(ClientMessage::Start { payload: start_raw }) => {
                         let start = sanitize_start(start_raw);
+                        spawn_resident_tts_warm(state.as_ref());
                         if note_missing_hello_warning(
                             client_hello.is_some(),
                             &mut warned_missing_hello,
@@ -4636,6 +4654,7 @@ async fn stream_reply_with_tts(
     let mut pronounce_hold = false;
     let mut total_tts_ms: u128 = 0;
     let mut first_audio_sent = false;
+    let mut first_tts_enqueue_at: Option<std::time::Instant> = None;
     let mut next_segment_id = 0u64;
     let mut first_token_logged = false;
     let mut spoken_stop = false;
@@ -4690,6 +4709,9 @@ async fn stream_reply_with_tts(
                 next_segment_id = next_segment_id.saturating_add(1);
                 ctx.telemetry.tts_enqueued = ctx.telemetry.tts_enqueued.saturating_add(1);
                 let tts_enqueue_started_at = std::time::Instant::now();
+                if first_tts_enqueue_at.is_none() {
+                    first_tts_enqueue_at = Some(tts_enqueue_started_at);
+                }
                 ctx.telemetry
                     .log_stage("tts_enqueue", tts_enqueue_started_at);
                 // Never spell an unknown name. Stop this reply, ask, listen.
@@ -4813,12 +4835,15 @@ async fn stream_reply_with_tts(
                             return Ok(());
                         }
                         if !first_audio_sent {
+                            let first_chunk_ms =
+                                first_tts_enqueue_at.map(|t| t.elapsed().as_millis());
                             tracing::info!(
                                 target: "permagentd::voice",
                                 turn_id = ctx.turn_id,
                                 socket_epoch = ctx.telemetry.socket_epoch,
                                 session_id = ctx.session_id.unwrap_or("voice-anon"),
                                 first_audio_ms = ctx.telemetry.elapsed_ms(),
+                                first_chunk_ms,
                                 speech_end_to_first_audio_ms = pipeline_start.elapsed().as_millis(),
                                 "voice first audio queued"
                             );
@@ -7549,5 +7574,262 @@ mod tests {
             "downloaded voices file size mismatch"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    use crate::voice::provider::{AudioOutput, TextToSpeech, TtsConfig};
+    use crate::voice::tts_warm::{
+        advance_test_warm_clock, generation_key, join_tts_provider_warm, reset_registry_for_test,
+        set_test_warm_clock, TTS_PROVIDER_WARM_SENTENCE, WARM_TEST_SERIAL,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
+
+    struct WarmTestFakeTts {
+        calls: Arc<Mutex<Vec<String>>>,
+        hold: Option<Arc<(Mutex<bool>, Condvar)>>,
+        fail_until_call: Option<Arc<AtomicUsize>>,
+    }
+
+    impl WarmTestFakeTts {
+        fn recording() -> Self {
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                hold: None,
+                fail_until_call: None,
+            }
+        }
+
+        fn blocking(hold: Arc<(Mutex<bool>, Condvar)>) -> Self {
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                hold: Some(hold),
+                fail_until_call: None,
+            }
+        }
+
+        fn fail_until(fail_until_call: Arc<AtomicUsize>) -> Self {
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                hold: None,
+                fail_until_call: Some(fail_until_call),
+            }
+        }
+
+        fn arc(self) -> Arc<dyn TextToSpeech> {
+            Arc::new(self)
+        }
+    }
+
+    impl TextToSpeech for WarmTestFakeTts {
+        fn synthesize(&self, text: &str, _config: &TtsConfig) -> anyhow::Result<AudioOutput> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(text.to_string());
+            if let Some(fail_until) = &self.fail_until_call {
+                let calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+                if calls.len() <= fail_until.load(Ordering::Relaxed) {
+                    anyhow::bail!("injected warm failure");
+                }
+            }
+            if let Some(hold) = &self.hold {
+                let (lock, cvar) = &**hold;
+                let mut blocked = lock.lock().unwrap_or_else(|e| e.into_inner());
+                while *blocked {
+                    blocked = cvar.wait(blocked).unwrap_or_else(|e| e.into_inner());
+                }
+            }
+            Ok(AudioOutput {
+                samples: vec![0.125; 240],
+                sample_rate: 24_000,
+            })
+        }
+
+        fn sample_rate(&self) -> u32 {
+            24_000
+        }
+
+        fn list_voices(&self) -> Vec<String> {
+            vec!["default".to_string()]
+        }
+    }
+
+    async fn warm_test_setup() {
+        reset_registry_for_test().await;
+        set_test_warm_clock(std::time::Instant::now());
+    }
+
+    fn warm_key(voice: Option<String>) -> String {
+        generation_key(
+            super::FEEDBACK_PROVIDER_GENERATION.load(std::sync::atomic::Ordering::Relaxed),
+            voice,
+        )
+    }
+
+    #[tokio::test]
+    async fn reconnect_burst_runs_one_warm_synthesis_per_generation() {
+        let _serial = WARM_TEST_SERIAL.lock().await;
+        warm_test_setup().await;
+        let hold = Arc::new((Mutex::new(true), Condvar::new()));
+        let fake = WarmTestFakeTts::blocking(hold.clone());
+        let calls = fake.calls.clone();
+        let tts = fake.arc();
+        let key = warm_key(None);
+        let mut joins = Vec::new();
+        for _ in 0..5 {
+            let tts = tts.clone();
+            let key = key.clone();
+            joins.push(tokio::spawn(async move {
+                join_tts_provider_warm(key, tts, None).await;
+            }));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        *hold.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        hold.1.notify_all();
+        for join in joins {
+            join.await.unwrap();
+        }
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn second_socket_while_warm_in_flight_joins_without_second_synth() {
+        let _serial = WARM_TEST_SERIAL.lock().await;
+        warm_test_setup().await;
+        let hold = Arc::new((Mutex::new(true), Condvar::new()));
+        let fake = WarmTestFakeTts::blocking(hold.clone());
+        let calls = fake.calls.clone();
+        let tts = fake.arc();
+        let key = warm_key(None);
+        let first = tokio::spawn({
+            let tts = tts.clone();
+            let key = key.clone();
+            async move {
+                join_tts_provider_warm(key, tts, None).await;
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        let second = tokio::spawn(async move {
+            join_tts_provider_warm(key, tts, None).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        *hold.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        hold.1.notify_all();
+        first.await.unwrap();
+        second.await.unwrap();
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn after_successful_warm_a_new_socket_synthesizes_nothing() {
+        let _serial = WARM_TEST_SERIAL.lock().await;
+        warm_test_setup().await;
+        let fake = WarmTestFakeTts::recording();
+        let calls = fake.calls.clone();
+        let tts = fake.arc();
+        let key = warm_key(None);
+        join_tts_provider_warm(key.clone(), tts.clone(), None).await;
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        join_tts_provider_warm(key, tts, None).await;
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_warm_retries_once_not_before_sixty_seconds() {
+        let _serial = WARM_TEST_SERIAL.lock().await;
+        warm_test_setup().await;
+        let fail_until = Arc::new(AtomicUsize::new(1));
+        let fake = WarmTestFakeTts::fail_until(fail_until);
+        let calls = fake.calls.clone();
+        let tts = fake.arc();
+        let key = warm_key(None);
+        join_tts_provider_warm(key.clone(), tts.clone(), None).await;
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        join_tts_provider_warm(key.clone(), tts.clone(), None).await;
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        advance_test_warm_clock(std::time::Duration::from_secs(60));
+        join_tts_provider_warm(key.clone(), tts.clone(), None).await;
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 2);
+        join_tts_provider_warm(key, tts, None).await;
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn provider_generation_bump_triggers_warm_again() {
+        let _serial = WARM_TEST_SERIAL.lock().await;
+        warm_test_setup().await;
+        let fake = WarmTestFakeTts::recording();
+        let calls = fake.calls.clone();
+        let tts = fake.arc();
+        let key = warm_key(None);
+        join_tts_provider_warm(key, tts.clone(), None).await;
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        super::bump_feedback_provider_generation();
+        let new_key = warm_key(None);
+        join_tts_provider_warm(new_key, tts, None).await;
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn warm_does_not_block_ready_before_synth_releases() {
+        let _serial = WARM_TEST_SERIAL.lock().await;
+        warm_test_setup().await;
+        let hold = Arc::new((Mutex::new(true), Condvar::new()));
+        let fake = WarmTestFakeTts::blocking(hold.clone());
+        let calls = fake.calls.clone();
+        let tts = fake.arc();
+        let key = warm_key(None);
+        // The socket path spawns the join exactly like `spawn_resident_tts_warm` and
+        // carries on: `ready` goes out while the synthesis is still held here.
+        let warm = tokio::spawn(async move {
+            join_tts_provider_warm(key, tts, None).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+        assert!(
+            !warm.is_finished(),
+            "the warm is still inside the held synthesis"
+        );
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        *hold.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        hold.1.notify_all();
+        warm.await.unwrap();
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn start_during_warm_joins_rather_than_starting_another() {
+        let _serial = WARM_TEST_SERIAL.lock().await;
+        warm_test_setup().await;
+        let hold = Arc::new((Mutex::new(true), Condvar::new()));
+        let fake = WarmTestFakeTts::blocking(hold.clone());
+        let calls = fake.calls.clone();
+        let tts = fake.arc();
+        let key = warm_key(None);
+        let after_ready = tokio::spawn({
+            let tts = tts.clone();
+            let key = key.clone();
+            async move {
+                join_tts_provider_warm(key, tts, None).await;
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+        let on_start = tokio::spawn(async move {
+            join_tts_provider_warm(key, tts, None).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        *hold.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        hold.1.notify_all();
+        after_ready.await.unwrap();
+        on_start.await.unwrap();
+        assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        let warm_text = calls.lock().unwrap_or_else(|e| e.into_inner())[0].clone();
+        let plan = crate::voice::prosody::plan(TTS_PROVIDER_WARM_SENTENCE);
+        let expected = crate::voice::speakable::speakable(&plan.speech)
+            .unwrap_or_else(|| TTS_PROVIDER_WARM_SENTENCE.to_string());
+        assert_eq!(warm_text, expected);
     }
 }
