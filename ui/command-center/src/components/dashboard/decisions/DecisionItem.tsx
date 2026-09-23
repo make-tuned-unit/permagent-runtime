@@ -42,6 +42,7 @@ import type { AnswerResult } from './useDecisions';
 import { EvidenceDigest } from './EvidenceDigest';
 import { decisionsClient } from './client';
 import { formatAge, withAlpha } from './format';
+import { effectTextFor, toolArgumentsText } from './decisionEffects';
 import { usePersona } from '../../settings/useSettings';
 import { useCommandCenter } from '../../../lib/store';
 import { toast } from '../../../lib/notifications';
@@ -67,112 +68,7 @@ interface PendingAnswer {
   /** Plain-language restatement shown in the confirm row. */
   effectText: string;
 }
-
-/**
- * Confirm-step copy per kind+answer. UI copy describing the server's
- * documented gated effect (routes/decisions.rs:176-334) — never derived from
- * decision content (A1).
- */
-export function effectTextFor(
-  kind: string,
-  answer: 'approve' | 'reject',
-  agentName: string,
-  actionClass?: string,
-): string {
-  if (kind === 'approve_review') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will mark this goal complete and start anything waiting on it.`
-      : `Confirm reject — ${agentName} will send the work back for another attempt.`;
-  }
-  if (kind === 'unblock') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will wake this goal up and let it try again.`
-      : 'Confirm reject — the goal stays parked.';
-  }
-  if (kind === 'risk_gate') {
-    // Steward git-health cleanup (decisions_effects.rs repo-hygiene arm):
-    // informed-consent copy — the effect is a real removal, and every safety
-    // check re-runs at the moment it happens.
-    if (actionClass === 'repo_worktree_reap') {
-      return answer === 'approve'
-        ? `Confirm approve — ${agentName} removes this worktree folder. Anything with uncommitted or unpushed work is skipped, and every check is re-run at the moment of removal.`
-        : 'Confirm reject — the worktree stays, and this cleanup will not be suggested again.';
-    }
-    if (actionClass === 'repo_branch_delete') {
-      return answer === 'approve'
-        ? `Confirm approve — ${agentName} deletes this local branch (safe delete only: git refuses if it stopped being merged). Every check is re-run at the moment of deletion.`
-        : 'Confirm reject — the branch stays, and this cleanup will not be suggested again.';
-    }
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} may go ahead with this action.`
-      : `Confirm reject — ${agentName} will not go ahead with this.`;
-  }
-  if (kind === 'enrichment_proposal') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will save these details to the person's profile (your manual entries stay protected).`
-      : 'Confirm reject — nothing is written to the profile. If this was the wrong person, add a hint below so the next pass can find them.';
-  }
-  if (kind === 'project_intel_proposal') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will save these cited findings to the project's intelligence panel.`
-      : 'Confirm reject — no intelligence is stored.';
-  }
-  if (kind === 'file_to_project') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will save this as a project note and add the named people (name only, no contact details).`
-      : 'Confirm reject — nothing is saved anywhere.';
-  }
-  if (kind === 'tool_approval') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will run this tool and continue the turn.`
-      : `Confirm reject — ${agentName} will skip this tool and continue the turn.`;
-  }
-  if (kind === 'council_action') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will file this as a board card on the named project.`
-      : 'Confirm reject — this council action is dismissed; nothing is filed on the board.';
-  }
-  if (kind === 'session_gate') {
-    // Honest pre-S5 contract (routes/decisions.rs session_gate arm): the
-    // answer records the ruling; nothing is relayed into the terminal session
-    // yet, so it advances only when the gate is answered in its tab (the
-    // server's effect message hands back the exact line to paste).
-    return answer === 'approve'
-      ? 'Confirm allow — records your ruling. The terminal session itself advances once the gate is answered in its tab (the confirmation gives you the exact line to paste).'
-      : 'Confirm deny — records your ruling. The terminal session itself advances once the gate is answered in its tab (the confirmation gives you the exact line to paste).';
-  }
-  // malformed and anything unknown: recorded only, no state change.
-  return answer === 'approve'
-    ? 'Confirm — this is recorded for the audit trail; nothing else changes.'
-    : 'Confirm reject — this is recorded for the audit trail; nothing else changes.';
-}
-
-/**
- * Full tool-call arguments carried by a tool_approval payload, pretty-printed
- * for display. The `detail` line above holds only a clipped preview (marked
- * "[truncated — N more chars]" when clipped, tool_execution.rs); informed
- * consent requires the WHOLE thing be inspectable before approving. Untrusted
- * (S2): rendered as plain text only. Null when absent or unserializable.
- * Exported for tests.
- */
-export function toolArgumentsText(d: Decision): string | null {
-  if (!d.payload) return null;
-  // tool_approval carries the tool call in `arguments`; session_gate (S3,
-  // #429) carries the supervised session's gated tool input in `input` — the
-  // detail line for both holds only a clipped preview.
-  const raw =
-    d.kind === 'tool_approval'
-      ? (d.payload as { arguments?: unknown }).arguments
-      : d.kind === 'session_gate'
-        ? (d.payload as { input?: unknown }).input
-        : undefined;
-  if (raw === undefined || raw === null) return null;
-  try {
-    return JSON.stringify(raw, null, 2) ?? null;
-  } catch {
-    return null;
-  }
-}
+export { effectTextFor, toolArgumentsText };
 
 /**
  * Informed-reject warning (#458, GOAL_COMPLETION_AND_VERIFICATION.md §3e).
@@ -203,123 +99,8 @@ export function DecisionItem({
   const { colors } = useTheme();
   const { data: persona } = usePersona();
   const agentName = persona?.display_name ?? 'your agent';
-  const discussDecision = useCommandCenter(s => s.discussDecision);
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
-  const [pending, setPending] = useState<PendingAnswer | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [conflict, setConflict] = useState(false);
-  const [noteOpen, setNoteOpen] = useState(false);
-  const [note, setNote] = useState('');
-  const [inputOpen, setInputOpen] = useState(false);
-  const [inputText, setInputText] = useState('');
-  const [editOpen, setEditOpen] = useState(false);
-  const [editText, setEditText] = useState('');
-  const [evidenceOpen, setEvidenceOpen] = useState(false);
-  const [argsOpen, setArgsOpen] = useState(false);
-  const argsId = useId();
-  const [cancelErr, setCancelErr] = useState<string | null>(null);
-  const [answerErr, setAnswerErr] = useState<string | null>(null);
-  const [discardErr, setDiscardErr] = useState<string | null>(null);
-  // Where the goal's work was pushed (dispatch_evidence.push_target), fetched
-  // from the canonical evidence record for the informed-reject warning (#458).
-  const [pushTarget, setPushTarget] = useState<string | null>(null);
-  const conflictTimer = useRef<ReturnType<typeof setTimeout>>();
-
-  useEffect(() => () => clearTimeout(conflictTimer.current), []);
-
-  const isReviewWithGoal = d.kind === 'approve_review' && !!d.goal_id && !!d.project_id;
-
-  // Informed reject (#458 §3e): fetch push state up front so the warning is
-  // already in hand when the reviewer reaches the reject confirm step.
-  useEffect(() => {
-    if (!isReviewWithGoal) return;
-    let cancelled = false;
-    decisionsClient
-      .dispatchEvidence(d.project_id!, d.goal_id!)
-      .then(ev => { if (!cancelled) setPushTarget(ev?.push_target ?? null); })
-      .catch(() => { /* evidence absent — no warning, nothing to surface */ });
-    return () => { cancelled = true; };
-  }, [isReviewWithGoal, d.project_id, d.goal_id]);
-
-  // Resolves `false` on anything that is not a clean commit — a conflict or a
-  // network failure — so the Button contract never ticks on one.
-  const submit = async (p: PendingAnswer) => {
-    setSubmitting(true);
-    setAnswerErr(null);
-    try {
-      // A typed note wins; otherwise whatever the answer already carried (a
-      // staged verdict brings the words that were said with it) survives.
-      const body: AnswerBody = { ...p.body, note: note.trim() ? note.trim() : p.body.note };
-      const result = await onAnswer(d.id, body);
-      if (!result.ok) {
-        setConflict(true);
-        setPending(null);
-        conflictTimer.current = setTimeout(onConflictSettled, 1600);
-        setSubmitting(false);
-        return false;
-      } else if (result.effect_error) {
-        // Partial failure: the answer committed but the gated effect didn't
-        // apply. The item leaves the list on refresh, so surface via toast
-        // (2026-07 wiring audit — this used to vanish silently).
-        toast('Answer recorded — but the follow-through failed', result.effect_error);
-      }
-      // On success the refreshed list drops this item; nothing else to do.
-    } catch (e) {
-      // Network / server error: stay on the confirm row and SAY so — the old
-      // silent revert was indistinguishable from a dead button.
-      setAnswerErr(e instanceof Error ? e.message : 'The answer didn\'t send — try again.');
-      setSubmitting(false);
-      return false;
-    }
-    setSubmitting(false);
-    return true;
-  };
-
   const badge = badgeFor(d, colors);
-  const isUnblock = d.kind === 'unblock';
-  const isChoice = d.kind === 'choice';
-  const isApprovalLike =
-    d.kind === 'approve_review' || d.kind === 'risk_gate' || d.kind === 'malformed' ||
-    d.kind === 'enrichment_proposal' || d.kind === 'project_intel_proposal' ||
-    d.kind === 'automation_proposal' ||
-    d.kind === 'file_to_project' || d.kind === 'tool_approval' ||
-    d.kind === 'session_gate' || d.kind === 'council_action';
-  // The agent's original draft, when this decision carries one (payload.draft):
-  // enables "approve with edits" — revise the text, then accept (answer='edit').
-  const draft = draftText(d);
-  // risk_gate confirm copy varies by action class (Steward repo hygiene has
-  // its own informed-consent wording). Read defensively — payload is untrusted.
-  const riskActionClass =
-    d.kind === 'risk_gate' && d.payload && typeof d.payload === 'object'
-      ? String((d.payload as { action_class?: unknown }).action_class ?? '')
-      : undefined;
-  const options = choiceOptions(d);
-  const recommendedId = recommendedChoiceId(d);
-  const recommended = options.find(o => o.id === recommendedId) ?? null;
-  // L2 digest lives on the goal card; only goal-bound reviews can have one.
-  const hasEvidence = isReviewWithGoal;
-  // Full tool-call arguments (tool_approval) / gated tool input
-  // (session_gate) — the detail above holds only a clipped preview.
-  const toolArgs = toolArgumentsText(d);
-  // Tier-2 command approval (verification approval ladder): a choice decision
-  // asking the user to rule on a blocked shell command. When present, the
-  // command/cwd/reason render as their own block — the whole point of the
-  // card is that the user can see EXACTLY what they'd be authorising.
-  const checkApproval = checkApprovalOf(d);
-  // D29: a verdict said out loud but not committed. Voice cannot authenticate
-  // (NIST SP 800-63B-4 §3.2.3.2), so the daemon staged it against a decision
-  // that is still open and still unanswered — this row is where it becomes an
-  // answer, and the tap is what authenticates it. Expired stagings (30-minute
-  // TTL) never arrive here, so anything present is live.
-  const staged = d.staged_answer ?? null;
-  const stagedVerdict =
-    staged && (staged.answer === 'approve' || staged.answer === 'reject')
-      ? (staged.answer as 'approve' | 'reject')
-      : null;
-  const intelItems = d.kind === 'project_intel_proposal' && Array.isArray(d.payload?.items)
-    ? d.payload.items.filter((item): item is Record<string, unknown> =>
-        typeof item === 'object' && item !== null)
-    : [];
 
   return (
     <div data-testid={`decision-${d.id}`} style={{
@@ -391,10 +172,146 @@ export function DecisionItem({
         </div>
       )}
 
-      {/* Command approval (verification approval ladder, Tier 2): the exact
-          blocked command, its cwd, and why it was stopped. Rendered as plain
-          text only (S2, never dangerouslySetInnerHTML) — no truncation, CSS
-          wraps/scrolls instead so the full command stays inspectable. */}
+      <DecisionActions
+        decision={d}
+        agentName={agentName}
+        note=""
+        onAnswered={body => onAnswer(d.id, body)}
+        onConflict={onConflictSettled}
+        onCancelGoal={onCancelGoal}
+        onDiscardStaged={onDiscardStaged}
+      />
+    </div>
+  );
+}
+
+interface DecisionActionsProps {
+  decision: Decision;
+  agentName: string;
+  note: string;
+  onNoteChange?: (note: string) => void;
+  embeddedReview?: boolean;
+  onAnswered: (body: AnswerBody) => Promise<AnswerResult>;
+  onConflict: () => void;
+  onCancelGoal?: () => Promise<void>;
+  onDiscardStaged?: (id: string) => Promise<void>;
+}
+
+export function DecisionActions({
+  decision: d,
+  agentName,
+  note,
+  onNoteChange,
+  embeddedReview = false,
+  onAnswered,
+  onConflict,
+  onCancelGoal,
+  onDiscardStaged,
+}: DecisionActionsProps) {
+  const { colors } = useTheme();
+  const discussDecision = useCommandCenter(s => s.discussDecision);
+  const [pending, setPending] = useState<PendingAnswer | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [localNote, setLocalNote] = useState(note);
+  const noteText = onNoteChange ? note : localNote;
+  const setNoteText = onNoteChange ?? setLocalNote;
+  const [inputOpen, setInputOpen] = useState(false);
+  const [inputText, setInputText] = useState('');
+  const [editOpen, setEditOpen] = useState(false);
+  const [editText, setEditText] = useState('');
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [argsOpen, setArgsOpen] = useState(false);
+  const argsId = useId();
+  const [cancelErr, setCancelErr] = useState<string | null>(null);
+  const [answerErr, setAnswerErr] = useState<string | null>(null);
+  const [discardErr, setDiscardErr] = useState<string | null>(null);
+  const [pushTarget, setPushTarget] = useState<string | null>(null);
+  const conflictTimer = useRef<ReturnType<typeof setTimeout>>();
+  const submitInFlight = useRef(false);
+
+  useEffect(() => {
+    setLocalNote(note);
+    setNoteOpen(false);
+    setPending(null);
+    setInputOpen(false);
+    setEditOpen(false);
+    setAnswerErr(null);
+    setConflict(false);
+  }, [d.id]);
+
+  useEffect(() => () => clearTimeout(conflictTimer.current), []);
+
+  const isReviewWithGoal = d.kind === 'approve_review' && !!d.goal_id && !!d.project_id;
+
+  useEffect(() => {
+    if (!isReviewWithGoal) return;
+    let cancelled = false;
+    decisionsClient
+      .dispatchEvidence(d.project_id!, d.goal_id!)
+      .then(ev => { if (!cancelled) setPushTarget(ev?.push_target ?? null); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isReviewWithGoal, d.project_id, d.goal_id]);
+
+  const submit = async (p: PendingAnswer) => {
+    if (submitInFlight.current) return false;
+    submitInFlight.current = true;
+    setSubmitting(true);
+    setAnswerErr(null);
+    try {
+      const body: AnswerBody = { ...p.body, note: noteText.trim() ? noteText.trim() : p.body.note };
+      const result = await onAnswered(body);
+      if (!result.ok) {
+        setConflict(!embeddedReview);
+        setPending(null);
+        conflictTimer.current = setTimeout(onConflict, 1600);
+        return false;
+      }
+      if (result.effect_error) {
+        toast('Answer recorded — but the follow-through failed', result.effect_error);
+      }
+    } catch (e) {
+      setAnswerErr(e instanceof Error ? e.message : 'The answer didn\'t send — try again.');
+      return false;
+    } finally {
+      submitInFlight.current = false;
+      setSubmitting(false);
+    }
+    return true;
+  };
+
+  const isUnblock = d.kind === 'unblock';
+  const isChoice = d.kind === 'choice';
+  const isApprovalLike =
+    d.kind === 'approve_review' || d.kind === 'risk_gate' || d.kind === 'malformed' ||
+    d.kind === 'enrichment_proposal' || d.kind === 'project_intel_proposal' ||
+    d.kind === 'automation_proposal' || d.kind === 'file_to_project' ||
+    d.kind === 'tool_approval' || d.kind === 'session_gate' || d.kind === 'council_action';
+  const draft = draftText(d);
+  const riskActionClass =
+    d.kind === 'risk_gate' && d.payload && typeof d.payload === 'object'
+      ? String((d.payload as { action_class?: unknown }).action_class ?? '')
+      : undefined;
+  const options = choiceOptions(d);
+  const recommendedId = recommendedChoiceId(d);
+  const recommended = options.find(o => o.id === recommendedId) ?? null;
+  const hasEvidence = isReviewWithGoal;
+  const toolArgs = toolArgumentsText(d);
+  const checkApproval = checkApprovalOf(d);
+  const staged = d.staged_answer ?? null;
+  const stagedVerdict =
+    staged && (staged.answer === 'approve' || staged.answer === 'reject')
+      ? (staged.answer as 'approve' | 'reject')
+      : null;
+  const intelItems = d.kind === 'project_intel_proposal' && Array.isArray(d.payload?.items)
+    ? d.payload.items.filter((item): item is Record<string, unknown> =>
+        typeof item === 'object' && item !== null)
+    : [];
+
+  return (
+    <>
       {checkApproval && (
         <div style={{ marginTop: space.md }}>
           <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.xs }}>
@@ -404,8 +321,7 @@ export function DecisionItem({
             margin: 0, borderRadius: radius.sm, background: colors.codeBg,
             padding: `${space.lg}px ${space.xl}px`, fontFamily: font.mono, fontSize: textSize.caption,
             lineHeight: 1.6, color: colors.text, maxHeight: 240,
-            overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-            userSelect: 'text',
+            overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
           }}>
             {checkApproval.command}
           </pre>
@@ -426,12 +342,12 @@ export function DecisionItem({
           {intelItems.map((item, index) => {
             const kind = typeof item.kind === 'string' ? item.kind : 'item';
             const name = typeof item.name === 'string' ? item.name : 'Unnamed';
-            const note = typeof item.note === 'string' ? item.note : null;
+            const itemNote = typeof item.note === 'string' ? item.note : null;
             const source = typeof item.source_url === 'string' ? item.source_url : null;
             return (
               <div key={`${kind}-${name}-${index}`} style={{ borderLeft: `2px solid ${colors.purpleBright}`, paddingLeft: space.md }}>
                 <div style={{ color: colors.text, fontSize: textSize.caption, fontWeight: 600 }}>{kind}: {name}</div>
-                {note && <div style={{ color: colors.textMuted, fontSize: textSize.micro }}>{note}</div>}
+                {itemNote && <div style={{ color: colors.textMuted, fontSize: textSize.micro }}>{itemNote}</div>}
                 {source && isSafeHttpUrl(source) ? (
                   <a href={source} target="_blank" rel="noreferrer" style={{ color: colors.cyan, fontSize: textSize.micro }}>
                     Source
@@ -445,15 +361,8 @@ export function DecisionItem({
         </div>
       )}
 
-      {/* Full tool-call arguments (tool_approval) — the detail above holds a
-          clipped preview; what gets approved must be inspectable in full.
-          S2: plain text in a <pre>; nothing is interpreted or linked. */}
       {toolArgs && (
         <div>
-          {/* Disclosure toggle for the <pre> right below: nothing to await, so
-              it keeps the element and takes the shared `.pa-btn` interaction
-              rules rather than the Button primitive's pending/success
-              machinery. */}
           <button
             type="button"
             className="pa-btn"
@@ -490,7 +399,6 @@ export function DecisionItem({
         </div>
       )}
 
-      {/* Recommendation chip — only when the daemon marked a default option */}
       {recommended && (
         <div style={{ marginTop: space.md }}>
           <span style={{
@@ -503,10 +411,6 @@ export function DecisionItem({
         </div>
       )}
 
-      {/* Staged verdict (D29): what was said out loud, and the tap that makes
-          it an answer. Deliberately loud — a proposal sitting unnoticed is the
-          failure mode — and the discard beside it is the same size, because
-          "I didn't mean that" must be as easy as "yes I did". */}
       {staged && stagedVerdict && !conflict && !pending && (
         <div
           data-testid={`staged-${d.id}`}
@@ -524,14 +428,12 @@ export function DecisionItem({
             <span aria-hidden="true">🎙</span>
             <span>{stagedSummary(staged)}</span>
             <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, fontWeight: 400 }}>
-              {/* formatAge says "now" under a minute — "now ago" would be nonsense. */}
               · {formatAge(staged.staged_at) === 'now' ? 'just now' : `${formatAge(staged.staged_at)} ago`}
             </span>
           </div>
-          {/* Honest about what has and has not happened yet. */}
           <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>
             Heard, not committed — nothing has happened yet. Committing does
-            this: {effectTextFor(d.kind, stagedVerdict, agentName, riskActionClass)}
+            this: {effectTextFor(d.kind, stagedVerdict, agentName, riskActionClass, d)}
           </div>
           {staged.note && (
             <div style={{
@@ -551,8 +453,6 @@ export function DecisionItem({
             </span>
           )}
           <div style={{ display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
-            {/* One tap, and it travels the ordinary answer route: same actor,
-                same tier gate, attributed to this device — never to "voice". */}
             <Btn
               variant="primary"
               disabled={submitting}
@@ -605,7 +505,6 @@ export function DecisionItem({
         </div>
       )}
 
-      {/* Conflict: already answered elsewhere */}
       {conflict ? (
         <div style={{
           display: 'flex', alignItems: 'center', gap: space.md, marginTop: space.lg,
@@ -613,10 +512,9 @@ export function DecisionItem({
           background: withAlpha(colors.warning, 0.08), padding: `${space.md}px ${space.xl}px`,
           fontSize: textSize.caption, color: colors.text,
         }}>
-          Someone already answered this — refreshing…
+          {embeddedReview ? 'Answer not accepted — refreshing authoritative state…' : 'Someone already answered this — refreshing…'}
         </div>
       ) : pending ? (
-        /* Inline confirm step — one item at a time, never batch */
         <div style={{
           display: 'flex', alignItems: 'center', gap: space.md, marginTop: space.lg, flexWrap: 'wrap',
           borderRadius: radius.md, border: `1px solid ${colors.borderHi}`,
@@ -625,8 +523,6 @@ export function DecisionItem({
           <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1, minWidth: 180 }}>
             {pending.effectText}
           </span>
-          {/* Informed reject (#458): the work is already pushed — say so loudly
-              BEFORE the reject is confirmed. Reject stays enabled (advisory). */}
           {pending.body.answer === 'reject' && pushedRejectWarning(d.kind, pushTarget) && (
             <span role="alert" style={{
               flexBasis: '100%', order: -1, fontSize: textSize.caption, fontWeight: 600,
@@ -638,8 +534,8 @@ export function DecisionItem({
           )}
           {pending.body.answer === 'reject' && d.kind === 'enrichment_proposal' && (
             <textarea
-              value={note}
-              onChange={e => setNote(e.target.value)}
+              value={noteText}
+              onChange={e => setNoteText(e.target.value)}
               placeholder="How can the agent find this person online? Company, LinkedIn, city…"
               rows={3}
               style={{
@@ -661,7 +557,6 @@ export function DecisionItem({
           )}
         </div>
       ) : inputOpen ? (
-        /* Freeform answer (unblock) — travels as answer='input' */
         <div style={{ marginTop: space.lg }}>
           <textarea
             value={inputText}
@@ -694,9 +589,6 @@ export function DecisionItem({
           </div>
         </div>
       ) : editOpen ? (
-        /* Approve-with-edits — revise the agent's draft, then accept. Travels as
-           answer='edit': the daemon keeps the revision AND learns the
-           draft→revision delta (edit-as-training, decision_inbox/learn.rs). */
         <div style={{ marginTop: space.lg }}>
           <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.sm }}>
             Revise the draft, then accept — your version becomes the answer and {agentName} learns the change.
@@ -731,8 +623,6 @@ export function DecisionItem({
           </div>
         </div>
       ) : (
-        /* Action row per kind (A4): binary approvals get Approve/Reject/Add note
-           only; option chips appear only on choice-kind decisions. */
         <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginTop: space.lg, flexWrap: 'wrap' }}>
           {(isApprovalLike || isUnblock) && (
             <>
@@ -741,7 +631,7 @@ export function DecisionItem({
                 onClick={() => setPending({
                   body: { answer: 'approve' },
                   confirmLabel: 'Confirm approve',
-                  effectText: effectTextFor(d.kind, 'approve', agentName, riskActionClass),
+                  effectText: effectTextFor(d.kind, 'approve', agentName, riskActionClass, d),
                 })}
               >
                 Approve
@@ -751,7 +641,7 @@ export function DecisionItem({
                 onClick={() => setPending({
                   body: { answer: 'reject' },
                   confirmLabel: 'Confirm reject',
-                  effectText: effectTextFor(d.kind, 'reject', agentName, riskActionClass),
+                  effectText: effectTextFor(d.kind, 'reject', agentName, riskActionClass, d),
                 })}
               >
                 Reject
@@ -759,8 +649,6 @@ export function DecisionItem({
             </>
           )}
 
-          {/* Approve-with-edits — only when the decision carries an editable
-              draft (payload.draft). Revise, then accept as answer='edit'. */}
           {draft && (
             <Btn onClick={() => { setEditText(draft); setEditOpen(true); }}>
               Edit &amp; accept
@@ -785,16 +673,12 @@ export function DecisionItem({
             <Btn onClick={() => setInputOpen(true)}>Send answer</Btn>
           )}
 
-          <Btn onClick={() => setNoteOpen(o => !o)}>Add note</Btn>
+          {!embeddedReview && <Btn onClick={() => setNoteOpen(o => !o)}>Add note</Btn>}
 
-          {/* Deep-link into a context-preloaded chat (#303) — available on every
-              kind; discuss-only in v1, the decision stays answerable from here. */}
-          <Btn onClick={() => discussDecision(d.id, d.headline)}>
+          {!embeddedReview && <Btn onClick={() => discussDecision(d.id, d.headline)}>
             Discuss with {agentName}
-          </Btn>
+          </Btn>}
 
-          {/* Cancel the underlying goal (#490). User-initiated and immediate:
-              kills the worker and supersedes this decision. */}
           {onCancelGoal && (
             <Button
               colors={colors}
@@ -808,8 +692,6 @@ export function DecisionItem({
                   await onCancelGoal();
                   return true;
                 } catch (e) {
-                  // Resolves `false` so a cancel that failed cannot tick; the
-                  // message below is what actually says what happened.
                   setCancelErr(e instanceof Error ? e.message : 'Cancel failed');
                   return false;
                 } finally {
@@ -833,9 +715,6 @@ export function DecisionItem({
           )}
 
           {hasEvidence && (
-            /* Disclosure toggle for the digest below — same treatment as the
-               full-arguments toggle: the element stays, the interaction rules
-               are the shared ones. */
             <button
               type="button"
               className="pa-btn"
@@ -861,7 +740,6 @@ export function DecisionItem({
         </div>
       )}
 
-      {/* Cancel failure surfaced inline — never silently swallowed (#503) */}
       {cancelErr && (
         <div style={{
           marginTop: space.md, fontSize: textSize.caption, color: colors.danger,
@@ -872,11 +750,10 @@ export function DecisionItem({
         </div>
       )}
 
-      {/* Note rides along with whatever answer is confirmed */}
       {noteOpen && !conflict && !(pending?.body.answer === 'reject' && d.kind === 'enrichment_proposal') && (
         <textarea
-          value={note}
-          onChange={e => setNote(e.target.value)}
+          value={noteText}
+          onChange={e => setNoteText(e.target.value)}
           placeholder="Add a note — it travels with your answer"
           rows={2}
           style={{
@@ -888,15 +765,14 @@ export function DecisionItem({
         />
       )}
 
-      {/* Layered evidence (A3) — lazy-fetched L2 digest from the goal card */}
       {evidenceOpen && hasEvidence && (
         <EvidenceDigest projectId={d.project_id!} goalId={d.goal_id!} />
       )}
-    </div>
+    </>
   );
 }
 
-function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
+export function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
   switch (d.kind) {
     case 'unblock': return { label: 'unblock', color: colors.warning, bg: withAlpha(colors.warning, 0.14) };
     case 'choice':

@@ -167,6 +167,10 @@ const PENDING: Decision[] = [
   ),
 ];
 
+// Read-only fixture surface for unit tests that need one example per shipped
+// mock kind without recreating payloads by hand.
+export const MOCK_PENDING_DECISIONS: readonly Decision[] = PENDING;
+
 // ── Evidence digests (served via the goal card in the real daemon) ─────────
 
 const DISPATCH_EVIDENCE: Record<string, DispatchEvidenceData> = {

@@ -3,12 +3,13 @@
  *
  * Rendered from inside dashboard/ so the workspaces/ mount point stays
  * untouched, on `DetailModal` — the app's one modal shell — rather than on a
- * copy of it. Ranked Tier-2 + unblock items, "+M more" overflow, collapsed
- * Tier-1 group, history view.
+ * copy of it. D1 reviews the complete pending queue one decision at a time,
+ * alongside isolated discussion; parked goals and History remain available.
  * Zero batch/multi-select affordances anywhere — answers are one at a time.
  */
 
-import { useState, useCallback, useId, type CSSProperties } from 'react';
+import { useState, useCallback, useId, useEffect, type CSSProperties } from 'react';
+import { useCommandCenter } from '../../../lib/store';
 import { useLiveGoals } from '../../../lib/useLiveGoals';
 import { font, radius, ease, duration, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
@@ -18,8 +19,7 @@ import { StateBlock } from '../../common/StateBlock';
 import type { useDecisions } from './useDecisions';
 import type { HistoryItem } from './types';
 import { resolutionText, deadLetterText } from './types';
-import { DecisionItem } from './DecisionItem';
-import { decisionsClient } from './client';
+import { DecisionReview, useDecisionReviewState } from './DecisionReview';
 import { formatAge, withAlpha } from './format';
 import { usePersona } from '../../settings/useSettings';
 
@@ -27,13 +27,16 @@ import { Tooltip } from '../../common/Tooltip';
 interface Props {
   inbox: ReturnType<typeof useDecisions>;
   onClose: () => void;
+  placement?: 'center' | 'contained';
 }
 
-export function DecisionInbox({ inbox, onClose }: Props) {
+export function DecisionInbox({ inbox, onClose, placement = 'center' }: Props) {
   const { colors, reduceMotion } = useTheme();
+  const goalDetail = useCommandCenter(state => state.goalDetail);
   const { data, loading, error } = inbox;
   const { data: persona } = usePersona();
   const agentName = persona?.display_name ?? 'your agent';
+  const reviewState = useDecisionReviewState(inbox);
   const [view, setView] = useState<'list' | 'history'>('list');
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
   /** The history read failed. It used to be `catch { setHistory([]) }`, which
@@ -72,7 +75,8 @@ export function DecisionInbox({ inbox, onClose }: Props) {
     }
   }, [tier1Open, history, inbox]);
 
-  const decisions = data?.decisions ?? [];
+  const showAll = inbox.showAll;
+  useEffect(() => { void showAll(); }, [showAll]);
   const total = data?.total_pending ?? 0;
   const handled = data?.handled_count ?? 0;
   const attentionGoals = data?.attention_goals ?? [];
@@ -80,7 +84,6 @@ export function DecisionInbox({ inbox, onClose }: Props) {
   // — the summary number is only a fallback and now shares its definition.
   const { activeCount: liveGoalCount, loaded: liveGoalsLoaded } = useLiveGoals();
   const goals = liveGoalsLoaded ? liveGoalCount : (data?.goals_in_flight ?? 0);
-  const moreCount = total - decisions.length;
   const tier1Rows = (history ?? []).filter(d => d.tier === 1);
 
   return (
@@ -89,10 +92,14 @@ export function DecisionInbox({ inbox, onClose }: Props) {
     // none of its keyboard floor: no focus trap, no Escape, no `role="dialog"`,
     // and focus abandoned wherever it was when the inbox opened. On the surface
     // that exists to be checked several times a day.
+    // Suspend this shell's trap and Escape while the existing goal proof
+    // overlay is open; review state above the shell survives body remounts.
+    <div style={{ display: goalDetail ? 'none' : 'contents' }}>
     <DetailModal
       title={view === 'history' ? 'History' : 'Decision inbox'}
-      onClose={onClose}
-      width="min(720px, 92vw)"
+      onClose={() => { if (!goalDetail) onClose(); }}
+      width="min(1120px, 96vw)"
+      placement={goalDetail ? 'contained' : placement}
       badge={view === 'list' && total > 0
         ? { label: `${total} pending`, color: colors.cyan, bg: colors.cyanSoft }
         : null}
@@ -139,9 +146,9 @@ export function DecisionInbox({ inbox, onClose }: Props) {
       ) : undefined}
     >
       <div data-testid="inbox-body">
-          {view === 'history' ? (
-            <HistoryList items={history} failed={historyError} onRetry={loadHistory} />
-          ) : loading && !data ? (
+          {view === 'history' && <HistoryList items={history} failed={historyError} onRetry={loadHistory} />}
+          {view === 'list' && <>
+          {loading && !data ? (
             <div style={{ padding: '48px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textMuted }}>
               Checking with {agentName}…
             </div>
@@ -200,7 +207,8 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                   (wave-1 item 1): before this bucket the flag only hid the
                   goal from every active list. */}
               {attentionGoals.length > 0 && (
-                <div style={{ padding: `${space.lg}px 18px ${space.xs}px` }}>
+                <details style={{ padding: `${space.lg}px 18px ${space.xs}px` }}>
+                  <summary style={{ color: colors.warning }}>Parked goals · {attentionGoals.length}</summary>
                   <div style={{
                     fontFamily: font.body, fontSize: 10, fontWeight: 700,
                     letterSpacing: '0.10em', textTransform: 'uppercase',
@@ -235,50 +243,8 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                       )}
                     </div>
                   ))}
-                </div>
+                </details>
               )}
-              {decisions.map(d => (
-                <DecisionItem
-                  key={d.id}
-                  decision={d}
-                  onAnswer={inbox.answer}
-                  onConflictSettled={inbox.refresh}
-                  onDiscardStaged={inbox.discardStaged}
-                  onCancelGoal={
-                    d.goal_id && d.project_id
-                      ? async () => {
-                          await decisionsClient.cancelGoal(d.project_id!, d.goal_id!);
-                          inbox.refresh();
-                        }
-                      : undefined
-                  }
-                />
-              ))}
-
-              {moreCount > 0 && (
-                /* No success tick: `showAll` swallows its own failure, and the
-                   rest of the list appearing is the confirmation. */
-                <Button
-                  colors={colors}
-                  variant="bare"
-                  type="button"
-                  flashSuccess={false}
-                  onClick={() => { inbox.showAll(); }}
-                  style={{
-                    '--pa-btn-fg': colors.cyan,
-                    '--pa-btn-fg-hover': colors.cyan,
-                    '--pa-btn-bg-hover': colors.cyanSoft,
-                    '--pa-btn-bg-active': colors.cyanSoft,
-                    '--pa-btn-pad': '10px',
-                    '--pa-btn-radius': '0',
-                    display: 'flex', width: '100%',
-                    fontFamily: font.body, fontSize: textSize.caption,
-                  } as CSSProperties}
-                >
-                  +{moreCount} more decision{moreCount === 1 ? '' : 's'}
-                </Button>
-              )}
-
               {handled > 0 && (
                 <>
                   {/* Disclosure toggle for the routine-items group below, with
@@ -381,8 +347,11 @@ export function DecisionInbox({ inbox, onClose }: Props) {
               )}
             </>
           )}
+          </>}
+          <DecisionReview inbox={inbox} agentName={agentName} state={reviewState} active={view === 'list'} />
       </div>
     </DetailModal>
+    </div>
   );
 }
 
