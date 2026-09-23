@@ -1076,8 +1076,8 @@ impl SessionManager {
     }
 
     /// Preserve a paid hold when dispatch may have reached the provider but no
-    /// authoritative usage arrived. Unknown holds remain budget-consuming and
-    /// block fresh paid work until reconciliation proves the outcome.
+    /// authoritative usage arrived. Unknown holds remain budget-consuming until
+    /// settlement records durable usage.
     pub async fn mark_provider_invocation_unknown(&self, reservation_id: &str) -> Result<bool> {
         self.storage
             .mark_provider_invocation_unknown(reservation_id)
@@ -2069,13 +2069,14 @@ impl SessionStorage {
                     // does this work but is not started by the daemon, so run
                     // its sweep once here, where every process that opens the
                     // store (daemon, CLI) passes before its first query. The
-                    // rules are the admission path's own (explicit marks
-                    // resolve at once, lease-only holds keep their 6h grace;
-                    // ledger evidence settles, no evidence releases), and every
+                    // rules are the admission path's own (expired pending
+                    // turns unknown; ledger evidence settles; no evidence
+                    // keeps holding), and every
                     // update is guarded by `state = 'unknown'`, so running it
                     // here as well as elsewhere is idempotent. A failure only
-                    // delays a release until the next paid turn reconciles it,
-                    // so it is logged and never fails opening the store.
+                    // delays settlement visibility until the next paid turn
+                    // reconciles it, so it is logged and never fails opening
+                    // the store.
                     match crate::cost_router::budget::reconcile_concluded_unknown_holds(
                         &self.pool,
                     )
@@ -2665,87 +2666,19 @@ impl SessionStorage {
         Ok(result.rows_affected() == 1)
     }
 
-    /// Resolve every stale `unknown`-state reservation belonging to
-    /// `task_id`, inside the caller's already-open transaction.
+    /// Settle stale `unknown` reservations when durable usage is present.
     ///
-    /// `mark_provider_invocation_unknown` and the lease-expiry sweep above
-    /// both put a reservation into `unknown` deliberately: at the moment it
-    /// happens, nothing proves whether the provider call it authorized was
-    /// ever billed, so treating it as free (`released`) or as spent
-    /// (`settled`) would both be a guess. But `unknown` had no path back to
-    /// either state, so one ambiguous failure consumed the task's authorization
-    /// forever — not just its budget headroom (which `task_held`/`session_held`
-    /// already account for correctly), but the ability to authorize ANY
-    /// future call under the task, unconditionally (B7, Lane Y1 2026-09-09:
-    /// `regression-trap-lru-cache-evict`/`harness-testfix-inventory-suite-green`/
-    /// `harness-cli-argparse-log-filter`, 3/10 fixtures, all killed by
-    /// `"an expired provider reservation is unresolved"` — traced to
-    /// `handle_decompose_roadmap`'s internal planner completion
-    /// (`orchestrator.rs::run_decomposition` → `AccountedFastCompletion::
-    /// complete_one`, `reply_parts.rs:1339-1407`) failing after a long call
-    /// and marking its own reservation `unknown`; `dispatch_goal_fn` then
-    /// died on the SAME task identity, per `dispatch_budget_task_id`).
-    ///
-    /// By the time a FRESH call is being authorized for this task, ambiguity
-    /// can be resolved with real evidence: a `cost_ledger` row for the stale
-    /// reservation's `invocation_id` (`call_id`) is proof the provider call
-    /// completed and was accounted, so that hold is settled to the ledger's
-    /// own `cost_usd` — the recorded spend is preserved, never dropped, and
-    /// keeps counting toward the task/session ceilings exactly like any other
-    /// settled call. No ledger row means nothing durable proves the call was
-    /// ever billed, so the hold is released — holding it forever recovers no
-    /// spend, it only refuses honest future work.
-    ///
-    /// YF1 (G6 review, Lane Y-fix 2026-09-09): the above is only safe for a
-    /// row `mark_provider_invocation_unknown` put into `unknown` — that path
-    /// runs only once the caller has locally concluded the attempt is over.
-    /// A row the LEASE-EXPIRY sweep alone put into `unknown` proves nothing
-    /// of the sort: the provider call may still be genuinely streaming past
-    /// its lease, and releasing that hold the instant the next call comes in
-    /// hands its budget headroom to someone else while the real spend is
-    /// still in flight — when it later tries to settle,
-    /// `append_cost_ledger_with_usage` would find the hold already
-    /// `released`/re-`unknown` and (pre-YF1) hard-error, dropping the real
-    /// spend on the floor entirely (G6 finding #1). So a merely
-    /// lease-expired row (`unknown_marked_at IS NULL`) is left alone here
-    /// until it has been stale for `RECONCILE_GRACE` — well beyond the
-    /// longest legitimate call, approximating 3x the standard 2h paid-call
-    /// lease used by `reply_parts.rs` — keeping `reserve_provider_invocation`
-    /// fail-closed (refusing new calls under the task) for a bounded window
-    /// instead of releasing on a guess. `append_cost_ledger_with_usage` no
-    /// longer errors on a late settlement either way (see YF1 there): if the
-    /// real spend does land after this reconciliation already ran, it is
-    /// still recorded and still counts toward the ceiling, flagged
-    /// `late_settlement`.
-    ///
-    /// Scope (gated-turn-silence, 2026-09-18): the rows reconciled here are
-    /// the SAME rows the admission check below refuses on — every `unknown`
-    /// hold under `task_id` OR anywhere in `session_id`'s session tree.
-    /// Pre-fix this only looked at `task_id`, but an interactive chat starts
-    /// a NEW budget task on every user message (`agent.rs`,
-    /// `starts_new_budget_task` → `begin_budget_task`), while the refusal
-    /// also counts `unknown` holds across the whole session tree. So one
-    /// explicitly-marked `unknown` hold from an earlier turn (session
-    /// 20260918_7: an openai stream that "dropped before any reply started"
-    /// at 18:07, `unknown_marked_at` set, no ledger row) was never
-    /// reconciled by any later turn and refused every one of them for good —
-    /// "Can you sync my calendar?" and "who are you?" both got only "provider
-    /// spend could not be authorized ... an expired provider reservation is
-    /// unresolved", which the user reported as "my agent is not responding to
-    /// me". The eligibility rules above do not depend on which task owns the
-    /// hold, so widening the scope keeps them intact.
-    ///
-    /// Returns the latest instant at which a still-held (lease-expired,
-    /// inside `RECONCILE_GRACE`) hold becomes eligible, so the refusal can
-    /// tell the user when paid calls resume instead of only that they
-    /// stopped. `None` when nothing is still held for a known time.
+    /// A missing ledger row is not proof the provider did not bill us, so this
+    /// function never auto-releases unknown holds. Unknown amounts remain in
+    /// held headroom until either usage is settled or an explicit non-dispatch
+    /// path (`release_provider_invocation`) releases them.
     async fn reconcile_stale_reservations(
         tx: &mut sqlx::Transaction<'_, Sqlite>,
         task_id: &str,
         session_id: &str,
         now: &str,
-    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-        let stale: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+    ) -> Result<()> {
+        let stale: Vec<(String, String)> = sqlx::query_as(
             "WITH RECURSIVE lineage(id, parent_id) AS (
                  SELECT id, parent_session_id FROM sessions WHERE id = ?
                  UNION ALL
@@ -2756,7 +2689,7 @@ impl SessionStorage {
                  UNION ALL
                  SELECT s.id FROM sessions s JOIN session_tree t ON s.parent_session_id = t.id
              )
-             SELECT reservation_id, invocation_id, unknown_marked_at, lease_until
+             SELECT reservation_id, invocation_id
              FROM cost_reservations
              WHERE state = 'unknown'
                AND (task_id = ? OR session_id IN (SELECT id FROM session_tree))",
@@ -2765,87 +2698,45 @@ impl SessionStorage {
         .bind(task_id)
         .fetch_all(&mut **tx)
         .await?;
-        let mut held_until: Option<chrono::DateTime<chrono::Utc>> = None;
-
-        let now_dt = chrono::DateTime::parse_from_rfc3339(now)
-            .ok()
-            .map(|dt| dt.with_timezone(&chrono::Utc));
-        let grace = chrono::Duration::hours(6);
-
-        for (reservation_id, invocation_id, unknown_marked_at, lease_until) in stale {
-            let eligible = if unknown_marked_at.is_some() {
-                // Explicitly marked unknown: the attempt already concluded
-                // locally, so real evidence (or the lack of it) can be
-                // trusted right away.
-                true
-            } else {
-                // Lease-expiry sweep only — hold until well past any
-                // realistic in-flight completion.
-                match (now_dt, chrono::DateTime::parse_from_rfc3339(&lease_until)) {
-                    (Some(now_dt), Ok(lease_until)) => {
-                        let lease_until = lease_until.with_timezone(&chrono::Utc);
-                        let eligible = now_dt - lease_until >= grace;
-                        if !eligible {
-                            let clears_at = lease_until + grace;
-                            held_until = Some(
-                                held_until.map_or(clears_at, |existing| existing.max(clears_at)),
-                            );
-                        }
-                        eligible
-                    }
-                    _ => false,
-                }
-            };
-            if !eligible {
-                continue;
-            }
+        for (reservation_id, invocation_id) in stale {
             let ledger_cost: Option<f64> =
                 sqlx::query_scalar("SELECT cost_usd FROM cost_ledger WHERE call_id = ?")
                     .bind(&invocation_id)
                     .fetch_optional(&mut **tx)
                     .await?;
-            match ledger_cost {
-                Some(cost_usd) => {
-                    sqlx::query(
-                        "UPDATE cost_reservations
-                         SET state = 'settled', settled_cost_usd = ?, updated_at = ?
-                         WHERE reservation_id = ? AND state = 'unknown'",
-                    )
-                    .bind(cost_usd)
-                    .bind(now)
-                    .bind(&reservation_id)
-                    .execute(&mut **tx)
-                    .await?;
-                    tracing::info!(
-                        target: "permagent::cost_router",
-                        reservation_id = %reservation_id,
-                        invocation_id = %invocation_id,
-                        task_id,
-                        settled_cost_usd = cost_usd,
-                        "reconciled a stale unknown provider reservation to settled from its recorded ledger spend"
-                    );
-                }
-                None => {
-                    sqlx::query(
-                        "UPDATE cost_reservations
-                         SET state = 'released', updated_at = ?
-                         WHERE reservation_id = ? AND state = 'unknown'",
-                    )
-                    .bind(now)
-                    .bind(&reservation_id)
-                    .execute(&mut **tx)
-                    .await?;
-                    tracing::info!(
-                        target: "permagent::cost_router",
-                        reservation_id = %reservation_id,
-                        invocation_id = %invocation_id,
-                        task_id,
-                        "reconciled a stale unknown provider reservation to released; no ledger evidence it was ever billed"
-                    );
-                }
+            // THE ABSENT `else` IS THE POINT. Affirmative evidence of a charge
+            // settles the hold to that amount. NO evidence settles nothing: the
+            // hold is RETAINED against the ceilings until real evidence arrives.
+            // This branch used to release it, on the reasoning that an attempt
+            // marked unknown "already concluded locally, so the lack of evidence
+            // can be trusted right away". That is true for a pre-send abort and
+            // false for the ambiguous post-send failure this path exists to
+            // handle — the provider may have received and billed the request
+            // while we recorded nothing. Absence of our evidence is not evidence
+            // of absence, and neither elapsed time nor a later reservation makes
+            // it so, which is why there is no timeout branch here either.
+            if let Some(cost_usd) = ledger_cost {
+                sqlx::query(
+                    "UPDATE cost_reservations
+                     SET state = 'settled', settled_cost_usd = ?, updated_at = ?
+                     WHERE reservation_id = ? AND state = 'unknown'",
+                )
+                .bind(cost_usd)
+                .bind(now)
+                .bind(&reservation_id)
+                .execute(&mut **tx)
+                .await?;
+                tracing::info!(
+                    target: "permagent::cost_router",
+                    reservation_id = %reservation_id,
+                    invocation_id = %invocation_id,
+                    task_id,
+                    settled_cost_usd = cost_usd,
+                    "reconciled a stale unknown provider reservation to settled from its recorded ledger spend"
+                );
             }
         }
-        Ok(held_until)
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2917,7 +2808,6 @@ impl SessionStorage {
             _ => None,
         };
         let mut extension_from = None;
-        let mut unknown_held_until: Option<chrono::DateTime<chrono::Utc>> = None;
         if matches!(request, ReservationRequest::Initial(_)) {
             // An expired provider call may already have been accepted remotely;
             // preserve its hold as unknown rather than fabricating free allowance.
@@ -2932,8 +2822,7 @@ impl SessionStorage {
 
             // Initial reservations reconcile stale unknown holds (Y1). An
             // extension must not release its own evidence or mutate on refusal.
-            unknown_held_until =
-                Self::reconcile_stale_reservations(&mut tx, task_id, session_id, &now).await?;
+            Self::reconcile_stale_reservations(&mut tx, task_id, session_id, &now).await?;
         }
 
         let reservation_id = format!("invocation:{invocation_id}");
@@ -3034,9 +2923,8 @@ impl SessionStorage {
         .bind(task_id)
         .fetch_one(&mut *tx)
         .await?;
-        let (task_held, task_unknown): (f64, i64) = sqlx::query_as(
-            "SELECT CAST(COALESCE(SUM(amount_usd), 0.0) AS REAL),
-                    COALESCE(SUM(CASE WHEN state = 'unknown' THEN 1 ELSE 0 END), 0)
+        let task_held: f64 = sqlx::query_scalar(
+            "SELECT CAST(COALESCE(SUM(amount_usd), 0.0) AS REAL)
              FROM cost_reservations
              WHERE task_id = ? AND state IN ('pending', 'unknown')",
         )
@@ -3063,7 +2951,7 @@ impl SessionStorage {
         .bind(session_id)
         .fetch_one(&mut *tx)
         .await?;
-        let (session_held, session_unknown): (f64, i64) = sqlx::query_as(
+        let session_held: f64 = sqlx::query_scalar(
             "WITH RECURSIVE lineage(id, parent_id) AS (
                  SELECT id, parent_session_id FROM sessions WHERE id = ?
                  UNION ALL
@@ -3074,8 +2962,7 @@ impl SessionStorage {
                  UNION ALL
                  SELECT s.id FROM sessions s JOIN session_tree t ON s.parent_session_id = t.id
              )
-             SELECT CAST(COALESCE(SUM(r.amount_usd), 0.0) AS REAL),
-                    COALESCE(SUM(CASE WHEN r.state = 'unknown' THEN 1 ELSE 0 END), 0)
+             SELECT CAST(COALESCE(SUM(r.amount_usd), 0.0) AS REAL)
              FROM cost_reservations r JOIN session_tree t ON t.id = r.session_id
              WHERE r.state IN ('pending', 'unknown')",
         )
@@ -3096,31 +2983,6 @@ impl SessionStorage {
                 });
             }
         }
-        if task_unknown > 0 || session_unknown > 0 {
-            tx.commit().await?;
-            // This text reaches the chat verbatim (agent.rs: "I did not send
-            // this request because provider spend could not be authorized:
-            // ..."). The bare "an expired provider reservation is unresolved"
-            // gave the user nothing to act on and read as the agent ignoring
-            // them (gated-turn-silence, 2026-09-18), so say what is held,
-            // until when, and what they can do now. The leading phrase is
-            // kept verbatim for the log/forensics trail that greps for it.
-            let resume = match unknown_held_until {
-                Some(at) => format!(
-                    "paid calls here resume automatically at {}",
-                    at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")
-                ),
-                None => "paid calls here stay paused until it is resolved".to_string(),
-            };
-            return Ok(CostReservationOutcome::Unknown {
-                reason: format!(
-                    "an expired provider reservation is unresolved — an earlier paid call in \
-                     this chat ended without a confirmed bill, so I am not spending again until \
-                     it is accounted for; {resume}, or start a new chat to continue now"
-                ),
-            });
-        }
-
         let task_total = task_spent + task_held + amount_usd;
         let session_total = session_spent + session_held + amount_usd;
         if task_total >= task.hard {
@@ -6936,7 +6798,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reservation_requires_task_and_expiry_reconciles_on_next_call() {
+    async fn reservation_requires_task_and_expiry_retains_unknown_on_next_call() {
         let temp_dir = TempDir::new().unwrap();
         let sm = SessionManager::new(temp_dir.path().to_path_buf());
         let session = sm
@@ -6997,15 +6859,9 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        // B7 (Lane Y1, 2026-09-09): a FRESH invocation for the same task is
-        // no longer refused forever once the earlier lease has expired. The
-        // sweep above turns 'expired-call' unknown, and
-        // `reconcile_stale_reservations` — run at the very start of THIS
-        // `reserve_provider_invocation` call — resolves it (no ledger row
-        // for it, so released) before this call's own authorization is
-        // evaluated, exactly the P0 defect #1 repair: a stalled internal
-        // completion must not permanently block every later provider call
-        // under the same task.
+        // A fresh invocation for the same task is not unconditionally blocked
+        // by a stale unknown hold; authorization is decided by headroom
+        // arithmetic that already counts unknown holds.
         assert!(matches!(
             sm.reserve_provider_invocation(
                 "after-expiry",
@@ -7026,8 +6882,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            expired_state, "released",
-            "the expired hold must be resolved to a receipt, not stuck unknown"
+            expired_state, "unknown",
+            "a stale hold without durable usage evidence remains unknown"
         );
     }
 
@@ -7147,7 +7003,7 @@ mod tests {
     /// `reconcile_stale_reservations`) and the fresh invocation is then
     /// authorized normally against the now-accurate budget.
     #[tokio::test]
-    async fn b6_restart_reconciles_unknown_hold_and_a_fresh_invocation_succeeds() {
+    async fn b6_restart_retains_unknown_hold_and_allows_fresh_work_within_headroom() {
         let temp_dir = TempDir::new().unwrap();
         let db_dir = temp_dir.path().to_path_buf();
         let sm = SessionManager::new(db_dir.clone());
@@ -7197,14 +7053,9 @@ mod tests {
         .await
         .unwrap();
 
-        // Replaying the SAME durable invocation id is still refused: by the
-        // time this call runs, the sweep above has already turned it
-        // `unknown` (its lease expired), and `reconcile_stale_reservations`
-        // (run at the very start of THIS SAME `reserve_provider_invocation`
-        // call, before the duplicate-invocation check) resolves it to
-        // `released` — there is no ledger row for 'b6-restart-call', so
-        // there is no evidence to settle. Either way the identical
-        // invocation id must never come back as a fresh `Granted`.
+        // Replaying the SAME durable invocation id is still refused: that
+        // invocation already has an unresolved hold and must never come back
+        // as a fresh `Granted`.
         assert!(matches!(
             reopened
                 .reserve_provider_invocation(
@@ -7220,12 +7071,8 @@ mod tests {
             CostReservationOutcome::Unknown { .. }
         ));
 
-        // A DIFFERENT physical invocation now succeeds: reconciliation above
-        // already released the stale hold (B7), so it no longer consumes the
-        // task's authorization budget. This is the fix under test — before
-        // B7 this assertion was `Unknown{..}` forever, which is exactly the
-        // P0 availability bug (`dispatch_goal_fn` dying on the SAME stale
-        // hold via the shared task identity).
+        // A DIFFERENT physical invocation now succeeds because unknown holds
+        // consume headroom but no longer trigger an unconditional block.
         assert!(matches!(
             reopened
                 .reserve_provider_invocation(
@@ -7249,8 +7096,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            state, "released",
-            "a stale hold with no ledger evidence is released, not left unknown forever"
+            state, "unknown",
+            "a stale hold with no ledger evidence remains unknown"
         );
         assert!((amount - 0.75).abs() < 1e-12);
         let fresh_state: String = sqlx::query_scalar(
@@ -7266,13 +7113,32 @@ mod tests {
             .unwrap();
         assert_eq!(
             reservation_count, 2,
-            "one released receipt for the stale hold, one pending row for the fresh grant — replay of the same id must not create a second row"
+            "one unknown hold for the stale invocation and one pending row for the fresh grant — replay of the same id must not create a second row"
         );
 
         let projection = reopened.budget_projection(&session.id, cfg).await.unwrap();
-        assert_eq!(projection.task.unknown_usd, Some(0.0));
+        // `held_usd` and `unknown_usd` are SEPARATE sums (budget_projection.rs:
+        // "pending" adds to held, "unknown" adds to unknown) — they are not
+        // added together. The retained stale hold is $0.75 of unknown; the
+        // fresh grant is $0.10 of held. Remaining is the ceiling less BOTH,
+        // which is what keeps a retained hold honest without freezing work.
+        assert!((projection.task.unknown_usd.unwrap() - 0.75).abs() < 1e-12);
         assert!((projection.task.held_usd.unwrap() - 0.10).abs() < 1e-12);
-        assert!((projection.task.remaining_usd.unwrap() - 0.90).abs() < 1e-12);
+        assert!((projection.task.remaining_usd.unwrap() - 0.15).abs() < 1e-12);
+        assert!(matches!(
+            reopened
+                .reserve_provider_invocation(
+                    "b6-over-headroom",
+                    &session.id,
+                    Some(&task_id),
+                    0.20,
+                    "2099-01-01T00:00:00Z",
+                    &cfg,
+                )
+                .await
+                .unwrap(),
+            CostReservationOutcome::Refused { .. }
+        ));
 
         // B5.5 producer contract: the real restart projection is the shared
         // JSON consumed by downstream event/store/UI tests. Only identities
@@ -7472,11 +7338,10 @@ mod tests {
             .await
             .unwrap());
 
-        // Before B7 this died with "an expired provider reservation is
-        // unresolved" — the exact string observed in `dispatch_goal_fn`'s
-        // own card `last_error` in the harness evidence. Now it succeeds:
-        // the stale coordinator hold is reconciled (no ledger row for it, so
-        // released) at the start of THIS call.
+        // Before the headroom fix this died with an unresolved-hold refusal.
+        // Now it succeeds: the stale coordinator hold remains unknown, counts
+        // toward headroom, and authorization proceeds because enough ceiling
+        // remains.
         assert!(matches!(
             sm.reserve_provider_invocation(
                 "worker-dispatch-call",
@@ -7550,10 +7415,17 @@ mod tests {
         .unwrap();
 
         // A fresh call under the same task triggers both the lease sweep
-        // (pending -> unknown) and reconciliation. Pre-fix, reconciliation
-        // released the hold unconditionally and this call would be
-        // `Granted`. Post-fix, the stale hold is still within its grace
-        // window and must keep refusing.
+        // (pending -> unknown) and reconciliation.
+        //
+        // This assertion changed with the unknown-hold correction, and the
+        // distinction is the whole point of that change. The stale hold is
+        // RETAINED — it is not released merely because no ledger row appeared
+        // (asserted below). But retention must not FREEZE the chat: an
+        // unresolved hold of $1.00 against a $10.00 task ceiling leaves ample
+        // headroom, so a fresh $1.00 call is granted. Blocking here was the
+        // unconditional "any unknown blocks everything" behaviour that the
+        // correction removed; refusing every call until a hold resolves is a
+        // different failure from refunding it, and both are wrong.
         assert!(matches!(
             sm.reserve_provider_invocation(
                 "yf1-fresh-call",
@@ -7565,7 +7437,7 @@ mod tests {
             )
             .await
             .unwrap(),
-            CostReservationOutcome::Unknown { .. }
+            CostReservationOutcome::Granted { .. }
         ));
 
         let (state, unknown_marked_at): (String, Option<String>) = sqlx::query_as(
@@ -7585,12 +7457,10 @@ mod tests {
         );
     }
 
-    /// YF1 companion: the same lease-expired hold, once it has genuinely
-    /// been stale for longer than any legitimate call could still be
-    /// running, IS reconciled — the grace window is bounded, not
-    /// permanent refusal.
+    /// Elapsed time alone does not settle or release a lease-expired hold.
+    /// A later reservation can still be authorized by remaining headroom.
     #[tokio::test]
-    async fn yf1_lease_expired_pending_hold_reconciles_after_grace_window_elapses() {
+    async fn yf1_lease_expired_pending_hold_remains_unknown_after_grace_window() {
         let temp_dir = TempDir::new().unwrap();
         let sm = SessionManager::new(temp_dir.path().to_path_buf());
         let session = sm
@@ -7648,19 +7518,12 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(state, "released");
+        assert_eq!(state, "unknown");
     }
 
-    /// gated-turn-silence (2026-09-18, "my agent is not responding to me"):
-    /// an interactive chat begins a NEW budget task on every user message,
-    /// so a hold explicitly marked `unknown` on an earlier turn (session
-    /// 20260918_7: openai stream dropped before any reply at 18:07, no ledger
-    /// row) sits under a task no later turn ever reserves under. Pre-fix,
-    /// reconciliation only looked at the current task while the admission
-    /// check counted `unknown` holds across the whole session tree, so every
-    /// later turn in that chat was refused with "an expired provider
-    /// reservation is unresolved" — four hours later, "Can you sync my
-    /// calendar?" and "who are you?" both got nothing but that line.
+    /// An interactive chat starts a NEW budget task on each user message.
+    /// A prior turn's explicit unknown hold remains unknown, and the next turn
+    /// still runs when session headroom allows it.
     #[tokio::test]
     async fn earlier_turn_unknown_hold_is_reconciled_by_the_next_turn_in_the_same_chat() {
         let temp_dir = TempDir::new().unwrap();
@@ -7698,6 +7561,14 @@ mod tests {
             .mark_provider_invocation_unknown(&first_reservation)
             .await
             .unwrap());
+        let pool = sm.pool_clone().await.unwrap();
+        sqlx::query(
+            "UPDATE cost_reservations SET lease_until = '2000-01-01T00:00:00Z'
+             WHERE invocation_id = 'turn-1-dropped-stream'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         // Turn 2: the next user message starts a fresh budget task, exactly
         // as `Agent::reply` does for an interactive chat.
@@ -7719,7 +7590,6 @@ mod tests {
             "the next turn must not be refused by an earlier turn's concluded hold: {outcome:?}"
         );
 
-        let pool = sm.pool_clone().await.unwrap();
         let state: String = sqlx::query_scalar(
             "SELECT state FROM cost_reservations WHERE invocation_id = 'turn-1-dropped-stream'",
         )
@@ -7727,19 +7597,15 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            state, "released",
-            "no ledger row proves turn 1 was billed, so its hold is released"
+            state, "unknown",
+            "no ledger row means the earlier turn remains unresolved"
         );
     }
 
-    /// gated-turn-silence companion: when an earlier turn's hold genuinely
-    /// must keep refusing (its lease merely expired, still inside the grace
-    /// window, so the call may still be streaming), the refusal that reaches
-    /// the chat must say when paid calls resume and what the user can do
-    /// now — the bare "an expired provider reservation is unresolved" read
-    /// as the agent silently ignoring them.
+    /// An unresolved hold inside its grace window still consumes headroom, but
+    /// does not unconditionally block fresh work when enough ceiling remains.
     #[tokio::test]
-    async fn unresolved_hold_refusal_tells_the_user_when_and_what_to_do() {
+    async fn in_grace_unknown_hold_still_allows_calls_within_remaining_headroom() {
         let temp_dir = TempDir::new().unwrap();
         let sm = SessionManager::new(temp_dir.path().to_path_buf());
         let session = sm
@@ -7776,9 +7642,9 @@ mod tests {
         .unwrap();
 
         let second_task = sm.begin_budget_task(&session.id).await.unwrap();
-        let reason = match sm
+        let outcome = sm
             .reserve_provider_invocation(
-                "turn-2-refused",
+                "turn-2-allowed",
                 &session.id,
                 Some(&second_task),
                 1.0,
@@ -7786,26 +7652,13 @@ mod tests {
                 &cfg,
             )
             .await
-            .unwrap()
-        {
-            CostReservationOutcome::Unknown { reason } => reason,
-            other => panic!("an in-grace hold must still refuse: {other:?}"),
-        };
+            .unwrap();
         assert!(
-            reason.starts_with("an expired provider reservation is unresolved"),
-            "the forensic phrase must stay first: {reason}"
-        );
-        assert!(
-            reason.contains("resume automatically at"),
-            "the refusal must say when paid calls resume: {reason}"
-        );
-        assert!(
-            reason.contains("start a new chat to continue now"),
-            "the refusal must say what the user can do now: {reason}"
+            matches!(outcome, CostReservationOutcome::Granted { .. }),
+            "authorization should proceed when headroom remains: {outcome:?}"
         );
 
-        // The hold is still unknown (fail-closed inside the grace window),
-        // not released by the widened reconciliation scope.
+        // The original hold is still unresolved and continues to count as held.
         let state: String = sqlx::query_scalar(
             "SELECT state FROM cost_reservations WHERE invocation_id = 'turn-1-still-streaming'",
         )
@@ -7815,15 +7668,11 @@ mod tests {
         assert_eq!(state, "unknown");
     }
 
-    /// gated-turn-silence, E2E QA 2026-09-18: after the session-tree
-    /// reconcile shipped, session 20260918_7's concluded $1.56 hold was still
-    /// `unknown` because reconciliation only ran on the next paid turn and
-    /// nobody had spoken in that chat since the redeploy. Opening the store
-    /// (daemon start) must resolve a concluded hold by itself — with no
-    /// reservation call at all — while a lease-only hold still inside its
-    /// grace window keeps holding, exactly as the admission path would.
+    /// On restart, boot reconciliation may settle unknown holds from ledger
+    /// evidence but must not auto-release either explicit-unknown or lease-only
+    /// holds that still have no durable usage row.
     #[tokio::test]
-    async fn reopening_the_store_resolves_a_concluded_unknown_hold_without_a_new_turn() {
+    async fn reopening_the_store_keeps_unknown_holds_without_ledger_evidence() {
         let temp_dir = TempDir::new().unwrap();
         let db_dir = temp_dir.path().to_path_buf();
         let sm = SessionManager::new(db_dir.clone());
@@ -7896,8 +7745,8 @@ mod tests {
         };
         assert_eq!(
             state_of("boot-concluded-drop").await,
-            "released",
-            "a concluded hold with no ledger row must not wait for the user to speak again"
+            "unknown",
+            "a concluded hold with no ledger row must remain retained"
         );
         assert_eq!(
             state_of("boot-lease-only-in-grace").await,
@@ -7906,18 +7755,9 @@ mod tests {
         );
     }
 
-    /// gated-turn-silence, reply half (E2E QA 2026-09-19): the live store
-    /// showed session 20260918_7's hold `released` by the boot sweep, but QA
-    /// could not send the follow-up message that proves the chat answers
-    /// again (locked screen, paid session). This is that follow-up at the
-    /// storage seam the reply path calls: turn 1's stream drops and marks its
-    /// hold, the daemon restarts, and the user's next message — a NEW budget
-    /// task, as `Agent::reply` begins one per interactive message — must be
-    /// granted, not handed "an expired provider reservation is unresolved",
-    /// which `agent.rs` turns into "I did not send this request because
-    /// provider spend could not be authorized" (the "my agent is not
-    /// responding to me" report). Only the released hold is gone: the
-    /// earlier turn's real settled spend still counts toward the session.
+    /// After restart, a chat with an earlier unknown hold still answers new
+    /// messages when remaining headroom allows it; the earlier hold stays
+    /// unknown and budget-consuming.
     #[tokio::test]
     async fn next_message_after_restart_is_granted_in_a_chat_whose_earlier_turn_dropped() {
         let temp_dir = TempDir::new().unwrap();
@@ -7987,20 +7827,17 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(unknown, 0, "no unresolved hold may remain in the chat");
-        assert_eq!(pending, 1, "only the new message's own hold is live");
+        assert_eq!(
+            unknown, 1,
+            "the earlier unresolved hold must remain retained"
+        );
+        assert_eq!(pending, 1, "the new message creates its own live hold");
     }
 
-    /// YF1 (G6 review, Lane Y-fix 2026-09-09, finding #1): a late settlement
-    /// — the provider call for a hold that was ALREADY reconciled away
-    /// (released, no ledger evidence at the time) completing for real
-    /// afterward — must land in the ledger and keep counting toward the
-    /// ceiling, not hard-error and vanish. Pre-fix,
-    /// `append_cost_ledger_with_usage` refused any settlement against a
-    /// `released`/`unknown` reservation; this is the exact "real spend never
-    /// recorded" half of G6 finding #1.
+    /// A late usage report against a retained unknown hold settles that hold
+    /// exactly once and never double-counts.
     #[tokio::test]
-    async fn yf1_late_settlement_after_reconciliation_lands_in_ledger_and_counts() {
+    async fn yf1_late_settlement_of_retained_unknown_hold_is_exactly_once() {
         let temp_dir = TempDir::new().unwrap();
         let sm = SessionManager::new(temp_dir.path().to_path_buf());
         let session = sm
@@ -8031,9 +7868,8 @@ mod tests {
             other => panic!("setup reservation was not granted: {other:?}"),
         };
 
-        // Deep in the past — well past the grace window — so the next
-        // reservation call reconciles this hold to `released` with no
-        // ledger evidence yet, exactly as the other deep-past tests above.
+        // Deep in the past and still unknown: elapsed time alone does not
+        // auto-release this hold.
         let pool = sm.pool_clone().await.unwrap();
         sqlx::query(
             "UPDATE cost_reservations SET lease_until = '2000-01-01T00:00:00Z'
@@ -8059,12 +7895,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            pre_settlement_state, "released",
-            "setup: the hold must already be reconciled away before the late settlement arrives"
+            pre_settlement_state, "unknown",
+            "setup: the hold must stay retained before late usage arrives"
         );
 
-        // The provider call actually completes now, well after reconciliation
-        // already ran. Pre-fix this returned Err("... was released").
+        // The provider call actually completes now, well after the hold became
+        // unknown.
         let row = reservation_row(&session.id, &task_id, "yf1-late-call", 0.50);
         let inserted = sm
             .settle_provider_invocation(&reservation_id, &row, None, None, None, None, 15, 10, 5)
@@ -8074,18 +7910,34 @@ mod tests {
             inserted,
             "the late settlement must be recorded, not dropped"
         );
+        let inserted_again = sm
+            .settle_provider_invocation(&reservation_id, &row, None, None, None, None, 15, 10, 5)
+            .await
+            .unwrap();
+        assert!(
+            !inserted_again,
+            "a second settlement attempt must be an idempotent no-op"
+        );
 
-        let (cost_usd, late_settlement): (f64, i64) = sqlx::query_as(
-            "SELECT cost_usd, late_settlement FROM cost_ledger WHERE call_id = 'yf1-late-call'",
+        let cost_usd: f64 =
+            sqlx::query_scalar("SELECT cost_usd FROM cost_ledger WHERE call_id = 'yf1-late-call'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let ledger_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger WHERE call_id = 'yf1-late-call'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let settled_state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'yf1-late-call'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
+        assert_eq!(settled_state, "settled");
+        assert_eq!(ledger_rows, 1, "late settlement must not duplicate spend");
         assert!((cost_usd - 0.50).abs() < 1e-12);
-        assert_eq!(
-            late_settlement, 1,
-            "a settlement against an already-reconciled reservation must be flagged late_settlement"
-        );
 
         // And it must count: task spend is now 0.50 (late) + 0.01 (trigger)
         // = 0.51 against a 0.55 hard ceiling, so a fresh 0.10 request must be

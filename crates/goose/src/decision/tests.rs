@@ -1651,15 +1651,11 @@ async fn hosted_retry_after_5xx_uses_fresh_reservation() {
             .unwrap();
     states.sort();
     // The client marked the first hold UsageUnknown (asserted above through the
-    // fake). The real metered layer then reconciles a stale unknown hold when
-    // the next reservation in the same session is taken: with no ledger spend
-    // recorded for it, it becomes `released`; the retry's hold settles.
+    // fake). A later successful retry does not auto-release that ambiguous
+    // first hold: absence of a ledger row is not evidence of no provider bill.
     assert_eq!(states.len(), 2);
     assert!(states.contains(&"settled".to_string()), "{states:?}");
-    assert!(
-        states.iter().any(|s| s == "released" || s == "unknown"),
-        "{states:?}"
-    );
+    assert!(states.contains(&"unknown".to_string()), "{states:?}");
 }
 
 #[tokio::test]

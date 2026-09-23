@@ -510,34 +510,29 @@ pub async fn raise_budget_gate(
 
 // ── Unknown-hold sweep ───────────────────────────────────────────────────────
 
-/// How long a hold that reached `unknown` only because its lease expired
-/// (`unknown_marked_at IS NULL`) is kept before it may be resolved. Same 6h
-/// as `SessionManager::reconcile_stale_reservations`: roughly 3x the 2h
-/// paid-call lease, well beyond the longest legitimate stream, so a call that
-/// is genuinely still running past its lease can still settle into its own
-/// hold instead of losing it to someone else's headroom.
+/// Historical grace-window constant kept for compatibility with existing
+/// metrics/tests. Time no longer authorizes releasing unknown holds.
 pub const UNKNOWN_HOLD_GRACE_HOURS: i64 = 6;
 
 /// How often the daemon re-runs [`reconcile_concluded_unknown_holds`] after
-/// its boot pass, so a lease-only hold clears when its grace ends rather than
-/// whenever someone next happens to speak in that chat.
+/// its boot pass.
 pub const UNKNOWN_HOLD_SWEEP_INTERVAL_SECS: u64 = 15 * 60;
 
 /// What one sweep did.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct UnknownHoldSweep {
-    /// Expired `pending` holds moved to `unknown` (lease-only, grace applies).
+    /// Expired `pending` holds moved to `unknown`.
     pub expired_to_unknown: u64,
     /// `unknown` holds settled to the spend their `cost_ledger` row records.
     pub settled: u64,
     /// `unknown` holds released because no ledger row shows they were billed.
     pub released: u64,
-    /// Lease-only `unknown` holds still inside [`UNKNOWN_HOLD_GRACE_HOURS`].
+    /// Unknown holds still retained (no durable settle evidence yet).
     pub still_held: u64,
 }
 
-/// Resolve every `unknown` provider-spend hold that can already be resolved
-/// on evidence, across ALL sessions, without waiting for a new call.
+/// Resolve every `unknown` provider-spend hold that has durable usage
+/// evidence, across ALL sessions, without waiting for a new call.
 ///
 /// Why this exists (E2E QA, 2026-09-18, row
 /// `invocation:e1d47602-5717-47b9-9603-0b86911b4d6f`, session 20260918_7): an
@@ -556,16 +551,10 @@ pub struct UnknownHoldSweep {
 /// anything that path would keep:
 /// - an expired `pending` hold becomes `unknown` (the provider may still have
 ///   accepted it), with `unknown_marked_at` left NULL;
-/// - an `unknown` hold whose call concluded locally (`unknown_marked_at`
-///   set) is resolved at once;
-/// - a lease-only `unknown` hold is resolved only after
-///   [`UNKNOWN_HOLD_GRACE_HOURS`] past its lease, because the stream may
-///   still be live and about to settle;
-/// - resolving means: a `cost_ledger` row for its `invocation_id` settles it
-///   to that recorded `cost_usd` (the spend keeps counting), otherwise it is
-///   released (nothing durable says it was ever billed; if the spend lands
-///   later, `append_cost_ledger_with_usage` still records it as a
-///   `late_settlement`).
+/// - an `unknown` hold is settled only when a `cost_ledger` row for its
+///   `invocation_id` exists;
+/// - absent that durable usage record, it remains `unknown` (time alone is
+///   not evidence of no provider charge).
 ///
 /// Each resolution is guarded by `state = 'unknown'`, so it races safely with
 /// the admission path doing the same work for the same row.
@@ -581,8 +570,6 @@ pub async fn reconcile_concluded_unknown_holds_at(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<UnknownHoldSweep, sqlx::Error> {
     let now_str = now.to_rfc3339();
-    let grace = chrono::Duration::hours(UNKNOWN_HOLD_GRACE_HOURS);
-
     // Same statement the admission path runs first (the lease strings are
     // written by `to_rfc3339`, so they compare in time order as text).
     let expired_to_unknown = sqlx::query(
@@ -599,26 +586,14 @@ pub async fn reconcile_concluded_unknown_holds_at(
         ..UnknownHoldSweep::default()
     };
 
-    let stale: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
-        "SELECT reservation_id, invocation_id, unknown_marked_at, lease_until
+    let stale: Vec<(String, String)> = sqlx::query_as(
+        "SELECT reservation_id, invocation_id
          FROM cost_reservations WHERE state = 'unknown'",
     )
     .fetch_all(pool)
     .await?;
 
-    for (reservation_id, invocation_id, unknown_marked_at, lease_until) in stale {
-        let eligible = unknown_marked_at.is_some()
-            || match chrono::DateTime::parse_from_rfc3339(&lease_until) {
-                Ok(lease) => now - lease.with_timezone(&chrono::Utc) >= grace,
-                // An unreadable lease proves nothing either way: keep holding,
-                // exactly as the admission path does.
-                Err(_) => false,
-            };
-        if !eligible {
-            sweep.still_held += 1;
-            continue;
-        }
-
+    for (reservation_id, invocation_id) in stale {
         let mut tx = pool.begin().await?;
         let ledger_cost: Option<f64> =
             sqlx::query_scalar("SELECT cost_usd FROM cost_ledger WHERE call_id = ?")
@@ -642,17 +617,8 @@ pub async fn reconcile_concluded_unknown_holds_at(
                 n
             }
             None => {
-                let n = sqlx::query(
-                    "UPDATE cost_reservations SET state = 'released', updated_at = ?
-                     WHERE reservation_id = ? AND state = 'unknown'",
-                )
-                .bind(&now_str)
-                .bind(&reservation_id)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected();
-                sweep.released += n;
-                n
+                sweep.still_held += 1;
+                0
             }
         };
         tx.commit().await?;
@@ -672,9 +638,8 @@ pub async fn reconcile_concluded_unknown_holds_at(
 /// Run [`reconcile_concluded_unknown_holds`] once now and then every
 /// [`UNKNOWN_HOLD_SWEEP_INTERVAL_SECS`], for the life of the daemon. The boot
 /// pass is what clears a hold a redeploy left behind (the E2E row above); the
-/// interval clears lease-only holds when their grace ends. Failures are
-/// logged and retried on the next tick: a missed sweep only delays a release,
-/// it never releases anything early.
+/// interval settles holds as ledger evidence arrives. Failures are logged and
+/// retried on the next tick.
 pub fn spawn_unknown_hold_sweeper(pool: Pool<Sqlite>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(
@@ -1037,10 +1002,10 @@ mod unknown_hold_sweep_tests {
     }
 
     /// The E2E row: marked `unknown` by the call that dropped (no ledger row),
-    /// lease expired 20:07Z, $1.56 held. The sweep releases it with no new
-    /// turn in that chat, and the session stops counting it.
+    /// lease expired 20:07Z, $1.56 held. The sweep keeps holding it because
+    /// there is no durable evidence either way yet.
     #[tokio::test]
-    async fn the_reported_concluded_hold_is_released_without_a_new_turn() {
+    async fn the_reported_concluded_hold_is_retained_without_a_new_turn() {
         let pool = pool().await;
         let lease = Utc.with_ymd_and_hms(2026, 9, 18, 20, 7, 0).unwrap();
         let id = "e1d47602-5717-47b9-9603-0b86911b4d6f";
@@ -1051,16 +1016,20 @@ mod unknown_hold_sweep_tests {
             .await
             .unwrap();
 
-        assert_eq!(sweep.released, 1);
+        assert_eq!(sweep.released, 0);
         assert_eq!(sweep.settled, 0);
-        assert_eq!(state_of(&pool, id).await, ("released".to_string(), None));
-        assert_eq!(held_usd(&pool).await, 0.0);
+        assert_eq!(sweep.still_held, 1);
+        assert_eq!(state_of(&pool, id).await, ("unknown".to_string(), None));
+        assert!((held_usd(&pool).await - 1.56).abs() < 1e-9);
 
         // Idempotent: a second pass finds nothing to do.
         let again = reconcile_concluded_unknown_holds_at(&pool, now())
             .await
             .unwrap();
-        assert_eq!(again, UnknownHoldSweep::default());
+        assert_eq!(again.expired_to_unknown, 0);
+        assert_eq!(again.settled, 0);
+        assert_eq!(again.released, 0);
+        assert_eq!(again.still_held, 1);
     }
 
     /// A concluded hold whose call DID bill is settled to the ledger's real
@@ -1098,11 +1067,10 @@ mod unknown_hold_sweep_tests {
         );
     }
 
-    /// A hold that is `unknown` only because its lease ran out may belong to
-    /// a stream that is still live, so the sweep keeps it for the same 6h
-    /// grace the admission path does, then releases it.
+    /// A hold that is `unknown` only because its lease ran out still may have
+    /// billable usage; elapsed time alone never converts it to released.
     #[tokio::test]
-    async fn a_lease_only_hold_waits_out_the_grace_before_release() {
+    async fn a_lease_only_hold_is_retained_even_after_grace_window() {
         let pool = pool().await;
         let lease = now() - Duration::hours(1);
         hold(&pool, "maybe-live", "unknown", 0.61, lease, false).await;
@@ -1120,9 +1088,9 @@ mod unknown_hold_sweep_tests {
         )
         .await
         .unwrap();
-        assert_eq!(late.released, 1);
-        assert_eq!(late.still_held, 0);
-        assert_eq!(state_of(&pool, "maybe-live").await.0, "released");
+        assert_eq!(late.released, 0);
+        assert_eq!(late.still_held, 1);
+        assert_eq!(state_of(&pool, "maybe-live").await.0, "unknown");
     }
 
     /// An expired `pending` hold goes to lease-only `unknown` (held, not
