@@ -319,11 +319,11 @@ mod tests {
         record("cost_routing", "pack_honored");
         let after = snapshot();
         assert!(
-            after.dispatches >= baseline.dispatches + 1,
+            after.dispatches > baseline.dispatches,
             "record() must be additive: {after:?}"
         );
-        assert!(after.cheapest_capable >= baseline.cheapest_capable + 1);
-        assert!(after.pack_honored >= baseline.pack_honored + 1);
+        assert!(after.cheapest_capable > baseline.cheapest_capable);
+        assert!(after.pack_honored > baseline.pack_honored);
 
         // NOTE: a `\`-newline continuation does NOT join lines inside a RAW
         // string — the backslash, newline and indentation all become literal

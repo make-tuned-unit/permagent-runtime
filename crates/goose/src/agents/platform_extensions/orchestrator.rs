@@ -48791,8 +48791,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 goal(&title, &description, &[criterion.as_str()], &["code_edit"])
             })
             .collect();
-        for i in 1..goals.len() {
-            goals[i].depends_on = vec![i - 1];
+        for (i, g) in goals.iter_mut().enumerate().skip(1) {
+            g.depends_on = vec![i - 1];
         }
         let original_criteria: std::collections::HashSet<String> = goals
             .iter()
@@ -57585,7 +57585,6 @@ mod r68a_tests {
             "PERMAGENT_REVIEWER_GATE_TIMEOUT_SECS"
         );
         assert_eq!(DEFAULT_REVIEWER_GATE_TIMEOUT_SECS, 300);
-        assert!(DEFAULT_REVIEWER_GATE_TIMEOUT_SECS >= 300);
         assert_eq!(REVIEWER_GATE_SALVAGE_TIMEOUT_SECS, 120);
     }
 

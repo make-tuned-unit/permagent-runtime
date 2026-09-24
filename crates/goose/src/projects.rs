@@ -1267,7 +1267,7 @@ mod tests {
             &pool,
             CreateProject {
                 name: "Ghost".to_string(),
-                root_path: Some(missing.to_string_lossy().into_owned().into()),
+                root_path: Some(missing.to_string_lossy().into_owned()),
                 ..Default::default()
             },
         )

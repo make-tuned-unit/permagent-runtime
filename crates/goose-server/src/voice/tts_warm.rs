@@ -276,7 +276,9 @@ mod tests {
     }
 
     impl SlotWarmFakeTts {
-        fn new(label: &'static str) -> (Arc<dyn TextToSpeech>, Arc<Mutex<Vec<&'static str>>>) {
+        fn with_calls(
+            label: &'static str,
+        ) -> (Arc<dyn TextToSpeech>, Arc<Mutex<Vec<&'static str>>>) {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let tts: Arc<dyn TextToSpeech> = Arc::new(Self {
                 label,
@@ -317,8 +319,8 @@ mod tests {
         static TEST_GEN: AtomicU64 = AtomicU64::new(1);
         let generation = || TEST_GEN.load(Ordering::Relaxed);
 
-        let (tts_a, calls_a) = SlotWarmFakeTts::new("A");
-        let (tts_b, calls_b) = SlotWarmFakeTts::new("B");
+        let (tts_a, calls_a) = SlotWarmFakeTts::with_calls("A");
+        let (tts_b, calls_b) = SlotWarmFakeTts::with_calls("B");
         let slot: Arc<RwLock<Option<Arc<dyn TextToSpeech>>>> =
             Arc::new(RwLock::new(Some(tts_a.clone())));
 

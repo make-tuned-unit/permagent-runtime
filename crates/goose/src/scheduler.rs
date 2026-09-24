@@ -4298,7 +4298,7 @@ mod tests {
         let at = src
             .find("SessionType::Scheduled,")
             .expect("the scheduled run is still created here");
-        let after = &src[at..];
+        let after = src.get(at..).expect("find returns a char boundary");
         let begins = after
             .find("begin_budget_task")
             .expect("a scheduled run must open a budget task or it cannot spend");

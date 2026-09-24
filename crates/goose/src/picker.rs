@@ -132,7 +132,7 @@ pub fn base_url() -> String {
     // data parse fixtures directly (`parse_trade_row`, `parse_universe`).
     #[cfg(test)]
     {
-        return "http://127.0.0.1:9".to_string();
+        "http://127.0.0.1:9".to_string()
     }
     #[cfg(not(test))]
     crate::config::Config::global()

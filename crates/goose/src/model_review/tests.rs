@@ -316,9 +316,15 @@ async fn ledger_state_survives_rescans_and_actions_are_atomic() {
     assert_eq!(out.unknown, vec!["[\"nope\"]".to_string()]);
 
     let until = (now + chrono::Duration::days(7)).to_rfc3339();
-    ledger::apply_action(&pool, &[b.clone()], FindingAction::Defer, Some(&until), now)
-        .await
-        .unwrap();
+    ledger::apply_action(
+        &pool,
+        std::slice::from_ref(&b),
+        FindingAction::Defer,
+        Some(&until),
+        now,
+    )
+    .await
+    .unwrap();
 
     // The weekly rescan re-persists every finding; state must not reset.
     let second = report::build(inv, now).unwrap();
@@ -349,9 +355,15 @@ async fn ledger_state_survives_rescans_and_actions_are_atomic() {
     .execute(&pool)
     .await
     .unwrap();
-    ledger::apply_action(&pool, &[a.clone()], FindingAction::Reopen, None, now)
-        .await
-        .unwrap();
+    ledger::apply_action(
+        &pool,
+        std::slice::from_ref(&a),
+        FindingAction::Reopen,
+        None,
+        now,
+    )
+    .await
+    .unwrap();
     let reopened = ledger::entries(&pool, now).await.unwrap();
     let entry = reopened.iter().find(|e| e.key == a).unwrap();
     assert_eq!(entry.state, FindingState::Open);

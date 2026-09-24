@@ -990,14 +990,10 @@ mod tests {
         let mut stream = stream_openai_compat(fake_response(body), log).expect("stream starts");
 
         let started = std::time::Instant::now();
-        loop {
-            match StreamExt::next(&mut stream).await {
-                Some(Ok(_)) => {
-                    panic!("no content was ever sent — there is no real delta to yield")
-                }
-                Some(Err(e)) => panic!("a run of live keep-alives must never trip the stall: {e}"),
-                None => break,
-            }
+        match StreamExt::next(&mut stream).await {
+            Some(Ok(_)) => panic!("no content was ever sent — there is no real delta to yield"),
+            Some(Err(e)) => panic!("a run of live keep-alives must never trip the stall: {e}"),
+            None => {}
         }
         let elapsed = started.elapsed();
         assert!(

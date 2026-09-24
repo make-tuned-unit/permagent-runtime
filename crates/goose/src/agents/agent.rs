@@ -5398,10 +5398,6 @@ mod tests {
         );
     }
 
-    use crate::permission::permission_confirmation::PrincipalType;
-    use crate::providers::base::PermissionRouting;
-    use crate::recipe::Response;
-
     // ── Y-poll-suspend ───────────────────────────────────────────────────
 
     /// Pure `DispatchPollGuard` logic — no DB, no provider, no async: the
@@ -5526,123 +5522,6 @@ mod tests {
     mod suspend_for_dispatched_goals_tests {
         use super::*;
         use crate::session::session_manager::SessionType;
-
-        async fn setup_goal_card(
-            pool: &sqlx::Pool<sqlx::Sqlite>,
-            state_binding: &str,
-        ) -> crate::cards::Card {
-            crate::cards::seed_goal_columns(pool, crate::projects::PERSONAL_PROJECT_ID)
-                .await
-                .unwrap();
-            let col = crate::cards::get_goal_column(
-                pool,
-                crate::projects::PERSONAL_PROJECT_ID,
-                state_binding,
-            )
-            .await
-            .unwrap()
-            .unwrap();
-            crate::cards::create_card(
-                pool,
-                crate::cards::CreateCard {
-                    project_id: crate::projects::PERSONAL_PROJECT_ID.to_string(),
-                    title: format!("Y-poll-suspend test goal ({state_binding})"),
-                    description: None,
-                    card_type: Some("goal".to_string()),
-                    column_id: Some(col.id.clone()),
-                    created_by: None,
-                    // The column alone does not make a card a dispatched goal:
-                    // the drain reads `goal_state` (and `attempt_count`) from
-                    // the metadata, so a card without them is invisible to it
-                    // and the suspension returns instantly. Same shape as
-                    // `setup_goal_in_state` in orchestrator.rs, which is what
-                    // the drain's own passing tests build.
-                    metadata_json: Some(serde_json::json!({
-                        "goal_state": state_binding,
-                        "attempt_count": 1,
-                    })),
-                },
-            )
-            .await
-            .unwrap()
-        }
-
-        /// The drain finds a worker's goal through the SESSION's own goal-id
-        /// extension state (`goal_card_for_worker_session` reads
-        /// `sessions.extension_data`), not through the card's metadata. A
-        /// fixture that only wrote the card's `worker_session_id` left the
-        /// drain with nothing pending, so the suspension returned in ~15µs and
-        /// the test read as "it never waited".
-        async fn link_worker_session(
-            sm: &crate::session::SessionManager,
-            session_id: &str,
-            card_id: &str,
-        ) {
-            let session = sm.get_session(session_id, false).await.unwrap();
-            let mut extension_data = session.extension_data;
-            extension_data.set_extension_state(
-                crate::session::session_manager::GOAL_ID_EXTENSION_NAME,
-                crate::session::session_manager::GOAL_ID_EXTENSION_VERSION,
-                serde_json::Value::String(card_id.to_string()),
-            );
-            sm.update(session_id)
-                .extension_data(extension_data)
-                .apply()
-                .await
-                .unwrap();
-        }
-
-        async fn attach_worker(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, session_id: &str) {
-            let card = crate::cards::get_card(pool, card_id)
-                .await
-                .unwrap()
-                .unwrap();
-            let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-            meta.insert(
-                "worker_session_id".to_string(),
-                serde_json::json!(session_id),
-            );
-            sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
-                .bind(serde_json::Value::Object(meta).to_string())
-                .bind(card_id)
-                .execute(pool)
-                .await
-                .unwrap();
-        }
-
-        async fn move_card_to_state(
-            pool: &sqlx::Pool<sqlx::Sqlite>,
-            card_id: &str,
-            state_binding: &str,
-        ) {
-            let col = crate::cards::get_goal_column(
-                pool,
-                crate::projects::PERSONAL_PROJECT_ID,
-                state_binding,
-            )
-            .await
-            .unwrap()
-            .unwrap();
-            // Both halves, for the same reason the card is created with
-            // metadata: the drain reads the state from `goal_state`, so moving
-            // only the column leaves it seeing the old state forever.
-            let card = crate::cards::get_card(pool, card_id)
-                .await
-                .unwrap()
-                .unwrap();
-            let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-            meta.insert(
-                "goal_state".to_string(),
-                serde_json::Value::String(state_binding.to_string()),
-            );
-            sqlx::query("UPDATE cards SET column_id = ?, metadata_json = ? WHERE id = ?")
-                .bind(&col.id)
-                .bind(serde_json::Value::Object(meta).to_string())
-                .bind(card_id)
-                .execute(pool)
-                .await
-                .unwrap();
-        }
 
         /// What this module can and cannot prove.
         ///
