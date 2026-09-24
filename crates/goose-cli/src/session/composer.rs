@@ -1191,8 +1191,14 @@ fn clear_frame_ansi(rows: usize, height: usize) -> String {
 /// agent's own output painted over. Reproduced against xterm.js 6 on
 /// 2026-09-24. Re-asserting costs a dozen bytes and makes the region
 /// self-healing within one event.
+///
+/// Bracketed paste rides along for the same reason: the replayed tail can
+/// lack the startup `?2004h` too, and the Build tab's follow-up delivery
+/// (followUpDelivery.ts) will not paste until it sees BOTH it and a
+/// parameterized DECSTBM. Both sequences are idempotent, and paste mode is
+/// only ever on while the composer is, so teardown's `?2004l` still wins.
 fn reassert_region_ansi(rows: usize, height: usize) -> String {
-    set_region_ansi(rows, height)
+    format!("{ENABLE_BRACKETED_PASTE}{}", set_region_ansi(rows, height))
 }
 
 /// DECSTBM for a strip of `height` rows pinned at the bottom of `rows`.
@@ -3135,6 +3141,16 @@ mod tests {
         assert_eq!(stale_strip_start(20, 5, 0, 0, 0), 16);
         // A strip taller than the pane never erases above row 1.
         assert_eq!(stale_strip_start(6, 5, 6, 5, 30), 1);
+    }
+
+    #[test]
+    fn the_reasserted_frame_prefix_rearms_bracketed_paste_with_the_region() {
+        // A remounted Build pane replays a tail without the startup modes; the
+        // UI's delivery gate needs ?2004h AND a parameterized DECSTBM.
+        let prefix = reassert_region_ansi(24, 5);
+        assert!(prefix.contains(ENABLE_BRACKETED_PASTE), "{prefix:?}");
+        assert!(prefix.contains("\x1b[1;19r"), "{prefix:?}");
+        assert!(!prefix.contains(DISABLE_BRACKETED_PASTE));
     }
 
     #[test]
