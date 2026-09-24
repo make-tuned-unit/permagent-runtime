@@ -5,7 +5,7 @@ import {
 } from 'react-icons/fi';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
-import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse } from '../../lib/api';
+import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse, type ResolvedModelRoute } from '../../lib/api';
 import { concentric, font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setTheme as setThemeFn, space, type IdleAnim, type ThemePref, type UIDensity, textSize, type } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
@@ -775,6 +775,34 @@ function computeRoleEffective(
   return { display: '(default)', suffix: 'built-in default', provider: null };
 }
 
+/** `GET /config` → `resolved_routes.harness`, or `null` on a daemon that
+ *  predates the coordinator-gate projection (the row then falls back to
+ *  computeRoleEffective over the raw keys). */
+function readResolvedHarness(cfg: unknown): ResolvedModelRoute | null {
+  const routes = (cfg as { resolved_routes?: Record<string, unknown> } | null)?.resolved_routes;
+  const h = routes?.['harness'] as Partial<ResolvedModelRoute> | undefined;
+  if (!h || typeof h.provider !== 'string' || typeof h.model !== 'string' || typeof h.source !== 'string') return null;
+  return { provider: h.provider, model: h.model, source: h.source, notice: typeof h.notice === 'string' ? h.notice : null };
+}
+
+/** The daemon's resolved route, worded like computeRoleEffective. The harness
+ *  entry is AFTER the coordinator gate (model_roles.rs
+ *  `effective_harness_route`): an ungraduated GOOSE_MODEL is replaced at
+ *  launch, and the row must name the model that actually runs. */
+function resolvedRoleEffective(r: ResolvedModelRoute, modelKeyLabel: string): RoleEffective {
+  const p = trimmedOrNull(r.provider);
+  const m = trimmedOrNull(r.model);
+  const suffix = ({
+    configured: `from ${modelKeyLabel}`,
+    session_model: 'from GOOSE_MODEL',
+    default: 'built-in default',
+    disabled: 'session model (explicit)',
+    half_configured: 'half-set pair ignored',
+    coordinator_fallback: 'coordinator fallback',
+  } as Record<string, string>)[r.source] ?? r.source;
+  return { display: p !== null && m !== null ? `${p} / ${m}` : '(no model)', suffix, provider: p };
+}
+
 /**
  * The body of one role row: the current value, a save error if the last write
  * failed, and the control — in that order, at one width.
@@ -789,8 +817,8 @@ function computeRoleEffective(
  * declared could never apply. One body, three rows, so the fourth cannot drift
  * either.
  */
-function RoleRowBody({ testId, display, suffix, error, children }: {
-  testId: string; display: string; suffix?: string | null; error?: string | null;
+function RoleRowBody({ testId, display, suffix, notice, error, children }: {
+  testId: string; display: string; suffix?: string | null; notice?: string | null; error?: string | null;
   children: React.ReactNode;
 }) {
   const { colors } = useThemeHook();
@@ -804,6 +832,7 @@ function RoleRowBody({ testId, display, suffix, error, children }: {
           </span>
         )}
       </div>
+      {notice && <div data-testid={`${testId}-notice`} style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: space.md }}>{notice}</div>}
       {error && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{error}</div>}
       {children}
     </div>
@@ -815,18 +844,23 @@ function RoleRowBody({ testId, display, suffix, error, children }: {
  *  precedence differs (see the comment on that row). */
 function RoleModelRow({
   label, testId, hint, role, modelKey, provider, model,
-  sessionProvider, sessionModel, onSaved,
+  sessionProvider, sessionModel, resolved, onSaved,
 }: {
   label: string; testId: string; hint: string; role: 'chat' | 'harness'; modelKey: string;
   provider: string | null; model: string | null;
   sessionProvider: string | null; sessionModel: string | null;
+  /** The daemon's resolved route for this role, when it sends one. Wins over
+   *  the raw-key mirror below, which cannot see the coordinator gate. */
+  resolved?: ResolvedModelRoute | null;
   onSaved: (provider: string | null, model: string | null) => void;
 }) {
   const [error, setError] = useState<string | null>(null);
   const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const latestSave = useRef(0);
 
-  const effective = computeRoleEffective(provider, model, sessionProvider, sessionModel, modelKey);
+  const effective = resolved
+    ? resolvedRoleEffective(resolved, modelKey)
+    : computeRoleEffective(provider, model, sessionProvider, sessionModel, modelKey);
 
   const savePair = (p: string, m: string) => {
     const request = ++latestSave.current;
@@ -849,7 +883,7 @@ function RoleModelRow({
 
   return (
     <Row label={label} hint={hint}>
-      <RoleRowBody testId={testId} display={effective.display} suffix={effective.suffix} error={error}>
+      <RoleRowBody testId={testId} display={effective.display} suffix={effective.suffix} notice={resolved?.notice ?? null} error={error}>
         <ProviderModelPicker value={{ provider: provider ?? effective.provider, model }} sessionActive={isRoleDisableValue(model ?? '') || isRoleDisableValue(provider ?? '')} onChange={v => savePair(v.provider, v.model)} onUseSession={useSession} aria-label={`${label} provider and model`} />
       </RoleRowBody>
     </Row>
@@ -864,6 +898,9 @@ export function ModelsPanel({ goto }: PanelProps) {
   // Read-only: the model/provider switch itself lives in the provider modal on
   // API keys, and the per-role roster lives on Settings → Agents.
   const [primary, setPrimary] = useState<{ model: string | null; provider: string | null; mode: string | null } | null>(null);
+  // The harness coordinator the daemon says a launch would run (after the
+  // coordinator gate), from the same GET /config read as `primary`.
+  const [harnessResolved, setHarnessResolved] = useState<ResolvedModelRoute | null>(null);
   // Every read effect in this panel takes `configRev` so a key changed
   // anywhere else — agent, CLI, second device — re-reads here. The one
   // deliberate exception is the Watcher list below; see the note there.
@@ -878,6 +915,7 @@ export function ModelsPanel({ goto }: PanelProps) {
         provider: (map['GOOSE_PROVIDER'] as string) ?? null,
         mode: ((cfg as Record<string, unknown>)['effective_goose_mode'] as string) ?? null,
       });
+      setHarnessResolved(readResolvedHarness(cfg));
     }).catch(() => {});
     return () => { active = false; };
   }, [configRev]);
@@ -1019,7 +1057,14 @@ export function ModelsPanel({ goto }: PanelProps) {
           model={harnessCfg?.model ?? null}
           sessionProvider={primary?.provider ?? null}
           sessionModel={primary?.model ?? null}
-          onSaved={(p, m) => setHarnessCfg({ provider: p, model: m })}
+          resolved={harnessResolved}
+          onSaved={(p, m) => {
+            setHarnessCfg({ provider: p, model: m });
+            // The gate's answer depends on the new pair; re-read it rather
+            // than keep showing the previous route's verdict.
+            setHarnessResolved(null);
+            api.getConfig().then(cfg => setHarnessResolved(readResolvedHarness(cfg))).catch(() => {});
+          }}
         />
       </Section>
 

@@ -192,6 +192,80 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
     expect(allowed.setModelRoute).toHaveBeenCalledWith('chat', 'anthropic', 'claude-sonnet-5');
   });
 
+  it('shows the coordinator the daemon resolved for Harness, with its notice, not the raw GOOSE_MODEL', async () => {
+    // The bug: the row read GOOSE_MODEL and printed
+    // "anthropic / claude-haiku-4-5 · from GOOSE_MODEL", but a coding-harness
+    // launch runs the coordinator gate and replaces an ungraduated model.
+    // resolved_routes.harness is that gate's answer (model_roles.rs
+    // effective_harness_route).
+    const notice = 'anthropic/claude-haiku-4-5 is not graduated as a coordinator; using openai/gpt-5.4-mini';
+    allowed.getConfig.mockResolvedValue({
+      config: { GOOSE_PROVIDER: 'anthropic', GOOSE_MODEL: 'claude-haiku-4-5' },
+      effective_goose_mode: 'auto',
+      resolved_routes: {
+        chat: { provider: 'anthropic', model: 'claude-haiku-4-5', source: 'session_model' },
+        harness: { provider: 'openai', model: 'gpt-5.4-mini', source: 'coordinator_fallback', notice },
+      },
+    } as never);
+    await mount(vi.fn());
+    const harness = roleRow('harness');
+    expect(harness.textContent).toContain('openai / gpt-5.4-mini');
+    expect(harness.textContent).toContain('coordinator fallback');
+    expect(harness.textContent).not.toContain('from GOOSE_MODEL');
+    expect(harness.querySelector('[data-testid="role-row-harness-notice"]')?.textContent).toBe(notice);
+    // The picker opens on the provider the row names.
+    expect(harness.querySelector('[data-picker="harness"]')?.getAttribute('data-value-provider')).toBe('openai');
+    // Chat has no gate: it still reads the session model.
+    expect(roleRow('chat').textContent).toContain('anthropic / claude-haiku-4-5');
+    expect(roleRow('chat').textContent).toContain('from GOOSE_MODEL');
+    expect(roleRow('chat').querySelector('[data-testid="role-row-chat-notice"]')).toBeNull();
+  });
+
+  it('shows no notice when the resolved harness route is the one configured', async () => {
+    allowed.getConfig.mockResolvedValue({
+      config: {},
+      effective_goose_mode: 'auto',
+      resolved_routes: { harness: { provider: 'openai', model: 'gpt-5.4-mini', source: 'default' } },
+    } as never);
+    await mount(vi.fn());
+    expect(roleRow('harness').textContent).toContain('openai / gpt-5.4-mini');
+    expect(roleRow('harness').textContent).toContain('built-in default');
+    expect(roleRow('harness').querySelector('[data-testid="role-row-harness-notice"]')).toBeNull();
+  });
+
+  it('falls back to the raw-key display when an older daemon sends no harness route', async () => {
+    allowed.getConfig.mockResolvedValue({
+      config: { GOOSE_PROVIDER: 'zai', GOOSE_MODEL: 'glm-5.3' },
+      effective_goose_mode: 'auto',
+      resolved_routes: { chat: { provider: 'zai', model: 'glm-5.3', source: 'session_model' } },
+    } as never);
+    await mount(vi.fn());
+    expect(roleRow('harness').textContent).toContain('zai / glm-5.3');
+    expect(roleRow('harness').textContent).toContain('from GOOSE_MODEL');
+  });
+
+  it('re-reads the resolved harness route after saving a new pair', async () => {
+    await mount(vi.fn());
+    allowed.getConfig.mockResolvedValue({
+      config: {},
+      effective_goose_mode: 'auto',
+      resolved_routes: {
+        harness: {
+          provider: 'anthropic', model: 'claude-sonnet-5', source: 'configured',
+          notice: 'anthropic/claude-sonnet-5 is not graduated as a coordinator, but it was chosen explicitly, so it stays in control',
+        },
+      },
+    } as never);
+    const before = allowed.getConfig.mock.calls.length;
+    await act(async () => { choose('harness').click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(allowed.setModelRoute).toHaveBeenCalledWith('harness', 'anthropic', 'claude-sonnet-5');
+    expect(allowed.getConfig.mock.calls.length).toBeGreaterThan(before);
+    expect(roleRow('harness').textContent).toContain('anthropic / claude-sonnet-5');
+    expect(roleRow('harness').textContent).toContain('from harness_model');
+    expect(roleRow('harness').textContent).toContain('chosen explicitly');
+  });
+
   it('renders the Harness row as running on the session model when harness_model is "session"', async () => {
     mockRoleConfig({ harness_model: 'session' });
     await mount(vi.fn());

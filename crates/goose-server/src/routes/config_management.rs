@@ -87,7 +87,16 @@ pub struct ConfigResponse {
 pub struct ResolvedModelRoute {
     pub provider: String,
     pub model: String,
+    /// `configured` | `session_model` | `default` | `half_configured` |
+    /// `disabled` — where the route came from — or, for `harness` only,
+    /// `coordinator_fallback` when the coordinator gate replaced the
+    /// requested route with a graduated one.
     pub source: String,
+    /// A plain-words sentence when the route shown is not simply the one the
+    /// keys name (today only `harness`, from the coordinator gate). Absent
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 fn source_label(source: RoleModelSource) -> &'static str {
@@ -110,6 +119,27 @@ fn resolved_route(
         provider,
         model,
         source: source.to_string(),
+        notice: None,
+    }
+}
+
+/// The harness row: the coordinator a coding-harness launch from config would
+/// actually run, after `permagent::config::gate_harness_coordinator` — not the
+/// bare `harness_*`/`GOOSE_*` keys, which an ungraduated model's launch
+/// quietly overrides.
+fn harness_resolved_route(
+    effective: permagent::config::EffectiveHarnessRoute,
+) -> ResolvedModelRoute {
+    let source = if effective.outcome == Some(permagent::config::HarnessGateOutcome::Rerouted) {
+        "coordinator_fallback"
+    } else {
+        source_label(effective.source)
+    };
+    ResolvedModelRoute {
+        provider: effective.route.provider,
+        model: effective.route.model,
+        source: source.to_string(),
+        notice: effective.notice,
     }
 }
 
@@ -126,7 +156,7 @@ fn resolved_model_routes() -> HashMap<String, ResolvedModelRoute> {
     let chat_route = chat.route.map(|route| (route.provider, route.model));
 
     let voice = permagent::config::voice_model_from_config();
-    let mut routes = HashMap::with_capacity(2);
+    let mut routes = HashMap::with_capacity(3);
     routes.insert(
         "chat".to_string(),
         resolved_route(chat_route, fallback(), source_label(chat.source)),
@@ -143,12 +173,17 @@ fn resolved_model_routes() -> HashMap<String, ResolvedModelRoute> {
                     permagent::config::VoiceModelSource::HalfConfigured => "half_configured",
                 }
                 .to_string(),
+                notice: None,
             },
             // `None` is the explicit voice=session choice. Expose the
             // effective session route rather than leaving the mobile control
             // blank, while retaining the raw keys for the settings editor.
             None => resolved_route(None, fallback(), "session_model"),
         },
+    );
+    routes.insert(
+        "harness".to_string(),
+        harness_resolved_route(permagent::config::effective_harness_route_from_config()),
     );
     routes
 }
@@ -1884,6 +1919,7 @@ mod tests {
                 provider: "anthropic".into(),
                 model: "claude-haiku".into(),
                 source: "configured".into(),
+                notice: None,
             }
         );
 
@@ -1903,11 +1939,39 @@ mod tests {
             provider: "custom_deepseek".into(),
             model: "deepseek-chat".into(),
             source: "default".into(),
+            notice: None,
         };
         let value = serde_json::to_value(response).expect("route is JSON-compatible");
         assert_eq!(value["provider"], "custom_deepseek");
         assert_eq!(value["model"], "deepseek-chat");
         assert_eq!(value["source"], "default");
+        // Absent, not null, when there is nothing to say — older mobile
+        // decoders never see a new key on chat/voice.
+        assert!(value.get("notice").is_none());
+    }
+
+    #[test]
+    fn harness_projection_shows_the_gated_coordinator_and_its_notice() {
+        let session_haiku = |key: &str| match key {
+            "GOOSE_PROVIDER" => Some("anthropic".to_string()),
+            "GOOSE_MODEL" => Some("claude-haiku-4-5".to_string()),
+            _ => None,
+        };
+        let route =
+            harness_resolved_route(permagent::config::effective_harness_route(session_haiku));
+        let measured = ModelRole::Harness.measured_default();
+        assert_eq!(route.provider, measured.provider);
+        assert_eq!(route.model, measured.model);
+        assert_eq!(route.source, "coordinator_fallback");
+        let value = serde_json::to_value(&route).expect("route is JSON-compatible");
+        let notice = value["notice"]
+            .as_str()
+            .expect("a rerouted harness says why");
+        assert!(notice.contains("anthropic/claude-haiku-4-5"), "{notice}");
+
+        let fresh = harness_resolved_route(permagent::config::effective_harness_route(|_| None));
+        assert_eq!(fresh.source, "default");
+        assert_eq!(fresh.notice, None);
     }
 
     #[tokio::test]

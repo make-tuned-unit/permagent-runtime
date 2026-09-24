@@ -35,8 +35,10 @@ pub use extensions::{
 };
 pub use goose_mode::GooseMode;
 pub use model_roles::{
-    assess_harness_coordinator, resolve_role_model, role_model_from_config, CoordinatorEligibility,
-    ModelRole, RoleModel, RoleModelSource, RoleResolution, HARNESS_COORDINATOR_MIN_ORCHESTRATION,
+    assess_harness_coordinator, effective_harness_route, effective_harness_route_from_config,
+    gate_harness_coordinator, resolve_role_model, role_model_from_config, CoordinatorEligibility,
+    EffectiveHarnessRoute, HarnessGateDecision, HarnessGateOutcome, ModelRole, RoleModel,
+    RoleModelSource, RoleResolution, HARNESS_COORDINATOR_MIN_ORCHESTRATION,
 };
 pub use permission::PermissionManager;
 pub use secret_source::{SecretSource, SecretSourceError};
