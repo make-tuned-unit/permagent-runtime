@@ -288,7 +288,13 @@ pub enum EgressKind {
     /// An embedding request.
     Embedding,
     /// A product-analytics telemetry POST (e.g. the session-started event).
+    /// Permagent's OWN usage beacon about the user — not the user's analytics.
     Telemetry,
+    /// Pulling the USER'S OWN site analytics into Permagent: a project's
+    /// first-party analytics drain, or a connected analytics provider's stats
+    /// API. Inbound data the user owns, so it must not be counted as
+    /// "telemetry" (~74k of 76k "telemetry" audit rows were these drains).
+    AnalyticsPull,
     /// An agentic code scanner driving its own cloud model over the user's source.
     CodeScan,
     /// A crash-report upload (no ambient path exists today; a future one must
@@ -302,6 +308,7 @@ impl EgressKind {
             EgressKind::Inference => "inference",
             EgressKind::Embedding => "embedding",
             EgressKind::Telemetry => "telemetry",
+            EgressKind::AnalyticsPull => "analytics_pull",
             EgressKind::CodeScan => "code_scan",
             EgressKind::CrashReport => "crash_report",
         }
@@ -699,6 +706,12 @@ mod tests {
     fn telemetry_and_crash_egress_kinds_render_stable_strings() {
         assert_eq!(EgressKind::Telemetry.as_str(), "telemetry");
         assert_eq!(EgressKind::CrashReport.as_str(), "crash_report");
+        // The user's own analytics drains are a distinct kind, never "telemetry".
+        assert_eq!(EgressKind::AnalyticsPull.as_str(), "analytics_pull");
+        assert_ne!(
+            EgressKind::AnalyticsPull.as_str(),
+            EgressKind::Telemetry.as_str()
+        );
     }
 
     /// The load-bearing #327 guarantee at the policy layer: under sovereign mode

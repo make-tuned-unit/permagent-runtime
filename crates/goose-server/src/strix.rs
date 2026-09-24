@@ -137,6 +137,11 @@ pub fn spawn(state: Arc<AppState>) {
             }
         } else {
             tokio::time::sleep(STARTUP_DELAY).await;
+            // `last_sweep` is in-memory, so without this seed EVERY daemon
+            // restart swept STARTUP_DELAY later (12 sweeps in 3h on
+            // 2026-09-20). The durable record is each project's
+            // `strix_last_attempt`: the newest one is when the last sweep ran.
+            last_sweep = seeded_last_sweep(&state).await;
         }
         loop {
             let due = last_sweep.is_none_or(|t| t.elapsed() >= sweep_interval());
@@ -381,6 +386,52 @@ async fn never_scanned(state: &Arc<AppState>) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// The in-memory sweep clock, rebuilt from the database after a restart.
+/// None (sweep on the next due check) when there is no stamp or the DB is not
+/// readable — the failure mode is one extra sweep, never a skipped one.
+async fn seeded_last_sweep(state: &Arc<AppState>) -> Option<tokio::time::Instant> {
+    let pool = state.session_manager().pool_clone().await.ok()?;
+    let projects = projects::list_projects(&pool, Some("active")).await.ok()?;
+    let since = time_since_last_sweep(
+        projects.iter().map(|p| &p.metadata_json),
+        chrono::Utc::now(),
+    )?;
+    // The monotonic clock cannot go back further than the machine's uptime.
+    // Right after a reboot, a sweep that is not yet due is seeded as "now":
+    // late by at most the uptime, never an extra sweep.
+    let seeded = tokio::time::Instant::now()
+        .checked_sub(since)
+        .or_else(|| (since < sweep_interval()).then(tokio::time::Instant::now));
+    if seeded.is_some() {
+        tracing::info!(
+            target: "permagentd::strix",
+            "last sweep was {}m ago (from strix_last_attempt) — next due in {}m",
+            since.as_secs() / 60,
+            sweep_interval().saturating_sub(since).as_secs() / 60
+        );
+    }
+    seeded
+}
+
+/// How long ago the most recent sweep attempt happened, from the newest
+/// `strix_last_attempt` (falling back to `last_scan`) across projects. A
+/// stamp in the future (clock skew) reads as "just now". None when no
+/// project has a parseable stamp.
+fn time_since_last_sweep<'a>(
+    metas: impl IntoIterator<Item = &'a serde_json::Value>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<Duration> {
+    let newest = metas
+        .into_iter()
+        .filter_map(|m| {
+            chrono::DateTime::parse_from_rfc3339(&rotation_stamp_from_meta(m))
+                .ok()
+                .map(|t| t.with_timezone(&chrono::Utc))
+        })
+        .max()?;
+    Some((now - newest).to_std().unwrap_or(Duration::ZERO))
 }
 
 /// Least-recently-attempted stamp for rotation. Prefer `strix_last_attempt`
@@ -641,28 +692,107 @@ fn strix_llm_secret_name(model: &str) -> Option<&'static str> {
     }
 }
 
-/// Last non-empty line of stderr, falling back to stdout. Strix often prints
-/// the real failure on stdout (or nothing at all), which used to log as
-/// `scanner exited exit status: 2: ` with a blank reason.
+/// The scanner's failure reason: stderr first, falling back to stdout. Strix
+/// often prints the real failure on stdout (or nothing at all), which used to
+/// log as `scanner exited exit status: 2: ` with a blank reason.
+///
+/// Strix renders errors inside a box-drawn (rich) panel, so "the last line"
+/// was the panel's bottom border and the stored error read `╰────╯`. The
+/// reason is now the text INSIDE the last panel (see [`stream_failure_detail`]).
 fn scanner_failure_detail(output: &std::process::Output) -> String {
-    let last_nonempty = |bytes: &[u8]| {
-        String::from_utf8_lossy(bytes)
-            .lines()
-            .map(str::trim)
-            .rfind(|l| !l.is_empty())
-            .unwrap_or("")
-            .to_string()
-    };
-    let stderr = last_nonempty(&output.stderr);
+    let stderr = stream_failure_detail(&String::from_utf8_lossy(&output.stderr));
     if !stderr.is_empty() {
         return stderr;
     }
-    let stdout = last_nonempty(&output.stdout);
+    let stdout = stream_failure_detail(&String::from_utf8_lossy(&output.stdout));
     if !stdout.is_empty() {
         return stdout;
     }
     "(scanner printed nothing)".to_string()
 }
+
+/// Box-drawing characters rich uses for panel borders (square and rounded).
+const PANEL_CHARS: &[char] = &[
+    '│', '╭', '╮', '╰', '╯', '─', '┌', '┐', '└', '┘', '┃', '━', '┏', '┓', '┗', '┛', '║', '═', '╔',
+    '╗', '╚', '╝',
+];
+
+/// Drop ANSI SGR/CSI escapes (`ESC [ ... final-byte`) in case the scanner
+/// forced colour on a pipe.
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A line's text with panel borders and surrounding whitespace removed.
+fn panel_text(line: &str) -> String {
+    line.trim()
+        .trim_matches(|c: char| PANEL_CHARS.contains(&c) || c.is_whitespace())
+        .to_string()
+}
+
+/// The failure reason inside one output stream.
+///
+/// If the stream contains a box-drawn panel, return the text inside the LAST
+/// one: inner lines with the `│` borders stripped and blank lines dropped,
+/// joined by a space, prefixed with the panel title when the top border has
+/// one (`╭─ Error ─╮` → `Error: ...`). Otherwise (or for an empty panel), the
+/// last line that is not pure border. Empty when the stream has no text.
+fn stream_failure_detail(raw: &str) -> String {
+    let lines: Vec<String> = raw.lines().map(strip_ansi).collect();
+    const TOP: [char; 4] = ['╭', '┌', '┏', '╔'];
+    const BOTTOM: [char; 4] = ['╰', '└', '┗', '╚'];
+    fn starts_with(line: &str, set: &[char]) -> bool {
+        line.trim_start().starts_with(set)
+    }
+    let bottom = lines.iter().rposition(|l| starts_with(l.as_str(), &BOTTOM));
+    if let Some(bottom) = bottom {
+        let top = lines[..bottom]
+            .iter()
+            .rposition(|l| starts_with(l.as_str(), &TOP));
+        if let Some(top) = top {
+            let inner: Vec<String> = lines[top + 1..bottom]
+                .iter()
+                .map(|l| panel_text(l))
+                .filter(|l| !l.is_empty())
+                .collect();
+            if !inner.is_empty() {
+                let body = inner.join(" ");
+                let title = panel_text(&lines[top]);
+                return if title.is_empty() {
+                    body
+                } else {
+                    format!("{title}: {body}")
+                };
+            }
+        }
+    }
+    lines
+        .iter()
+        .map(|l| panel_text(l))
+        .rfind(|l| !l.is_empty())
+        .unwrap_or_default()
+}
+
+/// Environment that switches off the scanner's own usage telemetry. Forced on
+/// every run, local and remote (the remote export list is built from
+/// [`scanner_env`], see [`remote_scan_exports`]).
+const SCANNER_PRIVACY_ENV: &[(&str, &str)] = &[("STRIX_TELEMETRY", "false")];
 
 /// Build the scanner's LLM environment from Permagent's own config/keychain,
 /// so Guard setup never touches the launchd plist: the model rides
@@ -670,8 +800,15 @@ fn scanner_failure_detail(output: &std::process::Output) -> String {
 /// stored for chat (looked up by the model string's provider prefix). If the
 /// user exported STRIX_LLM/LLM_API_KEY themselves, those win — we only fill
 /// what is absent.
+///
+/// It also always carries [`SCANNER_PRIVACY_ENV`]: strix ships PostHog/Scarf
+/// usage beacons that are ON unless `STRIX_TELEMETRY=false`, and the Guard
+/// must not phone a third party home just because the user enabled a scan.
 fn scanner_env() -> Vec<(&'static str, String)> {
-    let mut env = Vec::new();
+    let mut env: Vec<(&'static str, String)> = SCANNER_PRIVACY_ENV
+        .iter()
+        .map(|(k, v)| (*k, (*v).to_string()))
+        .collect();
     let config = permagent::config::Config::global();
     let model = strix_model();
     if std::env::var("STRIX_LLM").is_err() {
@@ -1046,6 +1183,12 @@ async fn preflight() -> Result<(), String> {
     preflight_local().await
 }
 
+/// Local preflight's Docker failure. Names the missing `strix_docker_ssh`
+/// because that is the only way this path runs.
+const LOCAL_DOCKER_DOWN: &str = "Docker is not running on this Mac (`docker info` failed) — \
+     strix_docker_ssh is not set, so the Guard tried this Mac's Docker. Set \
+     strix_docker_ssh to scan on a remote Docker host instead";
+
 async fn preflight_local() -> Result<(), String> {
     let mut missing = Vec::new();
     if !strix_bin_present() {
@@ -1064,7 +1207,10 @@ async fn preflight_local() -> Result<(), String> {
         Ok(Ok(status)) if status.success()
     );
     if !docker_ok {
-        missing.push("Docker is not running (`docker info` failed)".to_string());
+        // Only reached when `strix_docker_ssh` is unset (see `preflight`):
+        // say so, or a user whose scans are meant to run on another host
+        // (and whose config lost that key) sees a baffling "Docker down".
+        missing.push(LOCAL_DOCKER_DOWN.to_string());
     }
     if missing.is_empty() {
         Ok(())
@@ -1221,6 +1367,23 @@ async fn scan_project(target: &std::path::Path) -> Result<Vec<Finding>, String> 
     scan_project_local(target).await
 }
 
+/// The `export ...;` prefix for the remote (strix_docker_ssh) scan: PATH and
+/// the Colima DOCKER_HOST, then every scanner env var single-quoted — which
+/// includes `STRIX_TELEMETRY=false` so the M1 run is as quiet as a local one.
+fn remote_scan_exports(env: &[(&'static str, String)]) -> String {
+    let mut exports = String::from(
+        "export PATH=/opt/homebrew/bin:$HOME/.local/bin:/usr/bin:/bin; \
+         export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock; ",
+    );
+    for (k, v) in env {
+        if *k == "DOCKER_HOST" {
+            continue;
+        }
+        exports.push_str(&format!("export {k}={}; ", posix_single_quote(v)));
+    }
+    exports
+}
+
 async fn scan_project_remote(
     target: &std::path::Path,
     ssh_target: &str,
@@ -1239,16 +1402,7 @@ async fn scan_project_remote(
         &format!("rm -rf \"$HOME/{runs_rel}\" && mkdir -p \"$HOME/{runs_rel}\""),
     )
     .await?;
-    let mut exports = String::from(
-        "export PATH=/opt/homebrew/bin:$HOME/.local/bin:/usr/bin:/bin; \
-         export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock; ",
-    );
-    for (k, v) in scanner_env() {
-        if k == "DOCKER_HOST" {
-            continue;
-        }
-        exports.push_str(&format!("export {k}={}; ", posix_single_quote(&v)));
-    }
+    let exports = remote_scan_exports(&scanner_env());
     let remote = remote_strix_command(&exports, &rel, &runs_rel);
     let mut cmd = ssh_command(ssh_target);
     cmd.arg(remote)
@@ -1656,6 +1810,113 @@ mod tests {
             stderr: b"".to_vec(),
         };
         assert_eq!(scanner_failure_detail(&empty), "(scanner printed nothing)");
+    }
+
+    /// Strix prints its errors inside a rich panel. The stored reason was the
+    /// bottom border (`╰────╯`); it must be the text inside the panel.
+    #[test]
+    fn scanner_failure_reads_inside_the_last_box_drawn_panel() {
+        let stdout = "\
+Strix v0.4 starting scan of /Users/me/project
+╭──────────────────────────── STRIX ─────────────────────────────╮
+│                                                                │
+│  Scan started                                                  │
+│                                                                │
+╰────────────────────────────────────────────────────────────────╯
+Some progress line
+╭──────────────────────────── Error ─────────────────────────────╮
+│                                                                │
+│  LLM CONNECTION FAILED                                         │
+│  litellm.RateLimitError: OpenAIException - Rate limit reached  │
+│  for gpt-5.4-mini on tokens per min (TPM)                      │
+│                                                                │
+╰────────────────────────────────────────────────────────────────╯
+";
+        let out = std::process::Output {
+            status: std::os::unix::process::ExitStatusExt::from_raw(1 << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: b"\n".to_vec(),
+        };
+        assert_eq!(
+            scanner_failure_detail(&out),
+            "Error: LLM CONNECTION FAILED litellm.RateLimitError: OpenAIException - \
+             Rate limit reached for gpt-5.4-mini on tokens per min (TPM)"
+        );
+
+        // Untitled panel, ANSI colour forced on, on stderr.
+        let stderr = "\x1b[31m╭──────────╮\x1b[0m\n│ \x1b[1mboom\x1b[0m     │\n╰──────────╯\n";
+        assert_eq!(stream_failure_detail(stderr), "boom");
+
+        // A panel with nothing inside falls back to the last non-border line.
+        assert_eq!(
+            stream_failure_detail("real reason\n╭────╮\n│    │\n╰────╯\n"),
+            "real reason"
+        );
+        // A stream that is only borders has no reason; stdout is used next.
+        let borders_only = std::process::Output {
+            status: std::os::unix::process::ExitStatusExt::from_raw(1 << 8),
+            stdout: b"docker: permission denied\n".to_vec(),
+            stderr: "╭──╮\n╰──╯\n".as_bytes().to_vec(),
+        };
+        assert_eq!(
+            scanner_failure_detail(&borders_only),
+            "docker: permission denied"
+        );
+    }
+
+    #[test]
+    fn scanner_telemetry_is_off_locally_and_on_the_remote_host() {
+        assert!(SCANNER_PRIVACY_ENV.contains(&("STRIX_TELEMETRY", "false")));
+        let env: Vec<(&'static str, String)> = SCANNER_PRIVACY_ENV
+            .iter()
+            .map(|(k, v)| (*k, (*v).to_string()))
+            .chain([
+                ("STRIX_LLM", "openai/x".to_string()),
+                ("DOCKER_HOST", "tcp://evil".to_string()),
+            ])
+            .collect();
+        let exports = remote_scan_exports(&env);
+        assert!(exports.contains("export STRIX_TELEMETRY='false'; "));
+        assert!(exports.contains("export STRIX_LLM='openai/x'; "));
+        assert!(exports.contains("export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock; "));
+        assert!(!exports.contains("tcp://evil"));
+    }
+
+    #[test]
+    fn local_docker_failure_names_the_unset_ssh_target() {
+        assert!(LOCAL_DOCKER_DOWN.contains("strix_docker_ssh is not set"));
+        assert!(LOCAL_DOCKER_DOWN.contains("this Mac's Docker"));
+    }
+
+    /// A daemon restart must not reset the sweep clock (12 sweeps in 3h on
+    /// 2026-09-20): the newest stamp across projects is the last sweep.
+    #[test]
+    fn sweep_clock_is_seeded_from_the_newest_attempt_stamp() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-20T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let metas = [
+            serde_json::json!({ LAST_ATTEMPT_KEY: "2026-09-20T09:00:00+00:00" }),
+            serde_json::json!({ LAST_ATTEMPT_KEY: "2026-09-20T11:30:00+00:00",
+                                LAST_SCAN_KEY: "2026-09-19T00:00:00+00:00" }),
+            // Pre-attempt-key metadata falls back to last_scan.
+            serde_json::json!({ LAST_SCAN_KEY: "2026-09-20T10:00:00+00:00" }),
+            serde_json::json!({}),
+            serde_json::json!({ LAST_ATTEMPT_KEY: "not a time" }),
+        ];
+        assert_eq!(
+            time_since_last_sweep(metas.iter(), now),
+            Some(Duration::from_secs(30 * 60))
+        );
+        // Clock skew: a future stamp reads as "just swept", never negative.
+        let future = [serde_json::json!({ LAST_ATTEMPT_KEY: "2026-09-20T13:00:00Z" })];
+        assert_eq!(
+            time_since_last_sweep(future.iter(), now),
+            Some(Duration::ZERO)
+        );
+        // Never swept: no seed, so the loop's normal first-sweep path runs.
+        let none = [serde_json::json!({}), serde_json::json!({ "other": 1 })];
+        assert_eq!(time_since_last_sweep(none.iter(), now), None);
     }
 
     /// Preflight failure files ONE briefing, not one per 15-minute tick — and

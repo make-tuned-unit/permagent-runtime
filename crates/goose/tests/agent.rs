@@ -5,6 +5,19 @@ use futures::StreamExt;
 use permagent::agents::{Agent, AgentEvent, GoosePlatform};
 use permagent::config::extensions::{set_extension, ExtensionEntry};
 
+/// Pin `Config::global()` to a per-run temp root BEFORE any test touches it.
+///
+/// This binary is an integration test, so the library's own `cfg(test)` pin
+/// never runs for it: `test_batch_summarization_preserves_all_summaries` set
+/// `GOOSE_TOOL_CALL_CUTOFF` and `setup_agent_with_extension_manager` rewrote
+/// the `extensions` section of the developer's REAL `~/.permagent/config.yaml`
+/// whenever `PERMAGENT_PATH_ROOT` was not exported by the runner — and did it
+/// concurrently with the live daemon's own writes to that file.
+#[ctor::ctor(unsafe)]
+fn pin_config_for_this_binary() {
+    permagent::config::base::pin_config_to_temp_root_for_tests();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

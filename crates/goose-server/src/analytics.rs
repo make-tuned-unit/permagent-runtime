@@ -284,7 +284,7 @@ pub async fn fetch_stats(
     // row is written for a request that was never buildable.
     validate_connection(conn)?;
     let base = normalize_base_url(&conn.base_url)?;
-    if !sovereignty::guard_outbound_egress(EgressKind::Telemetry, &base, conn.provider.label())
+    if !sovereignty::guard_outbound_egress(EgressKind::AnalyticsPull, &base, conn.provider.label())
         .await
     {
         // The guard refuses for two different reasons and they must not be
