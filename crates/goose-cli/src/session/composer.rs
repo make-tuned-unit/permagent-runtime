@@ -1175,6 +1175,26 @@ fn clear_frame_ansi(rows: usize, height: usize) -> String {
     ansi
 }
 
+/// DECSTBM, sent with EVERY frame and every output handoff rather than only
+/// when the composer's cached geometry changes.
+///
+/// The terminal can drop the region without the harness being told: xterm.js
+/// resets the margins on every resize (`Buffer.resize` sets `scrollBottom`
+/// back to the last row), and the Build tab re-creates its xterm on a pane
+/// toggle and replays a bounded tail of the PTY output that no longer holds
+/// the one DECSTBM sent at startup. Neither changes TIOCGWINSZ, so
+/// `geometry_changed` stays false and the region was never re-sent. With no
+/// region, the streamed newline after `prepare_output` walks the cursor into
+/// the pinned strip, each line then scrolls the whole screen by one, and the
+/// strip's top row — the status line — is left behind above the next frame:
+/// one "• Thinking (39s · …", "(40s · …" row per streamed line, and the
+/// agent's own output painted over. Reproduced against xterm.js 6 on
+/// 2026-09-24. Re-asserting costs a dozen bytes and makes the region
+/// self-healing within one event.
+fn reassert_region_ansi(rows: usize, height: usize) -> String {
+    set_region_ansi(rows, height)
+}
+
 /// DECSTBM for a strip of `height` rows pinned at the bottom of `rows`.
 fn set_region_ansi(rows: usize, height: usize) -> String {
     format!("\x1b[1;{}r", region_bottom_row(rows, height))
@@ -1182,6 +1202,52 @@ fn set_region_ansi(rows: usize, height: usize) -> String {
 
 fn region_bottom_row(rows: usize, height: usize) -> usize {
     rows.saturating_sub(height).max(1)
+}
+
+/// Terminal rows a set of already-painted rows occupies once the terminal has
+/// reflowed them to `cols` columns.
+///
+/// xterm.js (the Build tab's terminal) reflows on a width change: every
+/// frame row is padded to the OLD full width, so narrowing a 90-column pane
+/// to 45 turns each of them into two rows. The old strip is then twice as
+/// tall as `last_height`, and clearing only `last_height` rows left its top
+/// half — status line, top border, half the field — standing above the new
+/// frame. That is the "Ready line and empty box drawn twice" report
+/// (2026-09-24, Build split with the in-app Browser). Widening never splits a
+/// row, so each counts once.
+fn reflowed_rows(row_widths: &[usize], cols: usize) -> usize {
+    let cols = cols.max(1);
+    row_widths.iter().map(|&w| w.div_ceil(cols).max(1)).sum()
+}
+
+/// First row (1-based) of the band to erase before a frame painted for a new
+/// geometry. Covers both the old strip — measured AFTER reflow, anchored at
+/// the new bottom, and also at its old row numbers — and the new one, so no
+/// stale copy survives above whichever is taller.
+fn stale_strip_start(
+    rows: usize,
+    new_height: usize,
+    last_rows: usize,
+    last_height: usize,
+    reflowed_old_height: usize,
+) -> usize {
+    let new_start = rows.saturating_sub(new_height) + 1;
+    if last_rows == 0 {
+        return new_start.max(1);
+    }
+    let old_start = last_rows.saturating_sub(last_height) + 1;
+    let reflowed_start = rows.saturating_sub(reflowed_old_height.max(last_height)) + 1;
+    new_start.min(old_start).min(reflowed_start).max(1)
+}
+
+/// Display width of every row of the frame [`paint_frame_ansi`] draws, so the
+/// next geometry change can tell how many rows that frame became.
+fn frame_row_widths(state: &ComposerState, cols: usize) -> Vec<usize> {
+    render_ansi(state, cols)
+        .iter()
+        .map(String::as_str)
+        .map(measure_text_width)
+        .collect()
 }
 
 /// The exact bytes one composer frame writes: every row is addressed
@@ -1559,6 +1625,9 @@ mod tty {
         last_height: usize,
         last_rows: usize,
         last_cols: usize,
+        /// Display width of each row of the last painted frame; see
+        /// [`reflowed_rows`].
+        last_frame_widths: Vec<usize>,
         last_busy_second: Option<u64>,
         output_prepared: bool,
         has_output_cursor: bool,
@@ -1624,6 +1693,7 @@ mod tty {
                 last_height: 0,
                 last_rows: 0,
                 last_cols: 0,
+                last_frame_widths: Vec::new(),
                 last_busy_second: None,
                 output_prepared: false,
                 has_output_cursor: false,
@@ -1729,14 +1799,17 @@ mod tty {
                 return String::new();
             }
             // Erase from wherever the old frame started down to the bottom:
-            // after a resize the old and new strips are different rows.
-            let new_start = self.rows.saturating_sub(height) + 1;
-            let old_start = if self.last_rows == 0 {
-                new_start
-            } else {
-                self.last_rows.saturating_sub(self.last_height) + 1
-            };
-            let clear_from = old_start.min(new_start).max(1);
+            // after a resize the old and new strips are different rows, and
+            // after a narrowing the terminal has already reflowed the old one
+            // into more rows than it was painted with.
+            let reflowed = reflowed_rows(&self.last_frame_widths, self.cols);
+            let clear_from = stale_strip_start(
+                self.rows,
+                height,
+                self.last_rows,
+                self.last_height,
+                reflowed,
+            );
             let mut ansi = clear_frame_ansi(self.rows, self.rows.saturating_sub(clear_from) + 1);
             ansi.push_str(&set_region_ansi(self.rows, height));
             self.has_output_cursor = false;
@@ -1747,17 +1820,27 @@ mod tty {
         }
 
         pub fn paint(&mut self) {
-            let mut out = self.resync_region();
-            if self.output_prepared {
+            let mut out = String::new();
+            let prepared = std::mem::take(&mut self.output_prepared);
+            if prepared {
                 // Preserve partial-line streaming position while the edit cursor
-                // temporarily owns the terminal between output events.
+                // temporarily owns the terminal between output events. Saved
+                // BEFORE anything below moves the cursor: DECSTBM homes it.
                 out.push_str("\x1b[s");
-                self.has_output_cursor = true;
-                self.output_prepared = false;
             }
+            let resync = self.resync_region();
+            if prepared && resync.is_empty() {
+                // A geometry change just erased and re-homed everything, so a
+                // saved stream position would point into stale rows; let
+                // `prepare_output` park at the region bottom instead.
+                self.has_output_cursor = true;
+            }
+            out.push_str(&resync);
+            out.push_str(&reassert_region_ansi(self.rows, self.last_height));
             out.push_str(&paint_frame_ansi(&self.state, self.cols, self.rows));
             print!("{out}");
             let _ = io::stdout().flush();
+            self.last_frame_widths = frame_row_widths(&self.state, self.cols.max(24));
             self.last_busy_second = self.state.busy.then(|| self.state.elapsed_secs());
         }
 
@@ -1766,6 +1849,11 @@ mod tty {
         pub fn prepare_output(&mut self) {
             let mut out = self.resync_region();
             let bottom = self.region_bottom();
+            // Re-assert before handing the cursor to the stream: if the region
+            // is gone, the very next newline scrolls the whole screen and
+            // carries the status row up with it. The restore/park that follows
+            // re-positions the cursor DECSTBM just homed.
+            out.push_str(&reassert_region_ansi(self.rows, self.last_height));
             out.push_str(&prepare_output_ansi(bottom, self.has_output_cursor));
             print!("{out}");
             self.output_prepared = true;
@@ -2942,6 +3030,149 @@ mod tests {
         assert!(!clear_frame_ansi(30, 5).contains('\n'));
     }
 
+    /// The 2026-09-24 QA walk: Build split with the in-app Browser, ~45
+    /// columns. The busy row there is far longer than the pane, and it must
+    /// still be exactly one terminal row: a row that soft-wrapped would spill
+    /// into the box below it.
+    #[test]
+    fn a_long_busy_status_is_cut_to_the_pane_width_not_wrapped() {
+        let mut state = busy_state();
+        state.busy_since = Some(Instant::now() - Duration::from_secs(671));
+        state.phase = TurnPhase::Thinking;
+        state.phase_since = Some(Instant::now() - Duration::from_secs(39));
+        state.turn_tokens = Some(53_300);
+        state.turn_cost_usd = Some(0.41);
+        for width in [24usize, 30, 45, 46, 80] {
+            let frame = render_ansi(&state, width);
+            assert_eq!(frame.len(), composer_rows(&state, width), "width {width}");
+            for row in &frame {
+                assert!(
+                    measure_text_width(row) <= width,
+                    "width {width}: row wider than the pane: {row:?}"
+                );
+            }
+            // Padded to the full width so the previous tick's longer text is
+            // overwritten, never left as a tail.
+            assert_eq!(measure_text_width(&frame[0]), width, "width {width}");
+            assert!(!frame[0].contains('\n') && !frame[0].contains('\r'));
+        }
+        let status = &render_plain(&state, 45)[0];
+        assert!(
+            status.starts_with("• Thinking (39s · turn 671s"),
+            "{status}"
+        );
+        assert!(status.ends_with('…'), "{status}");
+    }
+
+    #[test]
+    fn truncate_counts_display_columns_not_chars() {
+        // Wide (CJK) and emoji cells are two columns each; cutting by char
+        // count would hand the terminal a row twice as wide as it thinks.
+        for max in 1..=12usize {
+            for s in [
+                "漢字漢字漢字漢字",
+                "ab漢c字de",
+                "🙂🙂🙂🙂🙂🙂🙂",
+                "plain ascii text",
+            ] {
+                let cut = truncate(s, max);
+                assert!(
+                    measure_text_width(&cut) <= max.max(1),
+                    "max {max}: {s:?} -> {cut:?}"
+                );
+            }
+        }
+        assert_eq!(truncate("short", 45), "short");
+        assert_eq!(pad_to("漢", 4), "漢  ");
+    }
+
+    #[test]
+    fn a_narrowed_pane_reflows_each_full_width_row_into_several() {
+        // A 5-row strip painted at 90 columns, after the pane narrows to 45.
+        let painted = [90usize; 5];
+        assert_eq!(reflowed_rows(&painted, 45), 10);
+        assert_eq!(reflowed_rows(&painted, 44), 15);
+        assert_eq!(reflowed_rows(&painted, 90), 5);
+        // Widening never splits a row, and an empty row is still a row.
+        assert_eq!(reflowed_rows(&painted, 200), 5);
+        assert_eq!(reflowed_rows(&[0, 0, 3], 45), 3);
+        assert_eq!(reflowed_rows(&[], 45), 0);
+        // A degenerate width must not divide by zero.
+        assert_eq!(reflowed_rows(&[3], 0), 3);
+    }
+
+    #[test]
+    fn the_frame_row_widths_are_the_rows_actually_painted() {
+        let mut state = busy_state();
+        state.buffer = "one\ntwo".into();
+        state.cursor = state.buffer.len();
+        for width in [24usize, 45, 90] {
+            let widths = frame_row_widths(&state, width);
+            assert_eq!(widths.len(), composer_rows(&state, width), "width {width}");
+            assert!(
+                widths.iter().all(|&w| w == width),
+                "width {width}: {widths:?}"
+            );
+            assert_eq!(reflowed_rows(&widths, width), widths.len());
+        }
+    }
+
+    #[test]
+    fn a_resize_erases_the_whole_reflowed_strip() {
+        // 90 → 45 columns on a 20-row pane, 5-row strip: the terminal has
+        // already turned the old strip into rows 11..=20. Clearing only
+        // 16..=20 (the old behaviour) left status + top border + half the
+        // field standing above the new frame.
+        let reflowed = reflowed_rows(&[90; 5], 45);
+        assert_eq!(stale_strip_start(20, 5, 20, 5, reflowed), 11);
+        // Same geometry: exactly the strip, never the stream above it.
+        assert_eq!(stale_strip_start(20, 5, 20, 5, 5), 16);
+        // The strip grew by a row (multi-line draft): the new, taller strip.
+        assert_eq!(stale_strip_start(20, 6, 20, 5, 5), 15);
+        // The pane got shorter: the old rows still count.
+        assert_eq!(stale_strip_start(16, 5, 20, 5, 5), 12);
+        // First frame ever: nothing old to erase.
+        assert_eq!(stale_strip_start(20, 5, 0, 0, 0), 16);
+        // A strip taller than the pane never erases above row 1.
+        assert_eq!(stale_strip_start(6, 5, 6, 5, 30), 1);
+    }
+
+    #[test]
+    fn every_frame_and_every_output_handoff_reasserts_the_scroll_region() {
+        // The terminal can drop DECSTBM without the pane size changing (an
+        // xterm.js resize that lands back on the same size, or the Build tab
+        // re-creating its xterm and replaying a tail that no longer holds the
+        // startup DECSTBM). A region sent only on a geometry change then never
+        // comes back, and every streamed line leaks one status row.
+        // Structural, like `both_repaint_paths_check_the_terminal_geometry`:
+        // the byte-level proof needs a real terminal emulator.
+        let source = include_str!("composer.rs");
+        for (name, body_end) in [
+            ("pub fn paint(&mut self)", "print!(\"{out}\");"),
+            ("pub fn prepare_output(&mut self)", "print!(\"{out}\");"),
+        ] {
+            let body = source.split(name).nth(1).expect("path must exist");
+            let body = &body[..body.find(body_end).expect("path prints")];
+            assert!(
+                body.contains("reassert_region_ansi(self.rows, self.last_height)"),
+                "{name} must re-send the scroll region on every call"
+            );
+        }
+        // The stream position is saved before anything homes the cursor.
+        let paint = source.split("pub fn paint(&mut self)").nth(1).unwrap();
+        let save = paint
+            .find("out.push_str(\"\\x1b[s\")")
+            .expect("paint saves");
+        let region = paint
+            .find("reassert_region_ansi")
+            .expect("paint re-asserts");
+        let resync = paint.find("self.resync_region()").expect("paint resyncs");
+        assert!(
+            save < resync && save < region,
+            "save the cursor before DECSTBM homes it"
+        );
+    }
+
     #[test]
     fn both_repaint_paths_check_the_terminal_geometry() {
         // The user, 2026-09-18: "The field for the terminal chat is not responsive and doesnt
@@ -3250,6 +3481,10 @@ mod pty_tests {
             "one input box per frame, not per line of output"
         );
         assert_eq!(streamed.matches("• Working").count(), chunks.len());
+        assert!(
+            streamed.matches("\x1b[1;19r").count() >= 2 * chunks.len(),
+            "every handoff and every frame must re-send the region: {streamed:?}"
+        );
 
         // A pane resize must re-assert the region, or the strip ends up inside
         // the scrolling area and every chunk scrolls a copy into the scrollback.
