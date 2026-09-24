@@ -54,7 +54,7 @@ describe('DocumentViewer', () => {
       root.render(<DocumentViewer projectId="project-id" doc={doc} onClose={() => {}} />);
     });
 
-    const iframe = container.querySelector('iframe');
+    const iframe = document.body.querySelector('iframe');
     expect(iframe).not.toBeNull();
     expect(iframe?.hasAttribute('sandbox')).toBe(true);
     expect(iframe?.getAttribute('sandbox')).toBe('');

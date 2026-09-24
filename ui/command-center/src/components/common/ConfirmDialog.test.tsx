@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 function buttonLabelled(text: string): HTMLButtonElement {
-  const found = Array.from(container.querySelectorAll('button')).find(
+  const found = Array.from(document.body.querySelectorAll('button')).find(
     b => (b.textContent ?? '').trim() === text,
   );
   expect(found, `no button labelled "${text}"`).toBeDefined();
@@ -72,7 +72,7 @@ function render(props: Partial<Parameters<typeof ConfirmDialog>[0]> = {}) {
 
 it('states the consequence rather than asking "are you sure?"', () => {
   render();
-  const text = container.textContent ?? '';
+  const text = document.body.textContent ?? '';
   expect(text).toContain('Mint a new drain key?');
   expect(text).toContain('Ingestion will fail with 401 until you redeploy.');
   expect(text.toLowerCase()).not.toContain('are you sure');
@@ -109,12 +109,12 @@ it('keeps the dialog open and names the failure when the action rejects', async 
   await click(buttonLabelled('Mint a new key'));
   await advance(MIN_PENDING_MS + 50);
 
-  const alert = container.querySelector('[role="alert"]');
+  const alert = document.body.querySelector('[role="alert"]');
   expect(alert, 'a failed confirm must say so on the dialog').not.toBeNull();
   expect(alert!.textContent).toContain("Couldn't mint a new key");
   expect(alert!.textContent).toContain('503 from the daemon');
   // Still open, and the affirmative never ticked.
-  expect(container.textContent).toContain('Mint a new drain key?');
+  expect(document.body.textContent).toContain('Mint a new drain key?');
   expect(buttonLabelled('Mint a new key').getAttribute('data-state')).not.toBe('success');
   expect(props.onCancel).not.toHaveBeenCalled();
 });
@@ -125,6 +125,6 @@ it('treats a `false` resolution as a failure too — nothing ticks', async () =>
   await click(buttonLabelled('Mint a new key'));
   await advance(MIN_PENDING_MS + 50);
 
-  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn't remove it");
+  expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("Couldn't remove it");
   expect(buttonLabelled('Mint a new key').getAttribute('data-state')).not.toBe('success');
 });

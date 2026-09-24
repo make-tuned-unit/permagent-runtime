@@ -80,14 +80,14 @@ describe('DecisionInbox explanatory copy', () => {
     const inbox = makeInbox({ error: true, refresh });
     render(inbox);
 
-    const detail = Array.from(container.querySelectorAll('div')).find(
+    const detail = Array.from(document.body.querySelectorAll('div')).find(
       el => el.textContent === 'This is a connection problem, not an empty inbox.',
     ) as HTMLDivElement | undefined;
     expect(detail).toBeDefined();
     expect(detail!.style.color).toBe(asRendered(getThemedColors().textMuted));
     expect(detail!.style.color).not.toBe(asRendered(getThemedColors().textDim));
 
-    const retry = Array.from(container.querySelectorAll('button')).find(
+    const retry = Array.from(document.body.querySelectorAll('button')).find(
       button => button.textContent === 'Retry',
     ) as HTMLButtonElement | undefined;
     expect(retry).toBeDefined();
@@ -98,7 +98,7 @@ describe('DecisionInbox explanatory copy', () => {
   it('uses readable muted copy for the empty-state activity explanation', () => {
     render(makeInbox({ data: emptyInbox }));
 
-    const detail = Array.from(container.querySelectorAll('div')).find(
+    const detail = Array.from(document.body.querySelectorAll('div')).find(
       el => el.textContent === '0 goals in flight.',
     ) as HTMLDivElement | undefined;
     expect(detail).toBeDefined();
@@ -113,7 +113,7 @@ describe('DecisionInbox explanatory copy', () => {
     });
     render(inbox);
 
-    const history = Array.from(container.querySelectorAll('button')).find(
+    const history = Array.from(document.body.querySelectorAll('button')).find(
       button => button.textContent === 'History →',
     ) as HTMLButtonElement | undefined;
     expect(history).toBeDefined();

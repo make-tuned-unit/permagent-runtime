@@ -99,6 +99,9 @@ export function DecisionInbox({ inbox, onClose, placement = 'center' }: Props) {
       title={view === 'history' ? 'History' : 'Decision inbox'}
       onClose={() => { if (!goalDetail) onClose(); }}
       width="min(1120px, 96vw)"
+      // A fixed height: stepping through decisions of different lengths must not
+      // resize the modal under the pointer (the arrows moved with every step).
+      height="min(880px, 92vh)"
       placement={goalDetail ? 'contained' : placement}
       badge={view === 'list' && total > 0
         ? { label: `${total} pending`, color: colors.cyan, bg: colors.cyanSoft }

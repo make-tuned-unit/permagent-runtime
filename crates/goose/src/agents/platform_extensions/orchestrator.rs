@@ -15517,13 +15517,15 @@ fn extract_status_code(text: &str) -> Option<u16> {
 
 /// The canned approve_review detail used when no deterministic evidence is
 /// available (in-process subagent, pre-evidence goals).
-fn review_detail_base(card_id: &str) -> String {
-    format!(
-        "Worker for goal {} reported success; the goal moved to Review. \
-         Inspect the work and answer approve (Review → Complete) or \
-         reject (Review → InProgress for rework).",
-        card_id
-    )
+///
+/// Plain words: this is what the user reads in the Decision Inbox. The goal is
+/// already named by the card's headline, so its internal id stays out, and so
+/// do the state-machine names (Review → Complete / InProgress).
+fn review_detail_base(_card_id: &str) -> String {
+    "This goal's work is finished and waiting for your review. Check the \
+     evidence, then approve to mark it done or reject to send it back for \
+     another attempt."
+        .to_string()
 }
 
 /// Build the approve_review decision detail, citing deterministic proof-of-work

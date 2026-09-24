@@ -377,7 +377,10 @@ export function Dashboard() {
                 boxShadow: isDragging
                   ? colors.elevationFloating
                   : isEditMode ? `0 0 ${space.xl}px ${colors.cyanGlow}` : 'none',
-                transform: !reduceMotion && isDragging ? 'scale(1.02)' : 'scale(1)',
+                // 'none' at rest, never 'scale(1)': any transform makes the card
+                // the containing block for fixed descendants, so a modal opened
+                // inside it would be trapped in the card (DetailModal also portals).
+                transform: !reduceMotion && isDragging ? 'scale(1.02)' : 'none',
                 opacity: isDragging ? 0.5 : 1,
                 transition: reduceMotion || isResizing
                   ? 'none'

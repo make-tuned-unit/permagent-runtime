@@ -34,7 +34,8 @@ afterEach(() => {
 });
 
 function dialog(): HTMLElement {
-  const el = container.querySelector('[role="dialog"]');
+  // The modal portals to <body>, so look there, not inside the render root.
+  const el = document.querySelector('[role="dialog"]');
   expect(el, 'the panel must be a dialog for assistive tech').not.toBeNull();
   return el as HTMLElement;
 }
@@ -127,7 +128,36 @@ it('still closes on Escape and on the scrim, and not on the panel itself', () =>
   });
   expect(onClose, 'a click inside the panel must not close it').toHaveBeenCalledTimes(1);
 
-  const scrim = container.firstElementChild as HTMLElement;
+  // The scrim is the dialog's parent, portaled to <body>.
+  const scrim = dialog().parentElement as HTMLElement;
   act(() => { scrim.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
   expect(onClose).toHaveBeenCalledTimes(2);
+});
+
+it('escapes a transformed ancestor: the overlay is portaled to <body>', () => {
+  // A dashboard card carries a transform, which makes it the containing block
+  // for `position: fixed` — a modal rendered in place was trapped in the card.
+  // jsdom has no layout, so assert the structural guarantee instead: the
+  // overlay is not inside the transformed ancestor at all.
+  const card = document.createElement('div');
+  card.style.transform = 'scale(1)';
+  card.style.overflow = 'hidden';
+  document.body.appendChild(card);
+  const cardRoot = createRoot(card);
+  act(() => {
+    cardRoot.render(
+      <DetailModal title="Decisions" onClose={vi.fn()}>
+        <button>Inside</button>
+      </DetailModal>,
+    );
+  });
+  const panel = document.querySelector('[role="dialog"]') as HTMLElement;
+  expect(panel).not.toBeNull();
+  expect(card.contains(panel), 'the dialog must not live inside the card').toBe(false);
+  const overlay = panel.parentElement as HTMLElement;
+  expect(overlay.parentElement).toBe(document.body);
+  expect(overlay.style.position).toBe('fixed');
+  act(() => cardRoot.unmount());
+  expect(document.querySelector('[role="dialog"]'), 'unmount removes the portal').toBeNull();
+  card.remove();
 });

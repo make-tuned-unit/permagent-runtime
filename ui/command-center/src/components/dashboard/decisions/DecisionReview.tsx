@@ -5,7 +5,7 @@ import { radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import { Tooltip } from '../../common/Tooltip';
-import { DecisionActions, badgeFor } from './DecisionItem';
+import { Btn, DecisionActions, badgeFor } from './DecisionItem';
 import { DiscussionPane } from './DiscussionPane';
 import { EvidenceDigest } from './EvidenceDigest';
 import { effectSummaryFor } from './decisionEffects';
@@ -120,7 +120,9 @@ export function DecisionReview({ inbox, agentName, state, active = true }: {
     {!complete && <p>Loading all pending decisions… <Button colors={colors} onClick={() => inbox.showAll()} flashSuccess={false}>Retry</Button></p>}
     {complete && !d && queue.ordered.length > 0 && <Button colors={colors} onClick={() => queue.focus(queue.ordered[0].id)}>Review next pending decision</Button>}
     {d && position && <>
-      <header style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: space.md, marginBottom: space.xxl }}>
+      {/* Pinned: the position and arrows stay reachable however long the decision is. */}
+      <header style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: space.md, marginBottom: space.xxl,
+        position: 'sticky', top: -space.xxl, zIndex: 1, background: colors.surface, paddingTop: space.md, paddingBottom: space.md }}>
         <strong style={{ fontSize: textSize.title }}>Needs you</strong>
         <span>{position.index + 1} of {position.total}</span>
         <span aria-hidden="true" style={{ display: 'flex', gap: space.xs, alignItems: 'center' }}>
@@ -151,7 +153,7 @@ export function DecisionReview({ inbox, agentName, state, active = true }: {
           <h2 style={{ margin: 0, fontSize: textSize.title }}>{d.headline}</h2>
           <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{d.detail}</p>
           <section style={{ background: colors.bg, borderRadius: radius.md, padding: space.xl }}>
-            <h3 style={{ fontSize: textSize.caption }}>IF YOU APPROVE</h3>
+            <h3 style={{ fontSize: textSize.caption }}>WHAT EACH ANSWER DOES</h3>
             {effect?.known ? <><ol style={{ paddingLeft: space.huge }}>{effect.lines.map((line, index) => <li key={index}>{line.replace(/^\d+\.\s*/, '')}</li>)}</ol>
               {effect.missing?.length ? <details><summary>Missing details</summary>missing: {effect.missing.join(', ')}</details> : null}</>
               : <p>{effect && !effect.known ? effect.text : ''}</p>}
@@ -160,20 +162,26 @@ export function DecisionReview({ inbox, agentName, state, active = true }: {
             <h3 style={{ fontSize: textSize.caption }}>EVIDENCE</h3>
             {target?.kind === 'council_report' && <Button colors={colors} onClick={() => openReport(target.councilSessionId)}>{target.label}</Button>}
             {target?.kind === 'dispatch' && <><EvidenceDigest projectId={target.projectId} goalId={target.goalId} />
-              <Button colors={colors} onClick={() => { setEvidenceGoal(true); openGoalDetail(target.projectId, target.goalId); }}>{target.label}</Button>
+              <div style={{ marginTop: space.md }}>
+                <Button colors={colors} onClick={() => { setEvidenceGoal(true); openGoalDetail(target.projectId, target.goalId); }}>{target.label}</Button>
+              </div>
               <p style={{ fontSize: textSize.caption, color: colors.textMuted }}>Close goal detail to return to this decision. Your note stays here.</p>
               {evidenceGoal && goalDetail && <Button colors={colors} onClick={() => { closeGoalDetail(); setEvidenceGoal(false); }}>← Back to decision</Button>}
             </>}
             {target?.kind === 'pause_episode' && <p>Job {target.jobId} · pause episode {target.episodeId} — no viewer yet.</p>}
             {target?.kind === 'budget' && <details><summary>{target.label}</summary>{target.detail}</details>}
-            {target?.kind === 'none' && <p>{target.reason}</p>}
+            {/* `target.reason` is for developers (it names the internal kind); say it plainly. */}
+            {target?.kind === 'none' && <p style={{ color: colors.textMuted }}>Nothing to inspect for this decision.</p>}
           </section>
           <label htmlFor={noteId}>Note</label>
           <textarea id={noteId} value={notes[d.id] ?? ''} rows={2} placeholder="Optional — goes in the audit trail"
             onChange={event => setNotes(current => ({ ...current, [d.id]: event.target.value }))}
             style={{ boxSizing: 'border-box', width: '100%', resize: 'vertical', padding: space.md, borderRadius: radius.sm,
               border: `1px solid ${colors.border}`, background: colors.inputBg, color: colors.text, fontSize: textSize.body }} />
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.md }}>
+          {/* Pinned: the answer buttons are never below the fold. */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: space.md, position: 'sticky', bottom: -space.xxl, zIndex: 1,
+            // Fills the scroll area's bottom padding too, so nothing peeks out beneath the bar.
+            background: colors.surface, paddingTop: space.md, paddingBottom: space.xxl + space.md, borderTop: `1px solid ${colors.border}` }}>
             <DecisionActions key={d.id} decision={d} agentName={agentName} note={notes[d.id] ?? ''} embeddedReview
               onNoteChange={note => setNotes(current => ({ ...current, [d.id]: note }))}
               onAnswered={async body => {
@@ -191,10 +199,15 @@ export function DecisionReview({ inbox, agentName, state, active = true }: {
                 return result;
               }} onConflict={() => { void inbox.refresh(); }} onDiscardStaged={inbox.discardStaged}
               onCancelGoal={d.project_id && d.goal_id ? async () => { await decisionsClient.cancelGoal(d.project_id!, d.goal_id!); await inbox.refresh(); } : undefined} />
-            <Button colors={colors} onClick={queue.later}>Later</Button>
+            {/* Same button as the answers beside it, so the row lines up. */}
+            <Btn onClick={queue.later}>Later</Btn>
           </div>
         </section>
-        <DiscussionPane key={d.id} decisionId={d.id} headline={d.headline} agentName={agentName} />
+        {/* Sized to its content and pinned beside the decision: stretched to the
+            left column's height it pushed its own input and Send below the fold. */}
+        <div style={{ alignSelf: 'start', position: narrow ? 'static' : 'sticky', top: space.huge * 2, minWidth: 0 }}>
+          <DiscussionPane key={d.id} decisionId={d.id} headline={d.headline} agentName={agentName} />
+        </div>
       </div>}
     </>}
   </div>;

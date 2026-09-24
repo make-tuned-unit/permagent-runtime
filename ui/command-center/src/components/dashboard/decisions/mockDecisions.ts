@@ -61,8 +61,8 @@ const PENDING: Decision[] = [
     rank: 0.95,
     headline: 'Ship the change: decision queue saving',
     detail:
-      'Worker for goal goal-queue-saving reported success; the goal moved to Review. ' +
-      'Inspect the work and answer approve (Review → Complete) or reject (Review → InProgress for rework).',
+      "This goal's work is finished and waiting for your review. Check the evidence, then approve to mark it " +
+      'done or reject to send it back for another attempt.',
     created_at: minutesAgo(192),
   }),
   openDecision({
