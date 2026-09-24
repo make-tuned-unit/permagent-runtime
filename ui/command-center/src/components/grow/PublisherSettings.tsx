@@ -30,11 +30,36 @@ type PublisherSnap = {
   pending?: { channel: string } | null;
 };
 
-const NETWORKS: { id: string; label: string }[] = [
+export const NETWORKS: { id: string; label: string }[] = [
   { id: 'ig', label: 'Instagram' },
   { id: 'li', label: 'LinkedIn' },
   { id: 'x', label: 'X' },
 ];
+
+/**
+ * The networks this project can actually publish to right now: the ids of
+ * channels bound to a Postiz integration. `null` while unknown, so a caller
+ * never warns on a guess. `refreshKey` lets a caller re-read after its own
+ * data changes (a connect finishes in ProjectChannels, then the calendar
+ * reloads).
+ */
+export function useConnectedChannels(projectId: string, refreshKey?: unknown): Set<string> | null {
+  const [connected, setConnected] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    let live = true;
+    apiFetch<PublisherSnap>(`/api/projects/${encodeURIComponent(projectId)}/publisher`)
+      .then((s) => {
+        if (!live || !s || Array.isArray(s)) return;
+        const ids = Object.entries(s.channels ?? {})
+          .filter(([, binding]) => s.configured && !!binding?.integrationId)
+          .map(([id]) => id);
+        setConnected(new Set(ids));
+      })
+      .catch(() => { if (live) setConnected(null); });
+    return () => { live = false; };
+  }, [projectId, refreshKey]);
+  return connected;
+}
 
 export function PostizConnect({ colors }: { colors: ThemeColors }) {
   const [configured, setConfigured] = useState<boolean | null>(null);

@@ -20,10 +20,12 @@
  * that arrived as `application/octet-stream`.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { api } from '../../lib/api';
+import { Button } from '../common/Button';
+import { DetailModal } from '../common/DetailModal';
 
 /** Poster/still box, and the Reel's own width. One number, so the two line up. */
 const MEDIA_W = 72;
@@ -78,15 +80,18 @@ function useGrowMediaUrl(
 }
 
 export function PostStill({
-  projectId, cardId, filename, cacheKey, colors,
+  projectId, cardId, filename, cacheKey, colors, alt,
 }: {
   projectId: string;
   cardId: string;
   filename: string;
   cacheKey?: string;
   colors: ThemeColors;
+  /** The post's headline: what the still says, for a screen reader and the viewer's title. */
+  alt?: string;
 }) {
   const { url } = useGrowMediaUrl(projectId, cardId, filename, cacheKey);
+  const [open, setOpen] = useState(false);
   if (!url) {
     return (
       <div style={{
@@ -95,15 +100,56 @@ export function PostStill({
       }} />
     );
   }
+  // A 72px thumbnail is not enough to approve a post from: the person
+  // pressing Approve has to be able to read what the image says. So the
+  // thumbnail is a button (click or Enter) that opens it full size in the
+  // app's one detail shell, which owns Escape, the focus trap and focus return.
   return (
-    <img
-      src={url}
-      alt=""
-      style={{
-        width: MEDIA_W, height: MEDIA_H, objectFit: 'cover', borderRadius: radius.sm,
-        border: `1px solid ${colors.border}`,
-      }}
-    />
+    <>
+      <Button
+        colors={colors}
+        variant="bare"
+        type="button"
+        className="pa-btn--composite"
+        onClick={() => setOpen(true)}
+        aria-label={alt ? `View image full size: ${alt}` : 'View image full size'}
+        title="View full size"
+        style={{
+          '--pa-btn-pad': '0',
+          '--pa-btn-radius': `${radius.sm}px`,
+          cursor: 'zoom-in', flexShrink: 0,
+        } as CSSProperties}
+      >
+        <img
+          src={url}
+          alt={alt ?? ''}
+          style={{
+            width: MEDIA_W, height: MEDIA_H, objectFit: 'cover', borderRadius: radius.sm,
+            border: `1px solid ${colors.border}`, display: 'block',
+          }}
+        />
+      </Button>
+      {open && (
+        <DetailModal
+          title={alt || 'Post image'}
+          onClose={() => setOpen(false)}
+          width="min(900px, 94vw)"
+          height="88vh"
+          bodyStyle={{ padding: 0, minHeight: 0, background: colors.bgDeeper }}
+        >
+          <div style={{
+            width: '100%', height: '100%', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', padding: space.md, boxSizing: 'border-box',
+          }}>
+            <img
+              src={url}
+              alt={alt ?? ''}
+              style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+            />
+          </div>
+        </DetailModal>
+      )}
+    </>
   );
 }
 

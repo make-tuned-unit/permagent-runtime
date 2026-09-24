@@ -26,7 +26,7 @@ vi.mock('../../lib/api', () => ({
   apiFetch: vi.fn(),
 }));
 
-import { PostVideo, mimeForFile } from './PostMedia';
+import { PostStill, PostVideo, mimeForFile } from './PostMedia';
 import { readMediaMeta, type SocialCard } from './calendarPosts';
 import { api } from '../../lib/api';
 import { getThemedColors } from '../../styles/tokens';
@@ -153,5 +153,48 @@ describe('PostVideo', () => {
     expect(mimeForFile('a.mp4')).toBe('video/mp4');
     expect(mimeForFile('a.webm')).toBe('video/webm');
     expect(mimeForFile('a.MOV')).toBe('video/quicktime');
+  });
+});
+
+
+describe('PostStill', () => {
+  // The calendar thumbnail is 72px wide: too small to read what a still says,
+  // and it is the only view of the image before Approve publishes it.
+  async function renderStill() {
+    fetchBlob.mockResolvedValue(new Blob(['png'], { type: 'image/png' }));
+    await render(
+      <PostStill projectId="p1" cardId="c1" filename="still.png" colors={colors}
+        alt="Freya Fest is the Winnipeg event" />,
+    );
+  }
+  const openButton = () =>
+    container.querySelector('button[aria-label^="View image full size"]') as HTMLButtonElement | null;
+  const dialog = () => document.querySelector('[role="dialog"]');
+
+  it('opens the still full size on click and closes on Escape', async () => {
+    await renderStill();
+    const thumb = container.querySelector('img');
+    expect(thumb?.getAttribute('alt')).toBe('Freya Fest is the Winnipeg event');
+    expect(dialog()).toBeNull();
+
+    await act(async () => { openButton()!.click(); });
+    const d = dialog();
+    expect(d).not.toBeNull();
+    expect(d!.textContent).toContain('Freya Fest is the Winnipeg event');
+    const big = d!.querySelector('img') as HTMLImageElement;
+    expect(big.getAttribute('src')).toBe('blob:image/png');
+    expect(big.style.objectFit).toBe('contain');
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(dialog()).toBeNull();
+  });
+
+  it('is a real button, so Enter opens it from the keyboard', async () => {
+    await renderStill();
+    const b = openButton()!;
+    expect(b.tagName).toBe('BUTTON');
+    expect(b.getAttribute('type')).toBe('button');
   });
 });

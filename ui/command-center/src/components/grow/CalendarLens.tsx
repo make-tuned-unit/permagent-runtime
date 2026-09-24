@@ -28,7 +28,7 @@ import { growChip } from './growStyles';
 import { FIELD_CLASS, growCard, growField, growLabel } from './growChrome';
 import { ROW_INNER_R, ROW_PAD, ROW_R, CARD_R } from './growGeometry';
 import { ErrorState, LoadingState } from './GrowStateBlocks';
-import { HiggsfieldConnect, PostizConnect, ProjectChannels } from './PublisherSettings';
+import { HiggsfieldConnect, NETWORKS, PostizConnect, ProjectChannels, useConnectedChannels } from './PublisherSettings';
 import { PostStill, PostVideo } from './PostMedia';
 import type { LoadState } from './growTypes';
 
@@ -116,6 +116,7 @@ function CalendarLens({
   onReload: () => void;
 }) {
   const groups = groupPostsByDay(posts);
+  const connected = useConnectedChannels(projectId, posts);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
       {groups.map((group) => (
@@ -130,6 +131,7 @@ function CalendarLens({
                 colors={colors}
                 onMutate={onMutate}
                 onReload={onReload}
+                connected={connected}
               />
             ))}
           </div>
@@ -140,10 +142,12 @@ function CalendarLens({
 }
 
 function CalendarPostRow({
-  projectId, post, colors, onMutate, onReload,
+  projectId, post, colors, onMutate, onReload, connected,
 }: {
   projectId: string;
   post: SocialCard;
+  /** Channel ids this project can publish to; null while unknown. */
+  connected: Set<string> | null;
   colors: ThemeColors;
   onMutate: (projectId: string, post: SocialCard, body: Record<string, unknown> | null) => Promise<void>;
   onReload: () => void;
@@ -234,6 +238,12 @@ function CalendarPostRow({
   };
 
   const canApprove = status === 'draft' && media.mediaStatus === 'ready';
+  // Approve on an unconnected channel still marks the post scheduled, but
+  // nothing publishes (publisher::submit_approved returns None). The card
+  // said READY + Approve with no hint of that, so say it where the choice is.
+  const unconnectedNetwork = media.channel && connected && !connected.has(media.channel)
+    ? (NETWORKS.find((n) => n.id === media.channel)?.label ?? media.channel)
+    : null;
   const canRetryStill = status === 'draft' && media.mediaStatus !== 'generating';
 
   return (
@@ -277,6 +287,7 @@ function CalendarPostRow({
             filename={media.stillFile}
             cacheKey={media.mediaStatus}
             colors={colors}
+            alt={post.title}
           />
         ) : null}
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -363,9 +374,15 @@ function CalendarPostRow({
               '--pa-btn-border-hover': colors.cyan,
               '--pa-btn-weight': 600,
             } as CSSProperties}
-          >Approve</Button>
+          >{unconnectedNetwork ? "Approve (won't publish)" : 'Approve'}</Button>
         )}
       </div>
+      {canApprove && unconnectedNetwork && (
+        <div role="note" style={{ fontSize: textSize.micro, color: colors.warning, marginTop: space.sm }}>
+          {unconnectedNetwork} isn&apos;t connected for this project, so approving marks this post
+          scheduled here but won&apos;t publish it. Connect {unconnectedNetwork} above first.
+        </div>
+      )}
       {canRetryStill && (
         <div style={{ display: 'flex', gap: space.md, marginTop: space.lg, alignItems: 'flex-start' }}>
           <textarea

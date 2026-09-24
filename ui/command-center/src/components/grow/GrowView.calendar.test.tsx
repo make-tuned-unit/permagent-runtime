@@ -238,6 +238,45 @@ describe('Grow calendar lens', () => {
     )).toBe(true);
   });
 
+  // Approve on a network the project hasn't connected still marks the post
+  // scheduled, but nothing publishes. The card used to say READY + Approve.
+  it('says Approve will not publish when the post\'s network is not connected', async () => {
+    const igCard = (id: string) => ({
+      id,
+      title: 'IG draft',
+      description: 'hi',
+      metadataJson: {
+        postStatus: 'draft', scheduledFor: '2026-08-18T12:00:00.000Z', channel: 'ig',
+        mediaStatus: 'ready', media: [{ kind: 'still', file: 'still.png' }],
+      },
+    });
+    const run = async (channels: Record<string, unknown>) => {
+      apiFetchMock.mockImplementation(((url: string) => {
+        if (url === '/api/projects') return Promise.resolve([project('p1', 'First')]);
+        if (url.includes('/cards?card_type=social_post')) return Promise.resolve([igCard('post-ig')]);
+        if (url === '/api/projects/p1/publisher') {
+          return Promise.resolve({ configured: true, channels, pending: null });
+        }
+        return Promise.resolve(growExtras(url) ?? []);
+      }) as typeof apiFetch);
+      await renderGrow();
+      await openCalendar();
+      await act(async () => { await Promise.resolve(); });
+    };
+
+    await run({});
+    const labels = Array.from(container.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels).toContain("Approve (won't publish)");
+    expect(container.querySelector('[role="note"]')?.textContent).toContain("Instagram isn't connected");
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    await run({ ig: { integrationId: 'int-1', name: 'evntally' } });
+    const connected = Array.from(container.querySelectorAll('button')).map((b) => b.textContent);
+    expect(connected).toContain('Approve');
+    expect(container.querySelector('[role="note"]')).toBeNull();
+  });
+
   it('does not offer Approve while the still is still generating', async () => {
     const card = {
       id: 'post-3',
