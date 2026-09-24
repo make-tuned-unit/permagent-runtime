@@ -682,7 +682,7 @@ impl OpenAiProvider {
                     let message_stream = responses_api_to_streaming_message(framed);
                     pin!(message_stream);
                     while let Some(message) = message_stream.next().await {
-                        let (message, usage) = message.map_err(ProviderError::stream_decode)?;
+                        let (message, usage) = message.map_err(ProviderError::from_stream_failure)?;
                         log.write(&message, usage.as_ref().map(|f| f.usage).as_ref())?;
                         yield (message, usage);
                     }

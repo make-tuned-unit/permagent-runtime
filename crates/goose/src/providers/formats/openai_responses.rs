@@ -817,12 +817,26 @@ where
                     // Arguments are complete, will be in the OutputItemDone event
                 }
 
+                // Typed by the event's own `code`/`type`, so an in-band rate
+                // limit or 5xx reaches the agent as one (with the provider's
+                // requested wait) instead of as a dropped stream. The callers'
+                // `ProviderError::from_stream_failure` keeps the type.
                 ResponsesStreamEvent::ResponseFailed { error, .. } => {
-                    Err(anyhow!("Responses API failed: {:?}", error))?;
+                    Err(anyhow::Error::new(
+                        crate::providers::errors::ProviderError::from_stream_error_event(
+                            "Responses API failed",
+                            &error,
+                        ),
+                    ))?;
                 }
 
                 ResponsesStreamEvent::Error { error } => {
-                    Err(anyhow!("Responses API error: {:?}", error))?;
+                    Err(anyhow::Error::new(
+                        crate::providers::errors::ProviderError::from_stream_error_event(
+                            "Responses API error",
+                            &error,
+                        ),
+                    ))?;
                 }
 
                 _ => {

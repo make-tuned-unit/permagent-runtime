@@ -147,6 +147,132 @@ pub fn may_silent_precommit_failover(committed: bool, err: &ProviderError) -> bo
         )
 }
 
+/// Whether a failure is worth sending again unchanged.
+///
+/// Industry convention (the OpenAI and Anthropic SDKs retry connection errors,
+/// 408, 409, 429 and 5xx/529; Google SRE and AWS retry only what is known to be
+/// transient): a failure the provider or the path to it may recover from in
+/// seconds is `Transient`; one that fails identically on every attempt (401/403
+/// auth, billing, 400 invalid request, 404 model not found, 413 / context
+/// length, a content-policy refusal, our own stream-budget runaway) is
+/// `Permanent`. Anything not positively known to be transient is treated as
+/// `Permanent` for retry purposes: a blind retry of an unknown failure is the
+/// retry storm the SRE guidance warns about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureClass {
+    /// Retry the same model with backoff; fall back only once the retries are
+    /// spent, and then only for a bounded time ([`transient_failover_cooldown`]).
+    Transient,
+    /// Do not retry. A fallback, when one is configured, may stay for the
+    /// session: the same request would be rejected the same way.
+    Permanent,
+}
+
+/// Pure: the one transient/permanent classifier the agent's retry and
+/// failover decisions read. See [`FailureClass`].
+pub fn classify_failure(err: &ProviderError) -> FailureClass {
+    // Before `is_permanent()`, for the reason `may_silent_precommit_failover`
+    // gives: a cut-off chunk quotes partial provider bytes that can read as a
+    // 400.
+    if is_cut_off_stream_chunk(err) {
+        return FailureClass::Transient;
+    }
+    if err.is_permanent() {
+        return FailureClass::Permanent;
+    }
+    if is_dropped_stream(err) || err.is_first_byte_provider_stall() {
+        return FailureClass::Transient;
+    }
+    match err {
+        ProviderError::NetworkError(_)
+        | ProviderError::ServerError(_)
+        | ProviderError::RateLimitExceeded { .. } => FailureClass::Transient,
+        // 408 Request Timeout and 409 Conflict are retried by both vendor SDKs.
+        ProviderError::RequestFailed(msg) if is_retryable_client_status(msg) => {
+            FailureClass::Transient
+        }
+        _ => FailureClass::Permanent,
+    }
+}
+
+fn is_retryable_client_status(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    ["408", "409"].iter().any(|code| {
+        m.contains(&format!("status: {code}"))
+            || m.contains(&format!("status {code}"))
+            || m.contains(&format!("({code})"))
+    }) || m.contains("request timeout")
+}
+
+/// How many times one failing model call is sent again to the SAME model
+/// before the turn falls back. Two, as the OpenAI and Anthropic SDKs default
+/// to; three attempts in all, Google SRE's per-request retry budget.
+pub const SAME_MODEL_MAX_RETRIES: usize = 2;
+
+/// The longest single wait the agent sits through to retry the same model. A
+/// provider that asks for longer (a TPM window resetting in 56 s) is better
+/// served by a time-boxed fallback than by a silent minute; the fallback then
+/// lasts at least that long ([`transient_failover_cooldown`]).
+pub const SAME_MODEL_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Pure: how long to wait before sending this failed call to the same model
+/// again, or `None` when it should not be retried here.
+///
+/// Retried here, and only here: failures that happened INSIDE an accepted
+/// stream (a dropped body, a chunk cut off mid-line, an error event the
+/// provider sent in the stream) before anything reached the user. Those never
+/// passed through the transport retry layer (`providers::retry`), which only
+/// sees the HTTP status. An HTTP-level 429/5xx or refused connection has
+/// already been retried there with backoff, and retrying it again here would
+/// multiply the attempts (AWS: retry at one layer of the stack). A first-byte
+/// stall has its own single retry in the agent.
+///
+/// The delay is the transport layer's own policy
+/// ([`crate::providers::RetryConfig::delay_for_error`]): the provider's
+/// `Retry-After` first, then the rate-limit floor, then exponential backoff
+/// with jitter.
+pub fn same_model_retry_delay(
+    err: &ProviderError,
+    stream_committed: bool,
+    retries_done: usize,
+) -> Option<std::time::Duration> {
+    if stream_committed || retries_done >= SAME_MODEL_MAX_RETRIES {
+        return None;
+    }
+    if classify_failure(err) != FailureClass::Transient || err.is_first_byte_provider_stall() {
+        return None;
+    }
+    if !(is_dropped_stream(err) || err.is_in_band_stream_event()) {
+        return None;
+    }
+    let delay =
+        crate::providers::RetryConfig::default().delay_for_error(err, retries_done + 1);
+    (delay <= SAME_MODEL_MAX_WAIT).then_some(delay)
+}
+
+/// How long a fallback taken for a TRANSIENT failure lasts before the session
+/// goes back to the model it was on. LiteLLM's default deployment cooldown is
+/// 60 s; a provider that named a longer wait gets that wait, capped at five
+/// minutes so a hint in hours cannot turn a blip into a sticky switch.
+pub const TRANSIENT_FAILOVER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
+/// Upper bound on [`transient_failover_cooldown`].
+pub const TRANSIENT_FAILOVER_MAX_COOLDOWN: std::time::Duration =
+    std::time::Duration::from_secs(300);
+
+/// Pure: see [`TRANSIENT_FAILOVER_COOLDOWN`].
+pub fn transient_failover_cooldown(err: &ProviderError) -> std::time::Duration {
+    let asked = match err {
+        ProviderError::RateLimitExceeded {
+            retry_delay: Some(d),
+            ..
+        } => *d,
+        _ => std::time::Duration::ZERO,
+    };
+    asked
+        .max(TRANSIENT_FAILOVER_COOLDOWN)
+        .min(TRANSIENT_FAILOVER_MAX_COOLDOWN)
+}
+
 /// Where a fallback candidate came from — kept so the one precedence rule that
 /// depends on it (an explicit override may name the failed provider) survives
 /// the move from "first match" to "first match that is actually up".
@@ -213,6 +339,120 @@ pub fn permanent_failure_candidates(
                 RoleModel { provider, model },
                 CandidateSource::Role(role.as_str()),
             );
+        }
+    }
+    out
+}
+
+/// What kind of session is failing over, so a fallback is chosen for the job
+/// the session is doing rather than taken from an unrelated workflow role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRole {
+    /// Any session without a stricter seat: candidates in the configured
+    /// precedence ([`permanent_failure_candidates`]).
+    General,
+    /// The coding harness's top-level coordinator: the judgement-dense seat
+    /// `config::model_roles::assess_harness_coordinator` gates at startup.
+    HarnessCoordinator,
+}
+
+/// Pure: [`permanent_failure_candidates`], ordered for `role`.
+///
+/// `General` is exactly [`permanent_failure_candidates`].
+///
+/// `HarnessCoordinator` keeps the operator's `PERMAGENT_FALLBACK*` keys first,
+/// in their own order: an explicit choice outranks any inference. Behind them
+/// it offers only models the coordinator gate accepts, from DECLARED role data
+/// (no model is named here): the configured harness route, the harness role's
+/// measured default, then every configured workflow role. Graduated
+/// (`TrustedDefault`) routes come first, then knowledge-base candidates that
+/// clear the orchestration floor (`HeuristicCandidate`), strongest
+/// orchestration first; unrated and below-floor models are left out, the same
+/// rule that keeps them out of the coordinator seat at startup. Session
+/// 20260924_3: with no fallback keys set, the coordinator fell to the first
+/// workflow role in config order, a review model the operator never chose
+/// for coding.
+pub fn failover_candidates(
+    read: impl Fn(&str) -> Option<String>,
+    role: SessionRole,
+) -> Vec<FallbackCandidate> {
+    let all = permanent_failure_candidates(&read);
+    if role == SessionRole::General {
+        return all;
+    }
+    use crate::config::model_roles::{
+        assess_harness_coordinator, resolve_role_model, CoordinatorEligibility, ModelRole,
+    };
+
+    let mut out: Vec<FallbackCandidate> = all
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.source,
+                CandidateSource::ExplicitOverride | CandidateSource::OrderedList
+            )
+        })
+        .cloned()
+        .collect();
+
+    // Declared order: harness route, the role's measured default, then the
+    // workflow roles as `permanent_failure_candidates` listed them.
+    let mut pool: Vec<FallbackCandidate> = Vec::new();
+    let harness_label = ModelRole::Harness.label();
+    if let Some(route) = resolve_role_model(ModelRole::Harness, &read).route {
+        pool.push(FallbackCandidate {
+            target: RoleModel {
+                provider: route.provider,
+                model: route.model,
+            },
+            source: CandidateSource::Role(harness_label),
+        });
+    }
+    let measured = ModelRole::Harness.measured_default();
+    pool.push(FallbackCandidate {
+        target: RoleModel {
+            provider: measured.provider,
+            model: measured.model,
+        },
+        source: CandidateSource::Role(harness_label),
+    });
+    pool.extend(
+        all.into_iter()
+            .filter(|c| matches!(c.source, CandidateSource::Role(_))),
+    );
+
+    let rank = |c: &FallbackCandidate| match assess_harness_coordinator(
+        &c.target.provider,
+        &c.target.model,
+    ) {
+        CoordinatorEligibility::TrustedDefault => Some(0u8),
+        CoordinatorEligibility::HeuristicCandidate => Some(1u8),
+        CoordinatorEligibility::Unrated | CoordinatorEligibility::BelowFloor => None,
+    };
+    let strength = |c: &FallbackCandidate| {
+        super::knowledge::lookup(&c.target.provider, &c.target.model)
+            .map(|row| row.orchestration_strength)
+            .unwrap_or(0.0)
+    };
+    let mut ranked: Vec<(usize, u8, f64, FallbackCandidate)> = pool
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, c)| rank(&c).map(|r| (i, r, strength(&c), c)))
+        .collect();
+    // Rank, then orchestration strength (higher first), then declared order,
+    // so the same config always yields the same list.
+    ranked.sort_by(|a, b| {
+        a.1.cmp(&b.1)
+            .then_with(|| b.2.total_cmp(&a.2))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    for (_, _, _, c) in ranked {
+        let dup = out.iter().any(|o| {
+            o.target.provider.eq_ignore_ascii_case(&c.target.provider)
+                && o.target.model.eq_ignore_ascii_case(&c.target.model)
+        });
+        if !dup {
+            out.push(c);
         }
     }
     out
@@ -666,8 +906,18 @@ pub async fn permanent_failure_fallback_for_request(
     failed_provider: &str,
     request_tokens: Option<usize>,
 ) -> Option<FallbackChoice> {
+    failover_for_request(failed_provider, request_tokens, SessionRole::General).await
+}
+
+/// [`permanent_failure_fallback_for_request`] with the candidates ordered for
+/// the failing session's `role` ([`failover_candidates`]).
+pub async fn failover_for_request(
+    failed_provider: &str,
+    request_tokens: Option<usize>,
+    role: SessionRole,
+) -> Option<FallbackChoice> {
     let cfg = crate::config::Config::global();
-    let candidates = permanent_failure_candidates(|k| cfg.get_param::<String>(k).ok());
+    let candidates = failover_candidates(|k| cfg.get_param::<String>(k).ok(), role);
     if candidates.is_empty() {
         return None;
     }
@@ -706,6 +956,7 @@ pub async fn permanent_failure_fallback_for_request(
     tracing::info!(
         target: "permagent::cost_router",
         from_provider = %failed_provider,
+        session_role = ?role,
         candidates = %candidate_list,
         ollama = ?avail.ollama,
         ollama_models = %ollama_models,
@@ -911,6 +1162,40 @@ pub fn precommit_failover_reply(
         precommit_failure_clause(failed_provider, err),
         fallback.provider,
         fallback.model
+    )
+}
+
+/// The ONE sentence for a fallback taken after a TRANSIENT failure: what
+/// happened, that the same model was retried first, where the session went,
+/// and that the switch is temporary. Same payload-free rule as
+/// [`precommit_failover_reply`], whose clause it reuses.
+pub fn transient_failover_reply(
+    failed_provider: &str,
+    err: &ProviderError,
+    fallback: &RoleModel,
+    retries: usize,
+    cooldown: std::time::Duration,
+) -> String {
+    let retried = match retries {
+        0 => String::new(),
+        1 => ", and a retry failed too".to_string(),
+        n => format!(", and {n} retries failed too"),
+    };
+    format!(
+        "{}{retried} — switched to {}/{} for now. This session goes back to {failed_provider} \
+         in about {} s, or on your next message.",
+        precommit_failure_clause(failed_provider, err),
+        fallback.provider,
+        fallback.model,
+        cooldown.as_secs().max(1),
+    )
+}
+
+/// The sentence for the switch back after a transient fallback's time box.
+pub fn transient_failover_restored_reply(original: &RoleModel, fallback: &RoleModel) -> String {
+    format!(
+        "Back on {}/{} after the temporary switch to {}/{}.",
+        original.provider, original.model, fallback.provider, fallback.model
     )
 }
 
@@ -1865,5 +2150,348 @@ mod tests {
             Some(4_096)
         );
         assert_eq!(local_context_limit("anthropic", "claude-opus-4-8"), None);
+    }
+
+    fn in_band(event: serde_json::Value) -> ProviderError {
+        ProviderError::from_stream_error_event("Responses API error", &event)
+    }
+
+    /// Table: transient vs permanent, by the classes the vendor SDKs and the
+    /// SRE guidance agree on.
+    #[test]
+    fn classify_failure_table() {
+        use std::time::Duration;
+        let t = FailureClass::Transient;
+        let p = FailureClass::Permanent;
+        let cases: Vec<(&str, ProviderError, FailureClass)> = vec![
+            (
+                "dropped body",
+                ProviderError::stream_decode("error decoding response body"),
+                t,
+            ),
+            (
+                "chunk cut off mid-line quoting a 400",
+                ProviderError::RequestFailed(
+                    "Failed to parse streaming chunk: EOF while parsing a string \
+                     {\"type\":\"invalid_request_error\""
+                        .into(),
+                ),
+                t,
+            ),
+            (
+                "first-byte stall",
+                ProviderError::first_byte_stall("no byte in 180s"),
+                t,
+            ),
+            (
+                "connection reset",
+                ProviderError::NetworkError("connection reset by peer".into()),
+                t,
+            ),
+            (
+                "5xx",
+                ProviderError::ServerError("502 Bad Gateway".into()),
+                t,
+            ),
+            (
+                "529 overloaded",
+                in_band(serde_json::json!({"type": "overloaded_error"})),
+                t,
+            ),
+            (
+                "429 with a wait",
+                ProviderError::RateLimitExceeded {
+                    details: "429".into(),
+                    retry_delay: Some(Duration::from_secs(5)),
+                },
+                t,
+            ),
+            (
+                "in-band TPM limit (session 20260924_3)",
+                in_band(serde_json::json!({
+                    "code": "rate_limit_exceeded",
+                    "headers": {"retry-after-ms": "5089"},
+                    "message": "Rate limit reached … Please try again in 5.089s."
+                })),
+                t,
+            ),
+            (
+                "408",
+                ProviderError::RequestFailed("Request timeout (status: 408)".into()),
+                t,
+            ),
+            (
+                "409",
+                ProviderError::RequestFailed("conflict (status: 409)".into()),
+                t,
+            ),
+            ("401", ProviderError::Authentication("bad key".into()), p),
+            (
+                "billing",
+                ProviderError::CreditsExhausted {
+                    details: "credit balance is too low".into(),
+                    top_up_url: None,
+                },
+                p,
+            ),
+            (
+                "400 invalid request",
+                ProviderError::RequestFailed("Bad request (400): invalid_request_error".into()),
+                p,
+            ),
+            (
+                "404 model",
+                ProviderError::EndpointNotFound("gpt-9".into()),
+                p,
+            ),
+            (
+                "context length",
+                ProviderError::ContextLengthExceeded("too long".into()),
+                p,
+            ),
+            (
+                "content policy",
+                in_band(serde_json::json!({"code": "invalid_prompt", "message": "flagged"})),
+                p,
+            ),
+            (
+                "our own stream-budget runaway",
+                ProviderError::stream_budget_exceeded("12960 deltas"),
+                p,
+            ),
+            (
+                "unknown client error is never retried blindly",
+                ProviderError::RequestFailed("something odd".into()),
+                p,
+            ),
+        ];
+        for (name, err, want) in cases {
+            assert_eq!(classify_failure(&err), want, "{name}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn same_model_retries_only_stream_level_transients_and_stay_bounded() {
+        use std::time::Duration;
+        let dropped = ProviderError::stream_decode("error decoding response body");
+        assert!(same_model_retry_delay(&dropped, false, 0).is_some());
+        assert!(same_model_retry_delay(&dropped, false, SAME_MODEL_MAX_RETRIES - 1).is_some());
+        assert_eq!(
+            same_model_retry_delay(&dropped, false, SAME_MODEL_MAX_RETRIES),
+            None,
+            "the budget is per failing call"
+        );
+        assert_eq!(
+            same_model_retry_delay(&dropped, true, 0),
+            None,
+            "never resend under a reply the user has already seen"
+        );
+
+        // The incident: the provider's own wait is honoured, exactly.
+        let tpm = in_band(serde_json::json!({
+            "code": "rate_limit_exceeded",
+            "headers": {"retry-after-ms": "5089"},
+            "message": "Rate limit reached"
+        }));
+        assert_eq!(
+            same_model_retry_delay(&tpm, false, 0),
+            Some(Duration::from_millis(5089))
+        );
+        // A wait longer than we sit through silently: fall back instead.
+        let long = in_band(serde_json::json!({
+            "code": "rate_limit_exceeded",
+            "headers": {"retry-after-ms": "56248"},
+        }));
+        assert_eq!(same_model_retry_delay(&long, false, 0), None);
+        assert!(same_model_retry_delay(
+            &in_band(serde_json::json!({"code": "server_error"})),
+            false,
+            0
+        )
+        .is_some());
+
+        // Already retried by the transport layer, or not ours to retry.
+        for err in [
+            ProviderError::RateLimitExceeded {
+                details: "HTTP 429".into(),
+                retry_delay: Some(Duration::from_secs(1)),
+            },
+            ProviderError::ServerError("HTTP 503".into()),
+            ProviderError::NetworkError("Could not connect to api.example".into()),
+            ProviderError::first_byte_stall("no byte"),
+            ProviderError::Authentication("bad key".into()),
+            in_band(serde_json::json!({"code": "insufficient_quota"})),
+        ] {
+            assert_eq!(same_model_retry_delay(&err, false, 0), None, "{err:?}");
+        }
+
+        // Exponential with jitter: the second wait is longer than the first
+        // at every jitter draw (0.8..1.2 of 1 s vs of 2 s overlaps only at the
+        // edges, so compare against the bounds).
+        let first = same_model_retry_delay(&dropped, false, 0).unwrap();
+        let second = same_model_retry_delay(&dropped, false, 1).unwrap();
+        assert!(first >= Duration::from_millis(800) && first <= Duration::from_millis(1200));
+        assert!(second >= Duration::from_millis(1600) && second <= Duration::from_millis(2400));
+    }
+
+    #[test]
+    fn a_transient_fallback_is_time_boxed() {
+        use std::time::Duration;
+        let dropped = ProviderError::stream_decode("x");
+        assert_eq!(
+            transient_failover_cooldown(&dropped),
+            TRANSIENT_FAILOVER_COOLDOWN
+        );
+        let wait = |secs| ProviderError::RateLimitExceeded {
+            details: "429".into(),
+            retry_delay: Some(Duration::from_secs(secs)),
+        };
+        assert_eq!(
+            transient_failover_cooldown(&wait(5)),
+            TRANSIENT_FAILOVER_COOLDOWN
+        );
+        assert_eq!(
+            transient_failover_cooldown(&wait(120)),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            transient_failover_cooldown(&wait(3600)),
+            TRANSIENT_FAILOVER_MAX_COOLDOWN
+        );
+    }
+
+    fn targets(cs: &[FallbackCandidate]) -> Vec<(String, String)> {
+        cs.iter()
+            .map(|c| (c.target.provider.clone(), c.target.model.clone()))
+            .collect()
+    }
+
+    /// Session 20260924_3's config: no fallback keys, a local mechanical role
+    /// and a cloud review role. A general session keeps the configured order;
+    /// the coordinator gets only models the coordinator gate accepts,
+    /// graduated first, and never the below-floor mechanical model.
+    #[test]
+    fn coordinator_candidates_are_role_fit_and_general_ones_unchanged() {
+        use crate::config::model_roles::{
+            assess_harness_coordinator, CoordinatorEligibility, ModelRole,
+        };
+        let r = reader(&[
+            ("PERMAGENT_ROLE_MECHANICAL_PROVIDER", "ollama"),
+            ("PERMAGENT_ROLE_MECHANICAL_MODEL", "qwen2.5-coder:7b"),
+            ("PERMAGENT_ROLE_REVIEW_PROVIDER", "zai"),
+            ("PERMAGENT_ROLE_REVIEW_MODEL", "glm-5.2"),
+        ]);
+        assert_eq!(
+            targets(&failover_candidates(&r, SessionRole::General)),
+            targets(&permanent_failure_candidates(&r)),
+        );
+
+        let coord = failover_candidates(&r, SessionRole::HarnessCoordinator);
+        let measured = ModelRole::Harness.measured_default();
+        assert_eq!(
+            (
+                coord[0].target.provider.as_str(),
+                coord[0].target.model.as_str()
+            ),
+            (measured.provider.as_str(), measured.model.as_str()),
+            "the harness role's graduated default leads"
+        );
+        let ranks: Vec<CoordinatorEligibility> = coord
+            .iter()
+            .map(|c| assess_harness_coordinator(&c.target.provider, &c.target.model))
+            .collect();
+        assert!(ranks.iter().all(|e| matches!(
+            e,
+            CoordinatorEligibility::TrustedDefault | CoordinatorEligibility::HeuristicCandidate
+        )));
+        let first_heuristic = ranks
+            .iter()
+            .position(|e| *e == CoordinatorEligibility::HeuristicCandidate)
+            .unwrap_or(ranks.len());
+        assert!(ranks[first_heuristic..]
+            .iter()
+            .all(|e| *e == CoordinatorEligibility::HeuristicCandidate));
+        assert!(
+            !coord.iter().any(|c| c.target.provider == "ollama"),
+            "a below-floor model never takes the coordinator seat: {coord:?}"
+        );
+
+        // With the coordinator's own provider down, the pick is the next
+        // role-fit model, not whatever workflow role was listed first.
+        let choice = choose_fallback(&measured.provider, &coord, &LocalAvailability::unprobed())
+            .expect("a role-fit candidate on another provider");
+        assert_ne!(choice.target.provider, measured.provider);
+        assert_eq!(
+            assess_harness_coordinator(&choice.target.provider, &choice.target.model),
+            CoordinatorEligibility::HeuristicCandidate
+        );
+    }
+
+    /// The operator's own keys outrank every inference, even a model the
+    /// coordinator gate would refuse.
+    #[test]
+    fn operator_fallback_keys_stay_first_for_the_coordinator() {
+        let r = reader(&[
+            (KEY_FALLBACKS, "ollama/qwen2.5-coder:7b"),
+            (KEY_FALLBACK_PROVIDER, "custom_deepseek"),
+            (KEY_FALLBACK_MODEL, "deepseek-v4-flash"),
+            ("PERMAGENT_ROLE_REVIEW_PROVIDER", "zai"),
+            ("PERMAGENT_ROLE_REVIEW_MODEL", "glm-5.2"),
+        ]);
+        let coord = failover_candidates(&r, SessionRole::HarnessCoordinator);
+        assert_eq!(coord[0].source, CandidateSource::ExplicitOverride);
+        assert_eq!(coord[1].source, CandidateSource::OrderedList);
+        assert_eq!(coord[1].target.provider, "ollama");
+    }
+
+    /// Graduated before heuristic, whatever the declared order, and a model
+    /// named by two roles is offered once.
+    #[test]
+    fn coordinator_candidates_rank_graduated_first_and_dedupe() {
+        use crate::config::model_roles::ModelRole;
+        let r = reader(&[
+            ("harness_provider", "zai"),
+            ("harness_model", "glm-5.2"),
+            ("PERMAGENT_ROLE_REVIEW_PROVIDER", "zai"),
+            ("PERMAGENT_ROLE_REVIEW_MODEL", "glm-5.2"),
+        ]);
+        let coord = failover_candidates(&r, SessionRole::HarnessCoordinator);
+        let measured = ModelRole::Harness.measured_default();
+        assert_eq!(
+            targets(&coord),
+            vec![
+                (measured.provider.clone(), measured.model.clone()),
+                ("zai".to_string(), "glm-5.2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn transient_reply_says_the_switch_is_temporary_and_carries_no_payload() {
+        let err = in_band(serde_json::json!({
+            "code": "rate_limit_exceeded",
+            "headers": {"retry-after-ms": "56248"},
+            "message": "Rate limit reached for gpt-5.4-mini in organization org-secret"
+        }));
+        let target = RoleModel {
+            provider: "zai".into(),
+            model: "glm-5.2".into(),
+        };
+        let msg = transient_failover_reply(
+            "openai",
+            &err,
+            &target,
+            2,
+            transient_failover_cooldown(&err),
+        );
+        assert!(msg.contains("openai is rate-limiting this model"), "{msg}");
+        assert!(msg.contains("2 retries"), "{msg}");
+        assert!(msg.contains("zai/glm-5.2"), "{msg}");
+        assert!(msg.contains("goes back to openai"), "{msg}");
+        assert!(!msg.contains("org-secret"), "{msg}");
+        assert!(
+            !msg.contains("dropped"),
+            "a rate limit is not a dropped stream: {msg}"
+        );
     }
 }

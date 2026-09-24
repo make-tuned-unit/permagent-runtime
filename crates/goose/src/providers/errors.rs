@@ -54,6 +54,14 @@ pub(crate) const STREAM_BUDGET_PREFIX: &str = "Provider stream budget exceeded: 
 /// (Lane R19a). See [`ProviderError::first_byte_stall`].
 pub(crate) const FIRST_BYTE_STALL_MARKER: &str = "first byte: ";
 
+/// Marker [`ProviderError::from_stream_error_event`] puts at the front of the
+/// details of an error the provider sent INSIDE a 200 stream. Those never
+/// passed through the transport retry layer (`providers::retry`), which only
+/// sees the HTTP status, so the agent may retry them once more itself;
+/// an HTTP-level 429/5xx has already been retried there and must not be
+/// retried twice. See [`ProviderError::is_in_band_stream_event`].
+pub(crate) const IN_BAND_STREAM_EVENT_MARKER: &str = "in-band stream event: ";
+
 impl ProviderError {
     pub fn telemetry_type(&self) -> &'static str {
         match self {
@@ -162,6 +170,14 @@ impl ProviderError {
     /// failover can walk straight back into the same loop.
     pub fn stream_budget_exceeded(detail: impl std::fmt::Display) -> Self {
         ProviderError::ExecutionError(format!("{STREAM_BUDGET_PREFIX}{detail}"))
+    }
+
+    /// An error the provider reported inside an already-accepted stream
+    /// ([`ProviderError::from_stream_error_event`]), as opposed to one the
+    /// HTTP status carried. Only the second kind went through the transport
+    /// retry layer.
+    pub fn is_in_band_stream_event(&self) -> bool {
+        self.to_string().contains(IN_BAND_STREAM_EVENT_MARKER)
     }
 
     pub fn is_stream_budget_exceeded(&self) -> bool {
@@ -487,6 +503,178 @@ impl From<reqwest::Error> for ProviderError {
     }
 }
 
+impl ProviderError {
+    /// The error a streamed body ended on, typed.
+    ///
+    /// Stream parsers return `anyhow::Error`. When the parser already typed the
+    /// failure (an in-band provider error event, see
+    /// [`ProviderError::from_stream_error_event`]) that type is kept. Anything
+    /// else is a body we could not decode and stays a
+    /// [`ProviderError::stream_decode`], the transient class it always was.
+    pub fn from_stream_failure(err: anyhow::Error) -> Self {
+        match err.downcast::<ProviderError>() {
+            Ok(typed) => typed,
+            Err(other) => ProviderError::stream_decode(other),
+        }
+    }
+
+    /// Type an error the provider sent INSIDE a 200 streaming response (an
+    /// OpenAI Responses `error` / `response.failed` event), by its own `code`
+    /// and `type` fields, the same classes an HTTP status would have given.
+    ///
+    /// Session 20260924_3 (2026-09-24): OpenAI sent a `rate_limit_exceeded`
+    /// event (TPM, `retry-after-ms: 5089`) as the first item of a 200 stream.
+    /// Every stream item error was typed `stream_decode`, so a rate limit that
+    /// asked for a five-second wait read as "openai dropped the response
+    /// stream", was never retried, and moved the whole session to another
+    /// model. An event this cannot classify still becomes `stream_decode`.
+    ///
+    /// `label` prefixes the details so the log still says which event carried
+    /// it. The details hold the raw event for the log; nothing user-facing
+    /// reads them ([`ProviderError::user_facing_summary`]).
+    pub fn from_stream_error_event(label: &str, error: &serde_json::Value) -> Self {
+        let field = |k: &str| {
+            error
+                .get(k)
+                .and_then(serde_json::Value::as_str)
+                .map(|s| s.trim().to_ascii_lowercase())
+        };
+        let code = field("code");
+        let kind = field("type");
+        let tagged = |tags: &[&str]| {
+            tags.iter()
+                .any(|t| code.as_deref() == Some(*t) || kind.as_deref() == Some(*t))
+        };
+        let message = error
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let details = format!("{IN_BAND_STREAM_EVENT_MARKER}{label}: {error}");
+
+        if tagged(&["insufficient_quota", "billing_hard_limit_reached"])
+            || is_billing_message(message)
+        {
+            return ProviderError::CreditsExhausted {
+                details,
+                top_up_url: None,
+            };
+        }
+        if tagged(&[
+            "rate_limit_exceeded",
+            "rate_limit_error",
+            "too_many_requests",
+        ]) {
+            return ProviderError::RateLimitExceeded {
+                retry_delay: stream_event_retry_delay(error),
+                details,
+            };
+        }
+        if tagged(&["context_length_exceeded"]) {
+            return ProviderError::ContextLengthExceeded(details);
+        }
+        if tagged(&[
+            "invalid_api_key",
+            "authentication_error",
+            "permission_error",
+            "unauthorized",
+        ]) || is_auth_message(message)
+        {
+            return ProviderError::Authentication(details);
+        }
+        if tagged(&["model_not_found"]) {
+            return ProviderError::EndpointNotFound(details);
+        }
+        if tagged(&[
+            "server_error",
+            "internal_error",
+            "api_error",
+            "overloaded_error",
+            "server_is_overloaded",
+            "service_unavailable",
+            "timeout",
+        ]) {
+            return ProviderError::ServerError(details);
+        }
+        if tagged(&["invalid_request_error", "invalid_prompt", "invalid_value"]) {
+            // The marker keeps `is_permanent_client_message` reading it as a
+            // deterministic 400, whichever of the three tags carried it.
+            return ProviderError::RequestFailed(format!("{details} (invalid_request_error)"));
+        }
+        // An untagged event whose text is a throttle ("Rate limit reached …
+        // try again in 20s"). Checked last so a tagged server error that
+        // happens to say "try again" stays a server error.
+        if looks_like_rate_limit(&message.to_ascii_lowercase()) {
+            return ProviderError::RateLimitExceeded {
+                retry_delay: stream_event_retry_delay(error),
+                details,
+            };
+        }
+        ProviderError::stream_decode(details)
+    }
+}
+
+/// How long an in-band rate-limit event asked us to wait: OpenAI copies its
+/// `retry-after-ms` / `retry-after` headers into the event's `headers` object,
+/// and always says "Please try again in 5.089s" in the message. `None` when it
+/// names no period, so the caller can tell that from "retry now".
+pub(crate) fn stream_event_retry_delay(error: &serde_json::Value) -> Option<Duration> {
+    let header = |k: &str| -> Option<f64> {
+        let v = error.get("headers")?.get(k)?;
+        v.as_f64()
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+            .filter(|n| n.is_finite() && *n >= 0.0)
+    };
+    if let Some(ms) = header("retry-after-ms") {
+        return Some(Duration::from_millis(ms as u64));
+    }
+    if let Some(secs) = header("retry-after") {
+        return Some(Duration::from_millis((secs * 1000.0).round() as u64));
+    }
+    let message = error.get("message").and_then(serde_json::Value::as_str)?;
+    retry_delay_from_message(message)
+}
+
+/// "try again in 5.089s" / "try again in 20ms" / "try again in 1m2s".
+pub(crate) fn retry_delay_from_message(message: &str) -> Option<Duration> {
+    let m = message.to_ascii_lowercase();
+    let rest = &m[m.find("try again in ")? + "try again in ".len()..];
+    let token: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+        .collect();
+    // The sentence's own full stop ("… in 5.089s. Visit …").
+    let token = token.trim_end_matches('.');
+    // Summed in milliseconds and rounded once, so "5.089s" is 5089 ms and
+    // not 5088 by way of binary floating point.
+    let mut total_ms = 0.0f64;
+    let mut number = String::new();
+    let mut chars = token.chars().peekable();
+    let mut saw_unit = false;
+    while let Some(c) = chars.next() {
+        if c.is_ascii_digit() || c == '.' {
+            number.push(c);
+            continue;
+        }
+        let n: f64 = number.parse().ok()?;
+        number.clear();
+        match c {
+            'm' if chars.peek() == Some(&'s') => {
+                chars.next();
+                total_ms += n;
+            }
+            'm' => total_ms += n * 60_000.0,
+            's' => total_ms += n * 1000.0,
+            'h' => total_ms += n * 3_600_000.0,
+            _ => return None,
+        }
+        saw_unit = true;
+    }
+    if !number.is_empty() || !saw_unit || !total_ms.is_finite() || total_ms < 0.0 {
+        return None;
+    }
+    Some(Duration::from_millis(total_ms.round() as u64))
+}
+
 #[derive(Debug)]
 pub enum GoogleErrorCode {
     BadRequest = 400,
@@ -695,5 +883,151 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// Session 20260924_3's first stream item, verbatim in shape (the org id
+    /// replaced). It must type as a rate limit with the provider's own wait,
+    /// not as a dropped stream.
+    #[test]
+    fn in_band_openai_rate_limit_event_is_a_rate_limit_with_its_wait() {
+        let event = serde_json::json!({
+            "type": "tokens",
+            "code": "rate_limit_exceeded",
+            "headers": {
+                "retry-after": "6",
+                "retry-after-ms": "5089",
+                "x-ratelimit-limit-tokens": "200000",
+            },
+            "message": "Rate limit reached for gpt-5.4-mini in organization org-x on tokens \
+                        per min (TPM): Limit 200000, Used 187494, Requested 29470. Please try \
+                        again in 5.089s. Visit https://platform.openai.com/account/rate-limits \
+                        to learn more.",
+            "param": null,
+        });
+        let err = ProviderError::from_stream_error_event("Responses API error", &event);
+        assert!(
+            matches!(
+                err,
+                ProviderError::RateLimitExceeded {
+                    retry_delay: Some(d),
+                    ..
+                } if d == Duration::from_millis(5089)
+            ),
+            "{err:?}"
+        );
+        assert!(!err.is_stream_decode());
+        assert!(!err.is_permanent());
+        assert!(err.is_in_band_stream_event());
+        assert!(!ProviderError::RateLimitExceeded {
+            details: "429 from the HTTP status".into(),
+            retry_delay: None,
+        }
+        .is_in_band_stream_event());
+    }
+
+    /// Table: every in-band event class lands on the variant an HTTP status
+    /// would have given it, so `is_permanent()` and the agent's retry policy
+    /// read it the same way.
+    #[test]
+    fn in_band_stream_error_events_are_typed_by_code() {
+        use serde_json::json;
+        let cases: Vec<(serde_json::Value, &str, bool)> = vec![
+            (
+                json!({"code": "rate_limit_exceeded", "message": "slow down"}),
+                "rate_limit",
+                false,
+            ),
+            (
+                json!({"type": "rate_limit_error", "message": "x"}),
+                "rate_limit",
+                false,
+            ),
+            (
+                json!({"message": "Rate limit reached. Please try again in 20s."}),
+                "rate_limit",
+                false,
+            ),
+            (
+                json!({"code": "server_error", "message": "The server had an error"}),
+                "server",
+                false,
+            ),
+            (
+                json!({"type": "overloaded_error", "message": "Overloaded"}),
+                "server",
+                false,
+            ),
+            (
+                json!({"code": "server_error", "message": "please try again in a moment"}),
+                "server",
+                false,
+            ),
+            (
+                json!({"code": "insufficient_quota", "message": "You exceeded your current quota"}),
+                "credits_exhausted",
+                true,
+            ),
+            (
+                json!({"code": "invalid_api_key", "message": "Incorrect API key"}),
+                "auth",
+                true,
+            ),
+            (
+                json!({"code": "context_length_exceeded", "message": "too long"}),
+                "context_length",
+                true,
+            ),
+            (
+                json!({"code": "model_not_found", "message": "no such model"}),
+                "endpoint_not_found",
+                true,
+            ),
+            (
+                json!({"code": "invalid_prompt", "message": "flagged"}),
+                "request",
+                true,
+            ),
+            (
+                json!({"type": "invalid_request_error", "message": "bad"}),
+                "request",
+                true,
+            ),
+            (json!({"message": "boom"}), "network", false),
+            (json!("not an object"), "network", false),
+        ];
+        for (event, telemetry, permanent) in cases {
+            let err = ProviderError::from_stream_error_event("Responses API error", &event);
+            assert_eq!(err.telemetry_type(), telemetry, "{event}");
+            assert_eq!(err.is_permanent(), permanent, "{event}");
+            assert!(err.to_string().contains("Responses API error"), "{event}");
+        }
+    }
+
+    #[test]
+    fn unknown_stream_failures_stay_dropped_streams_and_typed_ones_survive() {
+        let untyped = ProviderError::from_stream_failure(anyhow::anyhow!("EOF mid-line"));
+        assert!(untyped.is_stream_decode());
+        let typed = ProviderError::from_stream_failure(anyhow::Error::new(
+            ProviderError::ServerError("x".into()),
+        ));
+        assert_eq!(typed, ProviderError::ServerError("x".into()));
+    }
+
+    #[test]
+    fn retry_delay_from_message_reads_the_common_shapes() {
+        let cases = [
+            ("Please try again in 5.089s. Visit …", Some(5089)),
+            ("please try again in 20ms", Some(20)),
+            ("Please try again in 1m2s.", Some(62_000)),
+            ("Please try again in a moment", None),
+            ("no hint here", None),
+        ];
+        for (msg, want_ms) in cases {
+            assert_eq!(
+                retry_delay_from_message(msg).map(|d| d.as_millis() as u64),
+                want_ms,
+                "{msg}"
+            );
+        }
     }
 }

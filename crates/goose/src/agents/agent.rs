@@ -289,6 +289,53 @@ fn starts_new_budget_task(session_type: crate::session::SessionType, message_tex
 }
 
 /// The main goose Agent
+/// A time-boxed fallback in force after a transient provider failure. The
+/// session record was never changed (the switch is in memory only), so an
+/// evicted or restarted agent comes back on the operator's model regardless.
+struct TransientFailover {
+    /// The provider the session was on, and goes back to.
+    original: Arc<dyn Provider>,
+    /// The stand-in that was installed, so the switch back only happens while
+    /// it is still the live provider.
+    fallback: Arc<dyn Provider>,
+    fallback_target: crate::cost_router::role_map::RoleModel,
+    until: std::time::Instant,
+}
+
+/// Wait out a same-model retry, visibly (the shared provider wait status the
+/// CLI and desktop render) and cancellably.
+async fn sleep_before_same_model_retry(
+    provider: &str,
+    err: &ProviderError,
+    delay: std::time::Duration,
+    attempt: usize,
+    cancel_token: &Option<CancellationToken>,
+) {
+    use crate::providers::wait_status;
+    wait_status::publish(wait_status::ProviderWait {
+        provider: provider.to_string(),
+        reason: match err {
+            ProviderError::RateLimitExceeded { .. } => wait_status::WaitReason::RateLimited,
+            ProviderError::ServerError(_) => wait_status::WaitReason::ServerError,
+            _ => wait_status::WaitReason::Transient,
+        },
+        started: std::time::Instant::now(),
+        delay,
+        attempt,
+        max_attempts: crate::cost_router::fallback::SAME_MODEL_MAX_RETRIES,
+    });
+    match cancel_token {
+        Some(token) => {
+            tokio::select! {
+                _ = token.cancelled() => {}
+                _ = tokio::time::sleep(delay) => {}
+            }
+        }
+        None => tokio::time::sleep(delay).await,
+    }
+    wait_status::clear();
+}
+
 pub struct Agent {
     pub(super) provider: SharedProvider,
     pub config: AgentRunnerConfig,
@@ -334,6 +381,13 @@ pub struct Agent {
     /// turn's own visible text stays scrubbed of raw provider payloads,
     /// unchanged.
     last_context_length_failure: Mutex<Option<String>>,
+    /// A fallback taken for a TRANSIENT provider failure, and when it ends.
+    /// Set only by `fail_over_before_commit`; taken back at the next loop
+    /// iteration after `until`, and always at the start of the next reply, so
+    /// a blip moves the session for a bounded time instead of for the rest of
+    /// the session (20260924_3). Cleared by `update_provider`: any explicit
+    /// switch, including a permanent-failure fallback, supersedes it.
+    transient_failover: Mutex<Option<TransientFailover>>,
     /// Test seam for the mid-turn switch: when set, the next
     /// `switch_to_permanent_failure_fallback` uses this target and provider
     /// instead of probing config and building one by name, so the reply-loop
@@ -961,6 +1015,7 @@ impl Agent {
             container: Mutex::new(None),
             last_extension_config_mtime: Mutex::new(None),
             last_context_length_failure: Mutex::new(None),
+            transient_failover: Mutex::new(None),
             #[cfg(test)]
             test_failover: Mutex::new(None),
             #[cfg(test)]
@@ -2383,6 +2438,11 @@ impl Agent {
         cancel_token: Option<CancellationToken>,
         recognition_retrieval_id: Option<String>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
+        // A new message goes to the model the operator chose: a fallback taken
+        // for a transient failure on an earlier reply ends here, whatever is
+        // left of its time box. Before the prompt is built, which names the
+        // live model.
+        let restored_for_new_reply = self.end_transient_failover(&session.id, true).await;
         let context = self
             .prepare_reply_context(&session.id, conversation, session.working_dir.as_path())
             .await?;
@@ -2432,6 +2492,9 @@ impl Agent {
         let inner = Box::pin(async_stream::try_stream! {
             // Working on entry; Drop records done/error on every exit path (#348).
             let mut state_guard = ReplyStateGuard::start();
+            if let Some(notice) = restored_for_new_reply {
+                yield AgentEvent::Message(notice);
+            }
             let mut turns_taken = 0u32;
             let max_turns = session_config.max_turns.unwrap_or_else(|| {
                 Config::global()
@@ -2475,6 +2538,15 @@ impl Agent {
             // credit or key is fixed: the resend would fail over to the same
             // stand-in and be refused again.
             let mut failed_over_permanent_cause: Option<String> = None;
+            // Same-model retries spent on the CURRENT failing call (see
+            // `cost_router::fallback::same_model_retry_delay`). Reset by any
+            // iteration that was not itself such a retry, so a long harness
+            // run gets a fresh budget for each separate blip.
+            let mut same_model_retries: usize = 0;
+            // The previous iteration only re-sent the same call after a
+            // transient failure: it was not a new model turn, so it does not
+            // count against `max_turns`.
+            let mut resending_same_call = false;
             // R28a (HARNESS_LOOP_LOG.md "A27 analysis" misses 1/2): fires at
             // most once per reply, mirroring `monologue_nudged` above — see
             // `after_turn::turn_budget_nudge_text`'s own doc comment for why
@@ -2513,7 +2585,9 @@ impl Agent {
                     }
                 }
 
-                turns_taken += 1;
+                if !std::mem::take(&mut resending_same_call) {
+                    turns_taken += 1;
+                }
                 if turns_taken > max_turns {
                     yield AgentEvent::Message(
                         Message::assistant().with_text(
@@ -2530,6 +2604,19 @@ impl Agent {
                 // record is attached to this turn's already-settled
                 // `cost_ledger` row via `update_cost_ledger_timing`.
                 let mut turn_timing = TurnTimingRecorder::start();
+
+                // A transient fallback whose time box is up goes back to the
+                // model the session was on before this call is authorized, so
+                // the call, its reservation and its prompt are all for that
+                // model. The prompt is rebuilt: it names the live model.
+                if let Some(notice) = self.end_transient_failover(&session_config.id, false).await {
+                    permanent_failure_fallback_used = false;
+                    failed_over_from = None;
+                    failed_over_permanent_cause = None;
+                    (tools, toolshim_tools, system_prompt) =
+                        self.prepare_tools_and_prompt(&session_config.id, &session.working_dir).await?;
+                    yield AgentEvent::Message(notice);
+                }
 
                 // TODO(S8): $-budget pre-turn stop. Once the cost ledger from
                 // PR #714 lands (in CI, unmerged), add the pre-turn spend check
@@ -2832,6 +2919,10 @@ impl Agent {
                 let mut tools_updated = false;
                 let mut did_recovery_compact_this_iteration = false;
                 let mut did_switch_provider_this_iteration = false;
+                // Set by the same-model retry arm: this call failed
+                // transiently before anything reached the user, and the loop
+                // re-sends it to the SAME model after a backoff.
+                let mut did_retry_same_model_this_iteration = false;
                 // Tokens/tools shown to the user this stream: after this flips,
                 // a transient error must not silent-switch (the user already
                 // saw a partial answer). Billing/auth still announce.
@@ -3437,6 +3528,7 @@ impl Agent {
                                     &failed_provider,
                                     provider_err,
                                     request_tokens,
+                                    true,
                                 ).await
                             };
 
@@ -3485,6 +3577,56 @@ impl Agent {
                             state_guard.mark_error();
                             break;
                         }
+                        // A transient failure INSIDE the stream (a dropped
+                        // body, an in-band 429/5xx event) before anything
+                        // reached the user: send the same call to the same
+                        // model again after a bounded, jittered backoff that
+                        // honours the provider's own Retry-After. Only when
+                        // these retries are spent do the arms below fall back,
+                        // and then for a bounded time. Session 20260924_3: an
+                        // in-band TPM limit asking for 5 s moved a coding
+                        // session to a review model for good.
+                        Err(ref provider_err)
+                            if crate::cost_router::fallback::same_model_retry_delay(
+                                provider_err,
+                                stream_committed,
+                                same_model_retries,
+                            )
+                            .is_some() =>
+                        {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            let delay = crate::cost_router::fallback::same_model_retry_delay(
+                                provider_err,
+                                stream_committed,
+                                same_model_retries,
+                            )
+                            .unwrap_or_default();
+                            same_model_retries += 1;
+                            tracing::warn!(
+                                target: "permagent::cost_router",
+                                session_id = %session_config.id,
+                                provider = %turn_provider.get_name(),
+                                model = %turn_model_name,
+                                cause = crate::cost_router::fallback::failover_cause(provider_err),
+                                attempt = same_model_retries,
+                                max_retries = crate::cost_router::fallback::SAME_MODEL_MAX_RETRIES,
+                                delay_ms = delay.as_millis() as u64,
+                                error = %provider_err,
+                                "transient provider failure before any reply; retrying the same model"
+                            );
+                            sleep_before_same_model_retry(
+                                turn_provider.get_name(),
+                                provider_err,
+                                delay,
+                                same_model_retries,
+                                &cancel_token,
+                            )
+                            .await;
+                            did_retry_same_model_this_iteration = true;
+                            resending_same_call = true;
+                            break;
+                        }
                         // `is_dropped_stream`, not `is_stream_decode`: a body a
                         // proxy or llama-server closed partway through a
                         // `data:` line reaches here as `RequestFailed("Failed
@@ -3519,6 +3661,7 @@ impl Agent {
                                         &turn_provider,
                                         provider_err,
                                         request_tokens,
+                                        same_model_retries,
                                     )
                                     .await
                                 {
@@ -3576,6 +3719,7 @@ impl Agent {
                                         &turn_provider,
                                         provider_err,
                                         request_tokens,
+                                        same_model_retries,
                                     )
                                     .await
                                 {
@@ -3651,6 +3795,7 @@ impl Agent {
                                     &failed_provider,
                                     provider_err,
                                     request_tokens,
+                                    true,
                                 ).await
                             };
 
@@ -3737,6 +3882,7 @@ impl Agent {
                                         &turn_provider,
                                         provider_err,
                                         request_tokens,
+                                        same_model_retries,
                                     )
                                     .await
                                 {
@@ -3900,6 +4046,7 @@ impl Agent {
                                                 &turn_provider,
                                                 provider_err,
                                                 request_tokens,
+                                                same_model_retries,
                                             )
                                             .await
                                         {
@@ -3995,6 +4142,7 @@ impl Agent {
                                         &turn_provider,
                                         provider_err,
                                         request_tokens,
+                                        same_model_retries,
                                     )
                                     .await
                                 {
@@ -4047,6 +4195,7 @@ impl Agent {
                                         &turn_provider,
                                         provider_err,
                                         request_tokens,
+                                        same_model_retries,
                                     )
                                     .await
                                 {
@@ -4166,8 +4315,12 @@ impl Agent {
                 // v60 (node A4): both flags are set only from provider-error
                 // arms, and each makes the loop re-run this turn. That re-run
                 // is a re-dispatch after this invocation failed.
+                if !did_retry_same_model_this_iteration {
+                    same_model_retries = 0;
+                }
                 retry_of_failed_call = (did_switch_provider_this_iteration
-                    || did_recovery_compact_this_iteration)
+                    || did_recovery_compact_this_iteration
+                    || did_retry_same_model_this_iteration)
                     .then(|| invocation.invocation_id.clone());
                 // A mid-turn failover re-runs this turn on a different model,
                 // so the prompt must be rebuilt for it. `prepare_tools_and_prompt`
@@ -4332,7 +4485,9 @@ impl Agent {
                             yield AgentEvent::Message(message);
                             exit_chat = true;
                         }
-                        None if did_recovery_compact_this_iteration || did_switch_provider_this_iteration => {
+                        None if did_recovery_compact_this_iteration
+                            || did_switch_provider_this_iteration
+                            || did_retry_same_model_this_iteration => {
                             // Continue from the last user message: either the history was
                             // just compacted, or the model was just swapped after a
                             // permanent provider rejection. Both changed the inputs, so
@@ -4642,6 +4797,10 @@ impl Agent {
         let provider_name = provider.get_name().to_string();
         let model_config = provider.get_model_config();
 
+        // An explicit switch (the user, the chat route, a permanent-failure
+        // fallback, the overflow arm's switch back) supersedes any time-boxed
+        // transient fallback: there is nothing left to go back from.
+        *self.transient_failover.lock().await = None;
         let mut current_provider = self.provider.lock().await;
         *current_provider = Some(provider);
 
@@ -4672,12 +4831,20 @@ impl Agent {
     /// Regression context: session 20260823_4 (2026-08-23) burned every turn on
     /// an Anthropic "credit balance too low" 400 until the user noticed and
     /// switched to DeepSeek by hand.
+    ///
+    /// `sticky`: a permanent failure (billing / auth) persists the switch to
+    /// the session record, because the failed model rejects every request
+    /// until the operator fixes it. A transient one swaps the live provider in
+    /// memory only and leaves the session record on the operator's model
+    /// (`fail_over_before_commit` time-boxes it), so workers, an evicted
+    /// agent and the next session start all still see the chosen model.
     async fn switch_to_permanent_failure_fallback(
         &self,
         session_id: &str,
         failed_provider: &str,
         cause: &ProviderError,
         request_tokens: Option<usize>,
+        sticky: bool,
     ) -> Option<crate::cost_router::role_map::RoleModel> {
         #[cfg(test)]
         let injected = {
@@ -4692,7 +4859,8 @@ impl Agent {
         let (target, replaced, provider) = match injected {
             Some((target, provider)) => (target, String::new(), provider),
             None => {
-                self.build_failover_provider(failed_provider, request_tokens)
+                let role = self.failover_session_role(session_id).await;
+                self.build_failover_provider(failed_provider, request_tokens, role)
                     .await?
             }
         };
@@ -4701,14 +4869,18 @@ impl Agent {
         // window because no log carried it.
         let context_limit = provider.get_model_config().context_limit;
 
-        if let Err(e) = self.update_provider(provider, session_id).await {
-            warn!(
-                fallback_provider = %target.provider,
-                fallback_model = %target.model,
-                error = %e,
-                "Could not activate the configured fallback provider"
-            );
-            return None;
+        if sticky {
+            if let Err(e) = self.update_provider(provider, session_id).await {
+                warn!(
+                    fallback_provider = %target.provider,
+                    fallback_model = %target.model,
+                    error = %e,
+                    "Could not activate the configured fallback provider"
+                );
+                return None;
+            }
+        } else {
+            *self.provider.lock().await = Some(provider);
         }
 
         // Routing snapshot note: the ONE line that explains, after the fact, why
@@ -4726,6 +4898,8 @@ impl Agent {
             context_limit = ?context_limit,
             request_tokens = ?request_tokens,
             reason = crate::cost_router::fallback::failover_cause(cause),
+            class = ?crate::cost_router::fallback::classify_failure(cause),
+            sticky,
             "routing snapshot: switched model mid-turn"
         );
 
@@ -4740,6 +4914,7 @@ impl Agent {
         &self,
         failed_provider: &str,
         request_tokens: Option<usize>,
+        role: crate::cost_router::fallback::SessionRole,
     ) -> Option<(
         crate::cost_router::role_map::RoleModel,
         String,
@@ -4759,9 +4934,10 @@ impl Agent {
         // installed build let Ollama truncate it at n_ctx 4096, and the Ollama
         // preflight now refuses a request that size, so choosing by
         // availability alone would move the turn to a model certain to refuse.
-        let choice = crate::cost_router::fallback::permanent_failure_fallback_for_request(
+        let choice = crate::cost_router::fallback::failover_for_request(
             failed_provider,
             request_tokens,
+            role,
         )
         .await?;
         let replaced = choice
@@ -4838,6 +5014,85 @@ impl Agent {
         .await
     }
 
+    /// Which seat this session fills, so its fallback is chosen for that job
+    /// ([`crate::cost_router::fallback::failover_candidates`]). The coding
+    /// harness's top-level coordinator is the one seat with a stricter gate;
+    /// the same predicate the coding-DAG guards use decides it. A session the
+    /// store cannot read is treated as general, which is the old behaviour.
+    async fn failover_session_role(
+        &self,
+        session_id: &str,
+    ) -> crate::cost_router::fallback::SessionRole {
+        use crate::cost_router::fallback::SessionRole;
+        match self
+            .config
+            .session_manager
+            .get_session(session_id, false)
+            .await
+        {
+            Ok(session)
+                if crate::tool_inspection::is_top_level_coding_harness(
+                    session.recipe.as_ref().map(|r| r.title.as_str()),
+                    session.parent_session_id.as_deref(),
+                ) =>
+            {
+                SessionRole::HarnessCoordinator
+            }
+            _ => SessionRole::General,
+        }
+    }
+
+    /// End a time-boxed transient fallback: put the original provider back
+    /// once its time is up (or at once, with `force`, at the start of a new
+    /// reply), log it, and persist the one sentence that says so. `None` when
+    /// no transient fallback is in force, it is not due, or something else
+    /// has switched the provider since (then that switch stands).
+    async fn end_transient_failover(&self, session_id: &str, force: bool) -> Option<Message> {
+        let record = {
+            let mut slot = self.transient_failover.lock().await;
+            let due = slot
+                .as_ref()
+                .is_some_and(|t| force || std::time::Instant::now() >= t.until);
+            if !due {
+                return None;
+            }
+            slot.take()?
+        };
+        {
+            let mut live = self.provider.lock().await;
+            let still_ours = live
+                .as_ref()
+                .is_some_and(|p| Arc::ptr_eq(p, &record.fallback));
+            if !still_ours {
+                return None;
+            }
+            *live = Some(Arc::clone(&record.original));
+        }
+        let original = crate::cost_router::role_map::RoleModel {
+            provider: record.original.get_name().to_string(),
+            model: record.original.get_model_config().model_name,
+        };
+        tracing::info!(
+            target: "permagent::cost_router",
+            session_id = %session_id,
+            to_provider = %original.provider,
+            to_model = %original.model,
+            from_provider = %record.fallback_target.provider,
+            from_model = %record.fallback_target.model,
+            forced_by_new_reply = force,
+            "routing snapshot: transient fallback ended; back on the chosen model"
+        );
+        let message = Message::assistant().with_system_notification(
+            SystemNotificationType::InlineMessage,
+            crate::cost_router::fallback::transient_failover_restored_reply(
+                &original,
+                &record.fallback_target,
+            ),
+        );
+        persist_turn_ending_message(&self.config.session_manager, session_id, &message).await;
+        Some(message)
+    }
+
     /// One pre-commit failover, shared by every transient arm of the reply
     /// loop (dropped stream, refused connection, 5xx, spent rate limit, first-
     /// byte stall): switch the session to the next model that is up and can
@@ -4847,17 +5102,39 @@ impl Agent {
     ///
     /// Persisted, not just yielded: the desktop reloads the transcript when a
     /// turn ends, and an unpersisted notice vanishes with the reload.
+    ///
+    /// Every caller is a TRANSIENT arm (`may_silent_precommit_failover`
+    /// refuses permanent errors), so the switch is time-boxed, not sticky:
+    /// it is in memory only, and `end_transient_failover` puts `failed` back
+    /// after `transient_failover_cooldown` or at the next reply. `retries` is
+    /// how many same-model retries this call already spent, for the notice.
     async fn fail_over_before_commit(
         &self,
         session_id: &str,
         failed: &Arc<dyn Provider>,
         err: &ProviderError,
         request_tokens: Option<usize>,
+        retries: usize,
     ) -> Option<Message> {
         let failed_provider = failed.get_name().to_string();
         let target = self
-            .switch_to_permanent_failure_fallback(session_id, &failed_provider, err, request_tokens)
+            .switch_to_permanent_failure_fallback(
+                session_id,
+                &failed_provider,
+                err,
+                request_tokens,
+                false,
+            )
             .await?;
+        let cooldown = crate::cost_router::fallback::transient_failover_cooldown(err);
+        if let Some(fallback) = self.provider.lock().await.as_ref().map(Arc::clone) {
+            *self.transient_failover.lock().await = Some(TransientFailover {
+                original: Arc::clone(failed),
+                fallback,
+                fallback_target: target.clone(),
+                until: std::time::Instant::now() + cooldown,
+            });
+        }
         tracing::info!(
             target: "permagent::cost_router",
             session_id = %session_id,
@@ -4865,11 +5142,19 @@ impl Agent {
             to_provider = %target.provider,
             to_model = %target.model,
             cause = crate::cost_router::fallback::failover_cause(err),
-            "pre-commit failover"
+            same_model_retries = retries,
+            cooldown_secs = cooldown.as_secs(),
+            "pre-commit failover (transient, time-boxed)"
         );
         let message = Message::assistant().with_system_notification(
             SystemNotificationType::InlineMessage,
-            crate::cost_router::fallback::precommit_failover_reply(&failed_provider, err, &target),
+            crate::cost_router::fallback::transient_failover_reply(
+                &failed_provider,
+                err,
+                &target,
+                retries,
+                cooldown,
+            ),
         );
         persist_turn_ending_message(&self.config.session_manager, session_id, &message).await;
         Some(message)
