@@ -7,8 +7,8 @@
  * the list uses. You sit at the origin and are not clickable.
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Canvas, useThree } from '@react-three/fiber';
 import { Html, Line, OrbitControls } from '@react-three/drei';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
@@ -21,6 +21,16 @@ import { isBridge, isYou, layoutPeopleGraph, type GraphNode } from './peopleGrap
 import { PersonFace } from './PersonFace';
 import { shouldShowLabel } from './peopleFace';
 import { isQuiet } from './contactAge';
+import { fitPeopleGraph, GRAPH_FOV, insetsAvoiding, LABEL_LIFT, type CameraPose, type Insets, type Rect, type Viewport } from './graphFit';
+
+/** Chrome over the canvas the graph must stay clear of: the filter field at
+ *  the top (placed at `space.xl`, ~30px tall, plus a gap). The Key — chip or
+ *  open panel — is measured from the DOM and carved out separately, since its
+ *  size depends on whether it is open. Pixel clearances, not layout spacing. */
+const FILTER_CLEARANCE_PX = 56;
+const GRAPH_INSETS: Insets = {
+  top: FILTER_CLEARANCE_PX, right: space.xxl, bottom: space.xxl, left: space.xxl,
+};
 
 type Status = 'loading' | 'error' | 'ready';
 
@@ -75,10 +85,66 @@ export function PeopleGraph() {
   }, [people, query]);
 
   const layout = useMemo(() => layoutPeopleGraph(filtered), [filtered]);
-  const byId = useMemo(() => new Map(layout.nodes.map(n => [n.id, n])), [layout.nodes]);
+
+  // The canvas's real size, so the graph is fitted to what is on screen
+  // (graphFit.ts: a fixed camera clipped and stacked faces at 660x560).
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState<Viewport | null>(null);
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      if (width > 0 && height > 0) {
+        setViewport(prev => (prev && prev.width === Math.round(width) && prev.height === Math.round(height))
+          ? prev
+          : { width: Math.round(width), height: Math.round(height) });
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // The Key's real rect, measured AFTER it renders and again whenever it
+  // opens, closes or resizes (opening swaps the chip for the panel, which is a
+  // new element, so `onElement` fires and this re-observes). The graph is
+  // fitted into what the key leaves free — nothing is drawn under it.
+  const [legendEl, setLegendEl] = useState<HTMLElement | null>(null);
+  const [legendRect, setLegendRect] = useState<Rect | null>(null);
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!legendEl || !host || typeof ResizeObserver === 'undefined') { setLegendRect(null); return; }
+    const measure = () => {
+      const h = host.getBoundingClientRect();
+      const r = legendEl.getBoundingClientRect();
+      const next = {
+        left: Math.round(r.left - h.left), top: Math.round(r.top - h.top),
+        right: Math.round(r.right - h.left), bottom: Math.round(r.bottom - h.top),
+      };
+      setLegendRect(prev => (prev && prev.left === next.left && prev.top === next.top
+        && prev.right === next.right && prev.bottom === next.bottom) ? prev : next);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(legendEl);
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, [legendEl]);
+
+  const fitted = useMemo(
+    () => (viewport
+      ? fitPeopleGraph(layout.nodes, layout.clusters, viewport, insetsAvoiding(viewport, GRAPH_INSETS, legendRect))
+      : null),
+    [layout, viewport, legendRect],
+  );
+  const nodes = useMemo(() => layout.nodes.map(n => {
+    const p = fitted?.nodes.get(n.id);
+    return p ? { ...n, x: p[0], y: p[1], z: p[2] } : n;
+  }), [layout.nodes, fitted]);
+  const byId = useMemo(() => new Map(nodes.map(n => [n.id, n])), [nodes]);
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%', background: gradient.workspace }}>
+    <div ref={hostRef} style={{ position: 'relative', width: '100%', height: '100%', background: gradient.workspace }}>
       <input
         value={query}
         onChange={e => setQuery(e.target.value)}
@@ -125,13 +191,16 @@ export function PeopleGraph() {
       {status === 'ready' && (
         <CanvasLegend
           canvasId="people-graph"
+          // Open, the key covers ~45% of a 660x560 graph: start collapsed.
+          defaultOpen={false}
+          onElement={setLegendEl}
           gestures={PEOPLE_GESTURES}
           vocabulary={PEOPLE_VOCABULARY}
         />
       )}
       {status === 'ready' && (
         <Canvas
-          camera={{ position: [0, 7.5, 14], fov: 50 }}
+          camera={{ position: [0, 7.5, 14], fov: GRAPH_FOV }}
           gl={{ alpha: true, antialias: true }}
           style={{ width: '100%', height: '100%', background: 'transparent' }}
           onPointerMissed={() => setHovered(null)}
@@ -139,6 +208,7 @@ export function PeopleGraph() {
           <ambientLight intensity={0.55} />
           <pointLight position={[8, 10, 6]} intensity={1.1} />
           <OrbitControls enableDamping makeDefault />
+          <FitCamera pose={fitted?.camera ?? null} />
           {layout.edges.map(edge => {
             const from = byId.get(edge.from);
             const to = byId.get(edge.to);
@@ -160,7 +230,12 @@ export function PeopleGraph() {
             );
           })}
           {layout.clusters.map(cluster => (
-            <Html key={cluster.id} position={[cluster.x, cluster.y + 1.6, cluster.z]} center style={{ pointerEvents: 'none' }}>
+            <Html
+              key={cluster.id}
+              position={fitted?.labels.get(cluster.id) ?? [cluster.x, cluster.y + LABEL_LIFT, cluster.z]}
+              center
+              style={{ pointerEvents: 'none' }}
+            >
               {/* A chip, not bare text: these labels sit in a 3D scene and
                   always draw on top, so over a face or a dense cluster the
                   letters used to land on the nodes themselves (QA 2026-09-20,
@@ -182,7 +257,7 @@ export function PeopleGraph() {
               </div>
             </Html>
           ))}
-          {layout.nodes.map(node => (
+          {nodes.map(node => (
             <PersonNode
               key={node.id}
               node={node}
@@ -204,6 +279,34 @@ export function PeopleGraph() {
       )}
     </div>
   );
+}
+
+/** Moves the camera (and the orbit pivot) to the fitted pose when the layout
+ *  or the canvas size changes. A user's own orbit stays until then. */
+function FitCamera({ pose }: { pose: CameraPose | null }) {
+  const camera = useThree(s => s.camera);
+  const size = useThree(s => s.size);
+  const controls = useThree(s => s.controls) as unknown as
+    | { target: { set: (x: number, y: number, z: number) => void }; update: () => void }
+    | null;
+  useEffect(() => {
+    if (!pose) return;
+    camera.position.set(...pose.position);
+    camera.lookAt(...pose.target);
+    // The fit centres the graph in the rectangle the Key leaves free, which is
+    // off-centre when the Key is open. Shift the projection's centre there
+    // (not the camera), so orbiting still pivots on the graph itself.
+    if ('setViewOffset' in camera && pose.center && size.width > 0 && size.height > 0) {
+      const { width: w, height: h } = size;
+      camera.setViewOffset(w, h, w / 2 - pose.center.x, h / 2 - pose.center.y, w, h);
+      camera.updateProjectionMatrix();
+    }
+    if (controls) {
+      controls.target.set(...pose.target);
+      controls.update();
+    }
+  }, [pose, camera, controls, size]);
+  return null;
 }
 
 function PersonNode({

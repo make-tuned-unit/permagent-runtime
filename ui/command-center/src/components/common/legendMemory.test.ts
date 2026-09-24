@@ -55,3 +55,14 @@ describe('canvas legend memory', () => {
     setItem.mockRestore();
   });
 });
+
+describe('canvas legend memory — collapsed-by-default canvases', () => {
+  it('a canvas can start collapsed on a first visit, and an explicit choice still wins', () => {
+    localStorage.clear();
+    expect(readLegendOpen('people-graph', false)).toBe(false);
+    rememberLegendOpen('people-graph', true);
+    expect(readLegendOpen('people-graph', false)).toBe(true);
+    rememberLegendOpen('people-graph', false);
+    expect(readLegendOpen('people-graph', false)).toBe(false);
+  });
+});

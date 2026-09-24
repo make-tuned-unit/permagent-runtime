@@ -18,6 +18,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
+// The tray's Decision Inbox row reads the real queue; these tests are about
+// the toast stack and the overlay, so it gets a still-loading one (no network).
+vi.mock('../dashboard/decisions/useDecisions', () => ({
+  useDecisions: () => ({ data: null, loading: true, error: false }),
+}));
+
 import { NotificationHost } from './NotificationHost';
 import { setTrayOpen, toast } from '../../lib/notifications';
 import { radius, setReduceMotion } from '../../styles/tokens';

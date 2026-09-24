@@ -59,13 +59,28 @@ afterEach(() => {
   localStorage.clear();
 });
 
-async function render() {
+async function mount() {
   await act(async () => root.render(<PeopleGraph />));
 }
 
 const legend = () => container.querySelector('[data-testid="canvas-legend"]');
+const keyButton = () => container.querySelector<HTMLButtonElement>('[data-testid="canvas-legend-open"]');
+
+/** Mount and open the key with its own "Key" button (it starts collapsed). */
+async function render() {
+  await mount();
+  await act(async () => keyButton()!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+}
 
 describe('People graph key', () => {
+  // QA 2026-09-24: open by default, the key covered ~45% of a 660x560 graph
+  // and faces were drawn over its text. It now waits behind its button.
+  it('starts collapsed on a first visit, behind its "Key" button', async () => {
+    await mount();
+    expect(legend()).toBeNull();
+    expect(keyButton()!.textContent).toBe('Key');
+  });
+
   it('teaches the premise the layout is built on', async () => {
     await render();
     const text = legend()!.textContent ?? '';
@@ -102,7 +117,7 @@ describe('People graph key', () => {
     expect(legend()).toBeNull();
     act(() => root.unmount());
     root = createRoot(container);
-    await render();
+    await mount();
     expect(legend()).toBeNull();
   });
 });

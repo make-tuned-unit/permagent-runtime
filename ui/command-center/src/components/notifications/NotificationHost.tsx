@@ -2,7 +2,7 @@
 // Mounted once at App root. Every item is a real daemon event (see
 // lib/notifications.ts); clicking one deep-links to its surface.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import {
   useNotifications,
   markAllRead,
@@ -14,7 +14,11 @@ import { navigateToTool, useCommandCenter } from '../../lib/store';
 import { font, radius, space, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useGlass } from '../common/Glass';
+import { Button } from '../common/Button';
 import { ToastCard } from './Toast';
+import { useDecisions } from '../dashboard/decisions/useDecisions';
+import { summarizeDecisions } from '../dashboard/decisions/summary';
+import { trayDecisionState, trayIsQuiet, type TrayDecisionState } from './trayAttention';
 
 const TOAST_MS = 6000;
 /** Never more than this many stacked at once — a wall of toasts is its own
@@ -155,11 +159,11 @@ export function NotificationHost() {
             ...type.label, color: colors.textDim,
             padding: `${space.xs}px ${space.lg}px ${space.md}px`,
           }}>Notifications</div>
-          {items.length === 0 ? (
-            <div style={{ padding: `${space.lg}px ${space.lg}px ${space.xl}px`, fontSize: textSize.caption, color: colors.textDim }}>
-              Nothing needs you — all quiet.
-            </div>
-          ) : items.map((n) => (
+          {/* The Decision Inbox's own count. The rows below are only the live
+              pings since launch, so they alone can't say "nothing needs you"
+              (QA 2026-09-24: "all quiet" over 23 pending decisions). */}
+          <TrayDecisions itemCount={items.length} />
+          {items.map((n) => (
             /* Left as a raw <button> on purpose: this row IS the card — three
                stacked blocks (title, body, timestamp) laid out by the button
                itself. `.pa-btn`'s inline-flex + centring would turn them into
@@ -203,5 +207,80 @@ export function NotificationHost() {
         ))}
       </div>
     </>
+  );
+}
+
+/**
+ * The tray's Decision Inbox row. Mounted only while the tray is open, so the
+ * decisions read (poll + /events refresh) runs only while someone is looking.
+ * It opens Home's Decision Review — the same `openDecisionInbox` entry point
+ * Settings and Model Review use — rather than a second inbox.
+ */
+function TrayDecisions({ itemCount }: { itemCount: number }) {
+  const { colors } = useTheme();
+  const inbox = useDecisions();
+  const agentName = useCommandCenter((s) => s.agentName);
+  const openDecisionInbox = useCommandCenter((s) => s.openDecisionInbox);
+  const [linkNote, setLinkNote] = useState<string | null>(null);
+  const state: TrayDecisionState = trayDecisionState(summarizeDecisions(inbox.data, agentName), inbox.error);
+
+  const note = (text: string) => (
+    <div style={{ padding: `${space.lg}px ${space.lg}px ${space.xl}px`, fontSize: textSize.caption, color: colors.textDim }}>
+      {text}
+    </div>
+  );
+
+  if (trayIsQuiet(itemCount, state)) return note('Nothing needs you — all quiet.');
+  if (state.kind === 'checking') return itemCount === 0 ? note('Checking the Decision Inbox…') : null;
+  if (state.kind === 'unknown') {
+    return note(itemCount === 0
+      ? "No new notifications. Couldn't read the Decision Inbox."
+      : "Couldn't read the Decision Inbox.");
+  }
+  if (state.kind !== 'waiting') return null;
+
+  const open = () => {
+    if (openDecisionInbox()) {
+      setTrayOpen(false);
+      markAllRead();
+    } else {
+      setLinkNote('Decision Review is on Home, and no workspace holds Home.');
+    }
+  };
+
+  return (
+    <div data-testid="tray-decisions" style={{
+      padding: `${space.md}px ${space.lg}px`, marginBottom: space.xs,
+      borderRadius: radius.md, background: colors.cyanSoft,
+    }}>
+      <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>
+        {state.headline}
+      </div>
+      {state.detail && (
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs, lineHeight: 1.4 }}>
+          {state.detail}
+        </div>
+      )}
+      <Button
+        colors={colors}
+        variant="bare"
+        onClick={open}
+        flashSuccess={false}
+        style={{
+          '--pa-btn-fg': colors.cyan,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          '--pa-btn-weight': 600,
+          marginTop: space.sm,
+          fontFamily: font.body,
+          fontSize: textSize.micro,
+        } as CSSProperties}
+      >
+        Open Decisions on Home →
+      </Button>
+      {linkNote && (
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginTop: space.xs }}>{linkNote}</div>
+      )}
+    </div>
   );
 }

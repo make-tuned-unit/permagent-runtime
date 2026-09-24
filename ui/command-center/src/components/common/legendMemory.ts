@@ -21,12 +21,20 @@ export function canvasLegendStorageKey(canvasId: string): string {
   return `${CANVAS_LEGEND_KEY_PREFIX}${canvasId}`;
 }
 
-/** True unless this canvas's key has been dismissed before. */
-export function readLegendOpen(canvasId: string): boolean {
+/**
+ * Whether this canvas's key is open. With nothing remembered it is
+ * `firstVisit` — open by default (teach once), but a canvas whose key would
+ * cover much of the scene (the People graph at ~660x560: ~45% of it) starts
+ * collapsed behind its "Key" button instead. An explicit choice always wins.
+ */
+export function readLegendOpen(canvasId: string, firstVisit = true): boolean {
   try {
-    return localStorage.getItem(canvasLegendStorageKey(canvasId)) !== 'dismissed';
+    const stored = localStorage.getItem(canvasLegendStorageKey(canvasId));
+    if (stored === 'dismissed') return false;
+    if (stored === 'open') return true;
+    return firstVisit;
   } catch {
-    return true;
+    return firstVisit;
   }
 }
 

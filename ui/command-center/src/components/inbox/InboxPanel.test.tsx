@@ -34,7 +34,8 @@ vi.mock('../../lib/api', () => ({
   }),
 }));
 
-import { InboxPanel } from './InboxPanel';
+import { InboxPanel, INBOX_COLS } from './InboxPanel';
+import { space } from '../../styles/tokens';
 import { api, apiFetch, type InboxFile } from '../../lib/api';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -146,5 +147,34 @@ describe('InboxPanel per-destination results', () => {
     expect(text).toContain('Filed as a document in Acme'); // project success must still be visible
     expect(text).toContain('Could not send brief.pdf to the Brain'); // failure names its destination
     expect(text).toContain('garbled text'); // and still carries the real reason
+  });
+});
+
+describe('InboxPanel fits the History column (QA 2026-09-24)', () => {
+  // Embedded in History beside the docked chat the panel is ~500px wide. The
+  // old six-column grid had ~780px of track floors, so STATUS was clipped.
+  it('the grid\'s fixed floors plus gaps fit a 500px embed', () => {
+    const floors = [...INBOX_COLS.matchAll(/(\d+)px/g)].map(m => Number(m[1]));
+    const tracks = INBOX_COLS.split(/\s+(?![^(]*\))/).length;
+    const embedPadX = space.xxxl; // InboxPanel's embedded contentPadX
+    const rowPadX = space.xl;     // ROW_PAD_X
+    const used = floors.reduce((a, b) => a + b, 0) + (tracks - 1) * space.xl + 2 * (embedPadX + rowPadX);
+    // Leave the file column at least 160px of the 500.
+    expect(used + 160).toBeLessThanOrEqual(500);
+  });
+
+  it('source, size and received ride under the filename instead of their own columns', async () => {
+    getInboxMock.mockResolvedValue([FILE]);
+    apiFetchMock.mockImplementation(async (endpoint: unknown) => {
+      if (endpoint === '/api/projects') return [] as unknown;
+      throw new Error(`unexpected fetch ${String(endpoint)}`);
+    });
+    await act(async () => { root.render(<InboxPanel embedded />); });
+    await flush();
+    const meta = container.querySelector('[data-testid="inbox-file-meta"]')!;
+    expect(meta.textContent).toContain('example.com');
+    expect(meta.textContent).toContain('1 KB');
+    expect(container.textContent).not.toContain('Received');
+    expect(container.textContent).toContain('Status');
   });
 });
