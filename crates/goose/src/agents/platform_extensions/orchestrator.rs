@@ -29995,19 +29995,23 @@ mod tests {
     #[serial_test::serial]
     async fn resolve_planner_route_free_refuses_a_pin_with_no_kb_row_and_no_evidence() {
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
-        std::env::set_var("ORCHESTRATOR_DECOMPOSITION_PROVIDER", "ollama");
-        std::env::set_var(
-            "ORCHESTRATOR_DECOMPOSITION_MODEL",
-            "i1-fixture-no-kb-row-model:7b",
-        );
+        // Under the env lock, which RESTORES each var on drop. A bare
+        // remove_var("PERMAGENT_PATH_ROOT") here unset the test-wide root for
+        // every later test in the process, and they then wrote into the real
+        // ~/.permagent (it clobbered the live git-steward recipe).
+        let root = tmp.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+            ("ORCHESTRATOR_DECOMPOSITION_PROVIDER", Some("ollama")),
+            (
+                "ORCHESTRATOR_DECOMPOSITION_MODEL",
+                Some("i1-fixture-no-kb-row-model:7b"),
+            ),
+        ]);
         crate::cost_router::invalidate_derived_role_map();
 
         let (route, reason) = resolve_planner_route_free().await;
 
-        std::env::remove_var("PERMAGENT_PATH_ROOT");
-        std::env::remove_var("ORCHESTRATOR_DECOMPOSITION_PROVIDER");
-        std::env::remove_var("ORCHESTRATOR_DECOMPOSITION_MODEL");
         crate::cost_router::invalidate_derived_role_map();
 
         assert!(

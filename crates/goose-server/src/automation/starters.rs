@@ -312,6 +312,50 @@ async fn reconcile_starter_recipes(scheduler: &dyn SchedulerTrait) {
 
         let starter_id_val = Some(starter.id.to_string());
 
+        // ── Pass 0: a recipe the scheduler cannot run is not a user edit ──
+        // A hash mismatch alone was read as "the user edited it". When a test
+        // run overwrote git-steward.yaml with a 13-byte `prompt: test`, that
+        // rule marked the wreck user_customized and preserved it forever while
+        // every fire failed on "missing field title". An edit that does not
+        // parse cannot be run, so it is set aside and the embedded version
+        // reinstalled — even over an earlier user_customized flag.
+        if let Some(reason) = unrunnable_recipe_reason(&on_disk_content) {
+            let backup = format!("{}.unparseable", job.source);
+            if let Err(e) = std::fs::write(&backup, &on_disk_content) {
+                tracing::error!(
+                    "Starter '{}' on disk is not a runnable recipe ({}), and setting it \
+                     aside failed: {}; leaving it in place",
+                    starter.id,
+                    reason,
+                    e
+                );
+                continue;
+            }
+            if let Err(e) = std::fs::write(&job.source, starter.yaml) {
+                tracing::error!("Failed to reinstall starter '{}': {}", starter.id, e);
+                continue;
+            }
+            tracing::warn!(
+                target: "permagentd::automation",
+                "Starter '{}' on disk is not a runnable recipe ({}); reinstalled the \
+                 embedded v{} (previous content kept at {})",
+                starter.id,
+                reason,
+                embedded_version,
+                backup
+            );
+            scheduler
+                .update_starter_fields(
+                    &job.id,
+                    starter_id_val,
+                    Some(embedded_version),
+                    Some(embedded_hash),
+                    false,
+                )
+                .await;
+            continue;
+        }
+
         // ── Pass 1: Detect user edits ──
         if let Some(ref stored) = stored_hash {
             if on_disk_hash != *stored && !is_customized {
@@ -423,6 +467,19 @@ async fn reconcile_starter_recipes(scheduler: &dyn SchedulerTrait) {
             &old_version,
             &embedded_version,
         ));
+    }
+}
+
+/// Why `content` cannot run as a scheduled recipe, or `None` if it can.
+///
+/// Parsed exactly as `execute_job` parses a `.yaml` source, so "runnable here"
+/// means "runnable there". A recipe with a blank title parses but is not a
+/// starter anyone wrote on purpose.
+fn unrunnable_recipe_reason(content: &str) -> Option<String> {
+    match serde_yaml::from_str::<Recipe>(content) {
+        Ok(recipe) if recipe.title.trim().is_empty() => Some("empty title".to_string()),
+        Ok(_) => None,
+        Err(e) => Some(e.to_string()),
     }
 }
 
@@ -1070,6 +1127,66 @@ mod tests {
         let on_disk = std::fs::read_to_string(&yaml_path).unwrap();
         assert_eq!(on_disk, modified);
     }
+    // ── Test 9: an unparseable on-disk starter is reinstalled, not preserved ──
+
+    /// The git-steward incident: a test fixture (`prompt: test`) overwrote the
+    /// live recipe. Reconcile read the hash mismatch as a user edit and froze
+    /// the wreck as user_customized. It must reinstall the embedded recipe —
+    /// on first detection AND when the flag was already (wrongly) set — and
+    /// keep the broken content beside it.
+    #[tokio::test]
+    async fn unparseable_starter_is_reinstalled_not_preserved_as_an_edit() {
+        for already_customized in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let yaml_path = tmp.path().join("git-steward.yaml");
+            std::fs::write(&yaml_path, "prompt: test\n").unwrap();
+
+            let mut job = make_job(
+                "git-steward",
+                yaml_path.to_str().unwrap(),
+                &extract_version(STEWARD_YAML),
+                &content_hash(STEWARD_YAML),
+                already_customized,
+            );
+            job.paused = true;
+            job.consecutive_failures = 3;
+            let scheduler = MockScheduler::new(vec![job]);
+
+            reconcile_starter_recipes(&scheduler).await;
+
+            assert_eq!(
+                std::fs::read_to_string(&yaml_path).unwrap(),
+                STEWARD_YAML,
+                "customized={already_customized}: the embedded recipe must be reinstalled"
+            );
+            let backup = tmp.path().join("git-steward.yaml.unparseable");
+            assert_eq!(std::fs::read_to_string(backup).unwrap(), "prompt: test\n");
+
+            let jobs = scheduler.list_scheduled_jobs().await;
+            let updated = jobs.iter().find(|j| j.id == "git-steward").unwrap();
+            assert_eq!(updated.user_customized, Some(false));
+            assert_eq!(
+                updated.starter_content_hash.as_deref(),
+                Some(content_hash(STEWARD_YAML).as_str())
+            );
+            // Reinstalling fixes the recipe; resuming is still the user's call.
+            assert!(updated.paused);
+        }
+    }
+
+    #[test]
+    fn unrunnable_recipe_reason_names_the_failure() {
+        let missing_title = unrunnable_recipe_reason("prompt: test\n").unwrap();
+        assert!(missing_title.contains("title"), "{missing_title}");
+        assert!(unrunnable_recipe_reason(
+            "version: \"1\"\ntitle: \"  \"\ndescription: d\nprompt: p\n"
+        )
+        .is_some());
+        for s in STARTERS {
+            assert_eq!(unrunnable_recipe_reason(s.yaml), None, "{}", s.id);
+        }
+    }
+
     #[tokio::test]
     async fn model_review_preserves_pause_and_customization() {
         // Reconciliation reads the tombstone list under $HOME and writes starter

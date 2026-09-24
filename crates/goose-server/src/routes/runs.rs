@@ -35,6 +35,14 @@ pub struct RunItem {
     pub started_at: Option<String>,
     /// Whether the frontend can offer an interrupt control for this row.
     pub interruptible: bool,
+    /// Schedule rows: the job is paused (by the user, or auto-paused after
+    /// repeated failures). Always `false` for worker and session rows.
+    pub paused: bool,
+    /// Schedule rows: the most recent run error, if any. `None` elsewhere.
+    pub last_error: Option<String>,
+    /// Schedule rows: failed runs in a row (the auto-pause counter). `0`
+    /// elsewhere.
+    pub consecutive_failures: u32,
 }
 
 #[derive(Serialize)]
@@ -71,6 +79,9 @@ async fn list_runs(State(state): State<Arc<AppState>>) -> Json<RunsResponse> {
             last_activity: None,
             started_at: ls.session_stats.batch_started_at.map(|t| t.to_rfc3339()),
             interruptible: false,
+            paused: false,
+            last_error: None,
+            consecutive_failures: 0,
         });
     }
 
@@ -88,22 +99,18 @@ async fn list_runs(State(state): State<Arc<AppState>>) -> Json<RunsResponse> {
                 _ => "idle",
             }
         };
-        let detail = if let Some(at) = j.at {
-            Some(format!("once at {}", at.to_rfc3339()))
-        } else if let Some(secs) = j.every_seconds {
-            Some(format!("every {secs}s"))
-        } else {
-            Some(j.cron.clone())
-        };
         runs.push(RunItem {
             kind: "schedule",
             id: j.id.clone(),
             name: schedule_run_name(j),
             status,
-            detail,
+            detail: Some(schedule_run_detail(j)),
             last_activity: j.last_run.map(|t| t.to_rfc3339()),
             started_at: j.process_start_time.map(|t| t.to_rfc3339()),
             interruptible: j.currently_running,
+            paused: j.paused,
+            last_error: schedule_last_error(j),
+            consecutive_failures: j.consecutive_failures,
         });
     }
 
@@ -134,6 +141,9 @@ async fn list_runs(State(state): State<Arc<AppState>>) -> Json<RunsResponse> {
             last_activity: Some(s.updated_at.to_rfc3339()),
             started_at: Some(s.created_at.to_rfc3339()),
             interruptible: false,
+            paused: false,
+            last_error: None,
+            consecutive_failures: 0,
         });
     }
 
@@ -152,6 +162,49 @@ fn schedule_run_name(job: &permagent::scheduler::ScheduledJob) -> String {
     job.id.clone()
 }
 
+/// The job's last error: the live field, else the one its pause episode froze.
+fn schedule_last_error(job: &permagent::scheduler::ScheduledJob) -> Option<String> {
+    job.last_error
+        .clone()
+        .or_else(|| job.pause_episode.as_ref().map(|e| e.last_error.clone()))
+        .filter(|e| !e.trim().is_empty())
+}
+
+/// Longest error excerpt the row detail carries; the full text is `last_error`.
+const DETAIL_ERROR_CHARS: usize = 120;
+
+/// The row's `detail`: the schedule, or — for a job paused after failures —
+/// why it stopped. An auto-paused job used to show only its cron, so a job
+/// that had failed three times and gone quiet looked merely idle.
+fn schedule_run_detail(job: &permagent::scheduler::ScheduledJob) -> String {
+    let schedule = if let Some(at) = job.at {
+        format!("once at {}", at.to_rfc3339())
+    } else if let Some(secs) = job.every_seconds {
+        format!("every {secs}s")
+    } else {
+        job.cron.clone()
+    };
+    if !job.paused || job.consecutive_failures == 0 {
+        return schedule;
+    }
+    let runs = if job.consecutive_failures == 1 {
+        "run"
+    } else {
+        "runs"
+    };
+    let mut detail = format!("Paused after {} failed {runs}", job.consecutive_failures);
+    if let Some(err) = schedule_last_error(job) {
+        let first_line = err.lines().next().unwrap_or("").trim();
+        let mut short: String = first_line.chars().take(DETAIL_ERROR_CHARS).collect();
+        if first_line.chars().count() > DETAIL_ERROR_CHARS || err.trim().lines().count() > 1 {
+            short.push('…');
+        }
+        detail.push_str(": ");
+        detail.push_str(&short);
+    }
+    detail
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/runs", get(list_runs))
@@ -161,6 +214,85 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn failed_job(failures: u32, error: &str) -> permagent::scheduler::ScheduledJob {
+        permagent::scheduler::ScheduledJob {
+            id: "git-steward".to_string(),
+            cron: "0 0 9 * * *".to_string(),
+            paused: true,
+            consecutive_failures: failures,
+            last_error: Some(error.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// An auto-paused job must say why it stopped. Before, the row carried only
+    /// the cron, so git-steward — paused after three "missing field title"
+    /// failures — looked like any idle schedule.
+    #[test]
+    fn an_auto_paused_job_says_why_it_stopped() {
+        let job = failed_job(3, "missing field `title` at line 1 column 1");
+        assert_eq!(
+            schedule_run_detail(&job),
+            "Paused after 3 failed runs: missing field `title` at line 1 column 1"
+        );
+        assert_eq!(
+            schedule_last_error(&job).as_deref(),
+            Some("missing field `title` at line 1 column 1")
+        );
+    }
+
+    /// Long or multi-line errors are cut to a first-line excerpt; the full text
+    /// stays in `last_error`.
+    #[test]
+    fn a_long_pause_error_is_shortened_in_the_detail() {
+        let long = format!("{}\nstack trace line", "x".repeat(300));
+        let detail = schedule_run_detail(&failed_job(1, &long));
+        assert!(
+            detail.starts_with("Paused after 1 failed run: xxx"),
+            "{detail}"
+        );
+        assert!(detail.ends_with('…'), "{detail}");
+        assert!(!detail.contains("stack trace"), "{detail}");
+        assert!(detail.chars().count() < 160, "{detail}");
+    }
+
+    /// A job the user paused (no failures) and a live job keep the schedule.
+    #[test]
+    fn a_healthy_or_user_paused_job_keeps_its_schedule() {
+        let mut job = failed_job(0, "");
+        job.last_error = None;
+        assert_eq!(schedule_run_detail(&job), "0 0 9 * * *");
+        job.paused = false;
+        job.consecutive_failures = 2;
+        assert_eq!(schedule_run_detail(&job), "0 0 9 * * *");
+        assert_eq!(schedule_last_error(&job), None);
+    }
+
+    /// The pause episode's error covers a job whose live `last_error` was
+    /// cleared (e.g. an edit) while it stayed paused.
+    #[test]
+    fn the_pause_episode_error_backs_up_last_error() {
+        let mut job = failed_job(3, "");
+        job.last_error = None;
+        job.pause_episode = Some(permagent::scheduler::SchedulePauseEpisode {
+            id: "episode".to_string(),
+            decision_id: "decision".to_string(),
+            failed_runs: Vec::new(),
+            failure_count: 3,
+            last_error: "provider timeout".to_string(),
+            headline: String::new(),
+            effect: None,
+        });
+        assert_eq!(
+            schedule_last_error(&job).as_deref(),
+            Some("provider timeout")
+        );
+        assert_eq!(
+            schedule_run_detail(&job),
+            "Paused after 3 failed runs: provider timeout"
+        );
+    }
 
     fn job_at(source: &str) -> permagent::scheduler::ScheduledJob {
         permagent::scheduler::ScheduledJob {

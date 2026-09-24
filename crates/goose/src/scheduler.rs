@@ -83,14 +83,37 @@ type JobsMap = HashMap<String, (JobId, ScheduledJob)>;
 /// coercion) without an inline complex type.
 type ScheduledTaskFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
+/// Test tripwire: a unit test that resolves the scheduler's storage without
+/// pointing `PERMAGENT_PATH_ROOT` at a tempdir writes into the user's LIVE
+/// `~/.permagent`. That happened: `worker_persona_job_announces_working_on_the_bus`
+/// copied its 13-byte `prompt: test` fixture over the real
+/// `scheduled_recipes/git-steward.yaml` on every `cargo test`, the job failed
+/// three times on "missing field title" and auto-paused. Panic instead.
+#[cfg(test)]
+fn refuse_real_home_in_tests(dir: &Path) {
+    if let Some(home) = dirs::home_dir() {
+        let real = home.join(".permagent");
+        assert!(
+            !dir.starts_with(&real),
+            "a test resolved the real {} — hold PERMAGENT_PATH_ROOT on a tempdir \
+             (see `isolated_env` in scheduler tests)",
+            real.display()
+        );
+    }
+}
+
 pub fn get_default_scheduler_storage_path() -> Result<PathBuf, io::Error> {
     let data_dir = Paths::data_dir();
+    #[cfg(test)]
+    refuse_real_home_in_tests(&data_dir);
     fs::create_dir_all(&data_dir)?;
     Ok(data_dir.join("schedule.json"))
 }
 
 pub fn get_default_scheduled_recipes_dir() -> Result<PathBuf, SchedulerError> {
     let data_dir = Paths::data_dir();
+    #[cfg(test)]
+    refuse_real_home_in_tests(&data_dir);
     let recipes_dir = data_dir.join("scheduled_recipes");
     fs::create_dir_all(&recipes_dir).map_err(SchedulerError::StorageError)?;
     Ok(recipes_dir)
@@ -1619,16 +1642,30 @@ impl Scheduler {
             let session_manager_for_task = session_manager_arc.clone();
 
             Box::pin(async move {
-                let should_execute = {
+                // `None` = the job was removed; `Some(n)` = paused after `n`
+                // consecutive failures. A paused fire used to return with no
+                // trace at all, so an auto-paused job just went quiet.
+                let skip = {
                     let mut jobs_guard = current_jobs_arc.lock().await;
                     refresh_schedule_state(&local_storage_path, &mut jobs_guard);
-                    jobs_guard
-                        .get(&task_job_id)
-                        .map(|(_, j)| !j.paused)
-                        .unwrap_or(false)
+                    match jobs_guard.get(&task_job_id) {
+                        Some((_, j)) if !j.paused => None,
+                        Some((_, j)) => Some(Some(j.consecutive_failures)),
+                        None => Some(None),
+                    }
                 };
 
-                if !should_execute {
+                if let Some(paused_failures) = skip {
+                    if let Some(consecutive_failures) = paused_failures {
+                        tracing::info!(
+                            job_id = %task_job_id,
+                            consecutive_failures,
+                            "Scheduled job '{}' skipped this fire: paused \
+                             (consecutive_failures={})",
+                            task_job_id,
+                            consecutive_failures
+                        );
+                    }
                     return;
                 }
 
@@ -4271,6 +4308,57 @@ mod tests {
         recipe_path
     }
 
+    /// Lock the process env with `PERMAGENT_PATH_ROOT` on `root` plus `extra`.
+    ///
+    /// Every test here that builds a `Scheduler` holds this: `add_scheduled_job(_,
+    /// true)` copies into `get_default_scheduled_recipes_dir()`, and a cron fire
+    /// or `run_now` reaches `Paths`-rooted state too. Without it, these tests
+    /// wrote `prompt: test` over the user's live `scheduled_recipes/*.yaml`.
+    /// The binary's ctor (`config/base.rs`) pins a root at start-up, but any
+    /// test that `remove_var`s `PERMAGENT_PATH_ROOT` outside a lock wipes it
+    /// for the rest of the process, so these tests set their own.
+    ///
+    /// Before redirecting, the process-global session pool (`SESSION_STORAGE`,
+    /// a `LazyLock` that captures `Paths::spectral_db()` on first touch — and a
+    /// cron fire reaches it through `Agent::new`) is pinned to the ctor's
+    /// process-lifetime root. Pinned to this test's tempdir instead, it would
+    /// outlive the directory and the next test to open it would hit "unable to
+    /// open database file" (the #840 flake goose-server's `test_support` fixed).
+    ///
+    /// Sequential lock calls, never nested: `env_lock` is not re-entrant.
+    /// Declare the guard AFTER the tempdir so the env is restored before the
+    /// directory is removed.
+    fn isolated_env<'a>(
+        root: &'a Path,
+        extra: &[(&'a str, Option<&'a str>)],
+    ) -> env_lock::EnvGuard<'a> {
+        {
+            let process_root = crate::config::base::test_config_root();
+            let process_root = process_root.to_str().expect("temp path is UTF-8");
+            let _pin = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(process_root))]);
+            let _ = SessionManager::instance();
+        }
+        let root = root.to_str().expect("tempdir path is UTF-8");
+        env_lock::lock_env(
+            std::iter::once(("PERMAGENT_PATH_ROOT", Some(root))).chain(extra.iter().copied()),
+        )
+    }
+
+    /// The tripwire itself: the real home (or anything under it) panics in a
+    /// test build; a tempdir passes. Checked on paths, deliberately NOT by
+    /// pointing `PERMAGENT_PATH_ROOT` at the real home — for that window any
+    /// unlocked test elsewhere in the binary would write there.
+    #[test]
+    fn scheduled_recipes_dir_refuses_the_real_home_in_tests() {
+        let real = dirs::home_dir().expect("home dir").join(".permagent");
+        for dir in [real.clone(), real.join("scheduled_recipes")] {
+            let result = std::panic::catch_unwind(|| refuse_real_home_in_tests(&dir));
+            assert!(result.is_err(), "{} must be refused", dir.display());
+        }
+        let temp = tempdir().unwrap();
+        refuse_real_home_in_tests(temp.path());
+    }
+
     /// Scheduled jobs run with NO approver: `execute_job` must build its agent
     /// through `new_scheduled_job_agent` so approval-required tools auto-deny
     /// with a recorded skip instead of parking the drain loop forever or
@@ -4601,8 +4689,11 @@ prompt: 'sweep [{{ dev_roots }}]'
     /// immediately via run_recipe, bypassing the pause entirely.
     #[tokio::test]
     async fn run_now_refuses_approval_pending_job() {
-        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "pending_job");
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
@@ -4631,8 +4722,11 @@ prompt: 'sweep [{{ dev_roots }}]'
 
     #[tokio::test]
     async fn update_schedule_rejects_floor_violation_without_mutating_job() {
-        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", None::<&str>)]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", None)],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "update_floor");
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
@@ -4664,8 +4758,11 @@ prompt: 'sweep [{{ dev_roots }}]'
 
     #[tokio::test]
     async fn sync_from_storage_pauses_floor_violation() {
-        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", None::<&str>)]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", None)],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "synced_floor");
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
@@ -4695,8 +4792,11 @@ prompt: 'sweep [{{ dev_roots }}]'
 
     #[tokio::test]
     async fn unpause_schedule_refuses_floor_violation() {
-        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", None::<&str>)]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", None)],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "paused_floor");
         let job = ScheduledJob {
@@ -5066,6 +5166,7 @@ prompt: 'sweep [{{ dev_roots }}]'
     #[tokio::test]
     async fn kill_clears_wedged_running_state_when_no_live_run_exists() {
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(temp_dir.path(), &[]);
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "wedged_job");
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
@@ -5114,6 +5215,7 @@ prompt: 'sweep [{{ dev_roots }}]'
     #[tokio::test]
     async fn kill_force_clears_a_run_that_ignores_cancellation() {
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(temp_dir.path(), &[]);
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "deaf_job");
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
@@ -5166,16 +5268,19 @@ prompt: 'sweep [{{ dev_roots }}]'
 
     #[tokio::test]
     async fn test_job_runs_on_schedule() {
-        let _guard = env_lock::lock_env([
-            ("GOOSE_PROVIDER", Some("openai")),
-            ("GOOSE_MODEL", Some("gpt-4o")),
-            ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
-            ("OPENAI_CUSTOM_HEADERS", Some("")),
-            // These tests fire every second; disable the production interval
-            // floor (which would reject the job at add time).
-            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
-        ]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[
+                ("GOOSE_PROVIDER", Some("openai")),
+                ("GOOSE_MODEL", Some("gpt-4o")),
+                ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
+                ("OPENAI_CUSTOM_HEADERS", Some("")),
+                // These tests fire every second; disable the production interval
+                // floor (which would reject the job at add time).
+                ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
+            ],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "scheduled_job");
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
@@ -5207,14 +5312,17 @@ prompt: 'sweep [{{ dev_roots }}]'
 
     #[tokio::test]
     async fn new_without_cron_loads_jobs_but_does_not_run_them() {
-        let _guard = env_lock::lock_env([
-            ("GOOSE_PROVIDER", Some("openai")),
-            ("GOOSE_MODEL", Some("gpt-4o")),
-            ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
-            ("OPENAI_CUSTOM_HEADERS", Some("")),
-            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
-        ]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[
+                ("GOOSE_PROVIDER", Some("openai")),
+                ("GOOSE_MODEL", Some("gpt-4o")),
+                ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
+                ("OPENAI_CUSTOM_HEADERS", Some("")),
+                ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
+            ],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "inspection_job");
         let seeded_jobs = vec![ScheduledJob {
@@ -5272,8 +5380,11 @@ prompt: 'sweep [{{ dev_roots }}]'
 
     #[tokio::test]
     async fn new_without_cron_lists_the_same_jobs_as_new() {
-        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "same_jobs");
         let seeded_jobs = vec![
@@ -5326,8 +5437,11 @@ prompt: 'sweep [{{ dev_roots }}]'
 
     #[tokio::test]
     async fn new_without_cron_does_not_rewrite_schedule_json_on_open() {
-        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "no_rewrite");
         let seeded_jobs = vec![ScheduledJob {
@@ -5360,8 +5474,11 @@ prompt: 'sweep [{{ dev_roots }}]'
 
     #[tokio::test]
     async fn new_without_cron_preserves_legacy_job_after_removing_another_job() {
-        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let legacy_recipe = create_test_recipe(temp_dir.path(), "legacy-job");
         let other_recipe = create_test_recipe(temp_dir.path(), "same_jobs_hourly");
@@ -5418,8 +5535,11 @@ prompt: 'sweep [{{ dev_roots }}]'
 
     #[tokio::test]
     async fn only_live_constructor_clears_persisted_running_flag() {
-        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "no_rewrite");
         // Reuse new_without_cron_does_not_rewrite_schedule_json_on_open's
@@ -5474,14 +5594,17 @@ prompt: 'sweep [{{ dev_roots }}]'
     /// `working` is emitted before the work, not derived from its outcome.
     #[tokio::test]
     async fn worker_persona_job_announces_working_on_the_bus() {
-        let _guard = env_lock::lock_env([
-            ("GOOSE_PROVIDER", Some("openai")),
-            ("GOOSE_MODEL", Some("gpt-4o")),
-            ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
-            ("OPENAI_CUSTOM_HEADERS", Some("")),
-            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
-        ]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[
+                ("GOOSE_PROVIDER", Some("openai")),
+                ("GOOSE_MODEL", Some("gpt-4o")),
+                ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
+                ("OPENAI_CUSTOM_HEADERS", Some("")),
+                ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
+            ],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "git-steward");
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
@@ -5521,16 +5644,19 @@ prompt: 'sweep [{{ dev_roots }}]'
 
     #[tokio::test]
     async fn test_paused_job_does_not_run() {
-        let _guard = env_lock::lock_env([
-            ("GOOSE_PROVIDER", Some("openai")),
-            ("GOOSE_MODEL", Some("gpt-4o")),
-            ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
-            ("OPENAI_CUSTOM_HEADERS", Some("")),
-            // These tests fire every second; disable the production interval
-            // floor (which would reject the job at add time).
-            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
-        ]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[
+                ("GOOSE_PROVIDER", Some("openai")),
+                ("GOOSE_MODEL", Some("gpt-4o")),
+                ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
+                ("OPENAI_CUSTOM_HEADERS", Some("")),
+                // These tests fire every second; disable the production interval
+                // floor (which would reject the job at add time).
+                ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
+            ],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "paused_job");
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
@@ -5563,16 +5689,19 @@ prompt: 'sweep [{{ dev_roots }}]'
 
     #[tokio::test]
     async fn test_job_with_no_prompt_does_not_panic() {
-        let _guard = env_lock::lock_env([
-            ("GOOSE_PROVIDER", Some("openai")),
-            ("GOOSE_MODEL", Some("gpt-4o")),
-            ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
-            ("OPENAI_CUSTOM_HEADERS", Some("")),
-            // These tests fire every second; disable the production interval
-            // floor (which would reject the job at add time).
-            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
-        ]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[
+                ("GOOSE_PROVIDER", Some("openai")),
+                ("GOOSE_MODEL", Some("gpt-4o")),
+                ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
+                ("OPENAI_CUSTOM_HEADERS", Some("")),
+                // These tests fire every second; disable the production interval
+                // floor (which would reject the job at add time).
+                ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
+            ],
+        );
         let recipe_path = temp_dir.path().join("no_prompt.yaml");
         fs::write(
             &recipe_path,
@@ -5628,8 +5757,11 @@ prompt: 'sweep [{{ dev_roots }}]'
     /// the agent tools hold, so this exercises their path and not a shortcut.
     #[tokio::test]
     async fn the_agents_schedule_path_announces_every_mutation() {
-        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
         let temp_dir = tempdir().unwrap();
+        let _guard = isolated_env(
+            temp_dir.path(),
+            &[("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))],
+        );
         let storage_path = temp_dir.path().join("schedule.json");
         let recipe_path = create_test_recipe(temp_dir.path(), "r1_agent_path");
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
@@ -8045,5 +8177,55 @@ mod fire_claim_tests {
             .await
             .unwrap();
         assert_eq!(count, 2, "persistence failure must roll back the report");
+    }
+
+    /// A fire of a paused job used to return with no log line, so an
+    /// auto-paused job (git-steward, after three "missing field title" runs)
+    /// simply went quiet. The skip must be visible, with the failure streak.
+    #[tokio::test]
+    async fn a_paused_fire_logs_the_skip_with_its_failure_streak() {
+        use std::sync::Mutex as StdMutex;
+        #[derive(Clone)]
+        struct Sink(Arc<StdMutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let mut job = weekly_job("paused-steward");
+        job.paused = true;
+        job.consecutive_failures = 3;
+        install_job(&scheduler, job.clone()).await;
+
+        let buf = Arc::new(StdMutex::new(Vec::new()));
+        let sink = Sink(buf.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .with_writer(move || sink.clone())
+            .finish();
+        {
+            // Thread-local default; the test runtime is current-thread, so the
+            // awaited fire logs on this thread.
+            let _default = tracing::subscriber::set_default(subscriber);
+            scheduler.task_for_job(job.clone())(instant("2026-09-21T12:00:00Z")).await;
+        }
+        let logs = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+
+        assert!(
+            logs.contains("skipped this fire: paused"),
+            "no skip line: {logs}"
+        );
+        assert!(logs.contains("paused-steward"), "{logs}");
+        assert!(logs.contains("consecutive_failures=3"), "{logs}");
+        let jobs = scheduler.jobs.lock().await;
+        assert!(jobs.get(&job.id).unwrap().1.last_run == job.last_run);
     }
 }
