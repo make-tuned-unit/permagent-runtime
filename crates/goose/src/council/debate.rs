@@ -100,6 +100,8 @@ fn council_ledger_row(
             0.0
         },
         is_estimated,
+        provenance: Default::default(),
+        outcome: Default::default(),
     })
 }
 

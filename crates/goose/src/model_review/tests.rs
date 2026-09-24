@@ -261,5 +261,6 @@ async fn model_review_fresh_and_upgrade_paths_install_the_same_tables() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 59);
+    // The full ladder runs on reopen, so later migrations stamp past 59.
+    assert!(version >= 59, "schema version {version} is below v59");
 }

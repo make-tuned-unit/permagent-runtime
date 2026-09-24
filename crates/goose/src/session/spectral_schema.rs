@@ -2120,6 +2120,25 @@ pub async fn migrate_v58_to_v59(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// v60: `cost_ledger` call-purpose fields (node A4, from the Astra/Codex
+/// round-2 ruling): `call_purpose`, `trigger_ref`, `retry_of_call_id`,
+/// `pre_call_evidence`, `tool_call_count`, `completion_kind`. All six are
+/// nullable and carry no DEFAULT, so every row written before this step reads
+/// back `NULL`, meaning *unknown* — never backfilled or guessed.
+///
+/// Mirrors `migrate_v53_to_v54`: re-runs `apply_cost_ledger_schema`, which is
+/// idempotent (`CREATE TABLE IF NOT EXISTS` + PRAGMA-guarded `ADD COLUMN`);
+/// fresh installs already get the columns from the same function.
+pub async fn migrate_v59_to_v60(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v59 -> v60 (cost_ledger call-purpose fields)");
+    apply_cost_ledger_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (60)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v60 (cost_ledger call-purpose fields)");
+    Ok(())
+}
+
 /// Shared by fresh initialization and the v56 -> v57 migration. Stores only a
 /// caller-provided state reference; never the decision-state text itself.
 pub async fn apply_decision_journal_schema(pool: &Pool<Sqlite>) -> Result<()> {
@@ -3006,6 +3025,35 @@ pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
             // than silently mixing them into ordinary on-time settlements.
             "late_settlement",
             "ALTER TABLE cost_ledger ADD COLUMN late_settlement INTEGER NOT NULL DEFAULT 0",
+        ),
+        // v60 (node A4): per-call purpose and outcome fields. Nullable with no
+        // DEFAULT on purpose: `NULL` means "unknown" (every historical row, and
+        // any caller that does not know), which must stay distinct from zero
+        // tool calls or an `empty` completion. See `CallProvenance`/
+        // `CallOutcome` in `session_manager.rs` for the value vocabularies.
+        (
+            "call_purpose",
+            "ALTER TABLE cost_ledger ADD COLUMN call_purpose TEXT",
+        ),
+        (
+            "trigger_ref",
+            "ALTER TABLE cost_ledger ADD COLUMN trigger_ref TEXT",
+        ),
+        (
+            "retry_of_call_id",
+            "ALTER TABLE cost_ledger ADD COLUMN retry_of_call_id TEXT",
+        ),
+        (
+            "pre_call_evidence",
+            "ALTER TABLE cost_ledger ADD COLUMN pre_call_evidence TEXT",
+        ),
+        (
+            "tool_call_count",
+            "ALTER TABLE cost_ledger ADD COLUMN tool_call_count INTEGER",
+        ),
+        (
+            "completion_kind",
+            "ALTER TABLE cost_ledger ADD COLUMN completion_kind TEXT",
         ),
     ] {
         let has_column: i64 = sqlx::query_scalar(
@@ -7517,5 +7565,117 @@ mod decision_journal_schema_tests {
             tables,
             vec!["model_review_findings", "model_review_reports"]
         );
+    }
+}
+
+#[cfg(test)]
+mod cost_ledger_call_purpose_schema_tests {
+    use super::*;
+
+    /// The six v60 columns, in the order `apply_cost_ledger_schema` adds them.
+    const V60_COLUMNS: [&str; 6] = [
+        "call_purpose",
+        "trigger_ref",
+        "retry_of_call_id",
+        "pre_call_evidence",
+        "tool_call_count",
+        "completion_kind",
+    ];
+
+    #[tokio::test]
+    async fn v59_to_v60_adds_call_purpose_columns_idempotently_and_leaves_history_null() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (59)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // `apply_cost_ledger_schema` also reconciles rollup columns on
+        // `sessions`, so the table has to exist.
+        sqlx::query("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // A pre-v60 ledger: the old shape, with one historical row in it.
+        sqlx::query(
+            "CREATE TABLE cost_ledger (
+                call_id TEXT PRIMARY KEY,
+                ts TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                task_id TEXT,
+                cost_tier TEXT NOT NULL DEFAULT 'paid_api',
+                cost_usd REAL NOT NULL DEFAULT 0
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO cost_ledger (call_id, ts, session_id, cost_usd)
+             VALUES ('historical-call', '2026-09-01T00:00:00Z', 's1', 0.25)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        migrate_v59_to_v60(&pool).await.unwrap();
+        migrate_v59_to_v60(&pool).await.unwrap();
+
+        let version: i32 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(version, 60);
+        let stamps: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM schema_version WHERE version = 60")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stamps, 1);
+
+        for col in V60_COLUMNS {
+            let (ty, notnull, default): (String, i32, Option<String>) = sqlx::query_as(
+                "SELECT type, [notnull], dflt_value FROM pragma_table_info('cost_ledger')
+                 WHERE name = ?",
+            )
+            .bind(col)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("column {col} missing after v60: {e}"));
+            let expected_ty = if col == "tool_call_count" {
+                "INTEGER"
+            } else {
+                "TEXT"
+            };
+            assert_eq!(ty, expected_ty, "{col} type");
+            assert_eq!(notnull, 0, "{col} must be nullable (NULL = unknown)");
+            assert_eq!(default, None, "{col} must have no DEFAULT (no guessing)");
+        }
+
+        // The historical row is not backfilled: every new field reads NULL.
+        type ProvenanceColumns = (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        );
+        let row: ProvenanceColumns = sqlx::query_as(
+            "SELECT call_purpose, trigger_ref, retry_of_call_id, pre_call_evidence,
+                    tool_call_count, completion_kind
+             FROM cost_ledger WHERE call_id = 'historical-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row, (None, None, None, None, None, None));
     }
 }

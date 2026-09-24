@@ -26,6 +26,7 @@ use crate::providers::toolshim::{
     augment_message_with_tool_calls, convert_tool_messages_to_text,
     modify_system_prompt_for_tool_json, OllamaInterpreter,
 };
+use crate::session::session_manager::{CallOutcome, CallProvenance, CallPurpose};
 use crate::session::{
     budget_task_id, goal_id, CostLedgerRow, CostTier, Session, SessionManager, SessionType,
 };
@@ -715,6 +716,9 @@ impl Agent {
     // have silently reserved the whole context window again.
     // Called by the streamed turn in `agents::agent` (first reservation and
     // the Y4a single retry), with the same request it then streams.
+    // `provenance` (v60, node A4) is the loop's pre-dispatch account of why
+    // this call is made; see `turn_call_provenance`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn reserve_provider_invocation_for_request(
         &self,
         session: &Session,
@@ -723,6 +727,7 @@ impl Agent {
         system_prompt: &SystemPromptParts,
         messages: &[Message],
         tools: &[Tool],
+        provenance: CallProvenance,
     ) -> std::result::Result<ProviderInvocationContext, ProviderAuthorizationFailure> {
         let counted = counted_prompt_tokens(
             &[
@@ -742,6 +747,7 @@ impl Agent {
             provider.retry_config().max_physical_attempts(),
             invocation_id,
             counted,
+            provenance,
         )
         .await
     }
@@ -1553,6 +1559,7 @@ impl Agent {
         usage: &ProviderUsage,
         invocation: &ProviderInvocationContext,
         recognition_retrieval_id: Option<&str>,
+        outcome: CallOutcome,
     ) -> Result<()> {
         record_provider_usage(
             Arc::clone(&self.config.session_manager),
@@ -1562,6 +1569,7 @@ impl Agent {
             false,
             Some(invocation),
             recognition_retrieval_id,
+            outcome,
         )
         .await
     }
@@ -1571,6 +1579,12 @@ impl Agent {
 /// deliberately independent from `Agent` so background context maintenance
 /// can use the same single Spectral transaction instead of creating a side
 /// ledger or a best-effort metric path.
+///
+/// v60 (node A4): `outcome` is what response processing observed about this
+/// call (tool-request count, completion kind); pass `CallOutcome::default()`
+/// when the response shape was not observed. The call's pre-dispatch
+/// provenance comes from `invocation` and is never inferred here.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn record_provider_usage(
     manager: Arc<SessionManager>,
     session_id: &str,
@@ -1579,6 +1593,7 @@ pub(crate) async fn record_provider_usage(
     is_compaction_usage: bool,
     invocation: Option<&ProviderInvocationContext>,
     recognition_retrieval_id: Option<&str>,
+    outcome: CallOutcome,
 ) -> Result<()> {
     let session = manager.get_session(session_id, false).await?;
 
@@ -1761,6 +1776,12 @@ pub(crate) async fn record_provider_usage(
         cost_usd,
         cache_savings_usd,
         is_estimated,
+        // Provenance was fixed before dispatch by the caller that knew why the
+        // call was made; a call without an invocation context has none.
+        provenance: invocation
+            .map(|call| call.provenance.clone())
+            .unwrap_or_default(),
+        outcome,
     };
     // Token and money accounting are one durable operation. An unavailable
     // ledger must stop the turn rather than allow paid work to continue
@@ -1936,6 +1957,11 @@ fn carries_binary_media(value: &Value) -> bool {
 /// being authorized, or `None` when the caller cannot see it; `None` reserves
 /// the whole context window, so an uncounted call fails closed onto the worst
 /// case rather than onto a guess.
+///
+/// `provenance` (v60, node A4) is the caller's own account of why this call is
+/// being made, captured before dispatch and carried unchanged on the returned
+/// context to the ledger row. Callers that do not know pass
+/// `CallProvenance::default()` (all unknown).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn reserve_provider_invocation_for_model(
     manager: Arc<SessionManager>,
@@ -1946,6 +1972,7 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     max_physical_attempts: u32,
     invocation_id: String,
     counted_prompt_tokens: Option<usize>,
+    provenance: CallProvenance,
 ) -> std::result::Result<ProviderInvocationContext, ProviderAuthorizationFailure> {
     // Y7 (harness loop, from Lane A12's Q6 measurement): reserve for ONE
     // physical attempt by default instead of the provider's whole retry
@@ -1995,6 +2022,7 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         // request instead of merely pricing it (see the field's own doc
         // comment).
         reserved_output_tokens: bound.as_ref().map(|bound| bound.output_tokens),
+        provenance,
     };
 
     // Local and subscription calls retain typed attribution, but never create
@@ -2132,6 +2160,66 @@ pub(crate) struct ProviderInvocationContext {
     /// lie (see that constant's doc comment for the measured evidence this
     /// closes: 63 reservations held $81.35 and settled at $1.23).
     pub reserved_output_tokens: Option<usize>,
+    /// v60 (node A4): why this call was made, as the dispatching caller knew
+    /// it before dispatch. Copied verbatim onto the `cost_ledger` row.
+    pub provenance: CallProvenance,
+}
+
+/// v60 (node A4): the provenance the streamed reply loop can honestly claim
+/// for one provider call, from facts it holds before dispatch.
+///
+/// - `retry_of_failed_call` is `Some` when this loop iteration re-runs the
+///   turn because the previous iteration's invocation failed (provider
+///   failover or recovery compaction): the call is a `retry` of that id.
+/// - Otherwise, when the newest message is a user-role message carrying tool
+///   results, the call continues after those results: `tool_continuation`,
+///   triggered by the last tool result in it.
+/// - Otherwise, on the first iteration of a reply whose newest message is the
+///   user's own message: `user_response`, triggered by that message's id when
+///   it has one.
+/// - Anything else (a later iteration answering a harness-injected nudge or a
+///   parse-recovery note, an assistant-last history, an empty conversation)
+///   stays `unknown`. The trigger is still recorded where one is identifiable.
+pub(crate) fn turn_call_provenance(
+    messages: &[Message],
+    turns_taken: u32,
+    retry_of_failed_call: Option<String>,
+) -> CallProvenance {
+    use crate::conversation::message::MessageContent;
+
+    let newest_user = messages
+        .last()
+        .filter(|message| message.role == rmcp::model::Role::User);
+    let last_tool_result = newest_user.and_then(|message| {
+        message
+            .content
+            .iter()
+            .rev()
+            .find_map(|content| match content {
+                MessageContent::ToolResponse(response) => Some(response.id.clone()),
+                _ => None,
+            })
+    });
+    let trigger = match (&last_tool_result, newest_user) {
+        (Some(tool_call_id), _) => Some(format!("tool_result:{tool_call_id}")),
+        (None, Some(message)) => message.id.as_ref().map(|id| format!("message:{id}")),
+        (None, None) => None,
+    };
+
+    let mut provenance = match retry_of_failed_call {
+        Some(failed_call_id) => CallProvenance::retry_of(failed_call_id),
+        None if last_tool_result.is_some() => {
+            CallProvenance::with_purpose(CallPurpose::ToolContinuation)
+        }
+        None if newest_user.is_some() && turns_taken == 1 => {
+            CallProvenance::with_purpose(CallPurpose::UserResponse)
+        }
+        None => CallProvenance::default(),
+    };
+    if let Some(trigger) = trigger {
+        provenance = provenance.with_trigger(trigger);
+    }
+    provenance
 }
 
 /// One reserved `complete_fast` attempt. It owns an immutable provider and
@@ -2143,9 +2231,17 @@ pub(crate) struct AccountedFastCompletion {
     session: Session,
     provider: Arc<dyn Provider>,
     is_compaction_usage: bool,
+    /// v60 (node A4): the purpose every call through this handle is made for,
+    /// when the creator genuinely knows it; default (unknown) otherwise.
+    provenance: CallProvenance,
 }
 
 impl Agent {
+    /// The accounted completion handle for the Agent's own context upkeep.
+    /// Every caller (reply-loop compaction, recovery compaction, `/compact`,
+    /// and tool-pair summarisation) is context maintenance, so its ledger rows
+    /// are labelled `context_maintenance` (v60, node A4). A caller making a
+    /// call for any other reason must not use this handle.
     pub(crate) fn accounted_fast_completion(
         &self,
         session: &Session,
@@ -2157,6 +2253,7 @@ impl Agent {
             session: session.clone(),
             provider,
             is_compaction_usage,
+            provenance: CallProvenance::with_purpose(CallPurpose::ContextMaintenance),
         })
     }
 }
@@ -2260,6 +2357,7 @@ impl AccountedFastCompletion {
             session,
             provider,
             is_compaction_usage,
+            provenance: CallProvenance::default(),
         };
         completion
             .complete_fast_inner(system, messages, tools)
@@ -2285,18 +2383,30 @@ impl AccountedFastCompletion {
             session,
             provider,
             is_compaction_usage,
+            provenance: CallProvenance::default(),
         };
         completion
-            .complete_one(model_config, system, messages, tools)
+            .complete_one(
+                model_config,
+                system,
+                messages,
+                tools,
+                uuid::Uuid::new_v4().to_string(),
+                completion.provenance.clone(),
+            )
             .await
     }
 
+    /// `invocation_id` is minted by the caller so a fallback after a failed
+    /// attempt can name it in `retry_of_call_id`.
     async fn complete_one(
         &self,
         model_config: crate::model::ModelConfig,
         system: &str,
         messages: &[Message],
         tools: &[Tool],
+        invocation_id: String,
+        provenance: CallProvenance,
     ) -> Result<(Message, ProviderUsage)> {
         // The exact request is in hand here, so the hold is sized to it rather
         // than to the model's whole context window.
@@ -2308,8 +2418,9 @@ impl AccountedFastCompletion {
             self.provider.cost_tier(),
             model_config.clone(),
             self.provider.retry_config().max_physical_attempts(),
-            uuid::Uuid::new_v4().to_string(),
+            invocation_id,
             counted,
+            provenance,
         )
         .await
         .map_err(|failure| anyhow::anyhow!(failure.to_string()))?;
@@ -2368,6 +2479,8 @@ impl AccountedFastCompletion {
             self.is_compaction_usage,
             Some(&invocation),
             None,
+            // A complete (non-streamed) response: its shape is fully observed.
+            CallOutcome::from_message(&response),
         )
         .await
         {
@@ -2389,8 +2502,16 @@ impl AccountedFastCompletion {
         let regular = self.provider.get_model_config();
         let fast = regular.use_fast_model();
         let paid = self.provider.cost_tier().is_chargeable();
+        let first_invocation_id = uuid::Uuid::new_v4().to_string();
         match self
-            .complete_one(fast.clone(), system, messages, tools)
+            .complete_one(
+                fast.clone(),
+                system,
+                messages,
+                tools,
+                first_invocation_id.clone(),
+                self.provenance.clone(),
+            )
             .await
         {
             Ok(result) => Ok(result),
@@ -2400,8 +2521,23 @@ impl AccountedFastCompletion {
             // gate/reconciliation before retrying.
             Err(error) if paid || fast.model_name == regular.model_name => Err(error),
             // Local/subscription calls retain the provider's normal fast→full
-            // fallback semantics, with a distinct invocation/ledger row.
-            Err(_) => self.complete_one(regular, system, messages, tools).await,
+            // fallback semantics, with a distinct invocation/ledger row. That
+            // row is a re-dispatch after a failed call, so it is labelled a
+            // retry of the fast attempt (v60, node A4), keeping the original
+            // trigger reference.
+            Err(_) => {
+                let mut retry = CallProvenance::retry_of(first_invocation_id);
+                retry.trigger_ref = self.provenance.trigger_ref.clone();
+                self.complete_one(
+                    regular,
+                    system,
+                    messages,
+                    tools,
+                    uuid::Uuid::new_v4().to_string(),
+                    retry,
+                )
+                .await
+            }
         }
     }
 }
@@ -2932,6 +3068,7 @@ mod tests {
             session: session.clone(),
             provider,
             is_compaction_usage: false,
+            provenance: CallProvenance::default(),
         };
         (directory, manager, session, completion)
     }
@@ -2990,6 +3127,7 @@ mod tests {
             fixture.retry_config().max_physical_attempts(),
             uuid::Uuid::new_v4().to_string(),
             None,
+            CallProvenance::default(),
         )
         .await;
 
@@ -3015,6 +3153,7 @@ mod tests {
             fixture.retry_config().max_physical_attempts(),
             uuid::Uuid::new_v4().to_string(),
             None,
+            CallProvenance::default(),
         )
         .await
         .expect("durable task should authorize the paid stream");
@@ -3048,6 +3187,7 @@ mod tests {
             false,
             Some(&invocation),
             Some("reply-attribution"),
+            CallOutcome::default(),
         )
         .await
         .expect("authoritative terminal usage should settle the hold");
@@ -3236,6 +3376,7 @@ mod tests {
             fixture.retry_config().max_physical_attempts(),
             invocation_id.clone(),
             None,
+            CallProvenance::default(),
         )
         .await;
         assert!(
@@ -3466,6 +3607,7 @@ mod tests {
             fixture.retry_config().max_physical_attempts(),
             invocation_id.clone(),
             None,
+            CallProvenance::default(),
         )
         .await;
         assert!(
@@ -4011,6 +4153,7 @@ mod tests {
             fixture.retry_config().max_physical_attempts(),
             reused.unwrap(),
             None,
+            CallProvenance::default(),
         )
         .await;
         assert!(
@@ -4272,6 +4415,106 @@ mod tests {
         assert_eq!(rows, 1);
     }
 
+    /// v60 (node A4): the local fast->regular fallback is a re-dispatch after
+    /// a failed call, so its ledger row says `retry`, names a prior call id,
+    /// and carries the observed outcome of the complete response.
+    #[tokio::test]
+    async fn accounted_fast_local_fallback_row_is_labelled_retry_with_outcome() {
+        let fixture = LocalFastFallbackProvider::new();
+        let (_directory, manager, session, completion) =
+            fast_accounting_fixture(Arc::new(fixture), false).await;
+
+        crate::context_mgmt::AccountedFastCompletion::complete_fast(
+            &completion,
+            "summarize",
+            &[Message::user().with_text("hello")],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let pool = manager.storage().pool().await.unwrap();
+        type ProvenanceRow = (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        );
+        let (call_id, purpose, retry_of, trigger, evidence, tool_calls, kind): ProvenanceRow =
+            sqlx::query_as(
+                "SELECT call_id, call_purpose, retry_of_call_id, trigger_ref, pre_call_evidence,
+                    tool_call_count, completion_kind
+             FROM cost_ledger WHERE session_id = ? AND model = 'full-local-model'",
+            )
+            .bind(&session.id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(purpose.as_deref(), Some("retry"));
+        let retry_of = retry_of.expect("a retry must name the failed invocation");
+        assert_ne!(retry_of, call_id, "retry_of_call_id is the EARLIER call");
+        assert_eq!(trigger, None, "the fixture handle knew no trigger");
+        assert_eq!(evidence, None, "no caller populates pre_call_evidence yet");
+        assert_eq!(tool_calls, Some(0));
+        assert_eq!(kind.as_deref(), Some("text"));
+    }
+
+    /// v60 (node A4): the main loop labels a call only from facts it holds.
+    #[test]
+    fn turn_call_provenance_labels_only_what_the_loop_knows() {
+        use rmcp::model::{CallToolResult, Content};
+
+        let user = Message::user().with_text("do the thing").with_id("m1");
+        // First iteration answering the user's own message.
+        let first = turn_call_provenance(std::slice::from_ref(&user), 1, None);
+        assert_eq!(first.purpose, CallPurpose::UserResponse);
+        assert_eq!(first.trigger_ref.as_deref(), Some("message:m1"));
+        assert_eq!(first.retry_of_call_id, None);
+        assert_eq!(first.pre_call_evidence, None);
+
+        // After tool results: a tool continuation, triggered by the last one.
+        let tool_results = Message::user()
+            .with_tool_response(
+                "tc-1",
+                Ok(CallToolResult::success(vec![Content::text("a")])),
+            )
+            .with_tool_response(
+                "tc-2",
+                Ok(CallToolResult::success(vec![Content::text("b")])),
+            );
+        let history = vec![
+            user.clone(),
+            Message::assistant().with_text("calling tools"),
+            tool_results,
+        ];
+        let cont = turn_call_provenance(&history, 2, None);
+        assert_eq!(cont.purpose, CallPurpose::ToolContinuation);
+        assert_eq!(cont.trigger_ref.as_deref(), Some("tool_result:tc-2"));
+
+        // A re-run after a failed invocation is a retry of it, trigger kept.
+        let retry = turn_call_provenance(&history, 3, Some("failed-call".to_string()));
+        assert_eq!(retry.purpose, CallPurpose::Retry);
+        assert_eq!(retry.retry_of_call_id.as_deref(), Some("failed-call"));
+        assert_eq!(retry.trigger_ref.as_deref(), Some("tool_result:tc-2"));
+
+        // A later iteration answering a harness-injected user note: unknown.
+        let nudge = Message::user().with_text("keep going").with_id("n1");
+        let later = turn_call_provenance(&[user.clone(), nudge], 4, None);
+        assert_eq!(later.purpose, CallPurpose::Unknown);
+        assert_eq!(later.trigger_ref.as_deref(), Some("message:n1"));
+
+        // Assistant-last or empty history: nothing is claimed.
+        let assistant_last = turn_call_provenance(&[Message::assistant().with_text("hi")], 1, None);
+        assert_eq!(assistant_last, CallProvenance::default());
+        assert_eq!(
+            turn_call_provenance(&[], 1, None),
+            CallProvenance::default()
+        );
+    }
+
     /// Collects what a scoped `tracing` subscriber writes, so a test can read
     /// the reservation seam's log line back.
     #[derive(Clone, Default)]
@@ -4325,6 +4568,7 @@ mod tests {
             fixture.retry_config().max_physical_attempts(),
             uuid::Uuid::new_v4().to_string(),
             Some(1_234),
+            CallProvenance::default(),
         )
         .await
         .expect("a free local call needs no paid authorization");
@@ -4371,6 +4615,7 @@ mod tests {
             fixture.retry_config().max_physical_attempts(),
             uuid::Uuid::new_v4().to_string(),
             Some(counted),
+            CallProvenance::default(),
         )
         .await;
 

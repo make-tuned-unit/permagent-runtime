@@ -176,6 +176,338 @@ type LedgerUsageColumns = (
     i32,
 );
 
+// ── Per-call purpose and outcome (schema v60, node A4) ──────────────────────
+//
+// Six nullable `cost_ledger` columns that make a candidate call reviewable
+// after the fact: why it was made (`call_purpose`, `trigger_ref`,
+// `retry_of_call_id`), what was known before dispatch (`pre_call_evidence`),
+// and what came back (`tool_call_count`, `completion_kind`).
+//
+// Provenance is supplied by the CALLER before dispatch and carried on
+// `ProviderInvocationContext` to the ledger row; the database writer persists
+// it and never invents it. A caller that does not genuinely know leaves the
+// default, which is "unknown" throughout. Rows written before v60 are NULL,
+// which also means unknown, and are never backfilled.
+
+/// Why a provider call was made (`cost_ledger.call_purpose`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CallPurpose {
+    /// The first provider call answering a user message.
+    UserResponse,
+    /// A call made because tool results came back and the model continues.
+    ToolContinuation,
+    /// A scheduled or background look at state (polling, monitors).
+    BackgroundCheck,
+    /// A re-dispatch after an earlier invocation failed; see
+    /// [`CallProvenance::retry_of_call_id`].
+    Retry,
+    /// A call whose job is to check other work.
+    Verification,
+    /// Compaction, tool-pair summarisation and other context upkeep.
+    ContextMaintenance,
+    /// The caller did not know. The honest default.
+    #[default]
+    Unknown,
+}
+
+impl CallPurpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CallPurpose::UserResponse => "user_response",
+            CallPurpose::ToolContinuation => "tool_continuation",
+            CallPurpose::BackgroundCheck => "background_check",
+            CallPurpose::Retry => "retry",
+            CallPurpose::Verification => "verification",
+            CallPurpose::ContextMaintenance => "context_maintenance",
+            CallPurpose::Unknown => "unknown",
+        }
+    }
+}
+
+/// What the provider response turned out to be (`cost_ledger.completion_kind`).
+/// `Unknown` is deliberately distinct from `Empty`: "we did not observe the
+/// response shape" is not the same fact as "the response had nothing in it".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompletionKind {
+    Text,
+    Tools,
+    Mixed,
+    Empty,
+    Error,
+    Cancelled,
+    #[default]
+    Unknown,
+}
+
+impl CompletionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CompletionKind::Text => "text",
+            CompletionKind::Tools => "tools",
+            CompletionKind::Mixed => "mixed",
+            CompletionKind::Empty => "empty",
+            CompletionKind::Error => "error",
+            CompletionKind::Cancelled => "cancelled",
+            CompletionKind::Unknown => "unknown",
+        }
+    }
+
+    /// Classify an observed, successfully completed response by its shape:
+    /// whether it carried non-blank text and how many completed tool requests.
+    /// Thinking/reasoning content alone is not text.
+    pub fn from_shape(has_text: bool, tool_calls: usize) -> Self {
+        match (has_text, tool_calls > 0) {
+            (true, true) => CompletionKind::Mixed,
+            (true, false) => CompletionKind::Text,
+            (false, true) => CompletionKind::Tools,
+            (false, false) => CompletionKind::Empty,
+        }
+    }
+}
+
+/// The proposed skip rule's verdict recorded in [`PreCallEvidence`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WouldSkip {
+    Yes,
+    No,
+    Unknown,
+}
+
+impl WouldSkip {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WouldSkip::Yes => "yes",
+            WouldSkip::No => "no",
+            WouldSkip::Unknown => "unknown",
+        }
+    }
+}
+
+/// Upper bound on a serialized `pre_call_evidence` value, in bytes.
+pub const PRE_CALL_EVIDENCE_MAX_BYTES: usize = 4096;
+
+/// Upper bound on a `trigger_ref`, in bytes. A reference ("message:<id>",
+/// "tool_result:<tool_call_id>", "schedule:<id>:<tick>") is short by design.
+pub const TRIGGER_REF_MAX_BYTES: usize = 256;
+
+/// Longest predicate name a truncation marker will carry.
+const PRE_CALL_EVIDENCE_MARKER_PREDICATE_MAX_BYTES: usize = 256;
+
+/// A versioned, bounded record of the facts available BEFORE dispatch plus the
+/// proposed skip rule's result (`cost_ledger.pre_call_evidence`):
+///
+/// `{"v":1,"predicate":"<name>@<version>","inputs":{...},"would_skip":"yes"|"no"|"unknown"}`
+///
+/// `inputs` must be the predicate's actual inputs, not a state hash or a
+/// model's assertion. The serialized value is capped at
+/// [`PRE_CALL_EVIDENCE_MAX_BYTES`]; an oversize record is replaced by a
+/// complete, well-formed truncation marker
+/// (`{"v":1,"predicate":..,"truncated":true,"original_bytes":N,"would_skip":..}`),
+/// never by cut-off JSON.
+///
+/// Plumbing only as of v60: no caller populates it yet (it is for a later
+/// polling experiment).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreCallEvidence {
+    json: String,
+    truncated: bool,
+}
+
+impl PreCallEvidence {
+    pub const VERSION: u32 = 1;
+
+    /// Build the record. `predicate` is `<name>@<version>`.
+    pub fn new(predicate: &str, inputs: serde_json::Value, would_skip: WouldSkip) -> Self {
+        let full = serde_json::json!({
+            "v": Self::VERSION,
+            "predicate": predicate,
+            "inputs": inputs,
+            "would_skip": would_skip.as_str(),
+        })
+        .to_string();
+        if full.len() <= PRE_CALL_EVIDENCE_MAX_BYTES {
+            return Self {
+                json: full,
+                truncated: false,
+            };
+        }
+        // Keep the marker itself bounded: an absurd predicate name is dropped
+        // (and said so) rather than cut.
+        let predicate_value = if predicate.len() <= PRE_CALL_EVIDENCE_MARKER_PREDICATE_MAX_BYTES {
+            serde_json::Value::String(predicate.to_string())
+        } else {
+            serde_json::Value::Null
+        };
+        let marker = serde_json::json!({
+            "v": Self::VERSION,
+            "predicate": predicate_value,
+            "truncated": true,
+            "original_bytes": full.len(),
+            "would_skip": would_skip.as_str(),
+        })
+        .to_string();
+        Self {
+            json: marker,
+            truncated: true,
+        }
+    }
+
+    /// The exact JSON persisted to `cost_ledger.pre_call_evidence`.
+    pub fn as_json(&self) -> &str {
+        &self.json
+    }
+
+    /// Whether the record exceeded the bound and was replaced by a marker.
+    pub fn is_truncated(&self) -> bool {
+        self.truncated
+    }
+}
+
+/// Caller-supplied, pre-dispatch provenance for one provider call. The
+/// default is all-unknown, so a call site that does not know stays honest.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CallProvenance {
+    pub purpose: CallPurpose,
+    /// The user event, tool result, schedule tick or state change that caused
+    /// this call, e.g. `message:<id>`, `tool_result:<tool_call_id>`,
+    /// `schedule:<schedule_id>:<tick>`. `None` when not known.
+    pub trigger_ref: Option<String>,
+    /// For [`CallPurpose::Retry`], the `call_id` (invocation id) of the earlier
+    /// failed invocation. That invocation may have no ledger row of its own
+    /// (a failed call with no usage is recorded only in `cost_reservations`).
+    pub retry_of_call_id: Option<String>,
+    pub pre_call_evidence: Option<PreCallEvidence>,
+}
+
+impl CallProvenance {
+    /// A call whose purpose the caller genuinely knows.
+    pub fn with_purpose(purpose: CallPurpose) -> Self {
+        Self {
+            purpose,
+            ..Self::default()
+        }
+    }
+
+    /// A re-dispatch after the invocation `failed_call_id` failed.
+    pub fn retry_of(failed_call_id: impl Into<String>) -> Self {
+        Self {
+            purpose: CallPurpose::Retry,
+            retry_of_call_id: Some(failed_call_id.into()),
+            ..Self::default()
+        }
+    }
+
+    /// Attach a trigger reference. An empty or oversize reference is dropped
+    /// (left unknown) rather than cut, since a cut reference would point at
+    /// nothing.
+    pub fn with_trigger(mut self, trigger_ref: impl Into<String>) -> Self {
+        let trigger_ref = trigger_ref.into();
+        if trigger_ref.is_empty() || trigger_ref.len() > TRIGGER_REF_MAX_BYTES {
+            tracing::debug!(
+                len = trigger_ref.len(),
+                "call provenance trigger_ref empty or over bound; leaving it unknown"
+            );
+            self.trigger_ref = None;
+        } else {
+            self.trigger_ref = Some(trigger_ref);
+        }
+        self
+    }
+
+    pub fn with_evidence(mut self, evidence: PreCallEvidence) -> Self {
+        self.pre_call_evidence = Some(evidence);
+        self
+    }
+}
+
+/// What response processing observed about one provider call. The default
+/// (`tool_call_count: None`, `completion_kind: Unknown`) is "not observed",
+/// which persists as NULL / `'unknown'` and never as zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CallOutcome {
+    /// Completed output tool requests (not streaming fragments).
+    pub tool_call_count: Option<i64>,
+    pub completion_kind: CompletionKind,
+}
+
+impl CallOutcome {
+    /// Outcome of a response whose shape was observed in full.
+    pub fn observed(has_text: bool, tool_calls: usize) -> Self {
+        Self {
+            tool_call_count: Some(tool_calls as i64),
+            completion_kind: CompletionKind::from_shape(has_text, tool_calls),
+        }
+    }
+
+    /// Outcome of one complete (non-streamed) response message.
+    pub fn from_message(message: &Message) -> Self {
+        let (has_text, tool_calls) = message_shape(message);
+        Self::observed(has_text, tool_calls)
+    }
+}
+
+/// `(has non-blank text, completed tool request count)` for one message.
+pub fn message_shape(message: &Message) -> (bool, usize) {
+    use crate::conversation::message::MessageContent;
+    let mut has_text = false;
+    let mut tool_calls = 0usize;
+    for content in &message.content {
+        match content {
+            MessageContent::Text(text) if !text.text.trim().is_empty() => has_text = true,
+            MessageContent::ToolRequest(_) => tool_calls += 1,
+            _ => {}
+        }
+    }
+    (has_text, tool_calls)
+}
+
+/// Accumulates the response shape across the frames of one streamed provider
+/// invocation. Tool requests arrive as complete `ToolRequest` contents (the
+/// stream layer assembles argument fragments before emitting one), so
+/// counting them per frame counts completed requests, not fragments.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StreamOutcomeTracker {
+    has_text: bool,
+    tool_calls: usize,
+    saw_frame: bool,
+    last_frame_was_error: bool,
+}
+
+impl StreamOutcomeTracker {
+    pub fn observe_message(&mut self, message: &Message) {
+        let (has_text, tool_calls) = message_shape(message);
+        self.has_text |= has_text;
+        self.tool_calls += tool_calls;
+    }
+
+    /// Record whether the latest stream frame was an error. A later good
+    /// frame (e.g. after a first-byte-stall retry) clears it.
+    pub fn observe_frame(&mut self, is_error: bool) {
+        self.saw_frame = true;
+        self.last_frame_was_error = is_error;
+    }
+
+    pub fn finish(&self, cancelled: bool) -> CallOutcome {
+        let tool_call_count = Some(self.tool_calls as i64);
+        if cancelled {
+            return CallOutcome {
+                tool_call_count,
+                completion_kind: CompletionKind::Cancelled,
+            };
+        }
+        if self.last_frame_was_error {
+            return CallOutcome {
+                tool_call_count,
+                completion_kind: CompletionKind::Error,
+            };
+        }
+        if !self.saw_frame {
+            return CallOutcome::default();
+        }
+        CallOutcome::observed(self.has_text, self.tool_calls)
+    }
+}
+
 /// One append-only per-call cost row. Every money field is the output of the
 /// single canonical [`crate::providers::canonical::cost_of`] function, so the
 /// ledger can never disagree with the live meter or the verification digest.
@@ -209,6 +541,13 @@ pub struct CostLedgerRow {
     /// True when tokens were estimated (no exact provider usage) rather than
     /// reported.
     pub is_estimated: bool,
+    /// v60: caller-supplied pre-dispatch provenance (`call_purpose`,
+    /// `trigger_ref`, `retry_of_call_id`, `pre_call_evidence`). Default =
+    /// unknown.
+    pub provenance: CallProvenance,
+    /// v60: response-derived outcome (`tool_call_count`, `completion_kind`).
+    /// Default = not observed.
+    pub outcome: CallOutcome,
 }
 
 /// Result of atomically acquiring a provider-spend lease. Only `Granted`
@@ -1987,6 +2326,14 @@ impl SessionStorage {
                     if version < 59 {
                         spectral_schema::migrate_v58_to_v59(&self.pool).await?;
                     }
+                    // v60: cost_ledger call-purpose fields (node A4) —
+                    // call_purpose/trigger_ref/retry_of_call_id/
+                    // pre_call_evidence/tool_call_count/completion_kind.
+                    // PRAGMA-guarded nullable ADD COLUMNs; historical rows
+                    // stay NULL (= unknown). Additive and base-independent.
+                    if version < 60 {
+                        spectral_schema::migrate_v59_to_v60(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB
@@ -3486,13 +3833,17 @@ impl SessionStorage {
                 subagent_id, turn_index, provider, model, cost_tier, is_chargeable,
                 is_headless, input_tokens, output_tokens, cache_read_tokens,
                 cache_write_tokens, input_cost, output_cost, cache_read_cost,
-                cache_write_cost, cost_usd, is_estimated, late_settlement
+                cache_write_cost, cost_usd, is_estimated, late_settlement,
+                call_purpose, trigger_ref, retry_of_call_id, pre_call_evidence,
+                tool_call_count, completion_kind
             ) VALUES (
                 ?, ?, ?, ?, ?, ?,
                 ?, (SELECT COUNT(*) FROM cost_ledger WHERE session_id = ?), ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
-                ?, ?, ?, ?
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?
             ) ON CONFLICT(call_id) DO NOTHING",
         )
         .bind(&row.call_id)
@@ -3519,6 +3870,20 @@ impl SessionStorage {
         .bind(row.cost_usd)
         .bind(row.is_estimated)
         .bind(is_late_settlement)
+        // v60: persisted exactly as supplied. The writer never derives or
+        // guesses these; an unknown purpose/kind is written as 'unknown' and
+        // an unobserved tool count as NULL (distinct from 0).
+        .bind(row.provenance.purpose.as_str())
+        .bind(row.provenance.trigger_ref.as_deref())
+        .bind(row.provenance.retry_of_call_id.as_deref())
+        .bind(
+            row.provenance
+                .pre_call_evidence
+                .as_ref()
+                .map(PreCallEvidence::as_json),
+        )
+        .bind(row.outcome.tool_call_count)
+        .bind(row.outcome.completion_kind.as_str())
         .execute(&mut *tx)
         .await?
         .rows_affected()
@@ -4302,6 +4667,8 @@ mod tests {
             cost_usd,
             cache_savings_usd: 0.0,
             is_estimated: false,
+            provenance: Default::default(),
+            outcome: Default::default(),
         }
     }
 
@@ -5482,6 +5849,8 @@ mod tests {
             cost_usd: 0.010_185,
             cache_savings_usd: 0.000_54,
             is_estimated: false,
+            provenance: Default::default(),
+            outcome: Default::default(),
         };
         sm.append_cost_ledger(&chargeable).await.unwrap();
 
@@ -5509,6 +5878,8 @@ mod tests {
             cost_usd: 0.0,
             cache_savings_usd: 0.0,
             is_estimated: false,
+            provenance: Default::default(),
+            outcome: Default::default(),
         };
         sm.append_cost_ledger(&local).await.unwrap();
 
@@ -5600,6 +5971,8 @@ mod tests {
             cost_usd: 0.0,
             cache_savings_usd: 0.0,
             is_estimated: false,
+            provenance: Default::default(),
+            outcome: Default::default(),
         };
 
         // If a legacy caller already persisted the ledger row, the combined
@@ -5686,6 +6059,8 @@ mod tests {
             cost_usd,
             cache_savings_usd: 0.0,
             is_estimated: false,
+            provenance: Default::default(),
+            outcome: Default::default(),
         };
         sm.append_cost_ledger(&row("01", &first_task, 1.0))
             .await
@@ -5811,6 +6186,8 @@ mod tests {
             cost_usd,
             cache_savings_usd: 0.0,
             is_estimated: false,
+            provenance: Default::default(),
+            outcome: Default::default(),
         };
         sm.append_cost_ledger(&row("11", &parent.id, 1.0))
             .await
@@ -5968,6 +6345,8 @@ mod tests {
                 cost_usd: cost,
                 cache_savings_usd: 0.0,
                 is_estimated: false,
+                provenance: Default::default(),
+                outcome: Default::default(),
             };
 
         sm.append_cost_ledger(&mk("p1", &parent.id, None, 0.40))
@@ -8116,6 +8495,8 @@ mod tests {
             cost_usd,
             cache_savings_usd: 0.0,
             is_estimated: false,
+            provenance: Default::default(),
+            outcome: Default::default(),
         };
         sm.append_cost_ledger(&ledger_row("b6-compact-before", 0.10))
             .await
@@ -8232,6 +8613,8 @@ mod tests {
             cost_usd,
             cache_savings_usd: 0.0,
             is_estimated: false,
+            provenance: Default::default(),
+            outcome: Default::default(),
         };
 
         sm.append_cost_ledger(&row("b6-local", &parent.id, None, CostTier::LocalFree, 0.0))
@@ -8754,6 +9137,264 @@ mod decision_journal_boot_tests {
         assert!(
             version >= 57,
             "reopening a v56 database must reach at least v57, got {version}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod call_provenance_tests {
+    use super::*;
+    use crate::conversation::message::MessageContent;
+    use rmcp::model::CallToolRequestParams;
+
+    #[test]
+    fn call_provenance_default_is_all_unknown() {
+        let provenance = CallProvenance::default();
+        assert_eq!(provenance.purpose, CallPurpose::Unknown);
+        assert_eq!(provenance.purpose.as_str(), "unknown");
+        assert_eq!(provenance.trigger_ref, None);
+        assert_eq!(provenance.retry_of_call_id, None);
+        assert_eq!(provenance.pre_call_evidence, None);
+
+        let outcome = CallOutcome::default();
+        assert_eq!(outcome.tool_call_count, None, "unobserved is not zero");
+        assert_eq!(outcome.completion_kind, CompletionKind::Unknown);
+        assert_ne!(outcome.completion_kind, CompletionKind::Empty);
+    }
+
+    #[test]
+    fn call_provenance_trigger_ref_is_bounded_not_cut() {
+        let ok = CallProvenance::with_purpose(CallPurpose::UserResponse).with_trigger("message:m1");
+        assert_eq!(ok.trigger_ref.as_deref(), Some("message:m1"));
+
+        let too_long = "x".repeat(TRIGGER_REF_MAX_BYTES + 1);
+        let dropped = CallProvenance::default().with_trigger(too_long);
+        assert_eq!(dropped.trigger_ref, None);
+
+        let retry = CallProvenance::retry_of("call-0");
+        assert_eq!(retry.purpose, CallPurpose::Retry);
+        assert_eq!(retry.retry_of_call_id.as_deref(), Some("call-0"));
+    }
+
+    #[test]
+    fn pre_call_evidence_is_versioned_and_within_bound() {
+        let evidence = PreCallEvidence::new(
+            "poll_unchanged@1",
+            serde_json::json!({"changed_state": false, "pending_work": 2}),
+            WouldSkip::No,
+        );
+        assert!(!evidence.is_truncated());
+        let value: serde_json::Value = serde_json::from_str(evidence.as_json()).unwrap();
+        assert_eq!(value["v"], 1);
+        assert_eq!(value["predicate"], "poll_unchanged@1");
+        assert_eq!(value["inputs"]["pending_work"], 2);
+        assert_eq!(value["would_skip"], "no");
+        assert!(evidence.as_json().len() <= PRE_CALL_EVIDENCE_MAX_BYTES);
+    }
+
+    #[test]
+    fn pre_call_evidence_over_bound_becomes_a_well_formed_marker() {
+        let huge = "y".repeat(PRE_CALL_EVIDENCE_MAX_BYTES * 2);
+        let evidence = PreCallEvidence::new(
+            "poll_unchanged@1",
+            serde_json::json!({ "blob": huge }),
+            WouldSkip::Unknown,
+        );
+        assert!(evidence.is_truncated());
+        assert!(evidence.as_json().len() <= PRE_CALL_EVIDENCE_MAX_BYTES);
+        // Never cut JSON: the marker parses, and says what happened.
+        let value: serde_json::Value = serde_json::from_str(evidence.as_json()).unwrap();
+        assert_eq!(value["v"], 1);
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["predicate"], "poll_unchanged@1");
+        assert_eq!(value["would_skip"], "unknown");
+        assert!(value["original_bytes"].as_u64().unwrap() > PRE_CALL_EVIDENCE_MAX_BYTES as u64);
+        assert!(value.get("inputs").is_none());
+
+        // An absurd predicate name is dropped from the marker, not cut.
+        let long_name = "p".repeat(10_000);
+        let evidence = PreCallEvidence::new(&long_name, serde_json::json!({}), WouldSkip::Yes);
+        assert!(evidence.is_truncated());
+        let value: serde_json::Value = serde_json::from_str(evidence.as_json()).unwrap();
+        assert!(value["predicate"].is_null());
+        assert!(evidence.as_json().len() <= PRE_CALL_EVIDENCE_MAX_BYTES);
+    }
+
+    fn tool_request(id: &str) -> MessageContent {
+        MessageContent::tool_request(id.to_string(), Ok(CallToolRequestParams::new("t")))
+    }
+
+    #[test]
+    fn completion_kind_derives_from_response_shape() {
+        assert_eq!(CompletionKind::from_shape(true, 0), CompletionKind::Text);
+        assert_eq!(CompletionKind::from_shape(false, 2), CompletionKind::Tools);
+        assert_eq!(CompletionKind::from_shape(true, 1), CompletionKind::Mixed);
+        assert_eq!(CompletionKind::from_shape(false, 0), CompletionKind::Empty);
+
+        let text = Message::assistant().with_text("hello");
+        assert_eq!(
+            CallOutcome::from_message(&text),
+            CallOutcome {
+                tool_call_count: Some(0),
+                completion_kind: CompletionKind::Text
+            }
+        );
+        let blank = Message::assistant().with_text("   ");
+        assert_eq!(
+            CallOutcome::from_message(&blank).completion_kind,
+            CompletionKind::Empty
+        );
+        let mut tools = Message::assistant();
+        tools.content.push(tool_request("a"));
+        tools.content.push(tool_request("b"));
+        let tools_outcome = CallOutcome::from_message(&tools);
+        assert_eq!(tools_outcome.tool_call_count, Some(2));
+        assert_eq!(tools_outcome.completion_kind, CompletionKind::Tools);
+        let mut mixed = Message::assistant().with_text("calling a tool");
+        mixed.content.push(tool_request("c"));
+        assert_eq!(
+            CallOutcome::from_message(&mixed).completion_kind,
+            CompletionKind::Mixed
+        );
+    }
+
+    #[test]
+    fn stream_outcome_tracker_counts_completed_requests_and_terminal_state() {
+        // Text deltas across frames plus one complete tool request.
+        let mut tracker = StreamOutcomeTracker::default();
+        tracker.observe_frame(false);
+        tracker.observe_message(&Message::assistant().with_text("part one"));
+        tracker.observe_frame(false);
+        let mut with_tool = Message::assistant();
+        with_tool.content.push(tool_request("x"));
+        tracker.observe_message(&with_tool);
+        tracker.observe_frame(false);
+        let outcome = tracker.finish(false);
+        assert_eq!(outcome.tool_call_count, Some(1));
+        assert_eq!(outcome.completion_kind, CompletionKind::Mixed);
+        assert_eq!(
+            tracker.finish(true).completion_kind,
+            CompletionKind::Cancelled
+        );
+
+        // An error as the last frame is an error completion...
+        let mut errored = StreamOutcomeTracker::default();
+        errored.observe_frame(false);
+        errored.observe_frame(true);
+        assert_eq!(errored.finish(false).completion_kind, CompletionKind::Error);
+        // ...but a good frame after it (a successful stall retry) clears it.
+        errored.observe_frame(false);
+        assert_eq!(errored.finish(false).completion_kind, CompletionKind::Empty);
+
+        // Nothing observed at all stays unknown, never empty/zero.
+        let untouched = StreamOutcomeTracker::default();
+        assert_eq!(untouched.finish(false), CallOutcome::default());
+    }
+
+    fn row(call_id: &str, session_id: &str) -> CostLedgerRow {
+        CostLedgerRow {
+            call_id: call_id.to_string(),
+            ts: "2026-09-23T00:00:00Z".to_string(),
+            session_id: session_id.to_string(),
+            parent_session_id: None,
+            task_id: None,
+            goal_id: None,
+            subagent_id: None,
+            provider: Some("ollama".to_string()),
+            model: Some("local-model".to_string()),
+            cost_tier: CostTier::LocalFree,
+            is_headless: true,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            input_cost: 0.0,
+            output_cost: 0.0,
+            cache_read_cost: 0.0,
+            cache_write_cost: 0.0,
+            cost_usd: 0.0,
+            cache_savings_usd: 0.0,
+            is_estimated: false,
+            provenance: CallProvenance::default(),
+            outcome: CallOutcome::default(),
+        }
+    }
+
+    type V60Columns = (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+    );
+
+    async fn read_v60(pool: &Pool<Sqlite>, call_id: &str) -> V60Columns {
+        sqlx::query_as(
+            "SELECT call_purpose, trigger_ref, retry_of_call_id, pre_call_evidence,
+                    tool_call_count, completion_kind
+             FROM cost_ledger WHERE call_id = ?",
+        )
+        .bind(call_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn cost_ledger_insert_round_trips_call_purpose_fields() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "a4".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+
+        let evidence = PreCallEvidence::new(
+            "poll_unchanged@1",
+            serde_json::json!({"changed_state": false}),
+            WouldSkip::No,
+        );
+        let mut known = row("call-known", &session.id);
+        known.provenance = CallProvenance::retry_of("call-failed")
+            .with_trigger("tool_result:tc-1")
+            .with_evidence(evidence.clone());
+        known.outcome = CallOutcome::observed(true, 3);
+        sm.append_cost_ledger(&known).await.unwrap();
+
+        let unknown = row("call-unknown", &session.id);
+        sm.append_cost_ledger(&unknown).await.unwrap();
+
+        let pool = sm.pool_clone().await.unwrap();
+        assert_eq!(
+            read_v60(&pool, "call-known").await,
+            (
+                Some("retry".to_string()),
+                Some("tool_result:tc-1".to_string()),
+                Some("call-failed".to_string()),
+                Some(evidence.as_json().to_string()),
+                Some(3),
+                Some("mixed".to_string()),
+            )
+        );
+        // A caller that knew nothing: purpose/kind say 'unknown' (a post-v60
+        // writer that did not know), the tool count stays NULL (not 0), and
+        // nothing is invented for trigger/retry/evidence.
+        assert_eq!(
+            read_v60(&pool, "call-unknown").await,
+            (
+                Some("unknown".to_string()),
+                None,
+                None,
+                None,
+                None,
+                Some("unknown".to_string()),
+            )
         );
     }
 }

@@ -94,6 +94,8 @@ fn call(
         cost_usd,
         cache_savings_usd: 0.0,
         is_estimated,
+        provenance: Default::default(),
+        outcome: Default::default(),
     }
 }
 

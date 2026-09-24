@@ -2491,6 +2491,10 @@ impl Agent {
             // look-again turns. See `DispatchPollGuard` for the rule this
             // state enforces.
             let mut dispatch_poll_guard = DispatchPollGuard::default();
+            // v60 (node A4): the invocation id of an iteration that failed and
+            // made the loop re-run the turn (provider failover or recovery
+            // compaction). The next dispatch is labelled a retry of it.
+            let mut retry_of_failed_call: Option<String> = None;
 
             loop {
                 // Only the per-iteration fact is cleared; the HUD's sticky
@@ -2622,6 +2626,13 @@ impl Agent {
                     Some(reused) => reused,
                     None => Uuid::new_v4().to_string(),
                 };
+                // v60 (node A4): why this call is being made, from what the
+                // loop knows before dispatch (see `turn_call_provenance`).
+                let call_provenance = crate::agents::reply_parts::turn_call_provenance(
+                    conversation.messages(),
+                    turns_taken,
+                    retry_of_failed_call.take(),
+                );
                 // Sized to the request about to be sent (the same system
                 // prompt, messages and tools handed to
                 // `stream_response_from_provider` below), not the model's whole
@@ -2638,6 +2649,7 @@ impl Agent {
                         &system_prompt,
                         conversation_with_moim.messages(),
                         &tools,
+                        call_provenance.clone(),
                     )
                     .await
                 {
@@ -2687,6 +2699,7 @@ impl Agent {
                                     &system_prompt,
                                     conversation_with_moim.messages(),
                                     &tools,
+                                    call_provenance,
                                 )
                                 .await
                             {
@@ -2828,6 +2841,10 @@ impl Agent {
                 // retry of the identical request. This bounds it to one per
                 // turn attempt — see `should_retry_first_byte_stall`.
                 let mut first_byte_stall_retried = false;
+                // v60 (node A4): the response shape of THIS invocation, for
+                // the ledger row's tool_call_count/completion_kind.
+                let mut stream_outcome =
+                    crate::session::session_manager::StreamOutcomeTracker::default();
 
                 // Track whether this provider turn has already emitted visible
                 // thinking so a later tool-call chunk can suppress replayed
@@ -2840,6 +2857,10 @@ impl Agent {
                         break;
                     }
 
+                    stream_outcome.observe_frame(next.is_err());
+                    if let Ok((Some(ref response), _)) = next {
+                        stream_outcome.observe_message(response);
+                    }
                     match next {
                         Ok((response, usage)) => {
                             compaction_attempts = 0;
@@ -4080,6 +4101,7 @@ impl Agent {
                     }
                 }
                 turn_timing.end_model();
+                let call_outcome = stream_outcome.finish(is_token_cancelled(&cancel_token));
                 if invocation.cost_tier.is_chargeable() {
                     let has_authoritative_usage = terminal_usage.as_ref().is_some_and(|usage| {
                         let u = usage.usage;
@@ -4097,6 +4119,7 @@ impl Agent {
                             usage,
                             &invocation,
                             recognition_retrieval_id.as_deref(),
+                            call_outcome,
                         )
                         .await
                         {
@@ -4136,9 +4159,16 @@ impl Agent {
                         usage,
                         &invocation,
                         recognition_retrieval_id.as_deref(),
+                        call_outcome,
                     )
                     .await?;
                 }
+                // v60 (node A4): both flags are set only from provider-error
+                // arms, and each makes the loop re-run this turn. That re-run
+                // is a re-dispatch after this invocation failed.
+                retry_of_failed_call = (did_switch_provider_this_iteration
+                    || did_recovery_compact_this_iteration)
+                    .then(|| invocation.invocation_id.clone());
                 // A mid-turn failover re-runs this turn on a different model,
                 // so the prompt must be rebuilt for it. `prepare_tools_and_prompt`
                 // is where the live model identity line and the model family's

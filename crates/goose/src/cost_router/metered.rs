@@ -288,6 +288,8 @@ fn ledger_row_for(
         cost_usd,
         cache_savings_usd: 0.0,
         is_estimated,
+        provenance: Default::default(),
+        outcome: Default::default(),
     })
 }
 
@@ -406,6 +408,8 @@ mod tests {
             cost_usd,
             cache_savings_usd: 0.0,
             is_estimated: false,
+            provenance: Default::default(),
+            outcome: Default::default(),
         }
     }
 
