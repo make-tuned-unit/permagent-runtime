@@ -391,7 +391,8 @@ struct GoalAdvanceParams {
     /// re-dispatches until changed). An unknown role is refused.
     #[serde(default)]
     role: Option<String>,
-    /// For 'dispatch' only: run the worker with only these extensions. Persisted
+    /// For 'dispatch' only: run the worker with only these extensions. Omit it
+    /// to give the worker its normal tools; an empty list is refused. Persisted
     /// on the goal (sticky across re-dispatches until changed). Enforced only
     /// for in-process workers; a later dispatch to a CLI worker is refused
     /// until the scope is cleared.
@@ -7315,6 +7316,53 @@ pub(crate) const WRITE_SCOPE_CONFLICT_REFUSAL: &str = "write scope conflicts wit
 /// a later poll instead of charging it a re-dispatch attempt (which,
 /// at the default budget of 2, otherwise burned the card's whole allowance
 /// on refusals before the conflict could clear).
+/// Refuse an `extension_scope` that names no extensions.
+///
+/// Stored on a goal, an empty scope means "deny every extension", and a worker
+/// dispatched under it has no file or shell tools at all. A model filling in an
+/// optional array argument sends `[]` meaning "nothing special", not that:
+/// on 2026-09-24 a coordinator did exactly this, and three workers in a row
+/// started with only a lesson-loading tool, looped on it until the runaway
+/// guard stopped them, and the goal failed. So `[]` (or only blank names) is
+/// refused here with the fix in the message, before anything is persisted.
+fn validate_requested_extension_scope(
+    scope: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, String> {
+    match scope {
+        Some(names) if names.iter().all(|name| name.trim().is_empty()) => Err(
+            "extension_scope is empty, which would dispatch the worker with no tools at all. \
+             Omit extension_scope to give the worker its normal tools, or list the \
+             extensions it needs (for example [\"developer\"])."
+                .to_string(),
+        ),
+        other => Ok(other),
+    }
+}
+
+#[cfg(test)]
+mod requested_extension_scope_tests {
+    use super::validate_requested_extension_scope;
+
+    #[test]
+    fn an_empty_scope_is_refused_with_the_fix_in_the_message() {
+        for empty in [vec![], vec!["".to_string(), "  ".to_string()]] {
+            let err = validate_requested_extension_scope(Some(empty)).unwrap_err();
+            assert!(err.contains("no tools"), "{err}");
+            assert!(err.contains("Omit extension_scope"), "{err}");
+        }
+    }
+
+    #[test]
+    fn an_omitted_or_named_scope_passes_through_unchanged() {
+        assert_eq!(validate_requested_extension_scope(None), Ok(None));
+        let named = vec!["developer".to_string()];
+        assert_eq!(
+            validate_requested_extension_scope(Some(named.clone())),
+            Ok(Some(named))
+        );
+    }
+}
+
 pub(crate) fn refusal_is_scope_wait(dispatch_error: &str) -> bool {
     dispatch_error.contains(WRITE_SCOPE_CONFLICT_REFUSAL)
 }
@@ -10246,11 +10294,12 @@ impl OrchestratorClient {
             })?),
             None => None,
         };
-        let requested_extension_scope = args
-            .get("extension_scope")
-            .map(|value| serde_json::from_value::<Vec<String>>(value.clone()))
-            .transpose()
-            .map_err(|e| format!("extension_scope must be an array of strings: {e}"))?;
+        let requested_extension_scope = validate_requested_extension_scope(
+            args.get("extension_scope")
+                .map(|value| serde_json::from_value::<Vec<String>>(value.clone()))
+                .transpose()
+                .map_err(|e| format!("extension_scope must be an array of strings: {e}"))?,
+        )?;
         // R48d: an explicit per-goal `worker_tier`, validated against the
         // routing roster up front — same "refuse loudly on a typo/unresolvable
         // value" convention `requested_role` just used above. "auto" and an
