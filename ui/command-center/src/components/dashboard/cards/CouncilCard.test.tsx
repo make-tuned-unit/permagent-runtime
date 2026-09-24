@@ -78,3 +78,41 @@ it('retry refetches and clears the error once the daemon answers', async () => {
   expect(container.textContent).not.toMatch(/Couldn't load/i);
   expect(container.textContent).toMatch(/No weekly report yet/i);
 });
+
+it('renders the report body as formatted markdown, not literal asterisks and hashes', async () => {
+  // QA at real size: Home showed "**Verdict:**" and "#### 🟠 **Permagent
+  // Runtime** — *Systemic infrastructure failure*" character for character.
+  const markdown = [
+    '**Context:** the daemon restarted three times this week.',
+    '',
+    '#### 🟠 **Permagent Runtime** — *Systemic infrastructure failure*',
+    '',
+    '**Risk:** high',
+    '',
+    '**Verdict:** fix the restart loop first.',
+  ].join('\n');
+  getLatest.mockResolvedValue({
+    report: { headline: 'One systemic failure', markdown },
+    session: { status: 'complete' },
+    positions: [],
+    openActions: 0,
+  } as never);
+  await act(async () => { root.render(<CouncilCard />); });
+  await settle();
+
+  const body = container.querySelector('[data-testid="council-report-body"]') as HTMLElement;
+  expect(body.textContent).toContain('Verdict:');
+  expect(body.textContent).not.toContain('**');
+  expect(body.textContent).not.toContain('####');
+  expect(Array.from(body.querySelectorAll('strong')).map(s => s.textContent)).toEqual(
+    expect.arrayContaining(['Context:', 'Risk:', 'Verdict:', 'Permagent Runtime']),
+  );
+  expect(body.querySelector('em')?.textContent).toBe('Systemic infrastructure failure');
+  // The heading is a heading, kept at the card's body size: no page-size text
+  // class, only weight and spacing from the wrapper.
+  const h4 = body.querySelector('h4') as HTMLElement;
+  expect(h4.textContent).toContain('Permagent Runtime');
+  expect(h4.style.fontSize).toBe('');
+  expect(body.className).toContain('[&_h4]:font-semibold');
+  expect(body.style.whiteSpace).not.toBe('pre-wrap');
+});

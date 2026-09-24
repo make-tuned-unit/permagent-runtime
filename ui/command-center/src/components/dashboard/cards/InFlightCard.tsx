@@ -2,7 +2,6 @@ import { memo, useLayoutEffect, useRef, useState } from 'react';
 import { duration, ease, font, radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useOrchestratorName } from '../../world/shared/useOrchestratorName';
-import { Mobius } from '../../mobius/Mobius';
 import { SectionTitle, EmptyNote } from '../atoms';
 import { useCommandCenter } from '../../../lib/store';
 import type { ActiveGoal } from '../../../lib/useLiveGoals';
@@ -73,7 +72,11 @@ export const InFlightCard = memo(function InFlightCard({ goals }: Props) {
     const measure = () => {
       const boxes = Array.from(grid.children).map(c => {
         const el = c as HTMLElement;
-        return { top: el.offsetTop, height: el.offsetHeight };
+        // offsetHeight rounds to whole pixels; a 70.4px row reported as 70
+        // left the list 1px short of the last row, clipping its bottom
+        // border (seen at real size). Round the painted height UP instead.
+        const painted = Math.ceil(el.getBoundingClientRect().height);
+        return { top: el.offsetTop, height: Math.max(el.offsetHeight, painted) };
       });
       // jsdom (and a tile not yet laid out) reports 0: leave the list at the
       // region's full height rather than collapse it to nothing.
@@ -134,7 +137,7 @@ export const InFlightCard = memo(function InFlightCard({ goals }: Props) {
                 // was cut through its title ("Find and analyz") with the
                 // ellipsis drawn off-screen where nobody could see it.
                 gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))',
-                gap: space.xxl,
+                gap: space.md,
                 // offsetTop of each row is measured against the grid.
                 position: 'relative',
               }}
@@ -151,7 +154,6 @@ export const InFlightCard = memo(function InFlightCard({ goals }: Props) {
 const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
   const { colors, reduceMotion } = useTheme();
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
-  const mobiusState = goal.state === 'review' ? 'idle' : 'thinking';
   // Clickable tile with no hover/press feedback before this (D10): the whole
   // card is a button and looked exactly like one that wasn't.
   const [hover, setHover] = useState(false);
@@ -186,7 +188,7 @@ const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
         onPointerDown={() => setPressed(true)}
         onPointerUp={() => setPressed(false)}
         style={{
-          padding: space.xxxl, borderRadius: radius.md, cursor: 'pointer',
+          padding: `${space.md}px ${space.lg}px`, borderRadius: radius.md, cursor: 'pointer',
           boxSizing: 'border-box', minWidth: 0,
           scrollSnapAlign: 'start',
           background: pressed ? colors.fillActive : hover ? colors.fillHover : colors.surface,
@@ -198,10 +200,15 @@ const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
             : `background ${duration.fast}ms ${ease.out}, transform ${duration.fast}ms ${ease.out}`,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: space.xl, minWidth: 0 }}>
-          <div style={{ flexShrink: 0, display: 'flex' }}>
-            <Mobius size={36} state={mobiusState} logoMode />
-          </div>
+        {/* The row used to lead with an animated Mobius at `size={36}`. That
+            prop is the logo's HEIGHT: the active frames are 1024x485, so it
+            drew 76px wide. In Home's real ~180px tile the row has ~104px
+            inside its padding, which left the text column ~16px, every line
+            an ellipsis, and a 20px row padding made each row ~96px tall, so
+            only one fit under the title. QA saw "2 active" over a box holding
+            just the logo. The row is text only now, with tighter padding, so
+            two rows fit a 230px tile and each line has the tile's width. */}
+        <div style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
           <div data-testid="inflight-row-text" style={{ flex: 1, minWidth: 0 }}>
             <div style={{
               fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
@@ -224,7 +231,7 @@ const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
               aria-hidden={note ? undefined : true}
               style={{
                 fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted,
-                marginTop: space.sm, lineHeight: 1.4, ...oneLine,
+                marginTop: space.xxs, lineHeight: 1.4, ...oneLine,
               }}
             >
               {note || '\u00a0'}

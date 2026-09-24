@@ -4,6 +4,7 @@ import { useTheme } from '../../../styles/useTheme';
 import { useCommandCenter } from '../../../lib/store';
 import { SectionTitle, StatusIcon, EmptyNote } from '../atoms';
 import type { RecentSession } from '../useDashboard';
+import { recentTitle } from './recentTitle';
 
 function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -67,13 +68,16 @@ function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: b
   // surface tint by coincidence of matching alpha. `fillHover`/`fillActive`
   // name what this row actually wants (D10), and give it real press feedback,
   // which it had none of before.
+  // Never the raw title: a session named after tool-call args arrives as a cut
+  // object literal (see recentTitle).
+  const label = recentTitle(item.title);
   const fadeTransition = reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}, box-shadow ${duration.fast}ms ${ease.out}`;
   return (
     <div
       onClick={() => onOpen(item.id)}
       role="button"
       tabIndex={0}
-      aria-label={`Open conversation: ${item.title}`}
+      aria-label={`Open conversation: ${label}`}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(item.id); } }}
       onMouseEnter={e => { e.currentTarget.style.background = colors.fillHover; e.currentTarget.style.transition = fadeTransition; }}
       onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
@@ -92,7 +96,7 @@ function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: b
         <div style={{
           fontFamily: font.body, fontSize: 12.5, fontWeight: 500, color: colors.text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>{item.title}</div>
+        }}>{label}</div>
         <div style={{ fontSize: 10.5, color: colors.textDim, marginTop: space.xxs }}>
           {timeAgo(item.ended_at)}
         </div>
