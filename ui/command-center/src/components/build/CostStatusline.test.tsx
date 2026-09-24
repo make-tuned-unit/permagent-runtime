@@ -213,12 +213,17 @@ describe('CostStatusline', () => {
     // remaining $0.90 · session held $0.10 · session billing paid_api"), and
     // The user, reading a line like it, said "I am unsure what all of this is".
     // It now leads with spend and says the rest in plain words; this fixture is
-    // complete and fully priced, so its remainder is stated without a hedge.
+    // partial (an unknown hold is retained), so its remainder is hedged.
+    // Since 59bc805d (U1) the golden retains an ambiguous post-send hold as
+    // unknown, so the fixture is partial and the bar must say so.
+    const usd = (n: number) => `$${n.toFixed(2)}`;
+    const session = restartProjection.session;
+    expect(session.completeness).toBe('partial');
     const costSpan = container!.querySelector('span[style*="font-weight"]');
-    expect(costSpan?.textContent).toBe('$0.10');
-    expect(eventText).toContain('$0.10 pending');
-    expect(eventText).toContain('$0.90 left');
-    expect(eventText).not.toContain('unconfirmed');
+    expect(costSpan?.textContent).toBe(usd(session.effectiveUsedUsd));
+    expect(eventText).toContain(`${usd(session.unknownUsd)} unconfirmed`);
+    expect(eventText).toContain(`${usd(session.heldUsd)} pending`);
+    expect(eventText).toContain(`~${usd(session.remainingUsd)} left (unconfirmed)`);
     expect(eventText).not.toContain('session settled');
     expect(eventText).not.toContain('session billing');
     getActiveHarnessRuns.mockResolvedValueOnce([{
