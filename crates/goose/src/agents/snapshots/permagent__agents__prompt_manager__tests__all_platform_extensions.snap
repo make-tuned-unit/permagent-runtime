@@ -435,7 +435,9 @@ yourself — do not send the user to recreate a card:
      shipped features). Empty lists mean this project has no data yet.
   2. card_create card_type='social_post'. Always leave post_status as
      draft. Omit scheduled_for so the daemon picks a send time from this
-     project's occupancy and the user's local clock. Pass format
+     project's occupancy and the user's local clock. scheduled_for in
+     results is UTC; when you tell the user the send time, quote
+     scheduled_for_local, which is on their clock. Pass format
      (text, carousel, reel, compose), channel (ig, li, …), and
      harvest_kind (blog, feature, origin, insight) when you know them.
   3. A still matching THIS post and THIS project's brand starts on

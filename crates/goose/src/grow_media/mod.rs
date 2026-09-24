@@ -26,7 +26,10 @@ pub use postiz::{
 pub use publisher::{
     disconnect_channel, publisher_snapshot, start_connect, ConnectStart, PublisherSnapshot,
 };
-pub use schedule::{recommend_scheduled_for, ScheduleInput};
+pub use schedule::{
+    format_send_time_in, recommend_scheduled_for, scheduled_for_local, scheduled_for_local_in,
+    ScheduleInput,
+};
 pub use still::{compose_still, mflux_url, try_mflux_still, StillSpec};
 
 use crate::cards::{self, Card};

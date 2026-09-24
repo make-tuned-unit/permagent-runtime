@@ -705,7 +705,9 @@ impl ProjectManagerClient {
                      shipped features). Empty lists mean this project has no data yet.
                   2. card_create card_type='social_post'. Always leave post_status as
                      draft. Omit scheduled_for so the daemon picks a send time from this
-                     project's occupancy and the user's local clock. Pass format
+                     project's occupancy and the user's local clock. scheduled_for in
+                     results is UTC; when you tell the user the send time, quote
+                     scheduled_for_local, which is on their clock. Pass format
                      (text, carousel, reel, compose), channel (ig, li, …), and
                      harvest_kind (blog, feature, origin, insight) when you know them.
                   3. A still matching THIS post and THIS project's brand starts on
@@ -1363,14 +1365,8 @@ impl ProjectManagerClient {
         };
         Ok(vec![Content::text(format!(
             "{outcome}\n\n{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "id": card.id,
-                "title": card.title,
-                "post_status": card.metadata_json.get(cards::POST_STATUS_KEY),
-                "scheduled_for": card.metadata_json.get(cards::POST_SCHEDULED_FOR_KEY),
-                "publisher_post_id": card.metadata_json.get(cards::POST_PUBLISHER_POST_ID_KEY),
-            }))
-            .unwrap_or_default()
+            serde_json::to_string_pretty(&approve_result_json(&card, &chrono::Local))
+                .unwrap_or_default()
         ))])
     }
 
@@ -2024,13 +2020,7 @@ impl ProjectManagerClient {
             .metadata_json
             .get(cards::DUE_DATE_KEY)
             .and_then(|v| v.as_str());
-        let json = serde_json::json!({
-            "id": card.id, "title": card.title, "card_type": card.card_type,
-            "column_id": card.column_id, "position": card.position,
-            "project": project.name, "due_date": stamped_due,
-            "scheduled_for": card.metadata_json.get(cards::POST_SCHEDULED_FOR_KEY),
-            "media_status": card.metadata_json.get(cards::POST_MEDIA_STATUS_KEY),
-        });
+        let json = card_create_result_json(&card, &project.name, stamped_due, &chrono::Local);
         let home_note = match (card.card_type.as_str(), stamped_due) {
             ("standard", Some(d)) => {
                 format!(" — due {d}, so it shows on the Home tab's to-do list")
@@ -2039,16 +2029,18 @@ impl ProjectManagerClient {
                  on the Home tab's to-do list; set due_date to put it there"
                 .to_string(),
             ("social_post", _) => {
-                let when = card
-                    .metadata_json
-                    .get(cards::POST_SCHEDULED_FOR_KEY)
+                // The user's clock, not the stored UTC string — see
+                // `post_schedule_fields`.
+                let when = json
+                    .get("scheduled_for_local")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unscheduled");
                 format!(
-                    " — draft on this project's calendar at {when}. A still matching this post \
-                     is generating; tell the user. If they dislike the graphic, retry_social_media \
-                     with their taste notes — do not recreate the card. Approve with \
-                     approve_social_post when mediaStatus is ready."
+                    " — draft on this project's calendar at {when} (the user's local time; \
+                     quote scheduled_for_local, not the UTC scheduled_for). A still matching \
+                     this post is generating; tell the user. If they dislike the graphic, \
+                     retry_social_media with their taste notes — do not recreate the card. \
+                     Approve with approve_social_post when mediaStatus is ready."
                 )
             }
             _ => String::new(),
@@ -2208,9 +2200,21 @@ impl ProjectManagerClient {
             Some(None) => " — due date cleared, so it leaves the Home tab's to-do list".to_string(),
             None => String::new(),
         };
+        // A reschedule echoes the new send time on the user's clock so the
+        // model never has to read a UTC instant back to them.
+        let schedule_note = scheduled_for
+            .and_then(|_| {
+                updated
+                    .metadata_json
+                    .get(cards::POST_SCHEDULED_FOR_KEY)
+                    .and_then(|v| v.as_str())
+            })
+            .and_then(crate::grow_media::scheduled_for_local)
+            .map(|local| format!(" — send time now {local} (the user's local time)"))
+            .unwrap_or_default();
         Ok(vec![Content::text(format!(
-            "Updated card \"{}\" (id: {}){}",
-            updated.title, updated.id, due_note
+            "Updated card \"{}\" (id: {}){}{}",
+            updated.title, updated.id, due_note, schedule_note
         ))])
     }
 
@@ -3176,6 +3180,74 @@ impl McpClientTrait for ProjectManagerClient {
     }
 }
 
+/// Put a social_post's send time into a tool result twice: `scheduled_for`
+/// as stored (RFC-3339 UTC — the UI and publisher parse that, so it is never
+/// reformatted) and `scheduled_for_local`, the same instant on `tz`. Given
+/// only the UTC string, the model told a UTC-3 user "14:00" while the Grow
+/// calendar showed 11:00 AM. `tz` is [`chrono::Local`] in production and a
+/// fixed offset in tests. The local field is omitted when nothing parses.
+fn post_schedule_fields<Tz>(
+    json: &mut serde_json::Map<String, serde_json::Value>,
+    meta: &serde_json::Value,
+    tz: &Tz,
+) where
+    Tz: chrono::TimeZone,
+    Tz::Offset: std::fmt::Display,
+{
+    let stored = meta.get(cards::POST_SCHEDULED_FOR_KEY);
+    json.insert(
+        "scheduled_for".to_string(),
+        stored.cloned().unwrap_or(serde_json::Value::Null),
+    );
+    if let Some(local) = stored
+        .and_then(|v| v.as_str())
+        .and_then(|s| crate::grow_media::scheduled_for_local_in(s, tz))
+    {
+        json.insert("scheduled_for_local".to_string(), serde_json::json!(local));
+    }
+}
+
+/// The JSON half of `card_create`'s result.
+fn card_create_result_json<Tz>(
+    card: &cards::Card,
+    project_name: &str,
+    stamped_due: Option<&str>,
+    tz: &Tz,
+) -> serde_json::Value
+where
+    Tz: chrono::TimeZone,
+    Tz::Offset: std::fmt::Display,
+{
+    let mut json = serde_json::json!({
+        "id": card.id, "title": card.title, "card_type": card.card_type,
+        "column_id": card.column_id, "position": card.position,
+        "project": project_name, "due_date": stamped_due,
+        "media_status": card.metadata_json.get(cards::POST_MEDIA_STATUS_KEY),
+    });
+    if let Some(map) = json.as_object_mut() {
+        post_schedule_fields(map, &card.metadata_json, tz);
+    }
+    json
+}
+
+/// The JSON half of `approve_social_post`'s result.
+fn approve_result_json<Tz>(card: &cards::Card, tz: &Tz) -> serde_json::Value
+where
+    Tz: chrono::TimeZone,
+    Tz::Offset: std::fmt::Display,
+{
+    let mut json = serde_json::json!({
+        "id": card.id,
+        "title": card.title,
+        "post_status": card.metadata_json.get(cards::POST_STATUS_KEY),
+        "publisher_post_id": card.metadata_json.get(cards::POST_PUBLISHER_POST_ID_KEY),
+    });
+    if let Some(map) = json.as_object_mut() {
+        post_schedule_fields(map, &card.metadata_json, tz);
+    }
+    json
+}
+
 /// Build `metadata_json` for `card_create`. Post-schedule fields are
 /// social_post-only — rejecting (not ignoring) them on other types keeps the
 /// tool honest about what it accepts.
@@ -3481,6 +3553,73 @@ mod tests {
             updated_at: String::new(),
             last_opened_at: String::new(),
         }
+    }
+
+    fn test_post_card(meta: serde_json::Value) -> cards::Card {
+        cards::Card {
+            id: "card-1".into(),
+            project_id: "proj-1".into(),
+            card_type: "social_post".into(),
+            title: "Launch post".into(),
+            description: String::new(),
+            column_id: "col-1".into(),
+            position: 0,
+            created_by: "agent".into(),
+            assigned_to: None,
+            metadata_json: meta,
+            created_at: String::new(),
+            updated_at: String::new(),
+            archived_at: None,
+        }
+    }
+
+    /// QA walk 2026-09-24: chat said "Scheduled for 2026-09-25 at 14:00"
+    /// while the Grow calendar showed 11:00 AM for a UTC-3 user. The create
+    /// result must carry the user's-clock rendering beside the stored UTC.
+    #[test]
+    fn card_create_result_carries_local_send_time_beside_stored_utc() {
+        let west3 = chrono::FixedOffset::west_opt(3 * 3600).unwrap();
+        let card = test_post_card(serde_json::json!({
+            cards::POST_SCHEDULED_FOR_KEY: "2026-09-25T14:00:00+00:00",
+            cards::POST_MEDIA_STATUS_KEY: "queued",
+        }));
+        let json = card_create_result_json(&card, "CivicLedger", None, &west3);
+        assert_eq!(
+            json["scheduled_for"], "2026-09-25T14:00:00+00:00",
+            "the stored UTC instant is passed through unchanged"
+        );
+        assert_eq!(
+            json["scheduled_for_local"],
+            "Fri Sep 25, 11:00 AM (UTC-03:00)"
+        );
+        assert_eq!(json["media_status"], "queued");
+    }
+
+    #[test]
+    fn card_create_result_omits_local_time_when_unscheduled() {
+        let west3 = chrono::FixedOffset::west_opt(3 * 3600).unwrap();
+        let mut card = test_post_card(serde_json::json!({}));
+        card.card_type = "standard".into();
+        let json = card_create_result_json(&card, "CivicLedger", Some("2026-09-30"), &west3);
+        assert!(json["scheduled_for"].is_null());
+        assert!(json.get("scheduled_for_local").is_none());
+        assert_eq!(json["due_date"], "2026-09-30");
+    }
+
+    #[test]
+    fn approve_result_carries_local_send_time() {
+        let east530 = chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
+        let card = test_post_card(serde_json::json!({
+            cards::POST_STATUS_KEY: "scheduled",
+            cards::POST_SCHEDULED_FOR_KEY: "2026-09-25T14:00:00Z",
+        }));
+        let json = approve_result_json(&card, &east530);
+        assert_eq!(json["post_status"], "scheduled");
+        assert_eq!(json["scheduled_for"], "2026-09-25T14:00:00Z");
+        assert_eq!(
+            json["scheduled_for_local"],
+            "Fri Sep 25, 7:30 PM (UTC+05:30)"
+        );
     }
 
     #[test]
