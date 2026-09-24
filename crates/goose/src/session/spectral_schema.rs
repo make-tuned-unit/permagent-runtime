@@ -789,6 +789,8 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     apply_model_review_schema(pool).await?;
     // K1b (v61): Council convene batch manifest over ordinary reservations.
     apply_cost_reservation_batches_schema(pool).await?;
+    // W1b (v62): Model Review finding states.
+    apply_model_review_states_schema(pool).await?;
 
     // Egress audit log (schema v29, sovereignty). Idempotent; shared with
     // migrate_v28_to_v29. Append-only, purely additive, base-independent.
@@ -2111,6 +2113,35 @@ pub async fn apply_model_review_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+/// W1b: review state for the Model Review ledger, one row per finding key.
+/// No row (or `open`) means open. A separate table rather than a column, so
+/// the weekly rescan that re-persists `model_review_findings` can never reset
+/// a dismissal, and so v59's two-table contract stays as it was.
+pub async fn apply_model_review_states_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS model_review_finding_states (
+        finding_key TEXT PRIMARY KEY NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('open', 'dismissed', 'deferred')),
+        defer_until TEXT,
+        decision_id TEXT,
+        updated_at TEXT NOT NULL
+    )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v62: Model Review finding states (W1b). Additive and idempotent.
+pub async fn migrate_v61_to_v62(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v61 -> v62 (model review finding states)");
+    apply_model_review_states_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (62)")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -7667,6 +7698,48 @@ mod decision_journal_schema_tests {
         assert_eq!(
             tables,
             vec!["model_review_findings", "model_review_reports"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod model_review_states_schema_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn migration_v61_to_v62_adds_the_states_table_idempotently() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE schema_version(version INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        migrate_v58_to_v59(&pool).await.unwrap();
+        migrate_v61_to_v62(&pool).await.unwrap();
+        migrate_v61_to_v62(&pool).await.unwrap();
+        let version: i32 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(version, 62);
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_review_finding_states'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(exists, 1);
+        let bad = sqlx::query(
+            "INSERT INTO model_review_finding_states(finding_key, state, updated_at) VALUES ('k', 'trash', 'now')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            bad.is_err(),
+            "storage verbs like 'trash' must be rejected by the table"
         );
     }
 }

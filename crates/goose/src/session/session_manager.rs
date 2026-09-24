@@ -2560,6 +2560,10 @@ impl SessionStorage {
                     if version < 61 {
                         spectral_schema::migrate_v60_to_v61(&self.pool).await?;
                     }
+                    // v62: model_review_finding_states (W1b review state).
+                    if version < 62 {
+                        spectral_schema::migrate_v61_to_v62(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB
