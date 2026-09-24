@@ -6,7 +6,6 @@ import {
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
 import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse } from '../../lib/api';
-import { relativeTimeAgo } from '../../lib/time-decay';
 import { concentric, font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setTheme as setThemeFn, space, type IdleAnim, type ThemePref, type UIDensity, textSize, type } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
@@ -222,9 +221,15 @@ function PersonaPanel() {
     <div>
       <H1 sub="Shape how your agent thinks, talks, and decides. Changes take effect at the start of the next conversation.">Persona</H1>
       <Section title="Identity">
-        <div style={{ display: 'flex', alignItems: 'center', gap: space.huge, marginBottom: space.md }}>
+        {/* Wraps rather than clips: the portrait and the fields sat side by side
+            with the fields on a bare `flex: 1`, so in a narrow column (chat
+            docked) the 140px portrait kept its width and Name/Greeting were
+            pushed off the card's right edge. The fields column is its own
+            size container, so its rows stack against the width THEY have, not
+            the card's. */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: space.huge, marginBottom: space.md }}>
           <Mobius size={140} state="idle" glow={1} />
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: '1 1 280px', minWidth: 0, containerType: 'inline-size' }}>
             <Row label="Name" hint="What you'll call them."><TextInput value={name} onChange={changeName} /></Row>
             <Row label="Greeting" hint="The first line they'll say each session."><TextInput multi value={greeting} onChange={changeGreeting} /></Row>
           </div>
@@ -666,14 +671,23 @@ function ToolsPanel({ goto }: PanelProps) {
       ) : extensions.length === 0 ? (
         <Section title="No extensions"><div style={{ color: colors.textMuted, fontSize: textSize.small }}>No MCP tools or extensions configured.</div></Section>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: space.lg }}>
+        // Two columns only while two fit: a fixed `repeat(2, 1fr)` held both
+        // columns in a ~390px column and pushed the status dots off the edge.
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(240px, 100%), 1fr))', gap: space.lg }}>
           {extensions.map((ext, i) => (
             <div key={ext.name || `ext-${i}`} style={{ display: 'flex', alignItems: 'center', gap: space.xxl, padding: space.xxl, borderRadius: radius.lg, background: colors.surface, border: `1px solid ${colors.border}` }}>
               <div style={{ width: 32, height: 32, borderRadius: radius.md, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: textSize.small, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{extensionLabel(ext).charAt(0).toUpperCase() || '?'}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: textSize.small, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{extensionLabel(ext)}</div>
                 <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools?.length ?? 0} tools
+                  {/* `available_tools` is the extension's tool ALLOWLIST from
+                      config.yaml, not its tool inventory: empty means "every
+                      tool is available" (ExtensionConfig::is_tool_available in
+                      crates/goose/src/agents/extension.rs). It printed as
+                      "0 tools" on every unrestricted extension. Only a
+                      non-empty list says anything, and what it says is a limit. */}
+                  {ext.type}{ext.bundled ? ' · bundled' : ''}
+                  {(ext.available_tools?.length ?? 0) > 0 && ` · ${ext.available_tools!.length} ${ext.available_tools!.length === 1 ? 'tool' : 'tools'} allowed`}
                   {(ext.env_keys?.length ?? 0) > 0 && ` · needs ${ext.env_keys!.join(', ')}`}
                 </div>
               </div>
@@ -1137,7 +1151,7 @@ function AppearancePanel() {
     <div>
       <H1 sub="How Permagent looks while it runs alongside you.">Appearance</H1>
       <Section title="Theme" sub="System follows your device — silver by day, dark when your other apps go dark.">
-        <div role="radiogroup" aria-label="Theme" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: space.lg }}>
+        <div role="radiogroup" aria-label="Theme" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(120px, 100%), 1fr))', gap: space.lg }}>
           {themes.map(th => {
             const on = prefs.themePref === th.id;
             return (
@@ -1167,11 +1181,11 @@ function AppearancePanel() {
       <Section title="Möbius">
         <Row label="Glow intensity"><Slider value={prefs.mobiusGlow} onChange={v => setMobiusGlow(v)} suffix="%" /></Row>
         <Row label="Animation when idle">
-          <div style={{ display: 'flex', gap: space.md }}>{animOptions.map((a, i) => <Chip key={a} on={prefs.idleAnim === a} onClick={() => setIdleAnim(a)}>{animLabels[i]}</Chip>)}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.md }}>{animOptions.map((a, i) => <Chip key={a} on={prefs.idleAnim === a} onClick={() => setIdleAnim(a)}>{animLabels[i]}</Chip>)}</div>
         </Row>
       </Section>
       <Section title="Density">
-        <Row label="UI density"><div style={{ display: 'flex', gap: space.md }}>{densityOptions.map((d, i) => <Chip key={d} on={prefs.density === d} onClick={() => setDensityFn(d)}>{densityLabels[i]}</Chip>)}</div></Row>
+        <Row label="UI density"><div style={{ display: 'flex', flexWrap: 'wrap', gap: space.md }}>{densityOptions.map((d, i) => <Chip key={d} on={prefs.density === d} onClick={() => setDensityFn(d)}>{densityLabels[i]}</Chip>)}</div></Row>
         <Row label="Reduce motion" hint="Honors system preference by default."><Toggle on={prefs.reduceMotion} onChange={v => setReduceMotionFn(v)} /></Row>
       </Section>
     </div>
@@ -1363,9 +1377,10 @@ export function DataPanel() {
 
 // ── Panel router ─────────────────────────────────────────────────────
 
-/** Grid columns for the egress-audit table (ported from the retired
- *  Governance → Sovereignty panel — the table read better than stacked rows). */
-const EGRESS_COLS = '150px 1fr 90px 80px';
+/* The egress-audit table's columns live in `atoms.tsx` as `.pa-set-egress`
+   (ported from the retired Governance → Sovereignty panel — the table read
+   better than stacked rows): they answer to the group's width through a
+   container query, which an inline `gridTemplateColumns` could not. */
 
 /** Sovereignty — the data boundary. The toggle writes the daemon's global
  *  sovereign flag (enforced fail-closed at the provider choke point); the
@@ -1492,14 +1507,14 @@ function SovereigntyBlock() {
             Nothing has left this machine yet. Every cloud call will be recorded here.
           </div>
         ) : (
-          <div style={{ marginTop: space.xl, overflowX: 'auto' }}>
-            <div style={{ minWidth: 460 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: space.xl, padding: `0 ${space.lg}px ${space.md}px`, ...type.label, color: colors.textDim }}>
-                <div>When</div><div>Provider · Model</div><div>Kind</div><div>Result</div>
+          <div style={{ marginTop: space.xl }}>
+            <div>
+              <div className="pa-set-egress" style={{ padding: `0 ${space.lg}px ${space.md}px`, ...type.label, color: colors.textDim }}>
+                <div>When</div><div>Provider · Model</div><div className="pa-set-wide-only">Kind</div><div>Result</div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
                 {log.map(e => (
-                  <div key={e.id} style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: space.xl, alignItems: 'center', padding: `${space.md}px ${space.lg}px`, borderRadius: concentric(radius.lg, space.xs), background: colors.fillSubtle }}>
+                  <div key={e.id} className="pa-set-egress" style={{ padding: `${space.md}px ${space.lg}px`, borderRadius: concentric(radius.lg, space.xs), background: colors.fillSubtle }}>
                     {/* The primitive clones its child rather than boxing it,
                         so these stay grid ITEMS and the ellipsis truncation
                         below still measures against the column. */}
@@ -1508,12 +1523,12 @@ function SovereigntyBlock() {
                         {timeAgo(e.ts) || e.ts}
                       </div>
                     </Tooltip>
-                    <Tooltip content={`${e.provider} · ${e.model}`}>
+                    <Tooltip content={`${e.provider} · ${e.model} · ${e.kind}`}>
                       <div tabIndex={0} style={{ fontSize: textSize.caption, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         <span style={{ color: colors.textMuted }}>{e.provider}</span> · {e.model}
                       </div>
                     </Tooltip>
-                    <div style={{ fontSize: textSize.caption, color: colors.textMuted }}>{e.kind}</div>
+                    <div className="pa-set-wide-only" style={{ fontSize: textSize.caption, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis' }}>{e.kind}</div>
                     <div>
                       <span style={{
                         ...type.label, fontWeight: 700,
@@ -1735,7 +1750,10 @@ function DevicesPanel() {
             hint={
               (d.revoked ? 'Revoked · ' : '')
               + `Paired ${new Date(d.created).toLocaleDateString()}`
-              + ` · ${d.last_seen ? `last seen ${relativeTimeAgo(d.last_seen) || 'just now'}` : 'never seen'}`
+              // `timeAgo`, the History format ("3d ago"): `relativeTimeAgo`
+              // only counts hours, so a phone idle for six weeks read
+              // "last seen 1058h 52m ago".
+              + ` · ${d.last_seen ? `last seen ${timeAgo(d.last_seen) || 'at an unknown time'}` : 'never seen'}`
             }
           >
             {editingId === d.id ? (
@@ -1875,8 +1893,8 @@ function DevicesPanel() {
           />
         </Row>
         <Row label="Device name" hint="Name the device you are pairing — this is how it appears in the registry above.">
-          <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
-            <TextInput value={pairName} onChange={setPairName} placeholder="e.g. iPhone" />
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: space.sm }}>
+            <div style={{ flex: '1 1 160px', minWidth: 0 }}><TextInput value={pairName} onChange={setPairName} placeholder="e.g. iPhone" /></div>
             <Button
               colors={colors}
               style={ghost(colors)}
@@ -2031,10 +2049,17 @@ export function SettingsView() {
           </div>
         ))}
       </div>
-      <div style={{ flex: 1, overflow: 'auto', padding: '32px 40px 60px' }}>
-        {/* `section`, not `pane` — History needs the segment the caller asked
-            for, and every other panel ignores it. */}
-        {Panel && <Panel goto={setSection} section={section} />}
+      {/* The content column is a size container: how wide it is depends on
+          whether chat is docked beside Settings, not on the window, so its
+          gutters answer to it (`.pa-set-body` in atoms.tsx) rather than to a
+          viewport media query. `minWidth: 0` lets it shrink below its
+          content's width instead of widening the pane. */}
+      <div style={{ flex: 1, minWidth: 0, overflow: 'auto', containerType: 'inline-size' }}>
+        <div className="pa-set-body">
+          {/* `section`, not `pane` — History needs the segment the caller asked
+              for, and every other panel ignores it. */}
+          {Panel && <Panel goto={setSection} section={section} />}
+        </div>
       </div>
     </div>
   );

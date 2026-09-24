@@ -31,8 +31,30 @@ import { Button } from '../common/Button';
  */
 
 /**
- * The two things inline styles cannot say: a separator on every row but the
- * first, and a hover fill on a row that is actually a target.
+ * The label column of a `Row`, and the group width below which a row stops
+ * being two columns and stacks its label above its control.
+ *
+ * The threshold is a CONTAINER width, not a viewport width. How wide the
+ * settings column is depends on whether the chat panel is docked beside it,
+ * not on the window: at 1162px with chat docked the column is under 400px, and
+ * a 196px label plus a 24px gap plus the row padding left the control ~50px —
+ * inputs vanished off the card's edge and selects ran past it. 520 is the
+ * label column, the gap and the padding plus room for a 240px select.
+ */
+const ROW_LABEL_WIDTH = 196;
+const ROW_STACK_BELOW = 520;
+
+/**
+ * The things inline styles cannot say: a separator on every row but the
+ * first, a hover fill on a row that is actually a target, and a row layout
+ * that answers to the width of the group it sits in (`@container`, with the
+ * group as the container — an inline `display: flex` could not be overridden
+ * by the query, so the row's layout lives here rather than on the element).
+ *
+ * `.pa-set-egress` is the Privacy pane's egress-audit table on the same rule:
+ * four fixed columns needed ~460px and, in a narrow column, scrolled sideways
+ * inside the card so its RESULT pills read as clipped. Narrow, it drops the
+ * Kind column (`.pa-set-wide-only`; the kind moves into the row's tooltip).
  *
  * Injected once, from the module, rather than added to `index.css` — this is
  * the Settings surface's own vocabulary and it should travel with the file that
@@ -40,7 +62,20 @@ import { Button } from '../common/Button';
  * carry the live theme without the stylesheet knowing anything about themes.
  */
 const SETTINGS_CSS = `
+.pa-set-group { container-type: inline-size; }
+.pa-set-body { padding: 32px 40px 60px; }
+@container (max-width: 560px) { .pa-set-body { padding: ${space.huge}px ${space.xxxl}px 40px; } }
 .pa-set-group > * + * { border-top: 1px solid var(--pa-set-sep); }
+.pa-set-row { display: flex; align-items: flex-start; gap: ${space.huge}px; }
+.pa-set-row-label { width: ${ROW_LABEL_WIDTH}px; flex-shrink: 0; padding-top: ${space.xs}px; }
+.pa-set-row-control { flex: 1; min-width: 0; }
+.pa-set-egress { display: grid; grid-template-columns: 150px minmax(0, 1fr) 90px 80px; gap: ${space.xl}px; align-items: center; }
+@container (max-width: ${ROW_STACK_BELOW}px) {
+  .pa-set-row { flex-direction: column; align-items: stretch; gap: ${space.md}px; }
+  .pa-set-row-label { width: auto; padding-top: 0; }
+  .pa-set-egress { grid-template-columns: 64px minmax(0, 1fr) 80px; gap: ${space.md}px; }
+  .pa-set-wide-only { display: none; }
+}
 .pa-set-row-tap { cursor: pointer; transition: background var(--pa-set-dur) var(--pa-set-ease); }
 .pa-set-row-tap:hover { background: var(--pa-set-hover); }
 .pa-set-row-tap:active { background: var(--pa-set-active); }
@@ -67,7 +102,9 @@ export function selectStyle(colors: ReturnType<typeof useTheme>['colors']): CSSP
     height: 30, padding: `0 ${space.lg}px`, borderRadius: radius.sm,
     background: colors.inputBg, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, fontSize: textSize.small,
-    minWidth: 240, cursor: 'pointer',
+    // `min(…, 100%)`: a select never asks for more room than its row has. A
+    // bare 240 pushed "Open on launch" past the card edge in a narrow column.
+    minWidth: 'min(240px, 100%)', maxWidth: '100%', cursor: 'pointer',
   };
 }
 
@@ -166,13 +203,12 @@ export function Row({ label, hint, children, onClick }: {
   const { colors } = useTheme();
   return (
     <div
-      className={onClick ? 'pa-set-row-tap' : undefined}
+      className={onClick ? 'pa-set-row pa-set-row-tap' : 'pa-set-row'}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
       style={{
-        display: 'flex', alignItems: 'flex-start', gap: space.huge,
         padding: `${space.xl}px ${space.xxl}px`,
         '--pa-set-hover': colors.fillHover,
         '--pa-set-active': colors.fillActive,
@@ -180,11 +216,11 @@ export function Row({ label, hint, children, onClick }: {
         '--pa-set-ease': 'var(--pa-ease-smooth, cubic-bezier(0.22, 1, 0.36, 1))',
       } as CSSProperties}
     >
-      <div style={{ width: 196, flexShrink: 0, paddingTop: space.xs }}>
+      <div className="pa-set-row-label">
         <div style={{ fontSize: textSize.small, fontWeight: 500, color: colors.text }}>{label}</div>
         {hint && <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xs, lineHeight: 1.45 }}>{hint}</div>}
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
+      <div className="pa-set-row-control">{children}</div>
     </div>
   );
 }

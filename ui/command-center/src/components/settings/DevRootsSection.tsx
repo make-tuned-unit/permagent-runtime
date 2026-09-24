@@ -163,7 +163,9 @@ export function DevRootsSection() {
           onKeyDown={e => { if (e.key === 'Enter') void add(input); }}
           placeholder={home ? `e.g. ${home}/Documents/dev` : 'e.g. ~/Documents/dev'}
           style={{
-            flex: 1, height: 34, padding: '0 10px', borderRadius: radius.md,
+            // `minWidth: 0`: an input's intrinsic width otherwise pushes the
+            // button past a narrow card's edge.
+            flex: 1, minWidth: 0, height: 34, padding: '0 10px', borderRadius: radius.md,
             background: colors.bgDeeper, border: `1px solid ${colors.border}`,
             color: colors.text, fontFamily: font.mono, fontSize: textSize.caption, outline: 'none',
           }}
