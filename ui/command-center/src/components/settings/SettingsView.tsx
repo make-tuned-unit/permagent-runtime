@@ -1372,7 +1372,7 @@ export function DataPanel() {
   return (
     <>
       <Section title="Diagnostics" sub="Live — an off-by-default opt-in written to the daemon's consent gate.">
-        <Row label="Share product analytics" hint="Anonymous usage and timing. Never your prompts."><Toggle on={!!analytics} onChange={saveAnalytics} /></Row>
+        <Row label="Share product analytics" hint="Pseudonymous (a random install ID) usage and timing. Never your prompts."><Toggle on={!!analytics} onChange={saveAnalytics} /></Row>
         {consentError && (
           <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '2px 0 8px' }}>{consentError}</div>
         )}

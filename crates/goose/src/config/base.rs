@@ -210,6 +210,34 @@ enum SecretStorage {
 // Global instance
 static GLOBAL_CONFIG: OnceCell<Config> = OnceCell::new();
 
+thread_local! {
+    /// Config lock files THIS thread already holds. The cross-process config
+    /// lock is reentrant per thread: `set_param` holds it across its whole
+    /// read-modify-write, and the load inside may itself save (migrations,
+    /// backup restore) — re-taking a `flock` on a second descriptor from the
+    /// same thread would deadlock against itself.
+    static HELD_CONFIG_LOCKS: std::cell::RefCell<Vec<PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Releases a held config lock: forget it for reentrancy, then close the
+/// descriptor (which drops the `flock`).
+struct ConfigLockGuard {
+    path: PathBuf,
+    _file: std::fs::File,
+}
+
+impl Drop for ConfigLockGuard {
+    fn drop(&mut self) {
+        HELD_CONFIG_LOCKS.with(|held| {
+            let mut held = held.borrow_mut();
+            if let Some(i) = held.iter().rposition(|p| p == &self.path) {
+                held.remove(i);
+            }
+        });
+    }
+}
+
 /// The directory every config read in this test binary resolves under.
 #[doc(hidden)]
 pub fn test_config_root() -> PathBuf {
@@ -571,6 +599,24 @@ impl Config {
     fn load_values_with_recovery(&self) -> Result<Mapping, ConfigError> {
         let file_content = std::fs::read_to_string(&self.config_path)?;
 
+        // A 0-byte / whitespace-only file is the signature of a truncated
+        // write, not a user's choice: every config this code writes, even an
+        // empty one, serialises as at least `{}`. serde_yaml reads a blank
+        // document as a VALID empty mapping, so without this check the next
+        // `set_param` saved `{extensions, <key>}` and every other key was gone
+        // (the Sep 2026 loss of strix_docker_ssh / GOOSE_TELEMETRY_ENABLED).
+        if file_content.trim().is_empty() {
+            tracing::error!(
+                "Config file {:?} is empty (a truncated write?) — restoring from backup \
+                 rather than treating it as a blank configuration",
+                self.config_path
+            );
+            if let Ok(backup_values) = self.try_restore_from_backup() {
+                return Ok(backup_values);
+            }
+            return Ok(Mapping::new());
+        }
+
         match parse_yaml_content(&file_content) {
             Ok(values) => Ok(values),
             Err(parse_error) => {
@@ -716,7 +762,76 @@ impl Config {
         }
     }
 
+    /// `<config>.lock`, beside the config file. A stable path every writer
+    /// agrees on — the old lock was taken on the temp file, which each writer
+    /// had already truncated before locking, so it excluded nothing.
+    fn lock_path(&self) -> PathBuf {
+        let mut name = self
+            .config_path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_else(|| CONFIG_YAML_NAME.into());
+        name.push(".lock");
+        self.config_path.with_file_name(name)
+    }
+
+    /// Run `f` holding an exclusive advisory lock on [`Self::lock_path`].
+    ///
+    /// This is what makes a read-modify-write safe ACROSS PROCESSES (the
+    /// daemon, CLI sessions, harness runs and test binaries each hold their
+    /// own `Config`, whose in-process `guard` mutex protects nothing from the
+    /// others) and across `Config` instances in one process: `flock` locks
+    /// conflict per open descriptor, so a second instance or thread blocks
+    /// until the first has re-read, merged and written. Reentrant per thread.
+    fn with_file_lock<R>(
+        &self,
+        f: impl FnOnce() -> Result<R, ConfigError>,
+    ) -> Result<R, ConfigError> {
+        let lock_path = self.lock_path();
+        if HELD_CONFIG_LOCKS.with(|held| held.borrow().contains(&lock_path)) {
+            return f();
+        }
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| ConfigError::DirectoryError(e.to_string()))?;
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        FileExt::lock_exclusive(&file).map_err(|e| ConfigError::LockError(e.to_string()))?;
+        HELD_CONFIG_LOCKS.with(|held| held.borrow_mut().push(lock_path.clone()));
+        let _release = ConfigLockGuard {
+            path: lock_path,
+            _file: file,
+        };
+        f()
+    }
+
+    /// Re-read the config under the cross-process lock, apply `mutate`, and
+    /// write the result before releasing the lock. Every non-secret writer goes
+    /// through here, so a save can never be built from a snapshot another
+    /// process has since changed (the lost update that dropped keys).
+    fn modify_values<R>(
+        &self,
+        mutate: impl FnOnce(&mut Mapping) -> Result<R, ConfigError>,
+    ) -> Result<R, ConfigError> {
+        let _guard = self.guard.lock().unwrap();
+        self.with_file_lock(|| {
+            let mut values = self.load_raw()?;
+            let out = mutate(&mut values)?;
+            self.save_values(&values)?;
+            Ok(out)
+        })
+    }
+
     fn save_values(&self, values: &Mapping) -> Result<(), ConfigError> {
+        self.with_file_lock(|| self.save_values_locked(values))
+    }
+
+    fn save_values_locked(&self, values: &Mapping) -> Result<(), ConfigError> {
         // Create backup before writing new config
         self.create_backup_if_needed()?;
 
@@ -730,40 +845,52 @@ impl Config {
                 .map_err(|e| ConfigError::DirectoryError(e.to_string()))?;
         }
 
-        // Write to a temporary file first for atomic operation
-        let temp_path = target_path.with_extension("tmp");
+        // Write to a temporary file first for atomic operation. The name is
+        // unique per writer: the old shared `config.tmp` let writer B's
+        // `open(truncate)` empty writer A's finished temp file just before A
+        // renamed it into place — publishing a 0-byte config.yaml, which
+        // parses as a VALID empty config (see `load_values_with_recovery`).
+        // Binaries built before this fix still use `config.tmp` and do not
+        // take the lock, so the unique name is what protects us from them.
+        let temp_path = {
+            let mut name = target_path
+                .file_name()
+                .map(|n| n.to_os_string())
+                .unwrap_or_else(|| CONFIG_YAML_NAME.into());
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            name.push(format!(".tmp.{}.{}", std::process::id(), nanos));
+            target_path.with_file_name(name)
+        };
 
-        {
+        let written = (|| -> Result<(), ConfigError> {
             let mut file = OpenOptions::new()
                 .write(true)
-                .create(true)
-                .truncate(true)
+                .create_new(true)
                 .open(&temp_path)?;
-
-            // Acquire an exclusive lock
-            file.lock_exclusive()
-                .map_err(|e| ConfigError::LockError(e.to_string()))?;
-
-            // Write the contents using the same file handle
             file.write_all(yaml_value.as_bytes())?;
             file.sync_all()?;
-
-            // Unlock is handled automatically when file is dropped
+            // Atomically replace the original file
+            std::fs::rename(&temp_path, &target_path)?;
+            Ok(())
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temp_path);
         }
-
-        // Atomically replace the original file
-        std::fs::rename(&temp_path, &target_path)?;
-
-        Ok(())
+        written
     }
 
     pub fn initialize_if_empty(&self, values: Mapping) -> Result<(), ConfigError> {
         let _guard = self.guard.lock().unwrap();
-        if !self.exists() {
-            self.save_values(&values)
-        } else {
-            Ok(())
-        }
+        self.with_file_lock(|| {
+            if !self.exists() {
+                self.save_values(&values)
+            } else {
+                Ok(())
+            }
+        })
     }
 
     // Create backup of current config file if it exists and is valid
@@ -776,6 +903,12 @@ impl Config {
         let current_content = std::fs::read_to_string(&self.config_path)?;
         if parse_yaml_content(&current_content).is_err() {
             // Don't back up corrupted files
+            return Ok(());
+        }
+        if current_content.trim().is_empty() {
+            // A blank file parses as an empty config, so it used to be
+            // "backed up" right over the last good copy — the one save that
+            // persisted a truncation also destroyed the only way back.
             return Ok(());
         }
 
@@ -953,16 +1086,13 @@ impl Config {
     /// - There is an error reading or writing the config file
     /// - There is an error serializing the value
     pub fn set_param<V: Serialize>(&self, key: &str, value: V) -> Result<(), ConfigError> {
-        let changed = {
-            let _guard = self.guard.lock().unwrap();
-            let mut values = self.load_raw()?;
-            let yaml_key = serde_yaml::to_value(key)?;
-            let yaml_value = serde_yaml::to_value(value)?;
+        let yaml_key = serde_yaml::to_value(key)?;
+        let yaml_value = serde_yaml::to_value(value)?;
+        let changed = self.modify_values(|values| {
             let changed = values.get(&yaml_key) != Some(&yaml_value);
             values.insert(yaml_key, yaml_value);
-            self.save_values(&values)?;
-            changed
-        };
+            Ok(changed)
+        })?;
         announce_config_change(&[key], "set", false, changed);
         Ok(())
     }
@@ -974,21 +1104,24 @@ impl Config {
         K: AsRef<str>,
         V: Serialize,
     {
-        let changed_keys = {
-            let _guard = self.guard.lock().unwrap();
-            let mut values = self.load_raw()?;
+        let mut pairs: Vec<(String, serde_yaml::Value, serde_yaml::Value)> = Vec::new();
+        for (key, value) in params {
+            pairs.push((
+                key.as_ref().to_string(),
+                serde_yaml::to_value(key.as_ref())?,
+                serde_yaml::to_value(value)?,
+            ));
+        }
+        let changed_keys = self.modify_values(|values| {
             let mut changed_keys: Vec<String> = Vec::new();
-            for (key, value) in params {
-                let yaml_key = serde_yaml::to_value(key.as_ref())?;
-                let yaml_value = serde_yaml::to_value(value)?;
+            for (key, yaml_key, yaml_value) in pairs {
                 if values.get(&yaml_key) != Some(&yaml_value) {
-                    changed_keys.push(key.as_ref().to_string());
+                    changed_keys.push(key);
                 }
                 values.insert(yaml_key, yaml_value);
             }
-            self.save_values(&values)?;
-            changed_keys
-        };
+            Ok(changed_keys)
+        })?;
         announce_config_change(&changed_keys, "set", false, !changed_keys.is_empty());
         Ok(())
     }
@@ -1007,16 +1140,8 @@ impl Config {
     /// - There is an error reading or writing the config file
     /// - There is an error serializing the value
     pub fn delete(&self, key: &str) -> Result<(), ConfigError> {
-        let existed = {
-            // Lock before reading to prevent race condition.
-            let _guard = self.guard.lock().unwrap();
-
-            let mut values = self.load_raw()?;
-            let existed = values.shift_remove(key).is_some();
-
-            self.save_values(&values)?;
-            existed
-        };
+        // Re-read and write under the cross-process lock (see `modify_values`).
+        let existed = self.modify_values(|values| Ok(values.shift_remove(key).is_some()))?;
         announce_config_change(&[key], "deleted", false, existed);
         Ok(())
     }
@@ -3117,6 +3242,100 @@ mod tests {
         assert_eq!(
             config.secret_source_for("OTHER_KEY").unwrap(),
             SecretSource::File
+        );
+    }
+
+    /// Lost update across processes: each process (daemon, CLI, harness, a
+    /// test binary) has its OWN `Config`, so the in-process `guard` mutex
+    /// never serialised them — two read-modify-writes could interleave and the
+    /// later save dropped the earlier one's key. Separate instances on one
+    /// file stand in for separate processes (`flock` conflicts per open
+    /// descriptor either way). Every key written must survive.
+    #[test]
+    fn separate_config_instances_never_lose_each_others_writes() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let secrets_path = dir.path().join("secrets.yaml");
+        const WRITERS: usize = 6;
+        const KEYS_EACH: usize = 8;
+        let barrier = Arc::new(Barrier::new(WRITERS));
+        let handles: Vec<_> = (0..WRITERS)
+            .map(|w| {
+                let (config_path, secrets_path) = (config_path.clone(), secrets_path.clone());
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let config = Config::new_with_file_secrets(&config_path, &secrets_path)
+                        .expect("config instance");
+                    barrier.wait();
+                    for k in 0..KEYS_EACH {
+                        config
+                            .set_param(&format!("lost_update_probe_{w}_{k}"), k as i64)
+                            .expect("set_param");
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let reader = Config::new_with_file_secrets(&config_path, &secrets_path).unwrap();
+        let values = reader.all_values().unwrap();
+        let missing: Vec<String> = (0..WRITERS)
+            .flat_map(|w| (0..KEYS_EACH).map(move |k| format!("lost_update_probe_{w}_{k}")))
+            .filter(|key| !values.contains_key(key))
+            .collect();
+        assert!(missing.is_empty(), "lost updates: {missing:?}");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+    }
+
+    /// A 0-byte config.yaml (a truncated publish) parsed as a VALID empty
+    /// config: the next save wrote `{extensions, <key>}` and backed the blank
+    /// file up over the last good copy. It must restore from the backup
+    /// instead, and must never back a blank file up.
+    #[test]
+    fn a_blank_config_file_restores_from_backup_instead_of_wiping_keys() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+        config.set_param("blank_probe_ssh_target", "me@m1").unwrap();
+        // This save backs up the file holding the key above.
+        config.set_param("blank_probe_second", 2).unwrap();
+        let backup = config.get_backup_paths()[0].clone();
+        assert!(std::fs::read_to_string(&backup)
+            .unwrap()
+            .contains("blank_probe_ssh_target"));
+
+        std::fs::write(&config_path, "").unwrap();
+        config.set_param("blank_probe_after", "t").unwrap();
+
+        assert_eq!(
+            config
+                .get_param::<String>("blank_probe_ssh_target")
+                .unwrap(),
+            "me@m1",
+            "a key that was in the last good copy must survive a truncated file"
+        );
+        assert_eq!(
+            config.get_param::<String>("blank_probe_after").unwrap(),
+            "t"
+        );
+        let backup_now = std::fs::read_to_string(&backup).unwrap();
+        assert!(
+            !backup_now.trim().is_empty(),
+            "the blank file must never be backed up over the last good copy"
         );
     }
 

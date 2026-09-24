@@ -254,7 +254,7 @@ async fn drain_one(
     // sovereign flip or unwritable audit skips the project rather than
     // egressing unaudited.
     if !permagent::sovereignty::guard_outbound_egress(
-        permagent::sovereignty::EgressKind::Telemetry,
+        permagent::sovereignty::EgressKind::AnalyticsPull,
         &drain_url,
         &project.id,
     )

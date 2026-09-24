@@ -54,7 +54,7 @@ pub fn configure_telemetry_consent_dialog() -> anyhow::Result<bool> {
     println!();
     println!(
         "{}",
-        style("Would you like to help improve Permagent by sharing anonymous usage data?").dim()
+        style("Would you like to help improve Permagent by sharing pseudonymous usage data?").dim()
     );
     println!(
         "{}",
@@ -82,22 +82,30 @@ pub fn configure_telemetry_consent_dialog() -> anyhow::Result<bool> {
     );
     println!(
         "{}",
-        style("  • Error types (e.g., \"rate_limit\", \"auth\" - no details)").dim()
+        style("  • Error types (e.g., \"rate_limit\", \"auth\") and, when an error is").dim()
+    );
+    println!(
+        "{}",
+        style("    reported, its message with secrets and personal data redacted").dim()
     );
     println!();
     println!(
         "{}",
-        style("We never collect your conversations, code, tool arguments, error messages,").dim()
+        style("Events carry a random install ID (pseudonymous, not anonymous). We never").dim()
     );
     println!(
         "{}",
-        style("or any personal data. You can change this anytime with 'permagent configure'.")
-            .dim()
+        style("collect your conversations, code, tool arguments, or personal data.").dim()
+    );
+    println!(
+        "{}",
+        style("It is off unless you opt in. Change it anytime with 'permagent configure'.").dim()
     );
     println!();
 
-    let enabled = cliclack::confirm("Share anonymous usage data to help improve Permagent?")
-        .initial_value(true)
+    let enabled = cliclack::confirm("Share pseudonymous usage data to help improve Permagent?")
+        // Opt-in only: an unset choice plus Enter must NOT opt the user in.
+        .initial_value(false)
         .interact()?;
 
     config.set_param(TELEMETRY_ENABLED_KEY, enabled)?;
@@ -1294,7 +1302,7 @@ pub async fn configure_settings_dialog() -> anyhow::Result<()> {
         setting_select = setting_select.item(
             "telemetry",
             "Telemetry",
-            "Enable or disable anonymous usage data collection",
+            "Enable or disable pseudonymous usage data collection",
         );
     }
     let setting_type = setting_select
@@ -1432,8 +1440,8 @@ pub fn configure_telemetry_dialog() -> anyhow::Result<()> {
 
     let _ = cliclack::log::info(format!("Current telemetry status: {}", current_status));
 
-    let enabled = cliclack::confirm("Share anonymous usage data to help improve Permagent?")
-        .initial_value(current_choice.unwrap_or(true))
+    let enabled = cliclack::confirm("Share pseudonymous usage data to help improve Permagent?")
+        .initial_value(current_choice.unwrap_or(false))
         .interact()?;
 
     config.set_param(TELEMETRY_ENABLED_KEY, enabled)?;
