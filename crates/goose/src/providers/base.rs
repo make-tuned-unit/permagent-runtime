@@ -49,9 +49,7 @@ pub fn local_session_title(messages: &Conversation) -> Option<String> {
         .collect::<Vec<_>>()
         .join("\n");
     let stripped = strip_xml_tags(&joined);
-    if stripped.split_whitespace().next().is_none() {
-        return None;
-    }
+    stripped.split_whitespace().next()?;
     Some(safe_truncate(&extract_short_title(&stripped), 100))
 }
 
@@ -173,11 +171,8 @@ fn is_task_heading(line: &str) -> bool {
 fn strip_label<'a>(line: &'a str, labels: &[&str]) -> Option<&'a str> {
     labels.iter().find_map(|label| {
         let head = line.get(..label.len())?;
-        if head.eq_ignore_ascii_case(label) {
-            Some(line[label.len()..].trim())
-        } else {
-            None
-        }
+        let rest = line.get(label.len()..)?;
+        head.eq_ignore_ascii_case(label).then(|| rest.trim())
     })
 }
 
@@ -201,8 +196,10 @@ fn shorten_title_line(line: &str) -> String {
         }
     }
     if let Some(idx) = s.find(|c: char| !c.is_ascii_digit()) {
-        if idx > 0 && (s[idx..].starts_with(". ") || s[idx..].starts_with(") ")) {
-            s = s[idx + 2..].trim_start();
+        if let Some(tail) = s.get(idx..) {
+            if idx > 0 && (tail.starts_with(". ") || tail.starts_with(") ")) {
+                s = tail.get(2..).unwrap_or("").trim_start();
+            }
         }
     }
     let s = strip_wrapping_quotes(s);
@@ -218,7 +215,9 @@ fn strip_wrapping_quotes(mut s: &str) -> &str {
             (Some(a), Some(b))
                 if trimmed.chars().count() >= 2 && a == b && matches!(a, '"' | '\'' | '`') =>
             {
-                s = &trimmed[a.len_utf8()..trimmed.len() - b.len_utf8()];
+                s = trimmed
+                    .get(a.len_utf8()..trimmed.len() - b.len_utf8())
+                    .unwrap_or("");
             }
             _ => return trimmed,
         }
@@ -238,7 +237,9 @@ fn cut_at_first_sentence(s: &str) -> &str {
         if end >= bytes.len() || !bytes[end].is_ascii_whitespace() {
             continue;
         }
-        let head = &s[..end];
+        let Some(head) = s.get(..end) else {
+            continue;
+        };
         let last_word = head.split_whitespace().last().unwrap_or("");
         let stem = last_word.trim_end_matches(['.', '!', '?']);
         if c == '.'
@@ -251,7 +252,11 @@ fn cut_at_first_sentence(s: &str) -> &str {
         if head.split_whitespace().count() < 2 {
             continue;
         }
-        return if c == '.' { &s[..i] } else { head };
+        return if c == '.' {
+            s.get(..i).unwrap_or(head)
+        } else {
+            head
+        };
     }
     s
 }
@@ -262,7 +267,7 @@ fn cap_title_chars(s: &str, max_chars: usize) -> String {
     }
     let prefix: String = s.chars().take(max_chars).collect();
     let cut = match prefix.rfind(char::is_whitespace) {
-        Some(idx) if idx > 0 => &prefix[..idx],
+        Some(idx) if idx > 0 => prefix.get(..idx).unwrap_or(prefix.as_str()),
         _ => prefix.as_str(),
     };
     let cut = cut.trim_end_matches(|c: char| {

@@ -637,7 +637,7 @@ pub(crate) fn stream_event_retry_delay(error: &serde_json::Value) -> Option<Dura
 /// "try again in 5.089s" / "try again in 20ms" / "try again in 1m2s".
 pub(crate) fn retry_delay_from_message(message: &str) -> Option<Duration> {
     let m = message.to_ascii_lowercase();
-    let rest = &m[m.find("try again in ")? + "try again in ".len()..];
+    let rest = m.get(m.find("try again in ")? + "try again in ".len()..)?;
     let token: String = rest
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')

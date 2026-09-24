@@ -67,10 +67,12 @@ mod worker_session_tests {
     #[test]
     fn default_headless_drain_secs_is_well_under_the_evals_harness_timeout_floor() {
         assert_eq!(DEFAULT_HEADLESS_DRAIN_SECS, 240);
-        assert!(
-            DEFAULT_HEADLESS_DRAIN_SECS < 400,
-            "the default must stay under the eval's smallest measured harness_timeout (400.1s)"
-        );
+        const {
+            assert!(
+                DEFAULT_HEADLESS_DRAIN_SECS < 400,
+                "the default must stay under the eval's smallest measured harness_timeout (400.1s)"
+            );
+        }
     }
 
     #[tokio::test]

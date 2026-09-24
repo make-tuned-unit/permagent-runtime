@@ -133,9 +133,10 @@ mod tests {
 
         // Verify directory structure
         let path_components: Vec<_> = log_dir.components().collect();
-        assert!(path_components
-            .iter()
-            .any(|c| c.as_os_str() == ".permagent"));
+        // Under the pinned test root (lib.rs's ctor), never the real
+        // ~/.permagent this assertion used to require.
+        let root = env::var("PERMAGENT_PATH_ROOT").expect("CLI tests pin a root");
+        assert!(log_dir.starts_with(&root), "{log_dir:?} not under {root}");
         assert!(path_components.iter().any(|c| c.as_os_str() == "logs"));
         assert!(path_components.iter().any(|c| c.as_os_str() == "cli"));
     }

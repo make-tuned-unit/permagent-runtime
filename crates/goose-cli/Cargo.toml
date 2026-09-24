@@ -101,6 +101,7 @@ native-tls = [
 ]
 
 [dev-dependencies]
+ctor = "1.0"
 env-lock = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }

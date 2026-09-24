@@ -33703,7 +33703,9 @@ mod tests {
             .await
             .unwrap()
             .expect("approve_review decision created");
-        assert!(decision.detail.contains("reported success"));
+        assert!(decision
+            .detail
+            .contains("finished and waiting for your review"));
         assert!(!decision.detail.contains("Proof of work"));
         assert_eq!(decision.payload, serde_json::json!({}));
     }

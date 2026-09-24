@@ -3168,7 +3168,9 @@ mod tests {
             ("pub fn prepare_output(&mut self)", "print!(\"{out}\");"),
         ] {
             let body = source.split(name).nth(1).expect("path must exist");
-            let body = &body[..body.find(body_end).expect("path prints")];
+            let body = body
+                .get(..body.find(body_end).expect("path prints"))
+                .unwrap();
             assert!(
                 body.contains("reassert_region_ansi(self.rows, self.last_height)"),
                 "{name} must re-send the scroll region on every call"
@@ -3214,7 +3216,9 @@ mod tests {
             .split("_ = tokio::time::sleep(std::time::Duration::from_millis(250))")
             .nth(1)
             .expect("the idle tick arm must still exist");
-        let idle_guard = &idle_tick[..idle_tick.find("self.paint();").expect("tick repaints")];
+        let idle_guard = idle_tick
+            .get(..idle_tick.find("self.paint();").expect("tick repaints"))
+            .unwrap();
         assert!(
             idle_guard.contains("geometry_changed()"),
             "the idle tick must notice a resize; an idle composer emits no other signal"
@@ -3224,7 +3228,9 @@ mod tests {
             .split("fn drain_keys")
             .nth(1)
             .expect("drain_keys must still exist");
-        let drain_guard = &drain[..drain.find("self.paint();").expect("drain repaints")];
+        let drain_guard = drain
+            .get(..drain.find("self.paint();").expect("drain repaints"))
+            .unwrap();
         assert!(
             drain_guard.contains("geometry_changed()"),
             "a busy pane resized but not typed into must not wait for the next second"

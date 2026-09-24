@@ -3417,9 +3417,10 @@ mod tests {
         let headless_call = cli
             .find("let mut result = session.headless(contents).await;")
             .unwrap();
-        let tail = &cli[headless_call..];
+        let tail = cli.get(headless_call..).unwrap();
         let drain = tail.find(".drain_dispatched_goals(").unwrap();
-        let drain_done = drain + tail[drain..].find(".await;").unwrap() + ".await;".len();
+        let drain_done =
+            drain + tail.get(drain..).unwrap().find(".await;").unwrap() + ".await;".len();
         let receipts = tail.find("session.print_harness_receipts();").unwrap();
         let completion = tail.find("log_session_completion(").unwrap();
         assert!(drain_done < receipts && receipts < completion);

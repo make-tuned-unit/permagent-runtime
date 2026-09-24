@@ -245,8 +245,7 @@ pub fn same_model_retry_delay(
     if !(is_dropped_stream(err) || err.is_in_band_stream_event()) {
         return None;
     }
-    let delay =
-        crate::providers::RetryConfig::default().delay_for_error(err, retries_done + 1);
+    let delay = crate::providers::RetryConfig::default().delay_for_error(err, retries_done + 1);
     (delay <= SAME_MODEL_MAX_WAIT).then_some(delay)
 }
 

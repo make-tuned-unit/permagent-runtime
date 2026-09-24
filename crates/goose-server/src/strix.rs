@@ -117,7 +117,7 @@ pub fn spawn(state: Arc<AppState>) {
         );
     }
     tokio::spawn(async move {
-        let mut last_sweep: Option<tokio::time::Instant> = None;
+        let mut last_sweep: Option<tokio::time::Instant>;
         // First-value latency (audit 2026-08-11): a user who just enabled the
         // Guard on a never-scanned fleet should not wait STARTUP_DELAY +
         // CHECK_EVERY for the first evidence it exists. One short settle for

@@ -664,7 +664,7 @@ fn clip_at_word(text: &str, max: usize) -> String {
         head.as_str()
     } else {
         match head.rfind(char::is_whitespace) {
-            Some(i) if i > 0 => &head[..i],
+            Some(i) if i > 0 => head.get(..i).unwrap_or(head.as_str()),
             _ => head.as_str(),
         }
     };

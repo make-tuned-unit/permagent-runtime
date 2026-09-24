@@ -7595,6 +7595,7 @@ dependencies = [
  "cliclack",
  "comfy-table",
  "console",
+ "ctor",
  "dialoguer",
  "dirs",
  "dotenvy",

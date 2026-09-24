@@ -392,9 +392,12 @@ mod tests {
             ])
             .unwrap();
 
-        // Blocking creation of the temporary file forces the single atomic
-        // save to fail before the original config can be replaced.
-        std::fs::create_dir(config_path.with_extension("tmp")).unwrap();
+        // A read-only directory stops the atomic save from creating its
+        // temporary file (each writer now gets a unique one, so blocking a
+        // fixed `config.tmp` no longer injects the failure), so the save fails
+        // before the original config can be replaced.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
         let req = SetBudgetRequest {
             session: Some(CeilingsPatch {
                 soft: Some(1.0),
@@ -403,7 +406,9 @@ mod tests {
             }),
             task: None,
         };
-        assert!(apply_budget_patch(&req, &config).is_err());
+        let patched = apply_budget_patch(&req, &config);
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(patched.is_err());
 
         assert_eq!(
             config.get_param::<f64>(budget::KEY_SESSION_SOFT).unwrap(),
