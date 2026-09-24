@@ -593,6 +593,157 @@ struct ReservationExtension {
     config: crate::cost_router::budget::BudgetConfig,
 }
 
+/// Sanitized task and session ceilings, or `None` when any threshold is
+/// unavailable or invalid (authorization then fails closed as `Unknown`).
+/// Shared by the single-invocation reservation path and K1b batch admission.
+pub(super) fn reservation_ceilings(
+    config: &crate::cost_router::budget::BudgetConfig,
+) -> Option<(
+    crate::cost_router::budget::BudgetCeilings,
+    crate::cost_router::budget::BudgetCeilings,
+)> {
+    let task = config.task.sanitized();
+    let session = config.session.sanitized();
+    if [
+        task.soft,
+        task.gate,
+        task.hard,
+        session.soft,
+        session.gate,
+        session.hard,
+    ]
+    .iter()
+    .any(|value| !value.is_finite() || *value < 0.0)
+    {
+        return None;
+    }
+    Some((task, session))
+}
+
+/// THE reservation ceiling arithmetic: settled (`cost_ledger`) plus held
+/// (`pending` + `unknown` reservations) plus `amount_usd`, for the task and for
+/// the whole session tree, compared hard-before-gate. `None` means the amount
+/// fits under every gate. The caller owns the transaction (and commits it
+/// before returning the outcome).
+///
+/// Factored out of `reserve_provider_invocation_inner` for K1b so a Council
+/// batch is judged on the SUM of its paid slots with exactly the same
+/// arithmetic a single invocation gets — not a copy of it.
+pub(super) async fn reservation_ceiling_verdict(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    task_id: &str,
+    session_id: &str,
+    amount_usd: f64,
+    task: crate::cost_router::budget::BudgetCeilings,
+    session: crate::cost_router::budget::BudgetCeilings,
+) -> Result<Option<CostReservationOutcome>> {
+    let task_spent: f64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(SUM(cost_usd), 0.0) AS REAL)
+         FROM cost_ledger WHERE task_id = ?",
+    )
+    .bind(task_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let task_held: f64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(SUM(amount_usd), 0.0) AS REAL)
+         FROM cost_reservations
+         WHERE task_id = ? AND state IN ('pending', 'unknown')",
+    )
+    .bind(task_id)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    // Session scope includes this session and all descendants, matching
+    // the durable parent-session contract rather than a process-local map.
+    let session_spent: f64 = sqlx::query_scalar(
+        "WITH RECURSIVE lineage(id, parent_id) AS (
+             SELECT id, parent_session_id FROM sessions WHERE id = ?
+             UNION ALL
+             SELECT s.id, s.parent_session_id
+             FROM sessions s JOIN lineage l ON s.id = l.parent_id
+         ), session_tree(id) AS (
+             SELECT id FROM lineage WHERE parent_id IS NULL
+             UNION ALL
+             SELECT s.id FROM sessions s JOIN session_tree t ON s.parent_session_id = t.id
+         )
+         SELECT CAST(COALESCE(SUM(l.cost_usd), 0.0) AS REAL)
+         FROM cost_ledger l JOIN session_tree t ON t.id = l.session_id",
+    )
+    .bind(session_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let session_held: f64 = sqlx::query_scalar(
+        "WITH RECURSIVE lineage(id, parent_id) AS (
+             SELECT id, parent_session_id FROM sessions WHERE id = ?
+             UNION ALL
+             SELECT s.id, s.parent_session_id
+             FROM sessions s JOIN lineage l ON s.id = l.parent_id
+         ), session_tree(id) AS (
+             SELECT id FROM lineage WHERE parent_id IS NULL
+             UNION ALL
+             SELECT s.id FROM sessions s JOIN session_tree t ON s.parent_session_id = t.id
+         )
+         SELECT CAST(COALESCE(SUM(r.amount_usd), 0.0) AS REAL)
+         FROM cost_reservations r JOIN session_tree t ON t.id = r.session_id
+         WHERE r.state IN ('pending', 'unknown')",
+    )
+    .bind(session_id)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    for (label, value) in [
+        ("task settled spend", task_spent),
+        ("task held spend", task_held),
+        ("session settled spend", session_spent),
+        ("session held spend", session_held),
+    ] {
+        if !value.is_finite() || value < 0.0 {
+            return Ok(Some(CostReservationOutcome::Unknown {
+                reason: format!("{label} is unavailable or invalid"),
+            }));
+        }
+    }
+    let task_total = task_spent + task_held + amount_usd;
+    let session_total = session_spent + session_held + amount_usd;
+    if task_total >= task.hard {
+        return Ok(Some(CostReservationOutcome::Refused {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: task_spent,
+            held_usd: task_held,
+            requested_usd: amount_usd,
+            ceiling_usd: task.hard,
+        }));
+    }
+    if session_total >= session.hard {
+        return Ok(Some(CostReservationOutcome::Refused {
+            scope: crate::cost_router::budget::BudgetScope::Session,
+            spent_usd: session_spent,
+            held_usd: session_held,
+            requested_usd: amount_usd,
+            ceiling_usd: session.hard,
+        }));
+    }
+    if task_total >= task.gate {
+        return Ok(Some(CostReservationOutcome::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: task_spent,
+            held_usd: task_held,
+            requested_usd: amount_usd,
+            ceiling_usd: task.gate,
+        }));
+    }
+    if session_total >= session.gate {
+        return Ok(Some(CostReservationOutcome::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Session,
+            spent_usd: session_spent,
+            held_usd: session_held,
+            requested_usd: amount_usd,
+            ceiling_usd: session.gate,
+        }));
+    }
+    Ok(None)
+}
+
 #[derive(Clone, Copy)]
 enum ReservationRequest {
     Initial(Option<u32>),
@@ -1388,6 +1539,76 @@ impl SessionManager {
         self.storage
             .find_pending_gate_grant(session_id, provider, model)
             .await
+    }
+
+    /// K1b: admit a frozen Council plan as ONE atomic batch of ordinary
+    /// `pending` reservations plus a durable manifest. See
+    /// [`super::reservation_batch`] for the invariants; the ceiling arithmetic
+    /// is this file's `reservation_ceiling_verdict`, applied to the SUM of
+    /// the paid slots.
+    pub async fn reserve_invocation_batch(
+        &self,
+        request: &super::reservation_batch::BatchAdmissionRequest,
+        config: &crate::cost_router::budget::BudgetConfig,
+    ) -> std::result::Result<
+        super::reservation_batch::BatchAdmissionOutcome,
+        super::reservation_batch::BatchAdmissionError,
+    > {
+        let pool = self.storage.pool().await?;
+        super::reservation_batch::reserve_invocation_batch(pool, request, config).await
+    }
+
+    /// K1b: claim one admitted slot for `child_session_id`, transferring the
+    /// slot's EXISTING reservation to it. Never creates a reservation.
+    pub async fn claim_batch_invocation(
+        &self,
+        batch_id: &str,
+        slot_id: &str,
+        child_session_id: &str,
+    ) -> std::result::Result<
+        super::reservation_batch::BatchClaimOutcome,
+        super::reservation_batch::BatchAdmissionError,
+    > {
+        let pool = self.storage.pool().await?;
+        super::reservation_batch::claim_batch_invocation(pool, batch_id, slot_id, child_session_id)
+            .await
+    }
+
+    /// K1b: idempotent close. Releases only never-claimed slots; claimed slots
+    /// stay funded under U1's rules.
+    pub async fn close_reservation_batch(
+        &self,
+        batch_id: &str,
+    ) -> std::result::Result<
+        super::reservation_batch::BatchCloseSummary,
+        super::reservation_batch::BatchAdmissionError,
+    > {
+        let pool = self.storage.pool().await?;
+        super::reservation_batch::close_reservation_batch(pool, batch_id).await
+    }
+
+    /// K1b: stop new claims and release unclaimed slots; never refunds a claim.
+    pub async fn expire_reservation_batch(
+        &self,
+        batch_id: &str,
+    ) -> std::result::Result<
+        super::reservation_batch::BatchCloseSummary,
+        super::reservation_batch::BatchAdmissionError,
+    > {
+        let pool = self.storage.pool().await?;
+        super::reservation_batch::expire_reservation_batch(pool, batch_id).await
+    }
+
+    /// K1b: expire every open batch whose claim deadline has passed. Also runs
+    /// once when the store opens and inside every batch admission.
+    pub async fn reconcile_expired_batches(
+        &self,
+    ) -> std::result::Result<
+        super::reservation_batch::BatchExpirySweep,
+        super::reservation_batch::BatchAdmissionError,
+    > {
+        let pool = self.storage.pool().await?;
+        super::reservation_batch::reconcile_expired_batches(pool).await
     }
 
     /// Settle a reservation and append its provider usage in one transaction.
@@ -2334,6 +2555,11 @@ impl SessionStorage {
                     if version < 60 {
                         spectral_schema::migrate_v59_to_v60(&self.pool).await?;
                     }
+                    // v61 (K1b): Council convene batch manifest. New tables
+                    // only; paid slots are ordinary `cost_reservations` rows.
+                    if version < 61 {
+                        spectral_schema::migrate_v60_to_v61(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB
@@ -2468,6 +2694,30 @@ impl SessionStorage {
                             target: "permagent::cost_router",
                             error = %e,
                             "boot sweep of unknown provider-spend holds failed; the next paid turn still reconciles them"
+                        ),
+                    }
+
+                    // K1b: expire Council convene batches whose claim deadline
+                    // passed while no process was running, releasing ONLY
+                    // their never-claimed slots (claimed ones stay counted
+                    // under U1). Admission runs the same pass, so correctness
+                    // never depends on this timer; a failure is logged and
+                    // never fails opening the store.
+                    match super::reservation_batch::reconcile_expired_batches(&self.pool).await
+                    {
+                        Ok(sweep) if sweep.expired_batches > 0 => info!(
+                            target: "permagent::cost_router",
+                            expired_batches = sweep.expired_batches,
+                            released_slots = sweep.released_slots,
+                            released_usd = sweep.released_usd,
+                            retained_slots = sweep.retained_slots,
+                            "boot pass expired lapsed Council reservation batches"
+                        ),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(
+                            target: "permagent::cost_router",
+                            error = %e,
+                            "boot pass over Council reservation batches failed; the next batch admission reconciles them"
                         ),
                     }
 
@@ -3034,13 +3284,31 @@ impl SessionStorage {
         Ok(result.rows_affected() == 1)
     }
 
+    /// An expired provider call may already have been accepted remotely;
+    /// preserve its hold as unknown rather than fabricating free allowance.
+    /// Shared by the single-invocation path and K1b batch admission.
+    pub(super) async fn expire_lapsed_pending_reservations(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        now: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE cost_reservations SET state = 'unknown', updated_at = ?
+             WHERE state = 'pending' AND lease_until <= ?",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
     /// Settle stale `unknown` reservations when durable usage is present.
     ///
     /// A missing ledger row is not proof the provider did not bill us, so this
     /// function never auto-releases unknown holds. Unknown amounts remain in
     /// held headroom until either usage is settled or an explicit non-dispatch
     /// path (`release_provider_invocation`) releases them.
-    async fn reconcile_stale_reservations(
+    pub(super) async fn reconcile_stale_reservations(
         tx: &mut sqlx::Transaction<'_, Sqlite>,
         task_id: &str,
         session_id: &str,
@@ -3145,23 +3413,11 @@ impl SessionStorage {
             });
         }
         let lease_until = lease_until.to_rfc3339();
-        let task = config.task.sanitized();
-        let session = config.session.sanitized();
-        if [
-            task.soft,
-            task.gate,
-            task.hard,
-            session.soft,
-            session.gate,
-            session.hard,
-        ]
-        .iter()
-        .any(|value| !value.is_finite() || *value < 0.0)
-        {
+        let Some((task, session)) = reservation_ceilings(config) else {
             return Ok(CostReservationOutcome::Unknown {
                 reason: "budget ceiling is unavailable or invalid".to_string(),
             });
-        }
+        };
 
         let pool = self.pool().await?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -3177,16 +3433,7 @@ impl SessionStorage {
         };
         let mut extension_from = None;
         if matches!(request, ReservationRequest::Initial(_)) {
-            // An expired provider call may already have been accepted remotely;
-            // preserve its hold as unknown rather than fabricating free allowance.
-            sqlx::query(
-                "UPDATE cost_reservations SET state = 'unknown', updated_at = ?
-                 WHERE state = 'pending' AND lease_until <= ?",
-            )
-            .bind(&now)
-            .bind(&now)
-            .execute(&mut *tx)
-            .await?;
+            Self::expire_lapsed_pending_reservations(&mut tx, &now).await?;
 
             // Initial reservations reconcile stale unknown holds (Y1). An
             // extension must not release its own evidence or mutate on refusal.
@@ -3284,114 +3531,12 @@ impl SessionStorage {
             });
         }
 
-        let task_spent: f64 = sqlx::query_scalar(
-            "SELECT CAST(COALESCE(SUM(cost_usd), 0.0) AS REAL)
-             FROM cost_ledger WHERE task_id = ?",
-        )
-        .bind(task_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        let task_held: f64 = sqlx::query_scalar(
-            "SELECT CAST(COALESCE(SUM(amount_usd), 0.0) AS REAL)
-             FROM cost_reservations
-             WHERE task_id = ? AND state IN ('pending', 'unknown')",
-        )
-        .bind(task_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        // Session scope includes this session and all descendants, matching
-        // the durable parent-session contract rather than a process-local map.
-        let session_spent: f64 = sqlx::query_scalar(
-            "WITH RECURSIVE lineage(id, parent_id) AS (
-                 SELECT id, parent_session_id FROM sessions WHERE id = ?
-                 UNION ALL
-                 SELECT s.id, s.parent_session_id
-                 FROM sessions s JOIN lineage l ON s.id = l.parent_id
-             ), session_tree(id) AS (
-                 SELECT id FROM lineage WHERE parent_id IS NULL
-                 UNION ALL
-                 SELECT s.id FROM sessions s JOIN session_tree t ON s.parent_session_id = t.id
-             )
-             SELECT CAST(COALESCE(SUM(l.cost_usd), 0.0) AS REAL)
-             FROM cost_ledger l JOIN session_tree t ON t.id = l.session_id",
-        )
-        .bind(session_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        let session_held: f64 = sqlx::query_scalar(
-            "WITH RECURSIVE lineage(id, parent_id) AS (
-                 SELECT id, parent_session_id FROM sessions WHERE id = ?
-                 UNION ALL
-                 SELECT s.id, s.parent_session_id
-                 FROM sessions s JOIN lineage l ON s.id = l.parent_id
-             ), session_tree(id) AS (
-                 SELECT id FROM lineage WHERE parent_id IS NULL
-                 UNION ALL
-                 SELECT s.id FROM sessions s JOIN session_tree t ON s.parent_session_id = t.id
-             )
-             SELECT CAST(COALESCE(SUM(r.amount_usd), 0.0) AS REAL)
-             FROM cost_reservations r JOIN session_tree t ON t.id = r.session_id
-             WHERE r.state IN ('pending', 'unknown')",
-        )
-        .bind(session_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        for (label, value) in [
-            ("task settled spend", task_spent),
-            ("task held spend", task_held),
-            ("session settled spend", session_spent),
-            ("session held spend", session_held),
-        ] {
-            if !value.is_finite() || value < 0.0 {
-                tx.commit().await?;
-                return Ok(CostReservationOutcome::Unknown {
-                    reason: format!("{label} is unavailable or invalid"),
-                });
-            }
-        }
-        let task_total = task_spent + task_held + amount_usd;
-        let session_total = session_spent + session_held + amount_usd;
-        if task_total >= task.hard {
+        if let Some(outcome) =
+            reservation_ceiling_verdict(&mut tx, task_id, session_id, amount_usd, task, session)
+                .await?
+        {
             tx.commit().await?;
-            return Ok(CostReservationOutcome::Refused {
-                scope: crate::cost_router::budget::BudgetScope::Task,
-                spent_usd: task_spent,
-                held_usd: task_held,
-                requested_usd: amount_usd,
-                ceiling_usd: task.hard,
-            });
-        }
-        if session_total >= session.hard {
-            tx.commit().await?;
-            return Ok(CostReservationOutcome::Refused {
-                scope: crate::cost_router::budget::BudgetScope::Session,
-                spent_usd: session_spent,
-                held_usd: session_held,
-                requested_usd: amount_usd,
-                ceiling_usd: session.hard,
-            });
-        }
-        if task_total >= task.gate {
-            tx.commit().await?;
-            return Ok(CostReservationOutcome::NeedsGate {
-                scope: crate::cost_router::budget::BudgetScope::Task,
-                spent_usd: task_spent,
-                held_usd: task_held,
-                requested_usd: amount_usd,
-                ceiling_usd: task.gate,
-            });
-        }
-        if session_total >= session.gate {
-            tx.commit().await?;
-            return Ok(CostReservationOutcome::NeedsGate {
-                scope: crate::cost_router::budget::BudgetScope::Session,
-                spent_usd: session_spent,
-                held_usd: session_held,
-                requested_usd: amount_usd,
-                ceiling_usd: session.gate,
-            });
+            return Ok(outcome);
         }
 
         if let Some((from_usd, from_attempts)) = extension_from {

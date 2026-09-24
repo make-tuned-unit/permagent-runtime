@@ -787,6 +787,8 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     apply_schedule_fire_claims_schema(pool).await?;
     apply_decision_journal_schema(pool).await?;
     apply_model_review_schema(pool).await?;
+    // K1b (v61): Council convene batch manifest over ordinary reservations.
+    apply_cost_reservation_batches_schema(pool).await?;
 
     // Egress audit log (schema v29, sovereignty). Idempotent; shared with
     // migrate_v28_to_v29. Append-only, purely additive, base-independent.
@@ -2136,6 +2138,107 @@ pub async fn migrate_v59_to_v60(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v60 (cost_ledger call-purpose fields)");
+    Ok(())
+}
+
+/// K1b (v61): the durable Council convene batch manifest.
+///
+/// A batch is bookkeeping, not money. Every paid slot is an ORDINARY
+/// `pending` row in `cost_reservations`, so every existing ceiling sum
+/// (`state IN ('pending','unknown')`) counts it exactly once; this manifest
+/// only binds the frozen plan to those already-funded rows. A free slot has a
+/// member row and no reservation (`bound_usd IS NULL` exactly when
+/// `reservation_id IS NULL`).
+///
+/// `approval_decision_id` is UNIQUE so one human approval admits at most one
+/// batch. It deliberately has no FOREIGN KEY to `decisions`: that table is
+/// rebuilt by the CHECK-widening migration (rename + drop), which would
+/// rewrite or break a reference; admission verifies the row inside its own
+/// transaction instead.
+///
+/// Shared by fresh initialization and the v60 -> v61 migration; additive and
+/// idempotent (`IF NOT EXISTS` everywhere).
+pub async fn apply_cost_reservation_batches_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS cost_reservation_batches (
+            batch_id TEXT PRIMARY KEY NOT NULL,
+            request_id TEXT NOT NULL UNIQUE,
+            plan_hash TEXT NOT NULL,
+            slots_digest TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            owner_session_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('open', 'closed', 'expired')),
+            lease_until TEXT NOT NULL,
+            bound_usd REAL NOT NULL CHECK (bound_usd >= 0),
+            approval_decision_id TEXT UNIQUE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_cost_reservation_batches_status
+         ON cost_reservation_batches(status)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS cost_reservation_batch_members (
+            batch_id TEXT NOT NULL REFERENCES cost_reservation_batches(batch_id),
+            slot_id TEXT NOT NULL,
+            reservation_id TEXT UNIQUE,
+            invocation_id TEXT NOT NULL UNIQUE,
+            provider TEXT NOT NULL,
+            model TEXT,
+            bound_usd REAL CHECK (bound_usd IS NULL OR bound_usd > 0),
+            claimed_at TEXT,
+            claimed_session_id TEXT,
+            PRIMARY KEY (batch_id, slot_id),
+            CHECK ((bound_usd IS NULL) = (reservation_id IS NULL))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    // The frozen plan is immutable once admitted: only the claim columns and
+    // the batch status/updated_at may change, and a claim is set exactly once.
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_cost_reservation_batch_member_spec_immutable
+         BEFORE UPDATE OF batch_id, slot_id, reservation_id, invocation_id, provider, model, bound_usd
+         ON cost_reservation_batch_members
+         BEGIN SELECT RAISE(ABORT, 'batch member invocation spec is immutable'); END",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_cost_reservation_batch_member_claim_once
+         BEFORE UPDATE OF claimed_session_id, claimed_at ON cost_reservation_batch_members
+         WHEN OLD.claimed_session_id IS NOT NULL
+         BEGIN SELECT RAISE(ABORT, 'batch member is already claimed'); END",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_cost_reservation_batch_plan_immutable
+         BEFORE UPDATE OF batch_id, request_id, plan_hash, slots_digest, task_id,
+                          owner_session_id, lease_until, bound_usd, approval_decision_id
+         ON cost_reservation_batches
+         BEGIN SELECT RAISE(ABORT, 'batch plan is immutable'); END",
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn migrate_v60_to_v61(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v60 -> v61 (Council convene reservation batches)");
+    apply_cost_reservation_batches_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (61)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v61 (Council convene reservation batches)");
     Ok(())
 }
 
@@ -7677,5 +7780,128 @@ mod cost_ledger_call_purpose_schema_tests {
         .await
         .unwrap();
         assert_eq!(row, (None, None, None, None, None, None));
+    }
+}
+
+#[cfg(test)]
+mod cost_reservation_batches_schema_tests {
+    use super::*;
+
+    async fn batch_tables(pool: &Pool<Sqlite>) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type='table'
+             AND name LIKE 'cost_reservation_batch%' ORDER BY name",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    /// K1b: v60 -> v61 creates the manifest tables, stamps 61 once, and is
+    /// safe to run twice.
+    #[tokio::test]
+    async fn v60_to_v61_is_idempotent_and_stamps_once() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (60)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        migrate_v60_to_v61(&pool).await.unwrap();
+        migrate_v60_to_v61(&pool).await.unwrap();
+        let version: i32 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(version, 61);
+        let stamps: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM schema_version WHERE version = 61")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stamps, 1);
+        assert_eq!(
+            batch_tables(&pool).await,
+            vec![
+                "cost_reservation_batch_members".to_string(),
+                "cost_reservation_batches".to_string()
+            ]
+        );
+        // A free slot must not carry a reservation, and a paid slot must.
+        sqlx::query(
+            "INSERT INTO cost_reservation_batches (batch_id, request_id, plan_hash, slots_digest,
+                task_id, owner_session_id, status, lease_until, bound_usd, created_at, updated_at)
+             VALUES ('b', 'r', 'h', 'd', 't', 's', 'open', '2099-01-01T00:00:00Z', 1.0, 'now', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(sqlx::query(
+            "INSERT INTO cost_reservation_batch_members (batch_id, slot_id, reservation_id,
+                invocation_id, provider, bound_usd) VALUES ('b', 'free', 'invocation:x', 'x', 'p', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .is_err());
+        sqlx::query(
+            "INSERT INTO cost_reservation_batch_members (batch_id, slot_id, reservation_id,
+                invocation_id, provider, bound_usd) VALUES ('b', 'paid', 'invocation:y', 'y', 'p', 1.0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // The frozen plan cannot be rewritten after admission.
+        assert!(sqlx::query(
+            "UPDATE cost_reservation_batch_members SET bound_usd = 2.0 WHERE slot_id = 'paid'"
+        )
+        .execute(&pool)
+        .await
+        .is_err());
+        assert!(
+            sqlx::query("UPDATE cost_reservation_batches SET plan_hash = 'other'")
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+        // A claim is set exactly once.
+        sqlx::query(
+            "UPDATE cost_reservation_batch_members SET claimed_session_id = 'c1', claimed_at = 'now'
+             WHERE slot_id = 'paid'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(sqlx::query(
+            "UPDATE cost_reservation_batch_members SET claimed_session_id = 'c2' WHERE slot_id = 'paid'"
+        )
+        .execute(&pool)
+        .await
+        .is_err());
+    }
+
+    /// K1b: a fresh install gets the manifest tables from init, without
+    /// waiting for a numbered migration.
+    #[tokio::test]
+    async fn fresh_init_has_batch_tables() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        init_spectral_db(&pool).await.unwrap();
+        assert_eq!(
+            batch_tables(&pool).await,
+            vec![
+                "cost_reservation_batch_members".to_string(),
+                "cost_reservation_batches".to_string()
+            ]
+        );
     }
 }

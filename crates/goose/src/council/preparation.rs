@@ -111,8 +111,9 @@ impl Drop for ConvenePermit {
     }
 }
 
-/// All entry points share this construction site. K1 remains open while this
-/// implementation records no aggregate reservations.
+/// All entry points share this construction site. K1b: admission is the
+/// durable batch (every paid slot is an ordinary reservation written before
+/// any seat is called), so `legacy` is false and each seat claims its slot.
 pub async fn prepare(
     pool: &Pool<Sqlite>,
     trigger: Trigger,
@@ -121,8 +122,9 @@ pub async fn prepare(
     caller: &dyn MemberCaller,
     reservation: ConveneReservation,
 ) -> Result<PreparedConvene, ConveneBlocked> {
-    // K1b: replace LegacyAdmission with the durable batch adapter, and set legacy=false.
-    let admission: Arc<dyn ConveneAdmission> = Arc::new(LegacyAdmission);
+    // K1b: the durable batch adapter, paired with legacy=false below.
+    let (admission, legacy) =
+        production_admission(caller, crate::cost_router::budget::load_budget_config())?;
     let members = super::membership::resolve_members().await;
     let (provider, model) = super::membership::chair_route();
     let chair = Member {
@@ -141,10 +143,26 @@ pub async fn prepare(
             members,
             chair,
             admission,
-            legacy: true,
+            legacy,
         },
     )
     .await
+}
+
+/// K1b seam: production admission and its `legacy` flag, constructed together
+/// so the adapter can never be installed while seats still reserve per call
+/// (PlannedCaller only claims when `legacy` is false).
+pub(crate) fn production_admission(
+    caller: &dyn MemberCaller,
+    config: crate::cost_router::budget::BudgetConfig,
+) -> Result<(Arc<dyn ConveneAdmission>, bool), ConveneBlocked> {
+    let context = caller.context().ok_or_else(|| {
+        ConveneBlocked::unknown("", "Council requires a harness session for attribution")
+    })?;
+    let admission: Arc<dyn ConveneAdmission> = Arc::new(
+        crate::cost_router::convene_batch::DurableBatchAdmission::new(context.manager, config),
+    );
+    Ok((admission, false))
 }
 
 pub(crate) struct PrepareInput {
@@ -676,6 +694,12 @@ mod tests {
             .await
             .unwrap()
     }
+    async fn pending_reservations(pool: &Pool<Sqlite>) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM cost_reservations WHERE state = 'pending'")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
     async fn gated(caller: &Scripted) -> Arc<ScriptedAdmission> {
         let trial = input(Arc::new(ScriptedAdmission::new(0.0, 1000.0)));
         let plan = ConvenePlan::build("trial".into(), trial.members, trial.chair, caller)
@@ -828,6 +852,94 @@ mod tests {
             "council_budget_refused"
         );
         assert_eq!(count(&pool, "decisions").await, 1);
+    }
+    /// K1b wiring: the admission `prepare()` installs (via the same seam) is
+    /// the durable batch. Admission writes the manifest plus one ordinary
+    /// `pending` reservation per paid slot before any seat is called, and a
+    /// seat's dispatch claims that EXISTING reservation (no second one).
+    #[tokio::test]
+    async fn production_admission_writes_batch_and_seats_claim_existing_reservations() {
+        let _serial = super::super::test_lock().lock().await;
+        let (_dir, pool, caller) = fixture().await;
+        let ceilings = crate::cost_router::budget::BudgetCeilings {
+            soft: 1000.0,
+            gate: 1000.0,
+            hard: 2000.0,
+        };
+        let (admission, legacy) = production_admission(
+            &caller,
+            crate::cost_router::budget::BudgetConfig {
+                task: ceilings,
+                session: ceilings,
+            },
+        )
+        .unwrap();
+        assert!(
+            !legacy,
+            "the durable adapter must never run with legacy seats"
+        );
+        let mut request = input(admission);
+        request.legacy = legacy;
+        let ready = prepare_test(&pool, &caller, request).await.unwrap();
+        let paid = ready
+            .plan
+            .slots
+            .iter()
+            .filter(|s| s.planned.bound_usd.is_some())
+            .count() as i64;
+        assert!(paid > 0);
+        assert_eq!(count(&pool, "cost_reservation_batches").await, 1);
+        assert_eq!(
+            count(&pool, "cost_reservation_batch_members").await,
+            ready.plan.slots.len() as i64
+        );
+        assert_eq!(pending_reservations(&pool).await, paid);
+        assert_eq!(caller.calls.load(Ordering::SeqCst), 0);
+
+        // Dispatch one paid seat. The scripted transport refuses the call, so
+        // reaching it at all (calls == 1) proves the claim succeeded first.
+        let slot = ready
+            .plan
+            .slots
+            .iter()
+            .find(|s| s.planned.bound_usd.is_some())
+            .unwrap()
+            .clone();
+        let member = Member {
+            provider: slot.planned.provider.clone(),
+            model: slot.planned.model.clone().unwrap(),
+            display_name: "seat".into(),
+        };
+        let planned = PlannedCaller {
+            caller: &caller,
+            prepared: &ready,
+        };
+        assert!(planned
+            .complete_slot(slot.kind, &member, "system", "user")
+            .await
+            .is_err());
+        assert_eq!(caller.calls.load(Ordering::SeqCst), 1);
+        let (claimed_by, reservation_session): (String, String) = sqlx::query_as(
+            "SELECT m.claimed_session_id, r.session_id
+             FROM cost_reservation_batch_members m
+             JOIN cost_reservations r ON r.reservation_id = m.reservation_id
+             WHERE m.slot_id = ?",
+        )
+        .bind(&slot.planned.slot_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(claimed_by, reservation_session);
+        assert_ne!(claimed_by, ready.owner_session_id);
+        assert_eq!(
+            pending_reservations(&pool).await,
+            paid,
+            "a claim never adds a reservation"
+        );
+
+        let summary = ready.permit.close().await.unwrap();
+        assert_eq!(summary.retained_slots, 1);
+        assert_eq!(summary.released_slots as i64, paid - 1);
     }
     #[tokio::test]
     async fn decision_persistence_failure_is_not_acceptance() {

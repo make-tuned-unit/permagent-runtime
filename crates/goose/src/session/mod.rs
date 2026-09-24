@@ -3,6 +3,7 @@ pub mod chat_history_search;
 pub mod crash_capture;
 mod diagnostics;
 pub mod extension_data;
+pub mod reservation_batch;
 pub mod session_manager;
 pub mod spectral_schema;
 pub mod thread_manager;

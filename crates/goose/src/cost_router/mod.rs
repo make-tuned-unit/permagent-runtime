@@ -43,6 +43,7 @@ pub mod cache;
 pub mod call_site_completeness;
 pub mod capability_directory;
 pub mod cheap;
+pub mod convene_batch;
 pub mod delegate;
 pub mod derived;
 // Cross-crate schema-drift guard for Lane Z4's `permagent-eval graduate`
