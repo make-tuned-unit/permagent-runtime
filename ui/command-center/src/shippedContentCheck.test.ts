@@ -196,13 +196,12 @@ describe('shipped-content checker behaviour', () => {
 });
 
 describe('shipped-content convention (repo)', () => {
+  // Remaining leaks, owned by the automation lane (G2-auto). When they are
+  // fixed this list empties and the test should require `ok`.
   const MUST_REPORT = [
     'crates/goose-server/src/automation/health_review.yaml:134',
-    'crates/goose/src/prompts/system.md:93',
-    'crates/goose/src/projects.rs:119',
     'crates/goose-server/src/automation/steward.yaml:10',
     'crates/goose-server/src/automation/steward.yaml:15',
-    'crates/goose/src/meeting_writeup.rs:85',
   ];
 
   const MUST_NOT = [
@@ -213,6 +212,10 @@ describe('shipped-content convention (repo)', () => {
     'ui/command-center/src/components/settings/DevRootsSection.tsx:164',
     'ui/command-center/src/components/wizard/MomentCode.tsx:218',
     'crates/goose/src/prompts/session_name.md:5',
+    // Fixed by G2; must not come back.
+    'crates/goose/src/prompts/system.md',
+    'crates/goose/src/projects.rs',
+    'crates/goose/src/meeting_writeup.rs',
   ];
 
   it('reports known environment leaks and spares reviewed non-findings', () => {

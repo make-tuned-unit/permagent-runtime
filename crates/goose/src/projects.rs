@@ -113,11 +113,23 @@ pub fn resolve_root_path(raw: &str) -> Result<String, String> {
         let home = dirs::home_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "$HOME".to_string());
+        let roots = crate::config::dev_roots::dev_roots();
+        let where_to_look = if roots.is_empty() {
+            "No code roots are configured or discoverable; ask the user where the \
+             project lives, or list that home"
+                .to_string()
+        } else {
+            let listed: Vec<String> = roots.iter().map(|p| p.display().to_string()).collect();
+            format!(
+                "This user's code roots are: {}. List those",
+                listed.join(", ")
+            )
+        };
         return Err(format!(
             "root_path does not exist as a directory on this machine: {trimmed} \
-             (expanded: {}). This Mac's HOME is {home}. List that home \
-             (`ls ~/Documents/dev`) and pass the absolute path you see — do not guess \
-             a username. Do not tell the user the project is ready until this succeeds.",
+             (expanded: {}). This Mac's HOME is {home}. {where_to_look} and pass the \
+             absolute path you see — do not guess a username or a directory. Do not \
+             tell the user the project is ready until this succeeds.",
             expanded.display()
         ));
     }

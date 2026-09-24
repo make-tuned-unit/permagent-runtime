@@ -82,7 +82,7 @@ pub fn resolve_meeting_writeup_plan(
 pub fn privacy_statement(privacy: WriteupPrivacy) -> &'static str {
     match privacy {
         WriteupPrivacy::LocalOnly => "Written on-device.",
-        WriteupPrivacy::TrustedPool => "Written on your Mac mini over your tailnet.",
+        WriteupPrivacy::TrustedPool => "Written on a trusted machine in your device pool.",
         WriteupPrivacy::CloudSession => "Written via your configured session provider.",
     }
 }

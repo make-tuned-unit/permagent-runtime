@@ -3,25 +3,25 @@ source: crates/goose/src/agents/prompt_manager.rs
 expression: table
 ---
 ## unscoped (GooseDesktop — full product-contract inventory)
-shared body (no family selected): 79492 bytes / ~19873 tokens
+shared body (no family selected): 79506 bytes / ~19877 tokens
 
 family        overlay_bytes  total_bytes  approx_total_tokens
-anthropic               233        79726                19932
-openai                  300        79793                19949
-deepseek                253        79746                19937
-glm                     287        79780                19945
-xai                     215        79708                19927
-qwen-local              465        79958                19990
-other                     0        79492                19873
+anthropic               233        79740                19935
+openai                  300        79807                19952
+deepseek                253        79760                19940
+glm                     287        79794                19949
+xai                     215        79722                19931
+qwen-local              465        79972                19993
+other                     0        79506                19877
 
 ## scoped (GooseCli — declares developer, analyze, summon)
-shared body (no family selected): 13939 bytes / ~3485 tokens
+shared body (no family selected): 13953 bytes / ~3489 tokens
 
 family        overlay_bytes  total_bytes  approx_total_tokens
-anthropic               233        14173                 3544
-openai                  300        14240                 3560
-deepseek                253        14193                 3549
-glm                     287        14227                 3557
-xai                     215        14155                 3539
-qwen-local              465        14405                 3602
-other                     0        13939                 3485
+anthropic               233        14187                 3547
+openai                  300        14254                 3564
+deepseek                253        14207                 3552
+glm                     287        14241                 3561
+xai                     215        14169                 3543
+qwen-local              465        14419                 3605
+other                     0        13953                 3489
