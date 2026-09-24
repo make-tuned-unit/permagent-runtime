@@ -109,8 +109,8 @@ export function ProvidersSection() {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>Configure LLM providers and API keys. Connected keys sit on their own tab so the catalogue does not bury them. The default provider is used for new chat sessions.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <p className="text-xs flex-1 basis-60" style={{ fontFamily: font.body, color: colors.textMuted }}>Configure LLM providers and API keys. Connected keys sit on their own tab so the catalogue does not bury them. The default provider is used for new chat sessions.</p>
         <Button
           colors={colors}
           variant="ghostOn"
@@ -235,8 +235,10 @@ export function ProvidersSection() {
           className="rounded-lg p-4"
           style={{ backgroundColor: colors.surface, border: `1px solid ${colors.border}`, boxShadow: colors.cardShadow }}
         >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
+          {/* Wraps: in a narrow column (chat docked) the name and three
+              badges on one unwrapping line pushed "Connected" off the card. */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-3 min-w-0">
               <div
                 className="w-8 h-8 rounded flex items-center justify-center text-xs uppercase"
                 style={{ backgroundColor: colors.cyanSoft, color: colors.cyan, fontFamily: font.display, fontWeight: 700 }}
@@ -248,7 +250,7 @@ export function ProvidersSection() {
                 <div className="text-[10px]" style={{ fontFamily: font.body, color: colors.textMuted }}>{p.description}</div>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {sourceEntry && (
                 // A chip that only carries an explanation is not focusable on
                 // its own, and the adoption note is explicit: give a
@@ -294,7 +296,7 @@ export function ProvidersSection() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 mt-3">
+          <div className="flex flex-wrap items-center gap-2 mt-3">
             <Button
               colors={colors}
               type="button"

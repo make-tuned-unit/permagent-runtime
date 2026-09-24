@@ -38,7 +38,8 @@ import { conciergePreconditionCopy, gmailTokenPresent, type IntegrationStatus } 
 export const AGENTS_WITH_SETTINGS = new Set(['strix', 'watcher', 'librarian', 'council', 'concierge']);
 
 const inputStyle = (colors: ReturnType<typeof useTheme>['colors']): CSSProperties => ({
-  width: 260, fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
+  // A cap, not a width: a fixed 260 ran past a narrow row's edge.
+  width: '100%', maxWidth: 260, fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
   background: colors.inputBg, border: `1px solid ${colors.border}`,
   borderRadius: radius.sm, padding: `${space.sm}px ${space.lg}px`, outline: 'none',
 });

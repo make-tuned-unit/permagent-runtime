@@ -127,14 +127,17 @@ export function PronunciationSection() {
         <Row label="Saved" hint="Applied on the next spoken sentence.">
           <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
             {savedWords.map(w => (
+              // The respelling takes the slack, not the button: with neither
+              // side allowed to grow, a narrow row squeezed "bar dee" onto two
+              // lines while "Remove" kept its margin.
               <div key={w} style={{ display: 'flex', alignItems: 'center', gap: space.md, fontSize: textSize.small, fontFamily: font.body }}>
-                <span style={{ color: colors.text, fontWeight: 500 }}>{w}</span>
-                <span style={{ color: colors.textMuted }}>{saved[w].sounds_like}</span>
+                <span style={{ color: colors.text, fontWeight: 500, flexShrink: 0 }}>{w}</span>
+                <span style={{ color: colors.textMuted, flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{saved[w].sounds_like}</span>
                 <Button
                   colors={colors}
                   type="button"
                   onClick={() => api.deletePronunciation(w).then(reload)}
-                  style={{ ...btnVars(colors), height: 26, '--pa-btn-pad': '0 8px', marginLeft: 'auto' } as CSSProperties}
+                  style={{ ...btnVars(colors), height: 26, '--pa-btn-pad': '0 8px', flexShrink: 0 } as CSSProperties}
                 >
                   Remove
                 </Button>

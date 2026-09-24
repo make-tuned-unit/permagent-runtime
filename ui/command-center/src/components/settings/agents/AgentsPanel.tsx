@@ -961,7 +961,7 @@ function WorkerRow({ worker, onOpen }: { worker: BackgroundWorker; onOpen: () =>
       <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
         <AgentPortrait agentId={worker.id} size={28} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: space.xl, marginBottom: space.xs }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', columnGap: space.xl, rowGap: space.xxs, marginBottom: space.xs }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
               <span style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{worker.display_name}</span>
               {gate && <GateChip id={worker.id} gate={gate} />}
@@ -993,7 +993,7 @@ function PersonaRow({ persona, onOpen }: { persona: DispatchPersona; onOpen: () 
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: space.lg }}>
         <AgentPortrait agentId={persona.key} size={28} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: space.xl, marginBottom: space.xs }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', columnGap: space.xl, rowGap: space.xxs, marginBottom: space.xs }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
               <span style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{persona.display_name}</span>
               {gate && <GateChip id={persona.key} gate={gate} />}

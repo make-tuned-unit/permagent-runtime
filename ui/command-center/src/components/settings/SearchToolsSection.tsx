@@ -150,8 +150,8 @@ export function SearchToolsSection() {
             className="rounded-lg p-4"
             style={{ backgroundColor: colors.surface, border: `1px solid ${colors.border}`, boxShadow: colors.cardShadow }}
           >
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
                 <div className="text-sm" style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>{p.displayName}</div>
                 <div className="text-[10px]" style={{ fontFamily: font.body, color: colors.textMuted }}>{p.description}</div>
               </div>
@@ -181,13 +181,15 @@ export function SearchToolsSection() {
               </div>
             </div>
 
-            <div className="flex items-center gap-2 mt-3">
+            {/* Wraps: an input's intrinsic width plus three buttons outran a
+                narrow column (chat docked) and cut "Get key" off the card. */}
+            <div className="flex flex-wrap items-center gap-2 mt-3">
               <input
                 type="password"
                 value={r.input}
                 onChange={e => patch(p.id, { input: e.target.value })}
                 placeholder={r.configured ? '(key saved — enter new to replace)' : 'Paste API key'}
-                className="flex-1 text-[11px] px-3 py-1.5 rounded outline-none"
+                className="flex-1 basis-40 min-w-0 text-[11px] px-3 py-1.5 rounded outline-none"
                 style={{ fontFamily: font.mono, background: colors.inputBg, border: `1px solid ${colors.border}`, color: colors.text }}
               />
               <Button

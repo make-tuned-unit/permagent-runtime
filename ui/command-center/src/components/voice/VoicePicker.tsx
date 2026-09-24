@@ -11,7 +11,9 @@ const selectStyle = (colors: C): React.CSSProperties => ({
   height: 34, padding: '0 12px', borderRadius: radius.md,
   background: colors.inputBg, border: `1px solid ${colors.border}`,
   color: colors.text, fontFamily: font.body, fontSize: textSize.small,
-  flex: 1, cursor: 'pointer',
+  // `minWidth: 0` lets the select give up its longest option's width; without
+  // it the select and "▶ Preview" together outran a narrow settings row.
+  flex: '1 1 160px', minWidth: 0, cursor: 'pointer',
 });
 /** The picker's two controls, expressed for the shared button primitive: the
  *  same resting look as the inline style it replaces, with hover/press/disabled
@@ -97,7 +99,7 @@ export function VoicePicker({
   }
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: space.md, width: '100%' }}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: space.md, width: '100%' }}>
       <select value={effective ?? ''} onChange={e => onChange(e.target.value)} style={selectStyle(colors)}>
         {[...groups.entries()].map(([lang, vs]) => (
           <optgroup key={lang} label={lang}>
