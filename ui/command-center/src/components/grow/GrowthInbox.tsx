@@ -59,7 +59,7 @@ export function GrowthInboxSection({
         </h3>
         {hasSignal && signal && (
           <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
-            from {signal.posts} {signal.posts === 1 ? 'post' : 'posts'} · {signal.shipped} shipped
+            from {signal.posts} published {signal.posts === 1 ? 'post' : 'posts'} · {signal.shipped} shipped
           </span>
         )}
       </div>

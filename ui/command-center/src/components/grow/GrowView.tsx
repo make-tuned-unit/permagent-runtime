@@ -269,15 +269,21 @@ export function GrowView() {
     if (!activeId) { setCtx(null); return; }
     let alive = true;
     (async () => {
-      const [people, cards] = await Promise.all([
+      const [people, goalCards] = await Promise.all([
         apiFetch<unknown[]>(`/api/projects/${encodeURIComponent(activeId)}/people`).catch(() => []),
-        apiFetch<{ card_type: string }[]>(`/api/projects/${encodeURIComponent(activeId)}/cards`).catch(() => []),
+        // The daemon filters by type — the same `cards::list_cards(…, "goal")`
+        // read the growth inbox ranks from — so the header and the Actions tab
+        // count one set of goal cards. This used to fetch every card and filter
+        // on `c.card_type`, but CardResponse is camelCase (`cardType`), so the
+        // field was always undefined and the header read "0 goals" on a board
+        // full of them (QA 2026-09-24).
+        apiFetch<unknown[]>(`/api/projects/${encodeURIComponent(activeId)}/cards?card_type=goal`).catch(() => []),
       ]);
       if (!alive) return;
-      // Count of goal cards in ANY state — labeled "goals", not "shipped"
-      // (2026-07 wiring audit: the old "N shipped" label counted in-progress
-      // and triage cards as shipped work).
-      const goals = cards.filter((c) => c.card_type === 'goal').length;
+      // Count of goal cards in ANY state (archived excluded server-side) —
+      // labeled "goals", not "shipped" (2026-07 wiring audit: the old
+      // "N shipped" label counted in-progress and triage cards as shipped work).
+      const goals = Array.isArray(goalCards) ? goalCards.length : 0;
       setCtx({ people: people.length, goals });
     })();
     return () => { alive = false; };

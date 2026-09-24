@@ -11,6 +11,7 @@ import {
   dailyAnalyticsSeries,
   drainFreshness,
   DRAIN_STALE_MS,
+  evenTileColumns,
   linearTrendline,
 } from './analyticsFormat';
 
@@ -81,5 +82,15 @@ describe('linearTrendline', () => {
   it('returns a flat line for a single point and null for no points', () => {
     expect(linearTrendline([7])).toEqual({ slope: 0, intercept: 7, start: 7, end: 7 });
     expect(linearTrendline([])).toBeNull();
+  });
+});
+
+describe('evenTileColumns (QA 2026-09-24: six tiles in five columns)', () => {
+  it('caps the track count so six tiles land 3×2 or 2×3, never 5+1', () => {
+    const cols = evenTileColumns(3, 140, 12);
+    // Each track is at least a third of the row (minus the two gaps), so no
+    // fourth or fifth column can form however wide the panel is.
+    expect(cols).toBe('repeat(auto-fit, minmax(max(140px, calc((100% - 24px) / 3)), 1fr))');
+    expect(cols).not.toContain('110px');
   });
 });

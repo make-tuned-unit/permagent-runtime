@@ -22,7 +22,10 @@ import { AsOf } from '../common/AsOf';
 import type { Project } from '../projects/types';
 import { ACTION_CATEGORY_LABELS, normalizeActionCategory } from './growActionTabs';
 import { GrowthSparkline } from './GrowthSparkline';
+import { evenTileColumns } from './analyticsFormat';
 import {
+  ACTION_TITLE_CLAMP,
+  displayActionTitle,
   formatDeltaPct,
   type GrowthCategorySummary,
   type GrowthFleetResults,
@@ -275,9 +278,17 @@ function TallyRow({
   items: { label: string; value: number; tint?: string }[];
 }) {
   return (
-    <div style={{
-      display: 'flex', flexWrap: 'wrap', gap: space.md,
-    }}>
+    // A grid, not a wrapping flex row: six tallies wrapped 5 + 1 in the
+    // ~520px column beside the docked chat, leaving "Too little data" alone on
+    // a second row. Six cap at three per row (3×2); fewer share one row.
+    <div
+      data-testid="results-tally"
+      style={{
+        display: 'grid',
+        gridTemplateColumns: evenTileColumns(items.length === 6 ? 3 : items.length, 88, space.md),
+        gap: space.md,
+      }}
+    >
       {items.map((item) => (
         <div
           key={item.label}
@@ -333,20 +344,28 @@ export function ResultRowCard({
     <div style={{
       ...growCard(colors, { r: CARD_R, pad: CARD_PAD }),
     }}>
+      {/* Category and verdict share the top line; the title gets the card's
+          full width below them. Sharing a row with the verdict squeezed the
+          title into a ~230px column at the docked-chat width, where three
+          lines held barely a sentence. */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md, flexWrap: 'wrap' }}>
         <span style={{
           fontFamily: font.mono, fontSize: textSize.micro, letterSpacing: '0.08em',
           textTransform: 'uppercase', color: colors.textDim,
         }}>{cat}</span>
-        <span style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
-          {row.title}
-        </span>
         <div style={{ flex: 1 }} />
         <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: v.color }}>
           {row.verdict ? v.label : statusLabel(row.status)}
           {delta ? ` · ${delta}` : ''}
           {row.windowDays ? ` at ${row.windowDays}d` : ''}
         </span>
+      </div>
+      <div style={{
+        ...ACTION_TITLE_CLAMP,
+        marginTop: space.xs,
+        fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text,
+      }}>
+        {displayActionTitle(row.title)}
       </div>
       <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs }}>
         {showProject ? `${row.projectName} · ` : ''}
