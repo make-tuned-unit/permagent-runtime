@@ -580,48 +580,42 @@ fn enforce_harness_coordinator_route(
         return (resolved, None);
     }
 
-    let eligibility = permagent::config::assess_harness_coordinator(
-        &resolved.provider_name,
-        &resolved.model_name,
+    // The decision itself lives in `permagent::config::gate_harness_coordinator`
+    // so the daemon's Settings projection (`GET /config` resolved_routes.harness)
+    // shows exactly the coordinator this launch will run. Only the wording and
+    // the model-config plumbing live here.
+    use permagent::config::HarnessGateOutcome;
+    let decision = permagent::config::gate_harness_coordinator(
+        permagent::config::RoleModel::new(&resolved.provider_name, &resolved.model_name),
+        configured_fallback,
+        explicit_override,
     );
-    if eligibility.is_eligible() {
-        return (resolved, None);
-    }
-
-    if explicit_override {
-        let notice = format!(
-            "Coding harness coordinator {}/{} is not trusted ({}), but the model was explicitly selected; automatic fallback is refused to avoid unexpected provider spend. The selected model remains in control, and the cost meter records any work it performs.",
-            resolved.provider_name,
-            resolved.model_name,
-            eligibility.reason(),
-        );
-        return (resolved, deliver_failover_notice(notice, interactive));
-    }
-
-    // A deliberately configured harness role is the first fallback, but it
-    // must pass the same graduation gate. The measured default is the final
-    // deterministic fallback and is itself covered by the knowledge table.
-    let measured_fallback = permagent::config::ModelRole::Harness.measured_default();
-    let target = [configured_fallback, Some(measured_fallback)]
-        .into_iter()
-        .flatten()
-        .find(|candidate| {
-            permagent::config::assess_harness_coordinator(&candidate.provider, &candidate.model)
-                .is_eligible()
-        });
-
-    let Some(target) = target else {
+    let eligibility = decision.eligibility;
+    let target = match decision.outcome {
+        HarnessGateOutcome::Kept => return (resolved, None),
+        HarnessGateOutcome::KeptExplicit => {
+            let notice = format!(
+                "Coding harness coordinator {}/{} is not trusted ({}), but the model was explicitly selected; automatic fallback is refused to avoid unexpected provider spend. The selected model remains in control, and the cost meter records any work it performs.",
+                resolved.provider_name,
+                resolved.model_name,
+                eligibility.reason(),
+            );
+            return (resolved, deliver_failover_notice(notice, interactive));
+        }
         // This should be unreachable while the measured default remains in the
         // knowledge table. Keep the user's route if the table is deliberately
         // edited into an inconsistent state, but make the missing evidence
         // visible rather than claiming the coordinator is safe.
-        let notice = format!(
-            "Coding harness coordinator {}/{} is not graduated ({}), and no measured fallback is available; keeping the configured route.",
-            resolved.provider_name,
-            resolved.model_name,
-            eligibility.reason(),
-        );
-        return (resolved, deliver_failover_notice(notice, interactive));
+        HarnessGateOutcome::KeptNoFallback => {
+            let notice = format!(
+                "Coding harness coordinator {}/{} is not graduated ({}), and no measured fallback is available; keeping the configured route.",
+                resolved.provider_name,
+                resolved.model_name,
+                eligibility.reason(),
+            );
+            return (resolved, deliver_failover_notice(notice, interactive));
+        }
+        HarnessGateOutcome::Rerouted => decision.route,
     };
 
     let model_config = permagent::model::ModelConfig::new(&target.model)

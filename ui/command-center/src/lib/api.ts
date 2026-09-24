@@ -611,7 +611,23 @@ export interface PermagentConfig {
    *  backend ConfigResponse.effective_goose_mode). Snake_case mode value.
    *  Absent on daemons that predate the re-enable-gate epic part B. */
   effective_goose_mode?: string;
+  /** Effective per-role routes as the daemon resolves them
+   *  (backend ConfigResponse.resolved_routes). Keys: `chat`, `voice`, and —
+   *  on daemons with the coordinator-gate projection — `harness`, which is the
+   *  coordinator a coding-harness launch actually runs, after the gate. */
+  resolved_routes?: Record<string, ResolvedModelRoute>;
   [key: string]: unknown;
+}
+
+/** One entry of `PermagentConfig.resolved_routes` (backend ResolvedModelRoute). */
+export interface ResolvedModelRoute {
+  provider: string;
+  model: string;
+  /** `configured` | `session_model` | `default` | `half_configured` |
+   *  `disabled`, or for `harness` `coordinator_fallback`. */
+  source: string;
+  /** Plain-words sentence when the route is not simply the configured one. */
+  notice?: string | null;
 }
 
 // ── Secret sources (GET/POST /config/secret-sources) ──

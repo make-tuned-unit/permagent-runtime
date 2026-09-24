@@ -143,6 +143,105 @@ pub fn assess_harness_coordinator(provider: &str, model: &str) -> CoordinatorEli
     }
 }
 
+/// What the coordinator gate did with the route it was handed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessGateOutcome {
+    /// The requested route is graduated and runs as asked.
+    Kept,
+    /// Not graduated, but explicitly chosen (CLI flag or a complete
+    /// `harness_provider`/`harness_model` pair): kept, with a spend warning,
+    /// rather than silently replaced by a paid fallback.
+    KeptExplicit,
+    /// Not graduated and no graduated fallback exists: kept, with the missing
+    /// evidence made visible.
+    KeptNoFallback,
+    /// Not graduated: the top-level session is routed to a graduated fallback.
+    Rerouted,
+}
+
+/// The coordinator gate's decision for one requested route. The ONE place the
+/// "which model actually coordinates the coding harness" rule lives: the CLI
+/// session builder applies it at launch and the daemon's `GET /config`
+/// projects it for Settings, so the two cannot disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessGateDecision {
+    /// The route the precedence chain produced, before the gate.
+    pub requested: RoleModel,
+    /// The route that will actually coordinate.
+    pub route: RoleModel,
+    /// The requested route's evidence status.
+    pub eligibility: CoordinatorEligibility,
+    pub outcome: HarnessGateOutcome,
+}
+
+impl HarnessGateDecision {
+    /// One plain-words sentence for a person reading Settings, or `None` when
+    /// the requested route runs as asked. The CLI keeps its own longer
+    /// warnings (spend and cost-meter detail); this is the short version.
+    pub fn plain_notice(&self) -> Option<String> {
+        let requested = format!("{}/{}", self.requested.provider, self.requested.model);
+        match self.outcome {
+            HarnessGateOutcome::Kept => None,
+            HarnessGateOutcome::Rerouted => Some(format!(
+                "{requested} is not graduated as a coordinator; using {}/{}",
+                self.route.provider, self.route.model
+            )),
+            HarnessGateOutcome::KeptExplicit => Some(format!(
+                "{requested} is not graduated as a coordinator, but it was chosen explicitly, so it stays in control"
+            )),
+            HarnessGateOutcome::KeptNoFallback => Some(format!(
+                "{requested} is not graduated as a coordinator, and no graduated fallback is available; keeping it"
+            )),
+        }
+    }
+}
+
+/// Pure: apply the coordinator gate to a requested route.
+///
+/// A graduated route is kept. An ungraduated one is kept when
+/// `explicit_override` (the operator chose it; replacing it would be
+/// unexpected spend), otherwise routed to the first graduated candidate of
+/// `configured_fallback` then [`ModelRole::Harness`]'s measured default. If
+/// neither is graduated the requested route is kept and says so.
+pub fn gate_harness_coordinator(
+    requested: RoleModel,
+    configured_fallback: Option<RoleModel>,
+    explicit_override: bool,
+) -> HarnessGateDecision {
+    let eligibility = assess_harness_coordinator(&requested.provider, &requested.model);
+    let keep = |outcome| HarnessGateDecision {
+        route: requested.clone(),
+        requested: requested.clone(),
+        eligibility,
+        outcome,
+    };
+    if eligibility.is_eligible() {
+        return keep(HarnessGateOutcome::Kept);
+    }
+    if explicit_override {
+        return keep(HarnessGateOutcome::KeptExplicit);
+    }
+    let target = [
+        configured_fallback,
+        Some(ModelRole::Harness.measured_default()),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|candidate| {
+        assess_harness_coordinator(&candidate.provider, &candidate.model).is_eligible()
+    });
+    match target {
+        Some(target) => HarnessGateDecision {
+            requested: requested.clone(),
+            route: target,
+            eligibility,
+            outcome: HarnessGateOutcome::Rerouted,
+        },
+        None => keep(HarnessGateOutcome::KeptNoFallback),
+    }
+}
+
 /// Config key holding the session provider — the model everything falls back to.
 pub const SESSION_PROVIDER_KEY: &str = "GOOSE_PROVIDER";
 /// Config key holding the session model.
@@ -346,6 +445,76 @@ pub fn resolve_role_model(
         route: Some(role.measured_default()),
         source: RoleModelSource::Default,
     }
+}
+
+/// The coding harness's coordinator as a launch from config alone would run
+/// it: role keys, then the session model, then the measured default — and
+/// then the coordinator gate. What Settings must show, because the bare
+/// config keys are not what runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveHarnessRoute {
+    /// The route that coordinates. Empty strings only when nothing at all is
+    /// configured to run on (`session` disabled role keys and no session
+    /// model), in which case a launch fails with "No provider configured".
+    pub route: RoleModel,
+    /// Where the requested route came from, before the gate.
+    pub source: RoleModelSource,
+    /// What the gate did; `None` only in the nothing-to-run-on case above.
+    pub outcome: Option<HarnessGateOutcome>,
+    /// A plain-words sentence when the route shown is not simply the one
+    /// configured (see [`HarnessGateDecision::plain_notice`]).
+    pub notice: Option<String>,
+}
+
+/// Pure: resolve the coding harness's effective coordinator from a key reader.
+///
+/// Mirrors `goose-cli`'s session builder for a launch with no CLI
+/// `--provider/--model`, no resumed session and a recipe that does not pin a
+/// model (the built-in `permagent-coding` recipe pins none). Those per-run
+/// layers cannot be known from config and are not represented here.
+pub fn effective_harness_route(read: impl Fn(&str) -> Option<String>) -> EffectiveHarnessRoute {
+    let value = |key: &str| {
+        read(key)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let resolution = resolve_role_model(ModelRole::Harness, &read);
+    // `resolve_role_model` returns `None` when the session model applies.
+    let requested = resolution.route.clone().or_else(|| {
+        match (value(SESSION_PROVIDER_KEY), value(SESSION_MODEL_KEY)) {
+            (Some(provider), Some(model)) => Some(RoleModel::new(provider, model)),
+            _ => None,
+        }
+    });
+    let Some(requested) = requested else {
+        let provider = value(SESSION_PROVIDER_KEY).unwrap_or_default();
+        let model = value(SESSION_MODEL_KEY).unwrap_or_default();
+        return EffectiveHarnessRoute {
+            route: RoleModel::new(provider, model),
+            source: resolution.source,
+            outcome: None,
+            notice: Some(
+                "No session model is set, so the coding harness has no model to run on".into(),
+            ),
+        };
+    };
+    let decision = gate_harness_coordinator(
+        requested,
+        resolution.route,
+        resolution.source == RoleModelSource::Configured,
+    );
+    EffectiveHarnessRoute {
+        notice: decision.plain_notice(),
+        outcome: Some(decision.outcome),
+        route: decision.route,
+        source: resolution.source,
+    }
+}
+
+/// [`effective_harness_route`] read from the process-global config.
+pub fn effective_harness_route_from_config() -> EffectiveHarnessRoute {
+    let config = crate::config::Config::global();
+    effective_harness_route(|key| config.get_param::<String>(key).ok())
 }
 
 fn is_disable_value(value: &str) -> bool {
@@ -570,5 +739,93 @@ mod tests {
         // separate local/mechanical capability contract.
         assert!(!CoordinatorEligibility::HeuristicCandidate.is_eligible());
         assert!(!CoordinatorEligibility::BelowFloor.is_eligible());
+    }
+
+    #[test]
+    fn effective_harness_route_keeps_a_configured_pair() {
+        // A complete harness pair is an operator choice: it wins over the
+        // session model, and even ungraduated it is kept (with a notice)
+        // rather than replaced by a paid fallback.
+        let effective = effective_harness_route(reader(&[
+            ("harness_provider", "anthropic"),
+            ("harness_model", "claude-haiku-4-5"),
+            (SESSION_PROVIDER_KEY, "zai"),
+            (SESSION_MODEL_KEY, "glm-5.3"),
+        ]));
+        assert_eq!(effective.source, RoleModelSource::Configured);
+        assert_eq!(
+            effective.route,
+            RoleModel::new("anthropic", "claude-haiku-4-5")
+        );
+        assert_eq!(effective.outcome, Some(HarnessGateOutcome::KeptExplicit));
+        let notice = effective.notice.expect("an ungraduated pair must say so");
+        assert!(notice.contains("anthropic/claude-haiku-4-5"), "{notice}");
+        assert!(notice.contains("chosen explicitly"), "{notice}");
+
+        // A configured pair that IS graduated runs silently.
+        let graduated = effective_harness_route(reader(&[
+            ("harness_provider", DEFAULT_HARNESS_PROVIDER_ID),
+            ("harness_model", DEFAULT_HARNESS_MODEL_ID),
+            (SESSION_PROVIDER_KEY, "zai"),
+            (SESSION_MODEL_KEY, "glm-5.3"),
+        ]));
+        assert_eq!(graduated.source, RoleModelSource::Configured);
+        assert_eq!(graduated.route, ModelRole::Harness.measured_default());
+        assert_eq!(graduated.outcome, Some(HarnessGateOutcome::Kept));
+        assert_eq!(graduated.notice, None);
+    }
+
+    #[test]
+    fn effective_harness_route_reroutes_an_ungraduated_session_model_with_a_notice() {
+        // The Settings bug: GOOSE_MODEL=claude-haiku-4-5 was shown as the
+        // harness model, but a launch replaced it with the measured default.
+        let effective = effective_harness_route(reader(&[
+            (SESSION_PROVIDER_KEY, "anthropic"),
+            (SESSION_MODEL_KEY, "claude-haiku-4-5"),
+        ]));
+        assert_eq!(effective.source, RoleModelSource::SessionModel);
+        assert_eq!(effective.route, ModelRole::Harness.measured_default());
+        assert_eq!(effective.outcome, Some(HarnessGateOutcome::Rerouted));
+        let expected = format!(
+            "anthropic/claude-haiku-4-5 is not graduated as a coordinator; using {}/{}",
+            DEFAULT_HARNESS_PROVIDER_ID, DEFAULT_HARNESS_MODEL_ID
+        );
+        assert_eq!(effective.notice.as_deref(), Some(expected.as_str()));
+
+        // `session` in a role key means the same session model, and the same gate.
+        let disabled = effective_harness_route(reader(&[
+            ("harness_model", "session"),
+            (SESSION_PROVIDER_KEY, "anthropic"),
+            (SESSION_MODEL_KEY, "claude-haiku-4-5"),
+        ]));
+        assert_eq!(disabled.source, RoleModelSource::Disabled);
+        assert_eq!(disabled.route, ModelRole::Harness.measured_default());
+        assert_eq!(disabled.outcome, Some(HarnessGateOutcome::Rerouted));
+    }
+
+    #[test]
+    fn effective_harness_route_passes_the_trusted_default_without_a_notice() {
+        let fresh = effective_harness_route(reader(&[]));
+        assert_eq!(fresh.source, RoleModelSource::Default);
+        assert_eq!(fresh.route, ModelRole::Harness.measured_default());
+        assert_eq!(fresh.outcome, Some(HarnessGateOutcome::Kept));
+        assert_eq!(fresh.notice, None);
+
+        let session = effective_harness_route(reader(&[
+            (SESSION_PROVIDER_KEY, DEFAULT_HARNESS_PROVIDER_ID),
+            (SESSION_MODEL_KEY, DEFAULT_HARNESS_MODEL_ID),
+        ]));
+        assert_eq!(session.source, RoleModelSource::SessionModel);
+        assert_eq!(session.route, ModelRole::Harness.measured_default());
+        assert_eq!(session.notice, None);
+    }
+
+    #[test]
+    fn effective_harness_route_with_nothing_to_run_on_says_so() {
+        let effective = effective_harness_route(reader(&[("harness_model", "off")]));
+        assert_eq!(effective.source, RoleModelSource::Disabled);
+        assert_eq!(effective.outcome, None);
+        assert_eq!(effective.route, RoleModel::new("", ""));
+        assert!(effective.notice.is_some());
     }
 }
