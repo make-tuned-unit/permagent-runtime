@@ -742,6 +742,9 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
               initialCommand={tab.initialCommand}
               supervisedSessionId={tab.supervisedSessionId}
               followUpInput={tab.followUpInput}
+              onFollowUpSettled={() => setTabs(prev => prev.map(t => (
+                t.id === tab.id ? { ...t, followUpInput: undefined } : t
+              )))}
               growthAction={tab.growthAction}
               isVisible={tab.id === activeTabId}
             />

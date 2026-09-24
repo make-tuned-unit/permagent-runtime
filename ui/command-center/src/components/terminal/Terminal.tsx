@@ -83,10 +83,13 @@ interface TerminalProps {
   followUpInput?: string;
   /** Growth action to mark implemented when this harness session ends. */
   growthAction?: { projectId: string; actionId: string };
+  /** Called once `followUpInput` has actually been written to the PTY, so the
+   *  owner can drop it and a later remount never pastes it twice. */
+  onFollowUpSettled?: () => void;
   isVisible: boolean;
 }
 
-export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, onPtyData, cwd, initialCommand, supervisedSessionId, followUpInput, growthAction, isVisible }: TerminalProps) {
+export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, onPtyData, cwd, initialCommand, supervisedSessionId, followUpInput, growthAction, onFollowUpSettled, isVisible }: TerminalProps) {
   const { theme, colors } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -103,6 +106,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   const supervisedSessionIdRef = useRef(supervisedSessionId);
   const followUpInputRef = useRef(followUpInput);
   const growthActionRef = useRef(growthAction);
+  const onFollowUpSettledRef = useRef(onFollowUpSettled);
   // The readiness-gated follow-up delivery for this mount (see
   // followUpDelivery.ts) — `sendNow()` backs the pending chip's button.
   const followUpDeliveryRef = useRef<FollowUpDelivery | null>(null);
@@ -120,6 +124,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   supervisedSessionIdRef.current = supervisedSessionId;
   followUpInputRef.current = followUpInput;
   growthActionRef.current = growthAction;
+  onFollowUpSettledRef.current = onFollowUpSettled;
 
   // ── Single setup effect — runs once on mount, cleans up on unmount ──
   useEffect(() => {
@@ -135,6 +140,29 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       const launchCommand = initialCommandRef.current ?? null;
 
       const api = await getTauriApi();
+      // Arm readiness-gated delivery of an undelivered follow-up prompt. Called
+      // on spawn AND on reattach: a remount between spawn and delivery (the
+      // Build pane toggling or re-fitting as it opens from Grow) cancels the
+      // previous mount's delivery, and the reattach branch used to arm nothing,
+      // so "Send to Permagent harness" started the harness and silently never
+      // pasted the prompt. The owner drops the prompt once it is written
+      // (`onFollowUpSettled`), which is what stops a later remount re-pasting.
+      const armFollowUp = (ptySessionId: string) => {
+        const follow = followUpInputRef.current;
+        followUpInputRef.current = undefined;
+        if (!follow || !api) return;
+        followUpDeliveryRef.current = createFollowUpDelivery({
+          text: follow,
+          write: (d) => {
+            void api.invoke('write_to_pty', { sessionId: ptySessionId, data: d }).catch(() => {});
+          },
+          onPending: () => setPendingPrompt(follow),
+          onSent: () => {
+            setPendingPrompt(null);
+            onFollowUpSettledRef.current?.();
+          },
+        });
+      };
       if (cancelled) return;
 
       const term = new XTerm({
@@ -266,19 +294,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
             const cmd = initialCommandRef.current;
             initialCommandRef.current = undefined; // fire once
             cancelInitialCommand = scheduleInitialCommand(api.invoke, result.session_id, cmd);
-            const follow = followUpInputRef.current;
-            followUpInputRef.current = undefined;
-            if (follow) {
-              const spawnedSessionId = result.session_id;
-              followUpDeliveryRef.current = createFollowUpDelivery({
-                text: follow,
-                write: (d) => {
-                  void api.invoke('write_to_pty', { sessionId: spawnedSessionId, data: d }).catch(() => {});
-                },
-                onPending: () => setPendingPrompt(follow),
-                onSent: () => setPendingPrompt(null),
-              });
-            }
+            armFollowUp(result.session_id);
           }
         } catch (err) {
           term.writeln('\r\n\x1b[31mFailed to spawn terminal: ' + err + '\x1b[0m\r\n');
@@ -398,6 +414,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         // A detached window owns a fresh xterm renderer but reconnects to the
         // same live PTY. Rehydrate its scrollback from the bounded Rust buffer.
         if (sessionIdRef.current) {
+          armFollowUp(sessionIdRef.current);
           try {
             const replay = await api.invoke('get_pty_output', {
               sessionId: sessionIdRef.current,

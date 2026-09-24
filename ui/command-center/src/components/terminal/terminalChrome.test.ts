@@ -93,7 +93,12 @@ describe('PTY attach / reattach behaviour is frozen (gate 6)', () => {
     // cannot quietly edit attach/reattach, and a visual lane did not. Moving
     // the hash is only ever correct alongside a deliberate behavioural change,
     // stated — as this one is.
-    expect(hash).toBe('5a5ba36c6806f525ed1668ecee746cfad77f08bec9d40550025d962fc2930600');
+    // RE-FROZEN 2026-09-24 for a behaviour fix: the reattach branch now
+    // re-arms an undelivered Grow follow-up prompt (`armFollowUp`), because a
+    // Build-pane remount between spawn and delivery cancelled it and nothing
+    // re-armed it: the harness started and the prompt was never pasted.
+    // Pinned in Terminal.followUp.test.tsx.
+    expect(hash).toBe('c6c32108e88ed3505d0376054aac6a0cd5e5a8d0c0f8a0f9df02d3283797e6e4');
   });
 
   it('still measures the opaque pty-terminal container (no padding on it)', () => {

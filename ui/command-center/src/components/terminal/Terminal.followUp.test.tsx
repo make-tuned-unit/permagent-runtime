@@ -48,9 +48,10 @@ vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }));
 // ── Tauri API stand-in, with a capturable pty_data handler ─────────────────
 type Invocation = { cmd: string; args?: Record<string, unknown> };
 const invocations: Invocation[] = [];
+let replayData = '';
 const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   invocations.push({ cmd, args });
-  if (cmd === 'get_pty_output') return { data: '', seq: 0 };
+  if (cmd === 'get_pty_output') return { data: replayData, seq: 0 };
   if (cmd === 'spawn_pty_session') return { session_id: 'pty-fresh', cwd: '/tmp' };
   return undefined;
 });
@@ -81,6 +82,7 @@ let root: Root;
 beforeEach(() => {
   vi.useFakeTimers();
   invocations.length = 0;
+  replayData = '';
   invoke.mockClear();
   listen.mockClear();
   ptyDataHandler = null;
@@ -199,5 +201,53 @@ describe('Terminal follow-up delivery (wired)', () => {
 
     // The chip clears once delivery happens.
     expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
+  // 2026-09-24: "Send to Permagent harness" from Grow started the harness and
+  // never pasted the prompt. The Build pane re-mounts its terminal as it opens,
+  // and unmount cancels the pending delivery; the reattach branch armed none,
+  // so the prompt was dropped with no chip. Reattach now re-arms it.
+  it('re-arms an undelivered follow-up when the pane remounts onto the live harness', async () => {
+    replayData = 'harness banner\x1b[?2004h\x1b[?1049h';
+    const settled = vi.fn();
+    act(() => {
+      root.render(
+        <Terminal sessionId="pty-fresh" isVisible followUpInput="do the thing" onFollowUpSettled={settled} />,
+      );
+    });
+    await flushAsyncSetup();
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+
+    const delivered = followUpWrites();
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].args?.data).toBe('\x1b[200~do the thing\x1b[201~\r');
+    expect(delivered[0].args?.sessionId).toBe('pty-fresh');
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(invocations.some(i => i.cmd === 'spawn_pty_session')).toBe(false);
+  });
+
+  it('pastes nothing on a remount once the prompt has been delivered', async () => {
+    replayData = 'harness banner\x1b[?2004h\x1b[?1049h';
+    act(() => {
+      root.render(<Terminal sessionId="pty-fresh" isVisible />);
+    });
+    await flushAsyncSetup();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(followUpWrites()).toEqual([]);
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it('reports delivery to its owner on a fresh spawn too', async () => {
+    const settled = vi.fn();
+    act(() => {
+      root.render(
+        <Terminal sessionId={null} isVisible initialCommand="claude" followUpInput="do the thing" onFollowUpSettled={settled} />,
+      );
+    });
+    await flushAsyncSetup();
+    emitPtyData('\x1b[?2004h\x1b[?1049h');
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(followUpWrites()).toHaveLength(1);
+    expect(settled).toHaveBeenCalledTimes(1);
   });
 });
