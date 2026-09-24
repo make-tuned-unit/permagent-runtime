@@ -27,7 +27,7 @@ vi.mock('../../lib/api', () => ({
 }));
 
 import { SpendPanel } from './SpendPanel';
-import { api } from '../../lib/api';
+import { api, apiFetch } from '../../lib/api';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -61,6 +61,9 @@ beforeEach(() => {
   root = createRoot(container);
   getSpendMock.mockReset();
   setBudgetMock.mockReset();
+  // The project list the panel reads to tell projects from stray folders.
+  // Unknown roots by default (the server's rows, unchanged).
+  vi.mocked(apiFetch).mockReset().mockRejectedValue(new Error('no projects in this test'));
 });
 
 afterEach(() => {
@@ -178,5 +181,32 @@ describe('SpendPanel', () => {
 
     expect(setBudgetMock).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Could not save the budget.');
+  });
+});
+
+describe('SpendPanel — By project (QA 2026-09-24)', () => {
+  it('folds folders that are not project roots into one "No project" row with its breakdown', async () => {
+    getSpendMock.mockResolvedValue({
+      ...SNAPSHOT,
+      projects: [
+        { path: '/', label: '/', costUsd: 68.6, tokens: 9000, sessionCount: 373 },
+        { path: '/proj/a', label: 'Alpha', costUsd: 5.0, tokens: 3000, sessionCount: 1 },
+        { path: '/tmp', label: 'tmp', costUsd: 3.1, tokens: 400, sessionCount: 181 },
+      ],
+    } as never);
+    vi.mocked(apiFetch).mockResolvedValue([{ id: 'p1', name: 'Alpha', rootPath: '/proj/a' }] as never);
+    await act(async () => { root.render(<SpendPanel />); });
+    await flush();
+
+    const none = container.querySelector('[data-testid="spend-no-project"]')!;
+    expect(none).toBeTruthy();
+    expect(none.textContent).toContain('No project');
+    expect(none.textContent).toContain('554 sessions in 2 folders');
+    expect(none.textContent).toContain('/tmp · 181 sessions');
+    // "tmp" is no longer a project row of its own.
+    const rowsOutside = Array.from(container.querySelectorAll('div'))
+      .filter(d => !none.contains(d) && d.textContent === 'tmp');
+    expect(rowsOutside).toHaveLength(0);
+    expect(container.textContent).toContain('Alpha');
   });
 });

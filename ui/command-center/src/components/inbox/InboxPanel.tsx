@@ -47,14 +47,18 @@ function receivedLabel(iso: string): string {
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-// Filename, source, size, received, project, status.
+// File, project, status.
 //
-// Source and project were fixed 120/118px while the filename took every
-// remaining pixel, so on a wide window the filename column ran half-empty
-// while "mail-attachment.g…" and "Port Community Li…" stayed clipped beside
-// it (QA 2026-09-20). They share the growth now, with floors that keep the
-// narrow-window layout intact.
-const COLS = 'minmax(220px, 2fr) minmax(120px, 1fr) 64px 118px minmax(118px, 1fr) 76px';
+// This used to be six columns (filename, source, size, received, project,
+// status) whose floors alone summed to ~780px. Embedded in History beside the
+// docked chat the panel is ~500px wide, so the grid overflowed and STATUS was
+// clipped to "Rou…"/"New…" (QA 2026-09-24). Source, size and received are
+// facts ABOUT the file, so they ride on a meta line under its name — the same
+// stacked-row shape the "Send to" line under each row already uses — and the
+// grid keeps only what needs its own column. Every track has a floor that fits
+// the narrowest host; the file column takes the rest.
+export const INBOX_COLS = 'minmax(0, 1fr) minmax(96px, 0.5fr) 84px';
+const COLS = INBOX_COLS;
 
 /** Outer radius of a file row card; inner controls nest via `concentric()`. */
 const ROW_RADIUS = radius.lg;
@@ -307,7 +311,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
           transition: edgeTransition,
           flexShrink: 0,
         }}>
-          <div>Filename</div><div>Source</div><div>Size</div><div>Received</div><div>Project</div><div>Status</div>
+          <div>File</div><div>Project</div><div>Status</div>
         </div>
       )}
 
@@ -367,14 +371,26 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                     display: 'grid', gridTemplateColumns: COLS, gap: space.xl, alignItems: 'center',
                     padding: `${space.xl}px ${ROW_PAD_X}px ${space.xs}px`,
                   }}>
-                    <Tooltip content={f.filename}>
-                      <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.small, fontWeight: 600 }}>{f.filename}</div>
-                    </Tooltip>
-                    <Tooltip content={f.original_url}>
-                      <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.caption, color: colors.textMuted }}>{sourceLabel(f.original_url)}</div>
-                    </Tooltip>
-                    <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.mono }}>{formatBytes(f.size_bytes)}</div>
-                    <div style={{ fontSize: textSize.caption, color: colors.textMuted }}>{receivedLabel(f.created_at)}</div>
+                    <div style={{ minWidth: 0 }}>
+                      <Tooltip content={f.filename}>
+                        <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.small, fontWeight: 600 }}>{f.filename}</div>
+                      </Tooltip>
+                      <div
+                        data-testid="inbox-file-meta"
+                        style={{
+                          display: 'flex', alignItems: 'baseline', gap: space.sm, minWidth: 0, marginTop: space.xxs,
+                          fontSize: textSize.caption, color: colors.textMuted, whiteSpace: 'nowrap',
+                        }}
+                      >
+                        <Tooltip content={f.original_url}>
+                          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{sourceLabel(f.original_url)}</span>
+                        </Tooltip>
+                        <span aria-hidden style={{ color: colors.textDim }}>·</span>
+                        <span style={{ fontFamily: font.mono, flexShrink: 0 }}>{formatBytes(f.size_bytes)}</span>
+                        <span aria-hidden style={{ color: colors.textDim }}>·</span>
+                        <span style={{ flexShrink: 0 }}>{receivedLabel(f.created_at)}</span>
+                      </div>
+                    </div>
                     <Tooltip content={projectTip}>
                       <div
                         style={{
@@ -390,6 +406,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                         borderRadius: radius.pill,
                         border: `1px solid ${colors.border}`,
                         color: f.status === 'received' ? colors.text : colors.textMuted,
+                        whiteSpace: 'nowrap',
                       }}>
                         {statusLabel(f.status)}
                       </span>

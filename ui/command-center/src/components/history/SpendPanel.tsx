@@ -8,13 +8,14 @@
  */
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
-import { api, type SpendSnapshot } from '../../lib/api';
+import { api, apiFetch, type ProjectSpend, type SpendSnapshot } from '../../lib/api';
 import { font, radius, space, tabularNums, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Tooltip } from '../common/Tooltip';
 import { Card, SectionLabel, StatRow } from '../common/Card';
 import { bandColor, bandLabel, formatTokens, formatUsd, timeAgo } from '../settings/format';
+import { groupProjectSpend, type NoProjectSpend } from './spendProjects';
 
 /** Width of one dollar-ceiling field. Fits "$ 1000" with room for the stepper. */
 export const CAP_FIELD_WIDTH = 168;
@@ -54,6 +55,21 @@ export function SpendPanel() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Project roots, so a session run from `/` or `/tmp` isn't shown as a
+  // project called "/" or "tmp" (see spendProjects.ts). Null = unknown: the
+  // rows are then shown exactly as the server sent them.
+  const [projectRoots, setProjectRoots] = useState<string[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    apiFetch<{ rootPath?: string | null }[]>('/api/projects')
+      .then(rows => {
+        if (!live || !Array.isArray(rows)) return;
+        setProjectRoots(rows.map(r => r.rootPath ?? '').filter(Boolean));
+      })
+      .catch(() => { /* unknown roots: leave the server's rows as they are */ });
+    return () => { live = false; };
+  }, []);
 
   const saveBudget = useCallback(async () => {
     setSaving(true);
@@ -127,6 +143,13 @@ export function SpendPanel() {
     </label>
   );
 
+  const spendFigure = (costUsd: number, tokens: number) => (
+    <span style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, ...tabularNums }}>
+      {formatUsd(costUsd)}
+      <span style={{ color: colors.textDim, marginLeft: space.md }}>{formatTokens(tokens)}</span>
+    </span>
+  );
+
   return (
     // The panel is a column of single-column cards, so it reads better at a
     // measure than stretched across a 1900px window.
@@ -190,18 +213,15 @@ export function SpendPanel() {
           <div style={{ color: colors.textMuted, fontSize: textSize.small, marginTop: space.lg }}>No spend recorded yet.</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: space.md, marginTop: space.xl }}>
-            {snap.projects.map(p => (
+            {projectSpendRows(snap.projects, projectRoots).map(row => row.kind === 'project' ? (
               <StatRow
-                key={p.path}
-                left={p.label}
-                sub={`${p.path} · ${p.sessionCount} session${p.sessionCount === 1 ? '' : 's'}`}
-                right={
-                  <span style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, ...tabularNums }}>
-                    {formatUsd(p.costUsd)}
-                    <span style={{ color: colors.textDim, marginLeft: space.md }}>{formatTokens(p.tokens)}</span>
-                  </span>
-                }
+                key={row.p.path}
+                left={row.p.label}
+                sub={`${row.p.path} · ${row.p.sessionCount} session${row.p.sessionCount === 1 ? '' : 's'}`}
+                right={spendFigure(row.p.costUsd, row.p.tokens)}
               />
+            ) : (
+              <NoProjectRow key="__no_project__" group={row.group} figure={spendFigure} />
             ))}
           </div>
         )}
@@ -242,6 +262,52 @@ export function SpendPanel() {
           </div>
         )}
       </Card>
+    </div>
+  );
+}
+
+type ProjectSpendRow =
+  | { kind: 'project'; p: ProjectSpend }
+  | { kind: 'none'; group: NoProjectSpend };
+
+/** Project rows plus one folded "No project" row, all in cost order. */
+function projectSpendRows(rows: ProjectSpend[], roots: string[] | null): ProjectSpendRow[] {
+  const { projects, noProject } = groupProjectSpend(rows, roots);
+  const out: ProjectSpendRow[] = projects.map(p => ({ kind: 'project' as const, p }));
+  if (noProject) {
+    const at = out.findIndex(r => r.kind === 'project' && r.p.costUsd < noProject.costUsd);
+    out.splice(at === -1 ? out.length : at, 0, { kind: 'none', group: noProject });
+  }
+  return out;
+}
+
+/** Sessions run outside any project, with the folders they ran in. */
+function NoProjectRow({ group, figure }: {
+  group: NoProjectSpend;
+  figure: (costUsd: number, tokens: number) => React.ReactNode;
+}) {
+  const { colors } = useTheme();
+  const folders = group.dirs.length;
+  return (
+    <div data-testid="spend-no-project">
+      <StatRow
+        left="No project"
+        sub={`${group.sessionCount} session${group.sessionCount === 1 ? '' : 's'} in ${folders} folder${folders === 1 ? '' : 's'} outside any project`}
+        right={figure(group.costUsd, group.tokens)}
+      />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxs, margin: `${space.xs}px 0 0 ${space.xxl}px` }}>
+        {group.dirs.map(d => (
+          <div key={d.path} style={{
+            display: 'flex', alignItems: 'baseline', gap: space.lg,
+            padding: `${space.xxs}px ${space.xl}px`, fontSize: textSize.micro, color: colors.textMuted,
+          }}>
+            <span style={{ flex: 1, minWidth: 0, fontFamily: font.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {d.path} · {d.sessionCount} session{d.sessionCount === 1 ? '' : 's'}
+            </span>
+            <span style={{ fontFamily: font.mono, color: colors.text, flexShrink: 0, ...tabularNums }}>{formatUsd(d.costUsd)}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -13,7 +13,8 @@ import { act } from 'react-dom/test-utils';
 
 vi.mock('../../lib/useNotifications', () => ({ useNotifications: () => ({ items: [] }) }));
 
-import { HistoryView } from './HistoryView';
+import { HistoryView, HISTORY_PAGE_PADDING } from './HistoryView';
+import { space } from '../../styles/tokens';
 import { segmentedTab } from '../common/segmented';
 import { getThemedColors, setTheme } from '../../styles/tokens';
 
@@ -46,5 +47,15 @@ describe('History segmented control', () => {
       const other = tabs().find(t => t.getAttribute('aria-selected') !== 'true')!;
       expect(other.style.getPropertyValue('--pa-btn-bg-hover'), theme).not.toBe(want);
     }
+  });
+});
+
+describe('History page padding (QA 2026-09-24)', () => {
+  it('insets the header, segments and list from the rail like every other view', () => {
+    act(() => root.render(<HistoryView initialTab="sessions" />));
+    const page = container.querySelector<HTMLElement>('[data-testid="history-view"]')!;
+    expect(page.style.padding).toBe(HISTORY_PAGE_PADDING);
+    expect(page.style.paddingLeft).toBe(`${space.huge}px`);
+    expect(page.style.boxSizing).toBe('border-box');
   });
 });

@@ -59,6 +59,8 @@ interface ScheduledJob {
   max_retries?: number;
   last_status?: ScheduleRunStatus | null;
   last_error?: string | null;
+  /** Failures since the last success; the daemon auto-pauses at a threshold. */
+  consecutive_failures?: number;
   // Richer schedule kinds (optional — a plain cron job omits them).
   at?: string | null;
   every_seconds?: number | null;
@@ -605,15 +607,22 @@ export function AutomateView() {
     setTimeout(() => setRunError(null), 8000);
     throw err;
   };
+  // Pause/Resume refetch the list the moment the daemon says yes. They used to
+  // wait for `guardedAction`'s post-tick refresh (and, whenever the card's own
+  // button unmounted first, for the next event or poll), so a resumed card
+  // could keep saying PAUSED for seconds after a 204 (QA 2026-09-24). The
+  // flipped label and the swapped Pause/Resume button are the confirmation.
   const handlePause = async (id: string) => {
     setActionState(`${id}:pause`, 'loading');
     try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/pause`, { method: 'POST' }); }
     catch (err) { failAction(id, 'pause', err); }
+    void fetchJobs();
   };
   const handleUnpause = async (id: string) => {
     setActionState(`${id}:unpause`, 'loading');
     try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); }
     catch (err) { failAction(id, 'resume', err); }
+    void fetchJobs();
   };
   // Deleting an automation is confirmed on the row itself (see
   // `DeleteAutomationControl`), so this only ever runs after the user has said
@@ -732,7 +741,7 @@ export function AutomateView() {
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: `${space.xxxl}px 32px 40px` }}>
 
         {/* Live run roster — everything at work right now, at a glance */}
-        <RunRoster />
+        <RunRoster schedules={jobs} />
 
         {/* Run completion banner — the no-scroll path to the produced result:
             "Review result" opens the run detail (findings / report) directly. */}

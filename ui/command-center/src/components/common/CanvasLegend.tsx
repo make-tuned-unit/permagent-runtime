@@ -67,6 +67,12 @@ export interface CanvasLegendProps {
   palette?: Partial<LegendPalette>;
   /** Position/size overrides. Defaults to the bottom-left of the canvas. */
   style?: CSSProperties;
+  /** Open on a first visit (the default). False starts it collapsed behind
+   *  its button until the user opens it; either way the choice is remembered. */
+  defaultOpen?: boolean;
+  /** The key's outer element, open or collapsed — for a canvas that lays its
+   *  scene out around the key (People graph). Called with null on unmount. */
+  onElement?: (el: HTMLElement | null) => void;
 }
 
 function Rows({ rows, palette }: { rows: LegendRow[]; palette: LegendPalette }) {
@@ -115,10 +121,12 @@ export function CanvasLegend({
   vocabularyLabel = 'What you’re looking at',
   palette,
   style,
+  defaultOpen = true,
+  onElement,
 }: CanvasLegendProps) {
   const { colors } = useTheme();
   const glass = useGlass('glass');
-  const [open, setOpen] = useState(() => readLegendOpen(canvasId));
+  const [open, setOpen] = useState(() => readLegendOpen(canvasId, defaultOpen));
   const panelId = useId();
 
   const set = useCallback((next: boolean) => {
@@ -168,7 +176,7 @@ export function CanvasLegend({
 
   if (!open) {
     return (
-      <div style={anchor}>
+      <div ref={onElement} style={anchor}>
         <Button
           colors={colors}
           variant="bare"
@@ -209,6 +217,7 @@ export function CanvasLegend({
 
   return (
     <section
+      ref={onElement}
       id={panelId}
       data-testid="canvas-legend"
       aria-label={`${title} — what this view shows and how to move around it`}

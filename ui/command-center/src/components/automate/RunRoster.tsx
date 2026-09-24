@@ -11,7 +11,7 @@
  * The point: long-running and parallel agent work used to be invisible. This
  * makes it legible at a glance and stoppable in one click.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { FiSquare } from 'react-icons/fi';
 import { font, radius, space, textSize } from '../../styles/tokens';
@@ -22,6 +22,8 @@ import { relativeTimeAgo } from '../../lib/time-decay';
 import { useCommandCenter } from '../../lib/store';
 
 import { Tooltip } from '../common/Tooltip';
+import { rosterDetail, rosterProblem, type RosterScheduleFacts } from './runRosterModel';
+
 interface RunItem {
   kind: 'worker' | 'schedule' | 'session';
   id: string;
@@ -39,8 +41,18 @@ const KIND_LABEL: Record<RunItem['kind'], string> = {
   session: 'Session',
 };
 
-export function RunRoster() {
+/**
+ * @param schedules The Automate view's `/schedule/list` rows. `/api/runs` has
+ *   no last error or failure count for a schedule, so a paused or failing row
+ *   takes them from here (joined by id). Optional: without it the row still
+ *   shows its status and schedule, just not why it stopped.
+ */
+export function RunRoster({ schedules }: { schedules?: RosterScheduleFacts[] } = {}) {
   const { colors } = useTheme();
+  const factsById = useMemo(
+    () => new Map((schedules ?? []).map(j => [j.id, j] as const)),
+    [schedules],
+  );
   const openAgentSettings = useCommandCenter(s => s.openAgentSettings);
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -81,6 +93,24 @@ export function RunRoster() {
       setTimeout(() => setStopError(null), 8000);
       // This helper states its own failure rather than rejecting, so it says so
       // to the button primitive too: `false` means "no success tick".
+      return false;
+    }
+  }, [load]);
+
+  // Resume a paused schedule — the same `/schedule/{id}/unpause` route the
+  // Automate list's own Resume button calls. A paused row used to say so only
+  // with a muted dot and a hover tooltip, and offered no way back.
+  const resume = useCallback(async (r: RunItem) => {
+    if (r.kind !== 'schedule') return false;
+    try {
+      await apiFetch(`/schedule/${encodeURIComponent(r.id)}/unpause`, { method: 'POST' });
+      setStopError(null);
+      load();
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStopError(`Couldn't resume "${r.name}": ${msg}`);
+      setTimeout(() => setStopError(null), 8000);
       return false;
     }
   }, [load]);
@@ -178,19 +208,58 @@ export function RunRoster() {
                 </span>
               </Tooltip>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md, minWidth: 0 }}>
                   <span style={{ fontSize: 12.5, fontWeight: 600, color: colors.text, fontFamily: font.body, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {r.name}
                   </span>
+                  {r.status === 'paused' && (
+                    <span data-testid="roster-paused" style={{
+                      fontSize: 10, fontWeight: 600, color: colors.warning, fontFamily: font.body, flexShrink: 0,
+                      padding: `0 ${space.sm}px`, borderRadius: radius.pill, border: `1px solid ${colors.warning}`,
+                    }}>
+                      Paused
+                    </span>
+                  )}
                   <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.body, flexShrink: 0 }}>
                     {KIND_LABEL[r.kind]}
                   </span>
                 </div>
-                {r.detail && (
-                  <div style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.body, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {r.detail}
-                  </div>
-                )}
+                {(() => {
+                  const facts = r.kind === 'schedule' ? factsById.get(r.id) : undefined;
+                  const d = rosterDetail(r.kind, r.detail, facts);
+                  const problem = r.kind === 'schedule' ? rosterProblem(r.status, facts) : null;
+                  return (
+                    <>
+                      {d.words && (
+                        <div style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.body, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {d.words}
+                          {/* The expression itself stays one glance away, smaller
+                              and dimmer than the words — truncated first. */}
+                          {d.raw && (
+                            <span data-testid="roster-cron" style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginLeft: space.md }}>
+                              {d.raw}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {problem && (
+                        <Tooltip content={problem}>
+                          <div
+                            data-testid="roster-problem"
+                            tabIndex={0}
+                            style={{
+                              fontSize: textSize.micro, fontFamily: font.body, outline: 'none',
+                              color: r.status === 'error' ? colors.danger : colors.warning,
+                              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                            }}
+                          >
+                            {problem}
+                          </div>
+                        </Tooltip>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
               {r.last_activity && (
                 <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.body, flexShrink: 0 }}>
@@ -217,6 +286,28 @@ export function RunRoster() {
                     } as CSSProperties}
                   >
                     Settings
+                  </Button>
+                </Tooltip>
+              )}
+              {r.kind === 'schedule' && r.status === 'paused' && (
+                <Tooltip content="Resume this schedule">
+                  <Button
+                    colors={colors}
+                    onClick={() => resume(r)}
+                    style={{
+                      '--pa-btn-fg': colors.cyan,
+                      '--pa-btn-border': colors.border,
+                      '--pa-btn-bg-hover': colors.surfaceHi,
+                      '--pa-btn-border-hover': colors.borderHi,
+                      '--pa-btn-pad': '3px 7px',
+                      '--pa-btn-radius': `${radius.sm}px`,
+                      fontFamily: font.body,
+                      fontSize: 10,
+                      gap: space.xs,
+                      flexShrink: 0,
+                    } as CSSProperties}
+                  >
+                    Resume
                   </Button>
                 </Tooltip>
               )}

@@ -32,6 +32,13 @@ describe('relativeTimeAgo', () => {
     expect(relativeTimeAgo(fixed(60))).toBe('1h ago');
   });
 
+  it('rolls over to days from 24h on (QA 2026-09-24: "82h 3m ago")', () => {
+    expect(relativeTimeAgo(fixed(23 * 60 + 59))).toBe('23h 59m ago');
+    expect(relativeTimeAgo(fixed(24 * 60))).toBe('1d ago');
+    expect(relativeTimeAgo(fixed(82 * 60 + 3))).toBe('3d ago');
+    expect(relativeTimeAgo(fixed(174 * 60 + 3))).toBe('7d ago');
+  });
+
   it('accepts ISO string timestamps', () => {
     const ts = fixed(30).toISOString();
     expect(relativeTimeAgo(ts)).toBe('30 min ago');

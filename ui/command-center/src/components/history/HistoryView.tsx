@@ -157,6 +157,9 @@ function Frame({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** The page inset every other top-level view has (Grow's body, ViewHeader). */
+export const HISTORY_PAGE_PADDING = `${space.xxxl}px ${space.huge}px`;
+
 export function HistoryView({ initialTab = 'sessions' }: { initialTab?: HistoryTabKey }) {
   const { colors } = useTheme();
   const [tab, setTab] = useState<HistoryTabKey>(initialTab);
@@ -173,7 +176,14 @@ export function HistoryView({ initialTab = 'sessions' }: { initialTab?: HistoryT
   const active = HISTORY_TABS.find(t => t.key === tab) ?? HISTORY_TABS[0];
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    // Page padding (QA 2026-09-24): History is mounted straight into the
+    // workspace area (App.tsx), with no ViewHeader or scroll body around it,
+    // so its title, segments and list sat flush against the rail. Same inset
+    // as Grow's body and ViewHeader's horizontal padding.
+    <div data-testid="history-view" style={{
+      height: '100%', display: 'flex', flexDirection: 'column', boxSizing: 'border-box',
+      padding: HISTORY_PAGE_PADDING,
+    }}>
       <H1 sub={active.sub}>History</H1>
 
       {/* The app's segmented control (components/common/segmented.ts), the
