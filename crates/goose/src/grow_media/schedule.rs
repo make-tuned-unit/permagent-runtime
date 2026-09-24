@@ -80,6 +80,42 @@ fn next_window(from: DateTime<Local>, channel: &str) -> DateTime<Local> {
         .unwrap_or(from + Duration::hours(24))
 }
 
+/// Render a stored send time on a given clock for the model to repeat to the
+/// user, e.g. `Fri Sep 25, 11:00 AM (UTC-03:00)`.
+///
+/// `scheduledFor` is stored as RFC-3339 UTC because the UI and the publisher
+/// parse it. Handing the model ONLY that string made it read "14:00" back as
+/// the user's time while the calendar showed 11:00 AM. The clock is a
+/// parameter so tests do not depend on the machine's zone; callers pass
+/// [`Local`]. chrono has no zone abbreviations without a tz database, so the
+/// UTC offset is spelled out instead.
+pub fn format_send_time_in<Tz>(when: DateTime<Utc>, tz: &Tz) -> String
+where
+    Tz: TimeZone,
+    Tz::Offset: std::fmt::Display,
+{
+    when.with_timezone(tz)
+        .format("%a %b %-d, %-I:%M %p (UTC%:z)")
+        .to_string()
+}
+
+/// [`format_send_time_in`] for a stored RFC-3339 string. `None` when the
+/// string does not parse — the caller then simply omits the local field.
+pub fn scheduled_for_local_in<Tz>(rfc3339: &str, tz: &Tz) -> Option<String>
+where
+    Tz: TimeZone,
+    Tz::Offset: std::fmt::Display,
+{
+    DateTime::parse_from_rfc3339(rfc3339)
+        .ok()
+        .map(|d| format_send_time_in(d.with_timezone(&Utc), tz))
+}
+
+/// The user's clock: this is a desktop app, so the machine's zone is theirs.
+pub fn scheduled_for_local(rfc3339: &str) -> Option<String> {
+    scheduled_for_local_in(rfc3339, &Local)
+}
+
 fn conflicts(when: DateTime<Utc>, occupied: &[DateTime<Utc>]) -> bool {
     occupied.iter().any(|other| {
         let delta = if when >= *other {
@@ -131,5 +167,35 @@ mod tests {
             now,
         });
         assert!(rec >= floor);
+    }
+
+    #[test]
+    fn send_time_renders_on_the_given_clock_not_utc() {
+        // 14:00 UTC is 11:00 AM on a UTC-3 clock — the calendar's value.
+        let west3 = chrono::FixedOffset::west_opt(3 * 3600).unwrap();
+        assert_eq!(
+            format_send_time_in(utc(2026, 9, 25, 14), &west3),
+            "Fri Sep 25, 11:00 AM (UTC-03:00)"
+        );
+        let east9 = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
+        assert_eq!(
+            format_send_time_in(utc(2026, 9, 25, 14), &east9),
+            "Fri Sep 25, 11:00 PM (UTC+09:00)"
+        );
+    }
+
+    #[test]
+    fn stored_rfc3339_parses_to_local_and_garbage_is_none() {
+        let west3 = chrono::FixedOffset::west_opt(3 * 3600).unwrap();
+        assert_eq!(
+            scheduled_for_local_in("2026-09-25T14:00:00+00:00", &west3).as_deref(),
+            Some("Fri Sep 25, 11:00 AM (UTC-03:00)")
+        );
+        // Crossing midnight moves the day too.
+        assert_eq!(
+            scheduled_for_local_in("2026-09-25T01:30:00Z", &west3).as_deref(),
+            Some("Thu Sep 24, 10:30 PM (UTC-03:00)")
+        );
+        assert_eq!(scheduled_for_local_in("tomorrow at 2", &west3), None);
     }
 }
