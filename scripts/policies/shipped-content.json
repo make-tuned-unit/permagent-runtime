@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "scope": {
+    "roots": [
+      "crates/*/src",
+      "ui/command-center/src",
+      "ui/desktop/src-tauri/src"
+    ],
+    "extensions": [
+      ".rs",
+      ".ts",
+      ".tsx",
+      ".md",
+      ".yaml",
+      ".yml"
+    ],
+    "skipDirectories": [
+      "node_modules",
+      "dist",
+      "target",
+      "vendor",
+      ".git"
+    ]
+  },
+  "rules": [
+    {
+      "id": "operational-home-root",
+      "kind": "operationalLiteral",
+      "include": [
+        "crates/goose/src/prompts/**",
+        "crates/goose-server/src/automation/**",
+        "crates/goose-cli/src/recipes/**",
+        "crates/goose/src/agents/builtin_skills/skills/**",
+        "crates/goose-mcp/src/tutorial/tutorials/**",
+        "crates/goose-server/src/app_catalog/**"
+      ],
+      "match": {
+        "type": "regex",
+        "pattern": "/Users/|/home/|~/Documents/dev|~/dev|\\$HOME/dev",
+        "flags": ""
+      },
+      "message": "Resolve operational roots from configuration or discovery."
+    },
+    {
+      "id": "projects-tool-home-guess",
+      "kind": "operationalLiteral",
+      "include": [
+        "crates/goose/src/projects.rs"
+      ],
+      "match": {
+        "type": "regex",
+        "pattern": "~/Documents/dev|~/dev\\b",
+        "flags": ""
+      },
+      "message": "Tool errors must not steer the model toward a hardcoded code root; point it at the configured dev roots."
+    },
+    {
+      "id": "unsupported-machine-topology",
+      "kind": "unsupportedClaim",
+      "include": [
+        "crates/goose/src/prompts/**",
+        "crates/goose-server/src/automation/**",
+        "crates/goose-cli/src/recipes/**",
+        "crates/goose/src/agents/builtin_skills/skills/**",
+        "crates/goose-mcp/src/tutorial/tutorials/**",
+        "crates/goose-server/src/app_catalog/**",
+        "crates/goose/src/meeting_writeup.rs"
+      ],
+      "match": {
+        "type": "context",
+        "anchor": {
+          "type": "regex",
+          "pattern": "\\b(?:your\\s+Mac\\s+mini|your\\s+tailnet)\\b",
+          "flags": "i"
+        },
+        "window": {
+          "linesBefore": 1,
+          "linesAfter": 1
+        },
+        "requireAll": [
+          {
+            "type": "regex",
+            "pattern": "\\b(?:written|processed|running|hosted)\\b",
+            "flags": "i"
+          }
+        ],
+        "rejectAny": []
+      },
+      "message": "Hardware ownership and network provenance require runtime evidence."
+    }
+  ],
+  "exceptions": [
+    {
+      "id": "workspace-snapshot-dev-canon-example",
+      "ruleId": "operational-home-root",
+      "path": "crates/goose-server/src/automation/workspace_snapshot.yaml",
+      "line": 35,
+      "exactLine": "  **Yesterday you worked on:** [group modified files by parent directory, e.g., \"3 files in ~/dev/canon, 2 files in ~/Documents\"]",
+      "contextBefore": [
+        ""
+      ],
+      "contextAfter": [
+        "",
+        "  **Disk:** [X% full, Y GB free]"
+      ],
+      "matchedText": "~/dev",
+      "expectedMatches": 1,
+      "reasonCode": "illustrativeExample",
+      "reason": "Template labels the path as an example in the report shape, not a configured root.",
+      "reviewBy": "2026-12-22"
+    }
+  ]
+}
