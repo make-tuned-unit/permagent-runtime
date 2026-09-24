@@ -3,6 +3,7 @@
 //! distributions. No state text is logged here. Fail awake means returning the
 //! caller's deterministic answer with an explicit reason, never inventing one.
 
+pub mod bench;
 mod http;
 mod journal;
 mod role;
