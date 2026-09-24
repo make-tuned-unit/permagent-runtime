@@ -444,3 +444,110 @@ it('a Picker scan reports the scan, not the accept-POST, and names what it found
     vi.useRealTimers();
   }
 });
+
+// ── QA 2026-09-24 (real-size walk at a ~570px Finance column) ─────────────
+
+const PNG_404 = 'market data source answered 404 Not Found: No data found, symbol may be delisted';
+
+function lot(over: Record<string, unknown>) {
+  return {
+    id: String(over.symbol),
+    symbol: 'VST',
+    companyName: 'Vistra',
+    entryDate: '2026-08-01',
+    entryPrice: 150,
+    shares: 10,
+    source: 'ledger',
+    quote: { symbol: String(over.symbol ?? 'VST'), price: 160, currency: 'USD', marketClosed: false },
+    last: 160,
+    unrealized: 100,
+    unrealizedPct: 6.6,
+    rsi: 55,
+    ...over,
+  };
+}
+
+function lotsBoard(rows: Record<string, unknown>[]) {
+  return board({
+    holdings: {
+      source: 'ledger', openCount: rows.length, netUnrealized: 0, netRealized: 0, netPnl: 0, trend: [], rows,
+    },
+  });
+}
+
+it('shows "No price" in the mark cell, not the backend sentence, and hints the exchange suffix on a 404', async () => {
+  apiFetch.mockResolvedValue(lotsBoard([
+    lot({ symbol: 'VST' }),
+    lot({ symbol: 'PNG', quote: null, last: null, unrealized: null, unrealizedPct: null, rsi: null, quoteError: PNG_404 }),
+  ]));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+
+  const cells = container.querySelectorAll('[data-testid="quote-no-price"]');
+  expect(cells).toHaveLength(1);
+  const cell = cells[0] as HTMLElement;
+  // Visible text is the short label; the full reason is screen-reader text only.
+  const visible = Array.from(cell.childNodes)
+    .filter((n) => !(n instanceof HTMLElement && n.classList.contains('sr-only')))
+    .map((n) => n.textContent)
+    .join('');
+  expect(visible.trim()).toBe('No price');
+  expect(cell.querySelector('.sr-only')?.textContent).toContain('404 Not Found');
+  expect(cell.hasAttribute('title')).toBe(false);
+  expect(cell.tabIndex).toBe(0);
+
+  const hints = container.querySelectorAll('[data-testid="lot-symbol-hint"]');
+  expect(hints).toHaveLength(1);
+  expect(hints[0].textContent).toContain('PNG.V');
+  expect(hints[0].textContent).toContain('Edit');
+});
+
+it('does not suggest a suffix when the quote failed for another reason', async () => {
+  apiFetch.mockResolvedValue(lotsBoard([
+    lot({ symbol: 'IREN', quote: null, last: null, quoteError: 'could not reach the market data source: timed out' }),
+  ]));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+  expect(container.querySelector('[data-testid="quote-no-price"]')).toBeTruthy();
+  expect(container.querySelector('[data-testid="lot-symbol-hint"]')).toBeNull();
+});
+
+it('keeps a lot\'s Edit / Close / Remove on one unwrapping line, with Remove named and still visible', async () => {
+  apiFetch.mockResolvedValue(lotsBoard([lot({ symbol: 'BLNE' })]));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+  const actions = container.querySelector('[data-testid="lot-actions"]') as HTMLElement;
+  expect(actions.style.flexWrap).toBe('nowrap');
+  const labels = Array.from(actions.querySelectorAll('button')).map((b) => b.textContent?.trim());
+  expect(labels).toEqual(['Edit', 'Close', 'Remove']);
+  expect(actions.querySelector('button[aria-label="Remove BLNE lot"]')).toBeTruthy();
+});
+
+it('shows "—" for household figures when no transactions are imported, not a measured zero', async () => {
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+  expect(container.textContent).toContain('No imported transactions yet.');
+  for (const label of ['30-day run-rate', '90-day run-rate', 'Spent (window)']) {
+    const labelEl = Array.from(container.querySelectorAll('div')).find((d) => d.textContent === label);
+    expect(labelEl, label).toBeTruthy();
+    expect(labelEl!.nextElementSibling?.textContent).toBe('—');
+  }
+});
+
+it('shows the household run-rate as money once transactions exist', async () => {
+  apiFetch.mockResolvedValue(board({
+    household: {
+      recent: [{
+        id: 't1', date: '2026-09-01', amount: -42.5, payee: 'Grocer', category: 'Groceries', createdAt: '2026-09-01T00:00:00Z',
+      }],
+      forecast: {
+        daysUsed: 30, spend90d: 42.5, runRate30d: 42.5, runRate90d: 14.17,
+        byCategory: [], recurring: [], method: 'trailing run-rate, not a model',
+      },
+    },
+  }));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+  const labelEl = Array.from(container.querySelectorAll('div')).find((d) => d.textContent === '30-day run-rate');
+  expect(labelEl!.nextElementSibling?.textContent).toMatch(/42\.50/);
+});

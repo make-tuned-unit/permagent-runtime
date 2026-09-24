@@ -65,7 +65,11 @@ const BOARD = {
   rsiThreshold: 74,
   dailyPick: null,
   household: {
-    recent: [],
+    // One imported line, so the run-rate is a measured figure: with nothing
+    // imported the household figures read "—" (QA 2026-09-24).
+    recent: [{
+      id: 't1', date: '2026-09-01', amount: -12, payee: 'Grocer', category: 'Groceries', createdAt: '2026-09-01T00:00:00Z',
+    }],
     forecast: {
       daysUsed: 30, spend90d: 0, runRate30d: 1000, runRate90d: 0,
       byCategory: [], recurring: [], method: 'trailing run-rate, not a model',
