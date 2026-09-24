@@ -225,7 +225,7 @@ fn glyph(c: char) -> [u8; 5] {
         'V' => [0x78, 0x04, 0x02, 0x04, 0x78],
         'W' => [0x7E, 0x04, 0x18, 0x04, 0x7E],
         'X' => [0x66, 0x18, 0x18, 0x18, 0x66],
-        'Y' => [0x70, 0x08, 0x06, 0x08, 0x70],
+        'Y' => [0x60, 0x10, 0x0E, 0x10, 0x60],
         'Z' => [0x46, 0x4A, 0x52, 0x62, 0x42],
         '0' => [0x3C, 0x4A, 0x52, 0x62, 0x3C],
         '1' => [0x00, 0x22, 0x7E, 0x02, 0x00],
@@ -272,8 +272,13 @@ fn draw_text(
         for ch in line.chars() {
             let bits = glyph(ch);
             for (col, column) in bits.iter().enumerate() {
-                for row in 0..7u32 {
-                    if column & (1 << row) != 0 {
+                // Each column byte is drawn top-down from bit 6 ('T' is
+                // [0x40, 0x40, 0x7E, ..]: its bar is bit 6). Mapping bit N to
+                // row N instead printed every glyph upside down, so a
+                // "WINNIPEG" headline shipped as "MINNIPEG".
+                for bit in 0..7u32 {
+                    if column & (1 << bit) != 0 {
+                        let row = 6 - bit;
                         for dy in 0..scale {
                             for dx in 0..scale {
                                 let px = x + col as u32 * scale + dx;
@@ -420,6 +425,50 @@ mod tests {
         assert!(dir.path().join("still.svg").is_file());
         // Fallback palette must not appear when the project supplied a kit.
         assert_ne!(parse_hex("#102030").unwrap(), (17, 17, 17));
+    }
+
+    /// Lit pixels in glyph row `row` (0 = top) of a glyph drawn at scale 1.
+    fn lit_in_row(img: &image::RgbImage, x0: u32, y0: u32, row: u32) -> usize {
+        (0..5)
+            .filter(|dx| img.get_pixel(x0 + dx, y0 + row).0 != [0, 0, 0])
+            .count()
+    }
+
+    #[test]
+    fn glyphs_are_drawn_right_way_up() {
+        // 'T' has its full bar on the top row and one stem pixel on its
+        // bottom row; 'L' is the reverse. Glyph bodies span rows 0-5 (row 6
+        // is the descender row a comma uses). A vertical flip swaps both.
+        let mut img = image::RgbImage::from_pixel(40, 20, image::Rgb([0, 0, 0]));
+        draw_text(&mut img, "T", 1, 1, 1, 255, 255, 255, 40);
+        assert_eq!(lit_in_row(&img, 1, 1, 0), 5, "T's bar belongs on top");
+        assert_eq!(lit_in_row(&img, 1, 1, 5), 1, "T's stem ends at the bottom");
+
+        let mut img = image::RgbImage::from_pixel(40, 20, image::Rgb([0, 0, 0]));
+        draw_text(&mut img, "L", 1, 1, 1, 255, 255, 255, 40);
+        assert_eq!(lit_in_row(&img, 1, 1, 0), 1, "L's top is only its stem");
+        assert_eq!(
+            lit_in_row(&img, 1, 1, 5),
+            5,
+            "L's foot belongs on the bottom"
+        );
+    }
+
+    #[test]
+    fn y_has_a_stem_so_it_is_not_a_v() {
+        // A 'Y' without a stem read as 'V': "FREYA" shipped as "FREVA".
+        // Its lower half is a single centred column; a V's is two strokes
+        // closing in.
+        let mut img = image::RgbImage::from_pixel(40, 20, image::Rgb([0, 0, 0]));
+        draw_text(&mut img, "Y", 1, 1, 1, 255, 255, 255, 40);
+        for row in 3..=5 {
+            assert_eq!(lit_in_row(&img, 1, 1, row), 1, "Y row {row} is the stem");
+            assert_ne!(
+                img.get_pixel(1 + 2, 1 + row).0,
+                [0, 0, 0],
+                "stem is centred"
+            );
+        }
     }
 
     #[test]
