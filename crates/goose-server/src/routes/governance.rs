@@ -245,13 +245,15 @@ mod tests {
 
     #[test]
     fn per_session_band_reflects_session_ceiling() {
-        // Session ceilings default soft $10 / gate $25 / hard $50.
+        // Read the ceilings rather than restating them: a hardcoded $12 sat
+        // exactly on the gate line once the defaults moved to $5/$12/$25.
         let cfg = BudgetConfig::default();
+        let c = &cfg.session;
         let rows = vec![
-            row("ok", "/d", 1.0, 10),
-            row("soft", "/d", 12.0, 10),
-            row("gate", "/d", 30.0, 10),
-            row("hard", "/d", 60.0, 10),
+            row("ok", "/d", c.soft / 2.0, 10),
+            row("soft", "/d", (c.soft + c.gate) / 2.0, 10),
+            row("gate", "/d", (c.gate + c.hard) / 2.0, 10),
+            row("hard", "/d", c.hard * 2.0, 10),
         ];
         let snap = build_spend_snapshot(rows, &BTreeMap::new(), &cfg, 100);
         let band = |id: &str| {
