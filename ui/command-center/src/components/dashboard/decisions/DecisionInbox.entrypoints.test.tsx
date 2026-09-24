@@ -20,7 +20,11 @@ vi.mock('../../../hooks/useBrowserNavigate', () => ({ useBrowserNavigate: () => 
 vi.mock('../../../lib/useLiveGoals', () => ({ useLiveGoals: () => ({ activeCount: 0, loaded: true }) }));
 vi.mock('../../settings/useSettings', () => ({ usePersona: () => ({ data: null }) }));
 vi.mock('./DiscussionPane', () => ({ DiscussionPane: () => <aside>Isolated discussion</aside> }));
-vi.mock('./DecisionItem', () => ({ DecisionActions: () => <button>Approve</button>, badgeFor: () => ({ label: 'approval' }) }));
+vi.mock('./DecisionItem', () => ({
+  DecisionActions: () => <button>Approve</button>,
+  Btn: ({ children }: { children: React.ReactNode }) => <button>{children}</button>,
+  badgeFor: () => ({ label: 'approval' }),
+}));
 vi.mock('./EvidenceDigest', () => ({ EvidenceDigest: () => null }));
 vi.mock('./client', () => ({ decisionsClient: {} }));
 
@@ -44,13 +48,13 @@ afterEach(() => { act(() => root.unmount()); container.remove(); });
 
 it.each(['Home', 'Council', 'Timeline', 'Settings fallback'])('every entry point opens the same one-at-a-time review: %s (ruling 2)', async entry => {
   await act(async () => root.render(entry === 'Home' ? <DecisionsCard /> : entry === 'Council' ? <CouncilCard /> : entry === 'Timeline' ? <TimelineCard /> : <ApprovalsStrip />));
-  const opener = entry === 'Home' ? container.querySelector('[aria-label="Open the decision inbox"]')
-    : entry === 'Timeline' ? Array.from(container.querySelectorAll('div')).find(el => el.textContent === 'Review journal decision')
-    : Array.from(container.querySelectorAll('button')).find(el => el.textContent?.includes(entry === 'Council' ? 'open actions' : 'Open Decisions on Home'));
+  const opener = entry === 'Home' ? document.body.querySelector('[aria-label="Open the decision inbox"]')
+    : entry === 'Timeline' ? Array.from(document.body.querySelectorAll('div')).find(el => el.textContent === 'Review journal decision')
+    : Array.from(document.body.querySelectorAll('button')).find(el => el.textContent?.includes(entry === 'Council' ? 'open actions' : 'Open Decisions on Home'));
   expect(opener).toBeTruthy();
   await act(async () => (opener as HTMLElement).click());
-  expect(container.querySelectorAll('[data-testid="decision-review"]').length).toBe(1);
-  expect(container.querySelectorAll('[data-testid="decision-a"]').length).toBe(1);
-  expect(container.querySelector('[data-testid="decision-b"]')).toBeNull();
-  expect(container.textContent).toContain('1 of 2');
+  expect(document.body.querySelectorAll('[data-testid="decision-review"]').length).toBe(1);
+  expect(document.body.querySelectorAll('[data-testid="decision-a"]').length).toBe(1);
+  expect(document.body.querySelector('[data-testid="decision-b"]')).toBeNull();
+  expect(document.body.textContent).toContain('1 of 2');
 });

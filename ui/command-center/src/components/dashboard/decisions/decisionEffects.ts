@@ -276,9 +276,11 @@ export function effectSummaryFor(d: Decision): EffectSummary {
         })()
       : undefined;
 
+  // Labelled: the review shows these under one heading, and an unlabelled
+  // reject line read as a second consequence of approving.
   const lines = [
-    normalizeEffect(effectTextFor(d.kind, 'approve', 'your agent', actionClass)),
-    normalizeEffect(effectTextFor(d.kind, 'reject', 'your agent', actionClass)),
+    `If you approve: ${normalizeEffect(effectTextFor(d.kind, 'approve', 'your agent', actionClass))}`,
+    `If you reject: ${normalizeEffect(effectTextFor(d.kind, 'reject', 'your agent', actionClass))}`,
   ];
   return { known: true, lines };
 }

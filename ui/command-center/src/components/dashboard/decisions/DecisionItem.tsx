@@ -623,7 +623,8 @@ export function DecisionActions({
           </div>
         </div>
       ) : (
-        <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginTop: space.lg, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginTop: embeddedReview ? 0 : space.lg, flexWrap: 'wrap' }}>
+          {/* In the review this row sits in a pinned bar beside Later: no top margin, or it rides lower. */}
           {(isApprovalLike || isUnblock) && (
             <>
               <Btn
@@ -814,7 +815,7 @@ export function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['color
  * global `filter: brightness()`, already applied through CSS regardless of
  * this token.
  */
-function Btn({ variant = 'ghost', danger = false, disabled = false, onClick, children }: {
+export function Btn({ variant = 'ghost', danger = false, disabled = false, onClick, children }: {
   variant?: 'primary' | 'ghost';
   danger?: boolean;
   disabled?: boolean;

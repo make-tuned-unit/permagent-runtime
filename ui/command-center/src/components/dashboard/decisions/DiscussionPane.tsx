@@ -36,7 +36,6 @@ export function DiscussionPane({ decisionId, headline, agentName }: {
     }}>
       <header>
         <h3 id={headingId} style={{ margin: 0, fontSize: textSize.heading }}>Talk it through with {agentName}</h3>
-        <span style={{ color: colors.textMuted, fontSize: textSize.caption }}>this decision only</span>
       </header>
       <div ref={list} role="log" aria-label="Decision discussion" aria-live="polite" style={{
         display: 'flex', flexDirection: 'column', gap: space.md, overflowY: 'auto',
@@ -44,8 +43,8 @@ export function DiscussionPane({ decisionId, headline, agentName }: {
       }}>
         {discussion.messages.length === 0 && (
           <p style={{ margin: 0, color: colors.textMuted }}>
-            This conversation is about this decision only. Your answers stay with you: review suggestions here,
-            then use the decision controls to submit your answer.
+            Ask about this decision before you answer. This conversation stays separate from your main chat, and
+            nothing typed here answers the decision — the buttons beside it do.
           </p>
         )}
         {discussion.messages.map(message => (

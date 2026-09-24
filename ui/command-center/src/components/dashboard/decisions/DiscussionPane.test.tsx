@@ -70,8 +70,8 @@ describe('DiscussionPane', () => {
 
   it('explains isolation, labels the input, and renders messages as plain text (rulings 6, 7)', () => {
     expect(container.textContent).toContain('Talk it through with Henry');
-    expect(container.textContent).toContain('this decision only');
-    expect(container.textContent).toContain('Your answers stay with you');
+    expect(container.textContent).toContain('stays separate from your main chat');
+    expect(container.textContent).toContain('nothing typed here answers the decision');
     const input = container.querySelector('textarea')!;
     expect(container.querySelector('label')!.htmlFor).toBe(input.id);
     discussion.messages = [

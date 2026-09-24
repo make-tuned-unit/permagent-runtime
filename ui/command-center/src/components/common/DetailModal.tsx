@@ -17,6 +17,7 @@
  */
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { CSSProperties, ReactNode } from 'react';
 import { FiX } from 'react-icons/fi';
 import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
@@ -268,7 +269,13 @@ export function DetailModal({
   // click when the surface beside it is the thing being worked on.
   if (!modal) return panel;
 
-  return (
+  // Portaled to <body>: a `position: fixed` overlay is only viewport-fixed
+  // while no ancestor has a transform, filter or containment — and a dashboard
+  // card has one, so a modal opened from a card was trapped in and clipped to
+  // that card (the Decision Inbox reviewed 20 decisions inside a 400px box).
+  // Theme variables live on :root, so nothing is lost by leaving the tree;
+  // React events still bubble through the React tree, not the DOM.
+  return createPortal(
     <div
       onClick={onClose}
       style={{
@@ -281,6 +288,7 @@ export function DetailModal({
       }}
     >
       {panel}
-    </div>
+    </div>,
+    document.body,
   );
 }

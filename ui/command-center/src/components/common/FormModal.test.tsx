@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 function buttonLabelled(text: string): HTMLButtonElement {
-  const found = Array.from(container.querySelectorAll('button')).find(
+  const found = Array.from(document.body.querySelectorAll('button')).find(
     b => (b.textContent ?? '').trim().replace(/^[✓]\s*/, '') === text,
   );
   expect(found, `no button labelled "${text}"`).toBeDefined();
@@ -81,7 +81,7 @@ function asRendered(color: string): string {
 
 it('inherits the dialog floor rather than re-implementing it', () => {
   render();
-  const dialog = container.querySelector('[role="dialog"]');
+  const dialog = document.body.querySelector('[role="dialog"]');
   expect(dialog, 'no role=dialog — the shell is not composing DetailModal').not.toBeNull();
   expect(dialog?.getAttribute('aria-modal')).toBe('true');
   const labelId = dialog?.getAttribute('aria-labelledby');
@@ -94,7 +94,7 @@ it('inherits the dialog floor rather than re-implementing it', () => {
 it('is a real form, so Enter submits from a field', async () => {
   const onSubmit = vi.fn();
   render({ onSubmit });
-  const form = container.querySelector('form');
+  const form = document.body.querySelector('form');
   expect(form, 'the fields are not inside a <form>').not.toBeNull();
   await act(async () => {
     form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -105,7 +105,7 @@ it('is a real form, so Enter submits from a field', async () => {
 
 it('wires the footer submit to the form in the body', () => {
   render();
-  const form = container.querySelector('form')!;
+  const form = document.body.querySelector('form')!;
   expect(buttonLabelled('Create').getAttribute('form')).toBe(form.id);
   expect(buttonLabelled('Create').getAttribute('type')).toBe('submit');
 });
@@ -113,7 +113,7 @@ it('wires the footer submit to the form in the body', () => {
 it('shows the submit as busy for the whole round trip, floor included', async () => {
   let release: () => void = () => {};
   render({ onSubmit: () => new Promise<void>(r => { release = r; }) });
-  const form = container.querySelector('form')!;
+  const form = document.body.querySelector('form')!;
   await act(async () => {
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     for (let i = 0; i < 8; i += 1) await Promise.resolve();
@@ -129,13 +129,13 @@ it('shows the submit as busy for the whole round trip, floor included', async ()
 it('keeps itself open with the reason when the submit resolves false', async () => {
   const onCancel = vi.fn();
   render({ onSubmit: () => false, failureLabel: "Couldn't create it", onCancel });
-  const form = container.querySelector('form')!;
+  const form = document.body.querySelector('form')!;
   await act(async () => {
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     for (let i = 0; i < 8; i += 1) await Promise.resolve();
   });
   await advance(MIN_PENDING_MS + 20);
-  expect(container.querySelector('[role="alert"]')?.textContent).toBe("Couldn't create it");
+  expect(document.body.querySelector('[role="alert"]')?.textContent).toBe("Couldn't create it");
   expect(onCancel, 'a failed submit must not close the modal').not.toHaveBeenCalled();
 });
 
@@ -144,20 +144,20 @@ it('puts the thrown reason in the sentence', async () => {
     onSubmit: () => { throw new Error('name already taken'); },
     failureLabel: "Couldn't create it",
   });
-  const form = container.querySelector('form')!;
+  const form = document.body.querySelector('form')!;
   await act(async () => {
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     for (let i = 0; i < 8; i += 1) await Promise.resolve();
   });
   await advance(MIN_PENDING_MS + 20);
-  expect(container.querySelector('[role="alert"]')?.textContent)
+  expect(document.body.querySelector('[role="alert"]')?.textContent)
     .toBe("Couldn't create it — name already taken");
 });
 
 it('clears a stale failure when the user tries again', async () => {
   let fail = true;
   render({ onSubmit: () => (fail ? false : undefined) });
-  const form = container.querySelector('form')!;
+  const form = document.body.querySelector('form')!;
   const submit = async () => {
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -166,24 +166,24 @@ it('clears a stale failure when the user tries again', async () => {
     await advance(MIN_PENDING_MS + 20);
   };
   await submit();
-  expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  expect(document.body.querySelector('[role="alert"]')).not.toBeNull();
   fail = false;
   await submit();
-  expect(container.querySelector('[role="alert"]')).toBeNull();
+  expect(document.body.querySelector('[role="alert"]')).toBeNull();
 });
 
 it('says why the submit is disabled instead of just dimming it', () => {
   render({ submitDisabled: true, disabledReason: 'Give the automation a name first.' });
   expect(buttonLabelled('Create').disabled).toBe(true);
-  const wrap = container.querySelector('span[tabindex="0"]') as HTMLElement;
+  const wrap = document.body.querySelector('span[tabindex="0"]') as HTMLElement;
   act(() => { wrap.focus(); });
   expect(document.querySelector('[role="tooltip"]')?.textContent)
     .toBe('Give the automation a name first.');
-  expect(container.textContent).toContain('Give the automation a name first.');
+  expect(document.body.textContent).toContain('Give the automation a name first.');
   // …and the inline copy of the reason has to be readable, not a dimmed hint.
   // `space.xl` is 12px, so the sweep onto the space scale left this selector
   // measuring exactly what it measured before.
-  const reason = Array.from(container.querySelectorAll('div')).find(
+  const reason = Array.from(document.body.querySelectorAll('div')).find(
     el => el.textContent === 'Give the automation a name first.' && el.style.marginTop === '12px',
   ) as HTMLDivElement | undefined;
   expect(reason).toBeDefined();
@@ -196,7 +196,7 @@ it('makes Cancel a peer of the submit, and blocks it mid-flight', async () => {
   let release: () => void = () => {};
   render({ onCancel, onSubmit: () => new Promise<void>(r => { release = r; }) });
   expect(buttonLabelled('Cancel').disabled).toBe(false);
-  const form = container.querySelector('form')!;
+  const form = document.body.querySelector('form')!;
   await act(async () => {
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     for (let i = 0; i < 8; i += 1) await Promise.resolve();
