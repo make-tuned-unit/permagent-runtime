@@ -786,6 +786,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     apply_schedule_pause_schema(pool).await?;
     apply_schedule_fire_claims_schema(pool).await?;
     apply_decision_journal_schema(pool).await?;
+    apply_model_review_schema(pool).await?;
 
     // Egress audit log (schema v29, sovereignty). Idempotent; shared with
     // migrate_v28_to_v29. Append-only, purely additive, base-independent.
@@ -2082,6 +2083,38 @@ pub async fn apply_schedule_pause_schema(pool: &Pool<Sqlite>) -> Result<()> {
 pub async fn migrate_v57_to_v58(pool: &Pool<Sqlite>) -> Result<()> {
     apply_schedule_pause_schema(pool).await?;
     sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (58)")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// W1 findings are separate from storage actions and decision effects. Shared
+/// by fresh initialization and v58 -> v59; additive and idempotent.
+pub async fn apply_model_review_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS model_review_reports (
+        id TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, report_json TEXT NOT NULL
+    )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS model_review_findings (
+        finding_key TEXT PRIMARY KEY NOT NULL,
+        report_id TEXT NOT NULL REFERENCES model_review_reports(id),
+        consumer TEXT NOT NULL, incumbent_identity TEXT NOT NULL,
+        candidate_identity TEXT NOT NULL, action TEXT NOT NULL, finding_json TEXT NOT NULL,
+        UNIQUE(consumer, incumbent_identity, candidate_identity, action)
+    )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn migrate_v58_to_v59(pool: &Pool<Sqlite>) -> Result<()> {
+    apply_model_review_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (59)")
         .execute(pool)
         .await?;
     Ok(())
@@ -7448,5 +7481,41 @@ mod decision_journal_schema_tests {
         .await
         .unwrap();
         assert_eq!(index_exists, 1);
+    }
+    #[tokio::test]
+    async fn model_review_migration_v58_to_v59_is_additive_and_idempotent() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE schema_version(version INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schema_version VALUES (58)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        migrate_v58_to_v59(&pool).await.unwrap();
+        migrate_v58_to_v59(&pool).await.unwrap();
+        let version: i32 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(version, 59);
+        let stamps: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM schema_version WHERE version=59")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stamps, 1);
+        // Names copied from apply_model_review_schema.
+        let tables: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'model_review_%' ORDER BY name")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(
+            tables,
+            vec!["model_review_findings", "model_review_reports"]
+        );
     }
 }

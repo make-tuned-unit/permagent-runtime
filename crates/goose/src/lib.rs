@@ -72,6 +72,7 @@ pub mod mcp_utils;
 pub mod meeting_writeup;
 pub mod mesh;
 pub mod model;
+pub mod model_review;
 pub mod oauth;
 #[cfg(feature = "otel")]
 pub mod otel;

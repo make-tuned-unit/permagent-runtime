@@ -47,6 +47,7 @@ pub mod job_health;
 pub mod librarian;
 #[cfg(feature = "local-inference")]
 pub mod local_inference;
+pub mod model_review;
 pub mod ollama;
 pub mod onboarding;
 pub mod packs;
@@ -206,6 +207,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(identity::routes(state.clone()))
         .merge(workers::routes(state.clone()))
         .merge(findings::routes(state.clone()))
+        .merge(model_review::routes(state.clone()))
         .merge(storage::routes(state.clone()))
         .merge(ollama::routes(state.clone()))
         .merge(packs::routes())

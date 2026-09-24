@@ -1,0 +1,13 @@
+version: "1.0.0"
+title: "Weekly Model Review"
+description: "Inventories local model artifacts and consumers against a local knowledge snapshot. No live upstream discovery, inference, installation, or switches."
+native_tool: scan_model_review
+produces_model_review: true
+prompt: |
+  Call scan_model_review exactly once. This is the ONLY tool for this automation.
+  The scheduler executes this deterministic native tool without an inference agent.
+  Do not run shell commands, start services, load models, query upstream metadata,
+  install models, benchmark, or change configuration.
+  Persist the typed Model Review report, even when empty, partial, stale, or
+  policy-blocked. Say discovery was local-only. Findings are review information;
+  no finding is a validated switch recommendation without executed bench evidence.

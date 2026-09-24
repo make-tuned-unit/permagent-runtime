@@ -1732,7 +1732,7 @@ impl Scheduler {
                         }
                         execute_job(
                             job_to_execute.clone(),
-                            current_jobs_arc.clone(),
+                            (current_jobs_arc.clone(), session_manager_for_task.clone()),
                             task_job_id.clone(),
                             cancel_token.clone(),
                             brain_snapshot,
@@ -2710,7 +2710,7 @@ impl Scheduler {
             }
             execute_job(
                 job_to_run,
-                self.jobs.clone(),
+                (self.jobs.clone(), self.session_manager.clone()),
                 sched_id.to_string(),
                 cancel_token.clone(),
                 brain_snapshot,
@@ -3407,16 +3407,69 @@ fn job_announce_identity(job: &ScheduledJob) -> Option<(&'static str, &'static s
         .map(|d| (d.id, d.display_name))
 }
 
+/// Native one-tool scheduler entry. Cron and Run now both reach this AFTER
+/// acquiring their existing fire claim. No Agent/provider is constructed.
+/// Like Phase 5's storage contract, persistence is mandatory before success;
+/// this branch deliberately never enters storage's serializer or extraction.
+async fn execute_model_review_job(
+    job: &ScheduledJob,
+    pool: &sqlx::SqlitePool,
+    input: crate::model_review::inventory::ScanInput,
+    cancel: &CancellationToken,
+) -> Result<String> {
+    let content = fs::read_to_string(&job.source)?;
+    let recipe: serde_json::Value = serde_yaml::from_str(&content)?;
+    anyhow::ensure!(recipe.get("native_tool").and_then(|v| v.as_str()) == Some("scan_model_review"),
+        "Model Review requires native_tool: scan_model_review; customized recipes are preserved but cannot invoke inference");
+    anyhow::ensure!(
+        recipe
+            .get("produces_model_review")
+            .and_then(|v| v.as_bool())
+            == Some(true),
+        "Model Review requires its typed persistence contract"
+    );
+    anyhow::ensure!(!cancel.is_cancelled(), "Model Review cancelled");
+    let inventory =
+        tokio::task::spawn_blocking(move || crate::model_review::inventory::scan(&input)).await?;
+    anyhow::ensure!(!cancel.is_cancelled(), "Model Review cancelled");
+    let report = crate::model_review::report::build(inventory, Utc::now())?;
+    // Phase 5: an error (including a missing ledger) fails the scheduler run.
+    crate::model_review::report::persist_report(pool, &report).await?;
+    Ok(report.id)
+}
+
 #[allow(clippy::too_many_lines)]
 async fn execute_job(
     job: ScheduledJob,
-    jobs: Arc<Mutex<JobsMap>>,
+    jobs_and_storage: (Arc<Mutex<JobsMap>>, Arc<SessionManager>),
     job_id: String,
     cancel_token: CancellationToken,
     brain: Option<crate::brain_handle::SafeBrain>,
     persona: Option<crate::config::agent_identity::SharedPersona>,
     agent_config: Option<crate::config::agent_identity::SharedAgentConfig>,
 ) -> Result<String> {
+    let (jobs, session_manager) = jobs_and_storage;
+    let native_model_review = if job.source.is_empty() {
+        false
+    } else {
+        let content = fs::read_to_string(&job.source)?;
+        let recipe: serde_json::Value = serde_yaml::from_str(&content)?;
+        recipe.get("native_tool").and_then(|v| v.as_str()) == Some("scan_model_review")
+            && recipe
+                .get("produces_model_review")
+                .and_then(|v| v.as_bool())
+                == Some(true)
+    };
+    if native_model_review {
+        let pool = session_manager.pool_clone().await?;
+        return execute_model_review_job(
+            &job,
+            &pool,
+            crate::model_review::inventory::ScanInput::local(),
+            &cancel_token,
+        )
+        .await;
+    }
     // Wrapped HERE rather than in the cron tick so a manual `run_now` announces
     // too: from the World's side there is no difference between the Steward
     // sweeping because it is Tuesday and sweeping because someone pressed Run.
@@ -7705,5 +7758,238 @@ mod fire_claim_tests {
         assert_eq!(finished.run_count, 1);
         assert_eq!(finished.failed_runs.len(), 1);
         assert_eq!(s2n_request_count(&pool).await, 0);
+    }
+    #[tokio::test]
+    async fn sovereign_discovery_sends_zero_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let _env = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(dir.path().to_str().unwrap())),
+            ("SOVEREIGN_MODE", Some("true")),
+            (
+                "GOOSE_PROVIDER",
+                Some("invalid-provider-must-not-be-constructed"),
+            ),
+            ("GOOSE_MODEL", Some("unused-native-model")),
+        ]);
+        struct ResetSovereignCache;
+        impl Drop for ResetSovereignCache {
+            fn drop(&mut self) {
+                crate::sovereignty::invalidate_global_mode_cache();
+            }
+        }
+        let _cache = ResetSovereignCache;
+        crate::sovereignty::invalidate_global_mode_cache();
+        assert!(crate::sovereignty::global_sovereign_mode());
+        std::fs::write(dir.path().join("config.yaml"), "{}\n").unwrap();
+        let recipe = dir.path().join("model_review.yaml");
+        std::fs::write(
+            &recipe,
+            include_str!("../../goose-server/src/automation/model_review.yaml"),
+        )
+        .unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let pool = scheduler.session_manager.pool_clone().await.unwrap();
+        let job = ScheduledJob {
+            id: "native-review-without-starter".into(),
+            starter_id: None,
+            source: recipe.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        crate::session::session_manager::TEST_SESSION_MANAGER.scope(
+            scheduler.session_manager.clone(),
+            async {
+                // Calibrate the actual transport guard against this isolated sink:
+                // sovereign denial must leave a blocked record before scan baselines.
+                assert!(!crate::sovereignty::guard_outbound_egress(
+                    crate::sovereignty::EgressKind::CodeScan,
+                    "https://example.invalid", "audit-probe",
+                ).await);
+                let rows = crate::sovereignty::recent_egress_rows(&pool, 10).await.unwrap();
+                assert_eq!(rows.len(), 1);
+                assert!(rows[0].blocked);
+                let (_, probe) = crate::sovereignty::plan_outbound_egress(
+                    crate::sovereignty::EgressKind::CodeScan,
+                    "https://example.invalid", "audit-probe", true,
+                );
+                let mut previous_report = None;
+                for fail_audit in [false, true] {
+                    if fail_audit {
+                        sqlx::query("CREATE TRIGGER reject_egress BEFORE INSERT ON egress_audit BEGIN SELECT RAISE(ABORT, 'audit sink unavailable'); END")
+                            .execute(&pool).await.unwrap();
+                        assert!(crate::sovereignty::record_egress(probe.clone()).await.is_err());
+                    }
+                    let before: (i64, i64) = sqlx::query_as(
+                        "SELECT (SELECT COUNT(*) FROM egress_audit), (SELECT COUNT(*) FROM cost_ledger)",
+                    ).fetch_one(&pool).await.unwrap();
+                    // Same dispatch used by cron and Run now, before Agent setup.
+                    // The invalid provider makes an accidental inference path fail.
+                    let id = execute_job(
+                        job.clone(), (scheduler.jobs.clone(), scheduler.session_manager.clone()),
+                        job.id.clone(), CancellationToken::new(), None, None, None,
+                    ).await.unwrap();
+                    let after: (i64, i64) = sqlx::query_as(
+                        "SELECT (SELECT COUNT(*) FROM egress_audit), (SELECT COUNT(*) FROM cost_ledger)",
+                    ).fetch_one(&pool).await.unwrap();
+                    assert_eq!(after.0 - before.0, 0, "scan attempted outbound egress");
+                    assert_eq!(after.1 - before.1, 0, "scan performed inference");
+                    let report = crate::model_review::report::latest(&pool).await.unwrap().unwrap();
+                    assert_eq!(report.id, id);
+                    assert_ne!(previous_report.as_ref(), Some(&id));
+                    previous_report = Some(id);
+                    // Exact field value from model_review::report::build.
+                    assert_eq!(report.discovery_mode, "local-only");
+                    assert!(report.summary.contains(crate::model_review::LOCAL_ONLY));
+                    assert!(report.policy_blocked);
+                    assert!(report.findings.iter().any(|finding|
+                        finding.tier == crate::model_review::findings::FindingTier::PolicyBlocked));
+                }
+            },
+        ).await;
+    }
+
+    #[tokio::test]
+    async fn model_review_starter_without_native_recipe_uses_ordinary_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let sentinel = "invalid-provider-must-not-be-constructed";
+        let _env = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(dir.path().to_str().unwrap())),
+            ("GOOSE_PROVIDER", Some(sentinel)),
+            ("GOOSE_MODEL", Some("unused-native-model")),
+        ]);
+        let recipe = dir.path().join("ordinary.yaml");
+        let mut declaration: serde_json::Value = serde_yaml::from_str(include_str!(
+            "../../goose-server/src/automation/model_review.yaml"
+        ))
+        .unwrap();
+        let fields = declaration.as_object_mut().unwrap();
+        fields.remove("native_tool");
+        fields.remove("produces_model_review");
+        fields.insert("extensions".into(), serde_json::json!([]));
+        std::fs::write(&recipe, serde_yaml::to_string(&declaration).unwrap()).unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let pool = scheduler.session_manager.pool_clone().await.unwrap();
+        let job = ScheduledJob {
+            id: "ordinary-model-review".into(),
+            starter_id: Some("model_review".into()),
+            source: recipe.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let error = crate::session::session_manager::TEST_SESSION_MANAGER
+            .scope(
+                scheduler.session_manager.clone(),
+                execute_job(
+                    job.clone(),
+                    (scheduler.jobs.clone(), scheduler.session_manager.clone()),
+                    job.id.clone(),
+                    CancellationToken::new(),
+                    None,
+                    None,
+                    None,
+                ),
+            )
+            .await
+            .unwrap_err();
+        // Exact provider-factory failure from providers::init::get_from_registry:
+        // proves this reached ordinary provider setup, not native validation.
+        assert_eq!(error.to_string(), format!("Unknown provider: {sentinel}"));
+        assert!(crate::model_review::report::latest(&pool)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn scheduled_model_review_executes_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(root)),
+            (
+                "GOOSE_PROVIDER",
+                Some("invalid-provider-must-not-be-constructed"),
+            ),
+        ]);
+        std::fs::write(dir.path().join("config.yaml"), "{}\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("models")).unwrap();
+        std::fs::write(
+            dir.path().join("models/whisper-base-q8_0.gguf"),
+            b"controlled inventory",
+        )
+        .unwrap();
+        let recipe = dir.path().join("model_review.yaml");
+        std::fs::write(
+            &recipe,
+            include_str!("../../goose-server/src/automation/model_review.yaml"),
+        )
+        .unwrap();
+        let scheduler = scheduler_at(dir.path()).await;
+        let job = ScheduledJob {
+            id: "model_review".into(),
+            starter_id: Some("model_review".into()),
+            cron: "0 30 19 * * 0".into(),
+            source: recipe.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        install_job(&scheduler, job.clone()).await;
+        let pool = scheduler.session_manager.pool_clone().await.unwrap();
+        // The real cron entry owns a fire claim and calls the native scanner.
+        let task = scheduler.task_for_job(job.clone());
+        let due = instant("2026-09-20T22:30:00Z");
+        tokio::join!(task(due), task(due));
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM model_review_reports")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "duplicate fire must scan once");
+        let report = crate::model_review::report::latest(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(report.summary.contains(crate::model_review::LOCAL_ONLY));
+        assert!(report
+            .inventory
+            .artifacts
+            .iter()
+            .any(|a| a.path == dir.path().join("models/whisper-base-q8_0.gguf")));
+        assert!(!report.findings.is_empty());
+        assert_eq!(
+            scheduler
+                .jobs
+                .lock()
+                .await
+                .get(&job.id)
+                .unwrap()
+                .1
+                .last_status,
+            Some(ScheduleRunStatus::Ok)
+        );
+        // Manual Run now shares the very same dispatch and typed persistence.
+        scheduler.run_now(&job.id).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM model_review_reports")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
+        sqlx::query("DROP TABLE model_review_findings")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(scheduler.run_now(&job.id).await.is_err());
+        assert_eq!(
+            scheduler
+                .jobs
+                .lock()
+                .await
+                .get(&job.id)
+                .unwrap()
+                .1
+                .last_status,
+            Some(ScheduleRunStatus::Error)
+        );
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM model_review_reports")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2, "persistence failure must roll back the report");
     }
 }

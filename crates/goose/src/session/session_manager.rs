@@ -545,6 +545,19 @@ impl<'a> SessionUpdateBuilder<'a> {
     }
 }
 
+// Test seam, deliberate: the real egress-audit and cost-ledger sinks reach
+// storage through `SessionManager::instance()`, so a test that wants to prove
+// "this code path wrote zero rows" needs those sinks to land in ITS isolated
+// database, not the process-global one. It is a task-local rather than a static
+// override because cargo runs tests in parallel threads inside one binary — a
+// process-wide switch would leak between concurrently running tests and turn
+// every such assertion order-dependent. Task-scoped, restores on unwind, and
+// absent from the shipped binary.
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static TEST_SESSION_MANAGER: Arc<SessionManager>;
+}
+
 pub struct SessionManager {
     storage: Arc<SessionStorage>,
 }
@@ -557,6 +570,10 @@ impl SessionManager {
     }
 
     pub fn instance() -> Self {
+        #[cfg(test)]
+        if let Ok(storage) = TEST_SESSION_MANAGER.try_with(|manager| Arc::clone(&manager.storage)) {
+            return Self { storage };
+        }
         Self {
             storage: Arc::clone(&SESSION_STORAGE),
         }
@@ -1965,6 +1982,10 @@ impl SessionStorage {
                     // v58: durable scheduler pause delivery and answer intents.
                     if version < 58 {
                         spectral_schema::migrate_v57_to_v58(&self.pool).await?;
+                    }
+                    // v59: model_review_reports and model_review_findings.
+                    if version < 59 {
+                        spectral_schema::migrate_v58_to_v59(&self.pool).await?;
                     }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the

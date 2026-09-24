@@ -1,0 +1,160 @@
+[
+  {
+    "family": "kokoro",
+    "upstream_source": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
+    "known_latest": {
+      "identity": "sha256:7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
+      "released_at": null,
+      "source_url": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+    },
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "Repository pin from crates/goose-server/src/routes/voice.rs::KOKORO_MODEL_URL/KOKORO_MODEL_SHA256; latest upstream release and release date unknown. Archive digest is not an extracted file digest. No benchmark evidence."
+  },
+  {
+    "family": "kokoro voices",
+    "upstream_source": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
+    "known_latest": {
+      "identity": "sha256:bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+      "released_at": null,
+      "source_url": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+    },
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "Repository pin from crates/goose-server/src/routes/voice.rs::KOKORO_VOICES_URL/KOKORO_VOICES_SHA256; latest upstream release and release date unknown. Archive digest is not an extracted file digest. No benchmark evidence."
+  },
+  {
+    "family": "wake word",
+    "upstream_source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2",
+    "known_latest": {
+      "identity": "sha256:f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a",
+      "released_at": null,
+      "source_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
+    },
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "Repository pin from crates/goose-server/src/voice/kws.rs::KWS_MODEL_URL/KWS_MODEL_SHA256; latest upstream release and release date unknown. Archive digest is not an extracted file digest. No benchmark evidence."
+  },
+  {
+    "family": "speaker",
+    "upstream_source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx",
+    "known_latest": {
+      "identity": "sha256:357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b",
+      "released_at": null,
+      "source_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
+    },
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "Repository pin from crates/goose-server/src/voice/speaker_print.rs::MODEL_URL/MODEL_SHA256; latest upstream release and release date unknown. Archive digest is not an extracted file digest. No benchmark evidence."
+  },
+  {
+    "family": "model-tiny-q80.gguf",
+    "upstream_source": "https://huggingface.co/oxide-lab/whisper-tiny-GGUF/resolve/main/model-tiny-q80.gguf",
+    "known_latest": {
+      "identity": "sha256:52deb0fdcbb9c36b4d570e35f5a65a5ad4275ccdb85e7a06e81a8b05b3743c9d",
+      "released_at": null,
+      "source_url": "https://huggingface.co/oxide-lab/whisper-tiny-GGUF/resolve/main/model-tiny-q80.gguf"
+    },
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "Repository pin: crates/goose/src/dictation/whisper.rs::MODELS; latest release/chronology unknown; signed bundled asset changes require application update."
+  },
+  {
+    "family": "whisper-base-q8_0.gguf",
+    "upstream_source": "https://huggingface.co/oxide-lab/whisper-base-GGUF/resolve/main/whisper-base-q8_0.gguf",
+    "known_latest": {
+      "identity": "sha256:7073e51db7ab02b38cc4fceeac39adc2d7a19beb98badf66aa708f4f0ac71aa9",
+      "released_at": null,
+      "source_url": "https://huggingface.co/oxide-lab/whisper-base-GGUF/resolve/main/whisper-base-q8_0.gguf"
+    },
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "Repository pin: crates/goose/src/dictation/whisper.rs::MODELS; latest release/chronology unknown; signed bundled asset changes require application update."
+  },
+  {
+    "family": "whisper-small-q8_0.gguf",
+    "upstream_source": "https://huggingface.co/oxide-lab/whisper-small-GGUF/resolve/main/whisper-small-q8_0.gguf",
+    "known_latest": {
+      "identity": "sha256:26d317490c2eb1b06ab36c28a13a0cf6fedb04e019d43fbe80bdec37b71cebf4",
+      "released_at": null,
+      "source_url": "https://huggingface.co/oxide-lab/whisper-small-GGUF/resolve/main/whisper-small-q8_0.gguf"
+    },
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "Repository pin: crates/goose/src/dictation/whisper.rs::MODELS; latest release/chronology unknown; signed bundled asset changes require application update."
+  },
+  {
+    "family": "whisper-medium-q8_0.gguf",
+    "upstream_source": "https://huggingface.co/oxide-lab/whisper-medium-GGUF/resolve/main/whisper-medium-q8_0.gguf",
+    "known_latest": {
+      "identity": "sha256:abb06070a461de884f8e1c3aea68576ede3d1ff924388811fbbb5c875eb7740a",
+      "released_at": null,
+      "source_url": "https://huggingface.co/oxide-lab/whisper-medium-GGUF/resolve/main/whisper-medium-q8_0.gguf"
+    },
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "Repository pin: crates/goose/src/dictation/whisper.rs::MODELS; latest release/chronology unknown; signed bundled asset changes require application update."
+  },
+  {
+    "family": "qwen2.5",
+    "upstream_source": "repository local configuration/reference only",
+    "known_latest": null,
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "upstream unknown; no authoritative release fact in the repository. Evaluation candidates are not validated replacements."
+  },
+  {
+    "family": "qwen3",
+    "upstream_source": "repository local configuration/reference only",
+    "known_latest": null,
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "upstream unknown; no authoritative release fact in the repository. Evaluation candidates are not validated replacements."
+  },
+  {
+    "family": "qwen3.8-27b",
+    "upstream_source": "repository local configuration/reference only",
+    "known_latest": null,
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "upstream unknown; no authoritative release fact in the repository. Evaluation candidates are not validated replacements."
+  },
+  {
+    "family": "mistral-nemo",
+    "upstream_source": "repository local configuration/reference only",
+    "known_latest": null,
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "upstream unknown; no authoritative release fact in the repository. Evaluation candidates are not validated replacements."
+  },
+  {
+    "family": "qwen3-embedding",
+    "upstream_source": "repository local configuration/reference only",
+    "known_latest": null,
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "upstream unknown; no authoritative release fact in the repository. Evaluation candidates are not validated replacements."
+  },
+  {
+    "family": "moonshine",
+    "upstream_source": "repository local configuration/reference only",
+    "known_latest": null,
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "upstream unknown; no authoritative release fact in the repository. Evaluation candidates are not validated replacements."
+  },
+  {
+    "family": "streaming STT",
+    "upstream_source": "repository local configuration/reference only",
+    "known_latest": null,
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "upstream unknown; no authoritative release fact in the repository. Evaluation candidates are not validated replacements."
+  },
+  {
+    "family": "MiniCPM5-2B",
+    "upstream_source": "repository local configuration/reference only",
+    "known_latest": null,
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "upstream unknown; no authoritative release fact in the repository. Evaluation candidates are not validated replacements."
+  },
+  {
+    "family": "Laya",
+    "upstream_source": "repository local configuration/reference only",
+    "known_latest": null,
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "upstream unknown; no authoritative release fact in the repository. Evaluation candidates are not validated replacements."
+  },
+  {
+    "family": "unknown",
+    "upstream_source": "repository local configuration/reference only",
+    "known_latest": null,
+    "snapshot_taken_at": "2026-09-22",
+    "notes": "upstream unknown; no authoritative release fact in the repository. Evaluation candidates are not validated replacements."
+  }
+]

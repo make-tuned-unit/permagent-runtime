@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 const WORKSPACE_SNAPSHOT_YAML: &str = include_str!("workspace_snapshot.yaml");
+const MODEL_REVIEW_YAML: &str = include_str!("model_review.yaml");
 const STORAGE_INSIGHTS_YAML: &str = include_str!("storage_insights.yaml");
 const STEWARD_YAML: &str = include_str!("steward.yaml");
 const HEALTH_REVIEW_YAML: &str = include_str!("health_review.yaml");
@@ -50,6 +51,13 @@ struct StarterRecipe {
 // `normalize_cron_to_6field` in scheduler.rs, which migrates any pre-existing
 // 5-field jobs once.
 const STARTERS: &[StarterRecipe] = &[
+    StarterRecipe {
+        id: "model_review",
+        cron: "0 30 19 * * 0",
+        yaml: MODEL_REVIEW_YAML,
+        owner: None,
+        assets: NO_ASSETS,
+    },
     StarterRecipe {
         id: "workspace-snapshot",
         cron: "0 0 8 * * 1-5",
@@ -535,6 +543,12 @@ mod tests {
 
     #[test]
     fn record_starter_deletion_persists_and_dedupes() {
+        // `TEST_ROOT` sets HOME when it is first touched, and that happens
+        // OUTSIDE any env guard (test_support.rs) — a test initialising it
+        // while this guard is held would move HOME between the write below and
+        // the read that checks it, and the tombstone would read back empty.
+        // Forcing it here means it is already initialised for everyone.
+        let _ = crate::test_support::test_root();
         let home = TempDir::new().unwrap();
         let _guard = env_lock::lock_env([("HOME", Some(home.path().to_str().unwrap()))]);
 
@@ -560,6 +574,12 @@ mod tests {
     #[cfg(unix)]
     fn record_starter_deletion_surfaces_write_failure() {
         use std::os::unix::fs::PermissionsExt;
+        // `TEST_ROOT` sets HOME when it is first touched, and that happens
+        // OUTSIDE any env guard (test_support.rs) — a test initialising it
+        // while this guard is held would move HOME between the write below and
+        // the read that checks it, and the tombstone would read back empty.
+        // Forcing it here means it is already initialised for everyone.
+        let _ = crate::test_support::test_root();
         let home = TempDir::new().unwrap();
         let _guard = env_lock::lock_env([("HOME", Some(home.path().to_str().unwrap()))]);
 
@@ -1049,5 +1069,42 @@ mod tests {
         // On-disk NOT overwritten
         let on_disk = std::fs::read_to_string(&yaml_path).unwrap();
         assert_eq!(on_disk, modified);
+    }
+    #[tokio::test]
+    async fn model_review_preserves_pause_and_customization() {
+        // Reconciliation reads the tombstone list under $HOME and writes starter
+        // files under the path root, and env vars are process-wide: without this
+        // lock the test raced `record_starter_deletion_persists_and_dedupes`,
+        // which points HOME at its own tempdir while it writes and reads back.
+        let _ = crate::test_support::test_root();
+        let tmp = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap())),
+        ]);
+        let path = tmp.path().join("model_review.yaml");
+        let edited = format!("{}# custom note\n", MODEL_REVIEW_YAML);
+        std::fs::write(&path, &edited).unwrap();
+        let mut job = make_job(
+            "model_review",
+            path.to_str().unwrap(),
+            "1.0.0",
+            &content_hash(MODEL_REVIEW_YAML),
+            false,
+        );
+        job.paused = true;
+        job.cron = "0 0 12 * * 1".into();
+        let scheduler = MockScheduler::new(vec![job]);
+        reconcile_starter_recipes(&scheduler).await;
+        let jobs = scheduler.list_scheduled_jobs().await;
+        let job = jobs.iter().find(|j| j.id == "model_review").unwrap();
+        assert!(job.paused);
+        assert_eq!(job.cron, "0 0 12 * * 1");
+        assert_eq!(job.user_customized, Some(true));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), edited);
+        let starter = STARTERS.iter().find(|s| s.id == "model_review").unwrap();
+        assert_eq!(starter.cron, "0 30 19 * * 0");
+        assert_eq!(ScheduledJob::default().tz, None);
     }
 }
