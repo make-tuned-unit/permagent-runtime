@@ -39,21 +39,20 @@ fn strip_xml_tags(text: &str) -> String {
 /// Derive a session title from the first user lines without calling a model.
 /// Housekeeping must not pay: titles are local unless there is no usable text.
 pub fn local_session_title(messages: &Conversation) -> Option<String> {
+    // Join with newlines, not spaces: the title picker reads line structure
+    // (headings, a `## Task` section, boilerplate preambles).
     let joined = messages
         .iter()
         .filter(|m| m.role == rmcp::model::Role::User)
         .take(MSG_COUNT_FOR_SESSION_NAME_GENERATION)
         .map(|m| m.as_concat_text())
         .collect::<Vec<_>>()
-        .join(" ");
-    let cleaned = strip_xml_tags(&joined)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if cleaned.is_empty() {
+        .join("\n");
+    let stripped = strip_xml_tags(&joined);
+    if stripped.split_whitespace().next().is_none() {
         return None;
     }
-    Some(safe_truncate(&extract_short_title(&cleaned), 100))
+    Some(safe_truncate(&extract_short_title(&stripped), 100))
 }
 
 /// Deterministic title used by the session manager. Empty or attachment-only
@@ -62,56 +61,229 @@ pub fn local_session_title_or_default(messages: &Conversation) -> String {
     local_session_title(messages).unwrap_or_else(|| "New Session".to_string())
 }
 
-fn extract_short_title(text: &str) -> String {
-    let word_count = text.split_whitespace().count();
-    if word_count <= 8 {
-        return text.to_string();
-    }
+/// The title of the generic coding-harness recipe. It names the harness, not
+/// the task, so sessions running it are titled from their prompt instead.
+/// Mirrors `PERMAGENT_CODING_RECIPE_TITLE` in goose-cli's builtin_recipes.rs.
+const GENERIC_RECIPE_TITLES: &[&str] = &[crate::tool_inspection::CODING_HARNESS_RECIPE_TITLE];
 
+/// A session's name taken from its recipe, when the recipe title names the
+/// job (e.g. "Nightly Health Review"). `None` for a missing, blank, templated
+/// or generic (coding-harness) title, so the caller falls back to the prompt.
+pub fn recipe_session_title(recipe: Option<&crate::recipe::Recipe>) -> Option<String> {
+    let title = recipe?
+        .title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if title.is_empty()
+        || title.contains("{{")
+        || GENERIC_RECIPE_TITLES
+            .iter()
+            .any(|generic| title.eq_ignore_ascii_case(generic))
     {
-        let mut results = Vec::new();
-        let mut quote_char: Option<char> = None;
-        let mut current = String::new();
-        let mut prev_char: Option<char> = None;
+        return None;
+    }
+    Some(safe_truncate(&title, 100))
+}
 
-        for ch in text.chars() {
-            match quote_char {
-                None => {
-                    if matches!(ch, '"' | '\'' | '`') {
-                        let after_alnum = prev_char.map(|p| p.is_alphanumeric()).unwrap_or(false);
-                        if !after_alnum {
-                            quote_char = Some(ch);
-                            current.clear();
-                        }
-                    }
-                }
-                Some(q) => {
-                    if ch == q {
-                        let trimmed = current.trim().to_string();
-                        let wc = trimmed.split_whitespace().count();
-                        if (2..=8).contains(&wc) {
-                            results.push(trimmed);
-                        }
-                        quote_char = None;
-                        current.clear();
-                    } else {
-                        current.push(ch);
-                    }
+const TITLE_MAX_CHARS: usize = 80;
+
+/// Pick a short title from (possibly long, multi-line) user text.
+///
+/// Order of preference: the first line of a `## Task` section or a `Goal:`
+/// line; otherwise the first line that is not boilerplate (a "You are …"
+/// preamble, "Working directory:", a bare heading). Each candidate is cut at
+/// its first sentence end or ~80 chars, and one that is mostly punctuation or
+/// braces (a code literal) is skipped for the next candidate.
+fn extract_short_title(text: &str) -> String {
+    let lines: Vec<String> = text
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+
+    let mut candidates: Vec<String> = Vec::new();
+
+    // 1. A `## Task` section's lines, up to the next heading.
+    if let Some(start) = lines.iter().position(|l| is_task_heading(l)) {
+        candidates.extend(
+            lines[start + 1..]
+                .iter()
+                .take_while(|l| !is_heading(l))
+                .filter(|l| !l.is_empty())
+                .cloned(),
+        );
+    }
+    // 1b. `Goal:` / `Task:` lines (text after the label, else the next line).
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(rest) = strip_label(line, &["goal:", "task:"]) {
+            if !rest.is_empty() {
+                candidates.push(rest.to_string());
+            } else if let Some(next) = lines[i + 1..].iter().find(|l| !l.is_empty()) {
+                if !is_heading(next) {
+                    candidates.push(next.clone());
                 }
             }
-            prev_char = Some(ch);
         }
+    }
+    // 2. Every other non-boilerplate line, in order.
+    candidates.extend(
+        lines
+            .iter()
+            .filter(|l| !l.is_empty() && !is_boilerplate_line(l))
+            .cloned(),
+    );
 
-        if let Some(title) = results.last() {
-            return title.clone();
+    for candidate in &candidates {
+        let title = shorten_title_line(candidate);
+        if is_meaningful_title(&title) {
+            return title;
         }
     }
 
-    if let Some(last) = text.lines().rev().find(|l| !l.trim().is_empty()) {
-        return last.trim().to_string();
-    }
+    // Nothing reads like a title: first non-empty line, shortened, so the
+    // result is at least stable and bounded.
+    lines
+        .iter()
+        .find(|l| !l.is_empty())
+        .map(|l| shorten_title_line(l.trim_start_matches('#').trim()))
+        .unwrap_or_default()
+}
 
-    text.to_string()
+/// A markdown ATX heading: one or more `#` then a space (or nothing).
+fn is_heading(line: &str) -> bool {
+    line.starts_with('#') && {
+        let rest = line.trim_start_matches('#');
+        rest.is_empty() || rest.starts_with(' ')
+    }
+}
+
+fn is_task_heading(line: &str) -> bool {
+    if !is_heading(line) {
+        return false;
+    }
+    let name = line
+        .trim_start_matches('#')
+        .trim()
+        .trim_end_matches(':')
+        .trim();
+    name.eq_ignore_ascii_case("task")
+}
+
+/// `Some(rest)` when `line` starts with one of `labels` (case-insensitive).
+fn strip_label<'a>(line: &'a str, labels: &[&str]) -> Option<&'a str> {
+    labels.iter().find_map(|label| {
+        let head = line.get(..label.len())?;
+        if head.eq_ignore_ascii_case(label) {
+            Some(line[label.len()..].trim())
+        } else {
+            None
+        }
+    })
+}
+
+fn is_boilerplate_line(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    is_heading(line)
+        || lower.starts_with("you are ")
+        || lower.starts_with("working directory:")
+        || lower.starts_with("```")
+        || line.chars().all(|c| matches!(c, '-' | '=' | '*' | '_'))
+}
+
+/// Strip list markers and wrapping quotes, cut at the first sentence end, then
+/// cap at ~80 chars on a word boundary with "…".
+fn shorten_title_line(line: &str) -> String {
+    let mut s = line.trim();
+    // List markers: "- ", "* ", "+ ", "1. ", "2) ".
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(rest) = s.strip_prefix(marker) {
+            s = rest.trim_start();
+        }
+    }
+    if let Some(idx) = s.find(|c: char| !c.is_ascii_digit()) {
+        if idx > 0 && (s[idx..].starts_with(". ") || s[idx..].starts_with(") ")) {
+            s = s[idx + 2..].trim_start();
+        }
+    }
+    let s = strip_wrapping_quotes(s);
+    let s = cut_at_first_sentence(s);
+    cap_title_chars(s, TITLE_MAX_CHARS)
+}
+
+fn strip_wrapping_quotes(mut s: &str) -> &str {
+    loop {
+        let trimmed = s.trim();
+        let mut chars = trimmed.chars();
+        match (chars.next(), chars.next_back()) {
+            (Some(a), Some(b))
+                if trimmed.chars().count() >= 2 && a == b && matches!(a, '"' | '\'' | '`') =>
+            {
+                s = &trimmed[a.len_utf8()..trimmed.len() - b.len_utf8()];
+            }
+            _ => return trimmed,
+        }
+    }
+}
+
+/// Cut at the first ". ", "! " or "? " that ends a sentence of 2+ words.
+/// Skips list numbers ("1."), single-letter initials and common abbreviations.
+fn cut_at_first_sentence(s: &str) -> &str {
+    const ABBREVIATIONS: &[&str] = &["e.g.", "i.e.", "etc.", "vs.", "mr.", "mrs.", "dr."];
+    let bytes = s.as_bytes();
+    for (i, c) in s.char_indices() {
+        if !matches!(c, '.' | '!' | '?') {
+            continue;
+        }
+        let end = i + 1;
+        if end >= bytes.len() || !bytes[end].is_ascii_whitespace() {
+            continue;
+        }
+        let head = &s[..end];
+        let last_word = head.split_whitespace().last().unwrap_or("");
+        let stem = last_word.trim_end_matches(['.', '!', '?']);
+        if c == '.'
+            && (ABBREVIATIONS.contains(&last_word.to_lowercase().as_str())
+                || stem.chars().count() <= 1
+                || stem.chars().all(|ch| ch.is_ascii_digit()))
+        {
+            continue;
+        }
+        if head.split_whitespace().count() < 2 {
+            continue;
+        }
+        return if c == '.' { &s[..i] } else { head };
+    }
+    s
+}
+
+fn cap_title_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let prefix: String = s.chars().take(max_chars).collect();
+    let cut = match prefix.rfind(char::is_whitespace) {
+        Some(idx) if idx > 0 => &prefix[..idx],
+        _ => prefix.as_str(),
+    };
+    let cut = cut.trim_end_matches(|c: char| {
+        c.is_whitespace() || matches!(c, ',' | ':' | ';' | '-' | '–' | '—' | '→' | '(' | '[')
+    });
+    format!("{cut}…")
+}
+
+/// A title must start with a letter or digit, carry some letters, and be
+/// mostly alphanumeric — never a brace/punctuation-heavy code literal.
+fn is_meaningful_title(title: &str) -> bool {
+    let Some(first) = title.chars().next() else {
+        return false;
+    };
+    if !first.is_alphanumeric() {
+        return false;
+    }
+    let letters = title.chars().filter(|c| c.is_alphabetic()).count();
+    let visible = title.chars().filter(|c| !c.is_whitespace()).count();
+    let alnum = title.chars().filter(|c| c.is_alphanumeric()).count();
+    letters >= 2 && alnum * 10 >= visible * 6
 }
 
 /// A global store for the current model being used, we use this as when a provider returns, it tells us the real model, not an alias
@@ -1034,56 +1206,162 @@ mod tests {
 
     #[test]
     fn test_extract_short_title() {
+        // Short plain text stays as-is.
         assert_eq!(extract_short_title("List files"), "List files");
+        assert_eq!(extract_short_title("Hello world"), "Hello world");
+        // Line structure is kept: the first real line wins, not the last.
         assert_eq!(
-            extract_short_title(
-                r#"blah blah blah blah blah blah blah blah blah "List files in folder""#
-            ),
+            extract_short_title("List files in folder\nand then some more words here"),
             "List files in folder"
         );
+        // Wrapping quotes/backticks are stripped.
         assert_eq!(
-            extract_short_title(
-                "blah blah blah blah blah blah blah blah blah `View current files`"
-            ),
+            extract_short_title("`View current files`"),
             "View current files"
         );
         assert_eq!(
-            extract_short_title(
-                r#"stuff stuff stuff stuff stuff stuff stuff stuff "Abc title" "Zzz title""#
-            ),
-            "Zzz title"
-        );
-        assert_eq!(
-            extract_short_title(
-                "long long long long long long long long long\nList files in folder"
-            ),
-            "List files in folder"
-        );
-        assert_eq!(
-            extract_short_title(
-                r#"lots of words here and there and more and more "single" final line here"#
-            ),
-            "lots of words here and there and more and more \"single\" final line here"
-        );
-        assert_eq!(extract_short_title("Hello world"), "Hello world");
-        assert_eq!(
-            extract_short_title(
-                r#"1. Analyze the request. 2. The user's message says list files. 3. "List current folder files" fits perfectly. Result: List current folder files"#
-            ),
-            "List current folder files"
-        );
-        assert_eq!(
-            extract_short_title(
-                r#"the user's phrasing is about listing files and the user's intent is clear. "List folder files" is best"#
-            ),
+            extract_short_title("\"List folder files\""),
             "List folder files"
         );
+        // Quoted spans inside long text are NOT picked as the title.
         assert_eq!(
             extract_short_title(
-                "lots of reasoning here about what to call it\nList current folder files"
+                r#"Summarise the release notes and mention "Abc title" and "Zzz title" at the end"#
             ),
-            "List current folder files"
+            "Summarise the release notes and mention \"Abc title\" and \"Zzz title\" at the end"
         );
+        // Cut at the first sentence end.
+        assert_eq!(
+            extract_short_title("Rename the build step. Then rerun the tests and report back."),
+            "Rename the build step"
+        );
+        // List numbers and abbreviations are not sentence ends.
+        assert_eq!(
+            extract_short_title("1. Compare e.g. two routers"),
+            "Compare e.g. two routers"
+        );
+        // Over ~80 chars: cut on a word boundary with an ellipsis.
+        let long = "word ".repeat(40);
+        let title = extract_short_title(&long);
+        assert!(title.ends_with('…'), "{title}");
+        assert!(title.chars().count() <= TITLE_MAX_CHARS + 1, "{title}");
+        // Boilerplate preambles and bare headings are skipped.
+        assert_eq!(
+            extract_short_title(
+                "You are a helpful agent.\n# Heading\nWorking directory: /tmp\nDo the thing"
+            ),
+            "Do the thing"
+        );
+        // A `Goal:` line wins over earlier prose.
+        assert_eq!(
+            extract_short_title("Some context first\nGoal: ship the watch app"),
+            "ship the watch app"
+        );
+        // A punctuation/brace-heavy line is never the title.
+        assert_eq!(
+            extract_short_title("{name: 'x', depth: 25|50}\nAdd scroll depth tracking"),
+            "Add scroll depth tracking"
+        );
+        // A markdown heading as the only line still yields readable text.
+        assert_eq!(extract_short_title("# Fix login"), "Fix login");
+    }
+
+    /// (a) The Grow coding-agent prompt shape (codingAgentDirective.ts): a
+    /// "You are …" preamble, a working directory, then a `## Task` section, with
+    /// a code literal in a later bullet that the old heuristic picked.
+    #[test]
+    fn local_session_title_uses_task_section_of_grow_prompt() {
+        let prompt = "You are a coding agent working in the repository for \"example.com\".\n\
+Working directory: /Users/me/dev/example\n\
+Implement the growth action below in this repo. Do not stop at drafting copy in chat — write the change into the right files.\n\
+\n\
+## Task\n\
+Fix event_cta_click funnel leak: 3,836 impressions → 940 clicks (24.5% CTR) suggests either CTA placement or copy issues\n\
+Category: conversion\n\
+\n\
+## What to do\n\
+Move the CTA above the fold and test new copy.\n\
+\n\
+## Steps\n\
+1. Add a scroll-depth event.\n\
+- Track `{name: 'scroll_depth', depth: 25|50|75|100, event_id: '[event-id]'}` on the event page\n\
+\n\
+## Deliverable\n\
+Commit the change.";
+        let conv = Conversation::new_unvalidated(vec![Message::user().with_text(prompt)]);
+        let title = local_session_title(&conv).expect("grow prompt yields a title");
+        assert!(
+            title.starts_with("Fix event_cta_click funnel leak: 3,836 impressions → 940 clicks"),
+            "{title}"
+        );
+        assert!(title.ends_with('…'), "{title}");
+        assert!(!title.contains('{'), "{title}");
+        assert!(!title.contains("scroll_depth"), "{title}");
+    }
+
+    /// (b) A health-review-like prompt with a quoted phrase deep inside: the
+    /// title comes from the opening sentence, not the quoted phrase.
+    #[test]
+    fn local_session_title_ignores_quoted_phrase_in_health_review_prompt() {
+        let prompt = "Review Permagent's own logs for the exact last 24 hours. This is a\n\
+diagnostic job, not a free-form log hunt: the bundled evidence collector owns\n\
+file enumeration, timestamps, mirror de-duplication, aggregation, and latency\n\
+pairing.\n\
+\n\
+## Diagnostic rules\n\
+\n\
+- Session 20260827_1's 129 warnings were the sanitizer dropping Top-of-Mind\n\
+  because `\"Merged text content\"` was treated as unexpected.\n";
+        let conv = Conversation::new_unvalidated(vec![Message::user().with_text(prompt)]);
+        let title = local_session_title(&conv).expect("health prompt yields a title");
+        assert_eq!(
+            title,
+            "Review Permagent's own logs for the exact last 24 hours"
+        );
+        assert!(!title.contains("Merged text content"), "{title}");
+    }
+
+    /// (c) A short plain chat message stays as typed.
+    #[test]
+    fn local_session_title_keeps_short_chat_message() {
+        let conv = Conversation::new_unvalidated(vec![
+            Message::user().with_text("what's the weather in Lisbon today")
+        ]);
+        assert_eq!(
+            local_session_title(&conv).as_deref(),
+            Some("what's the weather in Lisbon today")
+        );
+    }
+
+    /// (d) A specific recipe title names the session; the generic coding
+    /// harness title does not, so those sessions fall back to the prompt.
+    #[test]
+    fn recipe_session_title_uses_specific_titles_only() {
+        let recipe = |title: &str| {
+            crate::recipe::Recipe::builder()
+                .version("1.0.0")
+                .title(title)
+                .description("d")
+                .prompt("p")
+                .build()
+                .unwrap()
+        };
+        assert_eq!(
+            recipe_session_title(Some(&recipe("Nightly Health Review"))).as_deref(),
+            Some("Nightly Health Review")
+        );
+        assert_eq!(
+            recipe_session_title(Some(&recipe(
+                crate::tool_inspection::CODING_HARNESS_RECIPE_TITLE
+            ))),
+            None
+        );
+        assert_eq!(recipe_session_title(Some(&recipe("   "))), None);
+        assert_eq!(
+            recipe_session_title(Some(&recipe("Review {{ name }}"))),
+            None
+        );
+        assert_eq!(recipe_session_title(None), None);
     }
 
     #[test]

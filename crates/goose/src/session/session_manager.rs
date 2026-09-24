@@ -1804,7 +1804,13 @@ impl SessionManager {
             .count();
 
         if user_message_count <= MSG_COUNT_FOR_SESSION_NAME_GENERATION {
-            let name = provider.generate_session_name(id, &conversation).await?;
+            // A recipe whose title names the job (e.g. "Nightly Health
+            // Review") titles its sessions; the generic coding-harness title
+            // does not, so those sessions are named from their prompt.
+            let name = match crate::providers::base::recipe_session_title(session.recipe.as_ref()) {
+                Some(title) => title,
+                None => provider.generate_session_name(id, &conversation).await?,
+            };
             self.update(id)
                 .system_generated_name(name.clone())
                 .apply()
