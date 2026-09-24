@@ -125,6 +125,23 @@ impl HoldState {
     }
 }
 
+/// The line a person reads about a hold, for the Build cost bar and the In
+/// flight list. `last_plan` is addressed TO the worker ("Do not declare this
+/// done…"), so showing it verbatim reads as an instruction to the user.
+pub fn hold_user_note(state: &HoldState) -> Option<String> {
+    let plan = state.last_plan.as_deref()?;
+    let why = if plan.starts_with("verified but uncommitted") {
+        "verified, waiting on a commit"
+    } else if plan.starts_with("Verify passed") || plan.starts_with("You left a review report") {
+        "a failing command keeps repeating"
+    } else if plan.starts_with("This goal is read-only") {
+        "done claimed without a review report"
+    } else {
+        "done claimed before verify passed"
+    };
+    Some(format!("held {}/{MAX_HOLDS}: {why}", state.count))
+}
+
 /// Pure: should this worker's "done" be accepted, held, or parked?
 ///
 /// - Any role after a successful verify → Allow (goal callers also require committed work).
@@ -506,6 +523,34 @@ pub fn goal_already_satisfied_at_baseline(facts: &BaselineSatisfactionFacts) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hold_user_note_never_shows_the_worker_instruction() {
+        let held = |plan: &str| HoldState {
+            count: 1,
+            last_plan: Some(plan.to_string()),
+        };
+        let note = hold_user_note(&held(
+            "Do not declare this done. Run verify, read the errors, make one focused fix, and run verify again.",
+        ))
+        .unwrap();
+        assert_eq!(
+            note,
+            format!("held 1/{MAX_HOLDS}: done claimed before verify passed")
+        );
+        assert!(!note.contains("Do not declare"));
+        assert!(
+            hold_user_note(&held("verified but uncommitted: commit your work"))
+                .unwrap()
+                .ends_with("verified, waiting on a commit")
+        );
+        assert!(
+            hold_user_note(&held("This goal is read-only — no code change"))
+                .unwrap()
+                .ends_with("done claimed without a review report")
+        );
+        assert_eq!(hold_user_note(&HoldState::default()), None);
+    }
+
     use super::*;
 
     #[test]

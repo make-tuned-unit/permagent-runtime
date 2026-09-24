@@ -125,7 +125,9 @@ pub use escalation::{
     tier_for_workflow_role, workflow_role_for_tier, EscalationOutcome, GoalEscalationState,
     ParkReason, ESCALATION_METADATA_KEY, MAX_ESCALATIONS_DEFAULT,
 };
-pub use hold_done::{decide_hold, HoldOutcome, HoldState, HOLD_METADATA_KEY, MAX_HOLDS};
+pub use hold_done::{
+    decide_hold, hold_user_note, HoldOutcome, HoldState, HOLD_METADATA_KEY, MAX_HOLDS,
+};
 pub use knowledge::{
     kb_is_stale, kb_snapshot_date, lookup as lookup_model_knowledge, lookup_with_confidence,
     LookupConfidence, ModelKnowledge, KB_SNAPSHOT_DATE, KB_SNAPSHOT_STALE_AFTER_DAYS, KNOWN_MODELS,
