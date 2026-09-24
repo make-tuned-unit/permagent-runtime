@@ -25,7 +25,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../world/shared/useOrchestratorName', () => ({ useOrchestratorName: () => 'Henry' }));
-vi.mock('../../mobius/Mobius', () => ({ Mobius: () => null }));
+vi.mock('../../mobius/Mobius', () => ({ Mobius: () => <span data-testid="mobius" /> }));
 vi.mock('../../../lib/store', () => ({
   useCommandCenter: (sel: (s: Record<string, unknown>) => unknown) =>
     sel({ openGoalDetail: () => {} }),
@@ -197,6 +197,33 @@ describe('InFlightCard fits a grid-sized tile', () => {
     // And a scrolled list rests on a row start, keeping the viewport whole.
     expect(list.style.scrollSnapType).toBe('y mandatory');
     for (const row of qa('inflight-row')) expect(row.style.scrollSnapAlign).toBe('start');
+  });
+});
+
+describe('InFlightCard at Home\'s real tile size (~180 x 230)', () => {
+  it('gives each row\'s text the row\'s width: no logo beside it', () => {
+    // QA (real-size walk): "2 active" over a box showing only the Permagent
+    // logo. Mobius `size={36}` is its height; the active frames are 1024x485,
+    // so it drew 76px wide and left a ~16px text column in a 180px tile.
+    act(() => root.render(<InFlightCard goals={GOALS} />));
+    expect(qa('mobius')).toHaveLength(0);
+    for (const row of qa('inflight-row')) {
+      expect(row.querySelector('img')).toBeNull();
+      const inner = row.firstElementChild as HTMLElement;
+      expect(inner.children).toHaveLength(1);
+      expect(inner.firstElementChild?.getAttribute('data-testid')).toBe('inflight-row-text');
+    }
+  });
+
+  it('keeps row padding and gap small enough for two rows in a 230px tile', () => {
+    // Tile 230 - card padding 2x16 - border 2 - title ~29 leaves ~167px. A row
+    // is padding + border + three text lines (~17 + 14 + 2 + 15); with the old
+    // 20px padding and 16px gap two rows needed ~208px and only one showed.
+    act(() => root.render(<InFlightCard goals={GOALS} />));
+    const row = qa('inflight-row')[0];
+    expect(row.style.padding).toBe('8px 10px');
+    const grid = q('inflight-list').firstElementChild as HTMLElement;
+    expect(grid.style.gap).toBe('8px');
   });
 });
 

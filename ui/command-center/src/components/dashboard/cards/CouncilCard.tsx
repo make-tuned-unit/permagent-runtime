@@ -9,6 +9,27 @@ import { api, type CouncilLatest } from '../../../lib/api';
 import { Button } from '../../common/Button';
 import { useDecisions } from '../decisions/useDecisions';
 import { DecisionInbox } from '../decisions/DecisionInbox';
+import { MarkdownContent } from '../../chat/MarkdownContent';
+
+/**
+ * The report body is markdown (the Council writes `**Verdict:**`, `####`
+ * project headings, lists). It was dropped into a `pre-wrap` div as a string,
+ * so Home showed the asterisks and hashes literally. It now goes through the
+ * chat's own renderer. Tailwind's preflight already makes every heading
+ * inherit the body's size, which is what a card wants (an h4 at page size
+ * would dwarf the headline); these variants only give headings weight, the
+ * body text colour, and a little air above, so a heading still reads as one.
+ */
+// Spelled out in full: Tailwind finds classes by scanning source text, so a
+// class assembled at run time would never be generated.
+const COUNCIL_MD_CLASS = [
+  '[&_h1]:font-semibold [&_h1]:mt-2 [&_h1]:mb-1',
+  '[&_h2]:font-semibold [&_h2]:mt-2 [&_h2]:mb-1',
+  '[&_h3]:font-semibold [&_h3]:mt-2 [&_h3]:mb-1',
+  '[&_h4]:font-semibold [&_h4]:mt-2 [&_h4]:mb-1',
+  '[&_h5]:font-semibold [&_h5]:mt-2 [&_h5]:mb-1',
+  '[&_h6]:font-semibold [&_h6]:mt-2 [&_h6]:mb-1',
+].join(' ');
 
 export function CouncilCard() {
   const { colors } = useTheme();
@@ -98,11 +119,15 @@ export function CouncilCard() {
             }}>
               {report.headline}
             </div>
-            <div style={{
-              fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5,
-              whiteSpace: 'pre-wrap', overflow: 'auto', flex: 1, minHeight: 0,
-            }}>
-              {report.markdown}
+            <div
+              data-testid="council-report-body"
+              className={COUNCIL_MD_CLASS}
+              style={{
+                fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5,
+                overflow: 'auto', flex: 1, minHeight: 0, overflowWrap: 'anywhere',
+              }}
+            >
+              <MarkdownContent content={report.markdown} />
             </div>
             <div style={{
               display: 'flex', gap: space.lg, marginTop: space.lg, alignItems: 'center',

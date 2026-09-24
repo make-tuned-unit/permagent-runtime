@@ -147,7 +147,7 @@ function TodoRow({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        display: 'flex', alignItems: 'center', gap: space.lg,
+        display: 'flex', alignItems: 'flex-start', gap: space.lg,
         padding: `${space.md}px`, marginBottom: space.xxs,
         borderRadius: radius.sm,
         // Was `colors.borderHi` — a cyan-tinted hairline reused as a hover
@@ -158,74 +158,95 @@ function TodoRow({
         transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}, opacity ${duration.fast}ms ${ease.out}`,
       }}
     >
-      {/* Title + provenance. Clicking opens the card on its own board.
-          Not on the Button primitive: this is a two-line block whose title and
-          provenance lines truncate against the width the button's own `flex: 1`
-          gives them. The primitive wraps its children in one span, which has no
-          such width to truncate against — the row would overflow instead of
-          ellipsing. Left as a raw button. */}
-      <Tooltip content={`Open on the ${todo.projectName} board`}>
-        <button
-          onClick={open}
+      {/* Title, then provenance and due date on the second line.
+          The due label used to sit on the title's row, nowrap, beside the
+          dismiss button: at Home's real tile width (~245px) "16 days overdue"
+          took most of the row and the title was cut to "Set …" (QA, real-size
+          walk). It now shares the second line with the provenance, so the
+          title owns the row's whole width and may wrap to two lines. The
+          provenance truncates first; if even that leaves no room, the due
+          label wraps under it rather than squeezing either. */}
+      <div data-testid="todo-row-text" style={{ flex: 1, minWidth: 0 }}>
+        {/* Not on the Button primitive: the primitive wraps its children in
+            one span with no width to clamp against, so a long title would
+            overflow instead of wrapping and clamping. Left as a raw button. */}
+        <Tooltip content={`Open on the ${todo.projectName} board`}>
+          <button
+            data-testid="todo-row-title"
+            onClick={open}
+            style={{
+              display: 'block', width: '100%', minWidth: 0,
+              textAlign: 'left', cursor: 'pointer',
+              background: 'transparent', border: 'none', padding: 0, color: 'inherit', font: 'inherit',
+            }}
+          >
+            <span style={{
+              display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+              overflow: 'hidden', overflowWrap: 'anywhere',
+              fontSize: 12.5, lineHeight: 1.35, color: colors.text,
+            }}>{todo.title}</span>
+          </button>
+        </Tooltip>
+        <div
+          data-testid="todo-row-meta"
           style={{
-            flex: 1, minWidth: 0, textAlign: 'left', cursor: 'pointer',
-            background: 'transparent', border: 'none', padding: 0, color: 'inherit', font: 'inherit',
+            display: 'flex', flexWrap: 'wrap', alignItems: 'center',
+            columnGap: space.sm, rowGap: space.xxs, marginTop: space.xxs, minWidth: 0,
           }}
         >
-          <div style={{
-            fontSize: 12.5, color: colors.text,
-            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-          }}>{todo.title}</div>
-          <div style={{
-            fontSize: 10.5, color: colors.textDim, marginTop: space.xxs,
+          <span style={{
+            flex: '0 1 auto', minWidth: 0,
+            fontSize: 10.5, color: colors.textDim,
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
           }}>
             {todo.projectName} · {todo.columnName}
-          </div>
-        </button>
-      </Tooltip>
-
-      {editing ? (
-        <input
-          type="date"
-          autoFocus
-          defaultValue={todo.dueDate}
-          disabled={busy}
-          onBlur={e => void reschedule(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter') void reschedule((e.target as HTMLInputElement).value);
-            if (e.key === 'Escape') setEditing(false);
-          }}
-          style={{
-            fontSize: textSize.micro, padding: `${space.xs}px`, colorScheme: 'inherit',
-            borderRadius: radius.sm, border: `1px solid ${colors.border}`,
-            background: colors.surface, color: colors.text,
-          }}
-        />
-      ) : (
-        <Tooltip content="Change the due date">
-          <Button
-            colors={colors}
-            variant="bare"
-            type="button"
-            onClick={() => setEditing(true)}
-            style={{
-              '--pa-btn-bg': 'transparent',
-              '--pa-btn-fg': overdue ? colors.danger : colors.textMuted,
-              '--pa-btn-border': 'transparent',
-              '--pa-btn-bg-hover': colors.surfaceHi,
-              '--pa-btn-fg-hover': overdue ? colors.danger : colors.text,
-              '--pa-btn-bg-active': colors.surface,
-              '--pa-btn-pad': '2px 4px',
-              '--pa-btn-radius': `${radius.sm}px`,
-              '--pa-btn-weight': overdue ? 600 : 400,
-              fontSize: 10.5, whiteSpace: 'nowrap',
-              // Driven by the ROW's hover, not this button's — keep it inline.
-              textDecoration: hovered ? 'underline' : 'none',
-            } as CSSProperties}
-          >{relativeDueLabel(todo.dueDate, today)}</Button>
-        </Tooltip>
-      )}
+          </span>
+          {editing ? (
+            <input
+              type="date"
+              autoFocus
+              defaultValue={todo.dueDate}
+              disabled={busy}
+              onBlur={e => void reschedule(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') void reschedule((e.target as HTMLInputElement).value);
+                if (e.key === 'Escape') setEditing(false);
+              }}
+              style={{
+                fontSize: textSize.micro, padding: `${space.xxs}px ${space.xs}px`, colorScheme: 'inherit',
+                borderRadius: radius.sm, border: `1px solid ${colors.border}`,
+                background: colors.surface, color: colors.text,
+              }}
+            />
+          ) : (
+            <Tooltip content="Change the due date">
+              <Button
+                colors={colors}
+                variant="bare"
+                type="button"
+                data-testid="todo-row-due"
+                onClick={() => setEditing(true)}
+                style={{
+                  '--pa-btn-bg': 'transparent',
+                  '--pa-btn-fg': overdue ? colors.danger : colors.textMuted,
+                  '--pa-btn-border': 'transparent',
+                  '--pa-btn-bg-hover': colors.surfaceHi,
+                  '--pa-btn-fg-hover': overdue ? colors.danger : colors.text,
+                  '--pa-btn-bg-active': colors.surface,
+                  // No side padding: the label lines up with the provenance
+                  // text when it wraps under it.
+                  '--pa-btn-pad': '0',
+                  '--pa-btn-radius': `${radius.sm}px`,
+                  '--pa-btn-weight': overdue ? 600 : 400,
+                  fontSize: 10.5, whiteSpace: 'nowrap', flexShrink: 0,
+                  // Driven by the ROW's hover, not this button's — keep it inline.
+                  textDecoration: hovered ? 'underline' : 'none',
+                } as CSSProperties}
+              >{relativeDueLabel(todo.dueDate, today)}</Button>
+            </Tooltip>
+          )}
+        </div>
+      </div>
 
       <Tooltip content="Hide from this list — the card stays on its board">
         <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
