@@ -1459,11 +1459,10 @@ fn active_goal_from_row(r: &sqlx::sqlite::SqliteRow) -> ActiveGoal {
         .and_then(crate::cost_router::RoutingSnapshot::from_metadata)
         .map(|s| s.note)
         .filter(|n| !n.is_empty());
+    // Not `last_plan` itself: that text is written to the worker, not the user.
     let hold_note = obj
-        .and_then(|m| m.get(crate::cost_router::HOLD_METADATA_KEY))
-        .and_then(|v| v.get("last_plan"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(crate::cost_router::HoldState::from_metadata)
+        .and_then(|h| crate::cost_router::hold_user_note(&h));
     ActiveGoal {
         id: r.get("id"),
         title: r.get("title"),
