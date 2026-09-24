@@ -643,6 +643,39 @@ fn valid_pairs(v: &serde_json::Value, first: &str, second: &str) -> bool {
     })
 }
 
+/// Undo one layer of over-escaping in model-written strategy text.
+///
+/// Models writing a tool call's JSON arguments sometimes escape a quote twice,
+/// so the decoded string carries a literal backslash before the quote
+/// (`Just \"here's what's worth your time.\"`). Stored verbatim, the Grow
+/// Strategy card showed the backslashes (QA 2026-09-24, Evntally's value
+/// proposition). Prose never needs a backslash before a quote, so the
+/// two-character sequence `\"` is collapsed to `"`.
+pub fn unescape_overescaped_quotes(text: &str) -> String {
+    if text.contains("\\\"") {
+        text.replace("\\\"", "\"")
+    } else {
+        text.to_string()
+    }
+}
+
+/// [`unescape_overescaped_quotes`] over every string inside a points/metrics
+/// array (`[{label, detail}]` / `[{label, value}]`).
+fn unescape_pairs(mut v: serde_json::Value) -> serde_json::Value {
+    if let Some(items) = v.as_array_mut() {
+        for item in items {
+            if let Some(obj) = item.as_object_mut() {
+                for field in obj.values_mut() {
+                    if let Some(s) = field.as_str() {
+                        *field = serde_json::Value::String(unescape_overescaped_quotes(s));
+                    }
+                }
+            }
+        }
+    }
+    v
+}
+
 pub async fn set_project_strategy(
     pool: &Pool<Sqlite>,
     project_id: &str,
@@ -650,6 +683,8 @@ pub async fn set_project_strategy(
     content: &str,
     extras: StrategyExtras,
 ) -> Result<Option<Project>, String> {
+    let content = unescape_overescaped_quotes(content);
+    let content = content.as_str();
     if !STRATEGY_PILLARS.contains(&pillar) {
         return Err(format!(
             "Unknown strategy pillar '{pillar}'. Valid pillars: {}",
@@ -682,13 +717,13 @@ pub async fn set_project_strategy(
         if !valid_pairs(&points, "label", "detail") {
             return Err("points must be an array of {label, detail} strings".to_string());
         }
-        entry_map.insert("points".to_string(), points);
+        entry_map.insert("points".to_string(), unescape_pairs(points));
     }
     if let Some(metrics) = extras.metrics {
         if !valid_pairs(&metrics, "label", "value") {
             return Err("metrics must be an array of {label, value} strings".to_string());
         }
-        entry_map.insert("metrics".to_string(), metrics);
+        entry_map.insert("metrics".to_string(), unescape_pairs(metrics));
     }
     // NB: Map's Index panics on an absent key — insert(), never `map[key] =`.
     strategy
@@ -900,6 +935,52 @@ mod tests {
 
         let fetched = get_project(&pool, &created.id).await.unwrap().unwrap();
         assert_eq!(fetched.name, "Test Project");
+    }
+
+    #[tokio::test]
+    async fn strategy_save_strips_overescaped_quotes() {
+        // QA 2026-09-24: Evntally's value proposition was stored as
+        // `Just \"here's what's worth your time.\"` (a literal backslash
+        // before each quote — the model escaped its tool-call string twice),
+        // and the Strategy card rendered the backslashes.
+        let pool = test_pool().await;
+        let created = create_project(
+            &pool,
+            CreateProject {
+                name: "Evntally".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let saved = set_project_strategy(
+            &pool,
+            &created.id,
+            "value",
+            r#"No infinite scrolling. Just \"here's what's worth your time.\""#,
+            StrategyExtras {
+                points: Some(serde_json::json!([
+                    { "label": r#"\"Editorial\" picks"#, "detail": r#"Say \"no\" to noise"# }
+                ])),
+                metrics: Some(serde_json::json!([{ "label": "Open rate", "value": r#"\"40%\""# }])),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let value = &saved.metadata_json["strategy"]["value"];
+        assert_eq!(
+            value["content"],
+            r#"No infinite scrolling. Just "here's what's worth your time.""#
+        );
+        assert_eq!(value["points"][0]["label"], r#""Editorial" picks"#);
+        assert_eq!(value["points"][0]["detail"], r#"Say "no" to noise"#);
+        assert_eq!(value["metrics"][0]["value"], r#""40%""#);
+        // Text with no backslash-quote is untouched.
+        assert_eq!(
+            unescape_overescaped_quotes("plain \"quoted\" text"),
+            "plain \"quoted\" text"
+        );
     }
 
     #[tokio::test]

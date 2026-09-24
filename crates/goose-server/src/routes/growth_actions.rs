@@ -641,6 +641,37 @@ const SYSTEM: &str = "You are a growth analyst reviewing one product's own first
     \"targetMetric\":\"pageviews|sessions|aeo_visits|bounce_rate\",\
     \"targetDir\":\"up|down\"}]}";
 
+/// Longest action title kept, in characters. Titles are headlines, but the
+/// model writes full sentences often enough ("…to capture answer-engine traffic
+/// (ChatGPT, Perplexity)") that the old 120-char cut landed mid-word on real
+/// rows. The UI clamps to three lines, so the cap is only a guard.
+const TITLE_MAX_CHARS: usize = 200;
+
+/// Cut `text` to at most `max` characters at a word boundary, with "…" when
+/// anything was dropped. Never splits a word: the QA walk of 2026-09-24 found
+/// titles ending "…single-event funnel and" and "…(ChatGPT, Perplexit".
+fn clip_at_word(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    // Leave room for the ellipsis.
+    let head: String = text.chars().take(max.saturating_sub(1)).collect();
+    let next_is_boundary = text
+        .chars()
+        .nth(max.saturating_sub(1))
+        .is_some_and(char::is_whitespace);
+    let kept = if next_is_boundary {
+        head.as_str()
+    } else {
+        match head.rfind(char::is_whitespace) {
+            Some(i) if i > 0 => &head[..i],
+            _ => head.as_str(),
+        }
+    };
+    let kept = kept.trim_end_matches(|c: char| c.is_whitespace() || ",;:-—(".contains(c));
+    format!("{kept}…")
+}
+
 /// Parse and sanitize the model's reply.
 ///
 /// Drops any action missing evidence or a recommendation: an ungrounded action
@@ -712,7 +743,7 @@ pub fn parse_actions(text: &str) -> Vec<GrowthAction> {
                 "none".to_string()
             };
             Some(GrowthAction {
-                title: title.chars().take(120).collect(),
+                title: clip_at_word(&title, TITLE_MAX_CHARS),
                 evidence: evidence.chars().take(400).collect(),
                 recommendation: recommendation.chars().take(600).collect(),
                 steps,
@@ -3179,6 +3210,32 @@ mod tests {
         let actions = parse_actions(reply);
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].title, "Real one");
+    }
+
+    /// QA 2026-09-24: `take(120)` cut real titles mid-word with no ellipsis.
+    #[test]
+    fn long_titles_are_kept_whole_or_cut_at_a_word_with_an_ellipsis() {
+        let full = "Create and optimize structured answer content on a blog or FAQ page to \
+                    capture answer-engine traffic (ChatGPT, Perplexity)";
+        assert!(full.chars().count() > 120);
+        let reply = serde_json::json!({ "actions": [
+            { "title": full, "evidence": "e", "recommendation": "r" }
+        ]})
+        .to_string();
+        assert_eq!(
+            parse_actions(&reply)[0].title,
+            full,
+            "fits the cap → kept whole"
+        );
+
+        let long = "word ".repeat(60);
+        let clipped = clip_at_word(long.trim(), TITLE_MAX_CHARS);
+        assert!(clipped.ends_with("word…"), "{clipped}");
+        assert!(clipped.chars().count() <= TITLE_MAX_CHARS);
+
+        assert_eq!(clip_at_word("alpha beta gamma", 12), "alpha beta…");
+        assert_eq!(clip_at_word("alpha beta, gamma", 13), "alpha beta…");
+        assert_eq!(clip_at_word("short", 12), "short");
     }
 
     #[test]

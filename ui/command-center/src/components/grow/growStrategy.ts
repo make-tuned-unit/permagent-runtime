@@ -70,6 +70,19 @@ export interface SavedPillar {
   metrics?: Array<{ label: string; value: string }>;
 }
 
+/**
+ * Collapse the literal two characters backslash-quote to a plain quote.
+ *
+ * Strategy text is model-written, and a model that escapes its tool-call
+ * string twice stores `Just \"here's what's worth your time.\"` — the card
+ * rendered those backslashes (QA 2026-09-24). The daemon now strips them on
+ * save (projects::unescape_overescaped_quotes); this keeps rows written before
+ * that fix readable. Prose never needs a backslash before a quote.
+ */
+export function unescapeQuotes(text: string): string {
+  return text.includes('\\"') ? text.split('\\"').join('"') : text;
+}
+
 /** Tolerant read of a saved pillar from the project's metadata bag. */
 export function readStrategy(project: Project, key: string): SavedPillar | null {
   const strategy = (project.metadataJson as { strategy?: Record<string, unknown> } | null)?.strategy;
@@ -79,11 +92,11 @@ export function readStrategy(project: Project, key: string): SavedPillar | null 
     Array.isArray(v)
       ? (v as Array<Record<string, unknown>>)
           .filter(item => typeof item?.[a] === 'string' && typeof item?.[b] === 'string')
-          .map(item => ({ [a]: item[a] as string, [b]: item[b] as string }))
+          .map(item => ({ [a]: unescapeQuotes(item[a] as string), [b]: unescapeQuotes(item[b] as string) }))
       : undefined;
   const rawAny = raw as Record<string, unknown>;
   return {
-    content: raw.content,
+    content: unescapeQuotes(raw.content),
     updated_at: typeof raw.updated_at === 'string' ? raw.updated_at : undefined,
     points: pairs(rawAny.points, 'label', 'detail') as SavedPillar['points'],
     metrics: pairs(rawAny.metrics, 'label', 'value') as SavedPillar['metrics'],

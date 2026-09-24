@@ -14,7 +14,7 @@ import { apiFetch } from '../../lib/api';
 import { Button } from '../common/Button';
 import { Tooltip } from '../common/Tooltip';
 import { ConfirmDialog } from '../common/ConfirmDialog';
-import { dailyAnalyticsSeries, drainFreshness } from './analyticsFormat';
+import { dailyAnalyticsSeries, drainFreshness, evenTileColumns } from './analyticsFormat';
 import { DailyPageviewsChart } from './DailyPageviewsChart';
 import { ErrorState } from './GrowStateBlocks';
 import { FIELD_CLASS, growCard, growField, growLabel } from './growChrome';
@@ -424,7 +424,10 @@ export function FirstPartyAnalyticsPanel({
             colors={colors}
           />
           {/* Headline figures, each labelled for what it actually is. */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: space.lg }}>
+          <div
+            data-testid="fp-stat-tiles"
+            style={{ display: 'grid', gridTemplateColumns: evenTileColumns(3, 140, space.lg), gap: space.lg }}
+          >
             {([
               ['Pageviews', stats.pageviews.toLocaleString(), `last ${stats.periodDays} days`],
               // NOT "visitors": the hash merges people sharing a browser build,

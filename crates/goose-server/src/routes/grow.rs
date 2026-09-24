@@ -23,8 +23,9 @@
 //! Everything here is derived from data that exists today. Deliberately NOT
 //! invented (no source without an events pipeline): reach, visitors, signups,
 //! retention — the Analytics lens keeps its honest "awaiting analytics" tiles
-//! for those. A `social_post` card is counted as one post regardless of
-//! draft/scheduled/published, because no status field distinguishes them yet.
+//! for those. Only a `social_post` whose `postStatus` is `"posted"` counts as a
+//! post: a draft or a scheduled-but-unsent card is not something the audience
+//! has seen, so it earns no "keep posting" win and no cadence credit.
 //! Project age is available but intentionally not ranked (any age-only lever
 //! would fire on empty projects, which should instead show the "not enough
 //! signal" empty state).
@@ -92,7 +93,8 @@ pub struct GrowthInbox {
 /// touches the DB (and is trivially unit-testable).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GrowthSignals {
-    /// social_post cards on the project.
+    /// social_post cards on the project that were actually sent
+    /// (`postStatus == "posted"`). Drafts and scheduled posts are excluded.
     pub posts: u32,
     /// Goal cards sitting in a lifecycle column bound to `complete` (shipped).
     pub shipped: u32,
@@ -100,6 +102,20 @@ pub struct GrowthSignals {
     pub active_goals: u32,
     /// Whole days since the most recent post. `None` if nothing posted.
     pub days_since_last_post: Option<i64>,
+}
+
+/// "today" / "yesterday" / "N days ago" — never "0 days ago".
+fn days_ago(days: i64) -> String {
+    match days {
+        d if d <= 0 => "today".to_string(),
+        1 => "yesterday".to_string(),
+        d => format!("{d} days ago"),
+    }
+}
+
+/// `"1 goal"` / `"3 goals"` — no `goal(s)` in user-facing copy.
+fn plural(n: u32, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 // ── Ranker ──────────────────────────────────────────────────────────────────
@@ -178,7 +194,7 @@ fn levers(s: &GrowthSignals) -> Vec<Lever> {
                 "Momentum comes from cadence. Draft the next post before the gap widens."
                     .to_string(),
             win_title: "Posting consistently".to_string(),
-            win_why: format!("Last post {days} days ago — keep the rhythm going."),
+            win_why: format!("Last post {} — keep the rhythm going.", days_ago(days)),
         });
     }
 
@@ -229,8 +245,8 @@ fn levers(s: &GrowthSignals) -> Vec<Lever> {
             ),
             win_title: "Momentum on the board".to_string(),
             win_why: format!(
-                "{active} goal(s) in flight — the work is moving.",
-                active = s.active_goals
+                "{} in flight — the work is moving.",
+                plural(s.active_goals, "goal", "goals")
             ),
         });
     }
@@ -340,14 +356,34 @@ fn signals_from_cards(
         }
     }
 
-    let days_since_last_post = posts
+    // Only sent posts count. A draft (or a scheduled post that has not gone out
+    // yet) is not a post the audience saw: counting it made an unsent draft
+    // created a minute ago read as "Posting consistently — Last post 0 days
+    // ago". The send instant is `scheduledFor` when present (the time the post
+    // went out), else the card's creation time.
+    let sent: Vec<&cards::Card> = posts
         .iter()
-        .filter_map(|c| parse_ts(&c.created_at))
+        .filter(|c| {
+            c.metadata_json
+                .get(cards::POST_STATUS_KEY)
+                .and_then(|v| v.as_str())
+                == Some("posted")
+        })
+        .collect();
+    let days_since_last_post = sent
+        .iter()
+        .filter_map(|c| {
+            c.metadata_json
+                .get(cards::POST_SCHEDULED_FOR_KEY)
+                .and_then(|v| v.as_str())
+                .and_then(parse_ts)
+                .or_else(|| parse_ts(&c.created_at))
+        })
         .max()
         .map(|ts| (now - ts).num_days().max(0));
 
     GrowthSignals {
-        posts: posts.len() as u32,
+        posts: sent.len() as u32,
         shipped,
         active_goals,
         days_since_last_post,
@@ -521,6 +557,87 @@ mod tests {
         }
     }
 
+    fn with_status(mut c: cards::Card, status: &str) -> cards::Card {
+        c.metadata_json = serde_json::json!({ "postStatus": status });
+        c
+    }
+
+    fn posted(c: cards::Card) -> cards::Card {
+        with_status(c, "posted")
+    }
+
+    #[test]
+    fn a_draft_is_not_a_post() {
+        // QA 2026-09-24 (Evntally): the only social_post was an unsent draft
+        // scheduled for tomorrow, created minutes earlier. It was counted as a
+        // post, so the inbox said "Posting consistently — Last post 0 days ago".
+        let now = "2026-09-24T19:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut draft = with_status(
+            card("d1", "social_post", "c", "2026-09-24 18:21:27"),
+            "draft",
+        );
+        draft.metadata_json["scheduledFor"] = serde_json::json!("2026-09-25T14:00:00+00:00");
+        let scheduled = with_status(
+            card("s1", "social_post", "c", "2026-09-24 18:21:27"),
+            "scheduled",
+        );
+        let untagged = card("u1", "social_post", "c", "2026-09-24 18:21:27");
+        let s = signals_from_cards(&[draft, scheduled, untagged], &[], &[], now);
+        assert_eq!(
+            s.posts, 0,
+            "drafts / scheduled / untagged are not sent posts"
+        );
+        assert_eq!(s.days_since_last_post, None);
+        let inbox = rank_growth_inbox(s);
+        assert!(
+            !inbox.wins.iter().any(|w| w.title == "Posting consistently"),
+            "no sent post → no 'keep posting' win: {:?}",
+            inbox.wins
+        );
+    }
+
+    #[test]
+    fn a_sent_post_dates_from_its_send_time() {
+        let now = "2026-07-14T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut p = posted(card("p1", "social_post", "c", "2026-07-01 00:00:00"));
+        p.metadata_json["scheduledFor"] = serde_json::json!("2026-07-12T09:00:00Z");
+        let s = signals_from_cards(&[p], &[], &[], now);
+        assert_eq!(s.posts, 1);
+        assert_eq!(
+            s.days_since_last_post,
+            Some(2),
+            "send time, not card creation"
+        );
+    }
+
+    #[test]
+    fn win_copy_says_today_and_pluralises_goals() {
+        let inbox = rank_growth_inbox(sig(1, 0, 1, Some(0)));
+        let cadence = inbox
+            .wins
+            .iter()
+            .find(|w| w.title == "Posting consistently")
+            .expect("cadence win");
+        assert_eq!(cadence.why, "Last post today — keep the rhythm going.");
+        let momentum = inbox
+            .wins
+            .iter()
+            .find(|w| w.title == "Momentum on the board")
+            .expect("momentum win");
+        assert_eq!(momentum.why, "1 goal in flight — the work is moving.");
+        let three = rank_growth_inbox(sig(1, 0, 3, Some(1)));
+        assert!(three
+            .wins
+            .iter()
+            .any(|w| w.why == "3 goals in flight — the work is moving."));
+        assert!(three
+            .wins
+            .iter()
+            .any(|w| w.why == "Last post yesterday — keep the rhythm going."));
+        assert!(!format!("{inbox:?}{three:?}").contains("goal(s)"));
+        assert_eq!(days_ago(5), "5 days ago");
+    }
+
     #[test]
     fn signals_from_cards_counts_shipped_active_and_recency() {
         let now = "2026-07-14T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
@@ -536,8 +653,8 @@ mod tests {
             card("g4", "goal", "c_triage", "2026-07-01 00:00:00"), // neither
         ];
         let posts = [
-            card("p1", "social_post", "c_prog", "2026-07-10 00:00:00"), // 4d ago
-            card("p2", "social_post", "c_prog", "2026-07-01 00:00:00"), // older
+            posted(card("p1", "social_post", "c_prog", "2026-07-10 00:00:00")), // 4d ago
+            posted(card("p2", "social_post", "c_prog", "2026-07-01 00:00:00")), // older
         ];
         let s = signals_from_cards(&posts, &goals, &columns, now);
         assert_eq!(s.posts, 2);
@@ -550,7 +667,12 @@ mod tests {
     fn signals_from_cards_handles_rfc3339_timestamps() {
         // A post whose created_at was rewritten by the update trigger (RFC3339).
         let now = "2026-07-14T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let posts = [card("p1", "social_post", "c", "2026-07-12T09:30:00Z")];
+        let posts = [posted(card(
+            "p1",
+            "social_post",
+            "c",
+            "2026-07-12T09:30:00Z",
+        ))];
         let s = signals_from_cards(&posts, &[], &[], now);
         assert_eq!(s.posts, 1);
         assert_eq!(s.days_since_last_post, Some(1));

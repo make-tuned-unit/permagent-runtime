@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDeltaPct } from './growthResults';
+import { ACTION_TITLE_CLAMP, LEGACY_TITLE_CAP, displayActionTitle, formatDeltaPct } from './growthResults';
 import {
   lastCumulativeNet,
   sparklinePolyline,
@@ -42,5 +42,31 @@ describe('sparklinePolyline', () => {
   it('reads the last cumulative net', () => {
     expect(lastCumulativeNet([{ cumulativeNet: 1 }, { cumulativeNet: 3 }])).toBe(3);
     expect(lastCumulativeNet([])).toBe(0);
+  });
+});
+
+describe('displayActionTitle (QA 2026-09-24: titles cut mid-word)', () => {
+  it('trims a legacy 120-char cut back to a whole word and adds an ellipsis', () => {
+    const legacy = "Rewrite top entry page (Celebrating India's Independence Day, 23 views, 22 entries) to eliminate single-event funnel and";
+    expect(Array.from(legacy)).toHaveLength(LEGACY_TITLE_CAP);
+    expect(displayActionTitle(legacy)).toBe(
+      "Rewrite top entry page (Celebrating India's Independence Day, 23 views, 22 entries) to eliminate single-event funnel…",
+    );
+    const perplexit = 'Create and optimize structured answer content on a blog or FAQ page to capture answer-engine traffic (ChatGPT, Perplexit';
+    expect(Array.from(perplexit)).toHaveLength(LEGACY_TITLE_CAP);
+    expect(displayActionTitle(perplexit)).toBe(
+      'Create and optimize structured answer content on a blog or FAQ page to capture answer-engine traffic (ChatGPT…',
+    );
+  });
+
+  it('shows shorter or longer titles as they are', () => {
+    expect(displayActionTitle('Fix event_save_failure')).toBe('Fix event_save_failure');
+    const long = 'Create and optimize structured answer content on a blog or FAQ page to capture answer-engine traffic (ChatGPT, Perplexity)';
+    expect(displayActionTitle(long)).toBe(long);
+  });
+
+  it('clamps at three lines with an ellipsis rather than hard-cutting', () => {
+    expect(ACTION_TITLE_CLAMP.WebkitLineClamp).toBe(3);
+    expect(ACTION_TITLE_CLAMP.overflow).toBe('hidden');
   });
 });

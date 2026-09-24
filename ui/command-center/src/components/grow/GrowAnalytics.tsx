@@ -15,7 +15,7 @@ import type { Project } from '../projects/types';
 import { FunnelPanel } from './FunnelPanel';
 import { growCard, growLabel } from './growChrome';
 import { CARD_PAD, CARD_R } from './growGeometry';
-import type { SocialCard } from './calendarPosts';
+import { readPostMeta, type SocialCard } from './calendarPosts';
 import { FirstPartyAnalyticsPanel } from './FirstPartyAnalyticsPanel';
 import { AnalyticsConnectionPanel } from './AnalyticsConnectionPanel';
 import {
@@ -148,8 +148,12 @@ export function GrowAnalytics({
   // retention). Awareness/reach comes from published content; Visitors is
   // live once analytics is connected; signups/retention need provider goal
   // events (flagged follow-up).
+  // Only posts that actually went out. Drafts and scheduled posts are on the
+  // calendar, not in front of anyone, so "published" must not count them (the
+  // same rule the daemon's growth inbox applies).
+  const published = posts.filter((p) => readPostMeta(p).status === 'posted').length;
   const funnel = [
-    { stage: 'Content live', value: posts.length, source: true, hint: 'Published social posts' },
+    { stage: 'Content live', value: published, source: true, hint: 'Published social posts' },
     { stage: 'Reach', value: null as number | null, source: false, hint: 'Impressions — connect a channel' },
     {
       stage: fpLive ? 'Devices' : 'Visitors',
@@ -175,7 +179,7 @@ export function GrowAnalytics({
   const maxV = Math.max(1, ...funnel.map((f) => f.value ?? 0));
 
   const tiles = [
-    { label: 'POSTS PUBLISHED', value: String(posts.length), sub: 'this project' },
+    { label: 'POSTS PUBLISHED', value: String(published), sub: 'this project' },
     { label: 'ACTIVE CHANNELS', value: '0', sub: 'connect in the epic' },
     {
       label: 'REACH (30D)',

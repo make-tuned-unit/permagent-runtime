@@ -114,3 +114,16 @@ export function linearTrendline(values: readonly number[]): Trendline | null {
     end: intercept + slope * (safeValues.length - 1),
   };
 }
+
+/** Columns for a row of stat tiles that never leaves an orphan.
+ *
+ *  The first-party panel has six tiles. `repeat(auto-fit, minmax(110px, 1fr))`
+ *  packed five across the ~520px Grow column beside the docked chat, so
+ *  "Pages / session" sat alone on a second row (QA 2026-09-24). Capping the
+ *  count at `maxCols` (each track at least `(100% - gaps) / maxCols` wide)
+ *  lets the grid step 3 → 2 → 1 as it narrows — 3×2, then 2×3 — both of
+ *  which divide six evenly. `minPx` is the narrowest a tile may get. */
+export function evenTileColumns(maxCols: number, minPx: number, gapPx: number): string {
+  const share = `calc((100% - ${(maxCols - 1) * gapPx}px) / ${maxCols})`;
+  return `repeat(auto-fit, minmax(max(${minPx}px, ${share}), 1fr))`;
+}

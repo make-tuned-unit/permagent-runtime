@@ -6,6 +6,33 @@
  * "helped" is a measured window, not a suggestion.
  */
 
+/**
+ * The daemon used to store action titles through `title.chars().take(120)`,
+ * which cut real titles mid-word with no ellipsis ("…single-event funnel and",
+ * "…(ChatGPT, Perplexit"). New titles are clipped at a word boundary server
+ * side (growth_actions.rs `clip_at_word`); rows written before that fix are
+ * exactly 120 characters, so they are trimmed back to the last whole word and
+ * marked "…" here. Anything shorter or already punctuated is shown as is.
+ */
+export const LEGACY_TITLE_CAP = 120;
+
+export function displayActionTitle(title: string): string {
+  const chars = Array.from(title);
+  if (chars.length !== LEGACY_TITLE_CAP || /[.!?…)\]"']$/.test(title)) return title;
+  const cut = title.replace(/\s+\S*$/, '').replace(/[\s,;:(—-]+$/, '');
+  return `${cut || title}…`;
+}
+
+/** Title style shared by the Results and Actions cards: wraps, and clamps at
+ *  three lines with an ellipsis instead of running the card tall. */
+export const ACTION_TITLE_CLAMP = {
+  display: '-webkit-box',
+  WebkitLineClamp: 3,
+  WebkitBoxOrient: 'vertical',
+  overflow: 'hidden',
+  overflowWrap: 'anywhere',
+} as const;
+
 export interface GrowthResultRow {
   actionId: string;
   projectId: string;

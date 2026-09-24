@@ -25,6 +25,7 @@ import type { GrowthAction } from './growTypes';
 import { FIELD_CLASS, SUMMARY_CLASS, growCard, growField, growLabel } from './growChrome';
 import { CARD_INNER_R, CARD_PAD, CARD_R } from './growGeometry';
 import { ActionVerify } from './ActionVerify';
+import { ACTION_TITLE_CLAMP, displayActionTitle } from './growthResults';
 import { TrackingRail } from './TrackingRail';
 
 /**
@@ -215,8 +216,12 @@ export function ActionCard({
             borderRadius: radius.pill, padding: `1px ${space.sm}px`, flexShrink: 0,
           }}>{action.category}</span>
         )}
-        <span style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
-          {action.title}
+        <span style={{
+          ...ACTION_TITLE_CLAMP,
+          minWidth: 0,
+          fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text,
+        }}>
+          {displayActionTitle(action.title)}
         </span>
         <div style={{ flex: 1 }} />
         {/* Only when the prose cache still holds both. "medium impact · medium
