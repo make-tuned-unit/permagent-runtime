@@ -6,7 +6,7 @@
  * Holdings, household, watchlist, and notes are the default surface.
  */
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
 import { concentric, duration, ease, font, inkOnTrim, radius, space, tabularNums, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -55,6 +55,7 @@ import {
 } from './financeLabs';
 
 import { Tooltip } from '../common/Tooltip';
+import { classifyQuoteError, unknownSymbolHint } from './quoteError';
 interface Quote {
   symbol: string;
   name?: string | null;
@@ -1341,6 +1342,19 @@ function HoldingsSection({
               scrolls. The household and watchlist tables have no wrapper —
               a floor there would push them out of their card. */}
           <table style={{ ...tableStyle(), tableLayout: 'fixed', minWidth: LOTS_TABLE_MIN_WIDTH }}>
+            {/* Measured at a 530px table (the ~570px Finance column, QA
+                2026-09-24): share count and RSI are short, the signed P&L in
+                a converted currency ("+CA$1,926.06") is the widest figure, and
+                the actions column holds Edit / Close / Remove on one line.
+                Symbol and mark split what is left. */}
+            <colgroup>
+              <col />
+              <col style={{ width: LOTS_SHARES_COL }} />
+              <col />
+              <col style={{ width: LOTS_PNL_COL }} />
+              <col style={{ width: LOTS_RSI_COL }} />
+              <col style={{ width: LOTS_ACTIONS_COL }} />
+            </colgroup>
             <thead>
               <tr>
                 <th style={th(colors)}>Symbol</th>
@@ -1356,34 +1370,44 @@ function HoldingsSection({
                 const closed = Boolean(p.exitDate);
                 const rsiHot = Boolean(p.sellSignal) || (!closed && p.rsi != null && p.rsi >= rsiThreshold);
                 const pnl = closed ? p.realized : p.unrealized;
+                // A closed lot's mark is its exit price, so a failed quote only
+                // matters (and only gets a fix-it line) while the lot is open.
+                const quoteFailed = !closed && Boolean(p.quoteError);
+                const symbolHint = quoteFailed && classifyQuoteError(p.quoteError) === 'unknown-symbol'
+                  ? unknownSymbolHint(p.symbol)
+                  : null;
+                // The hint row sits under its lot, so the lot's own cells drop
+                // their rule and the pair reads as one row.
+                const cell: CSSProperties = symbolHint ? { ...td(colors), borderBottom: 'none' } : td(colors);
                 return (
-                  <tr key={p.id} style={closed ? { opacity: 0.55 } : undefined}>
-                    <td style={td(colors)}>
+                  <Fragment key={p.id}>
+                  <tr style={closed ? { opacity: 0.55 } : undefined}>
+                    <td style={cell}>
                       <div style={{ fontWeight: 600 }}>{p.symbol}</div>
                       <div style={{ ...type.caption, color: colors.textMuted }}>
                         {closed ? `${p.entryDate} → ${p.exitDate}` : p.entryDate}
                       </div>
                     </td>
-                    <td style={{ ...td(colors), textAlign: 'right', ...tabularNums }}>{p.shares}</td>
-                    <td style={{ ...td(colors), textAlign: 'right', ...tabularNums }}>
-                      {p.quoteError ? (
-                        <span style={{ color: colors.textMuted }}>{p.quoteError}</span>
-                      ) : closed ? (
+                    <td style={{ ...cell, textAlign: 'right', ...tabularNums }}>{p.shares}</td>
+                    <td style={{ ...cell, textAlign: 'right', ...tabularNums }}>
+                      {closed ? (
                         money.fmt(p.exitPrice)
+                      ) : quoteFailed ? (
+                        <NoPrice reason={p.quoteError ?? ''} colors={colors} />
                       ) : (
                         money.fmt(p.last, { source: p.quote?.currency })
                       )}
                     </td>
-                    <td style={{ ...td(colors), textAlign: 'right', ...tabularNums, color: toneFor(pnl, colors), fontWeight: 600 }}>
+                    <td style={{ ...cell, textAlign: 'right', ...tabularNums, color: toneFor(pnl, colors), fontWeight: 600 }}>
                       {money.signed(pnl)}
                       {!closed && p.unrealizedPct != null ? (
                         <div style={{ ...type.caption, color: colors.textMuted, fontWeight: 400 }}>{money.pct(p.unrealizedPct)}</div>
                       ) : null}
                     </td>
-                    <td style={{ ...td(colors), textAlign: 'right', ...tabularNums, color: rsiHot ? colors.danger : colors.text }}>
+                    <td style={{ ...cell, textAlign: 'right', ...tabularNums, color: rsiHot ? colors.danger : colors.text }}>
                       {p.rsi != null ? p.rsi.toFixed(1) : '—'}
                     </td>
-                    <td style={td(colors)}>
+                    <td style={{ ...cell, paddingRight: 0 }}>
                       <LotActions
                         row={p}
                         colors={colors}
@@ -1393,6 +1417,14 @@ function HoldingsSection({
                       />
                     </td>
                   </tr>
+                  {symbolHint && (
+                    <tr data-testid="lot-symbol-hint">
+                      <td colSpan={6} style={{ ...td(colors), ...type.caption, color: colors.textMuted, paddingTop: 0 }}>
+                        {symbolHint}
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -1427,10 +1459,14 @@ function LotActions({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, alignItems: 'flex-end', minWidth: 0 }}>
-      <div style={{ display: 'flex', gap: space.sm, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-        <Button colors={colors} type="button" disabled={busy} onClick={onEdit}>Edit</Button>
+      {/* One line at the lots table's working width (QA 2026-09-24: at a
+          ~570px column the three full-size buttons wrapped and doubled every
+          row). Compact padding, not hidden actions — Remove stays a visible,
+          danger-inked button rather than moving into a menu. */}
+      <div data-testid="lot-actions" style={{ display: 'flex', gap: space.xs, flexWrap: 'nowrap', justifyContent: 'flex-end', whiteSpace: 'nowrap' }}>
+        <Button colors={colors} type="button" disabled={busy} onClick={onEdit} style={LOT_ACTION_PAD}>Edit</Button>
         {!row.exitDate && (
-          <Button colors={colors} type="button" disabled={busy} aria-expanded={closing} onClick={() => setClosing((c) => !c)}>
+          <Button colors={colors} type="button" disabled={busy} aria-expanded={closing} onClick={() => setClosing((c) => !c)} style={LOT_ACTION_PAD}>
             Close
           </Button>
         )}
@@ -1438,7 +1474,14 @@ function LotActions({
           colors={colors}
           type="button"
           disabled={busy}
+          aria-label={`Remove ${row.symbol} lot`}
           onClick={() => mutate(() => apiFetch(deletePath, { method: 'DELETE' }))}
+          style={{
+            ...LOT_ACTION_PAD,
+            '--pa-btn-fg': colors.danger,
+            '--pa-btn-border-hover': colors.danger,
+            '--pa-btn-bg-hover': warnFill(colors.danger, 0.1),
+          } as CSSProperties}
         >
           Remove
         </Button>
@@ -1473,6 +1516,30 @@ function LotActions({
         </form>
       )}
     </div>
+  );
+}
+
+/** A lot action button's compact padding — see `LotActions`. */
+const LOT_ACTION_PAD = { '--pa-btn-pad': `${space.xs}px ${space.sm}px` } as CSSProperties;
+
+/**
+ * The mark cell when the quote could not be fetched. The backend's reason is a
+ * full sentence and the mark column is a number's width, so the cell says
+ * "No price" and the reason rides on the shared Tooltip (hover/focus) and in
+ * screen-reader text, never inline where it wraps the row to seven lines.
+ */
+function NoPrice({ reason, colors }: { reason: string; colors: ThemeColors }) {
+  return (
+    <Tooltip content={reason}>
+      <span
+        tabIndex={0}
+        data-testid="quote-no-price"
+        style={{ color: colors.textMuted, cursor: 'help', borderBottom: `1px dotted ${colors.border}`, outline: 'none', whiteSpace: 'nowrap' }}
+      >
+        No price
+        <span className="sr-only">: {reason}</span>
+      </span>
+    </Tooltip>
   );
 }
 
@@ -1794,14 +1861,19 @@ function HouseholdSection({
     });
   };
 
+  // Nothing imported is not the same as spending nothing: CA$0.00 would read
+  // as a measured zero, so the figures say "—" until there is something to
+  // measure (QA 2026-09-24).
+  const noData = household.recent.length === 0;
+
   return (
     <Card colors={colors}>
       <SectionTitle colors={colors}>Household</SectionTitle>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: space.xl, margin: '12px 0 16px' }}>
-        <Mini colors={colors} label="30-day run-rate" value={money.fmt(household.forecast.runRate30d)} large />
-        <Mini colors={colors} label="90-day run-rate" value={money.fmt(household.forecast.runRate90d)} large />
-        <Mini colors={colors} label="Spent (window)" value={money.fmt(household.forecast.spend90d)} large />
-        <Mini colors={colors} label="Days" value={String(household.forecast.daysUsed)} large />
+        <Mini colors={colors} label="30-day run-rate" value={noData ? '—' : money.fmt(household.forecast.runRate30d)} large />
+        <Mini colors={colors} label="90-day run-rate" value={noData ? '—' : money.fmt(household.forecast.runRate90d)} large />
+        <Mini colors={colors} label="Spent (window)" value={noData ? '—' : money.fmt(household.forecast.spend90d)} large />
+        <Mini colors={colors} label="Days" value={noData ? '—' : String(household.forecast.daysUsed)} large />
       </div>
       <div
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -1947,7 +2019,7 @@ function WatchlistSection({
                   </td>
                   <td style={{ ...td(colors), textAlign: 'right', ...tabularNums }}>
                     {row.quoteError ? (
-                      <span style={{ color: colors.textMuted }}>{row.quoteError}</span>
+                      <NoPrice reason={row.quoteError} colors={colors} />
                     ) : (
                       <>
                         <div>{money.fmt(q?.price, { source: q?.currency })}</div>
@@ -2222,6 +2294,14 @@ function warnFill(hex: string, a = 0.12): string {
  *  Every cell here is a number that must not be clipped or overlapped, so
  *  below this the wrapper scrolls instead. */
 export const LOTS_TABLE_MIN_WIDTH = 520;
+/** The SHARES header (wider than a four-digit count) plus the gutter. */
+const LOTS_SHARES_COL = 62;
+/** `77.4` plus the gutter. */
+const LOTS_RSI_COL = 42;
+/** A signed, converted P&L (`+CA$1,926.06`, bold) plus the gutter. */
+const LOTS_PNL_COL = 112;
+/** Edit / Close / Remove at compact padding on one line (QA 2026-09-24). */
+const LOTS_ACTIONS_COL = 144;
 
 function tableStyle(): CSSProperties {
   return { width: '100%', borderCollapse: 'collapse', fontFamily: font.body };
