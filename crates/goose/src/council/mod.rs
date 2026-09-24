@@ -14,12 +14,15 @@ use crate::agents::self_knowledge::{
 };
 use crate::config::Config;
 
+pub mod admission;
 pub mod brief;
+pub mod convene_plan;
 pub mod debate;
 pub mod deliver;
 pub mod due;
 pub mod membership;
 pub mod plan;
+pub mod preparation;
 pub mod store;
 pub mod verdict;
 
@@ -101,6 +104,12 @@ pub const SELF_KNOWLEDGE_FEATURE: FeatureDescriptor = FeatureDescriptor {
     ],
 };
 
+#[cfg(test)]
+fn test_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// Process-wide lock so Henry and the Sunday sweep cannot overlap.
 fn session_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
@@ -151,7 +160,8 @@ pub async fn convene(
 ///
 /// The global feature flag controls automatic weekly runs and unprompted tool
 /// calls. A click on Build's "Convene Council" button is a narrower authority:
-/// it approves this one spend without silently enabling the weekly schedule.
+/// it requests this one convene without silently enabling the weekly schedule.
+/// Budget admission is still required before dispatch.
 pub async fn convene_approved(
     pool: &Pool<Sqlite>,
     extra_question: Option<&str>,
@@ -191,18 +201,31 @@ async fn convene_reserved(
     caller: &dyn debate::MemberCaller,
     _reservation: ConveneReservation,
 ) -> Result<Convened, String> {
-    if store::has_running(pool).await? {
-        return Err("a council session is already running".to_string());
-    }
+    let prepared = preparation::prepare(
+        pool,
+        trigger,
+        extra_question,
+        project_hint,
+        caller,
+        _reservation,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    execute_prepared(pool, caller, prepared).await
+}
 
-    let members = membership::resolve_members().await;
-    if members.is_empty() {
-        return Err(
-            "no connected chat providers sit on the Council (connect a key, or un-exclude a seat)"
-                .to_string(),
-        );
-    }
-
+/// Executes exactly the plan admitted before HTTP acceptance. No roster,
+/// chair, or limit resolution belongs on this side of the boundary.
+pub async fn execute_prepared(
+    pool: &Pool<Sqlite>,
+    caller: &dyn debate::MemberCaller,
+    prepared: preparation::PreparedConvene,
+) -> Result<Convened, String> {
+    let _reservation = &prepared.reservation;
+    let planned_caller = preparation::PlannedCaller {
+        caller,
+        prepared: &prepared,
+    };
     // Past the refusals: from here a session really is running, and it runs for
     // minutes — two rounds across every connected provider, then a chair. The
     // World had no way to know that (no council event constructor existed at
@@ -211,7 +234,10 @@ async fn convene_reserved(
     // that was refused for being off, locked, or unseated did no work, and
     // `Err` before this line must stay silent.
     announce("working");
-    let convened = run_session(pool, trigger, extra_question, project_hint, caller, members).await;
+    let convened = run_session(pool, &prepared, &planned_caller).await;
+    if let Err(error) = prepared.permit.close().await {
+        tracing::error!(request_id = %prepared.plan.request_id(), %error, "Council batch close failed; claimed holds stay funded");
+    }
     // Any transition off `working` is also the Council HUD's cue to re-read
     // `/api/council/latest` — the report, if there is one, is written by now.
     announce(end_state(&convened));
@@ -243,17 +269,18 @@ fn end_state(convened: &Result<Convened, String>) -> &'static str {
 
 async fn run_session(
     pool: &Pool<Sqlite>,
-    trigger: store::Trigger,
-    extra_question: Option<&str>,
-    project_hint: Option<&str>,
+    prepared: &preparation::PreparedConvene,
     caller: &dyn debate::MemberCaller,
-    members: Vec<membership::Member>,
 ) -> Result<Convened, String> {
+    let trigger = prepared.trigger;
+    let extra_question = prepared.question.as_deref();
+    let project_hint = prepared.project.as_deref();
+    let members = &prepared.plan.members;
     let snapshot = brief::assemble_for_project(pool, extra_question, project_hint).await?;
     let brief_value = serde_json::to_value(&snapshot).unwrap_or(serde_json::json!({}));
     let session_id = store::insert_session(pool, trigger, extra_question, &brief_value).await?;
 
-    let round1 = debate::run_round1_parallel(caller, &members, &snapshot.markdown).await;
+    let round1 = debate::run_round1_parallel(caller, members, &snapshot.markdown).await;
     for r in &round1 {
         let _ = store::insert_position(
             pool,
@@ -312,13 +339,10 @@ async fn run_session(
         .await;
     }
 
-    let (chair_provider, chair_model) = membership::chair_route();
-    let chair = membership::Member {
-        provider: chair_provider.clone(),
-        display_name: "Chair".to_string(),
-        model: chair_model.clone(),
-    };
-    let report = match debate::run_chair(caller, &chair, &snapshot.markdown, &round1, &round2).await
+    let chair = &prepared.plan.chair;
+    let chair_provider = chair.provider.clone();
+    let chair_model = chair.model.clone();
+    let report = match debate::run_chair(caller, chair, &snapshot.markdown, &round1, &round2).await
     {
         Ok(r) => r,
         Err(e) => {
@@ -857,6 +881,7 @@ mod tests {
     /// seat is keyed to — and only around a session that is really running.
     #[tokio::test]
     async fn convening_announces_on_the_council_id() {
+        let _serial = test_lock().lock().await;
         let mut bus = crate::events::subscribe();
         announce("working");
         let evt = bus.try_recv().expect("convening must reach the bus");

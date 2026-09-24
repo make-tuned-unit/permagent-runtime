@@ -1,6 +1,7 @@
 //! Two-round debate plus chair synthesis. Callers inject [`MemberCaller`]
 //! so tests never hit a live provider.
 
+use super::convene_plan::{CallKind, ConveneSlot};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -216,6 +217,7 @@ pub(crate) trait CouncilProvider: Send + Sync {
     fn retry_config(&self) -> RetryConfig;
     async fn complete(
         &self,
+        config: &ModelConfig,
         session_id: &str,
         system: &str,
         messages: &[Message],
@@ -258,19 +260,14 @@ impl CouncilProvider for ProviderAdapter {
 
     async fn complete(
         &self,
+        config: &ModelConfig,
         session_id: &str,
         system: &str,
         messages: &[Message],
     ) -> Result<(Message, ProviderUsage), String> {
         self.provider
             // permagent-dispatch: seam=council_provider_adapter_transport_v1 class=excluded reason=caller_reservation_settlement authority=council_live_caller
-            .complete(
-                &self.provider.get_model_config(),
-                session_id,
-                system,
-                messages,
-                &[],
-            )
+            .complete(config, session_id, system, messages, &[])
             .await
             .map_err(|e| e.to_string())
     }
@@ -278,6 +275,42 @@ impl CouncilProvider for ProviderAdapter {
 
 #[async_trait::async_trait]
 pub trait MemberCaller: Send + Sync {
+    fn context(&self) -> Option<CouncilCallContext> {
+        None
+    }
+
+    async fn plan_model(&self, _member: &Member) -> Result<(ModelConfig, CostTier, u32), String> {
+        Err("Council caller does not support frozen planning".into())
+    }
+
+    async fn complete_slot(
+        &self,
+        _kind: CallKind,
+        member: &Member,
+        system: &str,
+        user: &str,
+    ) -> Result<MemberCallResult, String> {
+        self.complete(&member.provider, &member.model, system, user)
+            .await
+    }
+
+    async fn complete_planned(
+        &self,
+        slot: &ConveneSlot,
+        _owner_session_id: &str,
+        _reservation_id: Option<&str>,
+        system: &str,
+        user: &str,
+    ) -> Result<MemberCallResult, String> {
+        self.complete(
+            &slot.planned.provider,
+            slot.planned.model.as_deref().unwrap_or_default(),
+            system,
+            user,
+        )
+        .await
+    }
+
     async fn complete(
         &self,
         provider: &str,
@@ -483,12 +516,72 @@ async fn record_council_budget_block(
 
 #[async_trait::async_trait]
 impl MemberCaller for LiveCaller {
+    fn context(&self) -> Option<CouncilCallContext> {
+        Some(self.context.clone())
+    }
+
+    async fn plan_model(&self, member: &Member) -> Result<(ModelConfig, CostTier, u32), String> {
+        let provider = self
+            .provider_factory
+            .create(&member.provider, &member.model)
+            .await?;
+        Ok((
+            provider.model_config(),
+            provider.cost_tier(),
+            provider.retry_config().max_physical_attempts(),
+        ))
+    }
+
+    async fn complete_planned(
+        &self,
+        slot: &ConveneSlot,
+        owner_session_id: &str,
+        reservation_id: Option<&str>,
+        system: &str,
+        user: &str,
+    ) -> Result<MemberCallResult, String> {
+        let caller = Self {
+            context: CouncilCallContext {
+                manager: self.context.manager.clone(),
+                session_id: owner_session_id.into(),
+            },
+            provider_factory: self.provider_factory.clone(),
+            timeout: self.timeout,
+            budget_config: self.budget_config,
+        };
+        caller
+            .execute(
+                &slot.planned.provider,
+                slot.planned.model.as_deref().unwrap_or_default(),
+                system,
+                user,
+                Some(slot),
+                reservation_id,
+            )
+            .await
+    }
+
     async fn complete(
         &self,
         provider: &str,
         model: &str,
         system: &str,
         user: &str,
+    ) -> Result<MemberCallResult, String> {
+        self.execute(provider, model, system, user, None, None)
+            .await
+    }
+}
+
+impl LiveCaller {
+    async fn execute(
+        &self,
+        provider: &str,
+        model: &str,
+        system: &str,
+        user: &str,
+        slot: Option<&ConveneSlot>,
+        claimed_reservation_id: Option<&str>,
     ) -> Result<MemberCallResult, String> {
         let session = self
             .context
@@ -503,14 +596,34 @@ impl MemberCaller for LiveCaller {
         // malformed or stale Council context must not even initialize a
         // provider, since a factory may perform credential or transport work.
         let p = self.provider_factory.create(provider, model).await?;
-        let invocation_id = uuid::Uuid::new_v4().to_string();
-        let tier = p.cost_tier();
-        let config = p.model_config();
-        let attempts = p.retry_config().max_physical_attempts();
-        let bound =
-            crate::cost_router::plan_reservation_bound(provider, model, tier, &config, attempts)
-                .map_err(|e| format!("council provider call is not priced safely: {e}"))?;
-        let reservation_id = if let Some(bound) = bound {
+        let invocation_id = slot
+            .map(|s| s.planned.invocation_id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let tier = slot.map(|s| s.tier).unwrap_or_else(|| {
+            crate::cost_router::reservation::effective_cost_tier(provider, model, p.cost_tier())
+        });
+        let mut config = slot
+            .map(|s| s.config.clone())
+            .unwrap_or_else(|| p.model_config());
+        let attempts = slot
+            .map(|s| s.max_physical_attempts)
+            .unwrap_or_else(|| p.retry_config().max_physical_attempts());
+        let bound_usd = if let Some(slot) = slot {
+            slot.planned.bound_usd
+        } else {
+            let bound = crate::cost_router::plan_reservation_bound(
+                provider, model, tier, &config, attempts,
+            )
+            .map_err(|e| format!("council provider call is not priced safely: {e}"))?;
+            if let Some(bound) = bound {
+                config.max_tokens =
+                    Some(i32::try_from(bound.output_tokens).map_err(|e| e.to_string())?);
+            }
+            bound.map(|b| b.amount_usd)
+        };
+        let reservation_id = if let Some(id) = claimed_reservation_id {
+            Some(id.to_string())
+        } else if let Some(bound_usd) = bound_usd {
             let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
             match self
                 .context
@@ -519,7 +632,7 @@ impl MemberCaller for LiveCaller {
                     &invocation_id,
                     &self.context.session_id,
                     Some(&task_id),
-                    bound.amount_usd,
+                    bound_usd,
                     &lease_until,
                     &self
                         .budget_config
@@ -550,7 +663,15 @@ impl MemberCaller for LiveCaller {
         let result = tokio::time::timeout(
             self.timeout,
             // permagent-dispatch: seam=council_live_provider_transport_v1 class=excluded reason=caller_reservation_settlement authority=council_live_caller
-            p.complete(&self.context.session_id, system, std::slice::from_ref(&msg)),
+            crate::cost_router::with_authorized_attempts(
+                attempts,
+                p.complete(
+                    &config,
+                    &self.context.session_id,
+                    system,
+                    std::slice::from_ref(&msg),
+                ),
+            ),
         )
         .await;
         let (response, mut usage) = match result {
@@ -768,11 +889,12 @@ pub fn summarize_round1(member: &Member, take: &Round1Take) -> String {
 async fn call_one(
     caller: &dyn MemberCaller,
     member: &Member,
+    kind: CallKind,
     system: &str,
     user: &str,
 ) -> MemberResult {
     // permagent-dispatch: seam=council_member_dispatch_v1 class=excluded reason=caller_owned_dispatch authority=council_member_caller
-    let fut = caller.complete(&member.provider, &member.model, system, user);
+    let fut = caller.complete_slot(kind, member, system, user);
     match tokio::time::timeout(
         std::time::Duration::from_secs(MEMBER_TIMEOUT_GUARD_SECS),
         fut,
@@ -816,7 +938,9 @@ pub async fn run_round1(
         let m = m.clone();
         let brief = brief_markdown.to_string();
         // Sequential join of spawned tasks so a hung member cannot stall the rest.
-        futs.push(async move { call_one(caller, &m, round1_system(), &brief).await });
+        futs.push(
+            async move { call_one(caller, &m, CallKind::Round1, round1_system(), &brief).await },
+        );
     }
     let mut out = Vec::new();
     for fut in futs {
@@ -841,7 +965,7 @@ pub async fn run_round1_parallel(
         .map(|m| {
             let m = m.clone();
             let brief = brief_markdown.to_string();
-            async move { call_one(caller, &m, round1_system(), &brief).await }
+            async move { call_one(caller, &m, CallKind::Round1, round1_system(), &brief).await }
         })
         .collect();
     let mut out = futures::future::join_all(handles).await;
@@ -885,7 +1009,7 @@ pub async fn run_round2_parallel(
                 let user = format!(
                     "Your round-1 take:\n{own}\n\nPeer takes:\n{digest}\n\nNow vote and, if you must, dissent."
                 );
-                call_one(caller, &member, round2_system(), &user).await
+                call_one(caller, &member, CallKind::Round2, round2_system(), &user).await
             }
         })
         .collect();
@@ -933,7 +1057,7 @@ pub async fn run_chair(
     }
     let raw = caller
         // permagent-dispatch: seam=council_chair_dispatch_v1 class=excluded reason=caller_owned_dispatch authority=council_member_caller
-        .complete(&chair.provider, &chair.model, &chair_system(), &user)
+        .complete_slot(CallKind::Chair, chair, &chair_system(), &user)
         .await?;
     let mut report = parse_chair(&raw.text);
     apply_verdict_gate(caller, chair, &mut report).await;
@@ -976,7 +1100,14 @@ async fn ask_for_verdict_line(
     let lines: Vec<&str> = markdown.lines().collect();
     let tail = lines[lines.len().saturating_sub(NAG_TAIL_LINES)..].join("\n");
     let user = format!("{}\n\nYour report ended:\n\n{tail}", problem.nag());
-    let result = call_one(caller, chair, verdict_nag_system(), &user).await;
+    let result = call_one(
+        caller,
+        chair,
+        CallKind::Verdict,
+        verdict_nag_system(),
+        &user,
+    )
+    .await;
     if result.status != "ok" {
         return None;
     }
@@ -1059,6 +1190,7 @@ mod tests {
 
         async fn complete(
             &self,
+            _config: &ModelConfig,
             _session_id: &str,
             _system: &str,
             _messages: &[Message],
@@ -1203,6 +1335,135 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
         panic!("reservation did not become unknown");
+    }
+
+    struct WireProvider {
+        seen: std::sync::Mutex<Vec<(serde_json::Value, Option<u32>, bool)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for WireProvider {
+        fn get_name(&self) -> &str {
+            "openai"
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig {
+                model_name: "gpt-4o".into(),
+                context_limit: Some(16_000),
+                max_tokens: Some(8_000),
+                ..Default::default()
+            }
+        }
+        async fn stream(
+            &self,
+            _config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
+        {
+            Err(crate::providers::errors::ProviderError::ExecutionError(
+                "unexpected stream".into(),
+            ))
+        }
+        async fn complete(
+            &self,
+            config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<(Message, ProviderUsage), crate::providers::errors::ProviderError> {
+            let attempts = crate::cost_router::authorized_attempts();
+            let beyond_allowed = crate::cost_router::attempt_is_authorized(attempts.unwrap() + 1);
+            let wire_request = crate::providers::formats::openai::create_request(
+                config,
+                _system,
+                _messages,
+                _tools,
+                &crate::providers::utils::ImageFormat::OpenAi,
+                false,
+            )
+            .map_err(|e| crate::providers::errors::ProviderError::ExecutionError(e.to_string()))?;
+            self.seen
+                .lock()
+                .unwrap()
+                .push((wire_request, attempts, beyond_allowed));
+            Ok((
+                Message::assistant().with_text("fake response"),
+                ProviderUsage::new(
+                    "gpt-4o".into(),
+                    Usage {
+                        input_tokens: Some(10),
+                        output_tokens: Some(5),
+                        total_tokens: Some(15),
+                        ..Default::default()
+                    },
+                ),
+            ))
+        }
+    }
+    struct WireFactory(Arc<WireProvider>);
+    #[async_trait::async_trait]
+    impl CouncilProviderFactory for WireFactory {
+        async fn create(
+            &self,
+            _provider: &str,
+            _model: &str,
+        ) -> Result<Arc<dyn CouncilProvider>, String> {
+            Ok(Arc::new(ProviderAdapter {
+                provider: self.0.clone(),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_adapter_receives_frozen_output_and_attempt_limits() {
+        let (_dir, manager, session) = test_session().await;
+        let wire = Arc::new(WireProvider {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let caller = LiveCaller::new_with_factory(
+            manager,
+            &session.id,
+            Arc::new(WireFactory(wire.clone())),
+            std::time::Duration::from_secs(1),
+            normal_budget(),
+        );
+        let member = Member {
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            display_name: "OpenAI".into(),
+        };
+        let plan = super::super::convene_plan::ConvenePlan::build(
+            "wire".into(),
+            vec![member.clone()],
+            member,
+            &caller,
+        )
+        .await
+        .unwrap();
+        let slot = &plan.slots[0];
+        caller
+            .complete_planned(slot, &session.id, None, "sys", "user")
+            .await
+            .unwrap();
+        let seen = wire.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let max_tokens = seen[0].0["max_tokens"]
+            .as_u64()
+            .expect("wire request must include max_tokens");
+        assert_eq!(
+            max_tokens,
+            crate::cost_router::reservation::RESERVED_OUTPUT_TOKENS as u64
+        );
+        assert_ne!(
+            max_tokens,
+            wire.get_model_config().max_tokens.unwrap() as u64
+        );
+        assert_eq!(seen[0].1, Some(slot.max_physical_attempts));
+        assert!(!seen[0].2);
     }
 
     #[tokio::test]

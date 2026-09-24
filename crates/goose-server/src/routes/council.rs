@@ -5,6 +5,7 @@ use crate::state::AppState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -39,8 +40,7 @@ struct MembersPut {
 struct ConveneRequest {
     question: String,
     project: Option<String>,
-    /// Existing harness session whose durable budget task authorizes every
-    /// Council member/chair invocation.
+    /// Attribution parent; Council creates its own stable task child.
     session_id: String,
     /// Must be true. This endpoint spends across every seated provider, so a
     /// background classifier may recommend it but cannot approve it.
@@ -133,7 +133,7 @@ async fn put_members(Json(body): Json<MembersPut>) -> Result<Json<MembersRespons
 async fn convene_once(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ConveneRequest>,
-) -> Result<(StatusCode, Json<ConveneAccepted>), ErrorResponse> {
+) -> Result<Response, ErrorResponse> {
     if !body.approved {
         return Err(ErrorResponse::unprocessable(
             "explicit approval is required before a Council pass spends across providers",
@@ -178,35 +178,58 @@ async fn convene_once(
             "a Council session is already running",
         ));
     }
-    if membership::resolve_members().await.is_empty() {
-        return Err(ErrorResponse::service_unavailable(
-            "no connected chat providers are available for the Council",
-        ));
-    }
-    tokio::spawn(async move {
-        if let Err(error) = permagent::council::convene_approved_reserved(
-            &pool,
-            Some(&question),
-            project.as_deref(),
-            &permagent::council::debate::LiveCaller::new(
-                state.agent_manager.session_manager_arc(),
-                session_id,
-            ),
-            reservation,
-        )
-        .await
-        {
-            tracing::warn!(target: "permagentd::council", %error, "approved Build Council pass failed");
-        }
-    });
+    let caller = permagent::council::debate::LiveCaller::new(
+        state.agent_manager.session_manager_arc(),
+        session_id,
+    );
+    let prepared = permagent::council::preparation::prepare(
+        &pool,
+        store::Trigger::OnDemand,
+        Some(&question),
+        project.as_deref(),
+        &caller,
+        reservation,
+    )
+    .await;
+    Ok(admission_response(prepared, move |prepared| {
+        tokio::spawn(async move {
+            if let Err(error) = permagent::council::execute_prepared(&pool, &caller, prepared).await
+            {
+                tracing::warn!(target: "permagentd::council", %error, "approved Build Council pass failed");
+            }
+        });
+    }))
+}
 
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(ConveneAccepted {
-            accepted: true,
-            message: "Council convening from the live Build request".to_string(),
-        }),
-    ))
+/// The HTTP boundary transfers its prepared value only on successful admission.
+/// A rejected admission cannot call the dispatch closure or return acceptance.
+fn admission_response<T>(
+    prepared: Result<T, permagent::council::preparation::ConveneBlocked>,
+    dispatch: impl FnOnce(T),
+) -> Response {
+    match prepared {
+        Err(blocked) => blocked_response(blocked),
+        Ok(prepared) => {
+            dispatch(prepared);
+            (
+                StatusCode::ACCEPTED,
+                Json(ConveneAccepted {
+                    accepted: true,
+                    message: "Council convening from the live Build request".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+fn blocked_response(blocked: permagent::council::preparation::ConveneBlocked) -> Response {
+    let status = if blocked.persistence_failed {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::CONFLICT
+    };
+    (status, Json(blocked)).into_response()
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -216,4 +239,60 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/council/members", get(members).put(put_members))
         .route("/api/council/{id}", get(one))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use permagent::council::preparation::ConveneBlocked;
+
+    #[tokio::test]
+    async fn admission_http_codes_fields_and_dispatch_order() {
+        for (code, retryable, persistence_failed, status) in [
+            (
+                "council_budget_approval_required",
+                true,
+                false,
+                StatusCode::CONFLICT,
+            ),
+            ("council_budget_refused", false, false, StatusCode::CONFLICT),
+            ("council_budget_unknown", false, false, StatusCode::CONFLICT),
+            (
+                "council_budget_unknown",
+                false,
+                true,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            let response = admission_response::<()>(
+                Err(ConveneBlocked {
+                    accepted: false,
+                    code,
+                    request_id: "request".into(),
+                    decision_id: Some("decision".into()),
+                    message: "admission paused".into(),
+                    retryable_after_approval: retryable,
+                    persistence_failed,
+                }),
+                |_| panic!("blocked admission must never dispatch"),
+            );
+            assert_eq!(response.status(), status);
+            let bytes = axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                body,
+                serde_json::json!({"accepted": false, "code": code, "request_id": "request",
+                "decision_id": "decision", "message": "admission paused", "retryable_after_approval": retryable})
+            );
+        }
+        let transferred = std::cell::Cell::new(false);
+        let response = admission_response(Ok("frozen-plan-and-permit"), |prepared| {
+            assert_eq!(prepared, "frozen-plan-and-permit");
+            transferred.set(true);
+        });
+        assert!(transferred.get());
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+    }
 }

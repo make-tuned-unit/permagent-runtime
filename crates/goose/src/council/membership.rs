@@ -47,8 +47,16 @@ pub struct Seat {
 
 impl Seat {
     pub fn eligible(&self) -> bool {
-        self.configured && !self.excluded && !self.cli_or_acp
+        is_council_eligible_provider(&self.provider)
+            && self.configured
+            && !self.excluded
+            && !self.cli_or_acp
     }
+}
+
+/// The reserved test namespace is never a user-configurable Council seat.
+pub fn is_council_eligible_provider(name: &str) -> bool {
+    !(name == "permagent-test" || name.starts_with("permagent-test-"))
 }
 
 pub fn is_cli_or_acp(name: &str) -> bool {
@@ -114,6 +122,7 @@ pub fn seats_from(listed: &[(ProviderMetadata, ProviderType)], excluded: &[Strin
     let excluded_l: Vec<String> = excluded.iter().map(|s| s.to_ascii_lowercase()).collect();
     listed
         .iter()
+        .filter(|(meta, _)| is_council_eligible_provider(&meta.name))
         .map(|(meta, ty)| {
             let cli = is_cli_or_acp(&meta.name);
             Seat {
@@ -208,6 +217,35 @@ mod tests {
             "https://example.com",
             vec![],
         )
+    }
+
+    #[test]
+    fn test_namespace_cannot_be_readmitted_by_config() {
+        for name in ["permagent-test", "permagent-test-custom-headers"] {
+            for excluded in [true, false] {
+                let seat = Seat {
+                    provider: name.into(),
+                    display_name: name.into(),
+                    model: "m".into(),
+                    configured: true,
+                    excluded,
+                    cli_or_acp: false,
+                };
+                assert!(!seat.eligible());
+                assert!(members_from_seats(&[seat]).is_empty());
+            }
+            assert!(seats_from(&[(host_only(name), ProviderType::Builtin)], &[]).is_empty());
+        }
+        let seat = Seat {
+            provider: "permagent-tester".into(),
+            display_name: "Near match".into(),
+            model: "m".into(),
+            configured: true,
+            excluded: false,
+            cli_or_acp: false,
+        };
+        assert!(seat.eligible());
+        assert_eq!(members_from_seats(&[seat]).len(), 1);
     }
 
     #[test]
