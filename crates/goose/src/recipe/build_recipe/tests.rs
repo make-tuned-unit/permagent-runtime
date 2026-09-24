@@ -664,3 +664,23 @@ fn test_build_recipe_from_template_invalid_retry_config() {
         _ => panic!("Expected Invalid error, got: {:?}", err),
     }
 }
+
+/// `dev_roots` is a built-in like `recipe_dir`: a recipe may use it without
+/// declaring it (validation must not call it an undeclared variable), and the
+/// interactive build fills it from the same resolver the scheduler uses.
+#[test]
+fn test_build_recipe_from_template_fills_built_in_dev_roots() {
+    let instructions_and_parameters = r#"
+                "instructions": "Sweep [{{ dev_roots }}]""#;
+
+    let (_temp_dir, recipe_content, recipe_dir) = setup_recipe_file(instructions_and_parameters);
+
+    let recipe =
+        build_recipe_from_template(recipe_content, &recipe_dir, Vec::new(), NO_USER_PROMPT)
+            .unwrap();
+
+    assert_eq!(
+        recipe.instructions.unwrap(),
+        format!("Sweep [{}]", crate::recipe::built_in_dev_roots())
+    );
+}

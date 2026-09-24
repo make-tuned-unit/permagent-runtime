@@ -1107,4 +1107,67 @@ mod tests {
         assert_eq!(starter.cron, "0 30 19 * * 0");
         assert_eq!(ScheduledJob::default().tz, None);
     }
+
+    /// Render a starter's prompt the way the scheduler does: every declared
+    /// default, plus the two built-ins.
+    fn render_starter_prompt(yaml: &str, overrides: &[(&str, &str)]) -> String {
+        let recipe = Recipe::from_content(yaml).expect("starter parses");
+        let mut params: std::collections::HashMap<String, String> = recipe
+            .parameters
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|p| (p.key.clone(), p.default.clone().unwrap_or_default()))
+            .collect();
+        params.insert("recipe_dir".into(), "/recipes".into());
+        params.insert(
+            permagent::recipe::BUILT_IN_DEV_ROOTS_PARAM.into(),
+            String::new(),
+        );
+        for (k, v) in overrides {
+            params.insert((*k).into(), (*v).into());
+        }
+        permagent::recipe::template_recipe::render_recipe_content_with_params(
+            recipe.prompt.as_deref().expect("starter has a prompt"),
+            &params,
+        )
+        .expect("starter prompt renders")
+    }
+
+    /// With no code folder known, the steward says so and stops rather than
+    /// sweeping a guessed path; with folders known it sweeps them; an explicit
+    /// repos_root still wins.
+    #[test]
+    fn steward_resolves_roots_from_dev_roots_or_asks() {
+        let unknown = render_starter_prompt(STEWARD_YAML, &[]);
+        assert!(unknown.contains("No code folders are set"), "{unknown}");
+        assert!(
+            !unknown.contains("{{") && !unknown.contains("{%"),
+            "{unknown}"
+        );
+
+        let known = render_starter_prompt(STEWARD_YAML, &[("dev_roots", "/a/code, /b/src")]);
+        assert!(
+            known.contains("user's code folders: /a/code, /b/src."),
+            "{known}"
+        );
+        assert!(!known.contains("No code folders are set"));
+        assert!(known.contains(r#"repo_path: "/a/code, /b/src""#), "{known}");
+
+        let explicit = render_starter_prompt(
+            STEWARD_YAML,
+            &[("dev_roots", "/a/code"), ("repos_root", "/x/repos")],
+        );
+        assert!(explicit.contains("sweep /x/repos."));
+        assert!(explicit.contains(r#"repo_path: "/x/repos""#));
+    }
+
+    #[test]
+    fn health_review_names_the_checkout_through_dev_roots() {
+        let rendered = render_starter_prompt(HEALTH_REVIEW_YAML, &[("dev_roots", "/a/code")]);
+        assert!(
+            rendered.contains("user's code folders — /a/code —"),
+            "{rendered}"
+        );
+    }
 }

@@ -3328,7 +3328,7 @@ fn new_scheduled_job_agent() -> Agent {
 
 /// Resolve the complete, non-interactive parameter set for a scheduled run.
 ///
-/// `recipe_dir` is a built-in template variable rather than a user-declared
+/// `recipe_dir` and `dev_roots` are built-in template variables rather than user-declared
 /// parameter. Interactive recipe execution injects it while parsing/building
 /// (`recipe::build_recipe::apply_values_to_parameters`); the scheduler used to
 /// omit it, which made strict rendering fail and sent the entire raw
@@ -3356,6 +3356,9 @@ fn scheduled_recipe_params(
             recipe_dir.to_string_lossy().into_owned(),
         );
     }
+    params
+        .entry(crate::recipe::BUILT_IN_DEV_ROOTS_PARAM.to_string())
+        .or_insert_with(crate::recipe::built_in_dev_roots);
     params
 }
 
@@ -4515,6 +4518,57 @@ prompt: 'collect {{ hours }}h from {{ log_dir }} with {{ recipe_dir }}/collector
         assert!(rendered.contains("collect 24h from $HOME/.permagent/logs"));
         assert!(rendered.contains(&format!("{}/collector.py", dir.path().display())));
         assert!(!rendered.contains("{{"), "{rendered}");
+    }
+
+    /// `dev_roots` is the other built-in: a shipped recipe names the user's
+    /// code folders through it instead of carrying one user's layout as a
+    /// default. Strict rendering means a scheduled job would fail outright if
+    /// the scheduler forgot it, and a recipe's own `dev_roots` parameter wins.
+    #[test]
+    fn scheduled_recipe_params_include_dev_roots() {
+        let dir = tempdir().unwrap();
+        let recipe_path = dir.path().join("steward.yaml");
+        let recipe: Recipe = serde_yaml::from_str(
+            r#"
+version: "1"
+title: steward
+description: scheduled sweep
+prompt: 'sweep [{{ dev_roots }}]'
+"#,
+        )
+        .unwrap();
+        let params = scheduled_recipe_params(&recipe, &recipe_path, "steward");
+        assert_eq!(
+            params.get(crate::recipe::BUILT_IN_DEV_ROOTS_PARAM),
+            Some(&crate::recipe::built_in_dev_roots())
+        );
+        let rendered = crate::recipe::template_recipe::render_recipe_content_with_params(
+            recipe.prompt.as_deref().unwrap(),
+            &params,
+        )
+        .unwrap();
+        assert!(!rendered.contains("{{"), "{rendered}");
+
+        let declared: Recipe = serde_yaml::from_str(
+            r#"
+version: "1"
+title: steward
+description: scheduled sweep
+parameters:
+  - key: dev_roots
+    input_type: string
+    requirement: optional
+    description: declared by the recipe itself
+    default: "/declared"
+prompt: 'sweep [{{ dev_roots }}]'
+"#,
+        )
+        .unwrap();
+        let params = scheduled_recipe_params(&declared, &recipe_path, "steward");
+        assert_eq!(
+            params.get("dev_roots").map(String::as_str),
+            Some("/declared")
+        );
     }
 
     /// A render that cannot be completed must FAIL the job, never hand the raw

@@ -1,4 +1,4 @@
-version: "1.3.0"
+version: "1.4.0"
 title: "Git Steward"
 description: "Scheduled repo hygiene across every repository under the dev root — status, stale-branch, gone-upstream and orphaned-worktree sweeps, open-PR hygiene, CI-failure flagging, plus commit-message, PR-description and changelog drafts for the primary repo. Surfaces its findings as a single board card plus a recallable Brain memory. Read/propose only; destructive operations are routed to you for approval. Runs on the configured default model."
 
@@ -6,13 +6,13 @@ parameters:
   - key: repos_root
     input_type: string
     requirement: optional
-    description: "Directory whose immediate children are the git repositories to sweep. $HOME expands in shell commands."
-    default: "$HOME/dev"
+    description: "Directory whose immediate children are the git repositories to sweep. Leave empty to sweep every code folder configured in Settings (dev_roots). $HOME expands in shell commands."
+    default: ""
   - key: repo_path
     input_type: string
     requirement: optional
-    description: "The primary repository that gets the deep pass (commit/PR/changelog drafts, CI investigation). If it does not exist, use the most recently committed repo found in the sweep."
-    default: "$HOME/dev/permagent-runtime"
+    description: "The primary repository that gets the deep pass (commit/PR/changelog drafts, CI investigation). Leave empty, or name a path that does not exist, to use the most recently committed repo found in the sweep."
+    default: ""
   - key: stale_days
     input_type: string
     requirement: optional
@@ -41,12 +41,19 @@ prompt: |
   read `--stat` output instead of the full diff and summarize from the stat plus
   a few representative hunks.
 
-  PART A — FLEET SWEEP ({{ repos_root }})
+  PART A — FLEET SWEEP
 
-  1. DISCOVER the repositories: every immediate child of {{ repos_root }} that has
-     a `.git` DIRECTORY (a `.git` file marks a linked worktree of another repo —
-     skip those, they are swept via their parent):
-       `for d in {{ repos_root }}/*/.git; do [ -d "$d" ] && dirname "$d"; done`
+  0. ROOTS: {% if repos_root %}sweep {{ repos_root }}.{% elif dev_roots %}sweep each of the
+     user's code folders: {{ dev_roots }}.{% else %}no code folder is configured
+     and none could be discovered. Do NOT guess one. Skip every step below,
+     call `surface_steward_report` once with repo_path "(no code folders)" and
+     summary "No code folders are set — add them in Settings (dev_roots)", and
+     stop.{% endif %}
+
+  1. DISCOVER the repositories: for each root $ROOT above, every immediate child
+     that has a `.git` DIRECTORY (a `.git` file marks a linked worktree of
+     another repo — skip those, they are swept via their parent):
+       `for d in "$ROOT"/*/.git; do [ -d "$d" ] && dirname "$d"; done`
 
   2. For EACH discovered repo (call it $R), run:
        `git -C $R status --short --branch`
@@ -90,20 +97,21 @@ prompt: |
      `git -C $R worktree remove <path>` for the user to run. REPORT-ONLY —
      worktree removal is never autonomous.
 
-  PART B — DEEP PASS on the primary repo ({{ repo_path }}; if that path does not
-  exist, use the discovered repo with the most recent commit)
+  PART B — DEEP PASS on the primary repo, $P: {% if repo_path %}{{ repo_path }} if
+  that path exists, otherwise {% endif %}the discovered repo with the most recent
+  commit.
 
   6. COMMIT MESSAGE DRAFT (only if there are staged changes)
-     - `git -C {{ repo_path }} diff --cached --stat` (and the diff if small)
+     - `git -C $P diff --cached --stat` (and the diff if small)
      - Draft a Conventional Commits message. A PROPOSAL — do not commit.
 
   7. PR DESCRIPTION (only if the current branch is ahead of main and not main)
-     - `git -C {{ repo_path }} log --oneline main..HEAD` and `... diff --stat main..HEAD`
+     - `git -C $P log --oneline main..HEAD` and `... diff --stat main..HEAD`
      - Draft a one-line summary, a "What changed" list, and a "Why" sentence. A PROPOSAL.
 
   8. CHANGELOG (since the last tag)
-     - `git -C {{ repo_path }} describe --tags --abbrev=0` then
-       `git -C {{ repo_path }} log --oneline <lasttag>..HEAD`
+     - `git -C $P describe --tags --abbrev=0` then
+       `git -C $P log --oneline <lasttag>..HEAD`
      - Group into Added / Changed / Fixed. A PROPOSAL.
 
   9. CI-FAILURE INVESTIGATION: for the primary repo's most recent failed run
@@ -123,7 +131,7 @@ prompt: |
 
   FINALLY — surface the report so it reaches the board and the Brain. Call the
   `surface_steward_report` tool EXACTLY ONCE with:
-    repo_path: "{{ repos_root }}"
+    repo_path: "{{ repos_root or dev_roots }}"
     summary: a one-line fleet count, e.g. "9 repos: 1 red CI, 12 stale merged branches, 6 orphaned worktrees"
     stale_merged_branches: ["<repo-name>/<branch>", ...] across the fleet
     orphaned_worktrees: ["<path> (<branch>, merged)", ...]

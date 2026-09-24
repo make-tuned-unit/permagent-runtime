@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anstream::println;
 use console::style;
-use permagent::recipe::{Recipe, BUILT_IN_RECIPE_DIR_PARAM};
+use permagent::recipe::{Recipe, BUILT_IN_DEV_ROOTS_PARAM, BUILT_IN_RECIPE_DIR_PARAM};
 
 pub fn print_recipe_explanation(recipe: &Recipe) {
     println!(
@@ -36,7 +36,7 @@ pub fn print_recipe_explanation(recipe: &Recipe) {
 
 pub fn print_parameters_with_values(params: HashMap<String, String>) {
     for (key, value) in params {
-        let label = if key == BUILT_IN_RECIPE_DIR_PARAM {
+        let label = if key == BUILT_IN_RECIPE_DIR_PARAM || key == BUILT_IN_DEV_ROOTS_PARAM {
             " (built-in)"
         } else {
             ""

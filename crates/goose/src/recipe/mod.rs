@@ -22,6 +22,23 @@ pub mod validate_recipe;
 pub mod yaml_format_utils;
 
 pub const BUILT_IN_RECIPE_DIR_PARAM: &str = "recipe_dir";
+/// The user's code directories, comma-separated: the confirmed `dev_roots`
+/// config value, else what discovery can prove, else empty. A built-in so a
+/// shipped recipe never has to write one user's layout into its defaults
+/// (see `config::dev_roots` for why a guessed path is worse than a question).
+/// Empty means unknown — a recipe should say so and ask, not guess.
+pub const BUILT_IN_DEV_ROOTS_PARAM: &str = "dev_roots";
+
+/// Value for [`BUILT_IN_DEV_ROOTS_PARAM`]. Comma-separated rather than one per
+/// line because it is rendered into YAML, where a newline would break the
+/// indentation of the block scalar it lands in.
+pub fn built_in_dev_roots() -> String {
+    crate::config::dev_roots::dev_roots()
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 pub const RECIPE_FILE_EXTENSIONS: &[&str] = &["yaml", "json"];
 
 fn default_version() -> String {

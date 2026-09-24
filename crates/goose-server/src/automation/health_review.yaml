@@ -1,4 +1,4 @@
-version: "1.1.0"
+version: "1.2.0"
 title: "Nightly Health Review"
 description: "Builds a deterministic, validated 24-hour evidence set from every daemon log rotation, then reports confirmed errors, latency, loops, approvals, and user friction without carrying old findings forward."
 
@@ -131,8 +131,9 @@ prompt: |
     session started.
   - **A previous report in {{ report_dir }} already diagnosed a finding
     whose source comments name it as fixed.** Re-open it only with a log
-    line after that fix shipped (check `/Users/j/Documents/dev/permagent-runtime`
-    if present — read only, never clone, never edit).
+    line after that fix shipped (check the Permagent source checkout if one
+    exists under the user's code folders — {{ dev_roots }} — read only, never
+    clone, never edit; if there is none, say the fix could not be checked).
 
   ## Boundaries
 

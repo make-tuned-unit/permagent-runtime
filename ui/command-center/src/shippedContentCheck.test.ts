@@ -196,14 +196,6 @@ describe('shipped-content checker behaviour', () => {
 });
 
 describe('shipped-content convention (repo)', () => {
-  // Remaining leaks, owned by the automation lane (G2-auto). When they are
-  // fixed this list empties and the test should require `ok`.
-  const MUST_REPORT = [
-    'crates/goose-server/src/automation/health_review.yaml:134',
-    'crates/goose-server/src/automation/steward.yaml:10',
-    'crates/goose-server/src/automation/steward.yaml:15',
-  ];
-
   const MUST_NOT = [
     'crates/goose/src/privacy.rs:24',
     'crates/goose/src/privacy.rs:25',
@@ -216,14 +208,14 @@ describe('shipped-content convention (repo)', () => {
     'crates/goose/src/prompts/system.md',
     'crates/goose/src/projects.rs',
     'crates/goose/src/meeting_writeup.rs',
+    // Fixed by G2-auto (recipes resolve {{ dev_roots }}); must not come back.
+    'crates/goose-server/src/automation/health_review.yaml',
+    'crates/goose-server/src/automation/steward.yaml',
   ];
 
-  it('reports known environment leaks and spares reviewed non-findings', () => {
+  it('finds no environment leaks in shipped content', () => {
     const { lines, ok } = runShippedContentCheck({ repoRoot: REPO_ROOT, today: '2026-09-22' });
-    expect(ok).toBe(false);
-    for (const needle of MUST_REPORT) {
-      expect(lines.some((l) => l.includes(needle))).toBe(true);
-    }
+    expect(ok, lines.join('\n')).toBe(true);
     for (const needle of MUST_NOT) {
       expect(lines.some((l) => l.includes(needle))).toBe(false);
     }

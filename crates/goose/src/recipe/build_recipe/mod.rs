@@ -3,7 +3,7 @@ use crate::recipe::template_recipe::render_recipe_content_with_params;
 use crate::recipe::validate_recipe::validate_recipe_template_from_content;
 use crate::recipe::{
     Recipe, RecipeParameter, RecipeParameterInputType, RecipeParameterRequirement,
-    BUILT_IN_RECIPE_DIR_PARAM,
+    BUILT_IN_DEV_ROOTS_PARAM, BUILT_IN_RECIPE_DIR_PARAM,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -129,6 +129,10 @@ where
         BUILT_IN_RECIPE_DIR_PARAM.to_string(),
         recipe_dir.to_string(),
     );
+    // A recipe that declares its own `dev_roots` parameter keeps its value.
+    param_map
+        .entry(BUILT_IN_DEV_ROOTS_PARAM.to_string())
+        .or_insert_with(crate::recipe::built_in_dev_roots);
     let mut missing_params: Vec<String> = Vec::new();
     for param in recipe_parameters.unwrap_or_default() {
         if !param_map.contains_key(&param.key) {

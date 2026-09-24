@@ -2,7 +2,7 @@ use crate::recipe::read_recipe_file_content::RecipeFile;
 use crate::recipe::template_recipe::parse_recipe_content;
 use crate::recipe::{
     Recipe, RecipeParameter, RecipeParameterInputType, RecipeParameterRequirement,
-    BUILT_IN_RECIPE_DIR_PARAM,
+    BUILT_IN_DEV_ROOTS_PARAM, BUILT_IN_RECIPE_DIR_PARAM,
 };
 use anyhow::Result;
 use std::collections::HashSet;
@@ -130,6 +130,7 @@ fn validate_parameters_in_template(
 ) -> Result<()> {
     let mut template_variables = template_variables.clone();
     template_variables.remove(BUILT_IN_RECIPE_DIR_PARAM);
+    template_variables.remove(BUILT_IN_DEV_ROOTS_PARAM);
 
     let param_keys: HashSet<String> = recipe_parameters
         .as_ref()
