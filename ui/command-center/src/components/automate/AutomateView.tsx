@@ -20,6 +20,7 @@ import {
 } from '../../lib/cleanupRecovery';
 import { usePersona } from '../settings/useSettings';
 import { RunRoster } from './RunRoster';
+import { ModelReviewFindings } from './ModelReviewFindings';
 import { Button, SUCCESS_FLASH_MS } from '../common/Button';
 import { JobProgress } from '../common/JobProgress';
 import { useLongRunningJob, type LongRunningJob } from '../../hooks/useLongRunningJob';
@@ -1157,6 +1158,7 @@ export function AutomateView() {
         <DetailPanel detail={currentDetail}
           lastStatus={currentDetail.kind === 'run' && sessions.get(currentDetail.run.jobId)?.[0]?.id === currentDetail.run.id
             ? jobs.find(job => job.id === currentDetail.run.jobId)?.last_status : undefined}
+          starterId={currentDetail.kind === 'run' ? jobs.find(job => job.id === currentDetail.run.jobId)?.starter_id : undefined}
           onClose={() => setDetail(null)}
           onRunNow={handleRunNow} onPause={handlePause} onUnpause={handleUnpause}
           onDelete={handleDelete} onKill={handleKill} onResetToDefault={handleResetToDefault}
@@ -1351,9 +1353,11 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
 // ═══════════════════════════════════════════════════════════════════════
 
 function DetailPanel({
-detail, lastStatus, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone }: {
+detail, lastStatus, starterId, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone }: {
   detail: DetailTarget;
   lastStatus?: ScheduleRunStatus | null;
+  /** The run's job's starter (a run carries only its job id). */
+  starterId?: string | null;
   onClose: () => void;
   onRunNow: (id: string) => Promise<void>;
   onPause: (id: string) => Promise<void>;
@@ -1420,7 +1424,7 @@ detail, lastStatus, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onR
           actionStates={actionStates} onActionDone={onActionDone} />
       )}
       {detail.kind === 'extension' && <ExtensionDetail ext={detail.ext} />}
-      {detail.kind === 'run' && <RunDetail run={detail.run} displayName={detail.displayName} lastStatus={lastStatus} />}
+      {detail.kind === 'run' && <RunDetail run={detail.run} displayName={detail.displayName} lastStatus={lastStatus} starterId={starterId} />}
     </div>
   );
 }
@@ -1527,9 +1531,13 @@ export function findingsReportNotice(data: RunFindings, status?: ScheduleRunStat
   return data.findings.length === 0 ? 'Scan complete — no cleanup candidates found.' : null;
 }
 
-export function RunDetail({ run, displayName, lastStatus }: {
+export function RunDetail({ run, displayName, lastStatus, starterId }: {
   run: SessionInfo & { jobId: string }; displayName: string; lastStatus?: ScheduleRunStatus | null;
+  /** `model_review` swaps the storage findings ledger for the model findings
+   *  ledger (W1b). Model findings are never storage Trash/Keep (ruling 13). */
+  starterId?: string | null;
 }) {
+  const isModelReview = starterId === 'model_review';
   const { colors } = useTheme();
   const switchToSession = useCommandCenter(s => s.switchToSession);
   const openChatDock = useCommandCenter(s => s.openChatDock);
@@ -1582,6 +1590,12 @@ export function RunDetail({ run, displayName, lastStatus }: {
         reportOk = true;
       } catch {}
       let notice: string | null = null;
+      // A Model Review run has no storage cleanup ledger; asking for one would
+      // only produce a false "cleanup findings could not be saved" notice.
+      if (isModelReview) {
+        if (!cancelled) { setLoadError(false); setLoading(false); }
+        return;
+      }
       try {
         const data = await apiFetch<RunFindings>(`/automation/run/${encodeURIComponent(run.id)}/findings`);
         notice = findingsReportNotice(data, lastStatus);
@@ -1622,7 +1636,7 @@ export function RunDetail({ run, displayName, lastStatus }: {
     })();
     void refreshLifetime();
     return () => { cancelled = true; };
-  }, [run.id, run.jobId, run.createdAt, lastStatus, reloadTick, refreshLifetime]);
+  }, [run.id, run.jobId, run.createdAt, lastStatus, reloadTick, refreshLifetime, isModelReview]);
 
   const handleAction = async (findingId: string, action: string, confirmed?: boolean) => {
     setActionInFlight(findingId);
@@ -1744,7 +1758,13 @@ export function RunDetail({ run, displayName, lastStatus }: {
           ))}
         </div>
       )}
-      {loading ? (
+      {isModelReview ? (
+        // Not gated on `findings.length`: that is the storage ledger's count.
+        <>
+          <ModelReviewFindings />
+          {!loading && reportText && <ReportToggle text={reportText} createdAt={run.createdAt} tokens={run.totalTokens} />}
+        </>
+      ) : loading ? (
         <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading results...</div>
       ) : findings.length > 0 ? (
         <>
