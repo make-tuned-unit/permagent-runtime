@@ -6,9 +6,10 @@
 
 use crate::state::AppState;
 use chrono::{DateTime, Local};
+use permagent::council::preparation::{CODE_APPROVAL_REQUIRED, CODE_REFUSED};
 use permagent::council::{self, debate, due, store};
 use permagent::session::SessionManager;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const STARTUP_DELAY: Duration = Duration::from_secs(600);
@@ -70,6 +71,86 @@ async fn run_once(state: &AppState) {
             actions = c.n_actions,
             "weekly council finished"
         ),
-        Err(e) => tracing::warn!(target: "permagentd::council", "weekly council failed: {e}"),
+        Err(e) => match classify(&e, &LAST_OUTCOME) {
+            Outcome::Repeat => {
+                tracing::debug!(target: "permagentd::council", "weekly council still blocked: {e}")
+            }
+            Outcome::Waiting => tracing::info!(
+                target: "permagentd::council",
+                "weekly council is waiting on its Decision Inbox card: {e}"
+            ),
+            Outcome::Refused => {
+                tracing::info!(target: "permagentd::council", "weekly council not run: {e}")
+            }
+            Outcome::Failed => {
+                tracing::warn!(target: "permagentd::council", "weekly council failed: {e}")
+            }
+        },
+    }
+}
+
+/// The last blocked outcome this process logged. The sweep retries hourly for
+/// the whole week, so an unchanged block — a card still unanswered, an
+/// occurrence already refused — would otherwise write the same line ~150 times.
+static LAST_OUTCOME: Mutex<Option<String>> = Mutex::new(None);
+
+#[derive(Debug, PartialEq, Eq)]
+enum Outcome {
+    /// Identical to the last logged block: nothing new to say.
+    Repeat,
+    /// Budget admission raised (or found) a Decision Inbox card; the expected
+    /// state until the user answers it, not a failure.
+    Waiting,
+    /// A deliberate refusal: cancelled, already run, hard limit.
+    Refused,
+    /// Anything else, including an approval the admission check rejected.
+    Failed,
+}
+
+fn classify(error: &str, last: &Mutex<Option<String>>) -> Outcome {
+    let mut last = last.lock().unwrap_or_else(|p| p.into_inner());
+    if last.as_deref() == Some(error) {
+        return Outcome::Repeat;
+    }
+    *last = Some(error.to_string());
+    let code = error.split(':').next().unwrap_or_default();
+    if code == CODE_APPROVAL_REQUIRED {
+        Outcome::Waiting
+    } else if code == CODE_REFUSED {
+        Outcome::Refused
+    } else {
+        Outcome::Failed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use permagent::council::preparation::CODE_UNKNOWN;
+
+    #[test]
+    fn an_unanswered_card_logs_once_as_waiting_then_goes_quiet() {
+        let last = Mutex::new(None);
+        let waiting =
+            format!("{CODE_APPROVAL_REQUIRED}: approve the bounded convene (Decision Inbox: d1)");
+        assert_eq!(classify(&waiting, &last), Outcome::Waiting);
+        assert_eq!(classify(&waiting, &last), Outcome::Repeat);
+        assert_eq!(classify(&waiting, &last), Outcome::Repeat);
+        let refused = format!("{CODE_REFUSED}: already admitted or cancelled");
+        assert_eq!(classify(&refused, &last), Outcome::Refused);
+        assert_eq!(classify(&refused, &last), Outcome::Repeat);
+    }
+
+    /// A rejected approval or a storage fault is a real failure and says so,
+    /// once, and again whenever it changes.
+    #[test]
+    fn failures_warn_and_a_changed_failure_warns_again() {
+        let last = Mutex::new(None);
+        let a = format!("{CODE_UNKNOWN}: unauthorized: approval actor may not fund this plan");
+        let b = format!("{CODE_UNKNOWN}: database is locked");
+        assert_eq!(classify(&a, &last), Outcome::Failed);
+        assert_eq!(classify(&a, &last), Outcome::Repeat);
+        assert_eq!(classify(&b, &last), Outcome::Failed);
+        assert_eq!(classify("council_enabled is off", &last), Outcome::Failed);
     }
 }

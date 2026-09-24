@@ -33,11 +33,15 @@ impl std::fmt::Display for ConveneBlocked {
     }
 }
 impl std::error::Error for ConveneBlocked {}
+/// Stable codes a caller may match on (`Display` renders `"<code>: <message>"`).
+pub const CODE_UNKNOWN: &str = "council_budget_unknown";
+pub const CODE_REFUSED: &str = "council_budget_refused";
+pub const CODE_APPROVAL_REQUIRED: &str = "council_budget_approval_required";
 impl ConveneBlocked {
     fn unknown(request_id: &str, message: impl Into<String>) -> Self {
         Self {
             accepted: false,
-            code: "council_budget_unknown",
+            code: CODE_UNKNOWN,
             request_id: request_id.into(),
             decision_id: None,
             message: message.into(),
@@ -53,13 +57,13 @@ impl ConveneBlocked {
     }
     fn refused(request_id: &str, message: impl Into<String>) -> Self {
         Self {
-            code: "council_budget_refused",
+            code: CODE_REFUSED,
             ..Self::unknown(request_id, message)
         }
     }
     fn gate(plan: &ConvenePlan, decision_id: String) -> Self {
         Self {
-            code: "council_budget_approval_required",
+            code: CODE_APPROVAL_REQUIRED,
             decision_id: Some(decision_id),
             retryable_after_approval: true,
             ..Self::unknown(&plan.request_id, gate_copy(plan))
