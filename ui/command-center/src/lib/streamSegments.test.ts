@@ -164,7 +164,14 @@ describe('the empty placeholder bubble', () => {
     } as ChatMessage)).toBe(true);
   });
 
-  it('never hides user messages', () => {
-    expect(isRenderableChatMessage({ ...base, role: 'user', content: '' } as ChatMessage)).toBe(true);
+  it('never hides a user message that has something in it', () => {
+    // An EMPTY user message is no longer drawn (C1, 2026-09-24): the only ones
+    // that exist are tool-result carriers from history, and they drew a bare
+    // "You" bubble between assistant turns. See historyToolCarrier.test.ts.
+    expect(isRenderableChatMessage({ ...base, role: 'user', content: 'hi' } as ChatMessage)).toBe(true);
+    expect(isRenderableChatMessage({
+      ...base, role: 'user', content: '', images: [{ data: 'a', mimeType: 'image/png' }],
+    } as ChatMessage)).toBe(true);
+    expect(isRenderableChatMessage({ ...base, role: 'user', content: '' } as ChatMessage)).toBe(false);
   });
 });

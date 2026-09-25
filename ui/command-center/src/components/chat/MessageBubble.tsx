@@ -10,6 +10,14 @@ import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
 import { Tooltip } from '../common/Tooltip';
+
+/** A bubble's ceiling: 85% of the transcript, but never wider than a readable
+ *  measure. The dock can now be dragged to half a 2560px window (960px), and a
+ *  paragraph run edge to edge at that width is ~140 characters a line — past
+ *  where the eye loses its place on the return sweep. 72ch holds a comfortable
+ *  line in the bubble's own type size; a narrow dock still gets the 85%. */
+export const BUBBLE_MAX_WIDTH = 'min(85%, 72ch)';
+
 function MessageBubbleInner({ message }: { message: ChatMessage }) {
   const { colors } = useTheme();
   const agentName = useCommandCenter(s => s.agentName);
@@ -31,7 +39,7 @@ function MessageBubbleInner({ message }: { message: ChatMessage }) {
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className="max-w-[85%] rounded-xl px-3.5 py-2.5" style={{ ...bubbleStyle, overflowWrap: 'break-word', wordBreak: 'break-word', minWidth: 0 }}>
+      <div className="rounded-xl px-3.5 py-2.5" style={{ ...bubbleStyle, maxWidth: BUBBLE_MAX_WIDTH, overflowWrap: 'break-word', wordBreak: 'break-word', minWidth: 0 }}>
         <div className="flex items-center gap-2 mb-1">
           <span
             className="text-[11px]"

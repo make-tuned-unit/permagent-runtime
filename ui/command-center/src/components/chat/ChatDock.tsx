@@ -28,29 +28,54 @@ export const CHAT_DOCK_WIDTH = 384;
  * block, too wide on a 1280px window where it took a third of the screen. The
  * floor is the width below which a message bubble stops being readable; the
  * ceiling is where the dock starts being the app rather than a panel beside it.
+ *
+ * The ceiling is RELATIVE to the window. It used to be a flat 560px, which on a
+ * 2560px window capped the chat at 22% of the screen while the pane beside it
+ * sat mostly empty (dagK walk, 2026-09-24). Half the window is where the dock
+ * stops being a panel beside the app; 960px is where a transcript stops gaining
+ * anything from more width (bubbles hold their own reading measure).
  */
 export const CHAT_DOCK_MIN_WIDTH = 320;
-export const CHAT_DOCK_MAX_WIDTH = 560;
+export const CHAT_DOCK_MAX_FRACTION = 0.5;
+export const CHAT_DOCK_MAX_CEILING = 960;
 
 const WIDTH_KEY = 'permagent-chat-dock-width';
 
 /** Keyboard resize step for the separator (Left/Right arrows). */
 const WIDTH_STEP = space.md;
 
-export function clampDockWidth(px: number): number {
-  if (!Number.isFinite(px)) return CHAT_DOCK_WIDTH;
-  return Math.min(CHAT_DOCK_MAX_WIDTH, Math.max(CHAT_DOCK_MIN_WIDTH, Math.round(px)));
+function viewportWidth(): number {
+  return typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 0;
 }
 
-/** The persisted width, clamped — a hand-edited or stale value can't wedge the
- *  dock at 40px or off the side of the window. */
+/** The widest the dock may be in a window this wide. Never below the floor, so
+ *  a small window still gets a usable (if dominant) dock rather than none. */
+export function dockMaxWidth(viewport: number = viewportWidth()): number {
+  const relative = viewport > 0 ? Math.round(viewport * CHAT_DOCK_MAX_FRACTION) : CHAT_DOCK_MAX_CEILING;
+  return Math.max(CHAT_DOCK_MIN_WIDTH, Math.min(CHAT_DOCK_MAX_CEILING, relative));
+}
+
+/** The wide preset the grab edge's double-click toggles to: as wide as this
+ *  window allows. */
+export function dockWideWidth(viewport: number = viewportWidth()): number {
+  return dockMaxWidth(viewport);
+}
+
+export function clampDockWidth(px: number, max: number = dockMaxWidth()): number {
+  if (!Number.isFinite(px)) return Math.min(CHAT_DOCK_WIDTH, max);
+  return Math.min(max, Math.max(CHAT_DOCK_MIN_WIDTH, Math.round(px)));
+}
+
+/** The persisted width, clamped to THIS window — a hand-edited or stale value,
+ *  or one saved on a bigger display, can't wedge the dock at 40px or push it
+ *  past half the window. */
 export function readDockWidth(): number {
   try {
     const raw = localStorage.getItem(WIDTH_KEY);
-    if (raw === null) return CHAT_DOCK_WIDTH;
+    if (raw === null) return clampDockWidth(CHAT_DOCK_WIDTH);
     return clampDockWidth(Number(raw));
   } catch {
-    return CHAT_DOCK_WIDTH;
+    return clampDockWidth(CHAT_DOCK_WIDTH);
   }
 }
 
@@ -67,9 +92,14 @@ export function ChatDock() {
   const [narrow, setNarrow] = useState(
     typeof window !== 'undefined' && window.innerWidth < 640,
   );
+  // The ceiling follows the window, so it is state, recomputed on resize.
+  const [maxWidth, setMaxWidth] = useState(() => dockMaxWidth());
 
   useEffect(() => {
-    const onResize = () => setNarrow(window.innerWidth < 640);
+    const onResize = () => {
+      setNarrow(window.innerWidth < 640);
+      setMaxWidth(dockMaxWidth());
+    };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
@@ -83,8 +113,11 @@ export function ChatDock() {
   // syncBounds. The native webview follows the layout because it is driven by
   // the layout — see the comment at Browser.tsx:401-404, which already relies
   // on exactly this ("the container rect ALREADY excludes it").
-  const [width, setWidth] = useState(readDockWidth);
+  const [preferredWidth, setWidth] = useState(readDockWidth);
   const [dragging, setDragging] = useState(false);
+  // Shrinking the window clamps what is DRAWN, not what is remembered: the
+  // stored preference is left alone, so growing the window back restores it.
+  const width = Math.min(preferredWidth, maxWidth);
 
   // ── Open/close motion (D9: spring, under 500ms, reduce-motion honored) ──
   //
@@ -116,10 +149,10 @@ export function ChatDock() {
   }, [open, reduceMotion]);
 
   const commitWidth = useCallback((px: number) => {
-    const w = clampDockWidth(px);
+    const w = clampDockWidth(px, maxWidth);
     setWidth(w);
     writeDockWidth(w);
-  }, []);
+  }, [maxWidth]);
 
   if (!open && !closing) return null;
 
@@ -186,6 +219,7 @@ export function ChatDock() {
         {!narrow && (
           <ResizeEdge
             width={width}
+            maxWidth={maxWidth}
             dragging={dragging}
             setDragging={setDragging}
             onWidth={setWidth}
@@ -253,17 +287,22 @@ export function ChatDock() {
  *
  * Pointer-driven and pointer-captured, so a fast drag that outruns the cursor
  * keeps receiving moves instead of dropping the gesture the moment it leaves
- * the 8px strip. It is also a real `separator` with arrow-key steps: a resize
+ * the 12px strip. It is also a real `separator` with arrow-key steps: a resize
  * that only a mouse can perform is one a keyboard user simply does not have.
+ *
+ * Double-click toggles between the default width and the wide preset, the
+ * standard gesture on a split-pane seam (Finder, VS Code, Xcode).
  */
 function ResizeEdge({
   width,
+  maxWidth,
   dragging,
   setDragging,
   onWidth,
   onCommit,
 }: {
   width: number;
+  maxWidth: number;
   dragging: boolean;
   setDragging: (v: boolean) => void;
   onWidth: (px: number) => void;
@@ -286,7 +325,7 @@ function ResizeEdge({
     const d = drag.current;
     if (!d || d.id !== e.pointerId) return;
     // Dragging LEFT widens the dock — it lives on the right edge of the window.
-    onWidth(clampDockWidth(d.startWidth + (d.startX - e.clientX)));
+    onWidth(clampDockWidth(d.startWidth + (d.startX - e.clientX), maxWidth));
   };
 
   const endDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -295,7 +334,7 @@ function ResizeEdge({
     drag.current = null;
     e.currentTarget.releasePointerCapture?.(e.pointerId);
     setDragging(false);
-    onCommit(clampDockWidth(d.startWidth + (d.startX - e.clientX)));
+    onCommit(clampDockWidth(d.startWidth + (d.startX - e.clientX), maxWidth));
   };
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -305,10 +344,21 @@ function ResizeEdge({
     onCommit(width + delta);
   };
 
+  const onDoubleClick = () => {
+    const wide = Math.min(dockWideWidth(), maxWidth);
+    const standard = Math.min(CHAT_DOCK_WIDTH, maxWidth);
+    // At (or within a pixel of) the wide preset ⇒ back to the default; from
+    // anywhere else, including a hand-dragged width, go wide.
+    onCommit(Math.abs(width - wide) <= 1 ? standard : wide);
+  };
+
   // A pointer user gets the rule on hover; a keyboard user gets the same rule
   // on focus, because a resize that can only be SEEN with a mouse is the same
-  // omission as one that can only be performed with one.
-  const fill = dragging ? colors.fillActive : (hovered || focused) ? colors.fillHover : 'transparent';
+  // omission as one that can only be performed with one. The rule is a text
+  // tone, not a fill tone: `fillHover` is a 7% wash, which on a 2px line is
+  // invisible — the edge could not be found by eye (dagK walk, 2026-09-24).
+  const lit = dragging || hovered || focused;
+  const fill = dragging ? colors.textMuted : lit ? colors.textDim : 'transparent';
   return (
     <div
       role="separator"
@@ -316,13 +366,14 @@ function ResizeEdge({
       aria-label="Resize the chat panel"
       aria-valuenow={width}
       aria-valuemin={CHAT_DOCK_MIN_WIDTH}
-      aria-valuemax={CHAT_DOCK_MAX_WIDTH}
+      aria-valuemax={maxWidth}
       tabIndex={0}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
       onKeyDown={onKeyDown}
+      onDoubleClick={onDoubleClick}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
       onMouseEnter={() => setHovered(true)}
@@ -332,24 +383,43 @@ function ResizeEdge({
         left: 0,
         top: 0,
         bottom: 0,
-        width: space.md,
+        width: space.xl,
         cursor: 'col-resize',
         zIndex: 2,
-        // The hit area is 8px; what LIGHTS is a 2px rule on the seam, so the
+        // The hit area is 12px; what LIGHTS is a 2px rule on the seam, so the
         // affordance reads as the edge itself rather than as a stripe beside it.
         display: 'flex',
         justifyContent: 'flex-start',
+        alignItems: 'center',
         touchAction: 'none',
         outline: 'none',
       }}
     >
       <div
         aria-hidden
+        data-dock-seam
         style={{
-          width: space.xs / 2,
+          width: space.xxs,
           height: '100%',
           borderRadius: radius.pill,
           background: fill,
+          transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.smooth}`,
+        }}
+      />
+      {/* The grip: always faintly present mid-edge so the handle can be found
+          without hunting for it, brighter while the edge is live. */}
+      <div
+        aria-hidden
+        data-dock-grip
+        style={{
+          position: 'absolute',
+          left: space.xs,
+          top: '50%',
+          transform: 'translateY(-50%)',
+          width: space.xs,
+          height: space.huge + space.md,
+          borderRadius: radius.pill,
+          background: lit ? colors.textMuted : colors.border,
           transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.smooth}`,
         }}
       />
