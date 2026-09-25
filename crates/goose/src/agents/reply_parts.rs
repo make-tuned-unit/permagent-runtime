@@ -3169,6 +3169,48 @@ mod tests {
         assert_eq!(settled, 1);
     }
 
+    /// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md Q1): a caller that
+    /// genuinely knows why it is calling — the planner, via
+    /// `complete_accounted_with_purpose` — must see that purpose land on the
+    /// ledger row instead of falling through to `CallProvenance::default()`
+    /// (`unknown`), which is what `complete_accounted`/`complete_fast_accounted`
+    /// did unconditionally before this lane. This is the same plumbing
+    /// `run_decomposition` (`orchestrator.rs`) uses.
+    #[tokio::test]
+    async fn complete_accounted_with_purpose_records_planning_on_the_ledger() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage {
+            input_tokens: Some(10),
+            output_tokens: Some(4),
+            total_tokens: Some(14),
+            ..Usage::default()
+        }));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+
+        AccountedFastCompletion::complete_accounted_with_purpose(
+            Arc::clone(&manager),
+            session.clone(),
+            fixture,
+            "plan",
+            &[Message::user().with_text("decompose this")],
+            &[],
+            false,
+            CallPurpose::Planning,
+        )
+        .await
+        .unwrap();
+
+        let pool = manager.storage().pool().await.unwrap();
+        let purpose: Option<String> = sqlx::query_scalar(
+            "SELECT call_purpose FROM cost_ledger WHERE session_id = ? AND model = 'claude-haiku-4-5'",
+        )
+        .bind(&session.id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(purpose.as_deref(), Some("planning"));
+    }
+
     #[tokio::test]
     async fn primary_stream_reservation_refuses_paid_dispatch_without_a_task() {
         let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
