@@ -1164,8 +1164,8 @@ async fn ensure_needs_merge_decision(
             detail: Some(detail),
             payload: serde_json::to_value(decisions::UnblockPayload {
                 reason: decisions::UnblockReason::Stuck,
-                spent: None,
-                cap: None,
+                cause: Some(decisions::UnblockCause::MergeConflict),
+                ..Default::default()
             })
             .map_err(|error| error.to_string())?,
             ..Default::default()
@@ -1173,6 +1173,289 @@ async fn ensure_needs_merge_decision(
     )
     .await?;
     Ok(())
+}
+
+/// What each allowed answer does, in one plain sentence (Decision Inbox
+/// redesign D4). Lives here, beside [`apply_decision_effect_with_auto_land`],
+/// so the copy the modal shows and the arm that runs cannot drift apart:
+/// change an arm below, change its sentence here. Every sentence promises only
+/// what the arm (or, for scheduled jobs, `scheduler::scheduled_job_resume`;
+/// for tool/session gates, the waiter the answer route delivers to) actually
+/// does; where the effect is only a record, the sentence says so.
+///
+/// Keyed on exactly [`decisions::allowed_answers`] for the kind — a unit test
+/// pins that — so the UI never offers an answer with no sentence, or a
+/// sentence for an answer the route would refuse.
+pub fn answer_effects(
+    kind: &str,
+    payload: &serde_json::Value,
+    has_goal: bool,
+) -> std::collections::BTreeMap<String, String> {
+    fn str_of<'a>(payload: &'a serde_json::Value, key: &str) -> &'a str {
+        payload.get(key).and_then(|v| v.as_str()).unwrap_or("")
+    }
+    let proposal = str_of(payload, "proposal");
+    let reason = str_of(payload, "reason");
+    let action_class = str_of(payload, "action_class");
+    let pairs: Vec<(&str, String)> =
+        match kind {
+            "approve_review" => vec![
+                (
+                    "approve",
+                    "Marks the goal done and lands its work once its checks have passed.".into(),
+                ),
+                (
+                    "reject",
+                    "Sends the work back for another attempt, with your note as the reason. If it \
+                 has no attempts left, the goal is paused for you instead."
+                        .into(),
+                ),
+            ],
+            // Scheduled-job unblocks never reach the arms below: the answer route
+            // hands them to `scheduler::scheduled_job_resume` (D6).
+            "unblock" if reason == decisions::CONSECUTIVE_FAILURE_LIMIT => vec![
+                (
+                    "approve",
+                    "Turns the scheduled job back on; it runs again at its next scheduled time."
+                        .into(),
+                ),
+                (
+                    "reject",
+                    "Keeps the job paused. You can resume it later from Automate.".into(),
+                ),
+            ],
+            "unblock" if !has_goal => vec![
+                (
+                    "approve",
+                    "Records your answer. Nothing else changes.".into(),
+                ),
+                (
+                    "reject",
+                    "Records your answer. Nothing else changes.".into(),
+                ),
+                (
+                    "input",
+                    "Saves your reply on this decision. Nothing else changes.".into(),
+                ),
+            ],
+            "unblock" => vec![
+                (
+                    "approve",
+                    if reason == "wallclock_cap" {
+                        // D7: the approve arm also clears the wall-budget anchor.
+                        "Wakes the goal with a fresh time budget and more attempts.".into()
+                    } else {
+                        "Wakes the goal and gives it more attempts.".into()
+                    },
+                ),
+                // D8: the goal-unblock reject arm cancels the goal.
+                (
+                    "reject",
+                    "Cancels this goal for good. It will not run again.".into(),
+                ),
+                (
+                    "input",
+                    "Saves your reply on this decision and wakes the paused goal to try again."
+                        .into(),
+                ),
+            ],
+            "choice" if proposal == decisions::PROPOSAL_CHECK_APPROVAL => vec![
+            (
+                "choice",
+                "Applies the option you pick: run the check once, run it and allow it from now \
+                 on, or deny it."
+                    .into(),
+            ),
+            ("reject", "Denies the command; the check does not run.".into()),
+        ],
+            "choice" if proposal == decisions::PROPOSAL_DEBUG_DISPATCH => {
+                vec![
+            (
+                "choice",
+                "Applies the option you pick: send the goal back with a debugger, or leave it \
+                 in Review."
+                    .into(),
+            ),
+            ("reject", "Records that neither fits. Nothing else changes.".into()),
+        ]
+            }
+            "choice" if proposal == decisions::PROPOSAL_ROADMAP_CREATE => {
+                vec![
+            (
+                "choice",
+                "Records the option you pick. Henry creates the roadmap only if you approve \
+                 it."
+                    .into(),
+            ),
+            ("reject", "Records that none fit. No roadmap is created.".into()),
+        ]
+            }
+            "choice" if has_goal => {
+                vec![
+            (
+                "choice",
+                "Records the option you pick. If the goal is paused, it wakes up to continue."
+                    .into(),
+            ),
+            ("reject", "Records that none fit. Nothing else changes.".into()),
+        ]
+            }
+            "choice" => vec![
+                ("choice", "Records the option you pick.".into()),
+                (
+                    "reject",
+                    "Records that none fit. Nothing else changes.".into(),
+                ),
+            ],
+            "risk_gate" => {
+                let approve = if action_class == "user_data_deletion" && has_goal {
+                    "Permanently deletes this goal. This can't be undone."
+                } else if action_class == crate::steward::hygiene::ACTION_REPO_WORKTREE_REAP {
+                    "Removes this worktree, after checking again that it is safe to."
+                } else if action_class == crate::steward::hygiene::ACTION_REPO_BRANCH_DELETE {
+                    "Deletes this branch, after checking again that it is safe to."
+                } else if action_class == crate::decision_inbox::sink::CAPABILITY_ACTION_CLASS {
+                    "Grants the request. If the goal is paused, it wakes up to continue."
+                } else {
+                    "Records your permission."
+                };
+                vec![
+                    ("approve", approve.into()),
+                    ("reject", "Records your refusal. Nothing is changed.".into()),
+                ]
+            }
+            // D9: the approve arm only acknowledges; no automation is created.
+            "automation_proposal" => vec![
+                ("approve", "Records your approval.".into()),
+                ("edit", "Records your approval with your edits.".into()),
+                (
+                    "reject",
+                    if str_of(payload, "normalized_command").is_empty() {
+                        "Declines it.".into()
+                    } else {
+                        "Declines it. Henry won't suggest this automation again.".into()
+                    },
+                ),
+            ],
+            "enrichment_proposal" => vec![
+                (
+                    "approve",
+                    "Writes these details to the person's profile. Details you entered yourself \
+                 are kept."
+                        .into(),
+                ),
+                (
+                    "reject",
+                    "Nothing is written. A note you add is kept as a hint for next time.".into(),
+                ),
+            ],
+            "person_merge_proposal" => vec![
+                (
+                    "approve",
+                    "Merges the duplicate into the other person. The merge can be undone.".into(),
+                ),
+                (
+                    "reject",
+                    "Nothing changes; both people stay as they are.".into(),
+                ),
+            ],
+            "person_delete_proposal" => vec![
+                (
+                    "approve",
+                    "Deletes this person, with their meetings and project links. This can't be \
+                 undone."
+                        .into(),
+                ),
+                ("reject", "Nothing changes.".into()),
+            ],
+            "project_intel_proposal" => vec![
+                ("approve", "Adds these items to the project's notes.".into()),
+                ("reject", "Nothing is written.".into()),
+            ],
+            "council_action" => vec![
+                ("approve", "Files a card for this on the board.".into()),
+                (
+                    "reject",
+                    "Nothing is filed, and the Council won't suggest it again.".into(),
+                ),
+            ],
+            "file_to_project" => vec![
+                ("approve", "Files this under the project.".into()),
+                ("reject", "Nothing is filed.".into()),
+            ],
+            "config_change_proposal" => vec![
+                ("approve", "Changes the setting as described.".into()),
+                ("reject", "No setting is changed.".into()),
+            ],
+            "model_upgrade" => vec![
+                (
+                    "approve",
+                    "Switches the active model to the proposed one.".into(),
+                ),
+                ("reject", "The active model stays the same.".into()),
+            ],
+            "tool_approval" => vec![
+                ("approve", "Lets the tool call run this once.".into()),
+                ("reject", "Refuses the tool call.".into()),
+            ],
+            "session_gate" => vec![
+                (
+                    "approve",
+                    "Lets the terminal session continue past this step.".into(),
+                ),
+                ("reject", "Stops the terminal session at this step.".into()),
+            ],
+            "regression_proposal" => vec![
+                ("approve", "Saves this as a regression test task.".into()),
+                ("reject", "Nothing is written.".into()),
+            ],
+            // D5: no effect arm exists; both answers only close the card.
+            "capability_gap" => vec![
+                (
+                    "approve",
+                    "Records that you want this capability. Nothing is built automatically.".into(),
+                ),
+                (
+                    "reject",
+                    "Records that it isn't needed. Nothing else changes.".into(),
+                ),
+            ],
+            "malformed" => vec![
+                (
+                    "approve",
+                    "Removes it from your queue. Nothing else changes.".into(),
+                ),
+                (
+                    "reject",
+                    "Removes it from your queue. Nothing else changes.".into(),
+                ),
+            ],
+            _ => Vec::new(),
+        };
+    pairs
+        .into_iter()
+        .map(|(answer, sentence)| (answer.to_string(), sentence))
+        .collect()
+}
+
+/// D7: an approved or answered wall-clock park must also restart the goal's
+/// wall budget, or the very next dispatch trips `check_budget`'s
+/// `BudgetExhaustion::Wallclock` again (that cap is measured from
+/// `first_dispatched_at`, the goal's FIRST dispatch, never per attempt).
+/// Removing the key (a JSON null in a guarded metadata patch) lets the next
+/// dispatch stamp a fresh anchor, exactly as a first dispatch does.
+///
+/// Human answers only: an automated actor restarting a goal's clock would
+/// defeat the wall budget's whole purpose (the headless harness sets it to
+/// fit inside its own kill deadline).
+pub(crate) fn wall_budget_reset_patch(
+    decision: &Decision,
+    acted_by: &str,
+) -> Option<(String, serde_json::Value)> {
+    (decision.kind == "unblock"
+        && decision.payload.get("reason").and_then(|v| v.as_str()) == Some("wallclock_cap")
+        && acted_by == decisions::ACTOR_JESSE)
+        .then(|| ("first_dispatched_at".to_string(), serde_json::Value::Null))
 }
 
 /// Apply an outbox-eligible decision effect without daemon `AppState`.
@@ -1235,6 +1518,14 @@ pub async fn apply_decision_effect_with_auto_land(
                 Ok(path) => Ok((None, Some(format!("Regression written to {path}")))),
                 Err(e) => Err(e),
             }
+        }
+        // D5: a declined regression writes nothing.
+        ("regression_proposal", Some("reject")) => {
+            already_applied("regression proposal declined; nothing was written")
+        }
+        // D5: a capability request has no effect arm; the answer is the record.
+        ("capability_gap", Some("approve" | "reject")) => {
+            already_applied("capability request answered; recorded only")
         }
         ("approve_review", Some("approve")) => {
             let Some(goal_id) = decision.goal_id.as_deref() else {
@@ -1516,7 +1807,7 @@ pub async fn apply_decision_effect_with_auto_land(
                     .await
                     .map_err(|e| GuardError::Db(format!("record rejected attempt: {e}")))?;
                 }
-                let unblock_id = goal_transition::exhaust_and_park(
+                let unblock_id = goal_transition::exhaust_and_park_with_cause(
                     pool,
                     goal_id,
                     &card.title,
@@ -1526,6 +1817,7 @@ pub async fn apply_decision_effect_with_auto_land(
                         cap: budget.attempt_cap,
                     },
                     Some(&reason),
+                    Some(decisions::UnblockCause::ReviewRejected),
                 )
                 .await
                 .map_err(GuardError::Db)?;
@@ -1612,6 +1904,10 @@ pub async fn apply_decision_effect_with_auto_land(
                 serde_json::json!(false),
             );
             patch.insert("budget".to_string(), serde_json::Value::Object(budget));
+            let wall_reset = wall_budget_reset_patch(decision, &acted_by);
+            if let Some((key, value)) = wall_reset.clone() {
+                patch.insert(key, value);
+            }
             goal_transition::advance_goal_checked(
                 pool,
                 goal_id,
@@ -1625,8 +1921,37 @@ pub async fn apply_decision_effect_with_auto_land(
             )
             .await?;
             already_applied(format!(
-                "goal unparked to Ready with attempt_cap raised to {attempt_cap}"
+                "goal unparked to Ready with attempt_cap raised to {attempt_cap}{}",
+                if wall_reset.is_some() {
+                    " and its wall-clock budget restarted"
+                } else {
+                    ""
+                }
             ))
+        }
+        // D8: rejecting a goal's unblock cancels the goal. Before this arm the
+        // answer fell through to `resume_answered_decision`, which ignores a
+        // reject, leaving a parked goal with no open question at all. Same
+        // path as the board's Cancel (`orchestrator::cancel_goal`): terminal
+        // transition, stop any worker, supersede its other open decisions.
+        // Human answers only — no automated actor may cancel a goal this way.
+        ("unblock", Some("reject")) if decision.goal_id.is_some() => {
+            let goal_id = decision.goal_id.as_deref().expect("checked above");
+            if acted_by != decisions::ACTOR_JESSE {
+                return already_applied(format!(
+                    "unblock declined by {acted_by}; the goal stays parked"
+                ));
+            }
+            match goal_state(pool, goal_id).await?.as_deref() {
+                None => return already_applied("goal was already gone"),
+                Some("cancelled") => return already_applied("goal was already cancelled"),
+                Some("complete") => return already_applied("goal was already complete"),
+                _ => {}
+            }
+            crate::agents::platform_extensions::orchestrator::cancel_goal(pool, goal_id)
+                .await
+                .map_err(GuardError::Invalid)?;
+            already_applied("goal cancelled at your request")
         }
         ("risk_gate", Some("approve"))
             if decision

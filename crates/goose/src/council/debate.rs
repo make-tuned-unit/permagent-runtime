@@ -494,6 +494,8 @@ async fn record_council_budget_block(
                     reason,
                     spent: None,
                     cap: None,
+                    cause: Some(crate::decisions::UnblockCause::SpendBlocked),
+                    salvage: None,
                 })
                 .unwrap_or_default(),
                 ..Default::default()

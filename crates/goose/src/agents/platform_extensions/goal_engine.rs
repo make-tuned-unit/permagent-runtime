@@ -2862,6 +2862,8 @@ async fn escalate_stalled_gate_grant(
                 reason: crate::decisions::UnblockReason::Stuck,
                 spent: None,
                 cap: None,
+                cause: Some(crate::decisions::UnblockCause::Stalled),
+                salvage: None,
             })
             .map_err(|error| error.to_string())?,
             ..Default::default()

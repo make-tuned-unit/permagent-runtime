@@ -126,6 +126,9 @@ async fn decision_lifecycle_through_router() {
     let v = body_json(resp).await;
     assert_eq!(v["summary"]["total_pending"], 0);
     assert!(v["summary"]["handled_count"].is_i64());
+    // D3: the windowed, agent-only count the inbox modal reads.
+    assert_eq!(v["summary"]["handled"]["count"], 0);
+    assert!(v["summary"]["handled"]["since"].is_string());
     assert!(v["summary"]["goals_in_flight"].is_i64());
     assert_eq!(v["items"].as_array().unwrap().len(), 0);
 
@@ -233,6 +236,14 @@ async fn decision_lifecycle_through_router() {
     assert_eq!(items[0]["goal_title"], "Lifecycle demo goal");
     assert!(!items[0]["headline"].as_str().unwrap().is_empty());
     assert!(!items[0]["detail"].as_str().unwrap().is_empty());
+    // Modal redesign contract: plain summary, per-answer effects keyed on the
+    // answers the route accepts, and the raw detail under `technical`.
+    assert!(items[0]["summary"].is_string());
+    assert!(items[0]["effects"]["approve"].is_string());
+    assert!(items[0]["effects"]["reject"].is_string());
+    assert_eq!(items[0]["effects"].as_object().unwrap().len(), 2);
+    assert_eq!(items[0]["technical"]["detail"], items[0]["detail"]);
+    assert_eq!(items[0]["technical"]["goal_id"], serde_json::json!(goal.id));
 
     // ── 4. Answer: approve. HTTP attribution is 'jesse'; the gated effect
     //       (Review → Complete through the guard) executes atomically after ──
@@ -338,6 +349,8 @@ async fn decision_lifecycle_through_router() {
     let v = body_json(resp).await;
     assert_eq!(v["summary"]["total_pending"], 0);
     assert_eq!(v["summary"]["handled_count"], 1);
+    // The user answered it, so the agent-only count stays at zero.
+    assert_eq!(v["summary"]["handled"]["count"], 0);
 
     // ── 7. Audit hash chain is intact end-to-end ──
     let report = decisions::verify_audit_chain(&pool).await.unwrap();
