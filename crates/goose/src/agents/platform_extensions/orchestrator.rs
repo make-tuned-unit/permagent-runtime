@@ -1049,6 +1049,13 @@ fn roadmap_proposal_hash(goals: &[goal_state::ProposedGoal]) -> String {
 /// (`cost_router::HOLD_METADATA_KEY`) fired on that never completed.
 /// Best-effort: a query failure reads as "no history" (logged at debug), never
 /// as a failed decomposition.
+///
+/// 2026-09-25 DAG K cost fix: also returns each parked/held goal's title
+/// (capped at `PRIOR_GOAL_TITLES_CAP`) so `assess_planning_complexity` can
+/// require the NEW objective to actually overlap one of them before history
+/// alone escalates the plan to the expert planner — see that function's doc
+/// and `planner_complexity.rs:559`'s trace-linked comment for why an
+/// unrelated stuck goal must not do this on its own.
 async fn prior_plan_history(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     project: &crate::projects::Project,
@@ -1058,25 +1065,51 @@ async fn prior_plan_history(
         .get(ROADMAP_PROPOSAL_METADATA_KEY)
         .is_some_and(|v| !v.is_null());
     // `$.hold_done` is `cost_router::HOLD_METADATA_KEY` (asserted in tests).
-    let row = sqlx::query(
+    let rows = sqlx::query(
         "SELECT
-           COALESCE(SUM(CASE WHEN bc.state_binding = 'failed'
-                     OR COALESCE(json_extract(c.metadata_json, '$.needs_human_attention'), 0) != 0
-                    THEN 1 ELSE 0 END), 0) AS parked,
-           COALESCE(SUM(CASE WHEN json_extract(c.metadata_json, '$.hold_done') IS NOT NULL
-                     AND COALESCE(bc.state_binding, '') != 'complete'
-                    THEN 1 ELSE 0 END), 0) AS held
+           c.title AS title,
+           CASE WHEN bc.state_binding = 'failed'
+                 OR COALESCE(json_extract(c.metadata_json, '$.needs_human_attention'), 0) != 0
+                THEN 1 ELSE 0 END AS is_parked,
+           CASE WHEN json_extract(c.metadata_json, '$.hold_done') IS NOT NULL
+                 AND COALESCE(bc.state_binding, '') != 'complete'
+                THEN 1 ELSE 0 END AS is_held
          FROM cards c LEFT JOIN board_columns bc ON c.column_id = bc.id
          WHERE c.project_id = ? AND c.card_type = 'goal' AND c.archived_at IS NULL",
     )
     .bind(&project.id)
-    .fetch_one(pool)
+    .fetch_all(pool)
     .await;
-    let (parked, held) = match row {
-        Ok(r) => (
-            r.try_get::<i64, _>("parked").unwrap_or(0),
-            r.try_get::<i64, _>("held").unwrap_or(0),
-        ),
+    let mut parked_goals = 0usize;
+    let mut held_goals = 0usize;
+    let mut parked_titles = Vec::new();
+    let mut held_titles = Vec::new();
+    match rows {
+        Ok(rows) => {
+            for row in rows {
+                let title: String = row.try_get("title").unwrap_or_default();
+                let is_parked: i64 = row.try_get("is_parked").unwrap_or(0);
+                let is_held: i64 = row.try_get("is_held").unwrap_or(0);
+                if is_parked != 0 {
+                    parked_goals += 1;
+                    if parked_titles.len()
+                        < crate::cost_router::planner_complexity::PRIOR_GOAL_TITLES_CAP
+                        && !title.is_empty()
+                    {
+                        parked_titles.push(title.clone());
+                    }
+                }
+                if is_held != 0 {
+                    held_goals += 1;
+                    if held_titles.len()
+                        < crate::cost_router::planner_complexity::PRIOR_GOAL_TITLES_CAP
+                        && !title.is_empty()
+                    {
+                        held_titles.push(title);
+                    }
+                }
+            }
+        }
         Err(e) => {
             tracing::debug!(
                 target: "permagentd::orchestrator",
@@ -1084,13 +1117,14 @@ async fn prior_plan_history(
                 error = %e,
                 "planning complexity: plan-history query failed; treating as no history",
             );
-            (0, 0)
         }
-    };
+    }
     crate::cost_router::planner_complexity::PriorPlanHistory {
         unapproved_proposal,
-        parked_goals: usize::try_from(parked).unwrap_or(0),
-        held_goals: usize::try_from(held).unwrap_or(0),
+        parked_goals,
+        held_goals,
+        parked_titles,
+        held_titles,
     }
 }
 
@@ -8607,8 +8641,14 @@ pub(crate) async fn dispatch_goal_fn(
     }
     // Y16a: give a headless goal a real wallclock cap for the wall-budget
     // gate. Idempotent — never overrides an already-configured cap.
+    // 2026-09-25 DAG K cost fix: pass this dispatch's resolved tier so the
+    // cap is floored at that tier's own worker budget, not just the
+    // coordinator's drain allowance (see `headless_wallclock_cap_patch`'s
+    // doc comment).
     if policy.is_some() {
-        if let Some(budget) = headless_wallclock_cap_patch(&card.metadata_json) {
+        if let Some(budget) =
+            headless_wallclock_cap_patch(&card.metadata_json, role.map(|r| r.as_str()))
+        {
             claim_patch.insert("budget".to_string(), budget);
         }
     }
@@ -14411,8 +14451,28 @@ fn headless_max_redispatch_from_env() -> u32 {
 /// the CLI's own process-start `Instant` across the crate boundary, so this
 /// mirrors the drain env's own raw-`std::env::var` idiom). Missing/unparseable
 /// falls back to the raw drain value — the pre-Y16c behaviour — never worse.
+///
+/// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md fix 1): before this, a
+/// worker's ENTIRE execution budget was the coordinator's own drain/suspend
+/// allowance, with no regard for how much work its tier does — goal
+/// 01a0d5ea's edit-tier session 20260925_9 (25 turns, 5 files touched) was
+/// killed at "wallclock cap exhausted (240s elapsed of 240s)" with zero
+/// commits, purely because 240s is `DEFAULT_MID_TURN_DISPATCH_SUSPEND_CAP_SECS`
+/// (`agent.rs`), a value sized for how long a COORDINATOR should wait, not
+/// how long an edit-tier WORKER needs to finish. `tier` (the dispatch's
+/// resolved routing tier — "mechanical"/"local"/"edit"/"review"/"orchestrate",
+/// see `worker_tier` on `GoalAdvanceArgs`) is now floored against
+/// [`worker_wallclock_budget_secs_for_tier`]'s own default for that tier:
+/// the drain-derived arithmetic above is UNCHANGED (Y16a/Y16c's eval-harness
+/// SIGKILL alignment stays exact when the caller passes no known tier, which
+/// is what every existing test here does), but a KNOWN tier can only raise
+/// the cap, never lower it below its own floor — suspension of the
+/// coordinator is free (no LLM calls), so widening the worker's own budget
+/// costs nothing extra as long as the coordinator's own suspend window is
+/// widened to match (see `DEFAULT_MID_TURN_DISPATCH_SUSPEND_CAP_SECS`).
 fn headless_wallclock_cap_patch(
     existing_metadata: &serde_json::Value,
+    tier: Option<&str>,
 ) -> Option<serde_json::Value> {
     if goal_transition::goal_budget(existing_metadata)
         .wallclock_cap_secs
@@ -14435,6 +14495,10 @@ fn headless_wallclock_cap_patch(
         }
         None => drain_secs,
     };
+    let cap_secs = match worker_wallclock_budget_secs_for_tier(tier) {
+        Some(tier_budget) => cap_secs.max(tier_budget),
+        None => cap_secs,
+    };
     let mut budget = existing_metadata
         .get("budget")
         .and_then(|v| v.as_object())
@@ -14445,6 +14509,47 @@ fn headless_wallclock_cap_patch(
         serde_json::json!(cap_secs),
     );
     Some(serde_json::Value::Object(budget))
+}
+
+/// Default worker wallclock budget by dispatch tier (2026-09-25 DAG K cost
+/// fix). Sized for what each tier actually does, not for how long a
+/// coordinator should wait: mechanical/local work is small, single-file,
+/// scriptable; edit work touches several files across real turns; orchestrate
+/// work runs a sub-DAG. `None` for an unrecognized tier string (dispatch
+/// already refuses an unknown `worker_tier` before persisting it, so this
+/// should not happen in practice) or no tier at all — the caller then keeps
+/// whatever the drain-derived arithmetic already computed, exactly the
+/// pre-fix behaviour.
+const DEFAULT_WORKER_WALLCLOCK_BUDGET_MECHANICAL_SECS: u64 = 300;
+const DEFAULT_WORKER_WALLCLOCK_BUDGET_LOCAL_SECS: u64 = 300;
+const DEFAULT_WORKER_WALLCLOCK_BUDGET_EDIT_SECS: u64 = 900;
+const DEFAULT_WORKER_WALLCLOCK_BUDGET_REVIEW_SECS: u64 = 900;
+const DEFAULT_WORKER_WALLCLOCK_BUDGET_ORCHESTRATE_SECS: u64 = 1800;
+
+/// `tier`'s default worker wallclock budget, overridable per tier via
+/// `PERMAGENT_WORKER_WALLCLOCK_BUDGET_<TIER>_SECS` (tier uppercased, "hard"
+/// aliased to "orchestrate"'s key) — unset or unparseable keeps the default
+/// above. `None` only for an unrecognized tier string or no tier.
+fn worker_wallclock_budget_secs_for_tier(tier: Option<&str>) -> Option<u64> {
+    let (default_secs, env_suffix) = match tier? {
+        "mechanical" => (
+            DEFAULT_WORKER_WALLCLOCK_BUDGET_MECHANICAL_SECS,
+            "MECHANICAL",
+        ),
+        "local" => (DEFAULT_WORKER_WALLCLOCK_BUDGET_LOCAL_SECS, "LOCAL"),
+        "edit" => (DEFAULT_WORKER_WALLCLOCK_BUDGET_EDIT_SECS, "EDIT"),
+        "review" => (DEFAULT_WORKER_WALLCLOCK_BUDGET_REVIEW_SECS, "REVIEW"),
+        "orchestrate" | "hard" => (
+            DEFAULT_WORKER_WALLCLOCK_BUDGET_ORCHESTRATE_SECS,
+            "ORCHESTRATE",
+        ),
+        _ => return None,
+    };
+    let env_name = format!("PERMAGENT_WORKER_WALLCLOCK_BUDGET_{env_suffix}_SECS");
+    let overridden = std::env::var(env_name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    Some(overridden.unwrap_or(default_secs))
 }
 
 /// Env var the CLI stamps (unix seconds) at process startup so a headless
@@ -37876,7 +37981,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     async fn headless_wallclock_cap_patch_reads_the_drain_env_when_no_cap_is_configured() {
         std::env::remove_var("PERMAGENT_HEADLESS_STARTED_AT");
         std::env::set_var("PERMAGENT_HEADLESS_DRAIN_SECS", "555");
-        let patch = headless_wallclock_cap_patch(&serde_json::json!({}));
+        let patch = headless_wallclock_cap_patch(&serde_json::json!({}), None);
         std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
         assert_eq!(
             patch,
@@ -37894,7 +37999,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         let existing = serde_json::json!({
             "budget": { "wallclock_cap_secs": 999, "attempt_cap": 5 }
         });
-        let patch = headless_wallclock_cap_patch(&existing);
+        let patch = headless_wallclock_cap_patch(&existing, None);
         std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
         assert_eq!(patch, None);
     }
@@ -37936,7 +38041,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         let started_at = chrono::Utc::now().timestamp() - 200;
         std::env::set_var("PERMAGENT_HEADLESS_DRAIN_SECS", "440");
         std::env::set_var("PERMAGENT_HEADLESS_STARTED_AT", started_at.to_string());
-        let patch = headless_wallclock_cap_patch(&serde_json::json!({}));
+        let patch = headless_wallclock_cap_patch(&serde_json::json!({}), None);
         std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
         std::env::remove_var("PERMAGENT_HEADLESS_STARTED_AT");
         assert_eq!(
@@ -37953,13 +38058,88 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         let started_at = chrono::Utc::now().timestamp();
         std::env::set_var("PERMAGENT_HEADLESS_DRAIN_SECS", "440");
         std::env::set_var("PERMAGENT_HEADLESS_STARTED_AT", started_at.to_string());
-        let patch = headless_wallclock_cap_patch(&serde_json::json!({}));
+        let patch = headless_wallclock_cap_patch(&serde_json::json!({}), None);
         std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
         std::env::remove_var("PERMAGENT_HEADLESS_STARTED_AT");
         assert_eq!(
             patch,
             Some(serde_json::json!({ "wallclock_cap_secs": 440 }))
         );
+    }
+
+    /// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md fix 1, goal 01a0d5ea):
+    /// an edit-tier dispatch must get its own tier budget (900s) even though
+    /// the process-wide drain allowance is only 240s — the incident this
+    /// fixes killed a 25-turn, 5-file edit-tier worker at exactly 240s with
+    /// zero commits.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn headless_wallclock_cap_patch_floors_a_known_tier_above_a_smaller_drain() {
+        std::env::remove_var("PERMAGENT_HEADLESS_STARTED_AT");
+        std::env::set_var("PERMAGENT_HEADLESS_DRAIN_SECS", "240");
+        let patch = headless_wallclock_cap_patch(&serde_json::json!({}), Some("edit"));
+        std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
+        assert_eq!(
+            patch,
+            Some(serde_json::json!({ "wallclock_cap_secs": 900 })),
+            "an edit-tier worker must get its own 900s floor, not the 240s drain default"
+        );
+    }
+
+    /// A mechanical/local-tier dispatch's floor (300s) is already below a
+    /// generous drain allowance, so the drain-derived value passes through
+    /// unchanged — the tier floor only ever RAISES the cap, never lowers it.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn headless_wallclock_cap_patch_never_lowers_a_generous_drain_for_a_small_tier() {
+        std::env::remove_var("PERMAGENT_HEADLESS_STARTED_AT");
+        std::env::set_var("PERMAGENT_HEADLESS_DRAIN_SECS", "555");
+        let patch = headless_wallclock_cap_patch(&serde_json::json!({}), Some("mechanical"));
+        std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
+        assert_eq!(
+            patch,
+            Some(serde_json::json!({ "wallclock_cap_secs": 555 }))
+        );
+    }
+
+    /// An orchestrate-tier dispatch gets the largest floor (1800s).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn headless_wallclock_cap_patch_floors_orchestrate_tier_at_1800s() {
+        std::env::remove_var("PERMAGENT_HEADLESS_STARTED_AT");
+        std::env::set_var("PERMAGENT_HEADLESS_DRAIN_SECS", "240");
+        let patch = headless_wallclock_cap_patch(&serde_json::json!({}), Some("orchestrate"));
+        std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
+        assert_eq!(
+            patch,
+            Some(serde_json::json!({ "wallclock_cap_secs": 1800 }))
+        );
+    }
+
+    /// An operator override (`PERMAGENT_WORKER_WALLCLOCK_BUDGET_EDIT_SECS`)
+    /// replaces the edit tier's default floor.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn worker_wallclock_budget_env_override_replaces_the_tier_default() {
+        std::env::remove_var("PERMAGENT_HEADLESS_STARTED_AT");
+        std::env::set_var("PERMAGENT_HEADLESS_DRAIN_SECS", "240");
+        std::env::set_var("PERMAGENT_WORKER_WALLCLOCK_BUDGET_EDIT_SECS", "1200");
+        let patch = headless_wallclock_cap_patch(&serde_json::json!({}), Some("edit"));
+        std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
+        std::env::remove_var("PERMAGENT_WORKER_WALLCLOCK_BUDGET_EDIT_SECS");
+        assert_eq!(
+            patch,
+            Some(serde_json::json!({ "wallclock_cap_secs": 1200 }))
+        );
+    }
+
+    /// An unrecognized tier string falls back to the drain-derived value
+    /// unmodified (the pre-fix, Y16a/Y16c-only behaviour) rather than
+    /// guessing at a floor for a tier this function does not know.
+    #[test]
+    fn worker_wallclock_budget_secs_for_tier_is_none_for_an_unknown_or_absent_tier() {
+        assert_eq!(worker_wallclock_budget_secs_for_tier(None), None);
+        assert_eq!(worker_wallclock_budget_secs_for_tier(Some("bogus")), None);
     }
 
     #[tokio::test]
@@ -45039,6 +45219,18 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             "a held goal that completed is not history: {h:?}"
         );
         assert!(!h.unapproved_proposal);
+        // 2026-09-25 DAG K cost fix: titles come back too, so the planning
+        // gate can require the new objective to overlap them before
+        // escalating (a stuck goal elsewhere on the project must not alone
+        // force every future decompose_roadmap call onto the expert planner).
+        let mut parked_titles = h.parked_titles.clone();
+        parked_titles.sort();
+        assert_eq!(
+            parked_titles,
+            vec!["Needs a human".to_string(), "Parked goal".to_string()],
+            "{h:?}"
+        );
+        assert_eq!(h.held_titles, vec!["Held goal".to_string()], "{h:?}");
 
         let mut pending = project.clone();
         pending.metadata_json = serde_json::json!({"roadmap_proposal": {"hash": "abc"}});

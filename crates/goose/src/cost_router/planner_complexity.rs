@@ -185,7 +185,16 @@ impl PlanningComplexity {
 }
 
 /// What the harness already knows about earlier plans for this project.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+///
+/// 2026-09-25 DAG K cost fix: `parked_goals`/`held_goals` alone used to force
+/// `Complex` for every future `decompose_roadmap` call on a project after any
+/// one goal parked or held, regardless of whether the NEW objective has
+/// anything to do with the stuck one (see `assess_planning_complexity`'s
+/// `history_overlap` gate below). `parked_titles`/`held_titles` carry the
+/// stuck goals' titles so the assessment can require the new objective to
+/// actually overlap one of them before history escalates the plan — a
+/// project-wide "we've had trouble" signal is not "this new plan is hard."
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct PriorPlanHistory {
     /// A roadmap proposal is still pending on the project as a new decomposition
     /// starts: the previous plan was never approved into cards (rejected, or
@@ -197,6 +206,65 @@ pub struct PriorPlanHistory {
     /// Live goal cards on this project that a premature-done hold fired on and
     /// that have not completed since.
     pub held_goals: usize,
+    /// Titles of the parked goals counted in `parked_goals` (bounded; see
+    /// `PRIOR_GOAL_TITLES_CAP`). Used only to test objective overlap — never
+    /// counted on their own.
+    pub parked_titles: Vec<String>,
+    /// Titles of the held goals counted in `held_goals` (bounded; see
+    /// `PRIOR_GOAL_TITLES_CAP`). Used only to test objective overlap — never
+    /// counted on their own.
+    pub held_titles: Vec<String>,
+}
+
+/// Cap on how many parked/held goal titles a caller need supply — the
+/// overlap check is cheap per title but the query result is otherwise
+/// unbounded on a long-lived project.
+pub const PRIOR_GOAL_TITLES_CAP: usize = 20;
+
+/// Content words shared between the new objective and a stuck goal's title
+/// below which the two are not considered "the same problem." Deliberately
+/// low: an exact rewording (the 01a0d5ea case, "Instrument event detail
+/// pages…" redispatched with different phrasing) has to clear it, but two
+/// unrelated one-line objectives on the same project must not.
+const HISTORY_OVERLAP_JACCARD_THRESHOLD: f64 = 0.2;
+
+/// Generic words too common to signal that two objectives are "the same
+/// problem" — kept deliberately short and non-domain-specific so it never
+/// filters out the words that actually distinguish one objective from
+/// another.
+const HISTORY_OVERLAP_STOPWORDS: &[&str] = &[
+    "the", "and", "for", "with", "that", "this", "from", "into", "have", "has", "are", "was",
+    "were", "will", "add", "adds", "update", "updates", "make", "makes", "when", "then", "also",
+    "page", "pages", "support", "should", "need", "needs", "please", "ensure",
+];
+
+/// Lowercased content-word set of `text`: alphanumeric runs of at least 3
+/// characters, generic stopwords dropped. Used only to compare one objective
+/// against another for topical overlap (never to score difficulty).
+fn content_tokens(text: &str) -> std::collections::BTreeSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .map(str::to_lowercase)
+        .filter(|w| !HISTORY_OVERLAP_STOPWORDS.contains(&w.as_str()))
+        .collect()
+}
+
+/// Whether `new_objective` and `prior_title` name overlapping work: their
+/// content-word sets share at least one word and clear
+/// [`HISTORY_OVERLAP_JACCARD_THRESHOLD`] Jaccard similarity. Deterministic,
+/// no LLM — the same "facts only" rule as the rest of this module.
+fn objectives_overlap(new_objective: &str, prior_title: &str) -> bool {
+    let a = content_tokens(new_objective);
+    let b = content_tokens(prior_title);
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let intersection = a.intersection(&b).count();
+    if intersection == 0 {
+        return false;
+    }
+    let union = a.union(&b).count();
+    (intersection as f64 / union as f64) >= HISTORY_OVERLAP_JACCARD_THRESHOLD
 }
 
 /// Where one code identifier the objective names lives in the repo — read from
@@ -238,7 +306,8 @@ pub struct IdentifierSignal {
 }
 
 /// The facts the assessment reads — nothing a model wrote about difficulty.
-#[derive(Debug, Clone, Copy)]
+/// Not `Copy`: `history` now carries `Vec<String>` title lists.
+#[derive(Debug, Clone)]
 pub struct PlanningFacts<'a> {
     /// The operator's objective. Read for STRUCTURE only (file tokens, list
     /// lines, code identifiers, whether a parameter change is asked for) plus
@@ -593,7 +662,7 @@ pub fn assess_planning_complexity(facts: &PlanningFacts<'_>) -> PlanningComplexi
         .count();
 
     let mut complex: Vec<String> = Vec::new();
-    let h = facts.history;
+    let h = &facts.history;
     if h.unapproved_proposal {
         complex.push(
             "a previous roadmap proposal for this project was never approved into cards \
@@ -601,15 +670,33 @@ pub fn assess_planning_complexity(facts: &PlanningFacts<'_>) -> PlanningComplexi
                 .to_string(),
         );
     }
-    if h.parked_goals > 0 {
+    // 2026-09-25 DAG K cost fix: a parked/held goal only escalates THIS plan
+    // when its title overlaps the new objective — otherwise a project with
+    // one unrelated stuck goal would force every future decompose_roadmap
+    // call onto the expert planner forever, independent of the new
+    // objective's own size (the actual complexity signal below).
+    let overlapping_parked = h
+        .parked_titles
+        .iter()
+        .filter(|title| objectives_overlap(facts.objective, title))
+        .count();
+    if overlapping_parked > 0 {
         complex.push(format!(
-            "{} goal(s) on this project parked (failed or needs human attention)",
+            "{overlapping_parked} of {} goal(s) on this project parked (failed or needs human \
+             attention) share this objective's wording — likely a redispatch of the same stuck \
+             work",
             h.parked_goals
         ));
     }
-    if h.held_goals > 0 {
+    let overlapping_held = h
+        .held_titles
+        .iter()
+        .filter(|title| objectives_overlap(facts.objective, title))
+        .count();
+    if overlapping_held > 0 {
         complex.push(format!(
-            "{} goal(s) on this project were held for a premature done and never completed",
+            "{overlapping_held} of {} goal(s) on this project were held for a premature done \
+             and share this objective's wording — likely a redispatch of the same stuck work",
             h.held_goals
         ));
     }
@@ -844,18 +931,41 @@ mod tests {
     }
 
     #[test]
-    fn a_previously_failed_or_rejected_plan_is_complex() {
-        for history in [
-            PriorPlanHistory {
+    fn an_unapproved_proposal_is_complex_without_needing_overlap() {
+        // A pending, never-approved roadmap proposal is about THIS decompose
+        // call directly (it's a redecompose of the very objective in flight),
+        // so unlike parked/held goals it does not need a title-overlap check.
+        let v = assess_planning_complexity(&PlanningFacts {
+            objective: "Fix the off-by-one in src/pagination.rs",
+            repo_file_count: 12,
+            repo_files: &[],
+            identifier_references: &[],
+            history: PriorPlanHistory {
                 unapproved_proposal: true,
                 ..Default::default()
             },
+        });
+        assert_eq!(v.complexity, PlanningComplexity::Complex);
+    }
+
+    /// 2026-09-25 DAG K cost fix (root cause behind goal 01a0d5ea's
+    /// escalations): a parked or held goal ELSEWHERE on the project — with no
+    /// wording in common with the new objective — must not force every future
+    /// decompose_roadmap call on that project onto the expert planner.
+    #[test]
+    fn unrelated_parked_or_held_goals_do_not_alone_make_a_plan_complex() {
+        for history in [
             PriorPlanHistory {
                 parked_goals: 1,
+                parked_titles: vec!["Fix the login page CSS on mobile Safari".to_string()],
                 ..Default::default()
             },
             PriorPlanHistory {
                 held_goals: 2,
+                held_titles: vec![
+                    "Rotate the staging API key".to_string(),
+                    "Clean up dead feature flags".to_string(),
+                ],
                 ..Default::default()
             },
         ] {
@@ -866,8 +976,54 @@ mod tests {
                 identifier_references: &[],
                 history,
             });
-            assert_eq!(v.complexity, PlanningComplexity::Complex, "{history:?}");
+            assert_eq!(v.complexity, PlanningComplexity::Routine, "{v:?}");
         }
+    }
+
+    /// The 01a0d5ea case from HARNESS_COST_TRACE.md: the goal was redispatched
+    /// under reworded text after holding. A parked/held goal whose title
+    /// clearly overlaps the new objective's wording IS the same stuck work,
+    /// so it should still escalate.
+    #[test]
+    fn a_parked_goal_overlapping_the_new_objective_is_complex() {
+        let v = assess_planning_complexity(&PlanningFacts {
+            objective: "Instrument event detail pages with cta_visible, scroll_depth analytics \
+                        and event_id on event_cta_click.",
+            repo_file_count: 40,
+            repo_files: &[],
+            identifier_references: &[],
+            history: PriorPlanHistory {
+                parked_goals: 1,
+                parked_titles: vec![
+                    "Add cta_visible and scroll_depth analytics plus event_id to the event \
+                     detail page's event_cta_click"
+                        .to_string(),
+                ],
+                ..Default::default()
+            },
+        });
+        assert_eq!(v.complexity, PlanningComplexity::Complex, "{:?}", v.reasons);
+        assert!(v
+            .reasons
+            .iter()
+            .any(|r| r.contains("share this objective's wording")));
+    }
+
+    #[test]
+    fn objectives_overlap_ignores_stopwords_and_requires_real_shared_words() {
+        assert!(objectives_overlap(
+            "Instrument event detail pages with cta_visible, scroll_depth analytics",
+            "Add cta_visible and scroll_depth analytics to the event detail page",
+        ));
+        assert!(!objectives_overlap(
+            "Fix the off-by-one in src/pagination.rs",
+            "Rotate the staging API key",
+        ));
+        // Two unrelated one-liners sharing only stopwords must not overlap.
+        assert!(!objectives_overlap(
+            "Add the login retry limit for the mobile app",
+            "Add the checkout timeout copy for the desktop site",
+        ));
     }
 
     /// assess.rs's rule: prose asserting difficulty can never promote a plan.
