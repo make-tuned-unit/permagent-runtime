@@ -7308,14 +7308,6 @@ async fn finalize_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, state:
 /// refusal" test can never drift from the text that triggers it.
 pub(crate) const WRITE_SCOPE_CONFLICT_REFUSAL: &str = "write scope conflicts with active goal";
 
-/// R56a: true when a dispatch refusal says only "another goal currently
-/// holds the write scope" — a transient, self-clearing condition, not a
-/// verdict about this goal. Nothing was started, no worker or model budget
-/// was spent, and the same card becomes dispatchable the moment the
-/// conflicting goal leaves `in_progress`. The drain therefore retries it on
-/// a later poll instead of charging it a re-dispatch attempt (which,
-/// at the default budget of 2, otherwise burned the card's whole allowance
-/// on refusals before the conflict could clear).
 /// Refuse an `extension_scope` that names no extensions.
 ///
 /// Stored on a goal, an empty scope means "deny every extension", and a worker
@@ -7339,9 +7331,91 @@ fn validate_requested_extension_scope(
     }
 }
 
+/// An optional tool argument parsed as `T`, where JSON `null` means the same
+/// as leaving the argument out.
+///
+/// Models fill optional fields they are not using with `null`: on 2026-09-25
+/// gpt-5.4-mini sent `notes`, `worker`, `role` and `extension_scope` all as
+/// `null` in one `goal_advance` call. The scalar arguments already read `null`
+/// as absent (`as_str()` is `None`), but a typed parse of `null` as an array
+/// fails, so the whole call was refused over an argument the model meant to
+/// omit. Every optional array or object argument read by hand goes through
+/// here; the typed `*Params` structs already get this from serde's `Option`.
+fn optional_arg<T: serde::de::DeserializeOwned>(
+    args: &JsonObject,
+    key: &str,
+) -> Result<Option<T>, String> {
+    match args.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => serde_json::from_value::<T>(value.clone())
+            .map(Some)
+            .map_err(|e| e.to_string()),
+    }
+}
+
+/// `goal_advance`'s `extension_scope`: absent or `null` is "no scope given",
+/// a non-array is a type error, and an empty list is refused by
+/// [`validate_requested_extension_scope`].
+fn requested_extension_scope_arg(args: &JsonObject) -> Result<Option<Vec<String>>, String> {
+    validate_requested_extension_scope(
+        optional_arg::<Vec<String>>(args, "extension_scope")
+            .map_err(|e| format!("extension_scope must be an array of strings: {e}"))?,
+    )
+}
+
 #[cfg(test)]
 mod requested_extension_scope_tests {
-    use super::validate_requested_extension_scope;
+    use super::{requested_extension_scope_arg, validate_requested_extension_scope};
+    use rmcp::model::JsonObject;
+
+    fn args(value: serde_json::Value) -> JsonObject {
+        value.as_object().cloned().unwrap()
+    }
+
+    /// 2026-09-25: gpt-5.4-mini sent `extension_scope: null` beside `notes`,
+    /// `worker` and `role`, all `null`, and the call was refused. `null` is
+    /// the model saying "not using this", the same as leaving it out.
+    #[test]
+    fn a_null_scope_is_treated_as_omitted() {
+        assert_eq!(
+            requested_extension_scope_arg(&args(serde_json::json!({
+                "action": "dispatch",
+                "extension_scope": null,
+                "notes": null,
+                "worker": null,
+                "role": null,
+            }))),
+            Ok(None)
+        );
+        assert_eq!(
+            requested_extension_scope_arg(&args(serde_json::json!({"action": "dispatch"}))),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn an_empty_scope_argument_is_still_refused() {
+        let err = requested_extension_scope_arg(&args(serde_json::json!({
+            "extension_scope": [],
+        })))
+        .unwrap_err();
+        assert!(err.contains("Omit extension_scope"), "{err}");
+    }
+
+    #[test]
+    fn a_named_scope_argument_passes_and_a_wrong_type_is_refused() {
+        assert_eq!(
+            requested_extension_scope_arg(&args(serde_json::json!({
+                "extension_scope": ["developer"],
+            }))),
+            Ok(Some(vec!["developer".to_string()]))
+        );
+        let err = requested_extension_scope_arg(&args(serde_json::json!({
+            "extension_scope": "developer",
+        })))
+        .unwrap_err();
+        assert!(err.contains("must be an array of strings"), "{err}");
+    }
 
     #[test]
     fn an_empty_scope_is_refused_with_the_fix_in_the_message() {
@@ -7363,6 +7437,14 @@ mod requested_extension_scope_tests {
     }
 }
 
+/// R56a: true when a dispatch refusal says only "another goal currently
+/// holds the write scope" — a transient, self-clearing condition, not a
+/// verdict about this goal. Nothing was started, no worker or model budget
+/// was spent, and the same card becomes dispatchable the moment the
+/// conflicting goal leaves `in_progress`. The drain therefore retries it on
+/// a later poll instead of charging it a re-dispatch attempt (which,
+/// at the default budget of 2, otherwise burned the card's whole allowance
+/// on refusals before the conflict could clear).
 pub(crate) fn refusal_is_scope_wait(dispatch_error: &str) -> bool {
     dispatch_error.contains(WRITE_SCOPE_CONFLICT_REFUSAL)
 }
@@ -10294,12 +10376,7 @@ impl OrchestratorClient {
             })?),
             None => None,
         };
-        let requested_extension_scope = validate_requested_extension_scope(
-            args.get("extension_scope")
-                .map(|value| serde_json::from_value::<Vec<String>>(value.clone()))
-                .transpose()
-                .map_err(|e| format!("extension_scope must be an array of strings: {e}"))?,
-        )?;
+        let requested_extension_scope = requested_extension_scope_arg(&args)?;
         // R48d: an explicit per-goal `worker_tier`, validated against the
         // routing roster up front — same "refuse loudly on a typo/unresolvable
         // value" convention `requested_role` just used above. "auto" and an

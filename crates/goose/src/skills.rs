@@ -144,6 +144,19 @@ pub async fn create_skill(
         );
     }
 
+    crate::brain_feed::feed(
+        pool,
+        crate::brain_feed::FeedSource::Skill,
+        crate::brain_feed::feed_key("skill", &skill_id, "created"),
+        None,
+        format!(
+            "Skill '{}' learned: {}",
+            params.name,
+            params.description.as_deref().unwrap_or("(no description)")
+        ),
+    )
+    .await;
+
     Ok(CreatedSkill {
         id: skill_id,
         name: params.name,

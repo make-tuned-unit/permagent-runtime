@@ -4,7 +4,25 @@ import { apiFetch } from '../../lib/api';
 export interface DashboardAgent { name: string; state: string; active_count: number; summary: string }
 export interface DashboardStats { sessions_today: number; sessions_total: number; memory_count: number; memory_delta_today: number }
 export interface InFlightSession { id: string; title: string; started_at: string; state: string; progress: number }
-export interface RecentSession { id: string; title: string; state: string; ended_at: string }
+export interface RecentSession {
+  id: string;
+  /** dashboard.rs's display title (the name cut at 40, or `Session <id>`). */
+  title: string;
+  state: string;
+  ended_at: string;
+  // The same naming/classifying fields /api/sessions carries (SessionSummary),
+  // so Home labels and filters a session exactly as History does. Optional:
+  // an older daemon sends only the four above.
+  name?: string | null;
+  user_set_name?: boolean;
+  session_type?: string;
+  schedule_id?: string | null;
+  recipe_title?: string | null;
+  first_user_text?: string | null;
+  goal_id?: string | null;
+  goal_title?: string | null;
+  project_name?: string | null;
+}
 export interface DashboardData { agent: DashboardAgent; stats: DashboardStats; in_flight: InFlightSession[]; recent: RecentSession[] }
 
 export function useDashboard() {

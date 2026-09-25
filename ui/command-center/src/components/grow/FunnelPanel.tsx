@@ -18,7 +18,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from 're
 import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { FIELD_CLASS, growCard, growLabel } from './growChrome';
-import { CARD_PAD, CARD_R } from './growGeometry';
+import { CARD_PAD, CARD_R, magnitudeBarPct } from './growGeometry';
 import { Button } from '../common/Button';
 import { apiFetch } from '../../lib/api';
 
@@ -372,7 +372,7 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
                     </Tooltip>
                     <div style={{ flex: 1, height: 22, background: colors.bgDeeper, borderRadius: radius.sm, overflow: 'hidden' }}>
                       <div style={{
-                        width: `${Math.max(s.sessions > 0 ? 4 : 0, (s.sessions / entered) * 100)}%`,
+                        width: `${magnitudeBarPct(s.sessions, entered)}%`,
                         height: '100%',
                         // One tint. The bar was a cyan-to-purple gradient,
                         // which reads as a second dimension a magnitude bar

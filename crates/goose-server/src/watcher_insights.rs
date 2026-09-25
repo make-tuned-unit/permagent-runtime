@@ -295,6 +295,20 @@ async fn append_insight(
         },
     )
     .await?;
+
+    permagent::brain_feed::feed_for_project(
+        pool,
+        permagent::brain_feed::FeedSource::WatcherInsight,
+        permagent::brain_feed::feed_key(
+            "watcher_insight",
+            &project.id,
+            &chrono::Utc::now().to_rfc3339(),
+        ),
+        &project.id,
+        format!("Watcher insight for '{}': {}", project.name, text),
+    )
+    .await;
+
     Ok(())
 }
 

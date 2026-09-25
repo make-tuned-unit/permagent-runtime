@@ -24,10 +24,9 @@ import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
 import { PronunciationSection } from '../voice/PronunciationSection';
-import { Section, Row, Block, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, selectStyle } from './atoms';
+import { Section, Row, Block, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, ListRow, selectStyle } from './atoms';
 import { Button } from '../common/Button';
 import { H1 } from '../common/H1';
-import { StateBlock } from '../common/StateBlock';
 import { Tooltip } from '../common/Tooltip';
 import { Toggle } from '../common/Toggle';
 import { makeQrMatrix } from '../../lib/qrMatrix';
@@ -38,7 +37,14 @@ import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
 import { summarizeDecisions } from '../dashboard/decisions/summary';
 import { getOpenOnLaunch, setOpenOnLaunch, OPEN_ON_LAUNCH_OPTIONS, type OpenOnLaunch } from '../../lib/openOnLaunch';
 import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
+import { EgressAuditSection } from './EgressAuditSection';
+import { AuthLogSection } from './AuthLogSection';
+import { BackupsSection } from './BackupsSection';
+import { LocalModelsSection } from './LocalModelsSection';
+import { MessagingGatewaysSection } from './MessagingGatewaysSection';
+import { GmailConnectSection } from './GmailConnectSection';
 import { ProviderModelPicker } from './ProviderModelPicker';
+import { MemoryFeedPanel } from './MemoryFeedPanel';
 
 // The PreviewBadge/PreviewNotice machinery (2026-07-10 audit) is gone: every
 // preview-only control has been either wired to real state or removed
@@ -398,6 +404,15 @@ export function MemoryPanel({ goto: _goto }: { goto?: (key: string) => void }) {
           pruning, on the Librarian&apos;s own page — the button above lands on it.
         </div>
       </Section>
+      <Section title="What Henry learns from">
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.md, lineHeight: 1.5 }}>
+          Every kind of thing Henry can turn into a memory, and whether it
+          actually has — goals, decisions, cards, projects, meetings, growth
+          actions, finance, and more. A source reading &quot;not yet&quot; has
+          nothing wrong with it; it just hasn&apos;t fed anything yet.
+        </div>
+        <MemoryFeedPanel />
+      </Section>
     </div>
   );
 }
@@ -617,7 +632,7 @@ export function extensionLabel(ext: ToolExtension): string {
   return label || ext.name || 'Unnamed extension';
 }
 
-function ToolsPanel({ goto }: PanelProps) {
+export function ToolsPanel({ goto }: PanelProps) {
   const { colors } = useThemeHook();
   const [extensions, setExtensions] = useState<ToolExtension[]>([]);
   const [loading, setLoading] = useState(true);
@@ -626,6 +641,12 @@ function ToolsPanel({ goto }: PanelProps) {
   // it at all — this pane showed stale enabled/disabled state for the whole
   // session it was open.
   const configRev = useCommandCenter(s => s.configRev);
+  // The persona's own configured name — "What Henry can use" is a different
+  // sentence than "What your agent can use" once the user has actually named
+  // it, and this is the one place in the app that already knows the name (the
+  // Persona pane's `first_name`). Falls back to "your agent" rather than
+  // blocking the section on a slow or failed identity read.
+  const [personaName, setPersonaName] = useState<string | null>(null);
 
   useEffect(() => {
     api.getExtensions()
@@ -635,7 +656,14 @@ function ToolsPanel({ goto }: PanelProps) {
       .catch(() => setLoading(false));
   }, [configRev]);
 
+  useEffect(() => {
+    api.getIdentity()
+      .then(id => { if (id.first_name?.trim()) setPersonaName(id.first_name.trim()); })
+      .catch(() => {});
+  }, []);
+
   const enabledCount = extensions.filter(e => e.enabled).length;
+  const enabledExtensions = extensions.filter(e => e.enabled);
   // stdio servers that declare required env vars are the ones with API keys —
   // the panel points at where those are actually managed.
   const needKeys = extensions.filter(e => (e.env_keys?.length ?? 0) > 0);
@@ -645,6 +673,39 @@ function ToolsPanel({ goto }: PanelProps) {
       {/* MCP is defined here, once — the nav label carries the user's word and
           the pane carries the acronym. */}
       <H1 sub="Tools your agent can use. Most arrive over MCP — the Model Context Protocol — so connecting a server is what gives the agent something new it can call.">Tools</H1>
+
+      {/* "What Henry can use" — distinct from Models (which is "which brain
+          answers which job") and from the raw MCP server list below (which is
+          how you connect/disconnect one): this section answers the plain
+          question a non-technical reader actually has, in one line per
+          enabled tool, using the persona's own name once it has one. */}
+      <Section title={`What ${personaName ?? 'your agent'} can use`}>
+        {loading ? (
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: `${space.lg}px ${space.xxl}px` }}>
+            Checking what&apos;s connected…
+          </div>
+        ) : enabledExtensions.length === 0 ? (
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: `${space.lg}px ${space.xxl}px`, lineHeight: 1.5 }}>
+            Nothing connected yet — {personaName ?? 'your agent'} can only talk. Connect a tool below to give it something to do.
+          </div>
+        ) : (
+          <div style={{ padding: `${space.lg}px ${space.xxl}px`, display: 'flex', flexWrap: 'wrap', gap: space.sm }}>
+            {enabledExtensions.map(e => (
+              <span
+                key={e.name}
+                data-testid={`can-use-${e.name}`}
+                style={{
+                  ...type.label, padding: `${space.xxs}px ${space.md}px`, borderRadius: radius.pill,
+                  border: `1px solid ${colors.border}`, color: colors.text, fontFamily: font.body,
+                }}
+              >
+                {extensionLabel(e)}
+              </span>
+            ))}
+          </div>
+        )}
+      </Section>
+
       <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.xxl }}>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
@@ -747,6 +808,17 @@ type RoleEffective = {
  *  this and know which model actually answered. `modelKeyLabel` is the
  *  role's model config key (e.g. `chat_model`), used only to word the
  *  "from …" suffix. */
+/** Plain-language word for a role's own config key (R3 — no snake_case config
+ *  keys in user copy). Falls back to the raw key so an unrecognized role
+ *  degrades to something true rather than throwing. */
+const MODEL_KEY_LABEL: Record<string, string> = {
+  chat_model: 'your Chat setting',
+  harness_model: 'your Harness setting',
+};
+function roleSourceLabel(modelKeyLabel: string): string {
+  return MODEL_KEY_LABEL[modelKeyLabel] ?? modelKeyLabel;
+}
+
 function computeRoleEffective(
   provider: string | null, model: string | null,
   sessionProvider: string | null, sessionModel: string | null,
@@ -765,12 +837,12 @@ function computeRoleEffective(
     return { display: 'session model (explicit)', suffix: null, provider: sp };
   }
   if (p !== null && m !== null) {
-    return { display: `${p} / ${m}`, suffix: `from ${modelKeyLabel}`, provider: p };
+    return { display: `${p} / ${m}`, suffix: `from ${roleSourceLabel(modelKeyLabel)}`, provider: p };
   }
   // Zero or exactly one role key set: resolves as if neither were — a half
   // pair is a typo, not an intention (RoleModelSource::HalfConfigured).
   if (sp !== null && sm !== null) {
-    return { display: `${sp} / ${sm}`, suffix: 'from GOOSE_MODEL', provider: sp };
+    return { display: `${sp} / ${sm}`, suffix: 'set by your config', provider: sp };
   }
   return { display: '(default)', suffix: 'built-in default', provider: null };
 }
@@ -793,8 +865,8 @@ function resolvedRoleEffective(r: ResolvedModelRoute, modelKeyLabel: string): Ro
   const p = trimmedOrNull(r.provider);
   const m = trimmedOrNull(r.model);
   const suffix = ({
-    configured: `from ${modelKeyLabel}`,
-    session_model: 'from GOOSE_MODEL',
+    configured: `from ${roleSourceLabel(modelKeyLabel)}`,
+    session_model: 'set by your config',
     default: 'built-in default',
     disabled: 'session model (explicit)',
     half_configured: 'half-set pair ignored',
@@ -1106,6 +1178,8 @@ export function ModelsPanel({ goto }: PanelProps) {
         )}
       </Section>
 
+      <LocalModelsSection />
+
       {/* ── The one pointer to Agents ────────────────────────────
           There used to be TWO sections here — "Worker roster" and "Agent
           settings" — with the same button, the same destination and, because
@@ -1168,6 +1242,7 @@ function ServicesPanel() {
       <Section title="Fundamentals" sub="Optional financialdatasets.ai key. Quotes still work without it. Same field as the Finance tab.">
         <Block><FundamentalsKey /></Block>
       </Section>
+      <GmailConnectSection />
       <Section
         title="Data sources"
         sub="Public APIs you can turn on for agents. Browse a category at a time. Enabling a source makes it callable immediately — suggested agents get it, and the Orchestrator can call every enabled source."
@@ -1519,77 +1594,8 @@ function SovereigntyBlock() {
         </Row>
       </Section>
 
-      <Section title="Egress audit" sub="Every cloud call, allowed or blocked — newest first. BLOCKED means sovereign mode refused it before anything left this machine.">
-        <Row label="Cloud inference calls" hint={`${log?.length ?? 0} recorded`}>
-          <Button
-            colors={colors}
-            onClick={refreshLog}
-            style={{
-              '--pa-btn-bg': colors.surfaceHi,
-              '--pa-btn-fg': colors.text,
-              '--pa-btn-border': colors.border,
-              '--pa-btn-border-hover': colors.borderHi,
-              '--pa-btn-bg-hover': colors.surfaceHi,
-              '--pa-btn-bg-active': colors.surface,
-              '--pa-btn-pad': '4px 10px',
-              '--pa-btn-radius': `${radius.sm}px`,
-              fontSize: textSize.caption,
-            } as CSSProperties}
-          >Refresh</Button>
-        </Row>
-        {logError ? (
-          <StateBlock
-            tone="error"
-            compact
-            title="Couldn't read the egress log."
-            detail="This says nothing about whether calls were made — only that the record could not be read. Do not take a silent panel as a guarantee."
-            onRetry={() => { void refreshLog(); }}
-          />
-        ) : log === null ? (
-          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>Loading audit log…</div>
-        ) : log.length === 0 ? (
-          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>
-            Nothing has left this machine yet. Every cloud call will be recorded here.
-          </div>
-        ) : (
-          <div style={{ marginTop: space.xl }}>
-            <div>
-              <div className="pa-set-egress" style={{ padding: `0 ${space.lg}px ${space.md}px`, ...type.label, color: colors.textDim }}>
-                <div>When</div><div>Provider · Model</div><div className="pa-set-wide-only">Kind</div><div>Result</div>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
-                {log.map(e => (
-                  <div key={e.id} className="pa-set-egress" style={{ padding: `${space.md}px ${space.lg}px`, borderRadius: concentric(radius.lg, space.xs), background: colors.fillSubtle }}>
-                    {/* The primitive clones its child rather than boxing it,
-                        so these stay grid ITEMS and the ellipsis truncation
-                        below still measures against the column. */}
-                    <Tooltip content={`${new Date(e.ts).toLocaleString()}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}>
-                      <div tabIndex={0} style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.mono }}>
-                        {timeAgo(e.ts) || e.ts}
-                      </div>
-                    </Tooltip>
-                    <Tooltip content={`${e.provider} · ${e.model} · ${e.kind}`}>
-                      <div tabIndex={0} style={{ fontSize: textSize.caption, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        <span style={{ color: colors.textMuted }}>{e.provider}</span> · {e.model}
-                      </div>
-                    </Tooltip>
-                    <div className="pa-set-wide-only" style={{ fontSize: textSize.caption, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis' }}>{e.kind}</div>
-                    <div>
-                      <span style={{
-                        ...type.label, fontWeight: 700,
-                        padding: `${space.xxs}px ${space.md}px`, borderRadius: radius.pill, border: `1px solid ${colors.border}`,
-                        color: e.blocked ? colors.warning : colors.success,
-                      }}>
-                        {e.blocked ? 'blocked' : 'allowed'}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-      </Section>
+      <EgressAuditSection log={log} logError={logError} onRefresh={refreshLog} />
+      <AuthLogSection />
     </>
   );
 }
@@ -1611,6 +1617,7 @@ function PrivacyPanel() {
       <H1 sub="What leaves this machine, and what stops it. Memory and traces are local; sovereign mode makes that boundary enforced rather than merely true today.">Privacy &amp; data</H1>
       <SovereigntyBlock />
       <DataPanel />
+      <BackupsSection />
     </div>
   );
 }
@@ -1788,20 +1795,27 @@ function DevicesPanel() {
             No devices paired yet. Create a pairing link below.
           </div>
         )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         {devices?.map(d => (
-          <Row
+          <ListRow
             key={d.id}
-            label={d.name}
-            hint={
-              (d.revoked ? 'Revoked · ' : '')
-              + `Paired ${new Date(d.created).toLocaleDateString()}`
+            testId={`device-row-${d.id}`}
+            title={d.name}
+            // Never having connected is not the same fact as being revoked —
+            // dimmed, not hidden, so the entry a claim link created is still
+            // findable while it says plainly that nothing has happened yet.
+            tone={d.revoked ? 'problem' : !d.last_seen ? 'dim' : 'default'}
+            chip={d.revoked && (
+              <span style={{ fontSize: textSize.micro, fontWeight: 600, color: colors.danger }}>REVOKED</span>
+            )}
+            detail={
+              `Paired ${new Date(d.created).toLocaleDateString()}`
               // `timeAgo`, the History format ("3d ago"): `relativeTimeAgo`
               // only counts hours, so a phone idle for six weeks read
               // "last seen 1058h 52m ago".
               + ` · ${d.last_seen ? `last seen ${timeAgo(d.last_seen) || 'at an unknown time'}` : 'never seen'}`
             }
-          >
-            {editingId === d.id ? (
+            trailing={editingId === d.id ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
                 <TextInput value={editName} onChange={setEditName} placeholder="Device name" />
                 <Button
@@ -1820,47 +1834,42 @@ function DevicesPanel() {
                 >Save</Button>
                 <Button colors={colors} style={ghost(colors)} onClick={() => setEditingId(null)}>Cancel</Button>
               </div>
-            ) : (
+            ) : !d.revoked && (
               <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
-                {d.revoked ? (
-                  <span style={{ fontSize: textSize.micro, fontWeight: 600, color: colors.danger }}>REVOKED</span>
-                ) : (
-                  <>
-                    <Button
-                      colors={colors}
-                      style={ghost(colors)}
-                      onClick={() => { setEditingId(d.id); setEditName(d.name); setConfirmRevokeId(null); }}
-                    >Rename</Button>
-                    <Tooltip content="This device stops authenticating immediately. Pair it again to restore access.">
-                    <Button
-                      colors={colors}
-                      // The danger palette rides in as custom properties, not as
-                      // an inline `color`/`borderColor`: those would beat the
-                      // hover rule and leave this reading as unpressable.
-                      style={{
-                        ...ghost(colors),
-                        '--pa-btn-fg': colors.danger,
-                        '--pa-btn-border': `${colors.danger}66`,
-                        '--pa-btn-border-hover': colors.danger,
-                        '--pa-btn-bg-hover': `${colors.danger}1A`,
-                        '--pa-btn-bg-active': `${colors.danger}26`,
-                      } as CSSProperties}
-                      // The first press only arms the confirmation — nothing is
-                      // in flight, so it returns nothing and nothing ticks.
-                      onClick={() => {
-                        if (confirmRevokeId !== d.id) { setConfirmRevokeId(d.id); return; }
-                        return api.revokeDevice(d.id)
-                          .then(() => { setConfirmRevokeId(null); loadDevices(); return true; })
-                          .catch(() => { setConfirmRevokeId(null); return false; });
-                      }}
-                    >{confirmRevokeId === d.id ? 'Confirm revoke' : 'Revoke'}</Button>
-                    </Tooltip>
-                  </>
-                )}
+                <Button
+                  colors={colors}
+                  style={ghost(colors)}
+                  onClick={() => { setEditingId(d.id); setEditName(d.name); setConfirmRevokeId(null); }}
+                >Rename</Button>
+                <Tooltip content="This device stops authenticating immediately. Pair it again to restore access.">
+                <Button
+                  colors={colors}
+                  // The danger palette rides in as custom properties, not as
+                  // an inline `color`/`borderColor`: those would beat the
+                  // hover rule and leave this reading as unpressable.
+                  style={{
+                    ...ghost(colors),
+                    '--pa-btn-fg': colors.danger,
+                    '--pa-btn-border': `${colors.danger}66`,
+                    '--pa-btn-border-hover': colors.danger,
+                    '--pa-btn-bg-hover': `${colors.danger}1A`,
+                    '--pa-btn-bg-active': `${colors.danger}26`,
+                  } as CSSProperties}
+                  // The first press only arms the confirmation — nothing is
+                  // in flight, so it returns nothing and nothing ticks.
+                  onClick={() => {
+                    if (confirmRevokeId !== d.id) { setConfirmRevokeId(d.id); return; }
+                    return api.revokeDevice(d.id)
+                      .then(() => { setConfirmRevokeId(null); loadDevices(); return true; })
+                      .catch(() => { setConfirmRevokeId(null); return false; });
+                  }}
+                >{confirmRevokeId === d.id ? 'Confirm revoke' : 'Revoke'}</Button>
+                </Tooltip>
               </div>
             )}
-          </Row>
+          />
         ))}
+        </div>
       </Section>
 
       <Section title="Pair a device" sub="Turn on tailnet access below, then scan the QR code with the device you are adding. Both devices must be on your tailnet.">
@@ -2015,6 +2024,8 @@ function DevicesPanel() {
           <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>Links are single-use and expire in 10 minutes.</span>
         </Row>
       </Section>
+
+      <MessagingGatewaysSection />
     </div>
   );
 }

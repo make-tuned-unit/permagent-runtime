@@ -896,6 +896,16 @@ pub async fn create_card(pool: &Pool<Sqlite>, input: CreateCard) -> Result<Card,
     // Every card, goal or not: the Kanban board is what changed, and
     // `goal_state_changed` only reaches the goal surfaces.
     announce_board_change(&card.project_id);
+
+    crate::brain_feed::feed_for_project(
+        pool,
+        crate::brain_feed::FeedSource::Card,
+        crate::brain_feed::feed_key("card", &card.id, "created"),
+        &card.project_id,
+        format!("Card '{}' ({}) created.", card.title, card_type),
+    )
+    .await;
+
     Ok(card)
 }
 
@@ -1419,6 +1429,13 @@ pub struct ActiveGoal {
     pub routing_note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_note: Option<String>,
+    /// Coordinator ruling (dagK): the same per-goal Review-skip opt-in the
+    /// goal detail modal already reads from raw metadata
+    /// (`goal_transition::set_goal_auto_approve`) — surfaced here too so
+    /// Home's "In flight" rows can show the identical Auto-approve / Needs
+    /// review chip without a second source of truth for it.
+    #[serde(default)]
+    pub auto_approve: bool,
 }
 
 /// All goals Henry is actively working — the single source of truth for the
@@ -1463,6 +1480,10 @@ fn active_goal_from_row(r: &sqlx::sqlite::SqliteRow) -> ActiveGoal {
     let hold_note = obj
         .map(crate::cost_router::HoldState::from_metadata)
         .and_then(|h| crate::cost_router::hold_user_note(&h));
+    let auto_approve = obj
+        .and_then(|o| o.get("auto_approve"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     ActiveGoal {
         id: r.get("id"),
         title: r.get("title"),
@@ -1475,6 +1496,7 @@ fn active_goal_from_row(r: &sqlx::sqlite::SqliteRow) -> ActiveGoal {
         updated_at: r.get("updated_at"),
         routing_note,
         hold_note,
+        auto_approve,
     }
 }
 
@@ -1795,6 +1817,24 @@ pub async fn update_card(
     let updated = get_card(pool, card_id).await?;
     if let Some(project_id) = project_id {
         announce_board_change(&project_id);
+        if let Some(ref card) = updated {
+            crate::brain_feed::feed_for_project(
+                pool,
+                crate::brain_feed::FeedSource::Card,
+                crate::brain_feed::feed_key("card", card_id, "summary"),
+                &project_id,
+                format!(
+                    "Card '{}': {}",
+                    card.title,
+                    if card.description.trim().is_empty() {
+                        "(no description)".to_string()
+                    } else {
+                        card.description.clone()
+                    }
+                ),
+            )
+            .await;
+        }
     }
     Ok(updated)
 }
@@ -1887,6 +1927,20 @@ pub async fn move_card(
 
     let moved = get_card(pool, card_id).await?;
     announce_board_change(&card.project_id);
+
+    // Feed only real status (column) transitions, not a same-column
+    // reposition — a card sliding within its own column is not a fact.
+    if column_id != card.column_id {
+        crate::brain_feed::feed_for_project(
+            pool,
+            crate::brain_feed::FeedSource::Card,
+            crate::brain_feed::feed_key("card", card_id, "status"),
+            &card.project_id,
+            format!("Card '{}' moved to '{}'.", card.title, target_col.name),
+        )
+        .await;
+    }
+
     Ok(moved)
 }
 
@@ -3134,6 +3188,60 @@ mod tests {
             "Review is not in-flight — it lives in the Decision Inbox"
         );
         assert!(!states.contains(&"triage"));
+    }
+
+    /// Coordinator ruling (dagK): Home's "In flight" rows and the goal detail
+    /// modal must show the identical Auto-approve / Needs review chip, off
+    /// the same data — `list_active_goals` is that shared source, so its
+    /// `auto_approve` field has to reflect the card's real metadata rather
+    /// than defaulting true or being silently dropped.
+    #[tokio::test]
+    async fn list_active_goals_reports_the_per_goal_auto_approve_flag() {
+        let pool = test_pool().await;
+        seed_goal_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        let col = get_goal_column(&pool, PERSONAL_PROJECT_ID, "ready")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mk = |auto_approve: Option<bool>| {
+            let pool = &pool;
+            let col_id = col.id.clone();
+            async move {
+                let mut meta = serde_json::Map::new();
+                meta.insert("goal_state".to_string(), serde_json::json!("ready"));
+                if let Some(v) = auto_approve {
+                    meta.insert("auto_approve".to_string(), serde_json::json!(v));
+                }
+                create_card(
+                    pool,
+                    CreateCard {
+                        project_id: PERSONAL_PROJECT_ID.to_string(),
+                        title: format!("goal-auto-approve-{auto_approve:?}"),
+                        description: None,
+                        card_type: Some("goal".to_string()),
+                        column_id: Some(col_id),
+                        created_by: None,
+                        metadata_json: Some(serde_json::Value::Object(meta)),
+                    },
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        let on = mk(Some(true)).await;
+        let off = mk(Some(false)).await;
+        let unset = mk(None).await;
+
+        let active = list_active_goals(&pool).await.unwrap();
+        let flag = |id: &str| active.iter().find(|g| g.id == id).unwrap().auto_approve;
+        assert!(flag(&on.id), "auto_approve: true must read true");
+        assert!(!flag(&off.id), "auto_approve: false must read false");
+        assert!(
+            !flag(&unset.id),
+            "absent auto_approve must default false, never true"
+        );
     }
 
     #[tokio::test]

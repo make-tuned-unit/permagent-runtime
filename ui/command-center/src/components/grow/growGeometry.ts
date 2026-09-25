@@ -34,3 +34,17 @@ export const CARD_INNER_R = concentric(CARD_R, CARD_PAD);
 export const ROW_R = radius.lg;
 export const ROW_PAD = space.lg;
 export const ROW_INNER_R = concentric(ROW_R, ROW_PAD);
+
+/**
+ * A magnitude bar's fill, in percent of its track.
+ *
+ * Zero is an EMPTY track — never a sliver. A non-zero value gets a small floor
+ * so a real but tiny count stays visible beside a large one; that floor is
+ * only ever applied to something that exists. (The Growth funnel's floor was
+ * unconditional, so "Content live 0" drew a filled bar.)
+ */
+export const MAGNITUDE_BAR_MIN_PCT = 4;
+export function magnitudeBarPct(value: number, max: number): number {
+  if (!Number.isFinite(value) || value <= 0 || !(max > 0)) return 0;
+  return Math.min(100, Math.max(MAGNITUDE_BAR_MIN_PCT, (value / max) * 100));
+}

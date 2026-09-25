@@ -204,6 +204,18 @@ pub async fn create_incident(
     .execute(pool)
     .await?;
 
+    crate::brain_feed::feed(
+        pool,
+        crate::brain_feed::FeedSource::Incident,
+        crate::brain_feed::feed_key("incident", &id, "observation"),
+        None,
+        format!(
+            "Incident on {} (goal: {}): {}",
+            incident.surface, incident.user_goal, incident.observation
+        ),
+    )
+    .await;
+
     Ok(Incident {
         id,
         created_at,

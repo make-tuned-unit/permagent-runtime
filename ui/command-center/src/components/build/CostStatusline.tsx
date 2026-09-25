@@ -242,6 +242,11 @@ export function CostStatusline() {
     // budget tooltip covers the FIGURES only — hovering the picker to change
     // models should not raise a wall of ledger text over the menu.
     <div
+      // B2 (dagK): this bar is a static footer, not a scroll region, so the
+      // pill's own scroll-clearance pass never finds it — it opts in here so
+      // the pill raises itself clear of the bar entirely instead of floating
+      // in front of it (ChatLauncher.tsx's `footerClearance`).
+      data-pa-launcher-footer=""
       style={{
         display: 'flex',
         alignItems: 'center',

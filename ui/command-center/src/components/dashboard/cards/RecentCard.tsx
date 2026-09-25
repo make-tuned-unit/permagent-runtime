@@ -4,8 +4,17 @@ import { useTheme } from '../../../styles/useTheme';
 import { useCommandCenter } from '../../../lib/store';
 import { SectionTitle, StatusIcon, EmptyNote, CardScrollBody } from '../atoms';
 import type { RecentSession } from '../useDashboard';
-import { recentTitle } from './recentTitle';
 import { Tooltip } from '../../common/Tooltip';
+import { classifySession, labelSource, sessionDisplayLabel } from '../../../lib/sessionLabel';
+
+/** Home shows conversations — the same default History opens on. Probes,
+ *  scheduled jobs and coding workers live under History's other filters. */
+const RECENT_LIMIT = 4;
+
+/** The daemon's full record when it sent one, else its cut title. */
+function recentSource(item: RecentSession) {
+  return labelSource({ ...item, name: item.name ?? item.title });
+}
 
 function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -21,8 +30,9 @@ interface Props {
   items: RecentSession[];
 }
 
-export function RecentCard({ items }: Props) {
+export function RecentCard({ items: all }: Props) {
   const { colors } = useTheme();
+  const items = all.filter(item => classifySession(recentSource(item)) === 'conversation').slice(0, RECENT_LIMIT);
   const switchToSession = useCommandCenter(s => s.switchToSession);
   const openChatDock = useCommandCenter(s => s.openChatDock);
 
@@ -78,8 +88,8 @@ function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: b
   // name what this row actually wants (D10), and give it real press feedback,
   // which it had none of before.
   // Never the raw title: a session named after tool-call args arrives as a cut
-  // object literal (see recentTitle).
-  const label = recentTitle(item.title);
+  // object literal, a placeholder or a quoted fragment (see lib/sessionLabel).
+  const label = sessionDisplayLabel(recentSource(item));
   const fadeTransition = reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}, box-shadow ${duration.fast}ms ${ease.out}`;
   return (
     <div

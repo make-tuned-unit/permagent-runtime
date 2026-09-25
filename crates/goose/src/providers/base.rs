@@ -581,6 +581,12 @@ pub struct ProviderUsage {
     /// Agent assigns this once per stream and carries it through retries.
     #[serde(default)]
     pub invocation_id: Option<String>,
+    /// Set when the provider stopped this response early and said why (the
+    /// Responses API's `incomplete_details.reason`, e.g. `max_output_tokens`).
+    /// `None` is an ordinary completion. The agent reads it to tell a turn cut
+    /// off by the output cap from one the model chose to end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incomplete_reason: Option<String>,
 }
 
 impl ProviderUsage {
@@ -589,7 +595,13 @@ impl ProviderUsage {
             model,
             usage,
             invocation_id: None,
+            incomplete_reason: None,
         }
+    }
+
+    pub fn with_incomplete_reason(mut self, reason: Option<String>) -> Self {
+        self.incomplete_reason = reason;
+        self
     }
 
     pub fn with_invocation_id(mut self, invocation_id: impl Into<String>) -> Self {
@@ -626,6 +638,10 @@ impl ProviderUsage {
                 .invocation_id
                 .clone()
                 .or_else(|| other.invocation_id.clone()),
+            incomplete_reason: self
+                .incomplete_reason
+                .clone()
+                .or_else(|| other.incomplete_reason.clone()),
         }
     }
 }

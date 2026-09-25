@@ -19,6 +19,8 @@ import { Tooltip } from '../common/Tooltip';
 import type { Project } from '../projects/types';
 import type { SocialCard } from './calendarPosts';
 import { SEGMENT_STRIP_PAD, SEGMENT_STRIP_RADIUS, segmentedTab } from './growStyles';
+import { segmentDirection } from '../common/segmented';
+import { runViewTransition } from '../../lib/viewTransition';
 import {
   FIELD_CLASS,
   GrowChrome,
@@ -398,7 +400,8 @@ export function GrowView() {
               role="tab"
               aria-selected={selected}
               tabIndex={0}
-              onClick={() => setLens(l)}
+              // R8 item 5: crossfade + slide toward the clicked lens.
+              onClick={() => runViewTransition(() => setLens(l), { direction: segmentDirection(LENSES, lens, l) })}
               onFocus={() => setFocusLens(l)}
               onBlur={() => setFocusLens(null)}
               style={{

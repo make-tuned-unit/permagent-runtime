@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use permagent::session::session_manager::SessionType;
 use serde::{Deserialize, Serialize};
 use spectral::core::entity_id::EntityId;
+use sqlx::Row;
 use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
@@ -1322,12 +1323,84 @@ pub struct BackfillChatWingsQuery {
     apply: bool,
 }
 
+/// Chat persistence's own outbox depth (`chat_memory_outbox`) — the memory-feed
+/// panel's "Conversations" row needs this alongside [`permagent::brain_feed`]'s
+/// per-source counts, since chat turns are enqueued through the older,
+/// dedicated outbox (`crates/goose-server/src/brain_ops.rs:559-719`), not
+/// `brain_feed`'s.
+#[derive(Debug, Clone, Copy, Default, Serialize, utoipa::ToSchema)]
+pub struct ChatOutboxStatus {
+    /// Queued (`pending` or `running`), not yet delivered.
+    pub pending: i64,
+    /// Gave up after the outbox's own attempt cap.
+    pub dead: i64,
+}
+
+async fn chat_outbox_status(pool: &sqlx::Pool<sqlx::Sqlite>) -> ChatOutboxStatus {
+    let row = sqlx::query(
+        "SELECT
+            SUM(CASE WHEN status IN ('pending','running') THEN 1 ELSE 0 END) AS pending,
+            SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END) AS dead
+         FROM chat_memory_outbox",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    match row {
+        Some(r) => ChatOutboxStatus {
+            pending: r
+                .try_get::<Option<i64>, _>("pending")
+                .ok()
+                .flatten()
+                .unwrap_or(0),
+            dead: r
+                .try_get::<Option<i64>, _>("dead")
+                .ok()
+                .flatten()
+                .unwrap_or(0),
+        },
+        None => ChatOutboxStatus::default(),
+    }
+}
+
+/// Response for `GET /api/brain/feed-status` — Settings → Memory's "What Henry
+/// learns from" panel (memory-feed lane, 2026-09-25).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct FeedStatusResponse {
+    pub sources: Vec<permagent::brain_feed::FeedSourceStatus>,
+    pub chat_outbox: ChatOutboxStatus,
+}
+
+/// GET /api/brain/feed-status — per-source counts, last-fed time and errors
+/// for every [`permagent::brain_feed::FeedSource`], plus the chat outbox's own
+/// depth. Never 404s: every source appears even with zero facts fed, so the
+/// panel can render "not yet" honestly instead of omitting the row.
+async fn brain_feed_status(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<FeedStatusResponse>, crate::routes::errors::ErrorResponse> {
+    let pool =
+        state.session_manager().pool_clone().await.map_err(|e| {
+            crate::routes::errors::ErrorResponse::service_unavailable(e.to_string())
+        })?;
+    let disabled = permagent::brain_feed::disabled_sources();
+    let sources = permagent::brain_feed::feed_status(&pool, &disabled)
+        .await
+        .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
+    let chat_outbox = chat_outbox_status(&pool).await;
+    Ok(Json(FeedStatusResponse {
+        sources,
+        chat_outbox,
+    }))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/brain/search", get(brain_search))
         .route("/api/brain/graph", get(brain_graph))
         .route("/api/brain/memories", get(brain_memories))
         .route("/api/brain/memory", get(brain_memory_by_key))
+        .route("/api/brain/feed-status", get(brain_feed_status))
         .route(
             "/api/brain/backfill-approval-halls",
             post(backfill_approval_halls),
@@ -1341,6 +1414,52 @@ mod tests {
     use super::*;
     use spectral::core::entity_id::entity_id;
     use spectral::graph::graph_store::Triple;
+
+    /// GET /api/brain/feed-status's two ingredients: every `brain_feed`
+    /// source (even unfed ones, count 0) plus the chat outbox's own pending/
+    /// dead depth read straight from `chat_memory_outbox` — a table
+    /// `brain_feed` does not own, so the panel's "Conversations" row would be
+    /// permanently wrong without this second query.
+    #[tokio::test]
+    async fn feed_status_response_covers_every_source_and_the_chat_outbox() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        permagent::brain_feed::apply_schema(&pool).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE chat_memory_outbox (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO chat_memory_outbox (status) VALUES ('pending'), ('running'), ('dead'), ('applied')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let outbox = chat_outbox_status(&pool).await;
+        assert_eq!(outbox.pending, 2, "pending + running");
+        assert_eq!(outbox.dead, 1);
+
+        let sources = permagent::brain_feed::feed_status(&pool, &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            sources.len(),
+            permagent::brain_feed::FeedSource::ALL.len(),
+            "every source appears even with zero facts fed"
+        );
+        let chat_row = sources.iter().find(|s| s.source == "chat").unwrap();
+        assert_eq!(
+            chat_row.count, 0,
+            "chat is fed via its own outbox, not brain_feed's"
+        );
+    }
 
     fn triple(from_canonical: &str, to_canonical: &str, predicate: &str) -> Triple {
         Triple {

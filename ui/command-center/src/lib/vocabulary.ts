@@ -111,3 +111,34 @@ export type GlossaryKey = keyof typeof GLOSSARY;
 export function plural(term: Term, n: number): string {
   return `${n} ${n === 1 ? term.one : term.many}`;
 }
+
+/**
+ * Word-boundary swaps for text the DAEMON wrote, not this app — activity
+ * journal titles, run summaries, anything logged server-side under the
+ * internal name before this vocabulary existed. `automationNaming.test.ts`
+ * gates Automate's own SOURCE against the retired word "recipe"; it cannot
+ * gate a sentence the daemon composed at runtime (e.g. a scheduler journal
+ * entry: "Ran the daily digest recipe"), because there is no literal string
+ * in this repo to grep. Every surface that renders daemon-authored prose —
+ * Settings → Agents' activity lines today — must pass it through this first.
+ *
+ * Case-preserving on the replacement's own casing rule (lowercase in, unless
+ * the matched word was capitalized) and word-boundary matched, so it cannot
+ * clip "recipes" mid-word into something else or touch an unrelated word that
+ * merely contains the substring.
+ */
+const DAEMON_TEXT_SWAPS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\brecipes\b/gi, 'automations'],
+  [/\brecipe\b/gi, 'automation'],
+];
+
+export function deJargonDaemonText(text: string): string {
+  return DAEMON_TEXT_SWAPS.reduce(
+    (acc, [pattern, replacement]) => acc.replace(pattern, matched => (
+      matched[0] === matched[0].toUpperCase()
+        ? replacement[0].toUpperCase() + replacement.slice(1)
+        : replacement
+    )),
+    text,
+  );
+}

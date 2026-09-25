@@ -130,7 +130,9 @@ describe('PeopleDirectory', () => {
     await act(async () => root.render(<PeopleDirectory />));
 
     expect(container.textContent).toContain("Couldn't load people.");
-    expect(container.textContent).toContain('Retry');
+    // StateBlock's shared retry affordance (R7: converged onto the same
+    // component Projects/Dashboard use, instead of a fourth hand-rolled label).
+    expect(container.textContent).toContain('Try again');
     expect(container.textContent).not.toContain('No people yet.');
   });
 
@@ -197,5 +199,93 @@ describe('PeopleDirectory', () => {
     // The People endpoints carry no serde rename_all — a camelCase key would
     // fail to deserialize server-side rather than binding an empty name.
     expect(JSON.parse(post[1].body)).toEqual({ display_name: 'New Person' });
+  });
+
+  // P2 — QA 2026-09-24: 36 identical "never" rows said nothing a single
+  // banner doesn't, on a directory where no daemon has ever logged a meeting.
+  it('shows one banner instead of a "never" on every row when nothing has an interaction', async () => {
+    apiFetch.mockResolvedValue([
+      person('a', 'Ashley Lecroy'),
+      person('b', 'Craig Beaton'),
+      person('c', 'Dana Okafor'),
+    ]);
+    await act(async () => root.render(<PeopleDirectory />));
+
+    expect(container.textContent).toContain('No interactions recorded yet.');
+    expect(container.textContent).not.toContain('never');
+  });
+
+  it('does not show the banner once at least one contact has a real interaction', async () => {
+    apiFetch.mockResolvedValue([
+      person('a', 'Ashley Lecroy'),
+      person('b', 'Craig Beaton', { last_contact_at: '2026-01-01T00:00:00Z' }),
+    ]);
+    await act(async () => root.render(<PeopleDirectory />));
+
+    expect(container.textContent).not.toContain('No interactions recorded yet.');
+    expect(container.textContent).toContain('never');
+  });
+
+  // P3 — QA 2026-09-24: the backend is adding `kind`; the directory must
+  // filter organisations by it and show the user's own record as "You".
+  it('shows an Organisations filter chip and hides it when the backend sends no kind', async () => {
+    apiFetch.mockResolvedValue([
+      person('a', 'Ashley Lecroy', { kind: 'person' }),
+      person('org1', "Harbourview Residents' Association", { kind: 'organisation' }),
+    ]);
+    await act(async () => root.render(<PeopleDirectory />));
+
+    const chip = Array.from(container.querySelectorAll('button')).find(b =>
+      b.textContent?.includes('Organisations'));
+    expect(chip).toBeTruthy();
+    await act(async () => chip!.click());
+    expect(container.textContent).toContain("Harbourview Residents' Association");
+    expect(container.textContent).not.toContain('Ashley Lecroy');
+  });
+
+  // R2 (UX_STANDARD): a filter matching nobody must say so, not render an
+  // empty scroll area that looks identical to a slow load or a broken filter.
+  it('says so when the Organisations filter matches nobody visible', async () => {
+    apiFetch.mockResolvedValue([person('a', 'Ashley Lecroy', { kind: 'person' })]);
+    await act(async () => root.render(<PeopleDirectory />));
+    // No organisation in this directory — the chip itself must not even show
+    // (covered above) — this test is for a cohort that legitimately filters
+    // to zero, e.g. "Follow-up" with nothing due.
+    const followUpChip = Array.from(container.querySelectorAll('button')).find(b =>
+      b.textContent?.startsWith('Follow-up'))!;
+    await act(async () => followUpChip.click());
+    expect(container.textContent).toContain('No one matches this filter.');
+  });
+
+  it('shows no Organisations chip on an older daemon with no kind field', async () => {
+    apiFetch.mockResolvedValue([person('a', 'Ashley Lecroy')]);
+    await act(async () => root.render(<PeopleDirectory />));
+
+    const chip = Array.from(container.querySelectorAll('button')).find(b =>
+      b.textContent?.includes('Organisations'));
+    expect(chip).toBeFalsy();
+  });
+
+  it('marks organisation and person rows distinctly, reusing the Brain graph\'s own round/square convention', async () => {
+    apiFetch.mockResolvedValue([
+      person('a', 'Ashley Lecroy', { kind: 'person' }),
+      person('org1', "Harbourview Residents' Association", { kind: 'organisation' }),
+    ]);
+    await act(async () => root.render(<PeopleDirectory />));
+
+    expect(container.querySelector('[data-testid="people-row-person"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="people-row-organisation"]')).toBeTruthy();
+  });
+
+  it('shows the user\'s own record as "You", not their name, and never flags it a duplicate', async () => {
+    apiFetch.mockResolvedValue([
+      person('me', 'Jesse Sharratt', { kind: 'self' }),
+      person('b', 'Jesse', {}),
+    ]);
+    await act(async () => root.render(<PeopleDirectory />));
+
+    expect(container.textContent).toContain('You');
+    expect(container.textContent).not.toContain('Jesse Sharratt');
+    expect(container.textContent).not.toContain('possible duplicate');
   });
 });

@@ -2151,8 +2151,9 @@ pub(crate) struct ProviderInvocationContext {
     pub attempts_reserved: Option<u32>,
     /// The output-token cap this invocation's hold was priced against
     /// ([`ReservationBound::output_tokens`](crate::cost_router::reservation::ReservationBound::output_tokens),
-    /// `cost_router::reservation::RESERVED_OUTPUT_TOKENS` clamped to the
-    /// model's own `max_tokens`), or `None` for unpaid work that took no
+    /// `cost_router::reservation::output_reservation_cap` — larger for a
+    /// reasoning model — clamped to the model's own `max_tokens`), or `None`
+    /// for unpaid work that took no
     /// hold at all. `stream_response_from_provider` applies this to the
     /// request's own model config before dispatch, so the provider is asked
     /// to respect the SAME number the reservation priced — a reservation
@@ -5250,10 +5251,11 @@ mod tests {
     /// End to end through the real tokenizer and the real bound: a ~30k-token
     /// prompt to a 400k-context model reserves input for about that prompt
     /// plus the margin, not the whole window — which is itself now
-    /// 395,904 tokens rather than the 272,000 that produced the reported
-    /// $1.56 hold, because `RESERVED_OUTPUT_TOKENS` caps this model's raw
-    /// 128,000-token `max_tokens` down to 4,096 on the output side, freeing
-    /// the difference for input capacity (`context - output`).
+    /// 367,232 tokens rather than the 272,000 that produced the reported
+    /// $1.56 hold, because the reservation caps this reasoning model's raw
+    /// 128,000-token `max_tokens` down to 32,768 on the output side
+    /// (`REASONING_RESERVED_OUTPUT_TOKENS`), freeing the difference for input
+    /// capacity (`context - output`).
     #[tokio::test]
     async fn a_thirty_thousand_token_prompt_is_not_reserved_as_the_whole_window() {
         let body = "word ".repeat(30_000);
@@ -5292,9 +5294,11 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+        // gpt-5.4-mini is a reasoning model, so its cap is the reasoning one
+        // (`output_reservation_cap`), not the plain 4,096.
         assert_eq!(
             window.input_tokens,
-            400_000 - crate::cost_router::reservation::RESERVED_OUTPUT_TOKENS
+            400_000 - crate::cost_router::reservation::output_reservation_cap(&cfg)
         );
         assert!(sized.input_tokens >= counted);
         assert!(

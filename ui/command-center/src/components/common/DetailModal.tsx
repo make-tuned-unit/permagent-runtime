@@ -62,6 +62,21 @@ interface Props {
    * a pane you can Tab out of it would simply be false.
    */
   placement?: 'center' | 'contained';
+  /**
+   * Vertical position of a `center`-placement panel within the scrim.
+   *
+   * `center` (the default) puts the panel's MIDDLE at the viewport's middle,
+   * so any content that changes the panel's height — a disclosure expanding,
+   * a row loading in — moves every control in the panel, including the one
+   * still under the pointer (GM2: expanding "Show proof of work" in the goal
+   * detail modal shifted Cancel/Close under a waiting click). `top` fixes the
+   * panel's TOP a constant distance below the viewport's top instead, so
+   * content only ever grows downward into the panel's own internal scroll
+   * (`overflow: auto` on the body, already in place) and nothing already on
+   * screen moves. Ignored for `placement: 'contained'`, which has no scrim to
+   * center or anchor within.
+   */
+  align?: 'center' | 'top';
   /** Overrides on the footer row — the twin of `bodyStyle`, for a footer whose
    *  actions must wrap rather than be squeezed onto one line (a narrow dock),
    *  or that wants its own alignment. */
@@ -81,16 +96,63 @@ const FOCUSABLE = [
   'input:not([disabled])', 'select:not([disabled])', '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
+/** `align: 'top'`'s fixed distance from the viewport's top edge — composed
+ *  from the space scale (3 × `huge`) rather than a bare px literal. */
+const TOP_ANCHOR_OFFSET = space.huge * 3;
+
 export function DetailModal({
   title, badge, onClose, footer, children,
   width = 'min(560px, 92vw)', height, headerLeft, headerRight, bodyStyle, footerStyle,
-  placement = 'center', stopEscapePropagation,
+  placement = 'center', align = 'center', stopEscapePropagation,
 }: Props) {
   const { colors, reduceMotion } = useTheme();
   const panelRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLSpanElement>(null);
   const titleId = useId();
   const modal = placement === 'center';
+
+  // GM5/R3: whether the 2-line clamp below is actually cutting text off —
+  // the ONLY condition under which the title gets a Tooltip at all. Re-checked
+  // on every title change and on the title box's own resize (a narrower panel,
+  // a header gaining/losing headerLeft/headerRight neighbours).
+  const [titleClamped, setTitleClamped] = useState(false);
+  useEffect(() => {
+    const el = titleRef.current;
+    if (!el) return;
+    const measureTitle = () => {
+      // 1px of slack, same reasoning as the scroll-edge measurement below.
+      const clamped = el.scrollHeight - el.clientHeight > 1;
+      setTitleClamped(prev => (prev === clamped ? prev : clamped));
+    };
+    measureTitle();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measureTitle);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [title]);
+  const titleEl = (
+    <span
+      id={titleId}
+      ref={titleRef}
+      // Focusable only when a Tooltip is actually wrapping it (clamped) —
+      // hoverable/focusable there, but tabIndex={-1} keeps it OUT of the Tab
+      // order (the FOCUSABLE trap above explicitly excludes
+      // `[tabindex="-1"]`), so this never reorders the panel's real controls.
+      // A short, unclamped title needs no tab stop at all.
+      tabIndex={titleClamped ? -1 : undefined}
+      style={{
+        fontFamily: font.display, fontSize: textSize.body, fontWeight: 600,
+        color: colors.text, flex: 1, minWidth: 0,
+        overflow: 'hidden', wordBreak: 'break-word',
+        display: '-webkit-box',
+        WebkitLineClamp: 2,
+        WebkitBoxOrient: 'vertical',
+      } as CSSProperties}
+    >
+      {title}
+    </span>
+  );
 
   /**
    * Hard scroll edges (D11), for the two bars this shell pins.
@@ -135,7 +197,21 @@ export function DetailModal({
     const panel = panelRef.current;
     // A consumer that autofocuses its own field has already made the better
     // choice — don't take it back.
-    if (panel && !panel.contains(document.activeElement)) panel.focus();
+    if (panel && !panel.contains(document.activeElement)) {
+      // Coordinator finding: focusing the bare panel (a <div tabindex="-1">,
+      // not a naturally focusable element) makes Chromium's :focus-visible
+      // heuristic assume the focus MUST be keyboard/assistive-tech-driven —
+      // it shows the ring even when the modal was opened with a mouse click,
+      // reading as a thick cyan glow around the whole dialog (anti-slop #8).
+      // A real, ordinarily-focusable control (the close button, almost always
+      // the first FOCUSABLE match) inherits the browser's actual current
+      // input modality instead, so a pointer-opened modal shows no ring and
+      // a keyboard-opened one still does. `panel.focus()` is the fallback for
+      // the near-impossible case of a modal with no footer AND no headerRight
+      // AND (somehow) no close button in the DOM.
+      const first = panel.querySelector<HTMLElement>(FOCUSABLE);
+      (first ?? panel).focus();
+    }
     return () => { opener?.focus?.(); };
   }, [modal]);
 
@@ -177,12 +253,21 @@ export function DetailModal({
         aria-labelledby={titleId}
         tabIndex={-1}
         onClick={e => e.stopPropagation()}
+        // R8 item 6: scale-from-origin entrance for the modal case only — a
+        // `contained` dock sits inline in the layout it opened from and has
+        // no "origin" to pop out of; popping it would read as the layout
+        // itself glitching rather than as a control appearing.
+        className={modal ? 'pa-modal-in' : undefined}
         style={{
           ...(modal
             // An explicit height is the cap too, or the default 86vh silently
-            // shortens a viewer that asked for more.
+            // shortens a viewer that asked for more. `top` anchoring reserves
+            // the same gap below the panel as above it (TOP_ANCHOR_OFFSET on
+            // both sides) instead of the vh-relative 86vh a centred panel uses.
             ? {
-              width, height, maxHeight: height ?? '86vh',
+              width, height,
+              maxHeight: height ?? (align === 'top' ? `calc(100vh - ${TOP_ANCHOR_OFFSET * 2}px)` : '86vh'),
+              marginTop: align === 'top' ? TOP_ANCHOR_OFFSET : undefined,
               borderRadius: radius.lg,
               border: `1px solid ${colors.border}`,
             }
@@ -203,13 +288,15 @@ export function DetailModal({
           borderBottom: '1px solid', ...edge(edges.top),
         }}>
           {headerLeft}
-          <span id={titleId} style={{
-            fontFamily: font.display, fontSize: textSize.body, fontWeight: 600,
-            color: colors.text, flex: 1, minWidth: 0,
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>
-            {title}
-          </span>
+          {/* GM5/R3: at most 2 lines (a clamp, not unlimited wrap) — the brief
+              and R3 both say 2, not 1; a single-line ellipsis silently loses
+              MORE of a long title than a reader can recover from a tooltip
+              alone. Past 2 lines it still clips, with the full text on
+              hover/focus via Tooltip (never the native HTML attribute this
+              primitive replaces) — but ONLY when the title is actually
+              clamped: a short title gets no tooltip at all, which would be
+              pure noise on every other modal in the app. */}
+          {titleClamped ? <Tooltip content={title}>{titleEl}</Tooltip> : titleEl}
           {badge && (
             <span style={{
               fontFamily: font.mono, fontSize: 10, letterSpacing: '0.04em',
@@ -278,13 +365,17 @@ export function DetailModal({
   return createPortal(
     <div
       onClick={onClose}
+      // R8 item 6: scale-from-origin + fade in, faster out. The scrim fades
+      // in behind it; both are CSS keyframes (`index.css`), so they inherit
+      // the app-wide Reduce Motion collapse with no extra branch here.
+      className="pa-scrim-in"
       style={{
         position: 'fixed', inset: 0, zIndex: 120,
         // `veil` is the token for exactly this layer — the thing glass would
         // sit on — and it is theme-aware, which a flat 50% black is not: on the
         // silver theme it reads as a blackout rather than as a recede.
         background: colors.veil,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        display: 'flex', alignItems: align === 'top' ? 'flex-start' : 'center', justifyContent: 'center',
       }}
     >
       {panel}

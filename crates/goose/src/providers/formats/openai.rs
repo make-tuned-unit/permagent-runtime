@@ -821,6 +821,7 @@ fn extract_usage_with_output_tokens(chunk: &StreamingChunk) -> Option<ProviderUs
                 usage: get_usage(u),
                 model: model.clone(),
                 invocation_id: None,
+                incomplete_reason: None,
             })
         })
         .filter(|u| u.usage.output_tokens.is_some())

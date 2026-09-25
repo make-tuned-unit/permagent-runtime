@@ -27,6 +27,7 @@ import {
 import { api as daemonApi } from '../../lib/api';
 import { buildCodingSessionPayload, isHarnessCommand } from './codingSession';
 import { createFollowUpDelivery, type FollowUpDelivery } from './followUpDelivery';
+import { planReplay, writeReplay, type GridMark } from './replayGeometry';
 import { FiCopy, FiSend, FiX } from 'react-icons/fi';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
@@ -418,9 +419,21 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
           try {
             const replay = await api.invoke('get_pty_output', {
               sessionId: sessionIdRef.current,
-            }) as { data: string; seq: number };
+            }) as { data: string; seq: number; grid?: GridMark[] };
             if (!cancelled && replay?.data) {
-              term.write(replay.data);
+              // Parse every byte at the grid it was PAINTED for, then fit to
+              // this container. A harness frame is absolute rows under a
+              // DECSTBM region; parsed at this window's size instead, the
+              // tail's frames from every earlier pane size scattered through
+              // the screen and scrollback (2026-09-24 pop-out report). The
+              // fit below is then an ordinary resize — xterm reflows, and the
+              // TUI's SIGWINCH repaint (advertiseGrid) clears what it left.
+              // Live chunks stay held while the replay parses.
+              const regridded = await writeReplay(
+                term,
+                planReplay(replay.data, replay.seq, replay.grid),
+              );
+              if (regridded && !cancelled) fitVisibleTerminal(fitAddon, containerRef.current);
               onPtyDataRef.current?.(replay.data);
               followUpDeliveryRef.current?.onData(replay.data);
             }

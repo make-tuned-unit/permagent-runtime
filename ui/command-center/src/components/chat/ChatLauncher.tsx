@@ -12,6 +12,28 @@ const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 // launcher's reserved corner from this anchor + the published size (#553).
 export const CHAT_LAUNCHER_MARGIN = 20;
 
+// ── B2: never cover a footer ────────────────────────────────────────────────
+// The scroll-clearance mechanism below only ever finds SCROLLING regions
+// under the pill — Build's cost statusline (CostStatusline.tsx) is a static
+// bar pinned to the bottom of its own column, not a scroller, so it was never
+// found and the floating pill sat on top of it (its border and background
+// showing through the pill's glass). A footer opts in with this attribute;
+// the pill then raises itself clear of the tallest visible one, rather than
+// the footer having to know anything about the pill.
+export const LAUNCHER_FOOTER_ATTR = 'data-pa-launcher-footer';
+
+/** The extra distance, beyond `CHAT_LAUNCHER_MARGIN`, the pill must sit above
+ *  the viewport's bottom edge to clear every visible marked footer. */
+export function footerClearance(): number {
+  let max = 0;
+  for (const el of document.querySelectorAll(`[${LAUNCHER_FOOTER_ATTR}]`)) {
+    const r = el.getBoundingClientRect();
+    if (r.height <= 0 || r.width <= 0) continue; // hidden (display: none, unmounted tab)
+    max = Math.max(max, r.height);
+  }
+  return max;
+}
+
 // ── Scroll clearance ────────────────────────────────────────────────────────
 // The pill floats over every screen at z-index 9999, and nothing reserved room
 // for it: on Grow → Analytics it sat on top of the last row of the EVENTS
@@ -139,6 +161,36 @@ export function ChatLauncher() {
       setChatLauncherSize(null);
     };
   }, [chatWindowOpen, chatDockOpen, setChatLauncherSize]);
+
+  // B2: track the tallest visible marked footer so the pill can sit clear of
+  // it. Recomputed on the same triggers as the scroll-clearance pass below
+  // (DOM changes, resize) plus its own ResizeObserver on each marked footer —
+  // CostStatusline's own width changes with the pill's width (their inset
+  // math is circular by one frame, which settles immediately since neither
+  // side's height depends on the other's).
+  const [footerInset, setFooterInset] = useState(0);
+  useEffect(() => {
+    if (!visible) { setFooterInset(0); return; }
+    const recompute = () => setFooterInset(prev => {
+      const next = footerClearance();
+      return prev === next ? prev : next;
+    });
+    recompute();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(recompute);
+    for (const el of document.querySelectorAll(`[${LAUNCHER_FOOTER_ATTR}]`)) observer?.observe(el);
+    const mutationObserver = typeof MutationObserver === 'undefined' ? null : new MutationObserver(() => {
+      recompute();
+      observer?.disconnect();
+      for (const el of document.querySelectorAll(`[${LAUNCHER_FOOTER_ATTR}]`)) observer?.observe(el);
+    });
+    mutationObserver?.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('resize', recompute);
+    return () => {
+      observer?.disconnect();
+      mutationObserver?.disconnect();
+      window.removeEventListener('resize', recompute);
+    };
+  }, [visible]);
 
   // Mark the scroll regions under the pill (see `scrollersUnderPill`). Re-run
   // when the DOM under it changes — switching tabs swaps the whole view, and a
@@ -380,7 +432,7 @@ export function ChatLauncher() {
       onMouseDown={() => setPressed(true)}
       onMouseUp={() => setPressed(false)}
       style={{
-      position: 'fixed', bottom: CHAT_LAUNCHER_MARGIN, right: CHAT_LAUNCHER_MARGIN, zIndex: 9999,
+      position: 'fixed', bottom: CHAT_LAUNCHER_MARGIN + footerInset, right: CHAT_LAUNCHER_MARGIN, zIndex: 9999,
       display: 'flex', alignItems: 'center', gap: space.lg,
       padding: `${space.xl}px ${space.xxxl}px`,
       // Capsule, and it is the one control in the app that has earned one:

@@ -14,10 +14,11 @@ import { Button } from '../common/Button';
 import type { Project } from '../projects/types';
 import { FunnelPanel } from './FunnelPanel';
 import { growCard, growLabel } from './growChrome';
-import { CARD_PAD, CARD_R } from './growGeometry';
+import { CARD_PAD, CARD_R, magnitudeBarPct } from './growGeometry';
 import { readPostMeta, type SocialCard } from './calendarPosts';
 import { FirstPartyAnalyticsPanel } from './FirstPartyAnalyticsPanel';
 import { AnalyticsConnectionPanel } from './AnalyticsConnectionPanel';
+import { NETWORKS, useConnectedChannels } from './PublisherSettings';
 import {
   PROVIDER_LABELS,
   type AnalyticsConnectionStatus,
@@ -167,31 +168,58 @@ export function GrowAnalytics({
       stage: 'Signups',
       value: null as number | null,
       source: false,
-      hint: connected ? `Needs goal events in ${providerLabel} — follow-up` : 'Conversions — connect analytics below',
+      hint: connected ? `Set up a signup goal in ${providerLabel} to count these` : 'Conversions — connect analytics below',
     },
     {
       stage: 'Retained',
       value: null as number | null,
       source: false,
-      hint: connected ? `Needs goal events in ${providerLabel} — follow-up` : 'Return users — connect analytics below',
+      hint: connected ? `Set up a return-visit goal in ${providerLabel} to count these` : 'Return users — connect analytics below',
     },
   ];
   const maxV = Math.max(1, ...funnel.map((f) => f.value ?? 0));
 
+  // The channel count is READ, not assumed. The tile was a hard-coded "0" with
+  // "connect in the epic" under it — a number that was wrong the moment a
+  // channel was connected, and a sub-line in the team's planning vocabulary
+  // rather than the user's. It now counts the same bindings the Calendar's
+  // "Connect Instagram / LinkedIn / X" row writes, and says where that row is.
+  const connectedChannels = useConnectedChannels(project.id);
+  const channelLabels = NETWORKS.filter((n) => connectedChannels?.has(n.id)).map((n) => n.label);
+
+  // UX_BENCHMARK_RESEARCH §8 (Typefully: "narrow but actionable"): lead with
+  // the metric that answers "is this working", push setup/config metrics
+  // below it. Reach is the one number here backed by a live source; the other
+  // three either restate what the user already knows (posts published) or are
+  // permanently "—" until a provider goal or channel is configured. A
+  // period-over-period delta ("+12% vs last 30d") belongs beside Reach too,
+  // but neither `AnalyticsStatsData` nor the first-party stats route returns a
+  // prior-period figure yet — faking one would violate the "never faked" rule
+  // in the banner above, so it's left out rather than invented. Flagged for
+  // Jesse: add a `previousPeriod` field to both stats routes so this can lead
+  // with a real trend, not just a snapshot.
+  const leadTile = {
+    label: 'REACH (30D)',
+    value: pageviews != null ? pageviews.toLocaleString() : '—',
+    sub: pageviews != null
+      ? `pageviews · ${fpLive ? 'self-hosted' : providerLabel}`
+      : liveHint(`not exposed by ${providerLabel}`, 'awaiting analytics'),
+  };
   const tiles = [
     { label: 'POSTS PUBLISHED', value: String(published), sub: 'this project' },
-    { label: 'ACTIVE CHANNELS', value: '0', sub: 'connect in the epic' },
     {
-      label: 'REACH (30D)',
-      value: pageviews != null ? pageviews.toLocaleString() : '—',
-      sub: pageviews != null
-        ? `pageviews · ${fpLive ? 'self-hosted' : providerLabel}`
-        : liveHint(`not exposed by ${providerLabel}`, 'awaiting analytics'),
+      label: 'ACTIVE CHANNELS',
+      value: connectedChannels ? String(channelLabels.length) : '—',
+      sub: !connectedChannels
+        ? 'checking connected accounts…'
+        : channelLabels.length > 0
+          ? channelLabels.join(', ')
+          : 'Connect Instagram, LinkedIn or X in Calendar',
     },
     {
       label: 'CONVERSIONS',
       value: '—',
-      sub: connected ? 'needs provider goals — follow-up' : 'awaiting analytics',
+      sub: connected ? `set up a goal in ${providerLabel} to count these` : 'awaiting analytics',
     },
   ];
 
@@ -223,9 +251,19 @@ export function GrowAnalytics({
           the user analytics was installed here when it was not (reported
           2026-08-04). In a surface where every failure is silent, a false
           "verified" is the worst thing this panel can say. Keying remounts it,
-          which clears the whole class rather than the one field that leaked. */}
+          which clears the whole class rather than the one field that leaked.
+
+          `fp:` prefix: this panel and `AnalyticsConnectionPanel` below are
+          both keyed on the same `project.id` and sit as siblings in this same
+          fragment (one hidden behind `providersOpen`, but both mounted in the
+          same React children list), so two bare `key={project.id}` collided —
+          "two children with the same key" in dev, and undefined behaviour
+          per React's own docs. The prefix keeps each panel's remount-on-
+          project-switch behaviour (still id-scoped, still changes when the
+          project changes) while making the two keys distinct from each
+          other. See `analyticsPanelScope.test.ts` for the pinned contract. */}
       <FirstPartyAnalyticsPanel
-        key={project.id}
+        key={`fp:${project.id}`}
         colors={colors}
         projectId={project.id}
         stats={fpStats}
@@ -258,7 +296,7 @@ export function GrowAnalytics({
         </Button>
       ) : (
         <AnalyticsConnectionPanel
-          key={project.id}
+          key={`conn:${project.id}`}
           colors={colors}
           projectId={project.id}
           conn={conn}
@@ -270,10 +308,18 @@ export function GrowAnalytics({
         />
       )}
 
-      {/* Metric tiles */}
+      {/* Metric tiles — Reach leads, on its own row and at a larger size, so
+          the one number backed by a live source is what the eye lands on
+          first (UX_BENCHMARK_RESEARCH §8). The setup/config tiles follow at
+          the previous size. */}
+      <div data-testid="metric-tile-lead" style={{ ...growCard(colors, { r: CARD_R, pad: CARD_PAD }), marginBottom: space.xl }}>
+        <div style={{ fontFamily: font.display, fontSize: textSize.heading, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{leadTile.value}</div>
+        <div style={{ ...growLabel(colors), marginTop: space.xs }}>{leadTile.label}</div>
+        <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: space.xs / 2 }}>{leadTile.sub}</div>
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: space.xl }}>
         {tiles.map((t) => (
-          <div key={t.label} style={growCard(colors, { r: CARD_R, pad: CARD_PAD })}>
+          <div key={t.label} data-testid="metric-tile" style={growCard(colors, { r: CARD_R, pad: CARD_PAD })}>
             <div style={{ fontFamily: font.display, fontSize: textSize.title, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{t.value}</div>
             <div style={{ ...growLabel(colors), marginTop: space.xs }}>{t.label}</div>
             <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs / 2 }}>{t.sub}</div>
@@ -294,8 +340,10 @@ export function GrowAnalytics({
                   // which reads as a second dimension the number does not have —
                   // a magnitude bar encodes length and nothing else. D8: one
                   // accent per view, and it belongs to the action.
-                  <div style={{
-                    width: `${Math.max(6, ((f.value ?? 0) / maxV) * 100)}%`, height: '100%',
+                  // A zero is an EMPTY track. The fill had a 6% floor, so
+                  // "Content live 0" drew a cyan sliver that read as "a little".
+                  <div data-testid={`funnel-fill-${f.stage}`} style={{
+                    width: `${magnitudeBarPct(f.value ?? 0, maxV)}%`, height: '100%',
                     background: colors.cyan,
                     borderRadius: radius.sm,
                   }} />

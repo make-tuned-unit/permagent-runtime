@@ -181,6 +181,74 @@ fn tool_task_description(
     format!("{tool_name}: {}", crate::privacy::redact(&detail))
 }
 
+/// How many times one reply re-prompts after an assistant turn that produced
+/// no text and no tool call before it lets the run end.
+const MAX_EMPTY_TURN_CONTINUATIONS: u32 = 2;
+
+/// The continuation sent after an empty assistant turn.
+const EMPTY_TURN_CONTINUATION: &str = "Continue: take the next concrete step with a tool call.";
+
+/// The continuation sent when the empty turn was cut off by the output cap.
+const EMPTY_TURN_OUTPUT_CAP_CONTINUATION: &str =
+    "Your last response ran out of output room while reasoning, before it wrote any text \
+     or tool call. Continue: take the next concrete step with a tool call, and keep your \
+     reasoning short.";
+
+/// What the reply loop does with a turn that called no tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EmptyTurnDecision {
+    /// The turn said something or called a tool: the ordinary end-of-turn
+    /// handling applies.
+    NotEmpty,
+    /// Nothing came back: re-prompt the same session with this message.
+    Continue { prompt: &'static str },
+    /// Still nothing after the allowed continuations: end the run, and say why.
+    GiveUp { reason: String },
+}
+
+/// Decide what to do with an assistant turn, given what it produced.
+///
+/// A turn with no text and no tool request is not the model finishing. On
+/// 2026-09-25 two gpt-5.4-mini goal workers each returned a turn holding only
+/// a reasoning item (the output cap was spent thinking, the response was
+/// `incomplete`), and the loop took that as the end of the run: the worker
+/// exited mid-task, the done-check held it, and the goal went back to Ready
+/// to start over. Such a turn gets a short continuation instead, at most
+/// [`MAX_EMPTY_TURN_CONTINUATIONS`] times in a row, and then the run ends
+/// with a stated reason rather than silently.
+///
+/// `incomplete_reason` is the provider's own reason for stopping early
+/// (`ProviderUsage::incomplete_reason`), when it gave one.
+fn decide_empty_turn(
+    produced_text: bool,
+    requested_tool: bool,
+    incomplete_reason: Option<&str>,
+    continuations_so_far: u32,
+) -> EmptyTurnDecision {
+    if produced_text || requested_tool {
+        return EmptyTurnDecision::NotEmpty;
+    }
+    if continuations_so_far >= MAX_EMPTY_TURN_CONTINUATIONS {
+        return EmptyTurnDecision::GiveUp {
+            reason: format!(
+                "{} assistant turns in a row produced no text and no tool call{}; ending the run",
+                continuations_so_far + 1,
+                incomplete_reason
+                    .map(|r| format!(" (last response incomplete: {r})"))
+                    .unwrap_or_default()
+            ),
+        };
+    }
+    let prompt = if incomplete_reason
+        == Some(crate::providers::formats::openai_responses::INCOMPLETE_MAX_OUTPUT_TOKENS)
+    {
+        EMPTY_TURN_OUTPUT_CAP_CONTINUATION
+    } else {
+        EMPTY_TURN_CONTINUATION
+    };
+    EmptyTurnDecision::Continue { prompt }
+}
+
 /// Context needed for the reply function
 pub struct ReplyContext {
     pub conversation: Conversation,
@@ -2509,6 +2577,9 @@ impl Agent {
             let mut prev_monologue_text = String::new();
             let mut consecutive_monologue_turns = 0u32;
             let mut monologue_nudged = false;
+            // Consecutive turns that produced no text and no tool call, each
+            // answered with a continuation — see `decide_empty_turn`.
+            let mut empty_turn_continuations = 0u32;
             // Consecutive turns whose tool calls could not be parsed. A
             // malformed call used to END the session — the single most common
             // weak-model failure mode, terminating instead of being corrected.
@@ -2903,6 +2974,12 @@ impl Agent {
                 );
 
                 let mut no_tools_called = true;
+                // What this turn actually produced, for `decide_empty_turn`: any
+                // non-empty assistant text, any tool request (parsed or not),
+                // and the provider's reason if it stopped the response early.
+                let mut produced_text_this_turn = false;
+                let mut requested_tool_this_turn = false;
+                let mut incomplete_reason_this_turn: Option<String> = None;
                 // One strike and one recovery observation per turn: a single
                 // truncated response can carry several malformed calls, and
                 // three near-identical "could not be parsed" messages in one
@@ -2959,6 +3036,9 @@ impl Agent {
                             let usage = usage.map(|usage| usage.with_invocation_id(invocation_id.clone()));
                             if let Some(ref usage) = usage {
                                 terminal_usage = Some(usage.clone());
+                                if let Some(reason) = usage.incomplete_reason.as_ref() {
+                                    incomplete_reason_this_turn = Some(reason.clone());
+                                }
                                 // Pair the prefix hash with what the provider
                                 // actually did with it. Once per turn: usage
                                 // frames arrive repeatedly on a stream and the
@@ -3045,11 +3125,13 @@ impl Agent {
                                 if num_tool_requests == 0 {
                                     let text = filtered_response.as_concat_text();
                                     if !text.is_empty() {
+                                        produced_text_this_turn = true;
                                         last_assistant_text = text;
                                     }
                                     messages_to_add.push(response);
                                     continue;
                                 }
+                                requested_tool_this_turn = true;
 
                                 let mut request_to_response_map = HashMap::new();
                                 let mut request_metadata: HashMap<String, Option<ProviderMetadata>> = HashMap::new();
@@ -4433,6 +4515,11 @@ impl Agent {
                 if !saw_parse_failure_this_turn {
                     consecutive_parse_failure_turns = 0;
                 }
+                // The empty-turn bound is for turns IN A ROW: any turn that said
+                // something or asked for a tool starts it again.
+                if produced_text_this_turn || requested_tool_this_turn {
+                    empty_turn_continuations = 0;
+                }
 
                 if no_tools_called {
                     // S5: count consecutive no-tool turns that reached no NEW
@@ -4494,25 +4581,58 @@ impl Agent {
                             // the turn is worth re-running rather than ending.
                         }
                         None => {
-                            match self.handle_retry_logic(&mut conversation, &session_config, &initial_messages).await {
-                                Ok(should_retry) => {
-                                    if should_retry {
-                                        info!("Retry logic triggered, restarting agent loop");
-                                        messages_to_add = Conversation::default();
-                                        session_manager.replace_conversation(&session_config.id, &conversation).await?;
-                                        yield AgentEvent::HistoryReplaced(conversation.clone());
-                                    } else {
-                                        exit_chat = true;
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Retry logic failed: {}", e);
-                                    yield AgentEvent::Message(
-                                        Message::assistant().with_text(
-                                            format!("Retry logic encountered an error: {}", e)
-                                        )
+                            let empty_turn = decide_empty_turn(
+                                produced_text_this_turn,
+                                requested_tool_this_turn,
+                                incomplete_reason_this_turn.as_deref(),
+                                empty_turn_continuations,
+                            );
+                            match empty_turn {
+                                EmptyTurnDecision::Continue { prompt } => {
+                                    // Not the end of the run: the model produced
+                                    // nothing (a reasoning-only or incomplete
+                                    // response). Re-prompt the SAME session.
+                                    empty_turn_continuations += 1;
+                                    warn!(
+                                        session_id = %session_config.id,
+                                        continuation = empty_turn_continuations,
+                                        incomplete_reason = ?incomplete_reason_this_turn,
+                                        "assistant turn produced no text and no tool call; \
+                                         continuing the run instead of ending it"
                                     );
-                                    exit_chat = true;
+                                    let message = Message::user().with_text(prompt);
+                                    messages_to_add.push(message.clone());
+                                    yield AgentEvent::Message(message);
+                                }
+                                decision => {
+                                    if let EmptyTurnDecision::GiveUp { reason } = &decision {
+                                        warn!(
+                                            session_id = %session_config.id,
+                                            incomplete_reason = ?incomplete_reason_this_turn,
+                                            "{reason}"
+                                        );
+                                    }
+                                    match self.handle_retry_logic(&mut conversation, &session_config, &initial_messages).await {
+                                        Ok(should_retry) => {
+                                            if should_retry {
+                                                info!("Retry logic triggered, restarting agent loop");
+                                                messages_to_add = Conversation::default();
+                                                session_manager.replace_conversation(&session_config.id, &conversation).await?;
+                                                yield AgentEvent::HistoryReplaced(conversation.clone());
+                                            } else {
+                                                exit_chat = true;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!("Retry logic failed: {}", e);
+                                            yield AgentEvent::Message(
+                                                Message::assistant().with_text(
+                                                    format!("Retry logic encountered an error: {}", e)
+                                                )
+                                            );
+                                            exit_chat = true;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -5594,6 +5714,57 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-09-25: a gpt-5.4-mini worker's turn held only a reasoning item
+    /// (the output cap ran out while it thought). That is not the model
+    /// finishing, so the loop continues the same session.
+    #[test]
+    fn a_reasoning_only_turn_continues_the_run() {
+        assert_eq!(
+            decide_empty_turn(false, false, None, 0),
+            EmptyTurnDecision::Continue {
+                prompt: EMPTY_TURN_CONTINUATION
+            }
+        );
+        // Cut off by the output cap: the continuation says so.
+        assert_eq!(
+            decide_empty_turn(false, false, Some("max_output_tokens"), 1),
+            EmptyTurnDecision::Continue {
+                prompt: EMPTY_TURN_OUTPUT_CAP_CONTINUATION
+            }
+        );
+    }
+
+    #[test]
+    fn a_turn_with_text_or_a_tool_call_is_not_empty() {
+        assert_eq!(
+            decide_empty_turn(true, false, None, 0),
+            EmptyTurnDecision::NotEmpty
+        );
+        assert_eq!(
+            decide_empty_turn(false, true, Some("max_output_tokens"), 5),
+            EmptyTurnDecision::NotEmpty
+        );
+    }
+
+    /// Bounded: after the allowed continuations the run ends, and the reason
+    /// is stated rather than the loop exiting silently.
+    #[test]
+    fn empty_turns_stop_continuing_after_the_bound() {
+        match decide_empty_turn(
+            false,
+            false,
+            Some("max_output_tokens"),
+            MAX_EMPTY_TURN_CONTINUATIONS,
+        ) {
+            EmptyTurnDecision::GiveUp { reason } => {
+                assert!(reason.contains("no text and no tool call"), "{reason}");
+                assert!(reason.contains("max_output_tokens"), "{reason}");
+            }
+            other => panic!("expected GiveUp, got {other:?}"),
+        }
+    }
+
     /// The bug this fixes: `mark_error` breaks only the INNER stream loop, so a
     /// turn that failed once, recovered, and completed still reported Failed —
     /// to a coordinator reading a worker's outcome, to the HUD, and (once the

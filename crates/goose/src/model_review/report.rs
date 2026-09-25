@@ -70,6 +70,16 @@ pub async fn persist_report(pool: &SqlitePool, report: &Report) -> anyhow::Resul
             .execute(&mut *tx).await?;
     }
     tx.commit().await?;
+
+    crate::brain_feed::feed(
+        pool,
+        crate::brain_feed::FeedSource::ModelReview,
+        crate::brain_feed::feed_key("model_review", &report.id, "summary"),
+        None,
+        report.summary.clone(),
+    )
+    .await;
+
     Ok(())
 }
 

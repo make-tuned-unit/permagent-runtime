@@ -33,7 +33,8 @@ import { radius, space, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useNotifications } from '../../lib/notifications';
 import { Button } from '../common/Button';
-import { SEGMENT_STRIP_PAD, SEGMENT_STRIP_RADIUS, segmentedTab } from '../common/segmented';
+import { SEGMENT_STRIP_PAD, SEGMENT_STRIP_RADIUS, segmentDirection, segmentedTab } from '../common/segmented';
+import { runViewTransition } from '../../lib/viewTransition';
 import { Tooltip } from '../common/Tooltip';
 import { H1 } from '../common/H1';
 import { SessionsList } from '../sessions/SessionsList';
@@ -166,6 +167,13 @@ export function HistoryView({ initialTab = 'sessions' }: { initialTab?: HistoryT
   // A deep link that arrives while the view is already mounted must move the
   // segment, not be ignored — `initialTab` is the live section, not a seed.
   useEffect(() => { setTab(initialTab); }, [initialTab]);
+  // R8 item 5: a clicked tab crossfades + slides toward the direction the
+  // user just picked (view-transition, index.css). A deep-link-driven switch
+  // (the effect above) does NOT go through this — it isn't a click the user
+  // is watching happen, it's the view arriving already on the right tab.
+  const selectTab = (next: HistoryTabKey) => {
+    runViewTransition(() => setTab(next), { direction: segmentDirection(HISTORY_TAB_KEYS as HistoryTabKey[], tab, next) });
+  };
 
   // The Downloads segment carries an unread count of 'download' notifications
   // (files landed via `inbox_file_received`), fed by the same notification
@@ -210,7 +218,7 @@ export function HistoryView({ initialTab = 'sessions' }: { initialTab?: HistoryT
               role="tab"
               aria-selected={on}
               data-testid={`history-tab-${t.key}`}
-              onClick={() => setTab(t.key)}
+              onClick={() => selectTab(t.key)}
               flashSuccess={false}
               style={{ ...segmentedTab(colors, on), gap: space.sm } as CSSProperties}
             >

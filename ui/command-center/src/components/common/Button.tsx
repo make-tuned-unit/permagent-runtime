@@ -18,6 +18,15 @@
  *  - success — a brief tick, but ONLY when the promise resolves to something
  *    other than `false`. Callers whose helper swallows its own errors (finance's
  *    `mutate`) resolve `false` on failure so a failed action never ticks.
+ *  - failure — a short shake plus a danger tint (R8), when the promise
+ *    REJECTS (as opposed to resolving `false`). The two are deliberately
+ *    different signals: `resolve(false)` is a caller that already decided how
+ *    to tell the user their action failed (or decided it doesn't need
+ *    telling) and asked only for the tick to be withheld; an uncaught
+ *    rejection is a caller that has NOT handled it, so this surfaces it —
+ *    on the control itself, and via a toast (`onError`/`onErrorFeedback` opt
+ *    out) — rather than swallowing it silently, which is what happened
+ *    before this.
  *  - disabled — dimmed and `not-allowed`, so "you can't press this" is visible.
  *
  * Motion reuses the app's `pa-spin` keyframe and rides the global
@@ -44,6 +53,7 @@ import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';
 import type { ButtonHTMLAttributes, CSSProperties, MouseEvent, ReactNode } from 'react';
 import { radius } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
+import { toast } from '../../lib/notifications';
 
 /** ghost = hairline, ghostOn = hairline in accent (a selected filter),
  *  primary = flat accent fill, bare = no chrome (icon-ish affordances). */
@@ -52,6 +62,11 @@ export type ButtonVariant = 'ghost' | 'ghostOn' | 'primary' | 'bare';
 /** How long the success tick stays up. Long enough to read, short enough not
  *  to be mistaken for a new resting state. */
 export const SUCCESS_FLASH_MS = 900;
+
+/** How long the failure shake/tint stays up. Shorter than the success flash —
+ *  the shake itself (320ms, index.css `pa-btn-shake`) already carries most of
+ *  the "this failed" read; the tint just needs to outlast it slightly. */
+export const FAILURE_FLASH_MS = 600;
 
 /** How long a pending phase stays visible at minimum, even when the work
  *  finishes sooner. Ported from Automate's local `Btn`, which is where this
@@ -74,6 +89,14 @@ export interface ButtonProps
   onClick?: (e: MouseEvent<HTMLButtonElement>) => unknown;
   /** Opt out of the tick for actions where confirmation is noise. */
   flashSuccess?: boolean;
+  /** Opt out of the shake/tint AND the toast on a rejected promise — for a
+   *  caller that already shows its own inline error and would otherwise show
+   *  the failure twice. Pending/success behaviour is unaffected. */
+  onErrorFeedback?: boolean;
+  /** Called with the rejection reason instead of (or in addition to) the
+   *  default toast. Return `false` to suppress the default toast for this
+   *  rejection while still keeping the on-button shake. */
+  onError?: (error: unknown) => void | false;
   /** Minimum time the pending phase stays visible. `0` opts out — only for
    *  controls where a held spinner would itself be the wrong signal. */
   minPendingMs?: number;
@@ -149,6 +172,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   success,
   onClick,
   flashSuccess = true,
+  onErrorFeedback,
+  onError,
   minPendingMs = MIN_PENDING_MS,
   style,
   children,
@@ -158,6 +183,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
 }, ref) {
   const [selfPending, setSelfPending] = useState(false);
   const [selfSuccess, setSelfSuccess] = useState(false);
+  const [selfFailure, setSelfFailure] = useState(false);
   /** The tail of the floor after a caller-driven `pending` has already gone. */
   const [floorHeld, setFloorHeld] = useState(false);
   const live = useRef(true);
@@ -202,8 +228,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     // Settle first so a rejection is held for the floor too — a failure that
     // flickers past is as unreadable as a success that does.
     const settled = result.then(
-      (value) => ({ ok: true, value } as const),
-      () => ({ ok: false, value: undefined } as const),
+      (value) => ({ ok: true, value, error: undefined } as const),
+      (error: unknown) => ({ ok: false, value: undefined, error } as const),
     );
     const floor = minPendingMs > 0
       ? new Promise<void>((r) => { setTimeout(r, minPendingMs); })
@@ -211,7 +237,28 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     void Promise.all([settled, floor]).then(([outcome]) => {
       if (!live.current) return;
       setSelfPending(false);
-      if (!outcome.ok) return;
+      if (!outcome.ok) {
+        // An uncaught rejection, as opposed to a caller resolving `false` (its
+        // own "it failed" signal, handled below) — surface it: a shake on the
+        // control, and by default a toast, since nothing else has told the
+        // user this failed. See the class doc for why the two are not the
+        // same signal.
+        if (onErrorFeedback === false) return;
+        setSelfFailure(true);
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = setTimeout(() => {
+          if (live.current) setSelfFailure(false);
+        }, FAILURE_FLASH_MS);
+        const suppressed = onError?.(outcome.error) === false;
+        if (!suppressed) {
+          const message = outcome.error instanceof Error ? outcome.error.message : undefined;
+          // `force: true` — the direct consequence of the user's own click a
+          // moment ago is not the ambient chatter the "System messages"
+          // toggle exists to silence (coordinator ruling 2026-09-25).
+          toast('Action failed', message, undefined, { tone: 'danger', force: true });
+        }
+        return;
+      }
       // `false` is the caller's "it failed" signal — never tick on a failure.
       if (!flashSuccess || outcome.value === false) return;
       setSelfSuccess(true);
@@ -220,10 +267,12 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
         if (live.current) setSelfSuccess(false);
       }, SUCCESS_FLASH_MS);
     });
-  }, [onClick, flashSuccess, minPendingMs]);
+  }, [onClick, flashSuccess, minPendingMs, onErrorFeedback, onError]);
 
   const isPending = propPending || selfPending || floorHeld;
   const isSuccess = !isPending && (Boolean(success ?? false) || selfSuccess);
+  const isFailure = !isPending && !isSuccess && selfFailure;
+  const dataState = isSuccess ? 'success' : isFailure ? 'failure' : undefined;
 
   return (
     <button
@@ -234,7 +283,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       disabled={disabled || isPending}
       aria-busy={isPending || undefined}
       data-pending={isPending ? 'true' : undefined}
-      data-state={isSuccess ? 'success' : undefined}
+      data-state={dataState}
       onClick={onClick ? handle : undefined}
     >
       {isPending && <span className="pa-btn__spinner pa-spin" aria-hidden="true" />}

@@ -29,6 +29,10 @@ export interface ActiveGoal {
   updated_at: string;
   routing_note?: string | null;
   hold_note?: string | null;
+  /** Coordinator ruling (dagK): the per-goal Review-skip opt-in, so Home's
+   *  rows and the goal detail modal can show the identical Auto-approve /
+   *  Needs review chip off one field (cards.rs's `list_active_goals`). */
+  auto_approve: boolean;
 }
 
 interface ActiveGoalsResponse {
@@ -48,7 +52,8 @@ function sameGoals(a: ActiveGoal[], b: ActiveGoal[]): boolean {
     const o = b[i];
     return g.id === o.id && g.state === o.state && g.title === o.title
       && g.assigned_to === o.assigned_to && g.updated_at === o.updated_at
-      && g.routing_note === o.routing_note && g.hold_note === o.hold_note;
+      && g.routing_note === o.routing_note && g.hold_note === o.hold_note
+      && g.auto_approve === o.auto_approve;
   });
 }
 

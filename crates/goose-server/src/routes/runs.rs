@@ -94,7 +94,9 @@ async fn list_runs(State(state): State<Arc<AppState>>) -> Json<RunsResponse> {
             "working"
         } else {
             match &j.last_status {
-                Some(ScheduleRunStatus::Error) => "error",
+                // A failure the user has since resumed past is history: the
+                // job is armed and waiting, not failing (QA 2026-09-24).
+                Some(ScheduleRunStatus::Error) if !error_predates_resume(j) => "error",
                 Some(ScheduleRunStatus::Missed) => "missed",
                 _ => "idle",
             }
@@ -160,6 +162,13 @@ async fn list_runs(State(state): State<Arc<AppState>>) -> Json<RunsResponse> {
 /// `display_name || id`; this agrees with them.
 fn schedule_run_name(job: &permagent::scheduler::ScheduledJob) -> String {
     job.id.clone()
+}
+
+/// True when the job was resumed after the run that failed. `last_run` is
+/// stamped when that run started, so a resume after it is a resume after the
+/// failure.
+fn error_predates_resume(job: &permagent::scheduler::ScheduledJob) -> bool {
+    matches!((job.resumed_at, job.last_run), (Some(resumed), Some(ran)) if resumed > ran)
 }
 
 /// The job's last error: the live field, else the one its pause episode froze.

@@ -551,3 +551,34 @@ it('shows the household run-rate as money once transactions exist', async () => 
   const labelEl = Array.from(container.querySelectorAll('div')).find((d) => d.textContent === '30-day run-rate');
   expect(labelEl!.nextElementSibling?.textContent).toMatch(/42\.50/);
 });
+
+/**
+ * F1 (dagK UX QA, 2026-09-25): the tab was one flex column capped at 1120px —
+ * a ~690px column once the chat dock took its share — with 1,400+px of empty
+ * gradient beside it on a wide display. jsdom has no layout, so this cannot
+ * prove the grid activates at 1200px of *container* width (a real-browser
+ * screenshot at 1100/1440/2560 does that — see harness-grow.html). What it can
+ * prove: the two columns exist as distinct containers holding the right
+ * sections, in the original top-to-bottom order, and the `@container` rule
+ * that switches them into a grid is actually shipped.
+ */
+it('splits Holdings/Lots from Household/Watchlist/Notes into two column containers', async () => {
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+  const left = container.querySelector('[data-testid="finance-col-holdings"]');
+  const right = container.querySelector('[data-testid="finance-col-household"]');
+  expect(left, 'left column').toBeTruthy();
+  expect(right, 'right column').toBeTruthy();
+  expect(left!.textContent).toContain('Lots'); // the Holdings/Lots section heading
+  expect(right!.textContent).toContain('Household');
+  expect(right!.textContent).toContain('Watchlist');
+  expect(right!.textContent).toContain('Notes');
+  // Document order: the grid's left/right split only takes effect above
+  // 1200px of container width; below it the two divs stack in DOM order,
+  // which must still be Holdings first (unchanged behaviour, not a new one).
+  expect(left!.compareDocumentPosition(right!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  const css = document.getElementById('pa-finance-view')?.textContent ?? '';
+  expect(css).toContain('@container (min-width: 1200px)');
+  expect(css).toContain('.pa-fin-cols { display: grid;');
+});

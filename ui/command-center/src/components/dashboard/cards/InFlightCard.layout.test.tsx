@@ -210,8 +210,13 @@ describe('InFlightCard at Home\'s real tile size (~180 x 230)', () => {
     for (const row of qa('inflight-row')) {
       expect(row.querySelector('img')).toBeNull();
       const inner = row.firstElementChild as HTMLElement;
-      expect(inner.children).toHaveLength(1);
+      // The text block plus the small Auto-approve/Needs review chip
+      // (coordinator ruling, dagK) — still no third thing, and specifically
+      // no logo: the chip is a `flex-shrink: 0` sibling that never widens
+      // past its own label, so the text block still gets the row's width.
+      expect(inner.children).toHaveLength(2);
       expect(inner.firstElementChild?.getAttribute('data-testid')).toBe('inflight-row-text');
+      expect(inner.children[1].tagName).not.toBe('IMG');
     }
   });
 

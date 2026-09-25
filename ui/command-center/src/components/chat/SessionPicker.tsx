@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiChevronDown } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
+import { labelSource, sessionDisplayLabel } from '../../lib/sessionLabel';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
@@ -23,11 +24,20 @@ export function SessionPicker() {
   const loadSessions = useCommandCenter(s => s.loadSessions);
   const switchToSession = useCommandCenter(s => s.switchToSession);
   const chatSessionId = useCommandCenter(s => s.chatSessionId);
+  const sessionsError = useCommandCenter(s => s.sessionsError);
   const [open, setOpen] = useState(false);
+  // R2: the list has three states beyond populated — loading, error and
+  // (truthfully) empty — and this picker used to have none of them: opening
+  // it on a slow daemon, or one that was down, drew the same silent, item-less
+  // dropdown as a genuinely session-less agent.
+  const [loading, setLoading] = useState(false);
+  const [createError, setCreateError] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (open) loadSessions();
+    if (!open) return;
+    setLoading(true);
+    void loadSessions().finally(() => setLoading(false));
   }, [open, loadSessions]);
 
   useEffect(() => {
@@ -47,12 +57,19 @@ export function SessionPicker() {
   // Resolves false when the create fails, so nothing can confirm a session that
   // was never made. (Surfacing that failure is a separate concern — see report.)
   const handleNewSession = async () => {
-    setOpen(false);
+    setCreateError(false);
     try {
       const session = await api.createSession();
+      setOpen(false);
       await switchToSession(session.id);
       return true;
-    } catch { /* ignore */ }
+    } catch {
+      // Stay open and say so (R2, NN/g H9 error recovery) instead of closing
+      // on a failure the reader never saw — the earlier version swallowed
+      // this silently, so a down daemon looked identical to a successful
+      // click that just did nothing.
+      setCreateError(true);
+    }
     return false;
   };
 
@@ -114,7 +131,46 @@ export function SessionPicker() {
           >
             + New session
           </Button>
-          {sessions.map(session => {
+
+          {createError && (
+            <div
+              role="alert"
+              style={{ padding: `${space.md}px ${space.xl}px`, fontSize: textSize.caption, color: colors.danger, fontFamily: font.body }}
+            >
+              Couldn't start a new session. Try again.
+            </div>
+          )}
+
+          {loading ? (
+            <div style={{ padding: `${space.lg}px ${space.xl}px`, fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>
+              Loading sessions…
+            </div>
+          ) : sessionsError ? (
+            <div style={{ padding: `${space.lg}px ${space.xl}px`, fontSize: textSize.caption, color: colors.danger, fontFamily: font.body }}>
+              Couldn't reach the daemon.{' '}
+              <Button
+                colors={colors}
+                variant="bare"
+                type="button"
+                onClick={() => void loadSessions()}
+                style={{
+                  '--pa-btn-fg': colors.danger,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-pad': '0',
+                  textDecoration: 'underline',
+                  display: 'inline',
+                } as CSSProperties}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : sessions.length === 0 ? (
+            <div style={{ padding: `${space.lg}px ${space.xl}px`, fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>
+              No other sessions yet.
+            </div>
+          ) : null}
+
+          {!loading && !sessionsError && sessions.map(session => {
             const isCurrent = session.id === chatSessionId;
             return (
               <Button
@@ -138,7 +194,7 @@ export function SessionPicker() {
                     count back on the same line. */}
                 <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: space.xxs }}>
                   <span style={{ fontSize: textSize.caption, color: isCurrent ? colors.cyan : colors.text, fontFamily: font.body }}>
-                    {session.name || `Session ${session.id}`}
+                    {sessionDisplayLabel(labelSource(session))}
                   </span>
                   {session.updated_at && (
                     <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>

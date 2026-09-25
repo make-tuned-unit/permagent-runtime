@@ -21,6 +21,55 @@ use crate::identity::canonical::{self, EntityPrefix};
 use crate::people::Person;
 use crate::people_provenance::{self, Provenance};
 
+/// A handful of case-insensitive suffix/substring tokens that mark a name as
+/// an organisation rather than a person. Deliberately short and specific
+/// (legal-entity suffixes, not generic words) — a false "organisation" call
+/// here silently drops a real person from the directory (see
+/// [`classify_person_or_org`]'s doc for the conservative-default rationale).
+const ORG_TOKENS: [&str; 14] = [
+    " inc",
+    " inc.",
+    " llc",
+    " l.l.c.",
+    " ltd",
+    " ltd.",
+    " corp",
+    " corp.",
+    " co.",
+    " company",
+    " group",
+    " partners",
+    " studio",
+    " foundation",
+];
+
+/// What [`classify_person_or_org`] decided a filed name is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersonOrOrg {
+    Person,
+    Organisation,
+}
+
+/// Conservative person/organisation classifier for a bare filed name (memory-
+/// feed lane, 2026-09-25 — decisions_effects.rs's `file_person_addressless`
+/// and `apply_file_to_project` file arbitrary extracted names as people with
+/// no check at all; an organisation mention ("Acme Inc", "Doe & Partners LLC")
+/// was minted as a `Person` graph entity indistinguishable from a real
+/// contact). Conservative means the default is [`PersonOrOrg::Person`] — this
+/// only returns [`PersonOrOrg::Organisation`] when a specific legal-entity
+/// token is present, never on a guess (no "sounds corporate" heuristic, no
+/// capitalization or word-count signal), because a false Organisation call
+/// silently refuses to file a real person while a false Person call is merely
+/// a re-classifiable directory row.
+pub fn classify_person_or_org(name: &str) -> PersonOrOrg {
+    let folded = format!(" {}", name.trim().to_lowercase());
+    if ORG_TOKENS.iter().any(|tok| folded.ends_with(tok)) {
+        PersonOrOrg::Organisation
+    } else {
+        PersonOrOrg::Person
+    }
+}
+
 /// Create a person at runtime: provenance → graph node → directory row. Returns
 /// the minted (or pre-existing) [`Person`]. Idempotent by canonical name — the
 /// content-addressed `EntityId` and the `people.canonical_id` UNIQUE key both
@@ -78,4 +127,52 @@ pub async fn create_person(
     ));
 
     Ok(person)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_names_classify_as_person() {
+        for name in ["Jane Doe", "Mel Schembri", "José García", "Cher"] {
+            assert_eq!(
+                classify_person_or_org(name),
+                PersonOrOrg::Person,
+                "{name} should default to Person"
+            );
+        }
+    }
+
+    #[test]
+    fn legal_entity_suffixes_classify_as_organisation() {
+        for name in [
+            "Acme Inc",
+            "Acme Inc.",
+            "Doe & Partners LLC",
+            "Widgets Ltd.",
+            "Umbrella Corp",
+            "Initech Co.",
+            "Stark Group",
+            "Wayne Foundation",
+            "Pixel Studio",
+        ] {
+            assert_eq!(
+                classify_person_or_org(name),
+                PersonOrOrg::Organisation,
+                "{name} should classify as Organisation"
+            );
+        }
+    }
+
+    #[test]
+    fn a_person_named_after_a_place_is_not_misclassified() {
+        // "Corp" and "Company" as whole trailing words trigger; a name that
+        // merely contains the letters must not (guards against a substring-only
+        // implementation regressing to false positives).
+        assert_eq!(
+            classify_person_or_org("Corporal Jane Doe"),
+            PersonOrOrg::Person
+        );
+    }
 }

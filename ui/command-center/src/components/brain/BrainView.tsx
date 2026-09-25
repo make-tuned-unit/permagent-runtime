@@ -84,6 +84,13 @@ export function BrainView() {
   const cyanWash = `radial-gradient(ellipse 70% 50% at 50% 45%, ${colors.cyan}0a 0%, transparent 70%)`;
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<BrainScene | null>(null);
+  // Fit-to-visible-rect (QA 2026-09-25): the header, the bottom time-slider
+  // bar and an open key panel all overlap the canvas without resizing it —
+  // the scene's own framing needs to know how much of the canvas they cover
+  // so the graph doesn't fit itself under the bar.
+  const headerRef = useRef<HTMLDivElement>(null);
+  const sliderBarRef = useRef<HTMLDivElement>(null);
+  const [legendEl, setLegendEl] = useState<HTMLElement | null>(null);
 
   // List by default; Graph is a toggle away and the choice sticks (J12). The
   // graph has no legend and an undiscoverable interaction model, so it was the
@@ -229,10 +236,59 @@ export function BrainView() {
     return () => { obs.disconnect(); scene.dispose(); sceneRef.current = null; };
   }, [onHover, onSelect]);
 
+  /** Overlap (in px) of a chrome element with the canvas's edges, so the
+   *  scene can fit the graph into what's actually left over. */
+  const recomputeInsets = useCallback(() => {
+    const scene = sceneRef.current;
+    const box = containerRef.current;
+    if (!scene || !box) return;
+    const canvasRect = box.getBoundingClientRect();
+    const overlapTop = (el: HTMLElement | null) =>
+      el ? Math.max(0, el.getBoundingClientRect().bottom - canvasRect.top) : 0;
+    const overlapBottom = (el: HTMLElement | null) =>
+      el ? Math.max(0, canvasRect.bottom - el.getBoundingClientRect().top) : 0;
+    const overlapLeft = (el: HTMLElement | null) =>
+      el ? Math.max(0, el.getBoundingClientRect().right - canvasRect.left) : 0;
+    scene.setContentInsets({
+      top: overlapTop(headerRef.current),
+      bottom: overlapBottom(sliderBarRef.current),
+      left: overlapLeft(legendEl),
+      right: 0,
+    });
+  }, [legendEl]);
+
+  // Re-measure whenever the canvas, the header or the bottom bar change size,
+  // and whenever the key panel opens/closes (`legendEl`'s identity changes —
+  // it swaps between the collapsed button and the open panel).
+  useEffect(() => {
+    recomputeInsets();
+    const obs = new ResizeObserver(recomputeInsets);
+    [containerRef.current, headerRef.current, sliderBarRef.current].forEach(el => {
+      if (el) obs.observe(el);
+    });
+    return () => obs.disconnect();
+  }, [recomputeInsets, viewMode]);
+
   // Feed data to scene
   useEffect(() => {
     if (sceneRef.current && data) sceneRef.current.setData(data);
   }, [data]);
+
+  // The panel's selection breaks a label collision in its favour over an
+  // unselected same-degree neighbour (QA 2026-09-25: priority hovered >
+  // selected > degree).
+  useEffect(() => {
+    sceneRef.current?.setSelectedId(selected?.id ?? null);
+  }, [selected]);
+
+  // Perf (QA 2026-09-25): List mode leaves the graph's container `display:
+  // none` — a 0×0 canvas the render loop kept rendering into anyway, hundreds
+  // of GL_INVALID_FRAMEBUFFER_OPERATION warnings a minute for a scene nobody
+  // can see. The scene's own gate also catches a 0×0 mid-resize and a
+  // backgrounded tab; this just tells it which mode is showing.
+  useEffect(() => {
+    sceneRef.current?.setActive(viewMode === 'graph');
+  }, [viewMode]);
 
   // Search: debounce 300ms, auto-switch to list mode on non-empty query
   useEffect(() => {
@@ -318,6 +374,7 @@ export function BrainView() {
             searchLoading={searchLoading}
             searchError={searchError}
             entities={data?.entities ?? []}
+            graphMemories={data?.memories ?? []}
             filters={filters}
           />
         </div>
@@ -390,7 +447,7 @@ export function BrainView() {
       )}
 
       {/* Header */}
-      <div style={{
+      <div ref={headerRef} style={{
         position: 'absolute', top: space.xxl, left: space.xxl, right: space.xxl, zIndex: 10,
         display: 'flex', alignItems: 'center', gap: space.xl,
       }}>
@@ -669,7 +726,8 @@ export function BrainView() {
               const ent = selected.data as GraphEntity | undefined;
               const fields = ent?.fields ?? [];
               const degree = data?.edges?.filter(e => e.from === selected.id || e.to === selected.id).length ?? 0;
-              const memLinks = data?.memories?.filter(m => m.ent.includes(selected.id)).length ?? 0;
+              const linkedMemories = data?.memories?.filter(m => m.ent.includes(selected.id)) ?? [];
+              const memLinks = linkedMemories.length;
               return (<>
                 <p style={{ fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, margin: '0 0 16px' }}>
                   {selected.note || 'No description yet — the Librarian writes one on its next run.'}
@@ -694,6 +752,41 @@ export function BrainView() {
                           textTransform: 'uppercase', letterSpacing: '0.08em', flexShrink: 0,
                         }}>{f.source}</span>
                       </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* The entity's own memories, one click from the card — the
+                    same list whether it was opened from a graph node or a list
+                    row. Drawn from the graph sample (as the MEMORIES stat is);
+                    the stat below still searches the whole Brain. */}
+                {linkedMemories.length > 0 && (
+                  <div data-testid="brain-entity-memories" style={{ marginBottom: space.xxl, overflowY: 'auto', maxHeight: 240, display: 'flex', flexDirection: 'column', gap: space.xxs }}>
+                    <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: space.xs }}>
+                      Memories
+                    </div>
+                    {linkedMemories.slice(0, 12).map(m => (
+                      <Button
+                        key={m.id}
+                        colors={colors}
+                        variant="bare"
+                        type="button"
+                        onClick={() => selectMemory(m)}
+                        style={{
+                          '--pa-btn-fg': colors.text,
+                          '--pa-btn-bg-hover': colors.fillHover,
+                          '--pa-btn-bg-active': colors.fillActive,
+                          '--pa-btn-pad': `${space.sm}px ${space.md}px`,
+                          '--pa-btn-radius': `${radius.sm}px`,
+                          '--pa-btn-weight': 500,
+                          justifyContent: 'flex-start', textAlign: 'left',
+                          fontFamily: font.body, fontSize: textSize.caption,
+                        } as CSSProperties}
+                      >
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                          {deriveMemoryTitle(m)}
+                        </span>
+                      </Button>
                     ))}
                   </div>
                 )}
@@ -912,11 +1005,20 @@ export function BrainView() {
           vocabulary={BRAIN_VOCABULARY}
           palette={{ bg: reduceTransparency ? glass.glass.opaque : glass.glass.background, border: colors.borderHi }}
           style={{ bottom: 72 }}
+          // QA 2026-09-25: this key covers roughly the left third of the
+          // graph — the same "starts collapsed behind its own button" call
+          // the People graph already makes for a key that size (see
+          // legendMemory.ts). Dismissal is remembered per canvas either way;
+          // this only changes what a first visit sees.
+          defaultOpen={false}
+          // Feeds the framing fit (recomputeInsets): an open key panel eats
+          // the left third of the canvas, so the graph must not centre under it.
+          onElement={setLegendEl}
         />
       )}
 
       {/* Time slider */}
-      <div style={{
+      <div ref={sliderBarRef} style={{
         position: 'absolute', bottom: space.xxl, left: space.xxl, right: brainSliderRight(selected != null, chatLauncherSize), zIndex: 10,
         display: 'flex', alignItems: 'center', gap: space.xl, padding: `${space.lg}px ${space.xxl}px`,
         ...glassMat,

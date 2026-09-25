@@ -364,9 +364,23 @@ pub async fn upsert_suggested(
     .execute(pool)
     .await?;
 
-    get_by_fingerprint(pool, project_id, &fp)
+    let action = get_by_fingerprint(pool, project_id, &fp)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("growth action vanished immediately after upsert"))
+        .ok_or_else(|| anyhow::anyhow!("growth action vanished immediately after upsert"))?;
+
+    crate::brain_feed::feed_for_project(
+        pool,
+        crate::brain_feed::FeedSource::Growth,
+        crate::brain_feed::feed_key("growth_action", &action.id, "suggested"),
+        project_id,
+        format!(
+            "Growth action suggested: '{}' — {}",
+            seed.title, seed.recommendation
+        ),
+    )
+    .await;
+
+    Ok(action)
 }
 
 pub async fn get_by_fingerprint(
@@ -524,7 +538,18 @@ pub async fn set_status(
     .bind(target.map(|(_, d)| d.as_str()))
     .execute(pool)
     .await?;
-    get(pool, project_id, action_id).await
+    let row = get(pool, project_id, action_id).await?;
+    if let Some(ref action) = row {
+        crate::brain_feed::feed_for_project(
+            pool,
+            crate::brain_feed::FeedSource::Growth,
+            crate::brain_feed::feed_key("growth_action", action_id, "status"),
+            project_id,
+            format!("Growth action '{}' status: {}.", action.title, status),
+        )
+        .await;
+    }
+    Ok(row)
 }
 
 /// Everything a verification knows about itself: which strategy confirmed the
@@ -696,6 +721,29 @@ pub async fn upsert_outcome(
     .bind(judged_at)
     .execute(pool)
     .await?;
+
+    if let Some(action) = get_any(pool, action_id).await? {
+        let delta = judgement
+            .delta_pct
+            .map(|d| format!("{d:+.1}%"))
+            .unwrap_or_else(|| "n/a".to_string());
+        crate::brain_feed::feed_for_project(
+            pool,
+            crate::brain_feed::FeedSource::Growth,
+            crate::brain_feed::feed_key("growth_action", action_id, "outcome"),
+            &action.project_id,
+            format!(
+                "Growth action '{}' outcome ({}d): {} ({}) — {}",
+                action.title,
+                window_days,
+                judgement.verdict.as_str(),
+                delta,
+                judgement.rationale
+            ),
+        )
+        .await;
+    }
+
     Ok(())
 }
 

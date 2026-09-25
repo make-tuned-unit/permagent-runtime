@@ -40,8 +40,9 @@ import {
   ChatDock,
   CHAT_DOCK_WIDTH,
   CHAT_DOCK_MIN_WIDTH,
-  CHAT_DOCK_MAX_WIDTH,
+  CHAT_DOCK_MAX_CEILING,
   clampDockWidth,
+  dockMaxWidth,
   readDockWidth,
 } from './ChatDock';
 
@@ -52,7 +53,14 @@ const WIDTH_KEY = 'permagent-chat-dock-width';
 let container: HTMLDivElement;
 let root: Root;
 
+/** jsdom's window is 1024 wide; the walk that found the 560 cap was on a
+ *  ~2560 CSS px window. Each test states the width it means. */
+function setViewport(px: number) {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: px });
+}
+
 beforeEach(() => {
+  setViewport(2560);
   localStorage.clear();
   // Deterministic geometry: with Reduce Motion the dock opens at its full
   // width in the first commit instead of springing out over 320ms, so the
@@ -96,10 +104,20 @@ function pointer(type: string, clientX: number): MouseEvent {
 }
 
 describe('chat dock width', () => {
+  it('sets the ceiling from the window: half of it, never past 960, never under the floor', () => {
+    expect(dockMaxWidth(2560)).toBe(CHAT_DOCK_MAX_CEILING);
+    expect(dockMaxWidth(1440)).toBe(720);
+    expect(dockMaxWidth(1024)).toBe(512);
+    expect(dockMaxWidth(500)).toBe(CHAT_DOCK_MIN_WIDTH);
+    // On the walk's 2560px window the old flat 560 cap is no longer the limit.
+    expect(clampDockWidth(900)).toBe(900);
+  });
+
   it('clamps to the readable range and rounds to whole pixels', () => {
     expect(clampDockWidth(400)).toBe(400);
     expect(clampDockWidth(10)).toBe(CHAT_DOCK_MIN_WIDTH);
-    expect(clampDockWidth(9000)).toBe(CHAT_DOCK_MAX_WIDTH);
+    expect(clampDockWidth(9000)).toBe(CHAT_DOCK_MAX_CEILING);
+    expect(clampDockWidth(9000, 600)).toBe(600);
     expect(clampDockWidth(383.6)).toBe(384);
     // A hand-edited or corrupt entry cannot wedge the dock off-screen.
     expect(clampDockWidth(Number.NaN)).toBe(CHAT_DOCK_WIDTH);
@@ -113,6 +131,10 @@ describe('chat dock width', () => {
     expect(readDockWidth()).toBe(CHAT_DOCK_MIN_WIDTH);
     localStorage.setItem(WIDTH_KEY, 'not a number');
     expect(readDockWidth()).toBe(CHAT_DOCK_WIDTH);
+    // A width saved on a big display is re-clamped to the window it opens in.
+    localStorage.setItem(WIDTH_KEY, '900');
+    setViewport(1200);
+    expect(readDockWidth()).toBe(600);
   });
 
   it('opens at the persisted width', () => {
@@ -142,11 +164,57 @@ describe('chat dock width', () => {
     render();
     const edge = container.querySelector('[role="separator"]') as HTMLElement;
     act(() => { edge.dispatchEvent(pointer('pointerdown', 900)); });
-    act(() => { edge.dispatchEvent(pointer('pointermove', 100)); });
-    expect(panel().style.width).toBe(`${CHAT_DOCK_MAX_WIDTH}px`);
+    act(() => { edge.dispatchEvent(pointer('pointermove', -2000)); });
+    expect(panel().style.width).toBe(`${CHAT_DOCK_MAX_CEILING}px`);
     act(() => { edge.dispatchEvent(pointer('pointermove', 1600)); });
     expect(panel().style.width).toBe(`${CHAT_DOCK_MIN_WIDTH}px`);
     act(() => { edge.dispatchEvent(pointer('pointerup', 1600)); });
+  });
+
+  it('follows the window: shrinking it clamps the dock, growing it back restores the preference', () => {
+    localStorage.setItem(WIDTH_KEY, '900');
+    render();
+    const edge = container.querySelector('[role="separator"]') as HTMLElement;
+    expect(panel().style.width).toBe('900px');
+    expect(edge.getAttribute('aria-valuemax')).toBe(String(CHAT_DOCK_MAX_CEILING));
+
+    act(() => { setViewport(1200); window.dispatchEvent(new Event('resize')); });
+    expect(panel().style.width).toBe('600px');
+    expect(edge.getAttribute('aria-valuemax')).toBe('600');
+    // The remembered preference is not overwritten by a transient window size.
+    expect(localStorage.getItem(WIDTH_KEY)).toBe('900');
+
+    act(() => { setViewport(2560); window.dispatchEvent(new Event('resize')); });
+    expect(panel().style.width).toBe('900px');
+  });
+
+  it('double-click on the edge toggles between the default and the wide preset', () => {
+    render();
+    const edge = container.querySelector('[role="separator"]') as HTMLElement;
+    const dbl = () => act(() => {
+      edge.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+    });
+    expect(panel().style.width).toBe(`${CHAT_DOCK_WIDTH}px`);
+    dbl();
+    expect(panel().style.width).toBe(`${CHAT_DOCK_MAX_CEILING}px`);
+    expect(localStorage.getItem(WIDTH_KEY)).toBe(String(CHAT_DOCK_MAX_CEILING));
+    dbl();
+    expect(panel().style.width).toBe(`${CHAT_DOCK_WIDTH}px`);
+    expect(localStorage.getItem(WIDTH_KEY)).toBe(String(CHAT_DOCK_WIDTH));
+  });
+
+  it('has a findable grab edge: a 12px hit area and a grip that is visible at rest', () => {
+    render();
+    const edge = container.querySelector('[role="separator"]') as HTMLElement;
+    expect(edge.style.width).toBe('12px');
+    const grip = edge.querySelector('[data-dock-grip]') as HTMLElement;
+    expect(grip.style.background).not.toBe('transparent');
+    expect(grip.style.background).not.toBe('');
+    const seam = edge.querySelector('[data-dock-seam]') as HTMLElement;
+    expect(seam.style.width).toBe('2px');
+    expect(seam.style.background).toBe('transparent');
+    act(() => { edge.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+    expect(seam.style.background).not.toBe('transparent');
   });
 
   it('resizes from the keyboard too — a mouse-only resize is not a resize', () => {

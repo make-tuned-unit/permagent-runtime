@@ -152,7 +152,11 @@ describe('NotificationHost — floating-glass radius (D4)', () => {
     await act(async () => {
       root.render(<NotificationHost />);
     });
-    const toastButton = container.querySelector<HTMLElement>('[role="status"] button')!;
-    expect(toastButton.style.borderRadius).toBe(`${radius.glass}px`);
+    // R8: the glass surface (border/shadow/radius) moved from the inner
+    // `<button>` to its wrapping `<div>` so an Undo action can render as a
+    // sibling instead of a `<button>` nested inside a `<button>` (invalid
+    // DOM). The card's outer radius is unchanged, just on a different node.
+    const toastShell = container.querySelector<HTMLElement>('[role="status"] > div')!;
+    expect(toastShell.style.borderRadius).toBe(`${radius.glass}px`);
   });
 });
