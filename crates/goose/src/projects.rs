@@ -764,7 +764,10 @@ pub async fn set_project_strategy(
             crate::brain_feed::FeedSource::Project,
             crate::brain_feed::feed_key("project", project_id, &format!("strategy.{pillar}")),
             project_id,
-            format!("Project '{}' strategy ({}): {}", project.name, pillar, content),
+            format!(
+                "Project '{}' strategy ({}): {}",
+                project.name, pillar, content
+            ),
         )
         .await;
     }

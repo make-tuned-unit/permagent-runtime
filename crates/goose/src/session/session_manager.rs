@@ -5791,7 +5791,11 @@ mod tests {
             GOAL_ID_EXTENSION_VERSION,
             serde_json::Value::String("card-that-does-not-exist".to_string()),
         );
-        sm.update(&worker.id).extension_data(ext).apply().await.unwrap();
+        sm.update(&worker.id)
+            .extension_data(ext)
+            .apply()
+            .await
+            .unwrap();
 
         // Default: unchanged — User + Scheduled only.
         let default_ids: Vec<String> = sm
