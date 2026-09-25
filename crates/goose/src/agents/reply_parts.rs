@@ -2373,6 +2373,9 @@ impl AccountedFastCompletion {
     /// reviewer, the summarizer — can say so, instead of every one of them
     /// falling through `CallProvenance::default()` and showing up as
     /// `unknown` in the cost ledger.
+    // The existing seven accounting inputs plus the purpose tag; bundling them
+    // into a struct is a wider refactor of every accounted caller.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn complete_fast_accounted_with_purpose(
         manager: Arc<SessionManager>,
         session: Session,
@@ -2425,6 +2428,7 @@ impl AccountedFastCompletion {
     /// genuine [`CallPurpose`] instead of the honest-default `Unknown`. See
     /// [`Self::complete_fast_accounted_with_purpose`]'s doc comment for why
     /// this exists.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn complete_accounted_with_purpose(
         manager: Arc<SessionManager>,
         session: Session,
