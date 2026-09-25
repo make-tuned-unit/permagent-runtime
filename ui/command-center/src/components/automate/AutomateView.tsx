@@ -593,7 +593,6 @@ export function AutomateView() {
 
   // ── Derived data ──
 
-  const runningJobs = jobs.filter(j => j.currently_running);
   const allRuns = useMemo(() =>
     Array.from(sessions.entries())
       .flatMap(([jobId, runs]) => runs.map(r => ({ ...r, jobId })))
@@ -770,7 +769,6 @@ export function AutomateView() {
   // same order and under the same condition as the JSX — so it never offers a
   // jump to a section that isn't there.
   const sectionNavItems: SectionNavItem[] = [
-    ...(runningJobs.length > 0 ? [{ id: 'running', label: 'Running Now', count: runningJobs.length }] : []),
     ...(jobs.length > 0 ? [{ id: 'recent-activity', label: 'Recent Activity', count: allRuns.length }] : []),
     ...(!trulyEmpty ? [{ id: 'automations', label: AUTOMATION.title, count: filteredJobs.length }] : []),
     { id: 'learned', label: 'Learned', count: filteredSkills.length + filteredProposals.length },
@@ -855,8 +853,10 @@ export function AutomateView() {
           canOpen={id => jobIds.has(id)}
         />
 
-        {/* Live run roster — everything at work right now, at a glance */}
-        <RunRoster schedules={jobs} />
+        {/* Live run roster — everything at work right now, at a glance.
+            R7: this is now the ONLY place a running schedule's card lives —
+            a row opens the same detail panel "Running Now" used to. */}
+        <RunRoster schedules={jobs} onOpenSchedule={id => { const job = jobs.find(j => j.id === id); if (job) setDetail({ kind: 'recipe', job }); }} />
 
         {/* Run completion banner — the no-scroll path to the produced result:
             "Review result" opens the run detail (findings / report) directly. */}
@@ -967,20 +967,6 @@ export function AutomateView() {
               } as CSSProperties}
             >or browse what your agent can do &rarr;</Button>
           </div>
-        )}
-
-        {/* ── RUNNING NOW ── (only when something is executing) */}
-        {runningJobs.length > 0 && (
-          <Section id="running" title="Running Now" count={runningJobs.length} accentColor={colors.success}>
-            {runningJobs.map(job => (
-              <RecipeCard key={job.id} job={job} onRunNow={handleRunNow} onPause={handlePause}
-                onUnpause={handleUnpause} onDelete={handleDelete} onKill={handleKill}
-                onResetToDefault={handleResetToDefault} actionStates={actionStates} onActionDone={handleActionDone}
-                onSelect={() => setDetail({ kind: 'recipe', job })}
-                onOpenLastRun={openLastRun}
-                selected={detail?.kind === 'recipe' && detail.job.id === job.id} />
-            ))}
-          </Section>
         )}
 
         {/* ── RECENT ACTIVITY ── (above Recipes: a finished run's produced

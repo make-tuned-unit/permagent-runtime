@@ -37,8 +37,14 @@ const KIND_LABEL: Record<RunItem['kind'], string> = {
  *   no last error or failure count for a schedule, so a paused or failing row
  *   takes them from here (joined by id). Optional: without it the row still
  *   shows its status and schedule, just not why it stopped.
+ * @param onOpenSchedule R7: this is now the ONLY place a running schedule's
+ *   card lives — the separate "Running Now" section was dropped because it
+ *   showed the exact same job a second time. A schedule row opens that job's
+ *   detail panel (Run Now/Pause/Stop/Delete, the failure box, everything the
+ *   card used to offer); optional, so a caller with nowhere to send it can
+ *   still render the roster read-only.
  */
-export function RunRoster({ schedules }: { schedules?: RosterScheduleFacts[] } = {}) {
+export function RunRoster({ schedules, onOpenSchedule }: { schedules?: RosterScheduleFacts[]; onOpenSchedule?: (id: string) => void } = {}) {
   const { colors } = useTheme();
   const factsById = useMemo(
     () => new Map((schedules ?? []).map(j => [j.id, j] as const)),
@@ -186,13 +192,27 @@ export function RunRoster({ schedules }: { schedules?: RosterScheduleFacts[] } =
 
       {status === 'ready' && sorted.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
-          {sorted.map(r => (
+          {sorted.map(r => {
+            const openable = r.kind === 'schedule' && !!onOpenSchedule;
+            return (
             <div
               key={`${r.kind}:${r.id}`}
+              role={openable ? 'button' : undefined}
+              tabIndex={openable ? 0 : undefined}
+              aria-label={openable ? `Open details for ${r.name}` : undefined}
+              onClick={openable ? () => onOpenSchedule!(r.id) : undefined}
+              onKeyDown={openable ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenSchedule!(r.id); } } : undefined}
+              onMouseEnter={openable ? e => { e.currentTarget.style.borderColor = colors.borderHi; e.currentTarget.style.background = colors.fillHover; } : undefined}
+              onMouseLeave={openable ? e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.background = colors.bgDeeper; } : undefined}
+              onFocus={openable ? e => { e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; } : undefined}
+              onBlur={openable ? e => { e.currentTarget.style.boxShadow = 'none'; } : undefined}
               style={{
                 display: 'flex', alignItems: 'center', gap: space.lg, padding: `${space.sm}px ${space.lg}px`,
                 borderRadius: radius.md, background: colors.bgDeeper,
                 border: `1px solid ${colors.border}`,
+                cursor: openable ? 'pointer' : undefined,
+                outline: 'none',
+                transition: openable ? `border-color 120ms ease, background 120ms ease, box-shadow 120ms ease` : undefined,
               }}
             >
               <Tooltip content={r.status}>
@@ -231,14 +251,15 @@ export function RunRoster({ schedules }: { schedules?: RosterScheduleFacts[] } =
                     <>
                       {d.words && (
                         <div style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.body, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {d.words}
-                          {/* The expression itself stays one glance away, smaller
-                              and dimmer than the words — truncated first. */}
-                          {d.raw && (
-                            <span data-testid="roster-cron" style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginLeft: space.md }}>
-                              {d.raw}
-                            </span>
-                          )}
+                          {/* A2: the human words are what's shown; the raw
+                              expression is one hover/focus away, never
+                              printed inline (same rule as the schedule cards
+                              below — one way to read a cron on this page). */}
+                          {d.raw ? (
+                            <Tooltip content={`cron: ${d.raw}`}>
+                              <span data-testid="roster-cron" tabIndex={0} style={{ outline: 'none' }}>{d.words}</span>
+                            </Tooltip>
+                          ) : d.words}
                         </div>
                       )}
                       {problem && (
@@ -265,81 +286,83 @@ export function RunRoster({ schedules }: { schedules?: RosterScheduleFacts[] } =
                   {relativeTimeAgo(r.last_activity)}
                 </span>
               )}
-              {r.kind === 'worker' && (
-                <Tooltip content="Open in Settings → Agents">
-                  <Button
-                    colors={colors}
-                    type="button"
-                    onClick={() => openAgentSettings(r.id)}
-                    style={{
-                      '--pa-btn-fg': colors.cyan,
-                      '--pa-btn-border': colors.border,
-                      '--pa-btn-bg-hover': colors.surfaceHi,
-                      '--pa-btn-border-hover': colors.borderHi,
-                      '--pa-btn-pad': '3px 7px',
-                      '--pa-btn-radius': `${radius.sm}px`,
-                      fontFamily: font.body,
-                      fontSize: 10,
-                      gap: space.xs,
-                      flexShrink: 0,
-                    } as CSSProperties}
-                  >
-                    Settings
-                  </Button>
-                </Tooltip>
-              )}
-              {r.kind === 'schedule' && r.status === 'paused' && (
-                <Tooltip content="Resume this schedule">
-                  <Button
-                    colors={colors}
-                    onClick={() => resume(r)}
-                    style={{
-                      '--pa-btn-fg': colors.cyan,
-                      '--pa-btn-border': colors.border,
-                      '--pa-btn-bg-hover': colors.surfaceHi,
-                      '--pa-btn-border-hover': colors.borderHi,
-                      '--pa-btn-pad': '3px 7px',
-                      '--pa-btn-radius': `${radius.sm}px`,
-                      fontFamily: font.body,
-                      fontSize: 10,
-                      gap: space.xs,
-                      flexShrink: 0,
-                    } as CSSProperties}
-                  >
-                    Resume
-                  </Button>
-                </Tooltip>
-              )}
-              {/* Only schedules have a kill verb today — showing Stop on
-                  worker/session rows made a button that did nothing
-                  (interrupt() early-returns for those kinds). */}
-              {r.interruptible && r.kind === 'schedule' && (
-                // No tick: the row dropping out of "working" on the next poll is
-                // the confirmation that the run stopped.
-                <Tooltip content="Stop this run">
-                  <Button
-                    colors={colors}
-                    onClick={() => interrupt(r)}
-                    flashSuccess={false}
-                    style={{
-                      '--pa-btn-fg': colors.danger,
-                      '--pa-btn-border': colors.border,
-                      '--pa-btn-bg-hover': colors.surfaceHi,
-                      '--pa-btn-border-hover': colors.danger,
-                      '--pa-btn-pad': '3px 7px',
-                      '--pa-btn-radius': `${radius.sm}px`,
-                      fontFamily: font.body,
-                      fontSize: 10,
-                      gap: space.xs,
-                      flexShrink: 0,
-                    } as CSSProperties}
-                  >
-                    <FiSquare size={9} /> Stop
-                  </Button>
-                </Tooltip>
-              )}
+              {/* Stopped from reaching the row's own onClick — these act on
+                  the row, they don't open it. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: space.xs, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                {r.kind === 'worker' && (
+                  <Tooltip content="Open in Settings → Agents">
+                    <Button
+                      colors={colors}
+                      type="button"
+                      onClick={() => openAgentSettings(r.id)}
+                      style={{
+                        '--pa-btn-fg': colors.cyan,
+                        '--pa-btn-border': colors.border,
+                        '--pa-btn-bg-hover': colors.surfaceHi,
+                        '--pa-btn-border-hover': colors.borderHi,
+                        '--pa-btn-pad': '3px 7px',
+                        '--pa-btn-radius': `${radius.sm}px`,
+                        fontFamily: font.body,
+                        fontSize: 10,
+                        gap: space.xs,
+                      } as CSSProperties}
+                    >
+                      Settings
+                    </Button>
+                  </Tooltip>
+                )}
+                {r.kind === 'schedule' && r.status === 'paused' && (
+                  <Tooltip content="Resume this schedule">
+                    <Button
+                      colors={colors}
+                      onClick={() => resume(r)}
+                      style={{
+                        '--pa-btn-fg': colors.cyan,
+                        '--pa-btn-border': colors.border,
+                        '--pa-btn-bg-hover': colors.surfaceHi,
+                        '--pa-btn-border-hover': colors.borderHi,
+                        '--pa-btn-pad': '3px 7px',
+                        '--pa-btn-radius': `${radius.sm}px`,
+                        fontFamily: font.body,
+                        fontSize: 10,
+                        gap: space.xs,
+                      } as CSSProperties}
+                    >
+                      Resume
+                    </Button>
+                  </Tooltip>
+                )}
+                {/* Only schedules have a kill verb today — showing Stop on
+                    worker/session rows made a button that did nothing
+                    (interrupt() early-returns for those kinds). */}
+                {r.interruptible && r.kind === 'schedule' && (
+                  // No tick: the row dropping out of "working" on the next poll is
+                  // the confirmation that the run stopped.
+                  <Tooltip content="Stop this run">
+                    <Button
+                      colors={colors}
+                      onClick={() => interrupt(r)}
+                      flashSuccess={false}
+                      style={{
+                        '--pa-btn-fg': colors.danger,
+                        '--pa-btn-border': colors.border,
+                        '--pa-btn-bg-hover': colors.surfaceHi,
+                        '--pa-btn-border-hover': colors.danger,
+                        '--pa-btn-pad': '3px 7px',
+                        '--pa-btn-radius': `${radius.sm}px`,
+                        fontFamily: font.body,
+                        fontSize: 10,
+                        gap: space.xs,
+                      } as CSSProperties}
+                    >
+                      <FiSquare size={9} /> Stop
+                    </Button>
+                  </Tooltip>
+                )}
+              </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

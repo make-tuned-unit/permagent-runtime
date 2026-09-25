@@ -110,13 +110,22 @@ describe('reconcileRosterRuns — one source of truth for "is it running" (R5)',
 });
 
 describe('RunRoster rows', () => {
-  it('shows schedules in plain words with the expression as a secondary', async () => {
+  it('shows schedules in plain words only — the raw expression is a hover/focus Tooltip away, never printed inline (A2)', async () => {
     await mount();
     const text = container.textContent ?? '';
     expect(text).toContain('Weekdays at 6:00 AM');
     expect(text).toContain('Mon & Thu at 10:00 AM');
-    const raw = Array.from(container.querySelectorAll('[data-testid="roster-cron"]')).map(e => e.textContent);
-    expect(raw).toEqual(expect.arrayContaining(['0 0 6 * * 1-5', '0 0 10 * * 1,4']));
+    expect(text).not.toContain('0 0 6 * * 1-5');
+    expect(text).not.toContain('0 0 10 * * 1,4');
+
+    const words = Array.from(container.querySelectorAll('[data-testid="roster-cron"]')) as HTMLElement[];
+    expect(words).toHaveLength(2);
+    // Rows are sorted by status (paused before idle), so don't assume order —
+    // find the one showing "Weekdays" and check ITS tooltip.
+    const weekdaysEl = words.find(el => el.textContent === 'Weekdays at 6:00 AM')!;
+    act(() => { weekdaysEl.focus(); });
+    const tip = document.querySelector('[role="tooltip"]');
+    expect(tip?.textContent).toContain('0 0 6 * * 1-5');
   });
 
   it('reads last-run ages in days, not "82h 3m ago"', async () => {
@@ -156,5 +165,38 @@ describe('RunRoster rows', () => {
     expect(resume).toBeTruthy();
     await act(async () => { resume.click(); });
     expect(apiFetch).toHaveBeenCalledWith('/schedule/git-steward/unpause', { method: 'POST' });
+  });
+});
+
+describe('R7: the roster row is the running job\'s one entry point (no more duplicate "Running Now" card)', () => {
+  it('opens the schedule\'s detail when a schedule row is clicked or Enter-activated', async () => {
+    const onOpenSchedule = vi.fn();
+    await act(async () => { root.render(<RunRoster schedules={SCHEDULES} onOpenSchedule={onOpenSchedule} />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    const row = container.querySelector('[aria-label="Open details for Morning brief"]') as HTMLElement;
+    expect(row).toBeTruthy();
+    expect(row.getAttribute('role')).toBe('button');
+    act(() => { row.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(onOpenSchedule).toHaveBeenCalledWith('morning-brief');
+
+    onOpenSchedule.mockClear();
+    act(() => { row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(onOpenSchedule).toHaveBeenCalledWith('morning-brief');
+  });
+
+  it('is read-only (no role, no click) when the caller passes no onOpenSchedule', async () => {
+    await mount(); // default mount omits onOpenSchedule
+    const row = container.querySelector('[data-testid="roster-cron"]')!.closest('[role="button"]');
+    expect(row).toBeNull();
+  });
+
+  it('does not open the schedule when Resume/Stop/Settings inside the row is clicked', async () => {
+    const onOpenSchedule = vi.fn();
+    await act(async () => { root.render(<RunRoster schedules={SCHEDULES} onOpenSchedule={onOpenSchedule} />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const resume = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Resume')!;
+    act(() => { resume.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(onOpenSchedule).not.toHaveBeenCalled();
   });
 });

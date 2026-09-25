@@ -170,17 +170,21 @@ it('benchmark §4: an unacknowledged failure is a persistent alert that opens th
   expect(container.querySelector('[aria-label="Open details for Flight monitor"]')).toBeTruthy();
 });
 
-it('R5: a running job never reads "Never run yet" beside its RUNNING chip; the meta line says when it started', async () => {
+it('R5/R7: a running job has no card of its own — the roster row is its one entry, and opens a detail panel that never says "Never"', async () => {
   jobsFixture = [runningJob];
   await act(async () => { root.render(<AutomateView />); });
   await settle();
-  expect(container.textContent).toContain('RUNNING');
   expect(container.textContent).not.toContain('Never run yet');
-  expect(container.textContent).toMatch(/Running now · started \d+m ago/);
+  // No separate "Running Now" section/heading — the roster is the one place
+  // a running schedule appears above the fold.
+  expect(container.textContent).not.toContain('Running Now');
+  expect(container.querySelector('[data-testid="automate-section-nav"]')!.textContent).not.toContain('Running');
 
-  // The detail panel's own field agrees — one function, not two guesses.
-  const card = container.querySelector('[aria-label="Open details for Downloads sweep"]')!;
-  act(() => { card.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  // The roster row IS the running job's one entry point (no card exists for
+  // it — Automations excludes a currently-running job on purpose).
+  const row = container.querySelector('[aria-label="Open details for Downloads sweep"]')!;
+  expect(row).toBeTruthy();
+  act(() => { row.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
   await settle();
   expect(container.textContent).toContain('Started');
   expect(container.textContent).not.toContain('Never');
