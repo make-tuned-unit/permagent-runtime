@@ -289,6 +289,24 @@ impl Provider for SovereignGuardProvider {
         self.inner.supports_cache_control().await
     }
 
+    async fn request_context_window(&self, model_config: &ModelConfig) -> Option<usize> {
+        self.inner.request_context_window(model_config).await
+    }
+
+    /// Sends nothing, so there is no egress to gate: the wrapped provider
+    /// only measures the request against its own window.
+    async fn preflight_request(
+        &self,
+        model_config: &ModelConfig,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(), ProviderError> {
+        self.inner
+            .preflight_request(model_config, system, messages, tools)
+            .await
+    }
+
     async fn configure_oauth(&self) -> Result<(), ProviderError> {
         self.inner.configure_oauth().await
     }

@@ -586,6 +586,48 @@ pub fn local_request_budget(window: usize) -> usize {
     window - window / 4
 }
 
+/// Pure: whether a local model served in `window` tokens can take a
+/// dispatched worker whose first request (brief + system prompt + tool
+/// schemas) is `first_request_tokens`: within [`local_request_budget`], so
+/// the rest of the window is left for the reply and the turns after it. A
+/// first request that only just fits the whole window gets one turn before
+/// it overflows.
+pub fn local_window_fits_first_request(window: usize, first_request_tokens: usize) -> bool {
+    first_request_tokens <= local_request_budget(window)
+}
+
+/// The fixed part of a dispatched worker's first request — system prompt
+/// and tool schemas, in o200k tokens — as last measured on a worker run
+/// against a provider whose window is known, per prompt profile (index 0:
+/// default, 1: compact). Zero means "not measured yet in this process".
+/// Written by the worker's pre-send check (`subagent_handler`), read by
+/// dispatch routing, which runs before the worker exists and so cannot
+/// measure its tool surface itself.
+static WORKER_FIRST_REQUEST_OVERHEAD: [std::sync::atomic::AtomicUsize; 2] = [
+    std::sync::atomic::AtomicUsize::new(0),
+    std::sync::atomic::AtomicUsize::new(0),
+];
+
+/// Remember a measured worker first-request overhead (see
+/// [`WORKER_FIRST_REQUEST_OVERHEAD`]). Zero is ignored.
+pub fn record_worker_first_request_overhead(compact_profile: bool, tokens: usize) {
+    if tokens > 0 {
+        WORKER_FIRST_REQUEST_OVERHEAD[usize::from(compact_profile)]
+            .store(tokens, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The last measured worker first-request overhead for a profile, `None`
+/// before any worker has been measured in this process.
+pub fn worker_first_request_overhead(compact_profile: bool) -> Option<usize> {
+    match WORKER_FIRST_REQUEST_OVERHEAD[usize::from(compact_profile)]
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        0 => None,
+        n => Some(n),
+    }
+}
+
 /// Pure: whether `target` can take a request of `request_tokens` (system
 /// prompt, tools and history, counted the way the reservation counts them).
 ///

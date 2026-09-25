@@ -18,8 +18,15 @@ pub struct SearchParams {
     /// Regular expression to search for (ripgrep syntax).
     pub pattern: String,
     /// Directory or file to search. Relative paths resolve against the working
-    /// directory; defaults to the working directory.
-    pub path: Option<String>,
+    /// directory; defaults to the working directory. To search several, separate
+    /// them with spaces ("src docs") — each part must exist; a path that exists
+    /// as written, spaces and all ("My Docs"), is always searched as one path.
+    /// A JSON list of paths is accepted too.
+    // Advertised as a plain string: a union here is a schema some providers
+    // refuse, and the space-separated form covers what a list would.
+    #[schemars(with = "Option<String>")]
+    #[serde(default)]
+    pub path: Option<PathArg>,
     /// Only search files matching this glob, e.g. "*.rs" or "src/**/*.ts".
     pub glob: Option<String>,
     /// Restrict to a ripgrep file type, e.g. "rust", "py", "js".
@@ -28,6 +35,67 @@ pub struct SearchParams {
     pub max_per_file: Option<usize>,
     /// Max files shown before the rest are summarized (default 20).
     pub max_files: Option<usize>,
+}
+
+/// The `path` argument as the caller sent it: one string, or (accepted though
+/// not advertised) a list of strings.
+///
+/// 2026-09-25: gpt-5.4-mini called search with `path: "src docs"` in two
+/// separate runs, meaning two directories. It went to ripgrep as the single
+/// path `src docs` and failed with "rg: src docs: IO error … No such file or
+/// directory". See [`search_targets`] for how it is split now.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum PathArg {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl PathArg {
+    /// How the zero-match message names the scope.
+    fn describe(&self) -> String {
+        match self {
+            PathArg::One(path) => path.clone(),
+            PathArg::Many(paths) => paths.join("`, `"),
+        }
+    }
+}
+
+/// The ripgrep target arguments for a `path` argument, resolved against
+/// `base_dir` (an absolute part stays absolute).
+///
+/// - No path, or an empty one: no target, so ripgrep searches `base_dir`
+///   with clean relative paths.
+/// - A list: one target per non-empty entry, as given.
+/// - A string that exists as written is one target, never split — paths can
+///   contain spaces (`My Docs`).
+/// - Otherwise, a string of several whitespace-separated parts that ALL
+///   exist is one target per part (`src docs`).
+/// - Anything else is passed as written, so ripgrep's own error names the
+///   path that is missing.
+fn search_targets(path: Option<&PathArg>, base_dir: &Path) -> Vec<String> {
+    match path {
+        None => Vec::new(),
+        Some(PathArg::Many(paths)) => paths
+            .iter()
+            .filter(|p| !p.trim().is_empty())
+            .cloned()
+            .collect(),
+        Some(PathArg::One(path)) => {
+            if path.trim().is_empty() {
+                return Vec::new();
+            }
+            if base_dir.join(path).exists() {
+                return vec![path.clone()];
+            }
+            let parts: Vec<&str> = path.split_whitespace().collect();
+            if parts.len() > 1 && parts.iter().all(|part| base_dir.join(part).exists()) {
+                parts.into_iter().map(str::to_string).collect()
+            } else {
+                vec![path.clone()]
+            }
+        }
+    }
 }
 
 /// One ripgrep hit: the file it was found in, the 1-based line, and the raw line text.
@@ -152,12 +220,10 @@ fn rg_command(
             command.arg("--type").arg(file_type);
         }
     }
-    // End of flags, then the optional search target. Omitting the target
+    // End of flags, then the optional search targets. Omitting them
     // lets ripgrep default to the working directory with clean relative paths.
     command.arg("--");
-    if let Some(path) = &params.path {
-        command.arg(path);
-    }
+    command.args(search_targets(params.path.as_ref(), base_dir));
     command.current_dir(base_dir);
     command.stdin(Stdio::null());
     command
@@ -193,7 +259,7 @@ fn has_regex_metachars(pattern: &str) -> bool {
 /// zero-match path, so the extra subprocess cost is bounded and rare.
 async fn zero_match_message(params: &SearchParams, base_dir: &Path) -> String {
     let scope = match &params.path {
-        Some(path) => format!(" under `{path}`"),
+        Some(path) => format!(" under `{}`", path.describe()),
         None => String::new(),
     };
     let mut message = format!("No matches for `{}`{}.", params.pattern, scope);
@@ -673,6 +739,144 @@ mod tests {
             .await;
         assert_eq!(result.is_error, Some(true));
         assert!(extract_text(&result).contains("cannot be empty"));
+    }
+
+    fn one(path: &str) -> PathArg {
+        PathArg::One(path.to_string())
+    }
+
+    /// The reported call: `path: "src docs"` with both directories present.
+    #[test]
+    fn space_separated_existing_paths_become_separate_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        assert_eq!(
+            search_targets(Some(&one("src docs")), dir.path()),
+            vec!["src".to_string(), "docs".to_string()]
+        );
+        // A file and a directory, extra whitespace included.
+        std::fs::write(dir.path().join("README.md"), "x").unwrap();
+        assert_eq!(
+            search_targets(Some(&one("  src   README.md ")), dir.path()),
+            vec!["src".to_string(), "README.md".to_string()]
+        );
+    }
+
+    /// A path that exists as written is one target, spaces and all — even
+    /// when its words also exist as paths of their own.
+    #[test]
+    fn a_path_with_spaces_that_exists_is_never_split() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("My Docs")).unwrap();
+        assert_eq!(
+            search_targets(Some(&one("My Docs")), dir.path()),
+            vec!["My Docs".to_string()]
+        );
+        std::fs::create_dir_all(dir.path().join("My")).unwrap();
+        std::fs::create_dir_all(dir.path().join("Docs")).unwrap();
+        assert_eq!(
+            search_targets(Some(&one("My Docs")), dir.path()),
+            vec!["My Docs".to_string()]
+        );
+    }
+
+    /// One missing part: passed through as written, so ripgrep's own error
+    /// names it.
+    #[test]
+    fn a_missing_part_keeps_the_path_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        assert_eq!(
+            search_targets(Some(&one("src nowhere")), dir.path()),
+            vec!["src nowhere".to_string()]
+        );
+        assert_eq!(
+            search_targets(Some(&one("nowhere")), dir.path()),
+            vec!["nowhere".to_string()]
+        );
+        // Nothing, or blank: no target, ripgrep searches the working dir.
+        assert!(search_targets(None, dir.path()).is_empty());
+        assert!(search_targets(Some(&one("  ")), dir.path()).is_empty());
+    }
+
+    /// A JSON list is accepted and passed as one target per entry, while the
+    /// advertised schema stays a plain string (no union for providers that
+    /// refuse one).
+    #[test]
+    fn a_list_of_paths_is_accepted_but_the_schema_stays_a_string() {
+        let params: SearchParams = serde_json::from_value(serde_json::json!({
+            "pattern": "x",
+            "path": ["src", "docs", ""]
+        }))
+        .unwrap();
+        assert_eq!(
+            params.path,
+            Some(PathArg::Many(vec![
+                "src".to_string(),
+                "docs".to_string(),
+                String::new()
+            ]))
+        );
+        assert_eq!(
+            search_targets(params.path.as_ref(), Path::new("/nonexistent")),
+            vec!["src".to_string(), "docs".to_string()]
+        );
+        let params: SearchParams =
+            serde_json::from_value(serde_json::json!({ "pattern": "x", "path": "src" })).unwrap();
+        assert_eq!(params.path, Some(one("src")));
+        let params: SearchParams =
+            serde_json::from_value(serde_json::json!({ "pattern": "x" })).unwrap();
+        assert_eq!(params.path, None);
+
+        let schema = serde_json::to_value(schemars::schema_for!(SearchParams)).unwrap();
+        let path_schema = &schema["properties"]["path"];
+        let text = path_schema.to_string();
+        assert!(text.contains("\"string\""), "{text}");
+        assert!(
+            !text.contains("anyOf") && !text.contains("oneOf") && !text.contains("array"),
+            "{text}"
+        );
+    }
+
+    /// End to end through ripgrep: both directories are searched, and a
+    /// missing part still fails with ripgrep's error naming the path.
+    #[tokio::test]
+    async fn search_splits_space_separated_paths_when_available() {
+        if which::which("rg").is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "fn needle() {}\n").unwrap();
+        std::fs::write(dir.path().join("docs/b.md"), "needle docs\n").unwrap();
+        let params = |path: &str| SearchParams {
+            pattern: "needle".to_string(),
+            path: Some(one(path)),
+            glob: None,
+            file_type: None,
+            max_per_file: None,
+            max_files: None,
+        };
+
+        let tool = SearchTool::new();
+        let result = tool
+            .search_with_cwd(params("src docs"), Some(dir.path()))
+            .await;
+        assert_eq!(result.is_error, Some(false), "{}", extract_text(&result));
+        let text = extract_text(&result);
+        assert!(text.starts_with("Found 2 matches in 2 files"), "{text}");
+        assert!(text.contains("src/a.rs"), "{text}");
+        assert!(text.contains("docs/b.md"), "{text}");
+
+        let result = tool
+            .search_with_cwd(params("src nowhere"), Some(dir.path()))
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        let text = extract_text(&result);
+        assert!(text.contains("Search failed"), "{text}");
+        assert!(text.contains("src nowhere"), "{text}");
     }
 
     // Integration smoke test that actually shells out to ripgrep. Skipped when

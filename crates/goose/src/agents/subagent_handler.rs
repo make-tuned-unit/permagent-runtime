@@ -187,6 +187,7 @@ fn get_agent_messages(params: SubagentRunParams) -> AgentMessagesFuture {
             .clone()
             .unwrap_or_else(|| "Begin.".to_string());
 
+        let compact_worker_profile = config.compact_worker_profile;
         let agent = build_subagent_agent(config);
 
         agent
@@ -211,9 +212,29 @@ fn get_agent_messages(params: SubagentRunParams) -> AgentMessagesFuture {
 
         let subagent_prompt =
             build_subagent_prompt(&agent, &task_config, &session_id, system_instructions).await?;
-        agent.override_system_prompt(subagent_prompt).await;
+        agent.override_system_prompt(subagent_prompt.clone()).await;
 
         let user_message = Message::user().with_text(user_task);
+
+        // Before the first turn: a provider that already knows its window
+        // (a local Ollama model) says now whether this first request fits.
+        // A refusal ends the run here with the classified `context_exceeded`
+        // the orchestrator's local→cloud fallback acts on. Left to the reply
+        // loop, the same refusal is answered by compacting a conversation
+        // with nothing in it on the same too-small model: 2026-09-25, goal
+        // 01a0d8d8, `qwen2.5-coder:7b` refused a 6,361-token first request
+        // against 4096, and the attempt then stayed "running" (no turn ever
+        // completed) until the goal's whole 182 s wall budget was gone,
+        // leaving no budget for the cloud retry.
+        preflight_first_request(
+            &agent,
+            &task_config,
+            &session_id,
+            &subagent_prompt,
+            &user_message,
+            compact_worker_profile,
+        )
+        .await?;
         let mut conversation = Conversation::new_unvalidated(vec![user_message.clone()]);
 
         if let Some(activities) = recipe.activities {
@@ -409,6 +430,91 @@ async fn build_subagent_prompt(
         },
     )
     .map_err(|e| anyhow!("Failed to render subagent system prompt: {}", e))
+}
+
+/// Pure: what a pre-send check's outcome means for the run. A context
+/// refusal becomes the run's error, worded by
+/// [`classified_subagent_failure_message`] exactly as a refusal inside the
+/// reply loop would be — `"subagent failed: context_exceeded (prompt N
+/// tokens > limit M)…"` — so the orchestrator's
+/// `classify_worker_fallback_reason` reads it as `ContextExceeded` and the
+/// next dispatch goes to the cloud tier. Anything else — it fits, or the
+/// check itself failed for another reason — is not a verdict and lets the
+/// run proceed: the send reports its own errors.
+pub(crate) fn first_request_refusal_message(
+    preflight: &Result<(), crate::providers::errors::ProviderError>,
+) -> Option<String> {
+    match preflight {
+        Err(err @ crate::providers::errors::ProviderError::ContextLengthExceeded(_)) => Some(
+            classified_subagent_failure_message(Some(err.to_string()), None),
+        ),
+        _ => None,
+    }
+}
+
+/// Run the provider's pre-send window check on the worker's first request
+/// (see [`crate::providers::base::Provider::preflight_request`]), and for a
+/// provider whose window is known, remember how big that request's fixed
+/// part (system prompt + tool schemas) was, for routing to size the next
+/// local dispatch against
+/// ([`crate::cost_router::fallback::record_worker_first_request_overhead`]).
+///
+/// The system prompt checked is the subagent template the run installs;
+/// the agent may append hints to it, so this is a floor, and the send's own
+/// preflight still refuses whatever this lets through.
+async fn preflight_first_request(
+    agent: &Agent,
+    task_config: &TaskConfig,
+    session_id: &str,
+    system: &str,
+    user_message: &Message,
+    compact_worker_profile: bool,
+) -> Result<()> {
+    let provider = &task_config.provider;
+    let model_config = provider.get_model_config();
+    let tools: Vec<_> = agent
+        .list_tools(session_id, None)
+        .await
+        .into_iter()
+        .filter(super::reply_parts::is_tool_visible_to_model)
+        .collect();
+    let window = provider.request_context_window(&model_config).await;
+    if window.is_some() {
+        if let Ok(counter) = crate::token_counter::create_token_counter().await {
+            let tools_json = serde_json::to_string(&tools).unwrap_or_default();
+            let overhead = counter
+                .count_tokens(system)
+                .saturating_add(counter.count_tokens(&tools_json));
+            crate::cost_router::fallback::record_worker_first_request_overhead(
+                compact_worker_profile,
+                overhead,
+            );
+        }
+    }
+    let preflight = provider
+        .preflight_request(
+            &model_config,
+            system,
+            std::slice::from_ref(user_message),
+            &tools,
+        )
+        .await;
+    match first_request_refusal_message(&preflight) {
+        Some(message) => {
+            tracing::warn!(
+                target: "permagent::cost_router",
+                session_id,
+                provider = provider.get_name(),
+                model = %model_config.model_name,
+                window = ?window,
+                reason = "first_request_exceeds_window",
+                "worker's first request does not fit its model's window; ending the attempt \
+                 before any turn so the local\u{2192}cloud fallback can take it"
+            );
+            Err(anyhow!(message))
+        }
+        None => Ok(()),
+    }
 }
 
 async fn get_final_output(agent: &Agent, has_response_schema: bool) -> Option<String> {

@@ -1004,6 +1004,38 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// The context window, in tokens, this provider will really run
+    /// `model_config`'s requests in, when it can know that for certain before
+    /// sending — a local server whose loaded window is fixed (Ollama reads it
+    /// from `/api/show`). `None` when it cannot tell, which is every cloud
+    /// provider: their overflow is a normal 400 that compaction answers.
+    ///
+    /// Routing reads this to keep a goal off a local model whose window
+    /// cannot hold the worker's first request. Decorators must forward it.
+    async fn request_context_window(&self, _model_config: &ModelConfig) -> Option<usize> {
+        None
+    }
+
+    /// Refuse, before anything is sent, a request this provider already
+    /// knows it cannot serve whole — the same `ContextLengthExceeded` its
+    /// `stream` would return for the same request. `Ok(())` when it fits or
+    /// the provider cannot tell (the default).
+    ///
+    /// A dispatched worker runs this on its first request so a refusal ends
+    /// the attempt at once with a classified `context_exceeded`, which the
+    /// orchestrator's local→cloud fallback acts on, instead of the agent loop
+    /// compacting a conversation that has nothing in it yet. Decorators must
+    /// forward it.
+    async fn preflight_request(
+        &self,
+        _model_config: &ModelConfig,
+        _system: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
     /// Create embeddings if supported. Default implementation returns an error.
     async fn create_embeddings(
         &self,
