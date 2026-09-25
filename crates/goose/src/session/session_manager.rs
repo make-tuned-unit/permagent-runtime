@@ -205,6 +205,16 @@ pub enum CallPurpose {
     Verification,
     /// Compaction, tool-pair summarisation and other context upkeep.
     ContextMaintenance,
+    /// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md Q1): a roadmap
+    /// decomposition's planner call — `run_decomposition`
+    /// (`platform_extensions::orchestrator`), routed through
+    /// `AccountedFastCompletion::complete_accounted_with_purpose`. Before
+    /// this variant existed every such call fell through to `Unknown`
+    /// (`complete_accounted`/`complete_fast_accounted` hardcoded
+    /// `CallProvenance::default()`), which is why tracing a planner
+    /// escalation's cost back to its cause required manual ledger
+    /// archaeology instead of a `call_purpose` filter.
+    Planning,
     /// The caller did not know. The honest default.
     #[default]
     Unknown,
@@ -219,6 +229,7 @@ impl CallPurpose {
             CallPurpose::Retry => "retry",
             CallPurpose::Verification => "verification",
             CallPurpose::ContextMaintenance => "context_maintenance",
+            CallPurpose::Planning => "planning",
             CallPurpose::Unknown => "unknown",
         }
     }
