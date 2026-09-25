@@ -12,10 +12,11 @@
  */
 
 import { useEffect, useId, useState, type CSSProperties } from 'react';
-import { font, radius, space, textSize } from '../../../styles/tokens';
+import { font, radius, space, tabularNums, textSize, type } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useCommandCenter } from '../../../lib/store';
 import { Button } from '../../common/Button';
+import { SkeletonText } from '../../common/Skeleton';
 import { decisionsClient } from './client';
 import type { DispatchEvidenceData, EvidenceDigestData, IndependentReviewDetail } from './types';
 import { formatUsd } from './format';
@@ -60,7 +61,19 @@ function OpenTranscriptButton({ sessionId }: { sessionId: string }) {
   );
 }
 
-export function EvidenceDigest({ projectId, goalId }: { projectId: string; goalId: string }) {
+/**
+ * `compact` is the decision inbox's inline digest (⑥): one fact row
+ * ("1 attempt · 4 min · 0 commits"), the check summary and the changed files,
+ * with no raw disclosure — the sheet's "Open full evidence…" is that level.
+ * The default (full) layout is GoalDetailModal's and is unchanged.
+ */
+export function EvidenceDigest({ projectId, goalId, compact = false, leadFacts = [] }: {
+  projectId: string;
+  goalId: string;
+  compact?: boolean;
+  /** Facts the caller already knows (e.g. time used, from the decision). */
+  leadFacts?: string[];
+}) {
   const { colors } = useTheme();
   const [state, setState] = useState<
     | { kind: 'loading' }
@@ -87,24 +100,100 @@ export function EvidenceDigest({ projectId, goalId }: { projectId: string; goalI
   }, [projectId, goalId]);
 
   if (state.kind === 'loading') {
+    // R2/U8: a skeleton in the final shape, not "Loading evidence…" text.
     return (
-      <div style={{ marginTop: space.xl, fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>
-        Loading evidence…
+      <div data-testid="evidence-loading" style={{ marginTop: compact ? 0 : space.xl, maxWidth: 360 }}>
+        <SkeletonText lines={2} />
       </div>
     );
   }
   if (state.kind === 'none') {
+    if (compact && leadFacts.length > 0) return <FactRow facts={leadFacts} />;
     return (
-      <div style={{ marginTop: space.xl, fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>
+      <div style={{ marginTop: compact ? 0 : space.xl, fontSize: compact ? textSize.small : textSize.caption, color: compact ? colors.textMuted : colors.textDim, fontFamily: font.body }}>
         No verification evidence has been recorded for this item yet.
       </div>
     );
   }
+  if (compact) return <CompactEvidence digest={state.digest} dispatch={state.dispatch} leadFacts={leadFacts} />;
   return (
     <>
       {state.dispatch && <DispatchEvidenceView ev={state.dispatch} />}
       {state.digest && <DigestView digest={state.digest} />}
     </>
+  );
+}
+
+function plural(n: number, word: string): string {
+  return `${n.toLocaleString('en-US')} ${word}${n === 1 ? '' : 's'}`;
+}
+
+function minutesBetween(a: string, b: string): string | null {
+  const ms = Date.parse(b) - Date.parse(a);
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const min = Math.round(ms / 60_000);
+  if (min < 1) return 'under a minute';
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)} hr ${min % 60 ? `${min % 60} min` : ''}`.trim();
+}
+
+function FactRow({ facts }: { facts: string[] }) {
+  const { colors } = useTheme();
+  return (
+    <div data-testid="evidence-facts" style={{ ...type.small, ...tabularNums, fontFamily: font.body, color: colors.text }}>
+      {facts.join(' · ')}
+    </div>
+  );
+}
+
+const COMPACT_FILES = 5;
+
+function CompactEvidence({ digest, dispatch, leadFacts }: {
+  digest: EvidenceDigestData | null;
+  dispatch: DispatchEvidenceData | null;
+  leadFacts: string[];
+}) {
+  const { colors } = useTheme();
+  const facts = [...leadFacts];
+  if (digest) {
+    facts.push(plural(digest.costs.attempt_count, 'attempt'));
+    const took = minutesBetween(digest.started_at, digest.finished_at);
+    if (took) facts.push(took);
+  }
+  if (dispatch) facts.push(plural(dispatch.commits.length, 'commit'));
+  const files = dispatch?.files_changed ?? digest?.diff.files_changed;
+  if (files != null) facts.push(`${plural(files, 'file')} changed`);
+  if (digest?.costs.cost_usd != null) facts.push(formatUsd(digest.costs.cost_usd));
+  const perFile = digest?.diff.per_file ?? [];
+  const cs = digest?.checks_summary;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
+      <FactRow facts={facts} />
+      {cs && (
+        <div style={{ ...type.small, fontFamily: font.body, color: colors.textMuted }}>
+          <SummaryRow ok={cs.total_count > 0 && cs.passed_count === cs.total_count} text={cs.one_line} />
+        </div>
+      )}
+      {dispatch?.push_target && (
+        <div style={{ ...type.small, fontFamily: font.body, color: colors.textMuted }}>
+          Pushed to {dispatch.push_target}
+        </div>
+      )}
+      {perFile.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxs }}>
+          {perFile.slice(0, COMPACT_FILES).map(f => (
+            <div key={f.path} style={{ display: 'flex', gap: space.md, fontFamily: font.mono, fontSize: textSize.caption, color: colors.textMuted, ...tabularNums }}>
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.path}</span>
+              <span style={{ color: colors.success, flexShrink: 0 }}>+{f.insertions}</span>
+              <span style={{ color: colors.danger, flexShrink: 0 }}>-{f.deletions}</span>
+            </div>
+          ))}
+          {perFile.length > COMPACT_FILES && (
+            <span style={{ fontSize: textSize.caption, color: colors.textDim }}>+{perFile.length - COMPACT_FILES} more</span>
+          )}
+        </div>
+      )}
+      {digest?.costs.worker_session_id && <OpenTranscriptButton sessionId={digest.costs.worker_session_id} />}
+    </div>
   );
 }
 

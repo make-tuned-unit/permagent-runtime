@@ -7,6 +7,14 @@ export function useDecisionQueue({ decisions, focusedId: initialId = null }: {
   focusedId?: string | null;
 }) {
   const [deferred, setDeferred] = useState<Set<string>>(() => new Set());
+  // "Later" lasts until anything new arrives (Linear's snooze-until-activity):
+  // a decision id this queue has never seen clears every deferral.
+  const [seen, setSeen] = useState<Set<string>>(() => new Set(decisions.map(d => d.id)));
+  const fresh = decisions.filter(d => !seen.has(d.id));
+  if (fresh.length > 0) {
+    setSeen(new Set([...seen, ...fresh.map(d => d.id)]));
+    if (deferred.size > 0) setDeferred(new Set());
+  }
   const ordered = [...decisions].sort((a, b) => {
     const tail = Number(deferred.has(a.id)) - Number(deferred.has(b.id));
     if (deferred.has(a.id) && deferred.has(b.id)) return [...deferred].indexOf(a.id) - [...deferred].indexOf(b.id);

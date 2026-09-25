@@ -26,6 +26,9 @@ import { Tooltip } from './Tooltip';
 
 interface Props {
   title: string;
+  /** Accessible name for a panel whose visible `title` is empty (its heading
+   *  lives in `headerLeft` instead); without it the dialog has no name. */
+  ariaLabel?: string;
   /** Optional status pill shown next to the title (e.g. goal state). */
   badge?: { label: string; color: string; bg: string } | null;
   onClose: () => void;
@@ -101,7 +104,7 @@ const FOCUSABLE = [
 const TOP_ANCHOR_OFFSET = space.huge * 3;
 
 export function DetailModal({
-  title, badge, onClose, footer, children,
+  title, ariaLabel, badge, onClose, footer, children,
   width = 'min(560px, 92vw)', height, headerLeft, headerRight, bodyStyle, footerStyle,
   placement = 'center', align = 'center', stopEscapePropagation,
 }: Props) {
@@ -250,7 +253,8 @@ export function DetailModal({
         ref={panelRef}
         role="dialog"
         aria-modal={modal || undefined}
-        aria-labelledby={titleId}
+        aria-labelledby={title ? titleId : undefined}
+        aria-label={title ? undefined : ariaLabel}
         tabIndex={-1}
         onClick={e => e.stopPropagation()}
         // R8 item 6: scale-from-origin entrance for the modal case only — a

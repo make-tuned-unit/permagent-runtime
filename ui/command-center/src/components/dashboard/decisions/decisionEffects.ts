@@ -1,137 +1,328 @@
-import type { Decision } from './types';
+/**
+ * One record per decision drives BOTH the "If you choose" rows (⑤) and the
+ * action bar's buttons (⑨), so the label a row names and the button it names
+ * cannot drift apart (U3). Before this, `effectSummaryFor` and `effectTextFor`
+ * described the same button two ways on one screen — a goal unblock's panel
+ * said "no automatic effect" while its confirm strip said "will wake this goal
+ * up".
+ *
+ * Source of the sentences, in order: the daemon's per-answer `effects` map
+ * (daemon lane D4) when it sends one, else the local per-kind table from the
+ * inbox design report. Sentences marked † there are not fully traced and say
+ * only what is verified.
+ *
+ * Roles: exactly one `primary` at most (D8), destructive/irreversible actions
+ * are `danger` (leading edge, ellipsis, ConfirmDialog, no key, never default).
+ */
+import type { AnswerBody, Decision } from './types';
+import { checkApprovalOf, choiceOptions, draftText, recommendedChoiceId } from './types';
+import { scheduledJobId } from './decisionEvidence';
 
-const RECORD_ONLY_TEXT = 'Records your answer; no automatic effect' as const;
+export type ActionRole = 'primary' | 'ghost' | 'danger';
 
-export type EffectSummary =
-  | { known: true; lines: string[]; missing?: string[] }
-  | { known: false; text: typeof RECORD_ONLY_TEXT };
+/** A field the action opens inline before it can be sent. */
+export type ActionField =
+  /** Required free text sent as `input_text` (answer 'input'). */
+  | 'input'
+  /** Required revised draft sent as `input_text` (answer 'edit'). */
+  | 'edit'
+  /** Optional one-line reason sent as the answer note. */
+  | 'reason'
+  /** Optional find-online hint sent as the note (enrichment discard). */
+  | 'hint';
 
-interface ScheduledJobUnblockShape {
-  target?: { type?: string; job_id?: string };
-  reason?: string;
-  pause_episode_id?: string;
-  answers?: Array<{ id?: string; label?: string }>;
+export interface VerdictAction {
+  /** Stable id; also the key into the daemon's `effects` map. */
+  id: string;
+  /** The exact button title. The ⑤ row names this same string. */
+  label: string;
+  /** One consequence sentence. */
+  effect: string;
+  role: ActionRole;
+  /** Single-key shortcut ('1'…'9', '0'), or null. */
+  key: string | null;
+  /** Return mirrors this action (only a reversible primary). */
+  returnDefault: boolean;
+  /** What gets sent. Null for `cancel_goal`, which is its own route. */
+  body: AnswerBody | null;
+  field?: ActionField;
+  /** Label of the send button while `field` is open ("Send and retry"). */
+  fieldSubmitLabel?: string;
+  fieldPlaceholder?: string;
+  /** Irreversible: goes through ConfirmDialog, never the undo hold. */
+  confirm?: { title: string; consequence: string; confirmLabel: string };
+  /** Toast title after the verdict ("Sent back"). */
+  doneLabel: string;
 }
 
-interface ChoiceShape {
-  options?: Array<{ id?: string; label?: string }>;
-  default?: string | null;
-  reservation_gate?: {
-    scope?: string;
-    settled_usd?: number;
-    held_usd?: number;
-    requested_usd?: number;
-    ceiling_usd?: number;
-    requesting_session_id?: string | null;
+export interface DecisionPlan {
+  actions: VerdictAction[];
+  /** Always offered: bare, `H`. */
+  later: { label: string; effect: string; key: 'H' };
+  /** False for kinds the daemon cannot take an answer for yet (D5). */
+  answerable: boolean;
+}
+
+export const LATER_EFFECT = 'Keeps it here; it comes back after anything new.';
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function asText(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/** `autonomy_level` / `budget.ceiling_usd` → "autonomy level" / "budget ceiling usd". */
+function humanKey(key: string): string {
+  return key.replace(/[._-]+/g, ' ').trim();
+}
+
+function displayValue(value: unknown): string | null {
+  if (typeof value === 'string') return value.trim() || null;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return null;
+}
+
+type Draft = Omit<VerdictAction, 'returnDefault' | 'doneLabel'> & { returnDefault?: boolean; doneLabel?: string };
+
+function primary(id: string, label: string, effect: string, body: AnswerBody | null, extra: Partial<Draft> = {}): Draft {
+  return { id, label, effect, role: 'primary', key: '1', returnDefault: true, body, ...extra };
+}
+function ghost(id: string, label: string, effect: string, key: string | null, body: AnswerBody | null, extra: Partial<Draft> = {}): Draft {
+  return { id, label, effect, role: 'ghost', key, body, ...extra };
+}
+function danger(id: string, label: string, effect: string, body: AnswerBody | null, confirm: VerdictAction['confirm']): Draft {
+  return { id, label, effect, role: 'danger', key: null, body, confirm };
+}
+
+const APPROVE: AnswerBody = { answer: 'approve' };
+const REJECT: AnswerBody = { answer: 'reject' };
+
+function localActions(d: Decision, agentName: string, canCancelGoal: boolean): Draft[] | null {
+  const payload = asObject(d.payload);
+  switch (d.kind) {
+    case 'approve_review':
+      return [
+        primary('approve', 'Accept work', 'Marks the goal done and lands or hands off the work.', APPROVE, { doneLabel: 'Accepted' }),
+        ghost('reject', 'Send back', 'Sends the work back for another attempt with your reason.', '3', REJECT, {
+          field: 'reason', fieldSubmitLabel: 'Send back', fieldPlaceholder: 'Why? (optional — the worker sees this)', doneLabel: 'Sent back',
+        }),
+      ];
+    case 'unblock': {
+      if (scheduledJobId(d)) {
+        return [
+          primary('approve', 'Resume job', 'Turns the scheduled job back on from its next run.', APPROVE, { doneLabel: 'Resumed' }),
+          ghost('reject', 'Keep paused', 'The job stays paused; you can resume it later.', '3', REJECT, { doneLabel: 'Kept paused' }),
+        ];
+      }
+      // No Reject (D8, Jesse's delegated ruling): the daemon has no reject arm
+      // for a goal unblock, so it left a parked goal with no open question.
+      const actions: Draft[] = [
+        primary('approve', 'Try again', 'Wakes the goal and gives it more attempts.', APPROVE, { doneLabel: 'Trying again' }),
+        ghost('input', 'Retry with notes', 'Sends your notes to the worker as written, then retries.', '2', { answer: 'input' }, {
+          field: 'input', fieldSubmitLabel: 'Send and retry', fieldPlaceholder: 'Notes for the worker — sent exactly as written', doneLabel: 'Notes sent',
+        }),
+      ];
+      if (canCancelGoal) {
+        actions.unshift(danger('cancel_goal', 'Cancel goal…', 'Stops this goal for good. Its branch and history stay viewable.', null, {
+          title: 'Cancel this goal?',
+          consequence: `${agentName} stops working on it for good and the worker is shut down. Its branch and history stay viewable, but the goal can't be resumed.`,
+          confirmLabel: 'Cancel goal',
+        }));
+      }
+      return actions;
+    }
+    case 'choice': {
+      const options = choiceOptions(d);
+      const check = checkApprovalOf(d);
+      const optionActions: Draft[] = options.slice(0, 9).map((opt, index) => {
+        const effect = check
+          ? opt.id === 'approve-once' ? 'The command runs this one time.'
+            : opt.id === 'approve-and-allowlist' ? `The command runs, and commands starting with “${check.first_token ?? 'it'}” won't ask again.`
+            : opt.id === 'deny' ? "The check doesn't run this command."
+            : `${agentName} continues with this option.`
+          : `${agentName} continues with ${opt.label}.`;
+        return ghost(`choice:${opt.id}`, opt.label, effect, String(index + 1), { answer: 'choice', choice_id: opt.id }, { doneLabel: opt.label });
+      });
+      if (!check) {
+        optionActions.push(ghost('reject', 'None of these', d.goal_id
+          ? `Records that none fit; ${agentName} pauses this goal.`
+          : 'Records that none of the options fit.', '0', REJECT, { doneLabel: 'None of these' }));
+      }
+      return optionActions;
+    }
+    case 'risk_gate': {
+      if (payload?.action_class === 'user_data_deletion') {
+        const object = d.goal_id ? 'goal' : 'data';
+        return [
+          danger('approve', `Delete ${object}…`, `Permanently deletes this ${object}. This can't be undone.`, APPROVE, {
+            title: `Delete this ${object}?`,
+            consequence: `This permanently deletes the ${object}${d.goal_title ? ` “${d.goal_title}”` : ''}. It can't be undone.`,
+            confirmLabel: `Delete ${object}`,
+          }),
+          ghost('reject', "Don't delete", 'Nothing is deleted.', '3', REJECT, { doneLabel: 'Kept' }),
+        ];
+      }
+      const action = asText(payload?.description);
+      const allow = payload?.action_class === 'repo_worktree_reap'
+        ? 'Removes this worktree folder; anything with uncommitted or unpushed work is skipped.'
+        : payload?.action_class === 'repo_branch_delete'
+          ? 'Deletes this local branch, only if it is still fully merged.'
+          : `${agentName} may go ahead with ${action ? action.replace(/[.]$/, '').replace(/^./, c => c.toLowerCase()) : 'this action'}.`;
+      return [
+        primary('approve', 'Allow', allow, APPROVE, { doneLabel: 'Allowed' }),
+        ghost('reject', "Don't allow", `${agentName} won't do it and will look for another way.`, '3', REJECT, { doneLabel: 'Not allowed' }),
+      ];
+    }
+    case 'automation_proposal': {
+      const actions: Draft[] = [primary('approve', 'Approve', 'Records your approval.', APPROVE, { doneLabel: 'Approved' })];
+      if (draftText(d)) {
+        actions.push(ghost('edit', 'Edit and approve', 'Opens the draft for you to change before approving.', '2', { answer: 'edit' }, {
+          field: 'edit', fieldSubmitLabel: 'Approve edited', fieldPlaceholder: 'Your version of the draft', doneLabel: 'Approved with edits',
+        }));
+      }
+      actions.push(ghost('reject', "Don't suggest again", `${agentName} won't pitch this automation again.`, '3', REJECT, { doneLabel: 'Dismissed' }));
+      return actions;
+    }
+    case 'enrichment_proposal':
+      return [
+        primary('approve', 'Save to profile', 'Writes these fields to the profile.', APPROVE, { doneLabel: 'Saved' }),
+        ghost('reject', 'Discard', 'Nothing is written; your hint helps next time.', '3', REJECT, {
+          field: 'hint', fieldSubmitLabel: 'Discard', fieldPlaceholder: 'How can the agent find this person online? Company, LinkedIn, city…', doneLabel: 'Discarded',
+        }),
+      ];
+    case 'project_intel_proposal':
+      return [
+        primary('approve', 'Apply', "Adds this to the project's notes.", APPROVE, { doneLabel: 'Applied' }),
+        ghost('reject', 'Discard', 'Nothing is written.', '3', REJECT, { doneLabel: 'Discarded' }),
+      ];
+    case 'file_to_project': {
+      const project = asText(payload?.project_name);
+      return [
+        primary('approve', 'File it', `Files this item under ${project ?? 'the project'}.`, APPROVE, { doneLabel: 'Filed' }),
+        ghost('reject', "Don't file", 'Nothing is filed.', '3', REJECT, { doneLabel: 'Not filed' }),
+      ];
+    }
+    case 'council_action':
+      return [
+        primary('approve', 'File card', 'Files a board card for this action.', APPROVE, { doneLabel: 'Card filed' }),
+        ghost('reject', 'Decline', "Recorded; the Council won't pitch it again.", '3', REJECT, { doneLabel: 'Declined' }),
+      ];
+    case 'tool_approval':
+      return [
+        primary('approve', 'Allow once', 'The tool runs this one time.', APPROVE, { doneLabel: 'Allowed once' }),
+        ghost('reject', 'Deny', `The tool call is refused; ${agentName} is told why.`, '3', REJECT, { doneLabel: 'Denied' }),
+      ];
+    case 'session_gate':
+      // Deviation from the report's table, kept honest: the session advances
+      // when the gate is answered in its own tab (decisionEffects history).
+      return [
+        primary('approve', 'Allow', 'Records your ruling; the session continues once its tab takes it.', APPROVE, { doneLabel: 'Allowed' }),
+        ghost('reject', 'Deny', 'Records your ruling; the session stops at this step.', '3', REJECT, { doneLabel: 'Denied' }),
+      ];
+    case 'malformed':
+      return [primary('approve', 'Dismiss', 'Removes it from your queue. Nothing else changes.', APPROVE, { doneLabel: 'Dismissed' })];
+    case 'model_upgrade': {
+      const model = asText(payload?.model_id);
+      return [
+        primary('approve', 'Switch model', `Makes ${model ?? 'the proposed model'} the active model.`, APPROVE, { doneLabel: 'Switched' }),
+        ghost('reject', 'Keep current', 'The active model is unchanged.', '3', REJECT, { doneLabel: 'Kept current' }),
+      ];
+    }
+    case 'config_change_proposal': {
+      const key = asText(payload?.key);
+      const value = displayValue(payload?.value);
+      return [
+        primary('approve', 'Apply change', key && value
+          ? `Changes ${humanKey(key)} to ${value}.`
+          : 'Applies the proposed setting change.', APPROVE, { doneLabel: 'Applied' }),
+        ghost('reject', 'Keep setting', 'No setting is changed.', '3', REJECT, { doneLabel: 'Kept' }),
+      ];
+    }
+    case 'person_merge_proposal':
+      return [
+        danger('approve', 'Merge people…', 'Combines these two into one person.', APPROVE, {
+          title: 'Merge these people?',
+          consequence: `${asText(payload?.duplicate_name) ?? 'The duplicate'} is folded into ${asText(payload?.survivor_name) ?? 'the other record'} and then deleted. This can't be undone.`,
+          confirmLabel: 'Merge people',
+        }),
+        ghost('reject', 'Keep separate', 'Nothing changes.', '3', REJECT, { doneLabel: 'Kept separate' }),
+      ];
+    case 'person_delete_proposal':
+      return [
+        danger('approve', 'Delete person…', "Permanently deletes this person's record.", APPROVE, {
+          title: 'Delete this person?',
+          consequence: `${asText(payload?.display_name) ?? "This person"}'s record is permanently deleted. This can't be undone.`,
+          confirmLabel: 'Delete person',
+        }),
+        ghost('reject', 'Keep', 'Nothing changes.', '3', REJECT, { doneLabel: 'Kept' }),
+      ];
+    case 'capability_gap':
+    case 'regression_proposal':
+      return null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The single source for a decision's verdicts. `canCancelGoal` is false where
+ * the surface has no goal to cancel (no project/goal id).
+ */
+export function decisionPlan(d: Decision, agentName = 'Henry', canCancelGoal = !!(d.project_id && d.goal_id)): DecisionPlan {
+  const drafts = localActions(d, agentName, canCancelGoal);
+  const daemonEffects = d.effects && typeof d.effects === 'object' ? d.effects : null;
+  const actions: VerdictAction[] = (drafts ?? []).map(a => {
+    const fromDaemon = daemonEffects ? asText(daemonEffects[a.id] ?? (a.body?.choice_id ? daemonEffects[a.body.choice_id] : undefined)) : null;
+    return {
+      ...a,
+      effect: fromDaemon ?? a.effect,
+      returnDefault: a.role === 'primary' && !a.confirm && (a.returnDefault ?? false),
+      doneLabel: a.doneLabel ?? a.label.replace(/…$/, ''),
+    };
+  });
+  // A voice-staged verdict (D29) makes its own action the one tinted button:
+  // committing it is the next step, whichever verdict it is.
+  const staged = d.staged_answer?.answer;
+  if (staged === 'approve' || staged === 'reject') {
+    const target = actions.find(a => a.body?.answer === staged && a.role !== 'danger');
+    if (target && target.role !== 'primary') {
+      for (const a of actions) if (a.role === 'primary') { a.role = 'ghost'; a.returnDefault = false; }
+      target.role = 'primary';
+      target.returnDefault = true;
+    }
+  }
+  const laterEffect = asText(daemonEffects?.later) ?? LATER_EFFECT;
+  return {
+    actions,
+    later: { label: 'Later', effect: drafts === null ? `${agentName} can't act on an answer to this yet. ${laterEffect}` : laterEffect, key: 'H' },
+    answerable: drafts !== null,
   };
 }
 
-function asObject(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+const ROW_ORDER: Record<ActionRole, number> = { primary: 0, ghost: 1, danger: 2 };
+
+/** The ⑤ rows, read from the same record as the buttons: [label, sentence].
+ *  Read top-down as a recommendation: the primary first, alternatives next,
+ *  the destructive choice last (the bar puts it apart at the leading edge),
+ *  then Later. */
+export function effectRows(plan: DecisionPlan): Array<{ label: string; effect: string }> {
+  const ordered = plan.actions
+    .map((a, i) => ({ a, i }))
+    .sort((x, y) => ROW_ORDER[x.a.role] - ROW_ORDER[y.a.role] || x.i - y.i)
+    .map(({ a }) => a);
+  return [
+    ...ordered.map(a => ({ label: a.label, effect: a.effect })),
+    { label: plan.later.label, effect: plan.later.effect },
+  ];
 }
 
-function asNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function normalizeEffect(effect: string): string {
-  const marker = ' — ';
-  const idx = effect.indexOf(marker);
-  return idx >= 0 ? effect.slice(idx + marker.length).trim() : effect.trim();
-}
-
-function usd(value: number): string {
-  return `$${value.toFixed(2)}`;
-}
-
-// Shared confirm-step copy per kind+answer. This remains the source that
-// DecisionItem uses, now lifted to a reusable module.
-export function effectTextFor(
-  kind: string,
-  answer: 'approve' | 'reject',
-  agentName: string,
-  actionClass?: string,
-  decision?: Decision,
-): string {
-  if (kind === 'approve_review') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will mark this goal complete and start anything waiting on it.`
-      : `Confirm reject — ${agentName} will send the work back for another attempt.`;
-  }
-  if (kind === 'unblock') {
-    if (decision) {
-      const scheduled = scheduledUnblockConfirmText(decision, answer);
-      if (scheduled) return scheduled;
-    }
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will wake this goal up and let it try again.`
-      : 'Confirm reject — the goal stays parked.';
-  }
-  if (kind === 'risk_gate') {
-    if (actionClass === 'repo_worktree_reap') {
-      return answer === 'approve'
-        ? `Confirm approve — ${agentName} removes this worktree folder. Anything with uncommitted or unpushed work is skipped, and every check is re-run at the moment of removal.`
-        : 'Confirm reject — the worktree stays, and this cleanup will not be suggested again.';
-    }
-    if (actionClass === 'repo_branch_delete') {
-      return answer === 'approve'
-        ? `Confirm approve — ${agentName} deletes this local branch (safe delete only: git refuses if it stopped being merged). Every check is re-run at the moment of deletion.`
-        : 'Confirm reject — the branch stays, and this cleanup will not be suggested again.';
-    }
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} may go ahead with this action.`
-      : `Confirm reject — ${agentName} will not go ahead with this.`;
-  }
-  if (kind === 'enrichment_proposal') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will save these details to the person's profile (your manual entries stay protected).`
-      : 'Confirm reject — nothing is written to the profile. If this was the wrong person, add a hint below so the next pass can find them.';
-  }
-  if (kind === 'project_intel_proposal') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will save these cited findings to the project's intelligence panel.`
-      : 'Confirm reject — no intelligence is stored.';
-  }
-  if (kind === 'file_to_project') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will save this as a project note and add the named people (name only, no contact details).`
-      : 'Confirm reject — nothing is saved anywhere.';
-  }
-  if (kind === 'tool_approval') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will run this tool and continue the turn.`
-      : `Confirm reject — ${agentName} will skip this tool and continue the turn.`;
-  }
-  if (kind === 'council_action') {
-    return answer === 'approve'
-      ? `Confirm approve — ${agentName} will file this as a board card on the named project.`
-      : 'Confirm reject — this council action is dismissed; nothing is filed on the board.';
-  }
-  if (kind === 'session_gate') {
-    return answer === 'approve'
-      ? 'Confirm allow — records your ruling. The terminal session itself advances once the gate is answered in its tab (the confirmation gives you the exact line to paste).'
-      : 'Confirm deny — records your ruling. The terminal session itself advances once the gate is answered in its tab (the confirmation gives you the exact line to paste).';
-  }
-  return answer === 'approve'
-    ? 'Confirm — this is recorded for the audit trail; nothing else changes.'
-    : 'Confirm reject — this is recorded for the audit trail; nothing else changes.';
-}
-
-function scheduledUnblockConfirmText(
-  d: Decision,
-  answer: 'approve' | 'reject',
-): string | null {
-  const summary = scheduledUnblockSummary(d);
-  if (!summary || !summary.known) return null;
-  const line = summary.lines[answer === 'approve' ? 0 : 1];
-  if (!line || line === RECORD_ONLY_TEXT) return null;
-  const withoutIndex = normalizeEffect(line).replace(/^\d+\.\s*/, '');
-  const separator = withoutIndex.indexOf(':');
-  const detail = (separator >= 0 ? withoutIndex.slice(separator + 1) : withoutIndex).trim();
-  if (!detail) return null;
-  return answer === 'approve'
-    ? `Confirm approve — ${detail}`
-    : `Confirm reject — ${detail}`;
+/** Henry's recommended choice option label, for the eyebrow chip. */
+export function recommendedLabel(d: Decision): string | null {
+  const id = recommendedChoiceId(d);
+  if (!id) return null;
+  return choiceOptions(d).find(o => o.id === id)?.label ?? null;
 }
 
 // Full tool-call arguments carried by a tool_approval payload / session_gate
@@ -152,135 +343,17 @@ export function toolArgumentsText(d: Decision): string | null {
   }
 }
 
-function scheduledUnblockSummary(d: Decision): EffectSummary | null {
-  if (d.kind !== 'unblock') return null;
-  const payload = asObject(d.payload) as ScheduledJobUnblockShape | null;
-  if (!payload) return null;
-
-  const target = payload.target;
-  const jobId = target && target.type === 'scheduled_job' && typeof target.job_id === 'string'
-    ? target.job_id
-    : null;
-  const episodeId = typeof payload.pause_episode_id === 'string' ? payload.pause_episode_id : null;
-  const reason = typeof payload.reason === 'string' ? payload.reason : null;
-  const answers = Array.isArray(payload.answers)
-    ? payload.answers.filter(a => a && typeof a.id === 'string' && typeof a.label === 'string')
-    : [];
-
-  if (!jobId && !episodeId && !reason && answers.length === 0) return null;
-
-  const missing: string[] = [];
-  if (!jobId) missing.push('scheduled job target');
-  if (!episodeId) missing.push('pause episode id');
-  if (!reason) missing.push('pause reason');
-  const approveAnswer = answers.find(a => a.id === 'approve');
-  const rejectAnswer = answers.find(a => a.id === 'reject');
-  if (!approveAnswer || !rejectAnswer) missing.push('resume/keep-paused choices');
-
-  const lines: string[] = [];
-  if (approveAnswer && rejectAnswer && jobId && episodeId) {
-    lines.push(
-      `1. ${approveAnswer.label}: resume the scheduled job "${jobId}" (episode ${episodeId}); this resumes the job and resets consecutive failures and retry count to 0.`,
-    );
-    lines.push(`2. ${rejectAnswer.label}: keep the scheduled job paused and change nothing else.`);
-  } else if (!approveAnswer || !rejectAnswer) {
-    lines.push(RECORD_ONLY_TEXT);
-  } else {
-    lines.push('Approve records a resume decision for this scheduled job pause episode.');
-    lines.push('Reject keeps the scheduled job paused.');
-  }
-
-  return missing.length > 0 ? { known: true, lines, missing } : { known: true, lines };
-}
-
-function choiceSummary(d: Decision): EffectSummary {
-  const payload = asObject(d.payload) as ChoiceShape | null;
-  const optionsRaw = payload && Array.isArray(payload.options) ? payload.options : [];
-  const options = optionsRaw.filter(
-    (o): o is { id: string; label: string } => !!o && typeof o.id === 'string' && typeof o.label === 'string',
+/**
+ * Informed-reject warning (#458). When an approve_review goal's work was
+ * already pushed, sending it back does NOT un-ship it. Null = no warning.
+ */
+export function pushedRejectWarning(
+  kind: string,
+  pushTarget: string | null | undefined,
+): string | null {
+  if (kind !== 'approve_review' || !pushTarget) return null;
+  return (
+    `This work is already on ${pushTarget} — sending it back won't un-ship it. ` +
+    'Rework lands as new commits; undoing the pushed commit needs a revert.'
   );
-  const lines: string[] = [];
-  const missing: string[] = [];
-
-  if (options.length === 0) {
-    missing.push('choice options');
-    lines.push('Records your selected choice.');
-  } else {
-    options.forEach((opt, idx) => {
-      const recommended = payload?.default === opt.id ? ' (recommended)' : '';
-      lines.push(`${idx + 1}. ${opt.label}${recommended}`);
-    });
-    lines.push('Records your selected option for this decision.');
-  }
-
-  if (payload?.reservation_gate) {
-    const gate = payload.reservation_gate;
-    const settled = asNumber(gate.settled_usd);
-    const held = asNumber(gate.held_usd);
-    const requested = asNumber(gate.requested_usd);
-    const ceiling = asNumber(gate.ceiling_usd);
-    const scope = typeof gate.scope === 'string' && gate.scope.trim() ? gate.scope.trim() : null;
-    if (
-      settled !== null &&
-      held !== null &&
-      requested !== null &&
-      ceiling !== null &&
-      scope
-    ) {
-      lines.push(
-        `Budget context (${scope}): settled ${usd(settled)}, held ${usd(held)}, requested ${usd(requested)}, ceiling ${usd(ceiling)}.`,
-      );
-    } else {
-      if (settled === null) missing.push('settled budget');
-      if (held === null) missing.push('held budget');
-      if (requested === null) missing.push('requested budget');
-      if (ceiling === null) missing.push('budget ceiling');
-      if (!scope) missing.push('budget scope');
-    }
-    lines.push('This records a budget-gate choice; it does not itself promise an automatic convene.');
-  }
-
-  return missing.length > 0 ? { known: true, lines, missing } : { known: true, lines };
-}
-
-export function effectSummaryFor(d: Decision): EffectSummary {
-  const knownKinds = new Set([
-    'approve_review',
-    'unblock',
-    'choice',
-    'risk_gate',
-    'automation_proposal',
-    'enrichment_proposal',
-    'project_intel_proposal',
-    'file_to_project',
-    'tool_approval',
-    'session_gate',
-    'council_action',
-    'malformed',
-  ]);
-
-  if (!knownKinds.has(d.kind)) {
-    return { known: false, text: RECORD_ONLY_TEXT };
-  }
-
-  if (d.kind === 'choice') return choiceSummary(d);
-
-  const scheduled = scheduledUnblockSummary(d);
-  if (scheduled) return scheduled;
-
-  const actionClass =
-    d.kind === 'risk_gate'
-      ? (() => {
-          const payload = asObject(d.payload);
-          return payload && typeof payload.action_class === 'string' ? payload.action_class : undefined;
-        })()
-      : undefined;
-
-  // Labelled: the review shows these under one heading, and an unlabelled
-  // reject line read as a second consequence of approving.
-  const lines = [
-    `If you approve: ${normalizeEffect(effectTextFor(d.kind, 'approve', 'your agent', actionClass))}`,
-    `If you reject: ${normalizeEffect(effectTextFor(d.kind, 'reject', 'your agent', actionClass))}`,
-  ];
-  return { known: true, lines };
 }

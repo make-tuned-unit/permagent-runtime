@@ -1,51 +1,69 @@
 /**
- * Decision Inbox — overlay (Lane L4).
+ * Decision Inbox — the sheet (Lane L4, redesigned 2026-09-25).
  *
- * Rendered from inside dashboard/ so the workspaces/ mount point stays
- * untouched, on `DetailModal` — the app's one modal shell — rather than on a
- * copy of it. D1 reviews the complete pending queue one decision at a time,
- * alongside isolated discussion; parked goals and History remain available.
- * Zero batch/multi-select affordances anywhere — answers are one at a time.
+ * One top-anchored 720px column on `DetailModal` (U9): ① header (position,
+ * ‹ ›, and a quiet "N handled since …" link that replaced both the
+ * "handled overnight" row and the History footer, U18), the review body
+ * (②–⑧, DecisionReview), and ⑨ the action bar in the shell's footer.
+ *
+ * The separate "Parked goals" list is gone (U2): every parked goal with an
+ * open unblock decision is already in the queue, so it showed the same goal
+ * twice. Zero batch/multi-select affordances — answers are one at a time
+ * (Jesse's delegated ruling, 2026-09-25).
  */
 
-import { useState, useCallback, useId, useEffect, type CSSProperties } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../../lib/store';
 import { useLiveGoals } from '../../../lib/useLiveGoals';
-import { font, radius, ease, duration, space, textSize } from '../../../styles/tokens';
+import { font, radius, space, type } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
+import { Chip } from '../../common/Chip';
 import { DetailModal } from '../../common/DetailModal';
+import { SkeletonText } from '../../common/Skeleton';
 import { StateBlock } from '../../common/StateBlock';
 import type { useDecisions } from './useDecisions';
 import type { HistoryItem } from './types';
 import { resolutionText, deadLetterText } from './types';
-import { DecisionReview, useDecisionReviewState } from './DecisionReview';
-import { formatAge, withAlpha } from './format';
+import {
+  DecisionReview, LoadingShape, REVIEW_PAD_X, ReviewActionBar, ReviewHeader,
+  useDecisionReviewState,
+} from './DecisionReview';
+import { handledLinkLabel, handledSentence, handledSummary } from './DecisionInbox.handled';
+import { ageLabel } from './decisionEvidence';
 import { usePersona } from '../../settings/useSettings';
 
-import { Tooltip } from '../../common/Tooltip';
 interface Props {
   inbox: ReturnType<typeof useDecisions>;
   onClose: () => void;
   placement?: 'center' | 'contained';
 }
 
+/** Focusable controls, for trapping Tab inside a dialog stacked on this one. */
+const FOCUSABLE = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+const quietLink = (colors: ReturnType<typeof useTheme>['colors']): CSSProperties => ({
+  '--pa-btn-fg': colors.textMuted,
+  '--pa-btn-fg-hover': colors.text,
+  '--pa-btn-bg-hover': colors.fillHover,
+  '--pa-btn-bg-active': colors.fillActive,
+  '--pa-btn-pad': `${space.xs}px ${space.md}px`,
+  '--pa-btn-weight': 400,
+  fontFamily: font.body, fontSize: type.caption.fontSize,
+} as CSSProperties);
+
 export function DecisionInbox({ inbox, onClose, placement = 'center' }: Props) {
-  const { colors, reduceMotion } = useTheme();
+  const { colors } = useTheme();
   const goalDetail = useCommandCenter(state => state.goalDetail);
   const { data, loading, error } = inbox;
   const { data: persona } = usePersona();
-  const agentName = persona?.display_name ?? 'your agent';
-  const reviewState = useDecisionReviewState(inbox);
+  const agentName = persona?.display_name ?? 'Henry';
+  const review = useDecisionReviewState(inbox, agentName);
   const [view, setView] = useState<'list' | 'history'>('list');
+  const [historyFilter, setHistoryFilter] = useState<'agent' | 'all'>('all');
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
-  /** The history read failed. It used to be `catch { setHistory([]) }`, which
-   *  moved the failure into the empty branch by hand: a daemon that never
-   *  answered rendered as "Nothing here yet" — i.e. as an audit trail saying
-   *  nothing had ever been decided. */
+  /** A failed history read must not render as an empty audit trail. */
   const [historyError, setHistoryError] = useState(false);
-  const [tier1Open, setTier1Open] = useState(false);
-  const tier1Id = useId();
 
   const loadHistory = useCallback(async () => {
     setHistoryError(false);
@@ -54,319 +72,151 @@ export function DecisionInbox({ inbox, onClose, placement = 'center' }: Props) {
     } catch { setHistoryError(true); }
   }, [inbox]);
 
-  const openHistory = useCallback(async () => {
+  const openHistory = useCallback(async (filter: 'agent' | 'all') => {
+    setHistoryFilter(filter);
     setView('history');
-    if (history === null) {
-      try {
-        setHistory(await inbox.loadHistory());
-        setHistoryError(false);
-      } catch { setHistoryError(true); }
-    }
-  }, [history, inbox]);
-
-  const toggleTier1 = useCallback(async () => {
-    const next = !tier1Open;
-    setTier1Open(next);
-    if (next && history === null) {
-      try {
-        setHistory(await inbox.loadHistory());
-        setHistoryError(false);
-      } catch { setHistoryError(true); }
-    }
-  }, [tier1Open, history, inbox]);
+    review.setShortcutsOpen(false);
+    if (history === null) await loadHistory();
+  }, [history, loadHistory, review]);
 
   const showAll = inbox.showAll;
   useEffect(() => { void showAll(); }, [showAll]);
-  const total = data?.total_pending ?? 0;
-  const handled = data?.handled_count ?? 0;
-  const attentionGoals = data?.attention_goals ?? [];
-  // #464/#515: the live shared source (event-driven, parked/archived excluded)
-  // — the summary number is only a fallback and now shares its definition.
+  const handled = handledSummary(data);
+  // #464/#515: the live shared source (event-driven, parked/archived excluded).
   const { activeCount: liveGoalCount, loaded: liveGoalsLoaded } = useLiveGoals();
   const goals = liveGoalsLoaded ? liveGoalCount : (data?.goals_in_flight ?? 0);
-  const tier1Rows = (history ?? []).filter(d => d.tier === 1);
+
+  // A dialog stacked on this one (ConfirmDialog) or the shortcut popover owns
+  // Escape and Tab while it is up. Both shells listen on `document`, so this
+  // runs in the capture phase and stops the event before either sees it.
+  const overlay = review.confirm ? 'confirm' : review.shortcutsOpen ? 'sheet' : null;
+  const { setConfirm, setShortcutsOpen } = review;
+  useEffect(() => {
+    if (!overlay) return;
+    const guard = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        e.preventDefault();
+        if (overlay === 'confirm') setConfirm(null); else setShortcutsOpen(false);
+        return;
+      }
+      if (e.key !== 'Tab' || overlay !== 'confirm') return;
+      const dialogs = document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]');
+      const top = dialogs[dialogs.length - 1];
+      if (!top) return;
+      const items = Array.from(top.querySelectorAll<HTMLElement>(FOCUSABLE));
+      if (items.length === 0) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const index = items.indexOf(document.activeElement as HTMLElement);
+      const next = e.shiftKey
+        ? items[(index <= 0 ? items.length : index) - 1]
+        : items[(index + 1) % items.length];
+      next.focus();
+    };
+    document.addEventListener('keydown', guard, true);
+    return () => document.removeEventListener('keydown', guard, true);
+  }, [overlay, setConfirm, setShortcutsOpen]);
+
+  const inList = view === 'list';
+  const coldLoading = loading && !data;
+  const coldError = error && !data;
+  const empty = !coldLoading && !coldError && review.complete && review.queue.ordered.length === 0;
+  const reviewing = inList && !coldLoading && !coldError && !empty;
+  const showBar = reviewing && review.complete && !!review.d && !review.report;
 
   return (
-    // The chrome is `DetailModal`'s. It used to be a byte-for-byte copy of that
-    // shell — the same `radius.lg`, the same shadow pair, the same 86vh — with
-    // none of its keyboard floor: no focus trap, no Escape, no `role="dialog"`,
-    // and focus abandoned wherever it was when the inbox opened. On the surface
-    // that exists to be checked several times a day.
-    // Suspend this shell's trap and Escape while the existing goal proof
-    // overlay is open; review state above the shell survives body remounts.
+    // Suspend this shell's trap and Escape while the goal evidence overlay is
+    // open; review state above the shell survives the body remount.
     <div style={{ display: goalDetail ? 'none' : 'contents' }}>
-    <DetailModal
-      title={view === 'history' ? 'History' : 'Decision inbox'}
-      onClose={() => { if (!goalDetail) onClose(); }}
-      width="min(1120px, 96vw)"
-      // A fixed height: stepping through decisions of different lengths must not
-      // resize the modal under the pointer (the arrows moved with every step).
-      height="min(880px, 92vh)"
-      placement={goalDetail ? 'contained' : placement}
-      badge={view === 'list' && total > 0
-        ? { label: `${total} pending`, color: colors.cyan, bg: colors.cyanSoft }
-        : null}
-      headerLeft={view === 'history' ? (
-        <Button
-          colors={colors}
-          variant="bare"
-          type="button"
-          onClick={() => setView('list')}
-          style={{
-            '--pa-btn-fg': colors.textMuted,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-bg-hover': colors.border,
-            '--pa-btn-pad': '2px 4px',
-            '--pa-btn-radius': `${radius.xs}px`,
-            '--pa-btn-weight': 400,
-            fontFamily: font.body, fontSize: textSize.caption,
-          } as CSSProperties}
-        >
-          ← Back
-        </Button>
-      ) : undefined}
-      bodyStyle={{ padding: '6px 0' }}
-      footer={view === 'list' ? (
-        <Button
-          colors={colors}
-          variant="bare"
-          type="button"
-          className="hover:underline"
-          onClick={openHistory}
-          style={{
-            '--pa-btn-fg': colors.textMuted,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-bg-hover': 'transparent',
-            '--pa-btn-bg-active': 'transparent',
-            '--pa-btn-pad': '0',
-            '--pa-btn-radius': '0',
-            '--pa-btn-weight': 400,
-            fontSize: textSize.caption, fontFamily: font.body,
-          } as CSSProperties}
-        >
-          History →
-        </Button>
-      ) : undefined}
-    >
-      <div data-testid="inbox-body">
-          {view === 'history' && <HistoryList items={history} failed={historyError} onRetry={loadHistory} />}
-          {view === 'list' && <>
-          {loading && !data ? (
-            <div style={{ padding: '48px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textMuted }}>
-              Checking with {agentName}…
-            </div>
-          ) : error && !data ? (
-            /* Cold load failure — must NOT read as the "No decisions needed"
-               all-clear (2026-07 wiring audit D4): a dead daemon looked
-               identical to a clear inbox. */
-            <div style={{ padding: '48px 18px', textAlign: 'center' }}>
-              <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: space.xs }}>
-                Couldn't reach the decision inbox.
-              </div>
-              <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: 14 }}>
-                This is a connection problem, not an empty inbox.
-              </div>
-              {/* No success tick: `refresh` swallows its own failure, so a
-                  tick would claim a load that never landed. The list replacing
-                  this dead end is the only honest confirmation. */}
-              <Button
-                colors={colors}
-                type="button"
-                flashSuccess={false}
-                onClick={() => inbox.refresh()}
-                style={{
-                  '--pa-btn-bg': 'transparent',
-                  '--pa-btn-fg': colors.cyan,
-                  '--pa-btn-border': colors.borderHi,
-                  '--pa-btn-bg-hover': colors.cyanSoft,
-                  '--pa-btn-fg-hover': colors.cyan,
-                  '--pa-btn-border-hover': colors.cyan,
-                  '--pa-btn-bg-active': colors.cyanGlow,
-                  '--pa-btn-pad': '5px 14px',
-                  '--pa-btn-radius': `${radius.md}px`,
-                  '--pa-btn-weight': 600,
-                  fontFamily: font.body, fontSize: textSize.caption,
-                } as CSSProperties}
-              >
-                Retry
-              </Button>
-            </div>
-          ) : total === 0 && attentionGoals.length === 0 ? (
-            <div style={{ padding: '48px 18px', textAlign: 'center' }}>
-              <div style={{
-                width: 34, height: 34, borderRadius: '50%',
-                background: withAlpha(colors.success, 0.15), color: colors.success,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: textSize.heading, margin: '0 auto 10px',
-              }}>✓</div>
-              <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: space.xs }}>No decisions needed.</div>
-              <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>
-                {goals} goal{goals === 1 ? '' : 's'} in flight.
-              </div>
-            </div>
-          ) : (
-            <>
-              {/* Parked goals — needs_human_attention finally MEANS attention
-                  (wave-1 item 1): before this bucket the flag only hid the
-                  goal from every active list. */}
-              {attentionGoals.length > 0 && (
-                <details style={{ padding: `${space.lg}px 18px ${space.xs}px` }}>
-                  <summary style={{ color: colors.warning }}>Parked goals · {attentionGoals.length}</summary>
-                  <div style={{
-                    fontFamily: font.body, fontSize: 10, fontWeight: 700,
-                    letterSpacing: '0.10em', textTransform: 'uppercase',
-                    // "Needs attention" is the warning semantic (D8), not a
-                    // bespoke amber — the dashboard's DecisionsCard made the
-                    // same call for the same bucket (one concept, one color).
-                    color: colors.warning, marginBottom: space.sm,
-                  }}>
-                    Parked goals — waiting on you
-                  </div>
-                  {attentionGoals.map(g => (
-                    <div
-                      key={g.id}
-                      style={{
-                        display: 'flex', alignItems: 'baseline', gap: space.md,
-                        padding: '6px 0',
-                        borderBottom: `1px solid ${colors.border}`,
-                      }}
-                    >
-                      <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1 }}>{g.title}</span>
-                      <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>
-                        {g.state_binding}
-                      </span>
-                      {g.reason && (
-                        <Tooltip content={g.reason}>
-                          <span tabIndex={0} style={{ outline: 'none' }}>
-                            <span style={{ fontSize: textSize.micro, color: colors.textMuted, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {g.reason}
-                            </span>
-                          </span>
-                        </Tooltip>
-                      )}
-                    </div>
-                  ))}
-                </details>
-              )}
-              {handled > 0 && (
-                <>
-                  {/* Disclosure toggle for the routine-items group below, with
-                      its own three-part row (dot, label, chevron) laid out by
-                      the button itself. It keeps the element and takes the
-                      shared `.pa-btn` interaction rules instead of the Button
-                      primitive, whose single label span would collapse that
-                      row and whose pending/success machinery has nothing to
-                      say about opening a list. */}
-                  <button
-                    type="button"
-                    className="pa-btn"
-                    aria-expanded={tier1Open}
-                    aria-controls={tier1Id}
-                    onClick={toggleTier1}
-                    style={{
-                      '--pa-btn-bg': 'transparent',
-                      '--pa-btn-fg': colors.text,
-                      '--pa-btn-border': 'transparent',
-                      '--pa-btn-bg-hover': colors.cyanSoft,
-                      '--pa-btn-fg-hover': colors.text,
-                      '--pa-btn-bg-active': colors.cyanSoft,
-                      '--pa-btn-pad': '12px 18px',
-                      '--pa-btn-radius': '0',
-                      gap: space.lg, width: '100%',
-                      justifyContent: 'flex-start',
-                      borderTop: `1px solid ${colors.border}`,
-                      textAlign: 'left', fontFamily: font.body,
-                      fontSize: 'inherit', lineHeight: 'inherit',
-                    } as CSSProperties}
-                  >
-                    <span style={{
-                      width: 8, height: 8, borderRadius: '50%',
-                      background: colors.success, flexShrink: 0,
-                    }} />
-                    <span style={{ fontSize: textSize.small, fontWeight: 500, color: colors.text, flex: 1 }}>
-                      {agentName} handled {handled} routine item{handled === 1 ? '' : 's'} overnight
-                    </span>
-                    <span style={{
-                      color: colors.textDim, fontSize: textSize.micro,
-                      transform: tier1Open ? 'rotate(90deg)' : 'none',
-                      // D9: a control-state change, so the snappy spring
-                      // (240ms) — not the old bare bezier with no duration
-                      // token behind it.
-                      transition: reduceMotion ? 'none' : `transform ${duration.snappy}ms ${ease.snappy}`,
-                    }}>▸</span>
-                  </button>
-                  {tier1Open && (
-                    <div id={tier1Id}>
-                      {history === null ? (
-                        <div style={{ padding: `${space.lg}px 18px ${space.lg}px 36px`, fontSize: textSize.caption, color: colors.textMuted }}>
-                          Loading…
-                        </div>
-                      ) : (
-                        tier1Rows.map(row => (
-                          <div
-                            key={row.id}
-                            style={{
-                              display: 'flex', alignItems: 'center', gap: space.lg,
-                              padding: `${space.md}px 18px ${space.md}px 36px`, fontSize: textSize.caption,
-                              color: colors.textMuted,
-                              borderTop: `1px solid ${colors.border}`,
-                              fontFamily: font.body,
-                            }}
-                          >
-                            <span style={{
-                              flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                            }}>
-                              {row.headline}
-                            </span>
-                            <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, flexShrink: 0 }}>
-                              {formatAge(row.created_at)}
-                            </span>
-                            <Button
-                              colors={colors}
-                              variant="bare"
-                              type="button"
-                              className="hover:underline"
-                              onClick={openHistory}
-                              style={{
-                                '--pa-btn-fg': colors.cyan,
-                                '--pa-btn-fg-hover': colors.cyan,
-                                '--pa-btn-bg-hover': 'transparent',
-                                '--pa-btn-bg-active': 'transparent',
-                                '--pa-btn-pad': '0',
-                                '--pa-btn-radius': '0',
-                                '--pa-btn-weight': 400,
-                                fontSize: textSize.micro, fontFamily: font.body,
-                                flexShrink: 0,
-                              } as CSSProperties}
-                            >
-                              audit →
-                            </Button>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
-            </>
+      <DetailModal
+        title={inList ? '' : historyFilter === 'agent' ? `What ${agentName} did` : 'History'}
+        ariaLabel="Decisions that need you"
+        onClose={() => { if (!goalDetail && !review.confirm) onClose(); }}
+        width="min(720px, 92vw)"
+        align="top"
+        placement={goalDetail ? 'contained' : placement}
+        headerLeft={inList ? (
+          <ReviewHeader state={review} />
+        ) : (
+          <Button colors={colors} variant="bare" type="button" onClick={() => setView('list')} style={quietLink(colors)}>
+            ← Back
+          </Button>
+        )}
+        headerRight={inList && !coldError ? (
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
+            data-testid="handled-link"
+            onClick={() => { void openHistory(handled.count > 0 ? 'agent' : 'all'); }}
+            style={quietLink(colors)}
+          >
+            {handledLinkLabel(handled)} ›
+          </Button>
+        ) : undefined}
+        bodyStyle={{ padding: `${space.huge}px ${REVIEW_PAD_X}px` }}
+        footer={showBar ? <ReviewActionBar state={review} /> : undefined}
+        footerStyle={{ padding: `${space.xl}px ${REVIEW_PAD_X}px` }}
+      >
+        <div data-testid="inbox-body">
+          {view === 'history' && (
+            <HistoryList
+              items={history}
+              failed={historyError}
+              onRetry={loadHistory}
+              filter={historyFilter}
+              onShowAll={() => setHistoryFilter('all')}
+              agentName={agentName}
+            />
           )}
-          </>}
-          <DecisionReview inbox={inbox} agentName={agentName} state={reviewState} active={view === 'list'} />
-      </div>
-    </DetailModal>
+          {inList && coldLoading && <LoadingShape />}
+          {inList && coldError && (
+            // A dead daemon must not read as the all-clear (2026-07 audit D4).
+            <StateBlock
+              tone="error"
+              title="Couldn't reach the decision inbox."
+              detail="This is a connection problem, not an empty inbox."
+              onRetry={() => { void inbox.refresh(); }}
+            />
+          )}
+          {inList && empty && (
+            <div className="pa-enter" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <StateBlock
+                tone="empty"
+                title="Nothing needs you"
+                detail={handledSentence(handled, agentName) ?? `${goals} goal${goals === 1 ? '' : 's'} in flight.`}
+              />
+              {handled.count > 0 && (
+                <Button colors={colors} variant="ghost" type="button" onClick={() => { void openHistory('agent'); }}>
+                  Review what {agentName} did
+                </Button>
+              )}
+            </div>
+          )}
+          {/* Mounted while a verdict is held on an empty queue too, so Z and
+              the toast's Undo keep working after the last answer. */}
+          <DecisionReview inbox={inbox} agentName={agentName} state={review} active={reviewing || (inList && empty)} />
+        </div>
+      </DetailModal>
     </div>
   );
 }
 
-/** Read-only audit list: every resolved decision, incl. Tier-1 auto-handled. */
-function HistoryList({ items, failed, onRetry }: {
+function isAgentActed(item: HistoryItem): boolean {
+  return item.acted_by === 'henry-policy' || item.acted_by === 'system' || item.tier === 1;
+}
+
+/** Read-only audit list: every resolved decision, or only the agent's own. */
+function HistoryList({ items, failed, onRetry, filter, onShowAll, agentName }: {
   items: HistoryItem[] | null;
   failed: boolean;
   onRetry: () => void;
+  filter: 'agent' | 'all';
+  onShowAll: () => void;
+  agentName: string;
 }) {
   const { colors } = useTheme();
-  const { data: persona } = usePersona();
-  const agentName = persona?.display_name ?? 'your agent';
   if (failed) {
     return (
       <StateBlock
@@ -379,60 +229,56 @@ function HistoryList({ items, failed, onRetry }: {
     );
   }
   if (items === null) {
-    return (
-      <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textMuted }}>
-        Loading…
-      </div>
-    );
+    return <SkeletonText lines={6} />;
   }
-  if (items.length === 0) {
+  const rows = filter === 'agent' ? items.filter(isAgentActed) : items;
+  if (rows.length === 0) {
     return <StateBlock tone="empty" compact title="Nothing here yet." />;
   }
   return (
-    <div>
-      {items.map(item => (
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      {filter === 'agent' && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: space.md }}>
+          <Button colors={colors} variant="bare" type="button" onClick={onShowAll} style={quietLink(colors)}>Show everything</Button>
+        </div>
+      )}
+      {rows.map((item, index) => (
         <div
-          key={item.id}
+          key={`${item.id}-${item.seq}`}
+          className="pa-enter"
           style={{
-            padding: `${space.xl}px 18px`,
-            borderBottom: `1px solid ${colors.border}`,
+            padding: `${space.xl}px 0`,
+            borderTop: index === 0 ? undefined : `1px solid ${colors.border}`,
             fontFamily: font.body,
-          }}
+            ['--pa-enter-delay' as string]: `${Math.min(index, 8) * 32}ms`,
+          } as CSSProperties}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
+            <Chip kind="static" tone={isAgentActed(item) ? 'success' : 'accent'}>
+              {isAgentActed(item) ? 'auto' : 'you'}
+            </Chip>
             <span style={{
-              fontFamily: font.mono, fontSize: 10, letterSpacing: '0.06em',
-              textTransform: 'uppercase', borderRadius: radius.xs, padding: `${space.xxs}px ${space.sm}px`,
-              flexShrink: 0,
-              color: item.tier === 1 ? colors.success : colors.cyan,
-              background: item.tier === 1 ? withAlpha(colors.success, 0.15) : colors.cyanSoft,
-            }}>
-              {item.tier === 1 ? agentName : 'you'}
-            </span>
-            <span style={{
-              fontSize: textSize.small, fontWeight: 500, color: colors.text, flex: 1,
+              ...type.small, fontWeight: 500, color: colors.text, flex: 1, minWidth: 0,
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
             }}>
               {item.headline}
             </span>
-            <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, flexShrink: 0 }}>
-              {formatAge(item.created_at)}
+            <span style={{ ...type.caption, color: colors.textDim, flexShrink: 0 }}>
+              {ageLabel(item.created_at)}
             </span>
           </div>
-          <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.xs }}>
+          <div style={{ ...type.caption, color: colors.textMuted, marginTop: space.xs }}>
             {resolutionText(item, agentName)}
           </div>
-          {/* CASE A fix #4: the answer succeeded but the gated effect never
-              took effect after every retry — the decisions row alone reads
-              identically to a decision whose effect actually ran, so this is
-              the one place that says otherwise. */}
+          {/* CASE A fix #4: the answer succeeded but its gated effect never
+              took effect after every retry. */}
           {deadLetterText(item) && (
             <div
               role="alert"
               style={{
-                marginTop: space.sm, fontSize: textSize.caption, color: colors.danger,
+                marginTop: space.sm, ...type.caption, color: colors.danger,
                 borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-                background: withAlpha(colors.danger, 0.08), padding: `${space.sm}px ${space.lg}px`,
+                padding: `${space.sm}px ${space.lg}px`,
               }}
             >
               {deadLetterText(item)}
