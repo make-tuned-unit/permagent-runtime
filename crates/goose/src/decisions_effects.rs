@@ -955,6 +955,19 @@ async fn land_approved_goal(
                         pool, &card, &note,
                     )
                     .await;
+                    // Feed the Brain here too (fix-as-found, 2026-09-25): this
+                    // early return used to skip the landing-outcome feed
+                    // entirely, so a headless rebase's failed re-verify — a
+                    // real, actionable outcome — never reached memory. Same
+                    // call as the fall-through path below.
+                    crate::brain_feed::feed_for_project(
+                        pool,
+                        crate::brain_feed::FeedSource::Goal,
+                        crate::brain_feed::feed_key("goal", goal_id, "landing"),
+                        &card.project_id,
+                        format!("Goal '{}' landing: {:?}", card.title, outcome),
+                    )
+                    .await;
                     return (Some((project_id, outcome)), Some(note));
                 }
             }
@@ -4908,6 +4921,21 @@ mod tests {
         assert_eq!(evidence["verdict"]["status"], "fail");
         assert_eq!(evidence["head_commit"], serde_json::json!(rebased));
         assert_eq!(evidence["rebased_onto_trunk"]["reverify"], "fail");
+
+        // Fix-as-found (2026-09-25): the early return on this exact path used
+        // to skip the landing-outcome Brain feed entirely, so a headless
+        // rebase's failed re-verify — a real, actionable outcome — never
+        // reached memory. It must be queued in the outbox like any other
+        // landing outcome.
+        let fed: Option<String> =
+            sqlx::query_scalar("SELECT content FROM brain_feed_outbox WHERE memory_key = ?")
+                .bind(crate::brain_feed::feed_key("goal", &goal_b.id, "landing"))
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        let fed = fed.expect("the reverify-failed landing outcome must reach the Brain feed");
+        assert!(fed.contains("Skipped"), "{fed}");
+
         assert!(
             decisions::find_open_decision_for_goal(&pool, &goal_b.id, "unblock")
                 .await
