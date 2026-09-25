@@ -176,6 +176,46 @@ pub fn request_window(served: ServedWindow, requested: Option<usize>) -> Request
     }
 }
 
+/// The most this app asks Ollama for on its own initiative (see
+/// [`auto_num_ctx`]) when nothing else sizes the window. The KV cache grows
+/// linearly with `num_ctx`; 32768 is what a 7–8B model can carry on a 16 GB
+/// Mac alongside everything else. A bigger machine raises it with
+/// `OLLAMA_MAX_NUM_CTX` (env or config); a smaller one lowers it.
+const OLLAMA_DEFAULT_AUTO_NUM_CTX_CAP: usize = 32_768;
+
+fn resolve_ollama_auto_num_ctx_cap() -> usize {
+    match crate::config::Config::global().get_param::<usize>("OLLAMA_MAX_NUM_CTX") {
+        Ok(n) if n > 0 => n,
+        _ => OLLAMA_DEFAULT_AUTO_NUM_CTX_CAP,
+    }
+}
+
+/// The `num_ctx` to ask for when this app configures none for the model
+/// (no `GOOSE_INPUT_LIMIT`, no context limit on the model config — the case
+/// for any Ollama model the canonical registry has no row for).
+///
+/// Why: 2026-09-25 (cli log 20260925_105310, goal 01a0d8d8) a goal worker
+/// routed to the local mechanical role, `qwen2.5-coder:7b`, whose model
+/// config came back with `context_limit: null`. Nothing asked for more than
+/// Ollama's 4096 default, so the request went to `/v1` at 4096 and the
+/// worker's FIRST request (brief + tool schemas, 6,361 tokens) was refused
+/// before it was sent — for a model trained for 32768. Sizing from the
+/// model's own trained length (`/api/show`'s `model_info.*.context_length`),
+/// capped at `cap` for memory, lets the native endpoint serve it.
+///
+/// `None` (leave the served window alone) when:
+/// - the Modelfile sets `num_ctx` — that is somebody's explicit choice for
+///   this model, and overriding it could exceed what they sized it for;
+/// - the trained length is unknown — nothing to size from;
+/// - the capped size is no bigger than what is already served.
+pub fn auto_num_ctx(served: ServedWindow, cap: usize) -> Option<usize> {
+    if served.source != ServedWindowSource::ServerDefault {
+        return None;
+    }
+    let wanted = served.trained?.min(cap);
+    (wanted > served.tokens).then_some(wanted)
+}
+
 /// The `num_ctx` a Modelfile sets, from `/api/show`'s `parameters` text
 /// (`"num_ctx                        16384\ntemperature 0"`).
 fn modelfile_num_ctx(show: &Value) -> Option<usize> {
@@ -806,7 +846,34 @@ impl OllamaProvider {
     /// Ollama cannot be asked: `/v1`, unguarded, as before.
     pub async fn request_window(&self, model_config: &ModelConfig) -> Option<RequestWindow> {
         let served = self.served_context_window(&model_config.model_name).await?;
-        Some(request_window(served, resolve_ollama_num_ctx(model_config)))
+        let requested = resolve_ollama_num_ctx(model_config)
+            .or_else(|| auto_num_ctx(served, resolve_ollama_auto_num_ctx_cap()));
+        Some(request_window(served, requested))
+    }
+
+    /// The payload `stream` sends, the window it will run in (`None` for a
+    /// cloud model or an unreadable `/api/show`), and the native body when
+    /// that window needs `/api/chat`. Shared by `stream` and
+    /// [`Provider::preflight_request`] so the pre-turn check and the send
+    /// judge exactly the same request.
+    async fn prepare_request(
+        &self,
+        model_config: &ModelConfig,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Value, Option<RequestWindow>), ProviderError> {
+        let mut payload = create_request(
+            model_config,
+            system,
+            messages,
+            tools,
+            &ImageFormat::OpenAi,
+            true,
+        )?;
+        apply_ollama_options(&mut payload, model_config);
+        let window = self.request_window(model_config).await;
+        Ok((payload, window))
     }
 
     /// Refuse, before sending, a request Ollama would silently truncate.
@@ -1004,22 +1071,14 @@ impl Provider for OllamaProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
-        let mut payload = create_request(
-            model_config,
-            system,
-            messages,
-            tools,
-            &ImageFormat::OpenAi,
-            true,
-        )?;
-        apply_ollama_options(&mut payload, model_config);
-
         // Which window this request really runs in decides the endpoint: a
         // `num_ctx` bigger than the model is served with only takes effect on
         // `/api/chat` (the 2026-09-19 fallback asked `/v1` for 32768 and got
         // 4096). A cloud model, or an Ollama whose `/api/show` cannot be read,
         // stays on `/v1` with no window check, as before.
-        let window = self.request_window(model_config).await;
+        let (payload, window) = self
+            .prepare_request(model_config, system, messages, tools)
+            .await?;
         let transport = window.map_or(OllamaTransport::OpenAiCompat, |w| w.transport);
         let native_body = match window {
             Some(window) if window.transport == OllamaTransport::Native => {
@@ -1055,6 +1114,34 @@ impl Provider for OllamaProvider {
                 let _ = log.error(e);
             })?;
         stream_ollama(response, log, transport)
+    }
+
+    /// The window `stream` will run `model_config`'s requests in: the
+    /// served window, or the `num_ctx` sent natively when that is bigger.
+    /// `None` for a cloud model or when `/api/show` cannot be read.
+    async fn request_context_window(&self, model_config: &ModelConfig) -> Option<usize> {
+        self.request_window(model_config).await.map(|w| w.tokens)
+    }
+
+    /// The same refusal `stream` would return, without sending anything:
+    /// the same payload, the same window, the same count.
+    async fn preflight_request(
+        &self,
+        model_config: &ModelConfig,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(), ProviderError> {
+        let (payload, window) = self
+            .prepare_request(model_config, system, messages, tools)
+            .await?;
+        match window {
+            Some(window) => {
+                self.preflight_request_window(&model_config.model_name, &payload, window)
+                    .await
+            }
+            None => Ok(()),
+        }
     }
 
     async fn fetch_supported_models(&self) -> Result<Vec<String>, ProviderError> {
@@ -1601,6 +1688,42 @@ mod tests {
         assert_eq!(smaller.tokens, 16_384);
     }
 
+    /// With nothing configured, the window is sized from the model's own
+    /// trained length, capped for memory — never from its name.
+    #[test]
+    fn with_nothing_configured_the_window_is_sized_from_the_trained_length() {
+        let cap = OLLAMA_DEFAULT_AUTO_NUM_CTX_CAP;
+        // The reported case: qwen2.5-coder:7b, served at 4096, trained 32768.
+        let coder = served(4096, ServedWindowSource::ServerDefault, Some(32_768));
+        assert_eq!(auto_num_ctx(coder, cap), Some(32_768));
+        assert_eq!(
+            request_window(coder, auto_num_ctx(coder, cap)),
+            RequestWindow {
+                tokens: 32_768,
+                transport: OllamaTransport::Native,
+                served: coder,
+            }
+        );
+        // A long-context model is capped, not loaded at 128k.
+        let long = served(4096, ServedWindowSource::ServerDefault, Some(131_072));
+        assert_eq!(auto_num_ctx(long, cap), Some(cap));
+        assert_eq!(auto_num_ctx(long, 16_384), Some(16_384));
+        // Nothing bigger to ask for: trained no larger than served, a cap no
+        // larger than served, or an unknown trained length.
+        let small = served(4096, ServedWindowSource::ServerDefault, Some(4096));
+        assert_eq!(auto_num_ctx(small, cap), None);
+        assert_eq!(auto_num_ctx(coder, 4096), None);
+        let unknown = served(4096, ServedWindowSource::ServerDefault, None);
+        assert_eq!(auto_num_ctx(unknown, cap), None);
+        // A Modelfile num_ctx is somebody's explicit choice: left alone.
+        let modelfile = served(16_384, ServedWindowSource::Modelfile, Some(32_768));
+        assert_eq!(auto_num_ctx(modelfile, cap), None);
+        // A server started with a bigger OLLAMA_CONTEXT_LENGTH already
+        // serves enough.
+        let big_default = served(65_536, ServedWindowSource::ServerDefault, Some(131_072));
+        assert_eq!(auto_num_ctx(big_default, cap), None);
+    }
+
     /// No slack above the window: a prose prompt of 4,097 real tokens must
     /// not pass a 4096 window to be cut.
     #[test]
@@ -1789,6 +1912,7 @@ mod tests {
             ("GOOSE_INPUT_LIMIT", None::<&str>),
             ("GOOSE_CONTEXT_LIMIT", None::<&str>),
             ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+            ("OLLAMA_MAX_NUM_CTX", None::<&str>),
         ]);
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1843,19 +1967,92 @@ mod tests {
         // `expect(1)` / `expect(0)` are verified when `server` drops.
     }
 
-    /// Nothing larger configured: `/v1` at the served 4096, and a request
-    /// over it is refused BEFORE it is posted, so Ollama never cuts it.
+    /// The 2026-09-25 case end to end: a model with no configured context
+    /// limit (`context_limit: null`, as the goal worker's
+    /// `qwen2.5-coder:7b` had) and a first request over Ollama's 4096
+    /// default. Before this fix it was refused; now it goes to `/api/chat`
+    /// with `num_ctx` sized from the trained length, and `/v1` is never
+    /// called. The pre-send check agrees and does not refuse it either.
+    #[tokio::test]
+    async fn stream_sizes_an_unconfigured_model_from_its_trained_length() {
+        let _guard = env_lock::lock_env([
+            ("GOOSE_INPUT_LIMIT", None::<&str>),
+            ("GOOSE_CONTEXT_LIMIT", None::<&str>),
+            ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+            ("OLLAMA_MAX_NUM_CTX", None::<&str>),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .and(body_string_contains("qwen2.5-coder:7b"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(qwen25_7b_show()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_string_contains("\"num_ctx\":32768"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/x-ndjson")
+                    .set_body_string(concat!(
+                        r#"{"model":"qwen2.5-coder:7b","message":{"role":"assistant","content":"ok"},"done":false}"#,
+                        "\n",
+                        r#"{"model":"qwen2.5-coder:7b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":6000,"eval_count":1}"#,
+                        "\n"
+                    )),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let provider = provider_at(server.uri());
+        let mut model_config = ModelConfig::new("qwen2.5-coder:7b").unwrap();
+        model_config.context_limit = None;
+        assert_eq!(
+            provider.request_context_window(&model_config).await,
+            Some(32_768)
+        );
+        // ~6k tokens: over 4096, inside 32768.
+        let system = "Worker brief and tool schema line. ".repeat(1_000);
+        let messages = vec![Message::user().with_text("Begin.")];
+        provider
+            .preflight_request(&model_config, &system, &messages, &[])
+            .await
+            .expect("the pre-send check judges the same window the send uses");
+        let mut stream = provider
+            .stream(&model_config, "", &system, &messages, &[])
+            .await
+            .expect("a request inside the sized window is sent");
+        while let Some(item) = stream.next().await {
+            item.expect("stream item");
+        }
+    }
+
+    /// Nothing can make the window larger — the model was only trained for
+    /// the 4096 it is served with — so `/v1` at 4096, and a request over it
+    /// is refused BEFORE it is posted, so Ollama never cuts it.
     #[tokio::test]
     async fn stream_refuses_a_request_ollama_would_truncate_without_sending_it() {
         let _guard = env_lock::lock_env([
             ("GOOSE_INPUT_LIMIT", None::<&str>),
             ("GOOSE_CONTEXT_LIMIT", None::<&str>),
             ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+            ("OLLAMA_MAX_NUM_CTX", None::<&str>),
         ]);
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/show"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(qwen25_7b_show()))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "model_info": { "llama.context_length": 4096 } })),
+            )
             .expect(1)
             .mount(&server)
             .await;
@@ -1892,6 +2089,7 @@ mod tests {
             ("GOOSE_INPUT_LIMIT", None::<&str>),
             ("GOOSE_CONTEXT_LIMIT", None::<&str>),
             ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+            ("OLLAMA_MAX_NUM_CTX", None::<&str>),
         ]);
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1931,6 +2129,7 @@ mod tests {
             ("GOOSE_INPUT_LIMIT", None::<&str>),
             ("GOOSE_CONTEXT_LIMIT", None::<&str>),
             ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+            ("OLLAMA_MAX_NUM_CTX", None::<&str>),
         ]);
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1962,6 +2161,7 @@ mod tests {
             ("GOOSE_INPUT_LIMIT", None::<&str>),
             ("GOOSE_CONTEXT_LIMIT", None::<&str>),
             ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+            ("OLLAMA_MAX_NUM_CTX", None::<&str>),
         ]);
         let server = MockServer::start().await;
         Mock::given(method("POST"))

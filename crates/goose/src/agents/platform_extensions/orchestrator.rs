@@ -6002,6 +6002,38 @@ fn resolved_route_needs_capability_escalation(
     crate::cost_router::is_local_provider(resolved_provider) && !meets_local_bar
 }
 
+/// Pure decision core of the local-window-fit check at the end of
+/// `dispatch_goal_fn`'s routing block: `Some((first_request_tokens,
+/// window))` when a local route's served `window` cannot hold the worker's
+/// first request with room to work
+/// ([`crate::cost_router::fallback::local_window_fits_first_request`]), so
+/// the dispatch must fall back to the cloud tier. `None` — route as
+/// resolved — when either number is unknown: an unknown window is a
+/// provider that cannot say (never guessed at), and an unknown first
+/// request is left to the worker's own pre-send check.
+fn local_route_window_shortfall(
+    window: Option<usize>,
+    first_request_tokens: Option<usize>,
+) -> Option<(usize, usize)> {
+    let (window, tokens) = (window?, first_request_tokens?);
+    (!crate::cost_router::fallback::local_window_fits_first_request(window, tokens))
+        .then_some((tokens, window))
+}
+
+/// The window a local route's provider will really serve its requests in
+/// (`Provider::request_context_window`), built the same way
+/// `InternalSubagentEngine::spawn` builds the worker's provider. `None`
+/// when the provider cannot be built or cannot tell.
+async fn local_route_request_window(route: &crate::cost_router::RoleModel) -> Option<usize> {
+    let model_config = crate::model::ModelConfig::new(&route.model)
+        .ok()?
+        .with_canonical_limits(&route.provider);
+    let provider = crate::providers::create(&route.provider, model_config.clone(), Vec::new())
+        .await
+        .ok()?;
+    provider.request_context_window(&model_config).await
+}
+
 // ── R55a: the mid-attempt half of the local→cloud fallback ────────────────
 //
 // `should_fallback_to_coordinator_tier`, above, only ever runs when a
@@ -8251,6 +8283,88 @@ pub(crate) async fn dispatch_goal_fn(
                                  carried no positive local-bar evidence"
                             .to_string(),
                     });
+                }
+            }
+        }
+
+        // Local window fit (2026-09-25, cli log 20260925_105310, goal
+        // 01a0d8d8): a goal pinned to the local tier resolved to a local
+        // model served in a 4096 window, and the worker's FIRST request
+        // (brief + tool schemas, 6,361 tokens) was refused before it was
+        // sent — zero turns, the goal's whole wall budget spent, then an
+        // escalation. Checked LAST, after every precedence above (an
+        // explicit pin included: no pin can make a window bigger): whatever
+        // resolved, if it is a local model whose window — as its provider
+        // really serves it (`Provider::request_context_window`, the same
+        // probe the refusal used) — cannot hold the worker's first request
+        // with room to work, this dispatch goes to the cloud tier the
+        // existing local→cloud fallback uses, as a `context_exceeded`
+        // fallback. The first-request size is the last measured worker
+        // overhead (system prompt + tools; measured by the worker's own
+        // pre-send check) plus this goal's own text. Before any worker has
+        // been measured, or when the window cannot be known, nothing is
+        // decided here and the worker's pre-send check is the guard: it
+        // ends the attempt at once with a `context_exceeded` the next
+        // dispatch's `should_fallback_to_coordinator_tier` acts on.
+        let local_resolved = resolved
+            .as_ref()
+            .map(|(rm, _)| rm.clone())
+            .filter(|rm| crate::cost_router::is_local_provider(&rm.provider));
+        if let Some(local) = local_resolved {
+            // A local route resolves to the compact worker profile
+            // (`worker_prompt_profile`), so its measurement is the one read.
+            let overhead = crate::cost_router::fallback::worker_first_request_overhead(true);
+            let counter = if overhead.is_some() {
+                crate::token_counter::create_token_counter().await.ok()
+            } else {
+                None
+            };
+            let first_request = overhead.zip(counter).map(|(overhead, counter)| {
+                overhead
+                    .saturating_add(counter.count_tokens(&card.title))
+                    .saturating_add(counter.count_tokens(&card.description))
+            });
+            // Only probe the provider when there is something to judge.
+            let window = if first_request.is_some() {
+                local_route_request_window(&local).await
+            } else {
+                None
+            };
+            if let Some((tokens, window)) = local_route_window_shortfall(window, first_request) {
+                if let Some(hit) = resolve_dispatch_role_model(
+                    crate::cost_router::WorkflowRole::Orchestrate,
+                    &derived,
+                    policy,
+                ) {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        card_id,
+                        from_provider = %local.provider,
+                        from_model = %local.model,
+                        to_provider = %hit.0.provider,
+                        to_model = %hit.0.model,
+                        first_request_tokens = tokens,
+                        window,
+                        reason = WorkerFallbackReason::ContextExceeded.as_str(),
+                        "worker_fallback from={} to={} reason={}: the local model's served \
+                         window cannot hold the worker's first request",
+                        crate::cost_router::WorkflowRole::Local.as_str(),
+                        crate::cost_router::WorkflowRole::Orchestrate.as_str(),
+                        WorkerFallbackReason::ContextExceeded.as_str(),
+                    );
+                    role = Some(crate::cost_router::WorkflowRole::Orchestrate);
+                    resolved = Some(hit);
+                    routing_choice = Some(RoutingChoice {
+                        tier: crate::cost_router::WorkflowRole::Orchestrate,
+                        reason: format!(
+                            "worker_fallback: {} (first request ~{tokens} tokens; {}/{} is \
+                             served in {window})",
+                            WorkerFallbackReason::ContextExceeded.as_str(),
+                            local.provider,
+                            local.model
+                        ),
+                    });
+                    worker_fallback_applied = Some(WorkerFallbackReason::ContextExceeded);
                 }
             }
         }
@@ -39623,6 +39737,78 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             None
         );
         assert_eq!(classify_worker_fallback_reason(""), None);
+    }
+
+    /// A local route whose served window cannot hold the worker's first
+    /// request (with room to work) falls back to cloud at routing time.
+    #[test]
+    fn a_local_route_whose_served_window_cannot_hold_the_first_request_falls_back() {
+        // The reported case: 6,361 tokens against Ollama's 4096 default.
+        assert_eq!(
+            local_route_window_shortfall(Some(4096), Some(6_361)),
+            Some((6_361, 4096))
+        );
+        // The same request in the 32768 the native endpoint now asks for.
+        assert_eq!(
+            local_route_window_shortfall(Some(32_768), Some(6_361)),
+            None
+        );
+        // Fitting means fitting with room to work: three quarters of the
+        // window, the same budget the CLI trims a local session to.
+        assert_eq!(local_route_window_shortfall(Some(4096), Some(3_072)), None);
+        assert_eq!(
+            local_route_window_shortfall(Some(4096), Some(3_073)),
+            Some((3_073, 4096))
+        );
+        // Unknown window (a provider that cannot say): never guessed at.
+        assert_eq!(local_route_window_shortfall(None, Some(1_000_000)), None);
+        // Unknown first request (no worker measured yet): the worker's own
+        // pre-send check guards instead.
+        assert_eq!(local_route_window_shortfall(Some(4096), None), None);
+    }
+
+    /// A pre-send context refusal on a worker's first request ends the
+    /// attempt with an error the local→cloud fallback classifies as
+    /// `context_exceeded` — never an escalation.
+    #[test]
+    fn a_pre_send_context_refusal_is_classified_for_the_local_to_cloud_fallback() {
+        // The Ollama preflight's own wording, with the reported numbers.
+        let refusal = crate::providers::errors::ProviderError::ContextLengthExceeded(
+            "this request is about 6361 tokens (\"n_prompt_tokens\": 6361) but Ollama runs \
+             qwen2.5-coder:7b in a 4096 token window (\"n_ctx\": 4096; Ollama's default \
+             window). Ollama would silently keep only the tail of it, so it was not sent."
+                .to_string(),
+        );
+        let message = crate::agents::subagent_handler::first_request_refusal_message(&Err(refusal))
+            .expect("a context refusal is a verdict");
+        assert!(
+            message.contains("prompt 6361 tokens > limit 4096"),
+            "{message}"
+        );
+        // As `handle_goal_completion` receives it, wrapped by
+        // `run_subagent_task`.
+        let last_error = format!("-32603: Failed to execute task: {message}");
+        assert_eq!(
+            classify_worker_fallback_reason(&last_error),
+            Some(WorkerFallbackReason::ContextExceeded)
+        );
+        // The next dispatch of that local-routed first attempt goes to cloud.
+        assert_eq!(
+            should_fallback_to_coordinator_tier(Some(&last_error), 1, true, false),
+            Some(WorkerFallbackReason::ContextExceeded)
+        );
+
+        // Not a verdict: it fits, or the check failed some other way.
+        assert_eq!(
+            crate::agents::subagent_handler::first_request_refusal_message(&Ok(())),
+            None
+        );
+        assert_eq!(
+            crate::agents::subagent_handler::first_request_refusal_message(&Err(
+                crate::providers::errors::ProviderError::RequestFailed("boom".to_string())
+            )),
+            None
+        );
     }
 
     /// R48b: `should_fallback_to_coordinator_tier`'s gate — the classified

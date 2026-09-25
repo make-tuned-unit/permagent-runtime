@@ -763,6 +763,33 @@ impl Provider for CassetteProvider {
         }
     }
 
+    /// Replay serves whatever was recorded, with no window of its own.
+    async fn request_context_window(&self, model_config: &ModelConfig) -> Option<usize> {
+        match &self.mode {
+            CassetteProviderMode::Record { inner, .. } => {
+                inner.request_context_window(model_config).await
+            }
+            CassetteProviderMode::Replay { .. } => None,
+        }
+    }
+
+    async fn preflight_request(
+        &self,
+        model_config: &ModelConfig,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(), ProviderError> {
+        match &self.mode {
+            CassetteProviderMode::Record { inner, .. } => {
+                inner
+                    .preflight_request(model_config, system, messages, tools)
+                    .await
+            }
+            CassetteProviderMode::Replay { .. } => Ok(()),
+        }
+    }
+
     async fn configure_oauth(&self) -> Result<(), ProviderError> {
         match &self.mode {
             CassetteProviderMode::Record { inner, .. } => inner.configure_oauth().await,
