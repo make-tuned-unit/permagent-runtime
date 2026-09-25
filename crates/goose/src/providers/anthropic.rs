@@ -11,6 +11,7 @@ use tokio_util::io::StreamReader;
 use super::api_client::{ApiClient, AuthMethod};
 use super::base::{
     collect_stream, ConfigKey, MessageStream, ModelInfo, Provider, ProviderDef, ProviderMetadata,
+    ProviderUsage,
 };
 use super::errors::ProviderError;
 use super::formats::anthropic::{
