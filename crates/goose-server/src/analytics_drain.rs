@@ -231,9 +231,103 @@ async fn run_once(state: &AppState) -> Result<(), String> {
                 project = %project.name, "analytics drain failed: {e}"
             ),
         }
+        // Fix-as-found (memory-feed lane, 2026-09-25): one Brain fact per
+        // project per day, fed from this SAME daily pass so it needs no timer
+        // of its own. Yesterday, not today — this pass runs once a day, so
+        // "today" is always partial and would report a shrinking number on
+        // every later read; yesterday is closed and stable. Best-effort: a
+        // rollup failure must never stop the drain loop from reaching the
+        // next project.
+        let yesterday = (chrono::Utc::now() - chrono::Duration::days(1)).date_naive();
+        if let Err(e) = rollup_analytics_day(&pool, &project.id, &project.name, yesterday).await {
+            tracing::debug!(
+                target: "analytics_drain",
+                project = %project.name, "analytics rollup skipped: {e}"
+            );
+        }
     }
     sweep_behavioural_bots(&pool, &projects).await;
     Ok(())
+}
+
+/// Feed the Brain one memory summarizing `project_id`'s first-party analytics
+/// for `date` (memory-feed lane, fix-as-found 2026-09-25) — pageviews, CTA
+/// clicks (`analytics_events` rows with `kind='event' AND name='cta_click'`,
+/// the convention `first_party_analytics.rs` documents), and the day's top
+/// page. Keyed `analytics:{project_id}:{date}` so re-running this for the same
+/// day (a restart, a second daily pass after a long sleep) upserts the same
+/// fact instead of piling up duplicates. Returns the fed content for tests; a
+/// day with no pageviews and no CTA clicks feeds nothing — a silent day is not
+/// a fact worth remembering, and would otherwise read as "0 of everything"
+/// forever once the project goes quiet.
+pub async fn rollup_analytics_day(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    project_name: &str,
+    date: chrono::NaiveDate,
+) -> Result<Option<String>, String> {
+    let date_str = date.format("%Y-%m-%d").to_string();
+    let start = format!("{date_str}T00:00:00.000Z");
+    let end = format!("{date_str}T23:59:59.999Z");
+
+    let pageviews: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM analytics_events \
+         WHERE project_id = ? AND kind = 'pageview' AND created_at >= ? AND created_at <= ?",
+    )
+    .bind(project_id)
+    .bind(&start)
+    .bind(&end)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let cta_clicks: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM analytics_events \
+         WHERE project_id = ? AND kind = 'event' AND name = 'cta_click' \
+           AND created_at >= ? AND created_at <= ?",
+    )
+    .bind(project_id)
+    .bind(&start)
+    .bind(&end)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if pageviews == 0 && cta_clicks == 0 {
+        return Ok(None);
+    }
+
+    let top_page: Option<String> = sqlx::query_scalar(
+        "SELECT path FROM analytics_events \
+         WHERE project_id = ? AND kind = 'pageview' AND created_at >= ? AND created_at <= ? \
+         GROUP BY path ORDER BY COUNT(*) DESC, path ASC LIMIT 1",
+    )
+    .bind(project_id)
+    .bind(&start)
+    .bind(&end)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let content = match &top_page {
+        Some(p) => format!(
+            "{project_name}, {date_str}: {pageviews} pageviews, {cta_clicks} CTA clicks, top page {p}"
+        ),
+        None => format!(
+            "{project_name}, {date_str}: {pageviews} pageviews, {cta_clicks} CTA clicks"
+        ),
+    };
+
+    permagent::brain_feed::feed_for_project(
+        pool,
+        permagent::brain_feed::FeedSource::Analytics,
+        permagent::brain_feed::feed_key("analytics", project_id, &date_str),
+        project_id,
+        content.clone(),
+    )
+    .await;
+
+    Ok(Some(content))
 }
 
 /// Drain ONE project and persist what the pass learned.
@@ -1131,5 +1225,167 @@ mod tests {
             state.last_error.as_deref().unwrap_or("").contains("401"),
             "the UI must be able to show why ingestion stopped"
         );
+    }
+
+    /// `rollup_analytics_day` — one Brain fact per project per day (fix-as-
+    /// found, memory-feed lane 2026-09-25). Uses the full spectral schema
+    /// (not the bare `mem_pool`) so the fed row actually lands in
+    /// `brain_feed_outbox`, not just silently no-ops on a missing table.
+    async fn full_pool() -> Pool<Sqlite> {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        permagent::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    fn day_ev(id: &str, kind: &str, path: &str, name: Option<&str>, at: &str) -> DrainEvent {
+        DrainEvent {
+            id: id.to_string(),
+            kind: Some(kind.to_string()),
+            path: Some(path.to_string()),
+            referrer: None,
+            name: name.map(str::to_string),
+            visitor_hash: Some("v".into()),
+            at: Some(at.to_string()),
+            properties: None,
+            is_bot: None,
+            session_id: None,
+            utm_source: None,
+            utm_medium: None,
+            utm_campaign: None,
+            country: None,
+            user_agent: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn rollup_counts_pageviews_cta_clicks_and_names_the_top_page() {
+        let pool = full_pool().await;
+        sqlx::query("INSERT INTO projects (id, user_id, slug, name, status) VALUES ('p1','default','evntally','Evntally','active')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let day = "2026-09-24";
+        insert_event(
+            &pool,
+            "p1",
+            &day_ev(
+                "1",
+                "pageview",
+                "/events/freya-fest",
+                None,
+                &format!("{day}T10:00:00Z"),
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+        insert_event(
+            &pool,
+            "p1",
+            &day_ev(
+                "2",
+                "pageview",
+                "/events/freya-fest",
+                None,
+                &format!("{day}T10:05:00Z"),
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+        insert_event(
+            &pool,
+            "p1",
+            &day_ev(
+                "3",
+                "pageview",
+                "/pricing",
+                None,
+                &format!("{day}T10:10:00Z"),
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+        insert_event(
+            &pool,
+            "p1",
+            &day_ev(
+                "4",
+                "event",
+                "/pricing",
+                Some("cta_click"),
+                &format!("{day}T10:11:00Z"),
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+        // A different day must not bleed into this one.
+        insert_event(
+            &pool,
+            "p1",
+            &day_ev("5", "pageview", "/pricing", None, "2026-09-25T00:00:00Z"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        let content = rollup_analytics_day(&pool, "p1", "Evntally", date)
+            .await
+            .unwrap()
+            .expect("a day with traffic feeds a fact");
+        assert_eq!(
+            content,
+            "Evntally, 2026-09-24: 3 pageviews, 1 CTA clicks, top page /events/freya-fest"
+        );
+
+        let fed: String =
+            sqlx::query_scalar("SELECT content FROM brain_feed_outbox WHERE memory_key = ?")
+                .bind(permagent::brain_feed::feed_key(
+                    "analytics",
+                    "p1",
+                    "2026-09-24",
+                ))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(fed, content);
+
+        // Re-running the same day upserts — one row, not two.
+        rollup_analytics_day(&pool, "p1", "Evntally", date)
+            .await
+            .unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM brain_feed_outbox")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "a re-run must upsert the same key, not duplicate");
+    }
+
+    #[tokio::test]
+    async fn a_silent_day_feeds_nothing() {
+        let pool = full_pool().await;
+        sqlx::query("INSERT INTO projects (id, user_id, slug, name, status) VALUES ('p1','default','evntally','Evntally','active')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        let content = rollup_analytics_day(&pool, "p1", "Evntally", date)
+            .await
+            .unwrap();
+        assert!(
+            content.is_none(),
+            "zero pageviews and zero CTA clicks is not a fact"
+        );
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM brain_feed_outbox")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
     }
 }

@@ -204,6 +204,16 @@ pub async fn insert_report(pool: &Pool<Sqlite>, report: NewReport<'_>) -> Result
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+
+    crate::brain_feed::feed(
+        pool,
+        crate::brain_feed::FeedSource::Council,
+        crate::brain_feed::feed_key("council_report", &id, "headline"),
+        None,
+        format!("Council report: {} — {}", report.headline, report.markdown),
+    )
+    .await;
+
     Ok(id)
 }
 

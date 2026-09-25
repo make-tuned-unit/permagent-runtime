@@ -172,6 +172,14 @@ pub async fn add_watchlist(
         .await?
         .ok_or_else(|| "watchlist row vanished after insert".to_string())?;
     announce("watchlist", "created");
+    crate::brain_feed::feed(
+        pool,
+        crate::brain_feed::FeedSource::Finance,
+        crate::brain_feed::feed_key("finance_watchlist", &symbol, "added"),
+        None,
+        format!("Added '{}' to the finance watchlist.", symbol),
+    )
+    .await;
     Ok(item)
 }
 
@@ -251,6 +259,14 @@ pub async fn add_note(
         .await?
         .ok_or_else(|| "note vanished after insert".to_string())?;
     announce("note", "created");
+    crate::brain_feed::feed(
+        pool,
+        crate::brain_feed::FeedSource::Finance,
+        crate::brain_feed::feed_key("finance_note", &id, "content"),
+        None,
+        format!("Finance note '{}': {}", title, body),
+    )
+    .await;
     Ok(note)
 }
 
@@ -429,6 +445,17 @@ pub async fn add_position(pool: &Pool<Sqlite>, p: NewPosition) -> Result<Positio
         .await?
         .ok_or_else(|| "position vanished after insert".to_string())?;
     announce("position", "created");
+    crate::brain_feed::feed(
+        pool,
+        crate::brain_feed::FeedSource::Finance,
+        crate::brain_feed::feed_key("finance_position", &id, "opened"),
+        None,
+        format!(
+            "Opened position: {} shares of {} at {} on {}.",
+            position.shares, position.symbol, position.entry_price, position.entry_date
+        ),
+    )
+    .await;
     Ok(position)
 }
 
@@ -503,6 +530,18 @@ pub async fn close_position(
         .await?
         .ok_or_else(|| "position vanished after close".to_string())?;
     announce("position", "updated");
+    let pnl = (exit_price - position.entry_price) * position.shares as f64;
+    crate::brain_feed::feed(
+        pool,
+        crate::brain_feed::FeedSource::Finance,
+        crate::brain_feed::feed_key("finance_position", id, "closed"),
+        None,
+        format!(
+            "Closed position: {} shares of {} at {} on {} (P&L {:+.2}).",
+            position.shares, position.symbol, exit_price, exit_date, pnl
+        ),
+    )
+    .await;
     Ok(position)
 }
 
@@ -620,6 +659,24 @@ pub async fn insert_transactions(
     // of transactions and the view refetches the same aggregate either way.
     if inserted > 0 {
         announce("transactions", "imported");
+        // One fact per import (keyed by source file), not one per row — a
+        // statement is hundreds of transactions and the Brain needs the
+        // summary, not a flood.
+        crate::brain_feed::feed(
+            pool,
+            crate::brain_feed::FeedSource::Finance,
+            crate::brain_feed::feed_key("finance_import", source_file, "summary"),
+            None,
+            format!(
+                "Imported {} transaction(s) from '{}'{}.",
+                inserted,
+                source_file,
+                account
+                    .map(|a| format!(" into account '{a}'"))
+                    .unwrap_or_default()
+            ),
+        )
+        .await;
     }
     Ok(inserted)
 }

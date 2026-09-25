@@ -123,8 +123,12 @@ pub async fn sync_people_from_ontology(
 ///
 /// Idempotent: skips ids that already have a `people` row, and resolves each
 /// remaining id's canonical from the **live** Brain (no second Kuzu connection).
-/// A protected id whose graph node is gone is silently skipped. Returns the number
-/// of rows minted this pass.
+/// A protected id whose graph node is gone is silently skipped. Non-person
+/// entities (projects, orgs, …) are also skipped — `entity_canonical` now
+/// returns the graph's `entity_type` alongside the name, closing the gap where
+/// this bridge minted a `people` row from any protected entity regardless of
+/// type (a project entity showing up in the CRM directory as a "person").
+/// Returns the number of rows minted this pass.
 pub async fn sync_people_from_graph(
     pool: &Pool<Sqlite>,
     brain: &crate::brain_handle::SafeBrain,
@@ -144,19 +148,66 @@ pub async fn sync_people_from_graph(
         if existing.is_some() {
             continue;
         }
-        // Resolve the canonical from the live graph; skip if the node is gone.
-        let Some(canonical) = brain
+        // Resolve the canonical + type from the live graph; skip if the node
+        // is gone, and skip (never mint) a non-person entity.
+        let Some((canonical, entity_type)) = brain
             .entity_canonical(&id_hex)
             .await
             .map_err(|e| e.to_string())?
         else {
             continue;
         };
+        if entity_type != "person" {
+            continue;
+        }
         if upsert_identity_from_graph(pool, &canonical, &id_hex).await? {
             touched += 1;
         }
     }
     Ok(touched)
+}
+
+/// One-time cleanup (memory-feed lane, 2026-09-25): archive — never delete —
+/// any EXISTING `people` row whose `graph_entity_id` resolves to a non-person
+/// graph entity. These were minted before [`sync_people_from_graph`] checked
+/// `entity_type`, so they are still in the directory looking like people. A
+/// row whose graph node is gone entirely is left alone (nothing to
+/// reclassify); only a node that resolves AND says it is not a person is
+/// archived. Safe to run on every boot: an already-archived row's
+/// `archived_at` is left as-is (no re-stamping), and a row with no
+/// `graph_entity_id` is never touched. Returns the number of rows archived.
+pub async fn archive_non_person_bridge_rows(
+    pool: &Pool<Sqlite>,
+    brain: &crate::brain_handle::SafeBrain,
+) -> Result<usize, String> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT entity_uuid, graph_entity_id FROM people \
+         WHERE graph_entity_id IS NOT NULL AND archived_at IS NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut archived = 0usize;
+    for (entity_uuid, graph_entity_id) in rows {
+        let resolved = brain
+            .entity_canonical(&graph_entity_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let Some((_, entity_type)) = resolved else {
+            continue;
+        };
+        if entity_type == "person" {
+            continue;
+        }
+        sqlx::query("UPDATE people SET archived_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE entity_uuid = ?")
+            .bind(&entity_uuid)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        archived += 1;
+    }
+    Ok(archived)
 }
 
 #[cfg(test)]

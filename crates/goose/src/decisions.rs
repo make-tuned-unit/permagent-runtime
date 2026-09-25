@@ -1909,6 +1909,24 @@ pub async fn create_decision(pool: &Pool<Sqlite>, req: NewDecision) -> Result<De
     // Live event for the Decision Inbox consumer (event-driven, not 15s poll).
     crate::events::emit(crate::events::decision_created(&id, &kind, tier));
 
+    // Feed the Brain: a decision was asked. Malformed requests are the
+    // system's own validation noise, not a fact worth recalling.
+    if kind != "malformed" {
+        let content = if headline.is_empty() {
+            format!("A '{}' decision was asked.", kind)
+        } else {
+            format!("Decision asked ({}): {}", kind, headline)
+        };
+        crate::brain_feed::feed(
+            pool,
+            crate::brain_feed::FeedSource::DecisionAsked,
+            crate::brain_feed::feed_key("decision", &id, "asked"),
+            None,
+            content,
+        )
+        .await;
+    }
+
     get_decision(pool, &id)
         .await?
         .ok_or_else(|| "Failed to read created decision".to_string())

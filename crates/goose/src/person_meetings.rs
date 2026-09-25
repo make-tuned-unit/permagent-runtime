@@ -434,6 +434,34 @@ pub async fn create_meeting(pool: &Pool<Sqlite>, new: NewMeeting) -> Result<Pers
 
     bump_last_contact(pool, &new.entity_uuid, &start).await?;
 
+    let content = if notes.is_empty() {
+        format!("Meeting '{}' on {}.", title, start.to_rfc3339())
+    } else {
+        format!("Meeting '{}' on {}: {}", title, start.to_rfc3339(), notes)
+    };
+    match &project_id {
+        Some(pid) => {
+            crate::brain_feed::feed_for_project(
+                pool,
+                crate::brain_feed::FeedSource::Meeting,
+                crate::brain_feed::feed_key("meeting", &id, "summary"),
+                pid,
+                content,
+            )
+            .await;
+        }
+        None => {
+            crate::brain_feed::feed(
+                pool,
+                crate::brain_feed::FeedSource::Meeting,
+                crate::brain_feed::feed_key("meeting", &id, "summary"),
+                None,
+                content,
+            )
+            .await;
+        }
+    }
+
     fetch_meeting(pool, &id).await
 }
 

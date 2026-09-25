@@ -74,6 +74,23 @@ pub struct Person {
     /// `None` for rows minted before the bridge that the startup sync hasn't
     /// reached yet.
     pub graph_entity_id: Option<String>,
+    /// `"person"` or `"organisation"` (`people.kind`, memory-feed lane
+    /// 2026-09-25 — the `dagk/ux-mind` People UI's `peopleKind.ts` reads this
+    /// to render an org row differently and skip it in duplicate-person
+    /// flagging). Defaults to `"person"`; nothing currently writes
+    /// `"organisation"` here (organisation names are refused rather than
+    /// filed — see `people_create::classify_person_or_org`), so this is
+    /// forward-declared plumbing more than a populated signal today.
+    pub kind: String,
+    /// True when this row is the operator's own record. **Always `false`**:
+    /// no owner/self identity concept exists anywhere in this codebase today
+    /// (searched `config::agent_identity`, the `users` table, and the
+    /// decision-actor constants — `ACTOR_JESSE` is a string literal for
+    /// decision attribution, not a `people` row link). Reported rather than
+    /// guessed from a name match, per the memory-feed lane's instruction not
+    /// to invent an identity. A real owner-identity source needs to exist
+    /// before this can be anything but `false`.
+    pub is_self: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -194,13 +211,23 @@ impl Person {
     /// applying graph `entity_fields`, so the response reflects the graph only —
     /// never a stale people-table column (Decision A). The columns remain in the
     /// DB as a safety net until the Step-3 drop, but are not the response source.
+    ///
+    /// `last_contact_at` is deliberately EXCLUDED (memory-feed lane, 2026-09-25):
+    /// unlike the other columns it is not solely graph-sourced — it is also
+    /// bumped directly on the `people` row when a meeting is logged
+    /// ([`crate::person_meetings::bump_last_contact`]) — so clearing it here
+    /// unconditionally lost that column's value on every request that had no
+    /// graph override, regressing to "no last contact" for someone the CRM DID
+    /// have a date for. [`Person::set_attribute`] only overwrites it with a
+    /// graph value when that value is newer (max-of-sources), and
+    /// [`crate::person_meetings::merge_last_contact`] then takes the max
+    /// against the latest logged meeting on top of that.
     pub fn clear_attributes(&mut self) {
         self.role = None;
         self.company = None;
         self.email = None;
         self.phone = None;
         self.notes = None;
-        self.last_contact_at = None;
         self.birthday = None;
         self.relationship_strength = None;
         self.how_met = None;
@@ -223,7 +250,24 @@ impl Person {
             "email" => self.email = Some(value),
             "phone" => self.phone = Some(value),
             "notes" => self.notes = Some(value),
-            "last_contact_at" => self.last_contact_at = Some(value),
+            // Max-of-sources, not overwrite (see `clear_attributes`): a graph
+            // value only wins when it is actually newer than the column's own
+            // (meeting-bumped) value, else the more recent contact is lost.
+            "last_contact_at" => {
+                let take_graph = match self
+                    .last_contact_at
+                    .as_deref()
+                    .and_then(|c| crate::person_meetings::parse_rfc3339(c).ok())
+                {
+                    Some(current) => crate::person_meetings::parse_rfc3339(&value)
+                        .map(|graph_dt| graph_dt >= current)
+                        .unwrap_or(false),
+                    None => true,
+                };
+                if take_graph {
+                    self.last_contact_at = Some(value);
+                }
+            }
             "birthday" => self.birthday = Some(value),
             "relationship_strength" => self.relationship_strength = Some(value),
             "how_met" => self.how_met = Some(value),
@@ -263,13 +307,16 @@ fn row_to_person(r: &sqlx::sqlite::SqliteRow) -> Person {
         photo_url: None,
         find_online_hints: None,
         graph_entity_id: r.get("graph_entity_id"),
+        kind: r.get("kind"),
+        // No owner/self identity source exists yet — see the field's doc.
+        is_self: false,
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     }
 }
 
 const SELECT_COLS: &str = "entity_uuid, canonical_id, display_name, role, company, \
-     email, phone, notes, last_contact_at, graph_entity_id, created_at, updated_at";
+     email, phone, notes, last_contact_at, graph_entity_id, kind, created_at, updated_at";
 
 // ── Write primitives (substrate for v1.5; no HTTP surface in v1) ────────────
 
@@ -463,7 +510,10 @@ pub async fn list_people(
     filter: &PeopleFilter,
 ) -> Result<Vec<Person>, String> {
     // Build the WHERE clause dynamically; bind values positionally afterwards.
-    let mut clauses: Vec<&str> = Vec::new();
+    // Archived rows (non-person bridge mints, memory-feed lane 2026-09-25) are
+    // never in the default directory — they are archived, not deleted, so a
+    // direct-by-id lookup still finds them, but list/search does not.
+    let mut clauses: Vec<&str> = vec!["archived_at IS NULL"];
     if filter.company.is_some() {
         clauses.push("company = ?");
     }
@@ -541,6 +591,32 @@ mod tests {
         assert_eq!(p.company.as_deref(), Some("Acme"));
     }
 
+    /// `people.kind` defaults to `"person"` for every row minted through the
+    /// ordinary write path, and `is_self` is always `false` — no owner/self
+    /// identity source exists in this codebase to derive it from (memory-feed
+    /// lane, 2026-09-25; see the field's doc comment on [`Person`]).
+    #[tokio::test]
+    async fn kind_defaults_to_person_and_is_self_is_always_false() {
+        let pool = fresh_pool().await;
+        let p = upsert_person(
+            &pool,
+            "person:jane-doe",
+            "Jane Doe",
+            &PersonAttrs::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(p.kind, "person");
+        assert!(!p.is_self);
+
+        let fetched = get_by_canonical_id(&pool, "person:jane-doe")
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(fetched.kind, "person");
+        assert!(!fetched.is_self);
+    }
+
     #[test]
     fn clear_and_set_attribute_map_field_names() {
         let mut p = Person {
@@ -564,13 +640,19 @@ mod tests {
             photo_url: Some("old".into()),
             find_online_hints: Some("old".into()),
             graph_entity_id: Some("hex".into()),
+            kind: "person".into(),
+            is_self: false,
             created_at: "t".into(),
             updated_at: "t".into(),
         };
         // clear_attributes nulls every graph-sourced attribute (identity kept).
+        // last_contact_at is the one deliberate exception (memory-feed lane,
+        // 2026-09-25): it is also a meeting-bumped column value, not solely
+        // graph-sourced, so clearing it here would lose that column's value
+        // whenever the request had no graph override.
         p.clear_attributes();
         assert_eq!(p.role, None);
-        assert_eq!(p.last_contact_at, None);
+        assert_eq!(p.last_contact_at.as_deref(), Some("old"));
         assert_eq!(p.birthday, None);
         assert_eq!(p.relationship_strength, None);
         assert_eq!(p.how_met, None);
@@ -628,6 +710,8 @@ mod tests {
             photo_url: None,
             find_online_hints: None,
             graph_entity_id: Some("hex".into()),
+            kind: "person".into(),
+            is_self: false,
             created_at: "t".into(),
             updated_at: "t".into(),
         };

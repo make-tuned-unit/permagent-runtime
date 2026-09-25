@@ -248,6 +248,32 @@ pub async fn record_event(
         .execute(pool)
         .await
         .map_err(|e| LessonError::Db(e.to_string()))?;
+
+    // Feed the Brain the lesson's current standing (upserted per lesson, not
+    // per event — importance moves a lot and the memory only needs the
+    // latest verdict).
+    if let Ok(Some((text, incident_id))) =
+        sqlx::query_as::<_, (String, String)>("SELECT text, incident_id FROM lessons WHERE id = ?")
+            .bind(lesson_id)
+            .fetch_optional(pool)
+            .await
+    {
+        crate::brain_feed::feed(
+            pool,
+            crate::brain_feed::FeedSource::Lesson,
+            crate::brain_feed::feed_key("lesson", lesson_id, "standing"),
+            None,
+            format!(
+                "Lesson from incident {}: \"{}\" (importance {}{}).",
+                incident_id,
+                text,
+                importance,
+                if retired { ", retired" } else { "" }
+            ),
+        )
+        .await;
+    }
+
     Ok(importance)
 }
 

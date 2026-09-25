@@ -652,6 +652,20 @@ pub async fn advance_goal_checked_with_auto_land(
         });
     }
 
+    // Feed the Brain: the goal's latest outcome, keyed so repeated
+    // transitions upsert one evolving memory instead of piling up.
+    crate::brain_feed::feed_for_project(
+        pool,
+        crate::brain_feed::FeedSource::Goal,
+        crate::brain_feed::feed_key("goal", card_id, "outcome"),
+        &goal.project_id,
+        format!(
+            "Goal '{}' moved {:?} -> {:?} via action {:?} (actor {}).",
+            card_id, current_state, new_state, action, actor
+        ),
+    )
+    .await;
+
     Ok(new_state)
 }
 

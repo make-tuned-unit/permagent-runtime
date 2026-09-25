@@ -39,6 +39,7 @@ import { summarizeDecisions } from '../dashboard/decisions/summary';
 import { getOpenOnLaunch, setOpenOnLaunch, OPEN_ON_LAUNCH_OPTIONS, type OpenOnLaunch } from '../../lib/openOnLaunch';
 import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 import { ProviderModelPicker } from './ProviderModelPicker';
+import { MemoryFeedPanel } from './MemoryFeedPanel';
 
 // The PreviewBadge/PreviewNotice machinery (2026-07-10 audit) is gone: every
 // preview-only control has been either wired to real state or removed
@@ -397,6 +398,15 @@ export function MemoryPanel({ goto: _goto }: { goto?: (key: string) => void }) {
           of stale, low-signal memories is handled by the Librarian&apos;s nightly
           pruning, on the Librarian&apos;s own page — the button above lands on it.
         </div>
+      </Section>
+      <Section title="What Henry learns from">
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.md, lineHeight: 1.5 }}>
+          Every kind of thing Henry can turn into a memory, and whether it
+          actually has — goals, decisions, cards, projects, meetings, growth
+          actions, finance, and more. A source reading &quot;not yet&quot; has
+          nothing wrong with it; it just hasn&apos;t fed anything yet.
+        </div>
+        <MemoryFeedPanel />
       </Section>
     </div>
   );
