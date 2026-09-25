@@ -19,7 +19,7 @@ import { duration, ease, font, radius, space, textSize } from '../../../styles/t
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import { StateBlock } from '../../common/StateBlock';
-import { SectionTitle } from '../atoms';
+import { SectionTitle, CardScrollBody } from '../atoms';
 import { apiFetch } from '../../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../../lib/store';
 import { useDecisions } from '../decisions/useDecisions';
@@ -272,7 +272,7 @@ export function TimelineCard() {
             )}
           </div>
         ) : (
-          <div style={{ flex: 1, overflow: 'auto' }}>
+          <CardScrollBody testId="timeline-body">
             {groups.map(group => (
               <div key={group.label}>
                 <div style={{
@@ -320,7 +320,7 @@ export function TimelineCard() {
                 {loadingMore ? 'Loading…' : 'Show earlier'}
               </Button>
             )}
-          </div>
+          </CardScrollBody>
         )}
       </div>
       {inboxOpen && <DecisionOverlayHost onClose={() => setInboxOpen(false)} />}
@@ -373,6 +373,7 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
   return (
     <Tooltip content={onClick ? 'View evidence' : undefined}>
       <div
+        data-card-row=""
         onClick={onClick}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => { setHover(false); setPressed(false); }}

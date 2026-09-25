@@ -113,7 +113,7 @@ async fn get_dashboard(State(state): State<Arc<AppState>>) -> Json<DashboardResp
                 title: if s.name.is_empty() || s.name == "New Chat" {
                     format!("Session {}", s.id)
                 } else {
-                    truncate(&s.name, 40)
+                    truncate(&s.name, SESSION_TITLE_MAX)
                 },
                 started_at: s.created_at.to_rfc3339(),
                 state: "thinking".to_string(),
@@ -140,7 +140,7 @@ async fn get_dashboard(State(state): State<Arc<AppState>>) -> Json<DashboardResp
                 title: if s.name.is_empty() || s.name == "New Chat" {
                     format!("Session {}", s.id)
                 } else {
-                    truncate(&s.name, 40)
+                    truncate(&s.name, SESSION_TITLE_MAX)
                 },
                 state: state.to_string(),
                 ended_at: s.updated_at.to_rfc3339(),
@@ -165,6 +165,14 @@ async fn get_dashboard(State(state): State<Arc<AppState>>) -> Json<DashboardResp
         recent,
     })
 }
+
+/// Longest session title Home is sent, in bytes.
+///
+/// Was 40, which cut real titles mid-word ("Fix event_cta_click funnel leak:
+/// 3,836 i…") while the Recent card had half its width empty — the card can
+/// ellipsize to whatever width it has and shows the full title on hover, so
+/// the server only needs a sanity cap against pathological names.
+const SESSION_TITLE_MAX: usize = 200;
 
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
@@ -409,6 +417,21 @@ pub fn routes(state: Arc<AppState>) -> Router {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn session_titles_are_not_cut_at_forty_chars() {
+        let title = "Fix event_cta_click funnel leak: 3,836 impressions, 0 clicks";
+        assert!(title.len() > 40);
+        assert_eq!(super::truncate(title, super::SESSION_TITLE_MAX), title);
+    }
+
+    #[test]
+    fn truncate_still_caps_pathological_titles_on_a_char_boundary() {
+        let title = "é".repeat(300);
+        let out = super::truncate(&title, super::SESSION_TITLE_MAX);
+        assert!(out.len() <= super::SESSION_TITLE_MAX + 3);
+        assert!(out.ends_with("..."));
+    }
     use super::*;
 
     #[test]

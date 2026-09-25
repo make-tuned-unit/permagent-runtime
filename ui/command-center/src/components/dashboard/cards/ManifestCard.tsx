@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import { radius, font, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
-import { Stat, SectionTitle, EmptyNote } from '../atoms';
+import { Stat, SectionTitle, EmptyNote, CardScrollBody } from '../atoms';
 import { apiFetch } from '../../../lib/api';
 import type { CardManifest } from './registry';
 import { CardIcon } from './cardIcons';
@@ -451,7 +451,7 @@ export function ManifestCard({ manifest }: Props) {
   return shell(
     <>
       <SectionTitle title={manifest.name} />
-      <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+      <CardScrollBody testId="manifest-body">
         {manifest.layout === 'stat-grid' && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: space.xxxl, alignContent: 'center', height: '100%' }}>
             {cells.map((c, i) => (
@@ -463,7 +463,7 @@ export function ManifestCard({ manifest }: Props) {
         {manifest.layout === 'key-value' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
             {cells.map((c, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl }}>
+              <div key={i} data-card-row="" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl }}>
                 <span style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textDim }}>{c.label}</span>
                 <span style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: c.accent ? colors.cyan : colors.text }}>{c.value}</span>
               </div>
@@ -474,7 +474,7 @@ export function ManifestCard({ manifest }: Props) {
         {manifest.layout === 'list' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
             {cells.map((c, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl, padding: `${space.sm}px 0`, borderBottom: i < cells.length - 1 ? `1px solid ${colors.border}` : 'none' }}>
+              <div key={i} data-card-row="" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl, padding: `${space.sm}px 0`, borderBottom: i < cells.length - 1 ? `1px solid ${colors.border}` : 'none' }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.label}</div>
                   {c.sub && <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, marginTop: space.xxs }}>{c.sub}</div>}
@@ -486,7 +486,7 @@ export function ManifestCard({ manifest }: Props) {
             ))}
           </div>
         )}
-      </div>
+      </CardScrollBody>
       {/* Events from People are listed, but Apple Calendar is not connected:
           the way to connect it stays on the card rather than disappearing
           the moment anything else has something to show. */}

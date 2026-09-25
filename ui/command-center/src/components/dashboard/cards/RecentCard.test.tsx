@@ -44,3 +44,27 @@ it('shows a human label, not a serialized args blob, as the row title', () => {
   expect(rows[0].getAttribute('aria-label')).toBe('Open conversation: Scroll depth');
   expect(rows[1].textContent).toContain('Plan the Atlas launch');
 });
+
+it('the title owns the row and shows its full text in the shared Tooltip; the status word gives way', async () => {
+  const { _resetTooltipWarmForTests, TOOLTIP_COLD_DELAY_MS } = await import('../../common/Tooltip');
+  const long = 'Fix event_cta_click funnel leak: 3,836 impressions, 0 clicks on the pricing page';
+  vi.useFakeTimers();
+  try {
+    _resetTooltipWarmForTests();
+    act(() => root.render(<RecentCard items={[{ id: 's1', title: long, state: 'awaiting_input', ended_at: new Date().toISOString() }]} />));
+    const title = container.querySelector('[data-testid="recent-title"]') as HTMLElement;
+    const status = container.querySelector('[data-testid="recent-status"]') as HTMLElement;
+    expect(title.textContent).toBe(long);
+    expect(title.hasAttribute('title')).toBe(false);
+    // Before: the status was `flexShrink: 0`, so it never yielded width.
+    expect(status.style.flexShrink).not.toBe('0');
+    expect(status.style.minWidth).toMatch(/^0(px)?$/);
+    expect((title.parentElement as HTMLElement).style.flexGrow).toBe('1');
+    act(() => { title.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+    act(() => { vi.advanceTimersByTime(TOOLTIP_COLD_DELAY_MS); });
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(long);
+    act(() => { title.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })); });
+  } finally {
+    vi.useRealTimers();
+  }
+});

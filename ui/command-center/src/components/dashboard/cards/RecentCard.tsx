@@ -2,9 +2,10 @@ import { useCallback } from 'react';
 import { duration, ease, font, radius, space } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useCommandCenter } from '../../../lib/store';
-import { SectionTitle, StatusIcon, EmptyNote } from '../atoms';
+import { SectionTitle, StatusIcon, EmptyNote, CardScrollBody } from '../atoms';
 import type { RecentSession } from '../useDashboard';
 import { recentTitle } from './recentTitle';
+import { Tooltip } from '../../common/Tooltip';
 
 function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -43,15 +44,23 @@ export function RecentCard({ items }: Props) {
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
     }}>
-      <SectionTitle title="Recent" right={items.length > 0 ? 'last 24h' : undefined} />
+      {/* "While you were away" (UX_BENCHMARK_RESEARCH.md §1, Linear Priority's
+          rest-split / ChatGPT Tasks framing): dashboard.rs already restricts
+          this feed to non-active sessions and documents every one of them as
+          settled ("all recent sessions are treated as completed" — no
+          explicit pause/stop events exist to say otherwise), so this feed
+          already IS the "happened while you were away" half of Home; it only
+          needed the honest name. Renamed here rather than building a second,
+          parallel card — R7 convergence, one concept in one place. */}
+      <SectionTitle title="While you were away" right={items.length > 0 ? 'last 24h' : undefined} />
       {items.length === 0 ? (
         <EmptyNote hint="Sessions you run will appear here">No recent activity</EmptyNote>
       ) : (
-        <div style={{ flex: 1, overflow: 'auto', marginRight: -space.md, paddingRight: space.md }}>
+        <CardScrollBody testId="recent-body" style={{ marginRight: -space.md, paddingRight: space.md }}>
           {items.map((item, i) => (
             <ActivityItem key={item.id} item={item} isLast={i === items.length - 1} onOpen={openSession} />
           ))}
-        </div>
+        </CardScrollBody>
       )}
     </div>
   );
@@ -74,6 +83,7 @@ function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: b
   const fadeTransition = reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}, box-shadow ${duration.fast}ms ${ease.out}`;
   return (
     <div
+      data-card-row=""
       onClick={() => onOpen(item.id)}
       role="button"
       tabIndex={0}
@@ -92,18 +102,25 @@ function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: b
       background: 'transparent', transition: fadeTransition,
     }}>
       <StatusIcon state={item.state} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{
-          fontFamily: font.body, fontSize: 12.5, fontWeight: 500, color: colors.text,
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>{label}</div>
+      {/* The title owns the row: it grows into every spare pixel and the
+          status word is what gives way (below). The full title is one hover
+          away — the server no longer cuts it at 40 characters either. */}
+      <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+        <Tooltip content={label}>
+          <div data-testid="recent-title" style={{
+            fontFamily: font.body, fontSize: 12.5, fontWeight: 500, color: colors.text,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>{label}</div>
+        </Tooltip>
         <div style={{ fontSize: 10.5, color: colors.textDim, marginTop: space.xxs }}>
           {timeAgo(item.ended_at)}
         </div>
       </div>
-      <span style={{
+      <span data-testid="recent-status" style={{
         fontFamily: font.body, fontSize: 9.5, fontWeight: 600,
-        letterSpacing: '0.06em', textTransform: 'uppercase', flexShrink: 0,
+        letterSpacing: '0.06em', textTransform: 'uppercase',
+        flex: '0 1 auto', minWidth: 0, maxWidth: '40%',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         color: statusColor[item.state] || colors.textMuted,
       }}>{item.state.replace('_', ' ')}</span>
     </div>

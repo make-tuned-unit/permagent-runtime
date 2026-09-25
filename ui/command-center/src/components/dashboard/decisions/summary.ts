@@ -36,6 +36,16 @@ export interface DecisionSummary {
   oldestLabel: string | null;
   attentionLabel: string | null;
   handledLabel: string | null;
+  /**
+   * The single most-consequential open decision's own plain-language outcome
+   * (UX_BENCHMARK_RESEARCH.md §1/§2, Linear Priority + Devin "findings inline"
+   * pattern): the card names the count already, but named nothing about WHAT
+   * is waiting — a reader had to open the inbox just to see the one thing at
+   * the top of it. `data.decisions` is server-ranked ("render as given"), so
+   * this is `decisions[0].headline` verbatim, never synthesized here (A1).
+   * Null while there is nothing open.
+   */
+  topItemLabel: string | null;
 }
 
 /**
@@ -55,6 +65,7 @@ export function summarizeDecisions(
   const goals = activeGoals ?? data?.goals_in_flight ?? 0;
   const oldestAt = data?.oldest_pending_at ?? null;
   const loading = data === null;
+  const topItemLabel = data?.decisions?.[0]?.headline ?? null;
 
   return {
     loading,
@@ -76,5 +87,6 @@ export function summarizeDecisions(
     handledLabel: handled > 0
       ? `${agentName} handled ${handled} routine item${handled === 1 ? '' : 's'} overnight`
       : null,
+    topItemLabel,
   };
 }

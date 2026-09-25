@@ -6,7 +6,14 @@ import {
   ensureGrowthCardTallEnough,
   ensureGrowthResultsCard,
   reflow,
+  packDense,
+  fillHoles,
+  justifyRows,
+  countHoles,
+  layoutForDisplay,
+  minSpanForWidth,
   stripRetiredCards,
+  type PackedCell,
   type DashboardLayoutData,
 } from './useLayout';
 
@@ -180,5 +187,104 @@ describe('ensureGrowthCardTallEnough', () => {
     const layout: DashboardLayoutData = { cards: [card('growth_results', 12, 8)] };
     const { changed } = ensureGrowthCardTallEnough(layout);
     expect(changed).toBe(false);
+  });
+});
+
+/** Every cell of rows [0, bottom) is covered by exactly one card. */
+function holes(cells: PackedCell[], cols = 12): string[] {
+  const bottom = cells.reduce((m, c) => Math.max(m, c.y + c.h), 0);
+  const owner: (string | null)[][] = Array.from({ length: bottom }, () => new Array(cols).fill(null));
+  const overlaps: string[] = [];
+  for (const c of cells) {
+    for (let r = c.y; r < c.y + c.h; r++) for (let k = c.x; k < c.x + c.w; k++) {
+      if (owner[r][k]) overlaps.push(`overlap ${owner[r][k]}/${c.id} @${k},${r}`);
+      owner[r][k] = c.id;
+    }
+  }
+  const empty: string[] = [];
+  owner.forEach((row, r) => row.forEach((o, k) => { if (!o) empty.push(`${k},${r}`); }));
+  return [...overlaps, ...empty];
+}
+
+describe('dense dashboard packing (QA 2026-09-24: holes at 1456px)', () => {
+  // The walk's board: "Needs you" + "To-dos" on a row, then full-width cards.
+  // The shelf packer left 5 empty columns beside them and a hole under the
+  // shorter one.
+  const walkBoard = [
+    card('stats', 5, 3), card('calendar', 7, 4),
+    card('decisions', 3, 3), card('todos', 4, 5),
+    card('timeline', 12, 5), card('recent', 8, 5), card('growth_results', 12, 6), card('council', 12, 5),
+  ];
+
+  it('the old shelf layout had holes; the display layout has none', () => {
+    const shelf = walkBoard.map((c, i) => ({ id: c.id, x: 0, y: 0, w: c.size.w, h: c.size.h, i }));
+    // Reconstruct the old shelf packing to prove the test catches the bug.
+    let x = 0; let y = 0; let rowH = 0;
+    for (const c of shelf) {
+      if (x + c.w > 12) { x = 0; y += rowH; rowH = 0; }
+      c.x = x; c.y = y; x += c.w; rowH = Math.max(rowH, c.h);
+    }
+    expect(holes(shelf).length).toBeGreaterThan(0);
+    expect(holes(layoutForDisplay(walkBoard))).toEqual([]);
+  });
+
+  it('has no holes at a narrow (~1100px window) grid width either', () => {
+    const minSpan = minSpanForWidth(800, 16);
+    expect(minSpan).toBeGreaterThan(3);
+    const cells = layoutForDisplay(walkBoard, { minSpan });
+    expect(holes(cells)).toEqual([]);
+    expect(cells.every(c => c.w >= minSpan)).toBe(true);
+  });
+
+  it('back-fills a hole with a later card that fits (grid-auto-flow: dense)', () => {
+    const cells = packDense([card('a', 7, 4), card('b', 12, 2), card('c', 5, 2)]);
+    expect(cells[2]).toMatchObject({ x: 7, y: 0 });
+    expect(cells[1]).toMatchObject({ x: 0, y: 4 });
+  });
+
+  it('keeps the Customize order: the earlier card is placed first', () => {
+    const ab = packDense([card('a', 6, 2), card('b', 6, 2)]);
+    const ba = packDense([card('b', 6, 2), card('a', 6, 2)]);
+    expect(ab.find(c => c.id === 'a')!.x).toBe(0);
+    expect(ba.find(c => c.id === 'b')!.x).toBe(0);
+  });
+
+  it('Customize mode (fill: false) draws the true stored sizes', () => {
+    const cells = layoutForDisplay([card('decisions', 3, 3), card('todos', 4, 5), card('timeline', 12, 5)], { fill: false });
+    expect(cells.map(c => [c.w, c.h])).toEqual([[3, 3], [4, 5], [12, 5]]);
+  });
+
+  it('fillHoles never grows a card below the last row of the board', () => {
+    const cells = fillHoles([{ id: 'a', x: 0, y: 0, w: 6, h: 2 }, { id: 'b', x: 6, y: 0, w: 6, h: 4 }]);
+    expect(cells[0]).toMatchObject({ w: 6, h: 4 });
+    expect(cells[1]).toMatchObject({ h: 4 });
+  });
+
+  it('minSpanForWidth is 1 while the width is unknown and grows as the grid narrows', () => {
+    expect(minSpanForWidth(0, 16)).toBe(1);
+    expect(minSpanForWidth(1150, 16)).toBeLessThanOrEqual(3);
+    expect(minSpanForWidth(800, 16)).toBeGreaterThan(minSpanForWidth(1150, 16));
+  });
+
+  it('a boxed-in hole dense packing cannot fill falls back to justified rows', () => {
+    // This exact board leaves an enclosed 2-cell hole under "stats" after
+    // dense packing + stretching; the display layout must still have none.
+    expect(countHoles(fillHoles(packDense(walkBoard)))).toBeGreaterThan(0);
+    expect(countHoles(layoutForDisplay(walkBoard))).toBe(0);
+  });
+
+  it('justifyRows shares a row\'s spare columns and height, in order', () => {
+    const cells = justifyRows([card('decisions', 3, 3), card('todos', 4, 5), card('timeline', 12, 5)]);
+    expect(cells[0]).toMatchObject({ x: 0, y: 0, h: 5 });
+    expect(cells[1]).toMatchObject({ y: 0, h: 5 });
+    expect(cells[0].w + cells[1].w).toBe(12);
+    expect(cells[1].x).toBe(cells[0].w);
+    expect(cells[2]).toMatchObject({ x: 0, y: 5, w: 12 });
+    expect(holes(cells)).toEqual([]);
+  });
+
+  it('reflow persists the dense positions', () => {
+    const out = reflow([card('a', 7, 4), card('b', 12, 2), card('c', 5, 2)]);
+    expect(out[2].position).toEqual({ x: 7, y: 0 });
   });
 });

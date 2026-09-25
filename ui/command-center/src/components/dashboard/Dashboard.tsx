@@ -6,7 +6,7 @@ import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from './useDashboard';
 import { useLiveGoals } from '../../lib/useLiveGoals';
 import { useDueTodos } from '../../lib/useDueTodos';
-import { useLayout, reflow, DEFAULT_LAYOUT, type DashboardLayoutData, type DashboardCardLayout } from './useLayout';
+import { useLayout, reflow, layoutForDisplay, minSpanForWidth, DEFAULT_LAYOUT, type DashboardLayoutData, type DashboardCardLayout } from './useLayout';
 import { useCardRegistry } from './cards/useCardRegistry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
@@ -19,7 +19,7 @@ import { HeaderAgentStatus } from '../sidebar/NavAgentStatus';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { Button } from '../common/Button';
 import { AsOf } from '../common/AsOf';
-import { useState, useCallback, useRef, useMemo, type CSSProperties } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo, type CSSProperties } from 'react';
 
 import { Tooltip } from '../common/Tooltip';
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -69,6 +69,23 @@ export function Dashboard() {
   const [resizeId, setResizeId] = useState<string | null>(null);
   const resizeStart = useRef<{ pointerId: number; startX: number; startY: number; origW: number; origH: number; colPx: number }>({ pointerId: 0, startX: 0, startY: 0, origW: 0, origH: 0, colPx: 0 });
   const [resizePreview, setResizePreview] = useState<{ w: number; h: number } | null>(null);
+  // The grid's own width, so cards can be drawn no narrower than is readable
+  // (see minSpanForWidth). Observed rather than read once: the chat dock and
+  // sidebar change it without a window resize.
+  const [gridWidth, setGridWidth] = useState(0);
+  const gridMounted = !loading && !!data;
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    setGridWidth(el.getBoundingClientRect().width);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(entries => {
+      const w = entries[0]?.contentRect.width;
+      if (w) setGridWidth(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [gridMounted]);
 
   const reorderCards = useCallback((srcId: string, targetId: string) => {
     if (srcId === targetId) return;
@@ -223,6 +240,14 @@ export function Dashboard() {
   };
 
   const visibleCards = layout.cards.filter(c => c.visible);
+  // Where each card is DRAWN. The stored x/y were a shelf packing that left
+  // holes; this is a dense first-fit pack in the user's order, stretched into
+  // any hole nothing else fits (display-only). Customize shows true sizes —
+  // no stretch — so the resize grip edits what you see.
+  const cells = layoutForDisplay(
+    visibleCards.map(c => (resizeId === c.id && resizePreview ? { id: c.id, size: resizePreview } : c)),
+    { minSpan: minSpanForWidth(gridWidth, GAP), fill: !isEditMode },
+  );
   const canRemove = visibleCards.length > 1;
   const currentTypes = layout.cards.map(c => c.type);
 
@@ -336,7 +361,7 @@ export function Dashboard() {
           userSelect: (dragSrcId || resizeId) ? 'none' : 'auto',
         }}
       >
-        {visibleCards.map(card => {
+        {visibleCards.map((card, index) => {
           const entry = registry[card.type];
           // A card in the layout with no registry entry used to `return null`:
           // it left a hole in the grid and no explanation. Two of the default
@@ -347,15 +372,14 @@ export function Dashboard() {
           // Manifest cards self-fetch and only need their manifest; first-party
           // code cards read pre-fetched data from cardDataMap.
           const props = entry?.manifest ? { manifest: entry.manifest } : (cardDataMap[card.type] || {});
-          const { x, y } = card.position;
+          const { x, y, w, h } = cells[index];
           const isResizing = resizeId === card.id;
-          const w = isResizing && resizePreview ? resizePreview.w : card.size.w;
-          const h = isResizing && resizePreview ? resizePreview.h : card.size.h;
           const isDragging = dragSrcId === card.id;
           const isDragTarget = dragOverId === card.id && !isDragging;
           return (
             <div
               key={card.id}
+              data-testid={`dashboard-cell-${card.id}`}
               ref={el => { if (el) cardRefs.current.set(card.id, el); else cardRefs.current.delete(card.id); }}
               onPointerDown={isEditMode && !resizeId ? (e) => handlePointerDown(card.id, e) : undefined}
               style={{

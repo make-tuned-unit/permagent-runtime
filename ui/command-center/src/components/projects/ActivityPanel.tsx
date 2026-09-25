@@ -17,16 +17,11 @@ import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
-import type { Card, Project, ProjectMemory, ProjectNote } from './types';
+import type { BoardColumn, Card, Project, ProjectMemory, ProjectNote } from './types';
+import { describeTask, groupTaskRuns, type FeedItem } from './activityFeed';
 
 import { Tooltip } from '../common/Tooltip';
-type ActivityItem = {
-  id: string;
-  kind: 'memory' | 'note' | 'task';
-  title: string;
-  detail: string;
-  timestamp: string;
-};
+type ActivityItem = FeedItem;
 
 export function ActivityPanel({ project }: { project: Project }) {
   const { colors } = useTheme();
@@ -39,6 +34,7 @@ export function ActivityPanel({ project }: { project: Project }) {
   const [memories, setMemories] = useState<ProjectMemory[]>([]);
   const [notes, setNotes] = useState<ProjectNote[]>([]);
   const [cards, setCards] = useState<Card[]>([]);
+  const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
 
   // Resolves `false` on failure so the refresh button's success tick can never
@@ -46,14 +42,18 @@ export function ActivityPanel({ project }: { project: Project }) {
   const load = useCallback(async () => {
     setStatus('loading');
     try {
-      const [memoryRows, noteRows, cardRows] = await Promise.all([
+      const [memoryRows, noteRows, cardRows, columnRows] = await Promise.all([
         api.listProjectMemories(project.id),
         api.listProjectNotes(project.id),
         apiFetch<Card[]>(`/api/projects/${encodeURIComponent(project.id)}/cards`),
+        // Only to name a card's column in the feed; a board without columns
+        // must not fail the whole panel.
+        apiFetch<BoardColumn[]>(`/api/projects/${encodeURIComponent(project.id)}/columns`).catch(() => [] as BoardColumn[]),
       ]);
       setMemories(memoryRows);
       setNotes(noteRows);
       setCards(cardRows);
+      setColumns(columnRows);
       setStatus('ready');
       return true;
     } catch {
@@ -64,11 +64,15 @@ export function ActivityPanel({ project }: { project: Project }) {
 
   useEffect(() => { load(); }, [load, projectsRev]);
 
-  const items = useMemo<ActivityItem[]>(() => [
-    ...memories.map(m => ({ id: `memory-${m.id}`, kind: 'memory' as const, title: m.description || 'Memory linked', detail: m.content, timestamp: m.associated_at })),
-    ...notes.map(n => ({ id: `note-${n.id}`, kind: 'note' as const, title: n.title || 'Note added', detail: n.body, timestamp: n.created_at })),
-    ...cards.map(c => ({ id: `task-${c.id}`, kind: 'task' as const, title: c.title, detail: c.archivedAt ? 'Task archived' : 'Task updated', timestamp: c.updatedAt })),
-  ].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)).slice(0, 12), [memories, notes, cards]);
+  const items = useMemo<ActivityItem[]>(() => {
+    const byId = new Map(columns.map(c => [c.id, c]));
+    const all: ActivityItem[] = [
+      ...memories.map(m => ({ id: `memory-${m.id}`, kind: 'memory' as const, title: m.description || 'Memory linked', detail: m.content, timestamp: m.associated_at })),
+      ...notes.map(n => ({ id: `note-${n.id}`, kind: 'note' as const, title: n.title || 'Note added', detail: n.body, timestamp: n.created_at })),
+      ...cards.map(c => describeTask(c, byId)),
+    ].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+    return groupTaskRuns(all).slice(0, 12);
+  }, [memories, notes, cards, columns]);
 
   const icon = (kind: ActivityItem['kind']) => kind === 'memory'
     ? <FiBookOpen size={13} />
@@ -123,7 +127,7 @@ export function ActivityPanel({ project }: { project: Project }) {
       {status === 'ready' && items.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
           {items.map(item => (
-            <div key={item.id} style={{ display: 'flex', gap: space.md, padding: `${space.md}px ${space.lg}px`, borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}` }}>
+            <div key={item.id} data-testid="activity-item" style={{ display: 'flex', gap: space.md, padding: `${space.md}px ${space.lg}px`, borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}` }}>
               <span style={{ color: colors.cyan, marginTop: space.xxs, flexShrink: 0 }}>{icon(item.kind)}</span>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{item.title}</div>
