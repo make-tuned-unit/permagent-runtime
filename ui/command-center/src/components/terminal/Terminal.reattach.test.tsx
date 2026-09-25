@@ -17,9 +17,11 @@ import { act } from 'react-dom/test-utils';
 
 // vi.mock factories are hoisted above module code, so the grid constants ride
 // vi.hoisted and the stand-in class is defined inside the factory itself.
-const { COLS, ROWS } = vi.hoisted(() => ({
+const { COLS, ROWS, termLog } = vi.hoisted(() => ({
   COLS: 217, // a full-width Build pane — deliberately not a default 80
   ROWS: 48,
+  // What the fake xterm was asked to do, in order, with the grid in force.
+  termLog: [] as string[],
 }));
 
 vi.mock('@xterm/xterm', () => {
@@ -30,8 +32,16 @@ vi.mock('@xterm/xterm', () => {
     options: Record<string, unknown> = {};
     parser = { registerOscHandler: () => disposable() };
     open() {}
-    loadAddon() {}
-    write(_d: string) {}
+    loadAddon(addon: { activate?: (t: unknown) => void }) { addon.activate?.(this); }
+    resize(cols: number, rows: number) {
+      this.cols = cols;
+      this.rows = rows;
+      termLog.push(`resize ${cols}x${rows}`);
+    }
+    write(d: string, cb?: () => void) {
+      termLog.push(`write ${JSON.stringify(d)} @${this.cols}x${this.rows}`);
+      cb?.();
+    }
     writeln(_d: string) {}
     refresh() {}
     clear() {}
@@ -46,16 +56,26 @@ vi.mock('@xterm/xterm', () => {
   }
   return { Terminal: FakeXTerm };
 });
-vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }));
+vi.mock('@xterm/addon-fit', () => ({
+  FitAddon: class {
+    private term: { resize: (c: number, r: number) => void; cols: number; rows: number } | null = null;
+    activate(t: { resize: (c: number, r: number) => void; cols: number; rows: number }) { this.term = t; }
+    // A real fit sizes the grid to the container; this pane is COLS x ROWS.
+    fit() {
+      if (this.term && (this.term.cols !== COLS || this.term.rows !== ROWS)) this.term.resize(COLS, ROWS);
+    }
+  },
+}));
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }));
 vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }));
 
 // ── Tauri API stand-in ───────────────────────────────────────────────────────
 type Invocation = { cmd: string; args?: Record<string, unknown> };
+let replayResponse: unknown = { data: 'replayed scrollback', seq: 7 };
 const invocations: Invocation[] = [];
 const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   invocations.push({ cmd, args });
-  if (cmd === 'get_pty_output') return { data: 'replayed scrollback', seq: 7 };
+  if (cmd === 'get_pty_output') return replayResponse;
   if (cmd === 'spawn_pty_session') return { session_id: 'pty-fresh', cwd: '/tmp' };
   return undefined;
 });
@@ -80,6 +100,8 @@ let root: Root;
 
 beforeEach(() => {
   invocations.length = 0;
+  termLog.length = 0;
+  replayResponse = { data: 'replayed scrollback', seq: 7 };
   invoke.mockClear();
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -133,6 +155,46 @@ describe('Terminal reattach grid sync', () => {
 
     // A reattach must never spawn a second shell over the live one.
     expect(invocations.some(i => i.cmd === 'spawn_pty_session')).toBe(false);
+  });
+
+  // 2026-09-24 pop-out report: the replay was parsed at the NEW window's
+  // size, scattering harness frames painted for older sizes. With the
+  // backend's grid marks the replay is parsed at each painted grid, and only
+  // then is the xterm fitted to its container and the PTY told.
+  it('replays each run at the grid it was painted for, then fits and advertises', async () => {
+    // "AAAA" painted at 46x30, "BB" after a resize to 90x30 (seq 1004).
+    replayResponse = {
+      data: 'AAAABB',
+      seq: 1006,
+      grid: [
+        { seq: 0, cols: 46, rows: 30 },
+        { seq: 1004, cols: 90, rows: 30 },
+      ],
+    };
+    act(() => {
+      root.render(<Terminal sessionId="pty-live" isVisible />);
+    });
+    await flushAsyncSetup();
+
+    const fromReplay = termLog.slice(termLog.indexOf('resize 46x30'));
+    expect(fromReplay).toEqual([
+      'resize 46x30',
+      'write "AAAA" @46x30',
+      'resize 90x30',
+      'write "BB" @90x30',
+      `resize ${COLS}x${ROWS}`,
+    ]);
+    const resize = invocations.find(i => i.cmd === 'resize_pty');
+    expect(resize!.args).toMatchObject({ sessionId: 'pty-live', cols: COLS, rows: ROWS });
+  });
+
+  it('without grid marks replays at the fitted size, as before', async () => {
+    act(() => {
+      root.render(<Terminal sessionId="pty-live" isVisible />);
+    });
+    await flushAsyncSetup();
+    expect(termLog).toContain(`write "replayed scrollback" @${COLS}x${ROWS}`);
+    expect(termLog.some(l => l.startsWith('resize') && l !== `resize ${COLS}x${ROWS}`)).toBe(false);
   });
 
   it('does not advertise a collapsed 0-box to a live PTY', async () => {
