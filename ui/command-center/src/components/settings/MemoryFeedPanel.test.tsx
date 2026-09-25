@@ -2,13 +2,18 @@
  * @vitest-environment jsdom
  *
  * "What Henry learns from" (Settings → Memory, memory-feed lane 2026-09-25;
- * layout pass 2026-09-25 after a coordinator review at 1440px).
+ * layout pass 2026-09-25 after a coordinator review at 1440px; toggle pass
+ * 2026-09-25 after a second review found the "Off" chip's Settings link led
+ * to a page with no actual control — R5 says the control belongs in the
+ * panel itself).
+ *
  * Pins: loading skeleton, error + retry, a source reading "not yet" at zero
  * count, a never-fed source reading "Never" (not "date unknown"), a fed
- * source showing its count and last-fed time, a disabled source showing
- * "Off" and linking to Settings → Privacy, a failing source showing its
- * error, the summary line's counts and failing-filter toggle, and the
- * source/Brain navigation links actually calling `navigateToTool`.
+ * source showing its count and last-fed time, a failing source showing its
+ * error, the summary line's counts and failing-filter toggle, the
+ * source/Brain navigation links, and — this pass — the per-row Toggle:
+ * flipping it writes the disabled-sources config key, a failed write rolls
+ * back and toasts, and the one locked-on source (chat) cannot be flipped.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -17,22 +22,22 @@ import { act } from 'react-dom/test-utils';
 
 const hooks = vi.hoisted(() => ({
   getBrainFeedStatus: vi.fn(),
+  upsertConfig: vi.fn(),
   navigateToTool: vi.fn(),
-  setPendingSettingsSection: vi.fn(),
+  toast: vi.fn(),
 }));
 
 vi.mock('../../lib/api', () => ({
-  api: { getBrainFeedStatus: hooks.getBrainFeedStatus },
+  api: { getBrainFeedStatus: hooks.getBrainFeedStatus, upsertConfig: hooks.upsertConfig },
 }));
 
-vi.mock('../../lib/store', () => {
-  const state = { setPendingSettingsSection: hooks.setPendingSettingsSection };
-  const useCommandCenter = Object.assign(
-    (selector: (value: typeof state) => unknown) => selector(state),
-    { getState: () => state },
-  );
-  return { useCommandCenter, navigateToTool: hooks.navigateToTool };
-});
+vi.mock('../../lib/store', () => ({
+  navigateToTool: hooks.navigateToTool,
+}));
+
+vi.mock('../../lib/notifications', () => ({
+  toast: hooks.toast,
+}));
 
 import { MemoryFeedPanel } from './MemoryFeedPanel';
 
@@ -58,13 +63,18 @@ function row(source: string, overrides: Record<string, unknown> = {}) {
 }
 
 async function flush() {
-  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+}
+
+function toggleIn(row: Element): HTMLButtonElement {
+  return row.querySelector('[role="switch"]') as HTMLButtonElement;
 }
 
 beforeEach(() => {
   hooks.getBrainFeedStatus.mockReset();
+  hooks.upsertConfig.mockReset();
   hooks.navigateToTool.mockReset();
-  hooks.setPendingSettingsSection.mockReset();
+  hooks.toast.mockReset();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -136,18 +146,71 @@ describe('MemoryFeedPanel', () => {
     expect(r?.textContent).not.toContain('Not yet');
   });
 
-  it('flags a disabled source with an "Off" chip that links to Settings → Privacy', async () => {
+  it('renders a disabled source\'s toggle in the off position', async () => {
     hooks.getBrainFeedStatus.mockResolvedValueOnce({
       sources: [row('finance', { enabled: false })],
       chat_outbox: { pending: 0, dead: 0 },
     });
     act(() => { root.render(<MemoryFeedPanel />); });
     await flush();
-    const chip = container.querySelector('[data-testid="memory-feed-disabled-finance"]') as HTMLElement;
-    expect(chip).toBeTruthy();
-    expect(chip.textContent).toContain('Off');
-    act(() => { chip.click(); });
-    expect(hooks.setPendingSettingsSection).toHaveBeenCalledWith('privacy');
+    const r = container.querySelector('[data-testid="memory-feed-row-finance"]') as HTMLElement;
+    expect(toggleIn(r).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('flipping a source\'s toggle on writes the disabled-sources config without it, and commits the new state', async () => {
+    hooks.upsertConfig.mockResolvedValueOnce(undefined);
+    hooks.getBrainFeedStatus.mockResolvedValueOnce({
+      sources: [row('finance', { enabled: false }), row('meeting', { enabled: false })],
+      chat_outbox: { pending: 0, dead: 0 },
+    });
+    act(() => { root.render(<MemoryFeedPanel />); });
+    await flush();
+    const r = container.querySelector('[data-testid="memory-feed-row-finance"]') as HTMLElement;
+    await act(async () => { toggleIn(r).click(); await flush(); });
+
+    expect(hooks.upsertConfig).toHaveBeenCalledWith('BRAIN_FEED_DISABLED_SOURCES', 'meeting', false);
+    expect(toggleIn(r).getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('flipping a source off writes it into the disabled-sources list', async () => {
+    hooks.upsertConfig.mockResolvedValueOnce(undefined);
+    hooks.getBrainFeedStatus.mockResolvedValueOnce({
+      sources: [row('finance', { enabled: true })],
+      chat_outbox: { pending: 0, dead: 0 },
+    });
+    act(() => { root.render(<MemoryFeedPanel />); });
+    await flush();
+    const r = container.querySelector('[data-testid="memory-feed-row-finance"]') as HTMLElement;
+    await act(async () => { toggleIn(r).click(); await flush(); });
+    expect(hooks.upsertConfig).toHaveBeenCalledWith('BRAIN_FEED_DISABLED_SOURCES', 'finance', false);
+    expect(toggleIn(r).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('rolls back and toasts when the config write fails', async () => {
+    hooks.upsertConfig.mockRejectedValueOnce(new Error('daemon unreachable'));
+    hooks.getBrainFeedStatus.mockResolvedValueOnce({
+      sources: [row('finance', { enabled: true })],
+      chat_outbox: { pending: 0, dead: 0 },
+    });
+    act(() => { root.render(<MemoryFeedPanel />); });
+    await flush();
+    const r = container.querySelector('[data-testid="memory-feed-row-finance"]') as HTMLElement;
+    await act(async () => { toggleIn(r).click(); await flush(); });
+
+    expect(toggleIn(r).getAttribute('aria-checked')).toBe('true');
+    expect(hooks.toast).toHaveBeenCalledTimes(1);
+    expect(hooks.toast.mock.calls[0][0]).toContain("Couldn't");
+  });
+
+  it('locks the toggle on for a source that must never be disabled (chat)', async () => {
+    hooks.getBrainFeedStatus.mockResolvedValueOnce({
+      sources: [row('chat', { count: 5 })],
+      chat_outbox: { pending: 0, dead: 0 },
+    });
+    act(() => { root.render(<MemoryFeedPanel />); });
+    await flush();
+    const r = container.querySelector('[data-testid="memory-feed-row-chat"]') as HTMLElement;
+    expect(toggleIn(r).disabled).toBe(true);
   });
 
   it('flags a failing source with its error and a "failed" count when dead > 0', async () => {

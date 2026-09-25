@@ -51,6 +51,11 @@ const SCANNED = ['components/settings', 'components/history'];
 const KEYS_BEFORE = [
   // Autonomy → trust level.
   'GOOSE_MODE',
+  // Memory → "What Henry learns from": per-source on/off toggle
+  // (MemoryFeedPanel.tsx), a genuinely new control added in the memory-feed
+  // lane (2026-09-25, second coordinator review) — not a lost/renamed one.
+  // Backend: `crates/goose/src/brain_feed.rs::DISABLED_SOURCES_KEY`.
+  'BRAIN_FEED_DISABLED_SOURCES',
   // NOT HERE ANY MORE, and deliberately: `chat_provider` / `chat_model` /
   // `harness_provider` / `harness_model` (model_roles.rs) and `voice_provider`
   // / `voice_model` (voice_model.rs) were six config keys this surface wrote

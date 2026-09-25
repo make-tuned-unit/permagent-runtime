@@ -712,6 +712,43 @@ mod tests {
         assert!(parse_disabled("").is_empty());
     }
 
+    /// The Settings → Memory panel's per-source Toggle writes
+    /// `BRAIN_FEED_DISABLED_SOURCES` and expects it to take effect on the
+    /// daemon's NEXT drain pass, no restart — that promise rests entirely on
+    /// [`disabled_sources`] never caching what it read at boot.
+    /// `Config::get_param` checks an env-var override before the config file
+    /// on every call (`crates/goose/src/config/base.rs`), so toggling the env
+    /// var here is a faithful, filesystem-free stand-in for editing
+    /// config.yaml: if this passes, a live config-file edit takes effect the
+    /// same way, with no code path in between that could cache the old value.
+    #[test]
+    #[serial_test::serial(brain_feed_disabled_sources_env)]
+    fn disabled_sources_reads_live_not_cached_at_boot() {
+        let env_key = DISABLED_SOURCES_KEY.to_uppercase();
+        std::env::remove_var(&env_key);
+        assert!(
+            disabled_sources().is_empty(),
+            "nothing disabled before the env var is ever set"
+        );
+
+        std::env::set_var(&env_key, "finance,meeting");
+        assert_eq!(
+            disabled_sources(),
+            vec![FeedSource::Finance, FeedSource::Meeting],
+            "the very next read sees the new value — no boot-time cache"
+        );
+
+        // Flip it again, same process, no restart: still live.
+        std::env::set_var(&env_key, "skill");
+        assert_eq!(disabled_sources(), vec![FeedSource::Skill]);
+
+        std::env::remove_var(&env_key);
+        assert!(
+            disabled_sources().is_empty(),
+            "removing it re-enables everything on the next read too"
+        );
+    }
+
     #[test]
     fn content_is_bounded_on_char_boundary() {
         let long = "é".repeat(MAX_CONTENT_CHARS + 50);
