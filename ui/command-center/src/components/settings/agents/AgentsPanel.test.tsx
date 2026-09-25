@@ -261,8 +261,11 @@ describe('AgentsPanel', () => {
 
     expect(container.querySelector('[data-testid="worker-row-strix"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="gate-chip-strix"]')?.textContent).toBe('off');
-    // An ungated worker gets no chip: "no switch known" is not "switched off".
-    expect(container.querySelector('[data-testid="gate-chip-scheduler"]')).toBeNull();
+    // Every row shows its on/off state the same way (Jesse's 1440px review,
+    // round 3) — a worker with no switch at all reads "Always on" rather than
+    // showing nothing, which used to be indistinguishable from a daemon that
+    // forgot to serialise the gate.
+    expect(container.querySelector('[data-testid="gate-chip-scheduler"]')?.textContent).toBe('Always on');
   });
 
   // REGRESSION. There was no enable control on an agent's own page at all — the
@@ -291,11 +294,25 @@ describe('AgentsPanel', () => {
     expect(writesAfter.length).toBe(writesBefore.length);
   });
 
+  /** Focuses a `live-status-<id>` pill and reads its Tooltip's content — the
+   *  raw daemon text lives ONLY there now (Jesse's 1440px review, round 3):
+   *  the chip itself shows one of five plain words, never the raw value. */
+  async function liveStatusTooltip(id: string): Promise<string> {
+    const pill = container.querySelector(`[data-testid="live-status-${id}"]`) as HTMLElement;
+    expect(pill).toBeTruthy();
+    await act(async () => { pill.focus(); });
+    const tipId = pill.getAttribute('aria-describedby');
+    expect(tipId).toBeTruthy();
+    const tip = tipId ? document.getElementById(tipId) : null;
+    return tip?.textContent ?? '';
+  }
+
   it('re-reads the agent after a flip, so its live state is not left stale', async () => {
     mockRosterAndDetail();
     await mount();
     await open('worker-row-strix');
-    expect(container.textContent).toContain('off (strix_enabled=false)');
+    expect(container.querySelector('[data-testid="live-status-strix"]')?.textContent).toBe('Off');
+    expect(await liveStatusTooltip('strix')).toContain('off (strix_enabled=false)');
 
     // After the write lands the daemon answers with the flag on, and the page
     // must show THAT rather than the state it was opened with.
@@ -320,8 +337,9 @@ describe('AgentsPanel', () => {
     expect(upsertConfig).toHaveBeenCalledWith('strix_enabled', true);
     const after = apiFetchMock.mock.calls.slice(before).map(c => c[0]);
     expect(after).toContain('/api/agents/strix');
-    expect(container.textContent).toContain('on — sweeping every 24h');
-    expect(container.textContent).not.toContain('off (strix_enabled=false)');
+    expect(container.querySelector('[data-testid="live-status-strix"]')?.textContent).toBe('Running');
+    expect(await liveStatusTooltip('strix')).toContain('on — sweeping every 24h');
+    expect(await liveStatusTooltip('strix')).not.toContain('off (strix_enabled=false)');
   });
 
   // REGRESSION. The roster was fetched once, on mount, and nothing refetched it —
@@ -647,10 +665,13 @@ describe('AgentsPanel', () => {
     mockRosterAndDetail();
     await mount();
 
-    const row = container.querySelector('[data-testid="worker-row-scheduler"]');
-    expect(row?.textContent ?? '').toMatch(/could not be read/i);
-    expect(row?.textContent ?? '').toContain('pool locked');
-    expect((row?.textContent ?? '').toLowerCase()).not.toMatch(/\bidle\b/);
+    // Scheduler's mock live_state is `{ status: 'unavailable', reason: 'pool
+    // locked' }` — the chip must say "Unknown" (never "Idle": that word is
+    // reserved for `not_queryable`, a property of the worker, not a failed
+    // read), with the reason reachable only via the pill's Tooltip.
+    expect(container.querySelector('[data-testid="live-status-scheduler"]')?.textContent).toBe('Unknown');
+    expect(await liveStatusTooltip('scheduler')).toMatch(/could not be read/i);
+    expect(await liveStatusTooltip('scheduler')).toContain('pool locked');
   });
 
   it('renders attribution wording for empty activity', async () => {
@@ -741,7 +762,7 @@ describe('AgentsPanel', () => {
       expect(details?.hasAttribute('open')).toBe(false);
     });
 
-    it('shows real last activity on the roster row when the daemon has one', async () => {
+    it('shows real last activity on the roster row, de-jargoning the retired "recipe" the daemon still writes', async () => {
       apiFetchMock.mockImplementation(async (endpoint: string) => {
         if (endpoint === '/api/agents/roster') return ROSTER as never;
         if (endpoint.startsWith('/api/agents/scheduler/work')) {
@@ -765,7 +786,12 @@ describe('AgentsPanel', () => {
       await mount();
 
       const activity = container.querySelector('[data-testid="worker-row-scheduler-activity"]');
-      expect(activity?.textContent ?? '').toContain('Ran the daily digest recipe');
+      // "recipe" is the retired internal name (automationNaming.test.ts bans
+      // it in Automate's own source); the daemon's activity journal still
+      // writes it, so the UI must swap it — deJargonDaemonText, tested on its
+      // own in lib/vocabulary.test.ts.
+      expect(activity?.textContent ?? '').toContain('Ran the daily digest automation');
+      expect(activity?.textContent ?? '').not.toMatch(/\brecipe\b/i);
       expect(activity?.textContent ?? '').toMatch(/last activity/i);
     });
 
@@ -804,6 +830,56 @@ describe('AgentsPanel', () => {
       expect(text).toContain('What your agents can use');
       expect(text).not.toContain('Dispatch roster');
       expect(text).not.toMatch(/Platform extensions — not agents/);
+    });
+
+    it('says switched-off agents stay listed, not that their switch merely "isn\'t flipped yet"', async () => {
+      mockRosterAndDetail();
+      await mount();
+      expect(container.textContent).toContain('Switched-off agents stay listed so you can turn them on.');
+    });
+  });
+
+  // Jesse's 1440px review, round 3: (1) the status column leaked raw daemon
+  // internals — mapped and gated behind a Tooltip above; (2) three workers
+  // with no gate had NO on/off chip at all, which read as "we don't know",
+  // not "always on"; (3) "recipe" survived into the UI via daemon-authored
+  // journal text — de-jargoned above. This block pins the row-level view of
+  // all three fixes together.
+  describe('status column and every-row gate chip (ST1 round 3)', () => {
+    it('gives an ungated worker an "Always on" chip, not a missing one', async () => {
+      mockRosterAndDetail();
+      await mount();
+      // Scheduler has `gate: null` in this fixture.
+      expect(container.querySelector('[data-testid="gate-chip-scheduler"]')?.textContent).toBe('Always on');
+    });
+
+    it('does not show the same on/off word twice for one worker', async () => {
+      // A worker whose gate says "on" AND whose live_state literally says
+      // "on" too — the exact daemon shape that produced the duplicate. The
+      // status pill must narrow to a DIFFERENT word ("Running"), not repeat
+      // the gate chip's "on".
+      apiFetchMock.mockImplementation(async (endpoint: string) => {
+        if (endpoint === '/api/agents/roster') {
+          return {
+            workers: [{
+              id: 'initiative', display_name: 'Initiative', summary: 'Notices repeats.',
+              what_it_does: 'Watches for repeats.', why_it_matters: 'Automates them.',
+              state_source: 'queryable', live_state: { status: 'ok', value: 'on' },
+              dispatchable: false, gate: { config_key: 'initiative_enabled', enabled: true },
+            }],
+            dispatch_roster: [], capabilities: [],
+          } as never;
+        }
+        if (endpoint.startsWith('/api/agents/initiative/work')) return EMPTY_WORK as never;
+        throw new Error(`unexpected fetch ${endpoint}`);
+      });
+      await mount();
+
+      // Gate chip and status pill each say something, and they say DIFFERENT
+      // things — "on" (the switch) and "Running" (the live status) — rather
+      // than the daemon's identical "on" value leaking into both.
+      expect(container.querySelector('[data-testid="gate-chip-initiative"]')?.textContent).toBe('on');
+      expect(container.querySelector('[data-testid="live-status-initiative"]')?.textContent).toBe('Running');
     });
   });
 });

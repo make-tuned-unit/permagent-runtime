@@ -18,6 +18,7 @@ import {
   readAgentGate,
   firstSentence,
   workerSummary,
+  liveStatusChip,
 } from './agentsPanel';
 
 describe('liveStateLabel', () => {
@@ -274,5 +275,51 @@ describe('firstSentence', () => {
     const result = firstSentence(long);
     expect(result.length).toBeLessThanOrEqual(161);
     expect(result.endsWith('...')).toBe(true);
+  });
+});
+
+describe('liveStatusChip', () => {
+  // Jesse's 1440px review: the status column was leaking daemon internals
+  // ("off (strix_enabled=false)", "no live state to query") straight onto
+  // the row. Every raw value must narrow to one of five plain words, with the
+  // raw text demoted to `detail` (a tooltip's content, never the chip label).
+  it('narrows a config-key-leaking off value to plain "Off"', () => {
+    const chip = liveStatusChip({ status: 'ok', value: 'off (strix_enabled=false)' });
+    expect(chip.label).toBe('Off');
+    expect(chip.detail).toContain('strix_enabled=false');
+  });
+
+  it('narrows a bare "on" to "Running", not the internal word itself', () => {
+    const chip = liveStatusChip({ status: 'ok', value: 'on' });
+    expect(chip.label).toBe('Running');
+  });
+
+  it('turns a job count into "Scheduled (N jobs)"', () => {
+    expect(liveStatusChip({ status: 'ok', value: '3 jobs' }).label).toBe('Scheduled (3 jobs)');
+    expect(liveStatusChip({ status: 'ok', value: '1 job' }).label).toBe('Scheduled (1 job)');
+  });
+
+  it('maps "idle" straight through', () => {
+    expect(liveStatusChip({ status: 'ok', value: 'idle' }).label).toBe('Idle');
+  });
+
+  it('maps not_queryable to Idle and unavailable to Unknown, distinctly', () => {
+    expect(liveStatusChip({ status: 'not_queryable' }).label).toBe('Idle');
+    const unavailable = liveStatusChip({ status: 'unavailable', reason: 'pool locked' });
+    expect(unavailable.label).toBe('Unknown');
+    expect(unavailable.tone).toBe('error');
+    expect(unavailable.detail).toContain('pool locked');
+  });
+
+  it('never renders the raw daemon string as the label itself', () => {
+    for (const s of [
+      { status: 'ok', value: 'off (strix_enabled=false)' } as const,
+      { status: 'ok', value: 'on' } as const,
+      { status: 'not_queryable' } as const,
+      { status: 'unavailable', reason: 'x' } as const,
+    ]) {
+      const chip = liveStatusChip(s);
+      expect(['Running', 'Idle', 'Off', 'Unknown']).toContain(chip.label);
+    }
   });
 });

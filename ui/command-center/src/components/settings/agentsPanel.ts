@@ -121,6 +121,38 @@ export function liveStateLabel(s: LiveState): StatusLabel {
   }
 }
 
+/** The five words a worker's live status is allowed to say to a human. Every
+ *  raw daemon value narrows to exactly one of these — never rendered bare —
+ *  with the raw string (a config key, a reason, whatever the daemon actually
+ *  said) available only as the caller's tooltip content, never in the chip
+ *  itself (Jesse's 1440px review: "off (strix_enabled=false)" and "no live
+ *  state to query" were leaking straight onto the row). */
+export interface LiveStatusChip {
+  label: 'Running' | 'Idle' | 'Off' | 'Unknown' | string;
+  tone: LabelTone;
+  /** The raw daemon text — a tooltip's content, never rendered directly. */
+  detail: string;
+}
+
+export function liveStatusChip(s: LiveState): LiveStatusChip {
+  const detail = liveStateLabel(s).text;
+  if (s.status === 'unavailable') return { label: 'Unknown', tone: 'error', detail };
+  if (s.status === 'not_queryable') return { label: 'Idle', tone: 'unknown', detail };
+  const raw = s.value.trim();
+  const jobs = raw.match(/^(\d+)\s*jobs?$/i);
+  if (jobs) {
+    const n = Number(jobs[1]);
+    return { label: `Scheduled (${n} job${n === 1 ? '' : 's'})`, tone: 'ok', detail };
+  }
+  if (/^off\b/i.test(raw)) return { label: 'Off', tone: 'unknown', detail };
+  if (/^(on|running)\b/i.test(raw)) return { label: 'Running', tone: 'ok', detail };
+  if (/^idle$/i.test(raw)) return { label: 'Idle', tone: 'unknown', detail };
+  // An 'ok' read with a value shaped like none of the above — still an
+  // affirmative signal from the daemon, so "Running" is the honest default
+  // rather than inventing a sixth word or leaking the raw value.
+  return { label: 'Running', tone: 'ok', detail };
+}
+
 export function availabilityLabel(a: Availability): StatusLabel {
   switch (a.status) {
     case 'available':

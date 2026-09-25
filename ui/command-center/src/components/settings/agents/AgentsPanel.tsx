@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { Chip, Details, ListRow, Row, Section } from '../atoms';
 import { Button } from '../../common/Button';
+import { Tooltip } from '../../common/Tooltip';
 import { H1 } from '../../common/H1';
 import { Toggle } from '../../common/Toggle';
 import {
@@ -21,7 +22,7 @@ import {
   gateRowHint,
   grantsNotEnforcedNote,
   grantsSummary,
-  liveStateLabel,
+  liveStatusChip,
   NO_AGENT_SECRETS_NOTE,
   presenceLabel,
   readAgentGate,
@@ -38,6 +39,7 @@ import { useTheme } from '../../../styles/useTheme';
 import { api } from '../../../lib/api';
 import { useCommandCenter } from '../../../lib/store';
 import { timeAgo } from '../format';
+import { deJargonDaemonText } from '../../../lib/vocabulary';
 import {
   fetchAgentDetail,
   fetchAgentWork,
@@ -46,6 +48,7 @@ import {
   saveSecret,
   type AgentDetail,
   type BackgroundWorker,
+  type LiveState,
   type Capability,
   type DispatchPersona,
   type ListSection,
@@ -75,6 +78,31 @@ function StatusText({ text, tone }: { text: string; tone: LabelTone }) {
     <span style={{ fontSize: textSize.micro, color: toneColor(tone, colors), fontWeight: tone === 'error' ? 600 : 400 }}>
       {text}
     </span>
+  );
+}
+
+/** A worker's live status, narrowed to one of five plain words (Running,
+ *  Idle, Scheduled (N jobs), Off, Unknown — see `liveStatusChip`), rendered
+ *  as a chip with the raw daemon text (a config key, a failure reason,
+ *  whatever it actually said) reachable only via Tooltip, never printed
+ *  bare. This is LIVE STATUS, distinct from the on/off `GateChip` beside the
+ *  name — the two must never say the same thing in different words. */
+function LiveStatusPill({ id, live }: { id: string; live: LiveState }) {
+  const { colors } = useTheme();
+  const chip = liveStatusChip(live);
+  return (
+    <Tooltip content={chip.detail}>
+      <span
+        tabIndex={0}
+        data-testid={`live-status-${id}`}
+        style={{
+          ...type.label, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.pill,
+          border: `1px solid ${colors.border}`, color: toneColor(chip.tone, colors), fontFamily: font.body,
+        }}
+      >
+        {chip.label}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -417,8 +445,8 @@ function WorkReviewBlock({ work }: { work: WorkReview }) {
                 {activity.items.map(item => (
                   <div key={item.id} style={{ fontSize: textSize.caption, color: colors.text, lineHeight: 1.45 }}>
                     <span style={{ color: colors.textDim, fontFamily: font.mono, marginRight: space.md }}>{item.ts}</span>
-                    <strong>{item.title}</strong>
-                    {item.detail && <span style={{ color: colors.textMuted }}> — {item.detail}</span>}
+                    <strong>{deJargonDaemonText(item.title)}</strong>
+                    {item.detail && <span style={{ color: colors.textMuted }}> — {deJargonDaemonText(item.detail)}</span>}
                   </div>
                 ))}
                 {activity.truncated && (
@@ -620,9 +648,7 @@ function AgentDetailPane({
   // off — offering to flip a key that daemon does not read would be a lie.
   const gate = readAgentGate(detail);
 
-  const headerLive = detail.kind === 'worker'
-    ? liveStateLabel(detail.live_state)
-    : availabilityLabel(detail.availability);
+  const headerAvailability = detail.kind === 'dispatch_persona' ? availabilityLabel(detail.availability) : null;
 
   return (
     <div>
@@ -654,12 +680,10 @@ function AgentDetailPane({
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px', marginBottom: space.xxxl, fontSize: textSize.caption, color: colors.textMuted }}>
         <span>{detail.kind === 'worker' ? 'Runs on its own' : 'Takes on goals'}</span>
-        <span>
-          {detail.kind === 'worker'
-            ? (detail.state_source === 'queryable' ? 'status checked live' : 'no live status to check')
-            : `engine: ${engineLabel(detail.engine)}`}
-        </span>
-        <StatusText text={headerLive.text} tone={headerLive.tone} />
+        {detail.kind === 'dispatch_persona' && <span>{`engine: ${engineLabel(detail.engine)}`}</span>}
+        {detail.kind === 'worker'
+          ? <LiveStatusPill id={id} live={detail.live_state} />
+          : headerAvailability && <StatusText text={headerAvailability.text} tone={headerAvailability.tone} />}
         {detail.kind === 'dispatch_persona' && (
           <span>cost: {detail.cost_tier}</span>
         )}
@@ -782,7 +806,7 @@ export function AgentsPanel({ goto }: PanelProps) {
           const activity = r.value.activity;
           if (activity.status === 'unavailable') { next[id] = { status: 'unavailable' }; return; }
           const item = activity.items[0];
-          next[id] = item ? { status: 'ok', ts: item.ts, title: item.title } : { status: 'none' };
+          next[id] = item ? { status: 'ok', ts: item.ts, title: deJargonDaemonText(item.title) } : { status: 'none' };
         });
         return next;
       });
@@ -914,7 +938,7 @@ export function AgentsPanel({ goto }: PanelProps) {
 
       <Section
         title="Background agents"
-        sub="They run on their own — you don't send them a goal. Off just means the row's switch isn't flipped yet."
+        sub="They run on their own — you don't send them a goal. Switched-off agents stay listed so you can turn them on."
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
           {roster.workers.map(worker => (
@@ -976,8 +1000,29 @@ export function AgentsPanel({ goto }: PanelProps) {
  * previously sent the user hunting through five panes for a control they could
  * not find because the row it belonged to was filtered away.
  */
-function GateChip({ id, gate }: { id: string; gate: AgentGate }) {
+/** Every row shows its on/off state the same way, in the same place — Jesse's
+ *  1440px review: Scheduler, the Watcher and the Financier had no gate chip
+ *  at all, so "switched on" and "has no switch" looked identical (blank).
+ *  `gate: null` means the worker has no switch to flip, which is a fact worth
+ *  saying — "Always on" — not a reason to render nothing. This is the ONE
+ *  place on/off is shown; the live-status chip beside it never repeats it
+ *  (see `liveStatusChip`, which narrows a bare "on"/"off" daemon value to a
+ *  different word — Running/Idle — for exactly that reason). */
+function GateChip({ id, gate }: { id: string; gate: AgentGate | null }) {
   const { colors } = useTheme();
+  if (!gate) {
+    return (
+      <span
+        data-testid={`gate-chip-${id}`}
+        style={{
+          ...type.label, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.pill,
+          border: `1px solid ${colors.border}`, color: colors.textDim, fontFamily: font.body,
+        }}
+      >
+        Always on
+      </span>
+    );
+  }
   return (
     <span
       data-testid={`gate-chip-${id}`}
@@ -1018,7 +1063,6 @@ function WorkerRow({ worker, activity, onOpen }: {
   activity: RecentActivityState | undefined;
   onOpen: () => void;
 }) {
-  const live = liveStateLabel(worker.live_state);
   const problem = worker.live_state.status === 'unavailable';
   const gate = readAgentGate(worker);
   return (
@@ -1028,8 +1072,8 @@ function WorkerRow({ worker, activity, onOpen }: {
       tone={problem ? 'problem' : 'default'}
       icon={<AgentPortrait agentId={worker.id} size={28} />}
       title={worker.display_name}
-      chip={gate && <GateChip id={worker.id} gate={gate} />}
-      status={<StatusText text={live.text} tone={live.tone} />}
+      chip={<GateChip id={worker.id} gate={gate} />}
+      status={<LiveStatusPill id={worker.id} live={worker.live_state} />}
       detail={
         <>
           <div>{workerSummary(worker)}</div>
@@ -1051,7 +1095,7 @@ function PersonaRow({ persona, onOpen }: { persona: DispatchPersona; onOpen: () 
       onOpen={onOpen}
       icon={<AgentPortrait agentId={persona.key} size={28} />}
       title={persona.display_name}
-      chip={gate && <GateChip id={persona.key} gate={gate} />}
+      chip={<GateChip id={persona.key} gate={gate} />}
       status={<StatusText text={avail.text} tone={avail.tone} />}
       detail={
         <>
