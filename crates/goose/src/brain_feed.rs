@@ -35,7 +35,10 @@
 //!   persistence writes unconditionally). The config key
 //!   [`DISABLED_SOURCES_KEY`] (comma-separated short names, e.g.
 //!   `finance,meeting`) stops a source at delivery: its queued rows are
-//!   discarded without reaching the Brain.
+//!   discarded without reaching the Brain. [`FeedSource::Chat`] is the one
+//!   exception: [`disabled_sources`] strips it out even if it is listed
+//!   (2026-09-25 ruling — a UI-only lock on the Settings toggle is not a
+//!   guardrail), because conversations are the Brain's primary intake.
 
 use sqlx::{Pool, Row, Sqlite};
 
@@ -428,7 +431,22 @@ pub fn disabled_sources() -> Vec<FeedSource> {
     let raw = crate::config::Config::global()
         .get_param::<String>(DISABLED_SOURCES_KEY)
         .unwrap_or_default();
-    parse_disabled(&raw)
+    let mut disabled = parse_disabled(&raw);
+    // Chat cannot be disabled from here, no matter what the config says. The
+    // Settings → Memory toggle already locks this in the UI (product-level
+    // guardrail), but a UI-only lock is not a guardrail — a hand-edited
+    // config.yaml, an old value left over from before the lock existed, or a
+    // future writer of this key would otherwise still switch off the Brain's
+    // primary intake. Enforced here, at the one place every drain pass reads
+    // this list, so nothing upstream of it can bypass it.
+    if let Some(pos) = disabled.iter().position(|s| *s == FeedSource::Chat) {
+        disabled.remove(pos);
+        tracing::debug!(
+            target: "permagentd::brain",
+            "BRAIN_FEED_DISABLED_SOURCES listed 'chat' — ignored, conversations can never be disabled"
+        );
+    }
+    disabled
 }
 
 /// Parse a comma-separated short-name list. Unknown names are ignored.
@@ -747,6 +765,37 @@ mod tests {
             disabled_sources().is_empty(),
             "removing it re-enables everything on the next read too"
         );
+    }
+
+    /// A UI-only lock is not a guardrail (coordinator ruling, 2026-09-25): even
+    /// if `BRAIN_FEED_DISABLED_SOURCES` names `"chat"` — a hand-edited
+    /// config.yaml, a stale value from before the lock existed, anything —
+    /// [`disabled_sources`] must still never return [`FeedSource::Chat`]. This
+    /// is the exact list [`drain`] filters deliveries against, so proving chat
+    /// never appears here proves chat is never skipped there: conversations
+    /// still feed no matter what this key says.
+    #[test]
+    #[serial_test::serial(brain_feed_disabled_sources_env)]
+    fn chat_cannot_be_disabled_even_when_listed() {
+        let env_key = DISABLED_SOURCES_KEY.to_uppercase();
+        std::env::set_var(&env_key, "chat");
+        assert!(
+            !disabled_sources().contains(&FeedSource::Chat),
+            "chat must never be in the disabled list, no matter what the config says"
+        );
+
+        std::env::set_var(&env_key, "chat,finance");
+        let disabled = disabled_sources();
+        assert!(
+            !disabled.contains(&FeedSource::Chat),
+            "chat still not disabled alongside another source"
+        );
+        assert!(
+            disabled.contains(&FeedSource::Finance),
+            "the other listed source is unaffected"
+        );
+
+        std::env::remove_var(&env_key);
     }
 
     #[test]
