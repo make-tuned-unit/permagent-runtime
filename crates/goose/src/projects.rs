@@ -509,8 +509,25 @@ pub async fn update_project(
     }
 
     let updated = get_project(pool, id).await?;
-    if updated.is_some() {
+    if let Some(ref project) = updated {
         crate::events::emit(crate::events::project_changed(id, "updated"));
+        if input.description.is_some() || input.notes.is_some() {
+            let brief = if !project.description.trim().is_empty() {
+                project.description.clone()
+            } else {
+                project.notes.clone()
+            };
+            if !brief.is_empty() {
+                crate::brain_feed::feed_for_project(
+                    pool,
+                    crate::brain_feed::FeedSource::Project,
+                    crate::brain_feed::feed_key("project", id, "brief"),
+                    id,
+                    format!("Project '{}' brief: {}", project.name, brief),
+                )
+                .await;
+            }
+        }
     }
     Ok(updated)
 }
@@ -731,7 +748,7 @@ pub async fn set_project_strategy(
         .expect("just normalized")
         .insert(pillar.to_string(), entry);
 
-    update_project(
+    let updated = update_project(
         pool,
         project_id,
         UpdateProject {
@@ -739,7 +756,20 @@ pub async fn set_project_strategy(
             ..Default::default()
         },
     )
-    .await
+    .await?;
+
+    if let Some(ref project) = updated {
+        crate::brain_feed::feed_for_project(
+            pool,
+            crate::brain_feed::FeedSource::Project,
+            crate::brain_feed::feed_key("project", project_id, &format!("strategy.{pillar}")),
+            project_id,
+            format!("Project '{}' strategy ({}): {}", project.name, pillar, content),
+        )
+        .await;
+    }
+
+    Ok(updated)
 }
 
 /// Visual + voice identity for a project's Grow posts. Stored on

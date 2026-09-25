@@ -896,6 +896,16 @@ pub async fn create_card(pool: &Pool<Sqlite>, input: CreateCard) -> Result<Card,
     // Every card, goal or not: the Kanban board is what changed, and
     // `goal_state_changed` only reaches the goal surfaces.
     announce_board_change(&card.project_id);
+
+    crate::brain_feed::feed_for_project(
+        pool,
+        crate::brain_feed::FeedSource::Card,
+        crate::brain_feed::feed_key("card", &card.id, "created"),
+        &card.project_id,
+        format!("Card '{}' ({}) created.", card.title, card_type),
+    )
+    .await;
+
     Ok(card)
 }
 
@@ -1795,6 +1805,24 @@ pub async fn update_card(
     let updated = get_card(pool, card_id).await?;
     if let Some(project_id) = project_id {
         announce_board_change(&project_id);
+        if let Some(ref card) = updated {
+            crate::brain_feed::feed_for_project(
+                pool,
+                crate::brain_feed::FeedSource::Card,
+                crate::brain_feed::feed_key("card", card_id, "summary"),
+                &project_id,
+                format!(
+                    "Card '{}': {}",
+                    card.title,
+                    if card.description.trim().is_empty() {
+                        "(no description)".to_string()
+                    } else {
+                        card.description.clone()
+                    }
+                ),
+            )
+            .await;
+        }
     }
     Ok(updated)
 }
@@ -1887,6 +1915,20 @@ pub async fn move_card(
 
     let moved = get_card(pool, card_id).await?;
     announce_board_change(&card.project_id);
+
+    // Feed only real status (column) transitions, not a same-column
+    // reposition — a card sliding within its own column is not a fact.
+    if column_id != card.column_id {
+        crate::brain_feed::feed_for_project(
+            pool,
+            crate::brain_feed::FeedSource::Card,
+            crate::brain_feed::feed_key("card", card_id, "status"),
+            &card.project_id,
+            format!("Card '{}' moved to '{}'.", card.title, target_col.name),
+        )
+        .await;
+    }
+
     Ok(moved)
 }
 

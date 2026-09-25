@@ -391,12 +391,33 @@ pub(crate) async fn apply_jesse_answer(
     if !matches!(decision.kind.as_str(), "tool_approval" | "session_gate") {
         if let Some(brain) = permagent::agents::platform_extensions::get_global_brain() {
             use permagent::decision_inbox::learn;
-            if let Err(e) = learn::ingest_answered_decision(&pool, &brain, &decision).await {
-                tracing::warn!(
-                    "Decision {} answer ingestion failed (non-fatal): {}",
-                    decision.id,
-                    e
-                );
+            match learn::ingest_answered_decision(&pool, &brain, &decision).await {
+                // Counted against the feed-status panel even though the
+                // memory itself is written directly above (not via the
+                // outbox) — this is the only path today by which an
+                // answered decision reaches the Brain, and it should show
+                // up as fed, not perpetually "not yet".
+                Ok(Some(_)) => {
+                    permagent::brain_feed::record_fed(
+                        &pool,
+                        permagent::brain_feed::FeedSource::DecisionAsked,
+                    )
+                    .await;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "Decision {} answer ingestion failed (non-fatal): {}",
+                        decision.id,
+                        e
+                    );
+                    permagent::brain_feed::record_error(
+                        &pool,
+                        permagent::brain_feed::FeedSource::DecisionAsked,
+                        &e.to_string(),
+                    )
+                    .await;
+                }
             }
             if let Err(e) = learn::ingest_edited_decision(&pool, &brain, &decision).await {
                 tracing::warn!(

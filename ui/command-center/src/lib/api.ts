@@ -2544,6 +2544,27 @@ export const api = {
     }>(`/api/brain/memories?${qs.toString()}`);
   },
 
+  /** Per-source Brain-feed status (Settings → Memory's "What Henry learns
+   *  from" panel) — count/last-fed/error/pending/dead for every structured
+   *  data source, plus the chat-turn outbox's own depth. Never 404s: every
+   *  source appears even with zero facts fed. */
+  getBrainFeedStatus: () =>
+    apiFetch<{
+      sources: {
+        source: string;
+        tag: string;
+        label: string;
+        count: number;
+        last_fed_at: string | null;
+        last_error: string | null;
+        last_error_at: string | null;
+        pending: number;
+        dead: number;
+        enabled: boolean;
+      }[];
+      chat_outbox: { pending: number; dead: number };
+    }>('/api/brain/feed-status'),
+
   getAgents: () =>
     apiFetch<{
       agents: { id: string; name: string; role: string; source: string }[];

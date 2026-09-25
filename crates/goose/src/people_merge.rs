@@ -1402,6 +1402,8 @@ mod tests {
             photo_url: None,
             find_online_hints: None,
             graph_entity_id: None,
+            kind: "person".to_string(),
+            is_self: false,
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
         };

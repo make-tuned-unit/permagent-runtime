@@ -15,6 +15,7 @@ pub mod app_views;
 pub mod attachments;
 pub mod backup;
 pub mod brain_enrichment;
+pub mod brain_feed;
 pub mod brain_handle;
 pub mod briefings;
 pub mod builtin_extension;

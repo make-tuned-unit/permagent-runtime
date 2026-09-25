@@ -513,6 +513,23 @@ impl AppState {
                         "People↔graph bridge (graph side) sync failed (non-fatal)"
                     ),
                 }
+
+                // One-time (idempotent) cleanup: archive any pre-existing
+                // `people` row minted before this bridge checked entity_type,
+                // so a non-person graph entity no longer sits in the CRM
+                // directory as a "person". Non-fatal.
+                match permagent::people_bridge::archive_non_person_bridge_rows(&pool, b).await {
+                    Ok(n) if n > 0 => tracing::info!(
+                        target: "permagentd::people_bridge",
+                        "Archived {n} non-person people row(s) minted before entity_type checking"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(
+                        target: "permagentd::people_bridge",
+                        error = %e,
+                        "Non-person bridge-row archival failed (non-fatal)"
+                    ),
+                }
             }
 
             // Association→edge reconcile (2026-07-27): re-assert works_on

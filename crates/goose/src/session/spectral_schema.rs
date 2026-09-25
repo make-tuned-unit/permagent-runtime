@@ -735,6 +735,8 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
 
     // CRM people table (schema v12). Idempotent; shared with migrate_v11_to_v12.
     apply_people_schema(pool).await?;
+    apply_people_archived_column(pool).await?;
+    apply_people_kind_column(pool).await?;
 
     // Person-keyed meetings (schema v44). Idempotent; shared with
     // migrate_v43_to_v44 so a fresh install can log a meeting on first boot.
@@ -889,6 +891,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // version ladder, and a missing table silently costs every worker its
     // recovered state after a restart.
     apply_rlm_context_schema(pool).await?;
+
+    // Brain feed outbox + per-source status (crates/goose/src/brain_feed.rs).
+    // Version-independent for the same reason as the tables above.
+    crate::brain_feed::apply_schema(pool).await?;
 
     info!(
         "Spectral schema v{} initialized successfully",
@@ -1307,6 +1313,7 @@ pub async fn apply_people_schema(pool: &Pool<Sqlite>) -> Result<()> {
             notes           TEXT,
             last_contact_at TEXT,
             graph_entity_id TEXT,
+            kind            TEXT NOT NULL DEFAULT 'person' CHECK (kind IN ('person','organisation')),
             created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         )",
@@ -2597,6 +2604,49 @@ pub async fn apply_briefings_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await?;
 
+    Ok(())
+}
+
+/// Version-independent: `people.archived_at` (memory-feed lane, 2026-09-25).
+/// A `people` row minted by [`crate::people_bridge::sync_people_from_graph`]
+/// from a NON-person graph entity (the bridge ignored `entity_type` before
+/// this lane) is archived here, not deleted — the row may already carry
+/// manually-entered contact detail a delete would destroy. Archived rows are
+/// excluded from the default directory listing but remain readable by id.
+/// Guarded `ALTER TABLE ADD COLUMN`, additive and idempotent.
+pub async fn apply_people_archived_column(pool: &Pool<Sqlite>) -> Result<()> {
+    let has_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('people') WHERE name = 'archived_at'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_column == 0 {
+        sqlx::query("ALTER TABLE people ADD COLUMN archived_at TEXT")
+            .execute(pool)
+            .await?;
+        info!("Added people.archived_at column (non-person bridge row archival)");
+    }
+    Ok(())
+}
+
+/// Version-independent: `people.kind` (memory-feed lane, 2026-09-25 — contract
+/// note from `dagk/ux-mind`'s `peopleKind.ts`, which reads `kind:
+/// 'person'|'organisation'` from the people API). SQLite's guarded
+/// `ADD COLUMN` cannot carry a `CHECK` constraint the way the fresh-install
+/// `CREATE TABLE` above does, so an existing DB gets the column unconstrained;
+/// every writer here still only ever stores `'person'` or `'organisation'`.
+/// Additive and idempotent.
+pub async fn apply_people_kind_column(pool: &Pool<Sqlite>) -> Result<()> {
+    let has_column: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('people') WHERE name = 'kind'")
+            .fetch_one(pool)
+            .await?;
+    if has_column == 0 {
+        sqlx::query("ALTER TABLE people ADD COLUMN kind TEXT NOT NULL DEFAULT 'person'")
+            .execute(pool)
+            .await?;
+        info!("Added people.kind column ('person'|'organisation')");
+    }
     Ok(())
 }
 

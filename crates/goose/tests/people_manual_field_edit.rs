@@ -90,6 +90,8 @@ async fn overlaid_person(brain: &SafeBrain, name: &str) -> Person {
         photo_url: None,
         find_online_hints: None,
         graph_entity_id: Some(hex.clone()),
+        kind: "person".into(),
+        is_self: false,
         created_at: "t".into(),
         updated_at: "t".into(),
     };

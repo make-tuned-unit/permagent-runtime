@@ -93,7 +93,7 @@ pub async fn list_project_people(
 ) -> Result<Vec<ProjectPerson>, String> {
     let rows = sqlx::query(
         "SELECT p.entity_uuid, p.canonical_id, p.display_name, p.role, p.company, \
-                p.email, p.phone, p.notes, p.last_contact_at, p.graph_entity_id, \
+                p.email, p.phone, p.notes, p.last_contact_at, p.graph_entity_id, p.kind, \
                 p.created_at, p.updated_at, \
                 pp.role AS project_role, pp.added_at AS associated_at \
          FROM project_people pp \
@@ -132,6 +132,8 @@ pub async fn list_project_people(
                 photo_url: None,
                 find_online_hints: None,
                 graph_entity_id: r.get("graph_entity_id"),
+                kind: r.get("kind"),
+                is_self: false,
                 created_at: r.get("created_at"),
                 updated_at: r.get("updated_at"),
             },

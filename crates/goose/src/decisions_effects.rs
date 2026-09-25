@@ -977,6 +977,17 @@ async fn land_approved_goal(
     // landing actually happened, not merely whether it was attempted.
     persist_landing_outcome(pool, goal_id, &card, &outcome, rebase_refusal).await;
 
+    // Feed the Brain: what landing this goal actually did (or honestly why
+    // it did not) — the outcome future dispatches should recall.
+    crate::brain_feed::feed_for_project(
+        pool,
+        crate::brain_feed::FeedSource::Goal,
+        crate::brain_feed::feed_key("goal", goal_id, "landing"),
+        &card.project_id,
+        format!("Goal '{}' landing: {:?}", card.title, outcome),
+    )
+    .await;
+
     let warning = if let crate::goal_landing::LandOutcome::NeedsMerge { branch, trunk } = &outcome {
         ensure_needs_merge_decision(pool, goal_id, &card.title, &card.project_id, branch, trunk)
             .await
@@ -2283,6 +2294,25 @@ async fn apply_project_intel(
     tx.commit()
         .await
         .map_err(|e| GuardError::Db(e.to_string()))?;
+
+    let summary = payload
+        .items
+        .iter()
+        .map(|i| format!("{} ({})", i.name, i.kind))
+        .collect::<Vec<_>>()
+        .join(", ");
+    crate::brain_feed::feed_for_project(
+        pool,
+        crate::brain_feed::FeedSource::Project,
+        crate::brain_feed::feed_key("project", &payload.project_id, "intel"),
+        &payload.project_id,
+        format!(
+            "Project '{}' intelligence: {}",
+            payload.project_name, summary
+        ),
+    )
+    .await;
+
     already_applied(format!(
         "project intelligence applied to \"{}\": {} item(s) added/updated with source citations",
         payload.project_name,
@@ -2330,6 +2360,19 @@ async fn file_person_addressless(
             Ok(PersonOutcome::AssociatedExisting)
         }
         [] => {
+            // Conservative classification (memory-feed lane, 2026-09-25): a
+            // name carrying a legal-entity suffix ("Acme Inc", "Doe & Partners
+            // LLC") is an organisation, not a person — filing it here used to
+            // mint an indistinguishable `Person` graph entity. Refuse rather
+            // than guess; the caller can still file it as a project note.
+            if crate::people_create::classify_person_or_org(name)
+                == crate::people_create::PersonOrOrg::Organisation
+            {
+                return Err(format!(
+                    "'{name}' looks like an organisation, not a person — not added as a person \
+                     (never guess an identity)"
+                ));
+            }
             let brain = brain.ok_or_else(|| {
                 "Brain is not available — minting a person writes a graph entity; add them later \
                  with create_person"

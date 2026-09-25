@@ -152,7 +152,20 @@ pub async fn file_briefing(pool: &Pool<Sqlite>, briefing: NewBriefing) -> Option
     .await;
 
     match result {
-        Ok(_) => Some(id),
+        Ok(_) => {
+            crate::brain_feed::feed(
+                pool,
+                crate::brain_feed::FeedSource::Briefing,
+                crate::brain_feed::feed_key("briefing", &id, "summary"),
+                None,
+                format!(
+                    "Briefing from {} ({}): {}",
+                    briefing.from_agent, briefing.kind, briefing.summary
+                ),
+            )
+            .await;
+            Some(id)
+        }
         Err(e) => {
             warn!(
                 target: "permagent::briefings",

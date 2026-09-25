@@ -2658,6 +2658,20 @@ impl SessionStorage {
                     // paid invocation with `no such table`.
                     spectral_schema::apply_cost_reservations_schema(&self.pool).await?;
 
+                    // Version-independent: the Brain feed outbox + per-source
+                    // status tables (crates/goose/src/brain_feed.rs). New
+                    // tables only, idempotent, so a DB already past the
+                    // current stamp still gets them without a numbered step.
+                    crate::brain_feed::apply_schema(&self.pool).await?;
+
+                    // Version-independent: people.archived_at (non-person
+                    // bridge row archival). Additive + idempotent.
+                    spectral_schema::apply_people_archived_column(&self.pool).await?;
+
+                    // Version-independent: people.kind ('person'|'organisation').
+                    // Additive + idempotent.
+                    spectral_schema::apply_people_kind_column(&self.pool).await?;
+
                     // Boot pass over concluded `unknown` provider-spend holds
                     // (gated-turn-silence, E2E QA 2026-09-18). The session-tree
                     // reconcile in `reconcile_stale_reservations` only runs

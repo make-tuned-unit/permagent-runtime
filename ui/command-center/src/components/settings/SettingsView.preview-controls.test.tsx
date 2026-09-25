@@ -21,6 +21,10 @@ vi.mock('../../lib/api', () => ({
     setCrashConsent: vi.fn(),
     setAnalyticsConsent: vi.fn(),
     exportCrashReport: vi.fn(),
+    // MemoryPanel's "What Henry learns from" sub-panel (memory-feed lane,
+    // 2026-09-25) fetches this on mount; left pending so it stays in its
+    // loading state rather than resolving mid-assertion.
+    getBrainFeedStatus: vi.fn(() => new Promise(() => {})),
   },
   apiFetch: vi.fn(),
 }));

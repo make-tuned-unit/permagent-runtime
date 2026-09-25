@@ -744,12 +744,14 @@ impl SafeBrain {
         .map_err(|e| anyhow::anyhow!("brain task panicked: create_typed_entity: {e}"))?
     }
 
-    /// Look up a graph entity's canonical name by its bare 64-hex `EntityId`.
-    /// `None` if no such node exists. Used by the graph-side people bridge
+    /// Look up a graph entity's canonical name and entity type by its bare
+    /// 64-hex `EntityId`. `None` if no such node exists. Used by the
+    /// graph-side people bridge
     /// ([`crate::people_bridge::sync_people_from_graph`]) to resolve runtime /
     /// extracted persons for minting — reads the live Brain, no second Kuzu
-    /// connection.
-    pub async fn entity_canonical(&self, id_hex: &str) -> anyhow::Result<Option<String>> {
+    /// connection. Returns `(canonical, entity_type)` so a caller can refuse
+    /// to mint a `people` row for a non-person entity (project, org, …).
+    pub async fn entity_canonical(&self, id_hex: &str) -> anyhow::Result<Option<(String, String)>> {
         let brain = self.inner.clone();
         let id_hex = id_hex.to_string();
         tokio::task::spawn_blocking(move || {
@@ -757,7 +759,7 @@ impl SafeBrain {
                 .parse()
                 .map_err(|e| anyhow::anyhow!("invalid entity id hex: {e:?}"))?;
             match brain.store().get_entity(&id) {
-                Ok(Some(e)) => Ok(Some(e.canonical)),
+                Ok(Some(e)) => Ok(Some((e.canonical, e.entity_type))),
                 Ok(None) => Ok(None),
                 Err(e) => Err(anyhow::anyhow!("get_entity: {e}")),
             }
