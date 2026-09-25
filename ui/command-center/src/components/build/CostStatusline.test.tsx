@@ -358,7 +358,7 @@ describe('CostStatusline after an app launch (reload hydration, no live frame ye
 describe('runGoalNote', () => {
   const goal = (over: Partial<ActiveGoal>): ActiveGoal => ({
     id: 'g', title: 't', project_id: 'p', state: 'in_progress', assigned_to: null,
-    created_at: '', updated_at: '', ...over,
+    created_at: '', updated_at: '', auto_approve: false, ...over,
   });
 
   it("shows only its own run's goal note, never another run's", () => {
