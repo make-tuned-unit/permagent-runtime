@@ -318,6 +318,7 @@ export function BrainView() {
             searchLoading={searchLoading}
             searchError={searchError}
             entities={data?.entities ?? []}
+            graphMemories={data?.memories ?? []}
             filters={filters}
           />
         </div>
@@ -669,7 +670,8 @@ export function BrainView() {
               const ent = selected.data as GraphEntity | undefined;
               const fields = ent?.fields ?? [];
               const degree = data?.edges?.filter(e => e.from === selected.id || e.to === selected.id).length ?? 0;
-              const memLinks = data?.memories?.filter(m => m.ent.includes(selected.id)).length ?? 0;
+              const linkedMemories = data?.memories?.filter(m => m.ent.includes(selected.id)) ?? [];
+              const memLinks = linkedMemories.length;
               return (<>
                 <p style={{ fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, margin: '0 0 16px' }}>
                   {selected.note || 'No description yet — the Librarian writes one on its next run.'}
@@ -694,6 +696,41 @@ export function BrainView() {
                           textTransform: 'uppercase', letterSpacing: '0.08em', flexShrink: 0,
                         }}>{f.source}</span>
                       </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* The entity's own memories, one click from the card — the
+                    same list whether it was opened from a graph node or a list
+                    row. Drawn from the graph sample (as the MEMORIES stat is);
+                    the stat below still searches the whole Brain. */}
+                {linkedMemories.length > 0 && (
+                  <div data-testid="brain-entity-memories" style={{ marginBottom: space.xxl, overflowY: 'auto', maxHeight: 240, display: 'flex', flexDirection: 'column', gap: space.xxs }}>
+                    <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: space.xs }}>
+                      Memories
+                    </div>
+                    {linkedMemories.slice(0, 12).map(m => (
+                      <Button
+                        key={m.id}
+                        colors={colors}
+                        variant="bare"
+                        type="button"
+                        onClick={() => selectMemory(m)}
+                        style={{
+                          '--pa-btn-fg': colors.text,
+                          '--pa-btn-bg-hover': colors.fillHover,
+                          '--pa-btn-bg-active': colors.fillActive,
+                          '--pa-btn-pad': `${space.sm}px ${space.md}px`,
+                          '--pa-btn-radius': `${radius.sm}px`,
+                          '--pa-btn-weight': 500,
+                          justifyContent: 'flex-start', textAlign: 'left',
+                          fontFamily: font.body, fontSize: textSize.caption,
+                        } as CSSProperties}
+                      >
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                          {deriveMemoryTitle(m)}
+                        </span>
+                      </Button>
                     ))}
                   </div>
                 )}

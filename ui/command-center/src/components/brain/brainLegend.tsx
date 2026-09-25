@@ -47,7 +47,7 @@ function Swatch({ color, shape }: { color: number; shape: 'sphere' | 'cube' | 'd
 export const BRAIN_GESTURES: LegendRow[] = [
   { term: 'Drag', meaning: 'turns the graph; it drifts on its own when you let go' },
   { term: 'Scroll', meaning: 'moves you closer in or further back' },
-  { term: 'Hover a node', meaning: 'its name and what it is' },
+  { term: 'Hover a node', meaning: 'its name and what it is, and lights up everything it connects to' },
   { term: 'Click a node', meaning: 'opens it in the panel beside the graph' },
 ];
 
@@ -90,5 +90,9 @@ export const BRAIN_VOCABULARY: LegendRow[] = [
   {
     term: 'Travelling lights',
     meaning: 'always on. They show how strong a link is by how fast they move — not live traffic.',
+  },
+  {
+    term: 'Line colour',
+    meaning: 'what kind of connection it is — a memory link is cyan; a direct relationship (works at, member of, …) gets its own colour per kind.',
   },
 ];
