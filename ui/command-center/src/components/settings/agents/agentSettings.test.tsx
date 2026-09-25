@@ -15,6 +15,7 @@ const mocked = vi.hoisted(() => ({
   getLibrarianSchedule: vi.fn(async () => null as unknown),
   getOllamaStatus: vi.fn(async () => ({ reachable: false, installed: [], running: [] })),
   runLibrarianNow: vi.fn(async () => ({})),
+  getLibrarianStatus: vi.fn(async () => ({ entities_awaiting_context: 0 } as unknown)),
 }));
 
 vi.mock('../../../lib/api', () => ({ api: mocked, apiFetch: vi.fn() }));
@@ -116,6 +117,39 @@ describe("the Librarian's schedule", () => {
     await mount('librarian');
     expect(container.textContent).toContain('Next run');
     expect(container.textContent).toContain('Run Librarian now');
+  });
+
+  it('shows the entities-awaiting-context count when the daemon reports one', async () => {
+    mocked.getLibrarianSchedule.mockImplementation(async () => ({
+      enabled: true, start_time: '01:50', duration_minutes: 260,
+      model: 'qwen3:8b', run_if_launched_in_window: true, pruning_enabled: false,
+    }));
+    mocked.getLibrarianStatus.mockImplementation(async () => ({ entities_awaiting_context: 4 }));
+    await mount('librarian');
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="librarian-awaiting-context"]')?.textContent).toBe('4 awaiting your context');
+  });
+
+  it('says nothing when the count is zero — the row is not an ambient warning', async () => {
+    mocked.getLibrarianSchedule.mockImplementation(async () => ({
+      enabled: true, start_time: '01:50', duration_minutes: 260,
+      model: 'qwen3:8b', run_if_launched_in_window: true, pruning_enabled: false,
+    }));
+    mocked.getLibrarianStatus.mockImplementation(async () => ({ entities_awaiting_context: 0 }));
+    await mount('librarian');
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="librarian-awaiting-context"]')).toBeNull();
+  });
+
+  it('treats a daemon that predates the field as zero, not unknown', async () => {
+    mocked.getLibrarianSchedule.mockImplementation(async () => ({
+      enabled: true, start_time: '01:50', duration_minutes: 260,
+      model: 'qwen3:8b', run_if_launched_in_window: true, pruning_enabled: false,
+    }));
+    mocked.getLibrarianStatus.mockImplementation(async () => ({}));
+    await mount('librarian');
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="librarian-awaiting-context"]')).toBeNull();
   });
 });
 

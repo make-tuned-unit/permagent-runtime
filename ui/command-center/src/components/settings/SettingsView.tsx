@@ -27,7 +27,6 @@ import { PronunciationSection } from '../voice/PronunciationSection';
 import { Section, Row, Block, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, selectStyle } from './atoms';
 import { Button } from '../common/Button';
 import { H1 } from '../common/H1';
-import { StateBlock } from '../common/StateBlock';
 import { Tooltip } from '../common/Tooltip';
 import { Toggle } from '../common/Toggle';
 import { makeQrMatrix } from '../../lib/qrMatrix';
@@ -38,6 +37,12 @@ import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
 import { summarizeDecisions } from '../dashboard/decisions/summary';
 import { getOpenOnLaunch, setOpenOnLaunch, OPEN_ON_LAUNCH_OPTIONS, type OpenOnLaunch } from '../../lib/openOnLaunch';
 import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
+import { EgressAuditSection } from './EgressAuditSection';
+import { AuthLogSection } from './AuthLogSection';
+import { BackupsSection } from './BackupsSection';
+import { LocalModelsSection } from './LocalModelsSection';
+import { MessagingGatewaysSection } from './MessagingGatewaysSection';
+import { GmailConnectSection } from './GmailConnectSection';
 import { ProviderModelPicker } from './ProviderModelPicker';
 
 // The PreviewBadge/PreviewNotice machinery (2026-07-10 audit) is gone: every
@@ -747,6 +752,17 @@ type RoleEffective = {
  *  this and know which model actually answered. `modelKeyLabel` is the
  *  role's model config key (e.g. `chat_model`), used only to word the
  *  "from …" suffix. */
+/** Plain-language word for a role's own config key (R3 — no snake_case config
+ *  keys in user copy). Falls back to the raw key so an unrecognized role
+ *  degrades to something true rather than throwing. */
+const MODEL_KEY_LABEL: Record<string, string> = {
+  chat_model: 'your Chat setting',
+  harness_model: 'your Harness setting',
+};
+function roleSourceLabel(modelKeyLabel: string): string {
+  return MODEL_KEY_LABEL[modelKeyLabel] ?? modelKeyLabel;
+}
+
 function computeRoleEffective(
   provider: string | null, model: string | null,
   sessionProvider: string | null, sessionModel: string | null,
@@ -765,12 +781,12 @@ function computeRoleEffective(
     return { display: 'session model (explicit)', suffix: null, provider: sp };
   }
   if (p !== null && m !== null) {
-    return { display: `${p} / ${m}`, suffix: `from ${modelKeyLabel}`, provider: p };
+    return { display: `${p} / ${m}`, suffix: `from ${roleSourceLabel(modelKeyLabel)}`, provider: p };
   }
   // Zero or exactly one role key set: resolves as if neither were — a half
   // pair is a typo, not an intention (RoleModelSource::HalfConfigured).
   if (sp !== null && sm !== null) {
-    return { display: `${sp} / ${sm}`, suffix: 'from GOOSE_MODEL', provider: sp };
+    return { display: `${sp} / ${sm}`, suffix: 'set by your config', provider: sp };
   }
   return { display: '(default)', suffix: 'built-in default', provider: null };
 }
@@ -793,8 +809,8 @@ function resolvedRoleEffective(r: ResolvedModelRoute, modelKeyLabel: string): Ro
   const p = trimmedOrNull(r.provider);
   const m = trimmedOrNull(r.model);
   const suffix = ({
-    configured: `from ${modelKeyLabel}`,
-    session_model: 'from GOOSE_MODEL',
+    configured: `from ${roleSourceLabel(modelKeyLabel)}`,
+    session_model: 'set by your config',
     default: 'built-in default',
     disabled: 'session model (explicit)',
     half_configured: 'half-set pair ignored',
@@ -1106,6 +1122,8 @@ export function ModelsPanel({ goto }: PanelProps) {
         )}
       </Section>
 
+      <LocalModelsSection />
+
       {/* ── The one pointer to Agents ────────────────────────────
           There used to be TWO sections here — "Worker roster" and "Agent
           settings" — with the same button, the same destination and, because
@@ -1168,6 +1186,7 @@ function ServicesPanel() {
       <Section title="Fundamentals" sub="Optional financialdatasets.ai key. Quotes still work without it. Same field as the Finance tab.">
         <Block><FundamentalsKey /></Block>
       </Section>
+      <GmailConnectSection />
       <Section
         title="Data sources"
         sub="Public APIs you can turn on for agents. Browse a category at a time. Enabling a source makes it callable immediately — suggested agents get it, and the Orchestrator can call every enabled source."
@@ -1519,77 +1538,8 @@ function SovereigntyBlock() {
         </Row>
       </Section>
 
-      <Section title="Egress audit" sub="Every cloud call, allowed or blocked — newest first. BLOCKED means sovereign mode refused it before anything left this machine.">
-        <Row label="Cloud inference calls" hint={`${log?.length ?? 0} recorded`}>
-          <Button
-            colors={colors}
-            onClick={refreshLog}
-            style={{
-              '--pa-btn-bg': colors.surfaceHi,
-              '--pa-btn-fg': colors.text,
-              '--pa-btn-border': colors.border,
-              '--pa-btn-border-hover': colors.borderHi,
-              '--pa-btn-bg-hover': colors.surfaceHi,
-              '--pa-btn-bg-active': colors.surface,
-              '--pa-btn-pad': '4px 10px',
-              '--pa-btn-radius': `${radius.sm}px`,
-              fontSize: textSize.caption,
-            } as CSSProperties}
-          >Refresh</Button>
-        </Row>
-        {logError ? (
-          <StateBlock
-            tone="error"
-            compact
-            title="Couldn't read the egress log."
-            detail="This says nothing about whether calls were made — only that the record could not be read. Do not take a silent panel as a guarantee."
-            onRetry={() => { void refreshLog(); }}
-          />
-        ) : log === null ? (
-          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>Loading audit log…</div>
-        ) : log.length === 0 ? (
-          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>
-            Nothing has left this machine yet. Every cloud call will be recorded here.
-          </div>
-        ) : (
-          <div style={{ marginTop: space.xl }}>
-            <div>
-              <div className="pa-set-egress" style={{ padding: `0 ${space.lg}px ${space.md}px`, ...type.label, color: colors.textDim }}>
-                <div>When</div><div>Provider · Model</div><div className="pa-set-wide-only">Kind</div><div>Result</div>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
-                {log.map(e => (
-                  <div key={e.id} className="pa-set-egress" style={{ padding: `${space.md}px ${space.lg}px`, borderRadius: concentric(radius.lg, space.xs), background: colors.fillSubtle }}>
-                    {/* The primitive clones its child rather than boxing it,
-                        so these stay grid ITEMS and the ellipsis truncation
-                        below still measures against the column. */}
-                    <Tooltip content={`${new Date(e.ts).toLocaleString()}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}>
-                      <div tabIndex={0} style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.mono }}>
-                        {timeAgo(e.ts) || e.ts}
-                      </div>
-                    </Tooltip>
-                    <Tooltip content={`${e.provider} · ${e.model} · ${e.kind}`}>
-                      <div tabIndex={0} style={{ fontSize: textSize.caption, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        <span style={{ color: colors.textMuted }}>{e.provider}</span> · {e.model}
-                      </div>
-                    </Tooltip>
-                    <div className="pa-set-wide-only" style={{ fontSize: textSize.caption, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis' }}>{e.kind}</div>
-                    <div>
-                      <span style={{
-                        ...type.label, fontWeight: 700,
-                        padding: `${space.xxs}px ${space.md}px`, borderRadius: radius.pill, border: `1px solid ${colors.border}`,
-                        color: e.blocked ? colors.warning : colors.success,
-                      }}>
-                        {e.blocked ? 'blocked' : 'allowed'}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-      </Section>
+      <EgressAuditSection log={log} logError={logError} onRefresh={refreshLog} />
+      <AuthLogSection />
     </>
   );
 }
@@ -1611,6 +1561,7 @@ function PrivacyPanel() {
       <H1 sub="What leaves this machine, and what stops it. Memory and traces are local; sovereign mode makes that boundary enforced rather than merely true today.">Privacy &amp; data</H1>
       <SovereigntyBlock />
       <DataPanel />
+      <BackupsSection />
     </div>
   );
 }
@@ -1792,6 +1743,10 @@ function DevicesPanel() {
           <Row
             key={d.id}
             label={d.name}
+            // Never having connected is not the same fact as being revoked —
+            // dimmed, not hidden, so the entry a claim link created is still
+            // findable while it says plainly that nothing has happened yet.
+            dim={!d.revoked && !d.last_seen}
             hint={
               (d.revoked ? 'Revoked · ' : '')
               + `Paired ${new Date(d.created).toLocaleDateString()}`
@@ -2015,6 +1970,8 @@ function DevicesPanel() {
           <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>Links are single-use and expire in 10 minutes.</span>
         </Row>
       </Section>
+
+      <MessagingGatewaysSection />
     </div>
   );
 }

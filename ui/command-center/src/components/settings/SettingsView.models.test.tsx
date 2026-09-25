@@ -18,6 +18,13 @@ const allowed = vi.hoisted(() => ({
   runLibrarianNow: vi.fn(),
   getPacks: vi.fn(),
   applyPacks: vi.fn(),
+  // ModelsPanel now also mounts LocalModelsSection (ST2, dagK settings pass) —
+  // its own wiring tests live in LocalModelsSection.test.tsx; here it just
+  // needs to resolve so it does not throw on mount.
+  listLocalModels: vi.fn(async () => []),
+  downloadLocalModel: vi.fn(),
+  cancelLocalModelDownload: vi.fn(),
+  deleteLocalModel: vi.fn(),
 }));
 
 vi.mock('../../lib/api', () => ({
@@ -147,7 +154,7 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
     expect(roleRow('chat').textContent).toContain('built-in default');
     expect(roleRow('harness').textContent).toContain('built-in default');
     expect(roleRow('voice').textContent).toContain('custom_deepseek / deepseek-chat (default)');
-    expect(container.textContent).not.toContain('from GOOSE_MODEL');
+    expect(container.textContent).not.toContain('set by your config');
   });
 
   it('falls Chat and Harness back to the session model, but NOT Voice', async () => {
@@ -158,9 +165,9 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
     mockSessionModel('zai', 'glm-5.3');
     await mount(vi.fn());
     expect(roleRow('chat').textContent).toContain('zai / glm-5.3');
-    expect(roleRow('chat').textContent).toContain('from GOOSE_MODEL');
+    expect(roleRow('chat').textContent).toContain('set by your config');
     expect(roleRow('harness').textContent).toContain('zai / glm-5.3');
-    expect(roleRow('harness').textContent).toContain('from GOOSE_MODEL');
+    expect(roleRow('harness').textContent).toContain('set by your config');
     expect(roleRow('voice').textContent).not.toContain('zai / glm-5.3');
     expect(roleRow('voice').textContent).toContain('custom_deepseek / deepseek-chat (default)');
   });
@@ -172,9 +179,9 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
     mockRoleConfig({ chat_provider: 'anthropic', chat_model: 'claude-sonnet-5' });
     await mount(vi.fn());
     expect(roleRow('chat').textContent).toContain('anthropic / claude-sonnet-5');
-    expect(roleRow('chat').textContent).toContain('from chat_model');
+    expect(roleRow('chat').textContent).toContain('from your Chat setting');
     expect(roleRow('harness').textContent).toContain('zai / glm-5.3');
-    expect(roleRow('harness').textContent).toContain('from GOOSE_MODEL');
+    expect(roleRow('harness').textContent).toContain('set by your config');
     expect(roleRow('voice').textContent).not.toContain('claude-sonnet-5');
   });
 
@@ -211,13 +218,13 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
     const harness = roleRow('harness');
     expect(harness.textContent).toContain('openai / gpt-5.4-mini');
     expect(harness.textContent).toContain('coordinator fallback');
-    expect(harness.textContent).not.toContain('from GOOSE_MODEL');
+    expect(harness.textContent).not.toContain('set by your config');
     expect(harness.querySelector('[data-testid="role-row-harness-notice"]')?.textContent).toBe(notice);
     // The picker opens on the provider the row names.
     expect(harness.querySelector('[data-picker="harness"]')?.getAttribute('data-value-provider')).toBe('openai');
     // Chat has no gate: it still reads the session model.
     expect(roleRow('chat').textContent).toContain('anthropic / claude-haiku-4-5');
-    expect(roleRow('chat').textContent).toContain('from GOOSE_MODEL');
+    expect(roleRow('chat').textContent).toContain('set by your config');
     expect(roleRow('chat').querySelector('[data-testid="role-row-chat-notice"]')).toBeNull();
   });
 
@@ -241,7 +248,7 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
     } as never);
     await mount(vi.fn());
     expect(roleRow('harness').textContent).toContain('zai / glm-5.3');
-    expect(roleRow('harness').textContent).toContain('from GOOSE_MODEL');
+    expect(roleRow('harness').textContent).toContain('set by your config');
   });
 
   it('re-reads the resolved harness route after saving a new pair', async () => {
@@ -262,7 +269,7 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
     expect(allowed.setModelRoute).toHaveBeenCalledWith('harness', 'anthropic', 'claude-sonnet-5');
     expect(allowed.getConfig.mock.calls.length).toBeGreaterThan(before);
     expect(roleRow('harness').textContent).toContain('anthropic / claude-sonnet-5');
-    expect(roleRow('harness').textContent).toContain('from harness_model');
+    expect(roleRow('harness').textContent).toContain('from your Harness setting');
     expect(roleRow('harness').textContent).toContain('chosen explicitly');
   });
 

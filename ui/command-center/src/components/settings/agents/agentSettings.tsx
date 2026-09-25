@@ -17,7 +17,7 @@
  */
 
 import { useEffect, useState, type CSSProperties } from 'react';
-import { Row, Section, Block, ModelStateBadge, selectStyle } from '../atoms';
+import { Details, Row, Section, Block, ModelStateBadge, selectStyle } from '../atoms';
 import { Button } from '../../common/Button';
 import { Toggle } from '../../common/Toggle';
 import { font, radius, space, textSize } from '../../../styles/tokens';
@@ -85,11 +85,19 @@ export function GuardSweepSettings() {
   return (
     <Section
       title="Security sweeps"
-      sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws. Each sweep scans ONE active project (rotating through them, least-recently-scanned first) and files a security report with a fix plan as a note on that project, plus a findings checklist on its Overview. Requires the external `strix` scanner and Docker: locally, or on the host in `strix_docker_ssh` (rsync there, scan against that machine's Docker, pull `.strix` back). A forwarded Docker socket is not enough. The cadence below is a cost dial that applies once the Guard is on: every sweep runs on your API credits. Changes apply within ~15 minutes — no restart needed."
+      sub="Scans your own projects for security flaws and files a fix plan. Runs on your API credits, so the cadence below is a cost dial."
     >
       {error && (
         <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{error}</div>
       )}
+      <Details summary="How this works">
+        Born of the Strix pentest engine, the Guard scans ONE active project per sweep (rotating
+        through them, least-recently-scanned first) and files a security report with a fix plan as
+        a note on that project, plus a findings checklist on its Overview. Requires the external
+        strix scanner and Docker — either locally, or on another host (set below as scanner host;
+        this Mac rsyncs the project there and pulls the results back). A forwarded Docker socket is
+        not enough. Changes apply within about 15 minutes; no restart needed.
+      </Details>
       <Row label="Sweep every" hint="How often the Guard scans the next project in the rotation. Daily is the cost-effective default.">
         <select
           value={hours}
@@ -148,11 +156,18 @@ export function WatcherTopicSettings() {
   return (
     <Section
       title="Proactive nudges"
-      sub="The Watcher reaches out at most about once a day with the ONE thing genuinely worth your attention — news grounded in your active projects, or a memory thread that went quiet. Separately, it delivers the Financier's overbought sell signals on stocks you already hold (daily per symbol; does not use that taste budget). Teach it here: topics you want followed, and subjects it should never raise again. Changes apply at its next check — no restart needed."
+      sub="Reaches out at most about once a day with the one thing worth your attention. Teach it here: topics to follow, and subjects to never raise again."
     >
       {error && (
         <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{error}</div>
       )}
+      <Details summary="How this works">
+        News grounded in your active projects, or a memory thread that went quiet — at most one
+        nudge a day, so it has to be genuinely worth your attention. Separately, it delivers the
+        Financier's overbought sell signals on stocks you already hold (daily per symbol; this
+        does not use up that one-nudge budget). Changes here apply at its next check; no restart
+        needed.
+      </Details>
       <Row label="Topics to follow" hint="Comma-separated. Treated as relevant by your say-so, alongside subjects inferred from your active projects.">
         <input
           value={topics}
@@ -216,6 +231,11 @@ export function LibrarianScheduleSettings() {
   const [saving, setSaving] = useState(false);
   const [runningNow, setRunningNow] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Entities the Librarian described but could not place with confidence — it
+  // needs the user to say who/what one of them is (librarian_entities.rs). No
+  // route exists yet to list or answer them individually (only this count),
+  // so the row can only say how many and point at the Brain view.
+  const [awaitingContext, setAwaitingContext] = useState<number | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -227,6 +247,9 @@ export function LibrarianScheduleSettings() {
           setInstalled(s.installed.map(m => m.name));
           setRunning(s.running.map(m => m.name));
         })
+        .catch(() => {});
+      api.getLibrarianStatus()
+        .then(s => { if (active) setAwaitingContext(s.entities_awaiting_context ?? 0); })
         .catch(() => {});
     };
     poll();
@@ -334,6 +357,16 @@ export function LibrarianScheduleSettings() {
             <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>{nextRunText(schedule)}</span>
           </Row>
         </>
+      )}
+      {!!awaitingContext && (
+        <Row
+          label="Needs your input"
+          hint="Memories the Librarian described but couldn't confidently place — it will ask about one when it fits a conversation, one at a time. There is no list here yet to review or answer them directly; browse the Brain view in the meantime."
+        >
+          <span data-testid="librarian-awaiting-context" style={{ fontSize: textSize.caption, color: colors.warning }}>
+            {awaitingContext} awaiting your context
+          </span>
+        </Row>
       )}
       <Row label="Run now" hint="Manually warm-load the model and trigger a Librarian run.">
         <Button

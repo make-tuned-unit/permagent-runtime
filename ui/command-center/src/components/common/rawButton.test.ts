@@ -145,6 +145,13 @@ const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
     why: 'the worker and persona rows are whole cards — a portrait, a status row '
       + 'and a description — that open a detail page',
   },
+  'components/settings/atoms.tsx': {
+    count: 1,
+    why: "ListRow's clickable variant is the same whole-card shape as "
+      + 'AgentsPanel\'s worker/persona rows above (icon, status row, detail, '
+      + 'optional trailing controls) — it exists to converge future card lists '
+      + 'onto ONE row component instead of each hand-rolling its own',
+  },
   'components/skills/SkillCard.tsx': {
     count: 1,
     why: 'the whole skill card is the control, four nested rows of its own layout',

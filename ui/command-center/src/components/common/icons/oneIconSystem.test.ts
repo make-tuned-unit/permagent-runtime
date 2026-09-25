@@ -83,6 +83,10 @@ const DRAWINGS: Record<string, { count: number; why: string }> = {
       + 'shaped the way a local set should be: one named module, keyed by the '
       + "daemon's own names, with its rationale at the top",
   },
+  'components/settings/EgressAuditSection.tsx': {
+    count: 1,
+    why: 'the 24h hourly traffic timeline (allowed/blocked stacked bars) — a data graphic',
+  },
 };
 
 function sourceFiles(dir: string, out: string[] = []): string[] {

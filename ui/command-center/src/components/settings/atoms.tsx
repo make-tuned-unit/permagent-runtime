@@ -197,8 +197,12 @@ export function Section({ title, sub, children }: { title: string; sub?: string;
  * what is clickable, and Mac users read a hover highlight as "this is a
  * button". Rows that merely HOLD a control leave the feedback to the control.
  */
-export function Row({ label, hint, children, onClick }: {
+export function Row({ label, hint, children, onClick, dim }: {
   label: string; hint?: string; children?: React.ReactNode; onClick?: () => void;
+  /** Fades the row for something never seen / not yet real — R3: honest, not
+   *  hidden. A never-paired device or an inert integration is still LISTED,
+   *  just visually secondary to the rows that are actually happening. */
+  dim?: boolean;
 }) {
   const { colors } = useTheme();
   return (
@@ -210,6 +214,7 @@ export function Row({ label, hint, children, onClick }: {
       onKeyDown={onClick ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
       style={{
         padding: `${space.xl}px ${space.xxl}px`,
+        opacity: dim ? 0.6 : 1,
         '--pa-set-hover': colors.fillHover,
         '--pa-set-active': colors.fillActive,
         '--pa-set-dur': '160ms',
@@ -351,5 +356,92 @@ export function SaveButton({ onClick, disabled, saving }: {
     >
       {saving ? 'Saving...' : 'Save'}
     </Button>
+  );
+}
+
+/**
+ * Technical detail behind a disclosure (R3, UX_STANDARD.md).
+ *
+ * Several Section `sub` paragraphs used to be the whole explanation — crate
+ * names, socket requirements, scanner internals — in the ONE line every
+ * visitor reads before deciding whether the section is theirs. A plain-language
+ * `sub` on the caller stays the default; this holds what a curious operator
+ * (not everyone) needs. Native `<details>`/`<summary>`: free keyboard support
+ * (Enter/Space toggle, Tab reaches it) and a platform disclosure triangle
+ * rather than a hand-rolled chevron plus ARIA.
+ */
+export function Details({ summary, children }: { summary: string; children: React.ReactNode }) {
+  const { colors } = useTheme();
+  return (
+    <details style={{ marginTop: space.md }}>
+      <summary
+        style={{
+          cursor: 'pointer', fontSize: textSize.micro, color: colors.textMuted,
+          fontFamily: font.body, userSelect: 'none',
+        }}
+      >
+        {summary}
+      </summary>
+      <div style={{ marginTop: space.sm, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.55 }}>
+        {children}
+      </div>
+    </details>
+  );
+}
+
+/**
+ * One row of a list of named, statused things — a paired device, a background
+ * worker, a dispatch persona, a messaging gateway. Converges the shape that
+ * `AgentsPanel`'s worker/persona rows and `DevicesPanel`'s device rows had
+ * each hand-rolled slightly differently (portrait-or-not, chip-or-not,
+ * clickable-or-not): one row, one set of states, so a 4th list does not
+ * invent a 4th look (R6 — "one list-row style per list type").
+ *
+ * `onOpen` makes the row itself the target (button semantics, full keyboard
+ * support); omit it for a row that is display-only and let `trailing` carry
+ * whatever action it needs instead.
+ */
+export function ListRow({ icon, title, chip, status, detail, trailing, onOpen, tone }: {
+  icon?: React.ReactNode;
+  title: string;
+  /** A short status pill next to the title — "on"/"off", "connected", etc. */
+  chip?: React.ReactNode;
+  /** The status text at the row's trailing edge (top line) — live state. */
+  status?: React.ReactNode;
+  /** The plain-language sentence under the title. */
+  detail?: React.ReactNode;
+  /** Buttons or controls on their own line, below detail. */
+  trailing?: React.ReactNode;
+  onOpen?: () => void;
+  /** Dims the row for something never seen / not yet real (R3 — honest, not hidden). */
+  tone?: 'default' | 'dim' | 'problem';
+}) {
+  const { colors } = useTheme();
+  const border = tone === 'problem' ? colors.danger : colors.border;
+  const body = (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: space.lg, opacity: tone === 'dim' ? 0.6 : 1 }}>
+      {icon}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', columnGap: space.xl, rowGap: space.xxs, marginBottom: space.xs }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: space.md, minWidth: 0 }}>
+            <span style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
+            {chip}
+          </span>
+          {status}
+        </div>
+        {detail && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.45 }}>{detail}</div>}
+        {trailing && <div style={{ marginTop: space.md }}>{trailing}</div>}
+      </div>
+    </div>
+  );
+  const shared: CSSProperties = {
+    padding: `${space.xl}px 14px`, borderRadius: radius.md, background: colors.bgDeeper,
+    border: `1px solid ${border}`, fontFamily: font.body,
+  };
+  if (!onOpen) return <div style={shared}>{body}</div>;
+  return (
+    <button type="button" onClick={onOpen} style={{ ...shared, display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer' }}>
+      {body}
+    </button>
   );
 }
