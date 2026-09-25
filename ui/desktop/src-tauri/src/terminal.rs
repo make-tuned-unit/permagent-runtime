@@ -136,6 +136,11 @@ struct PtySession {
     /// Stream position matching `PtyDataPayload::seq`, so a replay can say
     /// exactly which emitted chunks it already contains.
     produced: Arc<std::sync::atomic::AtomicU64>,
+    /// The grid the PTY had from each stream position on — the spawn size at
+    /// 0, then one mark per `resize_pty` that changed it. A reattaching xterm
+    /// (pop-out, redock, Build pane remount) needs this to replay the tail at
+    /// the geometry each byte was painted for; see `GridMark`.
+    grid_marks: Mutex<Vec<GridMark>>,
     /// Directory the shell started in. Carried so an ADOPTED session can be
     /// labelled without asking the shell — see `list_pty_sessions`.
     cwd: String,
@@ -150,6 +155,60 @@ impl PtySessions {
     pub fn new() -> Self {
         Self(Mutex::new(HashMap::new()))
     }
+}
+
+/// "From stream position `seq` on, the PTY was `cols` x `rows`."
+///
+/// WHY (reported 2026-09-24): popping the Build terminal out into its own
+/// window showed several stale copies of the harness's pinned prompt frame,
+/// some cut at ~46 columns, some wrapped. The harness paints that frame with
+/// DECSTBM and absolute rows (`CSI row;1H`), which only mean what they meant
+/// for the grid the PTY had at the time. The replay below spans every size the
+/// docked pane has had, and the new window parsed all of it at its own size —
+/// scattering old frames through its screen and scrollback. With these marks
+/// the client re-grids its xterm at each one while replaying (replayGeometry.ts
+/// in the UI), so the replay goes through the same resizes and reflows the
+/// original terminal did, and only then fits to its own container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct GridMark {
+    seq: u64,
+    cols: u16,
+    rows: u16,
+}
+
+/// Enough history for any replay window; a pane dragged back and forth for an
+/// hour does not grow this without bound. Only marks inside the 2 MB replay
+/// window (plus the one in force at its start) are ever returned.
+const MAX_GRID_MARKS: usize = 1024;
+
+/// Record a grid change at `seq`, skipping a same-size resize.
+fn push_grid_mark(marks: &mut Vec<GridMark>, mark: GridMark) {
+    if let Some(last) = marks.last() {
+        if last.cols == mark.cols && last.rows == mark.rows {
+            return;
+        }
+    }
+    marks.push(mark);
+    if marks.len() > MAX_GRID_MARKS {
+        let excess = marks.len() - MAX_GRID_MARKS;
+        marks.drain(..excess);
+    }
+}
+
+/// The marks a replay of stream positions `(start, end]` needs: the one in
+/// force at `start`, then every change strictly inside the window.
+fn grid_marks_for_window(marks: &[GridMark], start: u64, end: u64) -> Vec<GridMark> {
+    let mut out = Vec::new();
+    if let Some(initial) = marks.iter().rev().find(|m| m.seq <= start) {
+        out.push(*initial);
+    }
+    out.extend(
+        marks
+            .iter()
+            .filter(|m| m.seq > start && m.seq < end)
+            .copied(),
+    );
+    out
 }
 
 #[derive(Clone, Serialize)]
@@ -390,20 +449,31 @@ pub async fn spawn_pty_session(
                 Err(_) => break,
             };
             if !data.is_empty() {
-                let seq = reader_produced
-                    .fetch_add(data.len() as u64, std::sync::atomic::Ordering::SeqCst)
-                    + data.len() as u64;
-                if let Ok(mut replay) = reader_output.lock() {
-                    replay.push_str(&data);
-                    const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
-                    if replay.len() > MAX_REPLAY_BYTES {
-                        let mut cut = replay.len() - MAX_REPLAY_BYTES;
-                        while !replay.is_char_boundary(cut) {
-                            cut += 1;
+                // The position advances UNDER the replay lock, so a reader of
+                // both (`get_pty_output`, `resize_pty`'s grid mark) sees a
+                // position that is exactly the end of the buffer — the grid
+                // marks are byte offsets into it and must not drift a chunk.
+                let bump = || {
+                    reader_produced
+                        .fetch_add(data.len() as u64, std::sync::atomic::Ordering::SeqCst)
+                        + data.len() as u64
+                };
+                let seq = match reader_output.lock() {
+                    Ok(mut replay) => {
+                        let seq = bump();
+                        replay.push_str(&data);
+                        const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
+                        if replay.len() > MAX_REPLAY_BYTES {
+                            let mut cut = replay.len() - MAX_REPLAY_BYTES;
+                            while !replay.is_char_boundary(cut) {
+                                cut += 1;
+                            }
+                            replay.drain(..cut);
                         }
-                        replay.drain(..cut);
+                        seq
                     }
-                }
+                    Err(_) => bump(),
+                };
                 if let Some(tx) = &tee_tx {
                     // Never blocks (unbounded); a dead forwarder is fine.
                     let _ = tx.send(TeeFrame::Data(data.clone()));
@@ -466,6 +536,7 @@ pub async fn spawn_pty_session(
         child,
         output,
         produced,
+        grid_marks: Mutex::new(vec![GridMark { seq: 0, cols, rows }]),
         cwd: resolved_cwd.clone(),
         started_at: chrono::Utc::now().to_rfc3339(),
     };
@@ -493,7 +564,11 @@ pub async fn spawn_pty_session(
 #[derive(Clone, Serialize)]
 pub struct PtyReplay {
     data: String,
+    /// Stream position of the END of `data`.
     seq: u64,
+    /// The grid in force at the start of `data` and every change inside it,
+    /// so the client can replay each byte at the size it was painted for.
+    grid: Vec<GridMark>,
 }
 
 #[tauri::command]
@@ -503,16 +578,26 @@ pub async fn get_pty_output(app: AppHandle, session_id: String) -> Result<PtyRep
     let session = map
         .get(&session_id)
         .ok_or_else(|| "Session not found".to_string())?;
-    // Read the position FIRST. If a chunk lands between these two reads the
-    // replay contains bytes beyond `seq`, so the client re-writes a little —
-    // harmless. The reverse order could drop bytes entirely.
-    let seq = session.produced.load(std::sync::atomic::Ordering::SeqCst);
-    let data = session
-        .output
+    // Position and bytes are read under the one lock the reader thread
+    // advances both under, so `seq` is exactly the end of `data` — the grid
+    // marks are byte offsets into it.
+    let (data, seq) = {
+        let replay = session
+            .output
+            .lock()
+            .map_err(|_| "Output buffer unavailable".to_string())?;
+        (
+            replay.clone(),
+            session.produced.load(std::sync::atomic::Ordering::SeqCst),
+        )
+    };
+    let start = seq.saturating_sub(data.len() as u64);
+    let grid = session
+        .grid_marks
         .lock()
-        .map(|s| s.clone())
-        .map_err(|_| "Output buffer unavailable".to_string())?;
-    Ok(PtyReplay { data, seq })
+        .map(|marks| grid_marks_for_window(&marks, start, seq))
+        .unwrap_or_default();
+    Ok(PtyReplay { data, seq, grid })
 }
 
 #[tauri::command]
@@ -554,6 +639,16 @@ pub async fn resize_pty(
             pixel_height: 0,
         })
         .map_err(|e| format!("Resize failed: {e}"))?;
+    // Mark where in the stream the new grid starts. Read the position under
+    // the replay lock so the mark lands on a chunk boundary of the buffer.
+    let seq = session
+        .output
+        .lock()
+        .map(|_replay| session.produced.load(std::sync::atomic::Ordering::SeqCst))
+        .unwrap_or_else(|_| session.produced.load(std::sync::atomic::Ordering::SeqCst));
+    if let Ok(mut marks) = session.grid_marks.lock() {
+        push_grid_mark(&mut marks, GridMark { seq, cols, rows });
+    }
     Ok(())
 }
 
@@ -638,6 +733,45 @@ pub async fn kill_pty(app: AppHandle, session_id: String) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mark(seq: u64, cols: u16, rows: u16) -> GridMark {
+        GridMark { seq, cols, rows }
+    }
+
+    #[test]
+    fn grid_marks_skip_same_size_resizes_and_stay_bounded() {
+        let mut marks = vec![mark(0, 80, 24)];
+        push_grid_mark(&mut marks, mark(10, 80, 24));
+        assert_eq!(marks, vec![mark(0, 80, 24)]);
+        push_grid_mark(&mut marks, mark(20, 90, 30));
+        assert_eq!(marks.last(), Some(&mark(20, 90, 30)));
+        for i in 0..(MAX_GRID_MARKS as u64 * 2) {
+            push_grid_mark(&mut marks, mark(100 + i, 40 + (i % 2) as u16, 24));
+        }
+        assert_eq!(marks.len(), MAX_GRID_MARKS);
+    }
+
+    #[test]
+    fn a_replay_window_gets_the_grid_in_force_at_its_start_plus_changes_inside() {
+        let marks = [
+            mark(0, 46, 30),
+            mark(40, 90, 30),
+            mark(120, 90, 24),
+            mark(200, 160, 45),
+        ];
+        // Window (100, 200]: 90x30 was in force at 100; 90x24 starts inside;
+        // the mark AT the end applies to no byte in the window.
+        assert_eq!(
+            grid_marks_for_window(&marks, 100, 200),
+            vec![mark(40, 90, 30), mark(120, 90, 24)]
+        );
+        // A mark exactly at the start is the one in force.
+        assert_eq!(
+            grid_marks_for_window(&marks, 40, 60),
+            vec![mark(40, 90, 30)]
+        );
+        assert_eq!(grid_marks_for_window(&[], 0, 10), vec![]);
+    }
 
     #[test]
     fn split_utf8_box_glyphs_survive_every_read_boundary() {

@@ -98,7 +98,14 @@ describe('PTY attach / reattach behaviour is frozen (gate 6)', () => {
     // Build-pane remount between spawn and delivery cancelled it and nothing
     // re-armed it: the harness started and the prompt was never pasted.
     // Pinned in Terminal.followUp.test.tsx.
-    expect(hash).toBe('c6c32108e88ed3505d0376054aac6a0cd5e5a8d0c0f8a0f9df02d3283797e6e4');
+    // RE-FROZEN 2026-09-24 (second fix that day) for a behaviour fix: the
+    // reattach replay is parsed at the grid each byte was PAINTED for
+    // (`planReplay`/`writeReplay` over the backend's grid marks) and the
+    // xterm is fitted to its container only afterwards. Parsed at the pop-out
+    // window's size, a harness's absolute-row frames from every earlier pane
+    // size scattered through the screen and scrollback. Pinned in
+    // replayGeometry.test.ts and Terminal.reattach.test.tsx.
+    expect(hash).toBe('dfc125620dc57ad3fca9a91892d0fa7affeb499e400cc717608a92d48e97bbe7');
   });
 
   it('still measures the opaque pty-terminal container (no padding on it)', () => {
