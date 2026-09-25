@@ -3,7 +3,7 @@
 use crate::routes::errors::ErrorResponse;
 use crate::state::AppState;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -20,6 +20,28 @@ struct LatestResponse {
     report: Option<store::Report>,
     positions: Vec<store::Position>,
     open_actions: i64,
+}
+
+/// CR1 (dagK): one row of the Council card's "Past sessions" list. Deliberately
+/// lighter than [`LatestResponse`] — no positions — since a list of many
+/// sessions never needs each one's per-model raw output; opening a session by
+/// id (the existing `GET /api/council/{id}`) still returns the full detail.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportsResponse {
+    sessions: Vec<ReportsSessionEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportsSessionEntry {
+    session: store::Session,
+    report: Option<store::Report>,
+}
+
+#[derive(Deserialize)]
+struct ReportsQuery {
+    limit: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -88,6 +110,29 @@ async fn latest(State(state): State<Arc<AppState>>) -> Result<Json<LatestRespons
             open_actions,
         })),
     }
+}
+
+/// CR1 (dagK): `GET /api/council/reports?limit=N` — the daemon already had
+/// every past Council session in `council_sessions`/`council_reports`
+/// (`store::list_finished`); the Council card's detail view could only ever
+/// show the single latest one (`/api/council/latest`). Default limit 10,
+/// clamped server-side in `list_finished` regardless of what the query asks.
+async fn reports(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ReportsQuery>,
+) -> Result<Json<ReportsResponse>, ErrorResponse> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| ErrorResponse::internal(e.to_string()))?;
+    let sessions = store::list_finished(&pool, query.limit.unwrap_or(10))
+        .await
+        .map_err(ErrorResponse::internal)?
+        .into_iter()
+        .map(|(session, report)| ReportsSessionEntry { session, report })
+        .collect();
+    Ok(Json(ReportsResponse { sessions }))
 }
 
 async fn one(
@@ -235,6 +280,7 @@ fn blocked_response(blocked: permagent::council::preparation::ConveneBlocked) ->
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/council/latest", get(latest))
+        .route("/api/council/reports", get(reports))
         .route("/api/council/convene", post(convene_once))
         .route("/api/council/members", get(members).put(put_members))
         .route("/api/council/{id}", get(one))

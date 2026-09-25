@@ -188,17 +188,25 @@ it('missing effects and pause episode evidence are explicit (rulings 8–10)', (
 });
 
 it('container width, rather than viewport width, controls the two columns (rulings 2, 11)', () => {
-  let resize: ResizeObserverCallback | undefined;
+  // DetailModal (GM5, dagK) now runs its OWN ResizeObserver too, to measure
+  // whether its title is clamped — so this can no longer assume there is
+  // exactly one instance in the tree. Every constructed observer's callback
+  // is collected and driven; DetailModal's ignores the synthetic entry and
+  // just re-reads the title box (a no-op here), so only DecisionReview's own
+  // narrow-breakpoint callback actually changes anything this test checks.
+  const callbacks: ResizeObserverCallback[] = [];
   const observer = { observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() };
   vi.stubGlobal('ResizeObserver', class {
-    constructor(callback: ResizeObserverCallback) { resize = callback; }
+    constructor(callback: ResizeObserverCallback) { callbacks.push(callback); }
     observe = observer.observe;
     unobserve = observer.unobserve;
     disconnect = observer.disconnect;
   });
   try {
     render([decision('a')], 'contained');
-    const width = (value: number) => act(() => resize!([{ contentRect: { width: value } } as ResizeObserverEntry], observer as ResizeObserver));
+    const width = (value: number) => act(() => {
+      for (const cb of callbacks) cb([{ contentRect: { width: value } } as ResizeObserverEntry], observer as ResizeObserver);
+    });
     const grid = () => Array.from(document.body.querySelectorAll<HTMLElement>('div')).find(el => el.style.display === 'grid')!;
     width(900);
     expect(grid().style.gridTemplateColumns).toBe('minmax(0, 7fr) minmax(0, 5fr)');

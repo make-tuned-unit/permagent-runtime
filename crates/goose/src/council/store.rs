@@ -280,6 +280,39 @@ pub async fn latest_finished(
     Ok(Some((session, report)))
 }
 
+/// CR1 (dagK): the most recent finished Council sessions, newest first, each
+/// paired with its report when one was generated (a `Failed` session, or one
+/// killed before the chair wrote its report, has none). `GET
+/// /api/council/latest` only ever surfaced the single newest one — a "Past
+/// sessions" list needs the run before that too, and the daemon already has
+/// this data; nothing about it required a new store.
+///
+/// `limit` is clamped to a sane range so an unbounded or absurd query
+/// parameter can't turn this into "every Council session ever run".
+pub async fn list_finished(
+    pool: &Pool<Sqlite>,
+    limit: i64,
+) -> Result<Vec<(Session, Option<Report>)>, String> {
+    let limit = limit.clamp(1, 100);
+    let sql = format!(
+        "SELECT {SESSION_COLS} FROM council_sessions
+         WHERE status IN ('complete','partial','failed')
+         ORDER BY started_at DESC LIMIT ?"
+    );
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let session = row_to_session(row);
+        let report = get_report_for_session(pool, &session.id).await?;
+        out.push((session, report));
+    }
+    Ok(out)
+}
+
 pub async fn get_report_for_session(
     pool: &Pool<Sqlite>,
     session_id: &str,
@@ -436,5 +469,51 @@ mod tests {
         assert_eq!(report.consensus, vec!["focus"]);
         assert_eq!(list_positions(&pool, &id).await.unwrap().len(), 1);
         assert!(last_success_started_at(&pool).await.unwrap().is_some());
+    }
+
+    /// CR1 (dagK): `list_finished` backs the Council card's "Past sessions"
+    /// list — newest first, a `Failed` session included (a run worth showing
+    /// even though the chair never wrote a report for it), a still-`Running`
+    /// one excluded (nothing finished to show yet), and the limit honoured.
+    #[tokio::test]
+    async fn list_finished_orders_newest_first_and_includes_failed_but_not_running() {
+        let pool = pool().await;
+
+        async fn make(pool: &Pool<Sqlite>, started_at: &str, status: SessionStatus) -> String {
+            let id = insert_session(pool, Trigger::OnDemand, None, &serde_json::json!({}))
+                .await
+                .unwrap();
+            // Deterministic ordering: the schema's own timestamp default has
+            // millisecond resolution, too fine to trust across three inserts
+            // that can land in the same tick under test.
+            sqlx::query("UPDATE council_sessions SET started_at = ? WHERE id = ?")
+                .bind(started_at)
+                .bind(&id)
+                .execute(pool)
+                .await
+                .unwrap();
+            if status != SessionStatus::Running {
+                finish_session(pool, &id, status, None, None, None)
+                    .await
+                    .unwrap();
+            }
+            id
+        }
+
+        let oldest = make(&pool, "2026-09-01T00:00:00.000Z", SessionStatus::Complete).await;
+        let middle = make(&pool, "2026-09-02T00:00:00.000Z", SessionStatus::Failed).await;
+        let newest = make(&pool, "2026-09-03T00:00:00.000Z", SessionStatus::Complete).await;
+        let _running = make(&pool, "2026-09-04T00:00:00.000Z", SessionStatus::Running).await;
+
+        let all = list_finished(&pool, 100).await.unwrap();
+        assert_eq!(
+            all.iter().map(|(s, _)| s.id.clone()).collect::<Vec<_>>(),
+            vec![newest.clone(), middle, oldest],
+            "newest finished session first; the still-running one is not finished yet"
+        );
+
+        let limited = list_finished(&pool, 1).await.unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].0.id, newest);
     }
 }

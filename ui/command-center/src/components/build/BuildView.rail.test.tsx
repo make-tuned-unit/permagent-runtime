@@ -98,9 +98,10 @@ describe('Build progress rail', () => {
     expect(document.querySelector('[role="tooltip"]')?.textContent).toMatch(/Step 3 of 5/);
   });
 
-  it('says what an idle Build tab is for', async () => {
+  it('says what an idle Build tab is for, truthfully — the terminal is a plain shell until a project is launched (B1)', async () => {
     await render();
-    expect(container.querySelector('[data-testid="view-header"]')!.textContent)
-      .toContain('the terminal below runs your coding agent');
+    const text = container.querySelector('[data-testid="view-header"]')!.textContent;
+    expect(text).toContain('the terminal below is a plain shell');
+    expect(text).not.toContain('the terminal below runs your coding agent');
   });
 });

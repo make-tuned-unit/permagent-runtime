@@ -14,9 +14,51 @@
 import { useEffect, useId, useState, type CSSProperties } from 'react';
 import { font, radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
+import { useCommandCenter } from '../../../lib/store';
+import { Button } from '../../common/Button';
 import { decisionsClient } from './client';
 import type { DispatchEvidenceData, EvidenceDigestData, IndependentReviewDetail } from './types';
 import { formatUsd } from './format';
+
+/**
+ * GM1 (dagK): every worker session id this panel knows about must be one
+ * click from its transcript (R5, agent transparency) — the same
+ * switchToSession + openChatDock pattern Automate's run rows use
+ * (AutomateView.tsx RunDetail.openConversation). Session ids only ever show
+ * up inside the raw `<pre>` disclosure otherwise (S2: plain text only), so
+ * this button lives in the visible summary layer instead.
+ */
+function OpenTranscriptButton({ sessionId }: { sessionId: string }) {
+  const { colors } = useTheme();
+  const switchToSession = useCommandCenter(s => s.switchToSession);
+  const openChatDock = useCommandCenter(s => s.openChatDock);
+  return (
+    <Button
+      colors={colors}
+      variant="bare"
+      type="button"
+      flashSuccess={false}
+      onClick={() => {
+        switchToSession(sessionId).catch(err => console.error('[evidence] open session failed:', err));
+        openChatDock();
+      }}
+      style={{
+        '--pa-btn-fg': colors.cyan,
+        '--pa-btn-fg-hover': colors.cyan,
+        '--pa-btn-bg-hover': colors.cyanSoft,
+        '--pa-btn-bg-active': colors.cyanGlow,
+        '--pa-btn-pad': '0 4px',
+        '--pa-btn-radius': `${radius.xs}px`,
+        marginLeft: -4,
+        alignSelf: 'flex-start',
+        fontFamily: font.body,
+        fontSize: textSize.micro,
+      } as CSSProperties}
+    >
+      Open transcript
+    </Button>
+  );
+}
 
 export function EvidenceDigest({ projectId, goalId }: { projectId: string; goalId: string }) {
   const { colors } = useTheme();
@@ -181,6 +223,28 @@ function DigestView({ digest }: { digest: EvidenceDigestData }) {
         <div style={{ color: colors.text, fontWeight: 500 }}>
           {costLine}
         </div>
+        {/* Benchmark ask (dagK, Codex pattern): the actual changed FILES,
+            visible without opening the raw disclosure — "N files changed"
+            alone (the one-liner above, in `cs.one_line`'s neighbourhood) names
+            a count, not what changed. Per-file hunks aren't in this digest
+            (only aggregate insertions/deletions per file); showing lines
+            here would fabricate detail the daemon never captured — flagged
+            in the report as a possible follow-up capture point, not guessed
+            at here. */}
+        {digest.diff.per_file.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxs }}>
+            {digest.diff.per_file.map(f => (
+              <div key={f.path} style={{ display: 'flex', gap: space.sm, fontFamily: font.mono, fontSize: textSize.micro }}>
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {f.path}
+                </span>
+                <span style={{ color: colors.success, flexShrink: 0 }}>+{f.insertions}</span>
+                <span style={{ color: colors.danger, flexShrink: 0 }}>-{f.deletions}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {digest.costs.worker_session_id && <OpenTranscriptButton sessionId={digest.costs.worker_session_id} />}
         {/* Disclosure toggle for the raw layer below: nothing to await, so it
             keeps the element and takes the shared `.pa-btn` interaction rules
             rather than the Button primitive's pending/success machinery. */}
