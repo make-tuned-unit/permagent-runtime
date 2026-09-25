@@ -507,6 +507,17 @@ const IMPLEMENTED_CARD_TYPES: &[&str] = &[
     "fleet_kpis",
     "stalled_pattern",
     "project_health_grid",
+    // Phase 2 (dagK home-templates lane) — all manifest cards.
+    "finance_summary",
+    "finance_watchlist",
+    "cost_vs_outcome",
+    "people_attention",
+    "open_commitments",
+    "recent_meetings",
+    "week_headline",
+    "week_small_multiples",
+    "memory_growth",
+    "on_this_week",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -1118,21 +1129,21 @@ mod tests {
     }
 
     #[test]
-    fn phase_2_templates_mark_their_unbuilt_cards_coming_soon() {
-        // Weekly Story ships two real cards (timeline, council) alongside
-        // Phase-2 synthesis cards that must be flagged, not silently dropped.
-        let t = dashboard_templates()
-            .into_iter()
-            .find(|t| t.id == "weekly_story")
-            .unwrap();
-        assert!(
-            t.cards.iter().any(|c| !c.coming_soon),
-            "timeline/council exist today"
-        );
-        assert!(
-            t.cards.iter().any(|c| c.coming_soon),
-            "week_headline etc. don't exist yet"
-        );
+    fn all_five_templates_are_fully_built_after_phase_2() {
+        // Phase 2 (dagK home-templates lane) shipped every remaining card —
+        // no template should still mark anything `comingSoon`.
+        for t in dashboard_templates() {
+            assert!(
+                t.cards.iter().all(|c| !c.coming_soon),
+                "{} still names an unbuilt card: {:?}",
+                t.id,
+                t.cards
+                    .iter()
+                    .filter(|c| c.coming_soon)
+                    .map(|c| &c.card_type)
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

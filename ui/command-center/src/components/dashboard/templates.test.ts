@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { DASHBOARD_TEMPLATES, realizedLayout, comingSoonCards, cardDisplayName, isCurrentTemplate } from './templates';
-import { countHoles } from './useLayout';
 
 describe('DASHBOARD_TEMPLATES', () => {
   it('has exactly the five templates from the research doc', () => {
@@ -33,50 +32,35 @@ describe('DASHBOARD_TEMPLATES', () => {
 });
 
 describe('realizedLayout', () => {
-  it("drops a template's comingSoon cards", () => {
-    const weeklyStory = DASHBOARD_TEMPLATES.find(t => t.id === 'weekly_story')!;
-    const layout = realizedLayout(weeklyStory);
-    expect(layout.cards.some(c => c.type === 'week_headline')).toBe(false);
-    // Real cards on that template survive.
-    expect(layout.cards.some(c => c.type === 'timeline')).toBe(true);
-    expect(layout.cards.some(c => c.type === 'council')).toBe(true);
+  it("keeps every card for a template — Phase 2 shipped, nothing is comingSoon anymore", () => {
+    for (const t of DASHBOARD_TEMPLATES) {
+      const layout = realizedLayout(t);
+      expect(layout.cards.length).toBe(t.cards.length);
+    }
   });
 
-  it('re-packs so dropping a comingSoon card leaves no interior hole', () => {
-    const weeklyStory = DASHBOARD_TEMPLATES.find(t => t.id === 'weekly_story')!;
-    const layout = realizedLayout(weeklyStory);
-    const cells = layout.cards.map(c => ({ id: c.id, x: c.position.x, y: c.position.y, w: c.size.w, h: c.size.h }));
-    // A dense re-pack of only the real cards should be gap-free start to end.
-    expect(countHoles(cells)).toBe(0);
-  });
-
-  it("keeps every card for a template with nothing coming soon (Morning Briefing)", () => {
-    const morning = DASHBOARD_TEMPLATES.find(t => t.id === 'morning_briefing')!;
-    const layout = realizedLayout(morning);
-    expect(layout.cards.length).toBe(morning.cards.length);
+  it('reflow never drops or duplicates a card while packing', () => {
+    // `reflow` (a plain dense pack) is not guaranteed hole-free on its own —
+    // that guarantee belongs to `layoutForDisplay`'s fill/justify fallback at
+    // render time (useLayout.ts). What `realizedLayout` must guarantee is
+    // that every card survives the re-pack, exactly once.
+    for (const t of DASHBOARD_TEMPLATES) {
+      const layout = realizedLayout(t);
+      expect(new Set(layout.cards.map(c => c.id)).size).toBe(t.cards.length);
+    }
   });
 });
 
 describe('comingSoonCards', () => {
-  it('is empty for a fully-built template', () => {
-    const morning = DASHBOARD_TEMPLATES.find(t => t.id === 'morning_briefing')!;
-    expect(comingSoonCards(morning)).toEqual([]);
-    const operator = DASHBOARD_TEMPLATES.find(t => t.id === 'operator_command_center')!;
-    expect(comingSoonCards(operator)).toEqual([]);
-  });
-
-  it('names every unbuilt card for a Phase-2-heavy template', () => {
-    const relationships = DASHBOARD_TEMPLATES.find(t => t.id === 'relationships_commitments')!;
-    const names = comingSoonCards(relationships);
-    expect(names).toContain('people_attention');
-    expect(names).toContain('open_commitments');
-    // `calendar` already exists — must not be listed as coming soon.
-    expect(names).not.toContain('calendar');
+  it('is empty for every template — Phase 2 shipped all remaining cards', () => {
+    for (const t of DASHBOARD_TEMPLATES) {
+      expect(comingSoonCards(t)).toEqual([]);
+    }
   });
 });
 
 describe('cardDisplayName', () => {
-  it('gives every Phase-2 comingSoon identifier a human name', () => {
+  it('still gives a human name to any identifier that might show up as comingSoon', () => {
     for (const t of DASHBOARD_TEMPLATES) {
       for (const type of comingSoonCards(t)) {
         const name = cardDisplayName(type);

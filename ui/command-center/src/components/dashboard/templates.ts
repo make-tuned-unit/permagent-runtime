@@ -69,12 +69,12 @@ export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
     name: 'Weekly Story',
     question: 'What actually happened this week, and how does it compare?',
     cards: [
-      { type: 'week_headline', id: 'week_headline', position: { x: 0, y: 0 }, size: { w: 12, h: 2 }, comingSoon: true },
+      { type: 'week_headline', id: 'week_headline', position: { x: 0, y: 0 }, size: { w: 12, h: 2 } },
       { type: 'timeline', id: 'timeline', position: { x: 0, y: 2 }, size: { w: 12, h: 6 } },
-      { type: 'week_small_multiples', id: 'week_small_multiples', position: { x: 0, y: 8 }, size: { w: 12, h: 3 }, comingSoon: true },
+      { type: 'week_small_multiples', id: 'week_small_multiples', position: { x: 0, y: 8 }, size: { w: 12, h: 3 } },
       { type: 'council', id: 'council', position: { x: 0, y: 11 }, size: { w: 12, h: 5 } },
-      { type: 'memory_growth', id: 'memory_growth', position: { x: 0, y: 16 }, size: { w: 6, h: 3 }, comingSoon: true },
-      { type: 'on_this_week', id: 'on_this_week', position: { x: 6, y: 16 }, size: { w: 6, h: 3 }, comingSoon: true },
+      { type: 'memory_growth', id: 'memory_growth', position: { x: 0, y: 16 }, size: { w: 6, h: 3 } },
+      { type: 'on_this_week', id: 'on_this_week', position: { x: 6, y: 16 }, size: { w: 6, h: 3 } },
     ],
   },
   {
@@ -82,9 +82,9 @@ export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
     name: 'Relationships & Commitments',
     question: 'Who am I neglecting, and what did I promise?',
     cards: [
-      { type: 'people_attention', id: 'people_attention', position: { x: 0, y: 0 }, size: { w: 6, h: 5 }, comingSoon: true },
-      { type: 'open_commitments', id: 'open_commitments', position: { x: 6, y: 0 }, size: { w: 6, h: 5 }, comingSoon: true },
-      { type: 'recent_meetings', id: 'recent_meetings', position: { x: 0, y: 5 }, size: { w: 6, h: 4 }, comingSoon: true },
+      { type: 'people_attention', id: 'people_attention', position: { x: 0, y: 0 }, size: { w: 6, h: 5 } },
+      { type: 'open_commitments', id: 'open_commitments', position: { x: 6, y: 0 }, size: { w: 6, h: 5 } },
+      { type: 'recent_meetings', id: 'recent_meetings', position: { x: 0, y: 5 }, size: { w: 6, h: 4 } },
       { type: 'calendar', id: 'calendar', position: { x: 6, y: 5 }, size: { w: 6, h: 4 } },
     ],
   },
@@ -94,9 +94,9 @@ export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
     question: 'Is the work paying off?',
     cards: [
       { type: 'growth_results', id: 'growth_results', position: { x: 0, y: 0 }, size: { w: 12, h: 6 } },
-      { type: 'finance_summary', id: 'finance_summary', position: { x: 0, y: 6 }, size: { w: 8, h: 5 }, comingSoon: true },
-      { type: 'finance_watchlist', id: 'finance_watchlist', position: { x: 8, y: 6 }, size: { w: 4, h: 5 }, comingSoon: true },
-      { type: 'cost_vs_outcome', id: 'cost_vs_outcome', position: { x: 0, y: 11 }, size: { w: 12, h: 3 }, comingSoon: true },
+      { type: 'finance_summary', id: 'finance_summary', position: { x: 0, y: 6 }, size: { w: 8, h: 5 } },
+      { type: 'finance_watchlist', id: 'finance_watchlist', position: { x: 8, y: 6 }, size: { w: 4, h: 5 } },
+      { type: 'cost_vs_outcome', id: 'cost_vs_outcome', position: { x: 0, y: 11 }, size: { w: 12, h: 3 } },
     ],
   },
 ];
