@@ -1763,6 +1763,9 @@ impl CliSession {
                 &self.session_id,
                 cap,
                 poll_interval,
+                // The process exits after this returns: anything still
+                // running is parked, never left silently `InProgress`.
+                permagent::agents::platform_extensions::orchestrator::DrainCapPolicy::ParkOnExpiry,
                 |worker_session_id, state| {
                     output::render_notice(&format!(
                         "goal worker {worker_session_id}: {}",

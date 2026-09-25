@@ -94,6 +94,10 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     // PATCH tool — same reasoning as `headless_unblock_count` above.
     "zero_progress",
     ZERO_PROGRESS_STREAK_METADATA_KEY,
+    // QA 2026-09-25: the zero-progress circuit breaker's one tier
+    // escalation per goal. Protected for the same reason as the streak: a
+    // worker must not be able to buy itself a second escalation.
+    ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY,
     // Lane R22c-e (G26 MED-1): the receipt an independent cross-family
     // reviewer's approval leaves on a goal salvaged with no automated
     // check to lean on (`orchestrator::land_salvage_approved_by_reviewer`)
@@ -143,6 +147,12 @@ pub const UNVERIFIED_REVIEWER_APPROVAL_METADATA_KEY: &str = "unverified_reviewer
 /// detail (`last_error`) so a human sees the goal spent a real attempt on
 /// nothing, not just the ordinary park reason.
 pub const ZERO_PROGRESS_STREAK_METADATA_KEY: &str = "zero_progress_streak";
+
+/// QA 2026-09-25: stamped on the dispatch the zero-progress circuit breaker
+/// (`orchestrator::zero_progress_breaker_verdict`) moved to a stronger worker
+/// tier. At most one such escalation per goal: a goal that stays at zero
+/// progress after it is parked, never escalated again.
+pub const ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY: &str = "zero_progress_escalation_used";
 
 // ── Errors ──────────────────────────────────────────────────────────────────
 
