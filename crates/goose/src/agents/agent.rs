@@ -767,16 +767,21 @@ async fn retry_first_byte_stall(
 // not efficient — but a SECOND consecutive turn whose only tool calls read
 // the exact same unchanged state is the measured waste above, verbatim.
 
-/// Default bound on a single mid-turn suspension, read from the SAME
-/// `PERMAGENT_HEADLESS_DRAIN_SECS` config key `CliSession::drain_dispatched_goals`
-/// reads for its own (post-run) wait — both are bounds on the same
-/// underlying `drain_dispatched_goals` call, so one operator knob covers
-/// both without needing to know which of the two call sites is currently
-/// waiting. Cannot literally be the same Rust constant: `crates/goose-cli`
-/// depends on `crates/goose`, not the other way around, so its
-/// `DEFAULT_HEADLESS_DRAIN_SECS` is not reachable from here — kept at the
-/// identical value (240s) on purpose.
+/// Default bound on a single mid-turn suspension, overridable through
+/// [`MID_TURN_DISPATCH_SUSPEND_SECS_KEY`].
+///
+/// QA 2026-09-25: this used to read `PERMAGENT_HEADLESS_DRAIN_SECS`, the
+/// post-run drain's key, on the theory that both bound the same call. They
+/// bound different things. The post-run cap is how long an exiting process
+/// waits before it parks what is left; this cap is only how long the
+/// coordinator sleeps before it gets a fresh look — the suspension runs the
+/// drain with `DrainCapPolicy::ReturnOnExpiry`, so reaching it parks nothing.
+/// Tuning one (the post-run key was raised to 900s as a stopgap for exactly
+/// this bug) must not silently retune the other.
 const DEFAULT_MID_TURN_DISPATCH_SUSPEND_CAP_SECS: u64 = 240;
+
+/// Config key for [`DEFAULT_MID_TURN_DISPATCH_SUSPEND_CAP_SECS`].
+const MID_TURN_DISPATCH_SUSPEND_SECS_KEY: &str = "PERMAGENT_MID_TURN_SUSPEND_SECS";
 
 /// Read-only tools whose only effect is looking at existing state — never
 /// dispatching, steering, escalating, or otherwise changing anything. Matched
@@ -889,6 +894,14 @@ impl DispatchPollGuard {
 /// without any of that needing to come back through this coordinator's own
 /// turns.
 ///
+/// Runs the drain with `DrainCapPolicy::ReturnOnExpiry`: reaching `cap`
+/// ends the wait and nothing else — a worker still running is reported as
+/// still running and left alone (QA 2026-09-25: the shared cap-expiry park
+/// pass used to park an actively working worker here, and its uncommitted
+/// edits went with it). A genuinely finished attempt the goal never
+/// resolved (terminal receipt, non-terminal card) is still parked, exactly
+/// as before.
+///
 /// Races the wait against `cancel_token` (when one is provided) so a cancel
 /// arriving mid-suspension is not swallowed by an in-flight drain: parking
 /// still-running goals at process exit is `CliSession::drain_dispatched_goals`'s
@@ -920,6 +933,7 @@ async fn suspend_for_dispatched_goals(
         coordinator_session_id,
         cap,
         poll_interval,
+        crate::agents::platform_extensions::orchestrator::DrainCapPolicy::ReturnOnExpiry,
         move |session_id, state| {
             if let Ok(mut observed) = transitions_for_closure.lock() {
                 observed.push((session_id.to_string(), state));
@@ -979,10 +993,20 @@ fn format_compact_resume_notice(
             lines.push(format!("  worker {session_id}: {}", state.binding()));
         }
     }
-    lines.push(format!(
-        "{} finished, {} parked at the wait cap.",
-        summary.finished, summary.timed_out
-    ));
+    // QA 2026-09-25: this wait parks nothing at its cap (`ReturnOnExpiry`),
+    // so never claim it did. `timed_out` here is only a genuine stall park.
+    let mut tally = format!(
+        "{} finished, {} still running",
+        summary.finished, summary.still_running
+    );
+    if summary.timed_out > 0 {
+        tally.push_str(&format!(
+            ", {} parked as stalled (attempt over, or idle past its budget)",
+            summary.timed_out
+        ));
+    }
+    tally.push('.');
+    lines.push(tally);
     lines.join("\n")
 }
 
@@ -4477,7 +4501,7 @@ impl Agent {
                     if should_suspend {
                         if let Some(pool) = drain_pool.as_ref() {
                             let drain_cap_secs: u64 = Config::global()
-                                .get_param("PERMAGENT_HEADLESS_DRAIN_SECS")
+                                .get_param(MID_TURN_DISPATCH_SUSPEND_SECS_KEY)
                                 .unwrap_or(DEFAULT_MID_TURN_DISPATCH_SUSPEND_CAP_SECS);
                             let notice = suspend_for_dispatched_goals(
                                 pool,
@@ -6044,6 +6068,7 @@ mod tests {
                 crate::agents::platform_extensions::orchestrator::DrainSummary {
                     finished: 1,
                     timed_out: 0,
+                    still_running: 0,
                 },
             );
             assert!(notice.contains("20260920_6"), "names the worker: {notice}");
@@ -6057,6 +6082,49 @@ mod tests {
                 "a resume notice must stay compact: {} chars",
                 notice.len()
             );
+        }
+
+        /// QA 2026-09-25: the suspension reaches its cap with a worker still
+        /// going and parks nothing (`ReturnOnExpiry`), so the notice must say
+        /// the worker is still running — the old "N parked at the wait cap"
+        /// line told the coordinator its worker had been stopped.
+        #[test]
+        fn the_resume_notice_says_still_running_when_nothing_was_parked() {
+            let notice = format_compact_resume_notice(
+                &[],
+                crate::agents::platform_extensions::orchestrator::DrainSummary {
+                    finished: 0,
+                    timed_out: 0,
+                    still_running: 1,
+                },
+            );
+            assert!(notice.contains("1 still running"), "{notice}");
+            assert!(!notice.contains("parked"), "nothing was parked: {notice}");
+
+            let stalled = format_compact_resume_notice(
+                &[],
+                crate::agents::platform_extensions::orchestrator::DrainSummary {
+                    finished: 0,
+                    timed_out: 1,
+                    still_running: 0,
+                },
+            );
+            assert!(
+                stalled.contains("1 parked") && !stalled.contains("wait cap."),
+                "a genuine stall park is named as such, never as a cap park: {stalled}"
+            );
+        }
+
+        /// The mid-turn cap has its own key: the post-run drain's
+        /// `PERMAGENT_HEADLESS_DRAIN_SECS` (raised to 900s as a stopgap on
+        /// 2026-09-25) must not retune how long a coordinator sleeps.
+        #[test]
+        fn the_mid_turn_cap_is_not_the_post_run_drain_key() {
+            assert_ne!(
+                MID_TURN_DISPATCH_SUSPEND_SECS_KEY,
+                "PERMAGENT_HEADLESS_DRAIN_SECS"
+            );
+            assert_eq!(DEFAULT_MID_TURN_DISPATCH_SUSPEND_CAP_SECS, 240);
         }
     }
 }

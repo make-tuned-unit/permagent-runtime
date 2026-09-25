@@ -1700,6 +1700,66 @@ pub async fn reap_goal_worktree(repo: &Path, run_id: &str, allow_unpushed: bool)
     remove_worktree_dir(repo, &dest).await
 }
 
+/// Commit-message reason for [`checkpoint_before_forced_reap`].
+const FORCED_REAP_CHECKPOINT_REASON: &str = "goal_cancelled_reap";
+
+/// QA 2026-09-25: a forced reap (`allow_unpushed`, a Cancelled goal) runs
+/// `git worktree remove --force`, which deletes uncommitted changes with the
+/// directory — the branch keeps only what was committed. Checkpoint them onto
+/// the goal branch first, through the same credential-scanned commit the
+/// teardown and timeout paths use
+/// (`orchestrator::checkpoint_uncommitted_changes_in`), so the branch keeps
+/// the work. Never pushes.
+///
+/// Returns whether the reap may go ahead: `false` only when the credential
+/// guard flagged the changes — nothing was committed, so the worktree is the
+/// only copy and is kept for a human. A clean tree, an absent directory, or a
+/// git failure (an orphaned dir git no longer tracks, which the reap's own
+/// phase 2 exists to clear) returns `true` — the pre-existing behaviour.
+async fn checkpoint_before_forced_reap(dest: &Path) -> bool {
+    if !dest.is_dir() {
+        return true;
+    }
+    match super::orchestrator::checkpoint_uncommitted_changes_in(
+        dest,
+        FORCED_REAP_CHECKPOINT_REASON,
+    )
+    .await
+    {
+        Ok(Some(commit)) => match commit.quarantined_reason {
+            None => {
+                tracing::info!(
+                    target: "permagentd::brain",
+                    "reaper: checkpointed {} uncommitted file(s) in {} onto its goal branch ({}) \
+                     before removing it",
+                    commit.files,
+                    dest.display(),
+                    commit.sha,
+                );
+                true
+            }
+            Some(reason) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "reaper: keeping worktree {} — its uncommitted changes were flagged by the \
+                     credential guard and were not committed: {reason}",
+                    dest.display()
+                );
+                false
+            }
+        },
+        Ok(None) => true,
+        Err(e) => {
+            tracing::debug!(
+                target: "permagentd::brain",
+                "reaper: could not checkpoint {} before removing it: {e}",
+                dest.display()
+            );
+            true
+        }
+    }
+}
+
 /// Resolve a terminal goal's worktree from its project root + run id and reap it
 /// (#504). Worktrees live at `<root_parent>/.permagent-goal-worktrees/<run_id>`,
 /// mirroring [`create_goal_worktree`]. Fully self-contained and best-effort:
@@ -1718,6 +1778,12 @@ pub async fn reap_terminal_goal_worktree(
     let Some(root) = root else {
         return;
     };
+    if allow_unpushed
+        && !checkpoint_before_forced_reap(&goal_worktrees_dir(&PathBuf::from(&root)).join(run_id))
+            .await
+    {
+        return;
+    }
     let outcome = reap_goal_worktree(&PathBuf::from(&root), run_id, allow_unpushed).await;
     tracing::info!(
         target: "permagentd::brain",
@@ -4717,6 +4783,65 @@ mod tests {
         let outcome = reap_goal_worktree(&repo, "cli-cancel", true).await;
         assert_eq!(outcome, ReapOutcome::RemovedTracked);
         assert!(!wt.exists(), "cancelled goal worktree must be reaped");
+    }
+
+    /// QA 2026-09-25: a forced (Cancelled) reap used to `worktree remove
+    /// --force` uncommitted edits away with the directory. They are now
+    /// checkpointed onto the goal branch first, which outlives the worktree.
+    #[tokio::test]
+    async fn forced_reap_checkpoints_uncommitted_work_onto_the_goal_branch_first() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let wt = create_goal_worktree(&repo, &baseline, "cli-wip")
+            .await
+            .unwrap();
+        std::fs::write(wt.join("wip.txt"), "half-done\n").unwrap();
+
+        assert!(checkpoint_before_forced_reap(&wt).await);
+        let outcome = reap_goal_worktree(&repo, "cli-wip", true).await;
+        assert_eq!(outcome, ReapOutcome::RemovedTracked);
+        assert!(!wt.exists());
+
+        let branch = goal_branch_name("cli-wip");
+        let log = String::from_utf8(git(&repo, &["log", "--format=%s", &branch]).stdout).unwrap();
+        assert!(
+            log.lines().next().is_some_and(|subject| subject
+                .starts_with("checkpoint: uncommitted worker changes at session end")),
+            "the uncommitted edit must survive as a WIP commit on {branch}: {log}"
+        );
+        let shown =
+            String::from_utf8(git(&repo, &["show", &format!("{branch}:wip.txt")]).stdout).unwrap();
+        assert_eq!(shown, "half-done\n");
+        let goal_tip = String::from_utf8(
+            git(
+                &repo,
+                &["ls-remote", "origin", &format!("refs/heads/{branch}")],
+            )
+            .stdout,
+        )
+        .unwrap();
+        assert!(goal_tip.trim().is_empty(), "the checkpoint is never pushed");
+    }
+
+    /// QA 2026-09-25: credential-shaped uncommitted content is never
+    /// committed, so the worktree is its only copy — the forced reap must
+    /// keep it.
+    #[tokio::test]
+    async fn forced_reap_keeps_a_worktree_whose_uncommitted_work_holds_a_secret() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let wt = create_goal_worktree(&repo, &baseline, "cli-secret")
+            .await
+            .unwrap();
+        std::fs::write(wt.join(".env"), "API_KEY=Sup3rS3cretValue123\n").unwrap();
+
+        assert!(
+            !checkpoint_before_forced_reap(&wt).await,
+            "a flagged checkpoint must stop the reap"
+        );
+        assert!(wt.join(".env").exists(), "the worktree is kept");
+        let head = String::from_utf8(git(&wt, &["rev-parse", "HEAD"]).stdout).unwrap();
+        assert_eq!(head.trim(), baseline, "nothing was committed");
     }
 
     /// Orphaned-dir fallback: a `cli-*` dir git no longer tracks (no worktree

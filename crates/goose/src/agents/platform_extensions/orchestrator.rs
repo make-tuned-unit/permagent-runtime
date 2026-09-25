@@ -5834,6 +5834,130 @@ fn should_fallback_to_coordinator_tier(
     classify_worker_fallback_reason(prior_last_error?)
 }
 
+/// Consecutive zero-progress attempts (`zero_progress_streak`) at which the
+/// zero-progress circuit breaker trips. The streak itself tops out at 2
+/// (`goal_transition::maybe_forgive_zero_progress_attempt`).
+const ZERO_PROGRESS_BREAKER_THRESHOLD: u64 = 2;
+
+/// What the zero-progress circuit breaker does with a dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ZeroProgressBreaker {
+    /// Dispatch as routed.
+    Proceed,
+    /// Run this attempt on the coordinator (`Orchestrate`) tier instead.
+    Escalate,
+    /// Do not dispatch: park the goal for a human.
+    Park,
+}
+
+/// QA 2026-09-25: the zero-progress circuit breaker's decision. Pure.
+///
+/// - `zero_progress_streak`: consecutive completed attempts with no commit,
+///   no file change and no successful verify (a teardown checkpoint commit
+///   counts as progress).
+/// - `prior_tier`: the tier the previous attempt ran on
+///   (`capability_snapshot.cost_routing.routing_choice`), `None` when unknown.
+/// - `escalation_used`: the one escalation per goal is already spent.
+/// - `can_escalate`: this dispatch is routed through the cost router at all
+///   (an external CLI worker owns its own model flag).
+///
+/// Below the threshold nothing changes. At it, one escalation to a stronger
+/// tier when there is one to go to, else park — never another identical run.
+pub(crate) fn zero_progress_breaker_verdict(
+    zero_progress_streak: u64,
+    prior_tier: Option<crate::cost_router::WorkflowRole>,
+    escalation_used: bool,
+    can_escalate: bool,
+) -> ZeroProgressBreaker {
+    if zero_progress_streak < ZERO_PROGRESS_BREAKER_THRESHOLD {
+        return ZeroProgressBreaker::Proceed;
+    }
+    if escalation_used
+        || !can_escalate
+        || prior_tier == Some(crate::cost_router::WorkflowRole::Orchestrate)
+    {
+        return ZeroProgressBreaker::Park;
+    }
+    ZeroProgressBreaker::Escalate
+}
+
+/// Park a goal the zero-progress circuit breaker refused to redispatch: an
+/// `unblock` decision (`Stuck`, deduplicated per goal like every other park)
+/// plus the ordinary park, whose `last_error` also carries the streak
+/// (`park_goal_with_meta`). Returns the dispatch refusal text; a failure to
+/// park is folded into it rather than dispatching anyway.
+async fn park_for_zero_progress(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    why_not_escalated: &str,
+) -> String {
+    let reason = format!(
+        "zero-progress circuit breaker: consecutive attempts made no progress (no commit, no file \
+         change, no successful verify) and {why_not_escalated} — not re-dispatching the same shape"
+    );
+    let decision = match decisions::find_open_decision_for_goal(pool, &card.id, "unblock").await {
+        Ok(Some(existing)) => Ok(existing.id),
+        Ok(None) | Err(_) => {
+            let headline: String = format!(
+                "\"{}\" keeps making no progress and needs your direction",
+                card.title
+            )
+            .chars()
+            .take(decisions::MAX_HEADLINE_CHARS)
+            .collect();
+            match serde_json::to_value(decisions::UnblockPayload {
+                reason: decisions::UnblockReason::Stuck,
+                spent: None,
+                cap: None,
+            }) {
+                Ok(payload) => create_decision_with_retry(
+                    pool,
+                    decisions::NewDecision {
+                        kind: "unblock".to_string(),
+                        goal_id: Some(card.id.clone()),
+                        project_id: Some(card.project_id.clone()),
+                        headline: Some(headline),
+                        detail: Some(format!("Goal {} parked: {reason}", card.id)),
+                        payload,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map(|d| d.id),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+    };
+    if let Err(e) = &decision {
+        record_decision_create_failure(pool, &card.id, "unblock", e).await;
+    }
+    let parked = goal_transition::park_goal(pool, &card.id, decisions::ACTOR_SYSTEM, &reason)
+        .await
+        .map_err(String::from);
+    tracing::warn!(
+        target: "permagentd::brain",
+        goal_id = %card.id,
+        "Goal '{}' not dispatched: {reason}",
+        card.title
+    );
+    match (decision, parked) {
+        (Ok(decision_id), Ok(())) => format!(
+            "Goal '{}' not dispatched: {reason}. Parked with unblock decision {decision_id} — \
+             answer it in the decision inbox to continue.",
+            card.title
+        ),
+        (_, Err(e)) => format!(
+            "Goal '{}' not dispatched: {reason}. It could not be parked ({e}) and stays Ready.",
+            card.title
+        ),
+        (Err(e), Ok(())) => format!(
+            "Goal '{}' not dispatched: {reason}. Parked, but its unblock decision could not be \
+             created ({e}).",
+            card.title
+        ),
+    }
+}
+
 /// Dispatch-recovery fix: pure decision core of the resolved-model
 /// validation at the bottom of `dispatch_goal_fn`'s routing-resolution
 /// block. Pure and IO-free, like `should_fallback_to_coordinator_tier`
@@ -7730,6 +7854,34 @@ pub(crate) async fn dispatch_goal_fn(
             | Some(agent_identity::WorkerEngineKind::SupervisedCli { .. })
             | Some(agent_identity::WorkerEngineKind::Pending)
     );
+    // QA 2026-09-25 (goal `01a0d5ea`: attempts `20260925_2`/`_3`/`_4` each
+    // ended with zero edits, and each redispatch repeated the identical
+    // shape until the attempt cap): the zero-progress circuit breaker. Two
+    // consecutive attempts with nothing to show (`zero_progress_streak`)
+    // mean a third identical dispatch is spending the cap, not working the
+    // goal — escalate this one attempt to the coordinator tier, once per
+    // goal, or park it for a human. Checked before the claim below, so a
+    // park here leaves no half-dispatched card behind.
+    let zero_progress_breaker = zero_progress_breaker_verdict(
+        card.metadata_json
+            .get(goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        card.metadata_json
+            .pointer("/capability_snapshot/cost_routing/routing_choice")
+            .and_then(serde_json::Value::as_str)
+            .and_then(crate::cost_router::WorkflowRole::from_tag),
+        card.metadata_json
+            .get(goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        is_internal_route,
+    );
+    if zero_progress_breaker == ZeroProgressBreaker::Park {
+        return Err(
+            park_for_zero_progress(&pool, &card, "no stronger worker tier is left to try").await,
+        );
+    }
     let mut role: Option<crate::cost_router::WorkflowRole> = None;
     let mut resolved: Option<(
         crate::cost_router::RoleModel,
@@ -7974,6 +8126,49 @@ pub(crate) async fn dispatch_goal_fn(
                 // dispatch simply proceeds on the local tier it already
                 // resolved — matching every other cost_router rule's
                 // guardrail (never invent a vendor default).
+            }
+        }
+
+        // QA 2026-09-25: the zero-progress breaker's escalation (decided
+        // above, before the claim). Applied after every other routing rule,
+        // explicit per-goal tier included — that tier is the shape that just
+        // produced two empty attempts. An attempt already on the coordinator
+        // tier (R48b's fallback, just above) needs nothing more. No baked
+        // default: an unresolvable coordinator tier parks instead of
+        // repeating the identical dispatch.
+        if zero_progress_breaker == ZeroProgressBreaker::Escalate
+            && role != Some(crate::cost_router::WorkflowRole::Orchestrate)
+        {
+            match resolve_dispatch_role_model(
+                crate::cost_router::WorkflowRole::Orchestrate,
+                &derived,
+                policy,
+            ) {
+                Some(hit) => {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        card_id,
+                        from = role.map(|r| r.as_str()).unwrap_or("unrouted"),
+                        to = crate::cost_router::WorkflowRole::Orchestrate.as_str(),
+                        "zero_progress_breaker escalated a redispatch after consecutive \
+                         zero-progress attempts",
+                    );
+                    role = Some(crate::cost_router::WorkflowRole::Orchestrate);
+                    resolved = Some(hit);
+                    routing_choice = Some(RoutingChoice {
+                        tier: crate::cost_router::WorkflowRole::Orchestrate,
+                        reason: "zero_progress_breaker: consecutive zero-progress attempts"
+                            .to_string(),
+                    });
+                }
+                None => {
+                    return Err(park_for_zero_progress(
+                        &pool,
+                        &card,
+                        "the coordinator tier has no configured or derived model",
+                    )
+                    .await);
+                }
             }
         }
 
@@ -8627,6 +8822,13 @@ pub(crate) async fn dispatch_goal_fn(
     if worker_fallback_applied.is_some() {
         claim_patch.insert("worker_fallback_used".to_string(), serde_json::json!(true));
     }
+    // QA 2026-09-25: spend the breaker's one escalation for this goal.
+    if zero_progress_breaker == ZeroProgressBreaker::Escalate {
+        claim_patch.insert(
+            goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY.to_string(),
+            serde_json::json!(true),
+        );
+    }
     claim_patch.insert(
         "dispatched_lifecycle".to_string(),
         serde_json::json!(daemon_lifecycle_id()),
@@ -8816,9 +9018,14 @@ pub(crate) async fn dispatch_goal_fn(
         // it now — see `checkpoint_uncommitted_worker_changes`'s own doc
         // comment for why. Best-effort: never blocks the rest of this
         // handler.
-        checkpoint_uncommitted_worker_changes(
+        // QA 2026-09-25: name THIS attempt's session, so the checkpoint
+        // lands in this worker's own worktree — never the previous
+        // attempt's (see `resolve_attempt_baseline_and_worktree`) — and its
+        // result counts as progress below.
+        let checkpoint = checkpoint_uncommitted_worker_changes(
             &tracker_pool,
             &tracker_card_id,
+            Some(tracker_session_id.as_str()),
             checkpoint_reason_for_outcome(&outcome),
         )
         .await;
@@ -8846,8 +9053,15 @@ pub(crate) async fn dispatch_goal_fn(
                     // never read as "zero progress" — `files_changed == 0`
                     // is not trustworthy when the collection itself errored
                     // (see `GoalEvidence::diff_errored`'s own doc comment).
-                    let zero_progress_signal =
-                        ev.commits.is_empty() && ev.files_changed == 0 && !ev.diff_errored;
+                    // QA 2026-09-25: `ev` is collected by the engine BEFORE
+                    // the teardown checkpoint above runs, so work that was
+                    // only ever uncommitted reads as `commits: []`,
+                    // `files_changed: 0` here — a checkpoint commit is real
+                    // progress and must not feed the zero-progress streak.
+                    let zero_progress_signal = ev.commits.is_empty()
+                        && ev.files_changed == 0
+                        && !ev.diff_errored
+                        && checkpoint != WorkerCheckpoint::Committed;
                     match serde_json::to_value(&ev) {
                         Ok(v) => {
                             if let Err(e) = cards::set_goal_dispatch_evidence(
@@ -8897,7 +9111,7 @@ pub(crate) async fn dispatch_goal_fn(
                         true
                     };
                     let zero_progress = goal_transition::attempt_made_zero_progress(
-                        !ev.commits.is_empty(),
+                        !ev.commits.is_empty() || checkpoint == WorkerCheckpoint::Committed,
                         ev.files_changed != 0,
                         verify_ran,
                     );
@@ -16407,6 +16621,32 @@ async fn stamp_local_fallback_to_cloud(
     crate::cost_router::routing_receipt::record("cost_routing", "fallbacks");
 }
 
+/// QA 2026-09-25: R55a's mid-attempt fallback, for a stalled LOCAL worker
+/// THIS process owns — stamp the cloud tier (one-shot, as before), then stop
+/// the worker so its completion tracker settles the attempt (teardown
+/// checkpoint, then the ordinary retry rails) instead of the drain parking a
+/// goal that has just been handed a stronger tier. Returns `false`, doing
+/// nothing, when no kill handle is registered here (another process's
+/// worker, or one already finishing) — the caller keeps the pre-existing
+/// park for that case.
+async fn stop_stalled_local_worker_for_cloud_retry(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+) -> bool {
+    let Some(kill) = take_goal_worker(card_id) else {
+        return false;
+    };
+    stamp_local_fallback_to_cloud(pool, card_id, "stall").await;
+    kill.kill();
+    tracing::info!(
+        target: "permagentd::brain",
+        goal_id = %card_id,
+        "local stall fallback: stopped the stalled local worker so the goal can be retried on \
+         the cloud tier instead of parked"
+    );
+    true
+}
+
 /// I1 (harness loop, 2026-09-10): wires E2b's pure
 /// `wall_budget_permits_another_attempt` primitive into the live retry
 /// decision `handle_goal_completion`'s `Err(error)` arm makes. Returns
@@ -18511,7 +18751,13 @@ pub async fn handle_goal_timeout(
     // TimedOut` path (the completion tracker already checkpointed at
     // `:4867` before reaching here), so the common case is simply a second,
     // free no-op, not a double commit.
-    checkpoint_uncommitted_worker_changes(pool, card_id, TIMEOUT_HANDLER_CHECKPOINT_REASON).await;
+    let checkpoint = checkpoint_uncommitted_worker_changes(
+        pool,
+        card_id,
+        None,
+        TIMEOUT_HANDLER_CHECKPOINT_REASON,
+    )
+    .await;
 
     // Lane R20b (A20 Q1, Mechanism B — `loc-refund`/`refactor-shipping`,
     // both killed by the eval's outer per-task timeout / a shutdown signal
@@ -18546,6 +18792,16 @@ pub async fn handle_goal_timeout(
             }
             SalvageOutcome::NotSalvaged { note } => note,
         };
+    // QA 2026-09-25: a quarantined checkpoint left real work uncommitted in
+    // the worktree on purpose — say so, and where, so the park reason never
+    // reads as "nothing to salvage" while that work is still sitting there.
+    let salvage_note = match checkpoint {
+        WorkerCheckpoint::Quarantined { reason, worktree } => format!(
+            "{salvage_note}; uncommitted changes NOT checkpointed — the credential guard flagged \
+             them ({reason}); left uncommitted in {worktree}, worktree kept for a human"
+        ),
+        WorkerCheckpoint::Nothing | WorkerCheckpoint::Committed => salvage_note,
+    };
 
     let exhaustion = goal_transition::BudgetExhaustion::Wallclock {
         spent_secs: secs,
@@ -18801,10 +19057,16 @@ pub struct DrainSummary {
     /// Dispatched goals that reached a terminal state (Complete/Cancelled/
     /// Failed) before the cap.
     pub finished: usize,
-    /// Dispatched goals still non-terminal when the cap expired — each was
-    /// parked through [`handle_goal_timeout`] so it never sits silently
-    /// `InProgress`.
+    /// Dispatched goals parked through [`handle_goal_timeout`] — a stall
+    /// park during the wait (either policy), plus, under
+    /// [`DrainCapPolicy::ParkOnExpiry`], everything still non-terminal when
+    /// the cap expired, so it never sits silently `InProgress`.
     pub timed_out: usize,
+    /// Dispatched goals still non-terminal when a
+    /// [`DrainCapPolicy::ReturnOnExpiry`] wait hit its cap — left exactly as
+    /// they were (running, or Ready for the sweep), never parked. Always `0`
+    /// under [`DrainCapPolicy::ParkOnExpiry`].
+    pub still_running: usize,
 }
 
 impl DrainSummary {
@@ -18812,8 +19074,109 @@ impl DrainSummary {
     /// returns this at its default, unmodified, when the wait set was empty
     /// (nothing to report, nothing to wait for).
     pub fn dispatched_anything(&self) -> bool {
-        self.finished + self.timed_out > 0
+        self.finished + self.timed_out + self.still_running > 0
     }
+}
+
+/// What [`drain_dispatched_goals`] does with goals still running when its
+/// cap expires.
+///
+/// QA 2026-09-25 (goal `01a0d5ea`, worker `20260925_9`): the mid-turn
+/// suspension in `Agent::reply_internal` borrowed the post-run drain whole,
+/// cap-expiry park pass included, so a worker 45 turns and 14 edits into its
+/// attempt — last tool call seconds before — was parked "timed out after
+/// 240s" by a guard whose only job was to stop the coordinator paying for
+/// look-again turns. Parking at the cap is a process-exit concern: only the
+/// caller that is about to exit may ask for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrainCapPolicy {
+    /// The post-run headless drain (`CliSession::drain_dispatched_goals`):
+    /// the process exits after this returns, so anything still running is
+    /// parked through [`handle_goal_timeout`] rather than left silently
+    /// `InProgress` behind a dead session.
+    ParkOnExpiry,
+    /// The mid-turn suspension: the process keeps running, so the cap only
+    /// ends the WAIT. Still-running goals are counted in
+    /// [`DrainSummary::still_running`] and left alone.
+    ReturnOnExpiry,
+}
+
+/// What the drain's end-of-cap pass does with ONE still-pending goal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CapExpiryAction {
+    /// Park it through [`handle_goal_timeout`].
+    Park,
+    /// A completion handler owns the card right now — never race it.
+    SkipInFlight,
+    /// [`DrainCapPolicy::ReturnOnExpiry`]: leave it running.
+    LeaveRunning,
+}
+
+/// The per-goal half of the cap-expiry pass. Pure. `ReturnOnExpiry` never
+/// reaches the park path, whatever the goal's state.
+pub(crate) fn cap_expiry_action(
+    policy: DrainCapPolicy,
+    completion_in_flight: bool,
+) -> CapExpiryAction {
+    match policy {
+        DrainCapPolicy::ReturnOnExpiry => CapExpiryAction::LeaveRunning,
+        DrainCapPolicy::ParkOnExpiry if completion_in_flight => CapExpiryAction::SkipInFlight,
+        DrainCapPolicy::ParkOnExpiry => CapExpiryAction::Park,
+    }
+}
+
+/// How recently a worker session must have written a message to count as
+/// actively progressing (see [`local_stall_parks`]).
+const WORKER_ACTIVITY_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Pure: whether a worker whose newest message is `last_activity_epoch_secs`
+/// (`messages.created_timestamp`, `None` with no message yet) was active
+/// within `window` of `now_epoch_secs`. A missing timestamp is NOT activity.
+pub(crate) fn worker_recently_active(
+    last_activity_epoch_secs: Option<i64>,
+    now_epoch_secs: i64,
+    window: std::time::Duration,
+) -> bool {
+    last_activity_epoch_secs.is_some_and(|last| {
+        now_epoch_secs.saturating_sub(last) <= i64::try_from(window.as_secs()).unwrap_or(i64::MAX)
+    })
+}
+
+/// Pure: whether R55a's local-stall check should actually park the goal.
+///
+/// R55a's "stalled" is a BUDGET, not an idleness test: a LOCAL-routed attempt
+/// whose time since this drain first saw it (`goal_started_at`) reaches
+/// `local_stall_budget` (2x this drain's median finished-goal duration, never
+/// under 180s, capped by the goal's own remaining wall budget minus a 180s
+/// cloud reserve) — whether or not it is still making tool calls. That is the
+/// right call for the post-run drain, which is about to exit and would
+/// otherwise wait out its cap on a slow local model. It is the wrong call for
+/// the mid-turn suspension, where nothing is about to exit: there a worker
+/// that wrote a message within [`WORKER_ACTIVITY_WINDOW`] is progressing, not
+/// stalled, and is left running. The post-run drain's behaviour is unchanged.
+pub(crate) fn local_stall_parks(
+    policy: DrainCapPolicy,
+    stalled_locally: bool,
+    recently_active: bool,
+) -> bool {
+    stalled_locally && !(policy == DrainCapPolicy::ReturnOnExpiry && recently_active)
+}
+
+/// Epoch seconds of `session_id`'s newest message, `None` with none (or on a
+/// read failure — which [`worker_recently_active`] reads as "not active", the
+/// pre-existing behaviour).
+async fn worker_last_activity_epoch_secs(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+) -> Option<i64> {
+    sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(created_timestamp) FROM messages WHERE session_id = ?",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .ok()
+    .flatten()
 }
 
 /// The goal card owned by `session_id`, if any — `(card_id, project_id)`.
@@ -18938,9 +19301,12 @@ async fn descendant_session_ids(
 /// [`DrainSummary`], when nothing was dispatched — never blocks a run that
 /// dispatched nothing. `on_status` is called once per OBSERVED state change
 /// (never on the unchanged steady state), so a caller can print one line per
-/// transition without polling noise. On cap expiry, every still-non-terminal
-/// goal is parked through the existing [`handle_goal_timeout`] path — nothing
-/// is left silently `InProgress`.
+/// transition without polling noise. What happens at cap expiry is
+/// `cap_policy`'s call ([`DrainCapPolicy`]): `ParkOnExpiry` parks every
+/// still-non-terminal goal through the existing [`handle_goal_timeout`] path
+/// — nothing is left silently `InProgress` behind an exiting process —
+/// while `ReturnOnExpiry` just stops waiting and reports them as
+/// [`DrainSummary::still_running`].
 ///
 /// Lane U / U2: the descendant set is re-queried on every iteration (not
 /// snapshotted once before the loop), so a goal dispatched mid-drain joins
@@ -18965,12 +19331,14 @@ async fn descendant_session_ids(
 /// reply loop is not a case worth trusting to timing — [`CoordinatorDrainGuard`]
 /// makes a second concurrent call for the same coordinator a no-op (an empty
 /// summary) instead of two pollers double-parking or double-counting the
-/// same goals.
+/// same goals. The mid-turn caller passes [`DrainCapPolicy::ReturnOnExpiry`]
+/// (QA 2026-09-25: it used to park actively working workers at its cap).
 pub async fn drain_dispatched_goals(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     coordinator_session_id: &str,
     cap: std::time::Duration,
     poll_interval: std::time::Duration,
+    cap_policy: DrainCapPolicy,
     on_status: impl FnMut(&str, GoalState),
 ) -> Result<DrainSummary, String> {
     let Some(_drain_guard) = CoordinatorDrainGuard::try_begin(pool, coordinator_session_id) else {
@@ -18991,6 +19359,7 @@ pub async fn drain_dispatched_goals(
         coordinator_session_id,
         cap,
         poll_interval,
+        cap_policy,
         on_status,
         None,
         DrainRedispatch {
@@ -19611,11 +19980,13 @@ async fn redispatch_ready_goals(
 /// function's docs for the real contract; this one exists so a test can
 /// pin the G4 #2 "mid-drain dispatch" case deterministically (no sleeping
 /// background task racing the poll loop's own timing).
+#[allow(clippy::too_many_arguments)]
 async fn drain_dispatched_goals_with(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     coordinator_session_id: &str,
     cap: std::time::Duration,
     poll_interval: std::time::Duration,
+    cap_policy: DrainCapPolicy,
     mut on_status: impl FnMut(&str, GoalState),
     mut on_iteration: Option<DrainIterationHook>,
     redispatch: DrainRedispatch<'_>,
@@ -19905,6 +20276,24 @@ async fn drain_dispatched_goals_with(
                     } else {
                         false
                     };
+                    // QA 2026-09-25: R55a's "stalled" is elapsed-vs-budget,
+                    // not idleness. Under `ReturnOnExpiry` (the mid-turn
+                    // suspension — nothing is about to exit) a worker that
+                    // wrote a message within `WORKER_ACTIVITY_WINDOW` is
+                    // progressing and is left running; see
+                    // `local_stall_parks`. Read only in that one shape, so
+                    // the post-run drain costs no extra query.
+                    let stalled_locally =
+                        if stalled_locally && cap_policy == DrainCapPolicy::ReturnOnExpiry {
+                            let recently_active = worker_recently_active(
+                                worker_last_activity_epoch_secs(pool, &session_id).await,
+                                chrono::Utc::now().timestamp(),
+                                WORKER_ACTIVITY_WINDOW,
+                            );
+                            local_stall_parks(cap_policy, stalled_locally, recently_active)
+                        } else {
+                            stalled_locally
+                        };
                     // R55a-b (G35): never race a still-running completion
                     // tracker — the same guard `park_dispatched_goals_now`
                     // applies before its own `handle_goal_timeout` call. A
@@ -19917,7 +20306,27 @@ async fn drain_dispatched_goals_with(
                             "local stall fallback skipped_in_flight: a completion handler is already running"
                         );
                         still_pending.insert(session_id, (card_id, project_id));
+                    } else if stalled_locally
+                        && stop_stalled_local_worker_for_cloud_retry(pool, &card_id).await
+                    {
+                        // QA 2026-09-25 (goal `01a0d8d8`, 14:01:23): the
+                        // fallback used to be stamped and then PARKED in the
+                        // same step (`handle_goal_timeout` always parks, and
+                        // its "wallclock cap exhausted (182s of 182s)" was
+                        // only that handler's elapsed-as-cap label — the
+                        // goal had no wall cap at all), so the cloud tier it
+                        // had just switched to never ran without a human.
+                        // This process owns the stalled worker, so it was
+                        // stopped instead: its completion tracker
+                        // checkpoints this attempt's work and settles the
+                        // card through the ordinary retry rails, and the
+                        // next polls pick it up as Requeued and redispatch
+                        // it on the stamped cloud tier. Keep waiting on it.
+                        still_pending.insert(session_id, (card_id, project_id));
                     } else if stalled_locally {
+                        // Not this process's worker (no kill handle): the
+                        // pre-existing park, with the cloud tier stamped for
+                        // whenever a human unblocks it.
                         stamp_local_fallback_to_cloud(pool, &card_id, "stall").await;
                         let _ = handle_goal_timeout(
                             pool,
@@ -20058,7 +20467,14 @@ async fn drain_dispatched_goals_with(
         tokio::time::sleep(poll_interval.min(cap.saturating_sub(start.elapsed()))).await;
     }
 
-    let timed_out = pending.len() + stalled + requeued.len();
+    // QA 2026-09-25: only `ParkOnExpiry` (the caller about to exit) parks
+    // what is still pending here; `ReturnOnExpiry` counts it and leaves it
+    // running — see `DrainCapPolicy`.
+    let leftover = pending.len() + requeued.len();
+    let (timed_out, still_running) = match cap_policy {
+        DrainCapPolicy::ParkOnExpiry => (leftover + stalled, 0),
+        DrainCapPolicy::ReturnOnExpiry => (stalled, leftover),
+    };
     for (card_id, project_id) in pending.into_values().chain(requeued) {
         // R31b-b (G28 review, MEDIUM-1): the same "a handler owns this card"
         // signal the poll loop above already waits on via `next_drain_
@@ -20066,14 +20482,21 @@ async fn drain_dispatched_goals_with(
         // and re-derives card state fresh, so without this it can race a
         // still-running, detached completion tracker. `completion_bound` is
         // the same bound computed once above.
-        if goal_completion_in_flight_within(&card_id, completion_bound) {
-            tracing::debug!(
-                target: "permagentd::brain",
-                goal_id = %card_id,
-                "cap-expiry force-park pass skipped_in_flight: a completion handler is already \
-                 running"
-            );
-            continue;
+        match cap_expiry_action(
+            cap_policy,
+            goal_completion_in_flight_within(&card_id, completion_bound),
+        ) {
+            CapExpiryAction::Park => {}
+            CapExpiryAction::LeaveRunning => continue,
+            CapExpiryAction::SkipInFlight => {
+                tracing::debug!(
+                    target: "permagentd::brain",
+                    goal_id = %card_id,
+                    "cap-expiry force-park pass skipped_in_flight: a completion handler is \
+                     already running"
+                );
+                continue;
+            }
         }
         // Best-effort: `handle_goal_timeout` itself no-ops for a card no
         // longer `in_progress` (raced to a terminal state between the last
@@ -20095,6 +20518,7 @@ async fn drain_dispatched_goals_with(
     Ok(DrainSummary {
         finished,
         timed_out,
+        still_running,
     })
 }
 
@@ -20198,6 +20622,7 @@ pub async fn park_dispatched_goals_now(
     Ok(DrainSummary {
         finished,
         timed_out,
+        still_running: 0,
     })
 }
 
@@ -22097,6 +22522,29 @@ async fn resolve_goal_baseline_and_worktree(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     meta: &serde_json::Value,
 ) -> Result<Option<(String, String)>, String> {
+    resolve_attempt_baseline_and_worktree(pool, meta, None).await
+}
+
+/// [`resolve_goal_baseline_and_worktree`] for one specific attempt:
+/// `attempt_session_id` names the worker session whose worktree is wanted
+/// (the completion tracker passes its own, so a teardown can never reach a
+/// LATER attempt's worktree); `None` means the card's current
+/// `worker_session_id`.
+///
+/// QA 2026-09-25 (goal `01a0d5ea`, worker `20260925_9`): this used to take
+/// `dispatch_evidence.worktree_path` whenever it existed — but that key is
+/// written only when an attempt FINISHES (the completion tracker's `Success`
+/// arm, after the teardown checkpoint), so during an attempt, at its
+/// teardown checkpoint, and at any timeout park it still named the PREVIOUS
+/// attempt's worktree. `_9`'s park checkpointed and salvaged `20260925_4`'s
+/// clean worktree ("no commits past the dispatch baseline — nothing to
+/// salvage") while its own 14 edits sat uncommitted in `20260925_9`. See
+/// [`pick_attempt_worktree`] for the order now used.
+async fn resolve_attempt_baseline_and_worktree(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    meta: &serde_json::Value,
+    attempt_session_id: Option<&str>,
+) -> Result<Option<(String, String)>, String> {
     if meta.pointer("/program/delivery").and_then(|v| v.as_str()) == Some("no_write") {
         return Ok(None);
     }
@@ -22107,26 +22555,84 @@ async fn resolve_goal_baseline_and_worktree(
     else {
         return Ok(None);
     };
-    let worktree = match meta
+    let evidence_path = meta
         .pointer("/dispatch_evidence/worktree_path")
-        .and_then(|v| v.as_str())
-    {
-        Some(path) => path.to_string(),
-        None => {
-            let session_id = meta.get("worker_session_id").and_then(|v| v.as_str());
-            let Some(working_dir) =
-                sqlx::query_scalar::<_, String>("SELECT working_dir FROM sessions WHERE id = ?")
-                    .bind(session_id)
-                    .fetch_optional(pool)
-                    .await
-                    .map_err(|e| e.to_string())?
-            else {
-                return Ok(None);
-            };
-            working_dir
+        .and_then(|v| v.as_str());
+    let session_id =
+        attempt_session_id.or_else(|| meta.get("worker_session_id").and_then(|v| v.as_str()));
+    let session_working_dir = match session_id {
+        Some(id) => {
+            sqlx::query_scalar::<_, String>("SELECT working_dir FROM sessions WHERE id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| e.to_string())?
         }
+        None => None,
     };
-    Ok(Some((baseline.to_string(), worktree)))
+    let worktree = pick_attempt_worktree(
+        evidence_path,
+        session_id,
+        session_working_dir.as_deref(),
+        |path| std::path::Path::new(path).is_dir(),
+    );
+    Ok(worktree.map(|worktree| (baseline.to_string(), worktree)))
+}
+
+/// Pure: which worktree belongs to the attempt run by `session_id`.
+///
+/// Every goal worktree is `<repo_parent>/.permagent-goal-worktrees/<run_id>`
+/// and both engines use the worker session id as the run id
+/// (`goal_engine::create_goal_worktree`), so the directory NAME says which
+/// attempt a path belongs to. In order:
+///   1. `evidence_path` when it names this attempt (or no attempt is known)
+///      — the common case once an attempt has finished, unchanged;
+///   2. the session's own `working_dir` when it is an existing goal worktree
+///      (internal workers are repointed there at spawn, Y3);
+///   3. `evidence_path`'s sibling named after this attempt, when it exists
+///      (same project, same worktrees dir — covers an external worker whose
+///      session row keeps the project root);
+///   4. `evidence_path` as-is, then the session's `working_dir` — exactly
+///      the pre-fix answers, used only when nothing for this attempt exists
+///      on disk.
+pub(crate) fn pick_attempt_worktree(
+    evidence_path: Option<&str>,
+    session_id: Option<&str>,
+    session_working_dir: Option<&str>,
+    exists: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let names_attempt = |path: &str, id: &str| {
+        std::path::Path::new(path)
+            .file_name()
+            .is_some_and(|name| name == id)
+    };
+    if let Some(path) = evidence_path {
+        if session_id.is_none_or(|id| names_attempt(path, id)) {
+            return Some(path.to_string());
+        }
+    }
+    if let Some(id) = session_id {
+        if let Some(dir) = session_working_dir {
+            let is_goal_worktree = std::path::Path::new(dir)
+                .components()
+                .any(|c| c.as_os_str() == goal_engine::GOAL_WORKTREES_DIR)
+                && names_attempt(dir, id);
+            if is_goal_worktree && exists(dir) {
+                return Some(dir.to_string());
+            }
+        }
+        if let Some(sibling) = evidence_path
+            .and_then(|path| std::path::Path::new(path).parent())
+            .map(|parent| parent.join(id).to_string_lossy().into_owned())
+        {
+            if exists(&sibling) {
+                return Some(sibling);
+            }
+        }
+    }
+    evidence_path
+        .map(str::to_string)
+        .or_else(|| session_working_dir.map(str::to_string))
 }
 
 /// Inspect live git state, not the evidence snapshot collected at worker exit.
@@ -22207,13 +22713,13 @@ fn without_generated_artefact_entries(status: &str) -> String {
 
 /// Result of a successful [`checkpoint_uncommitted_changes_in`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CheckpointCommit {
+pub(crate) struct CheckpointCommit {
     /// The checkpoint commit's sha. When `quarantined_reason` is `Some`, this
     /// commit was soft-reset away right after being scanned — the sha is no
     /// longer reachable from any ref (kept only for the log line/audit
     /// evidence, not as a landable reference).
-    sha: String,
-    files: usize,
+    pub(crate) sha: String,
+    pub(crate) files: usize,
     /// G27 HIGH-1: the credential/secret-scan verdict on this commit's own
     /// diff (`pre_commit_head..HEAD`, i.e. exactly the content this call just
     /// staged and committed), run with the SAME gate
@@ -22224,7 +22730,7 @@ struct CheckpointCommit {
     /// (`git reset --soft`) so the worktree is dirty-but-uncommitted again,
     /// exactly the state `maybe_salvage_committed_work`'s existing
     /// uncommitted-work guard already refuses.
-    quarantined_reason: Option<String>,
+    pub(crate) quarantined_reason: Option<String>,
 }
 
 /// Commit-message prefix for a checkpoint commit, so a reader (or a future
@@ -22256,7 +22762,7 @@ const TIMEOUT_HANDLER_CHECKPOINT_REASON: &str = "goal_teardown_park";
 /// worktree already succeeded under, so if those work, this does too; tests
 /// set `commit.gpgsign=false` explicitly, the same convention the rest of
 /// this file's git fixtures already use.
-async fn checkpoint_uncommitted_changes_in(
+pub(crate) async fn checkpoint_uncommitted_changes_in(
     worktree: &std::path::Path,
     reason: &str,
 ) -> Result<Option<CheckpointCommit>, String> {
@@ -22365,8 +22871,24 @@ fn checkpoint_reason_for_outcome(outcome: &goal_engine::GoalOutcome) -> &'static
     }
 }
 
-/// DB-aware wrapper: resolve the goal's own worktree exactly the way
-/// [`goal_has_uncommitted_work`] does, delegate the git work to
+/// What [`checkpoint_uncommitted_worker_changes`] did with an attempt's
+/// uncommitted changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorkerCheckpoint {
+    /// Nothing to commit, no resolvable worktree, or a git/card failure
+    /// (already logged).
+    Nothing,
+    /// A clean checkpoint commit now holds the work on the goal branch.
+    Committed,
+    /// The credential guard flagged the changes: nothing was committed and
+    /// they are still sitting, uncommitted, in `worktree` — which must be
+    /// kept, not reaped.
+    Quarantined { reason: String, worktree: String },
+}
+
+/// DB-aware wrapper: resolve the worktree of the attempt run by
+/// `attempt_session_id` (`None`: the card's current `worker_session_id`; see
+/// [`resolve_attempt_baseline_and_worktree`]), delegate the git work to
 /// [`checkpoint_uncommitted_changes_in`], and — on an actual commit — record
 /// it as a `decision_audit` row (`worker_checkpoint_committed`,
 /// `reason=<reason> files=<n>`), the same [`decisions::append_audit_tx`]
@@ -22389,45 +22911,58 @@ fn checkpoint_reason_for_outcome(outcome: &goal_engine::GoalOutcome) -> &'static
 async fn checkpoint_uncommitted_worker_changes(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
+    attempt_session_id: Option<&str>,
     reason: &str,
-) {
+) -> WorkerCheckpoint {
     let card = match cards::get_card(pool, card_id).await {
         Ok(Some(card)) => card,
-        Ok(None) => return,
+        Ok(None) => return WorkerCheckpoint::Nothing,
         Err(e) => {
             tracing::warn!(
                 target: "permagentd::brain",
                 goal_id = %card_id,
                 "worker checkpoint: could not load card: {e}"
             );
-            return;
+            return WorkerCheckpoint::Nothing;
         }
     };
-    let worktree = match resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await {
-        Ok(Some((_baseline, worktree))) => worktree,
-        Ok(None) => return,
-        Err(e) => {
-            tracing::warn!(
-                target: "permagentd::brain",
-                goal_id = %card_id,
-                "worker checkpoint: could not resolve the goal's worktree: {e}"
-            );
-            return;
-        }
-    };
+    let worktree =
+        match resolve_attempt_baseline_and_worktree(pool, &card.metadata_json, attempt_session_id)
+            .await
+        {
+            Ok(Some((_baseline, worktree))) => worktree,
+            Ok(None) => return WorkerCheckpoint::Nothing,
+            Err(e) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    goal_id = %card_id,
+                    "worker checkpoint: could not resolve the goal's worktree: {e}"
+                );
+                return WorkerCheckpoint::Nothing;
+            }
+        };
     let commit =
         match checkpoint_uncommitted_changes_in(std::path::Path::new(&worktree), reason).await {
             Ok(Some(commit)) => commit,
-            Ok(None) => return,
+            Ok(None) => return WorkerCheckpoint::Nothing,
             Err(e) => {
                 tracing::warn!(
                     target: "permagentd::brain",
                     goal_id = %card_id,
                     "worker checkpoint: git commit failed: {e}"
                 );
-                return;
+                return WorkerCheckpoint::Nothing;
             }
         };
+    // What the caller gets back — decided by the scan verdict alone; a
+    // failure to write the audit row below never changes what git holds.
+    let result = match &commit.quarantined_reason {
+        None => WorkerCheckpoint::Committed,
+        Some(scan_reason) => WorkerCheckpoint::Quarantined {
+            reason: scan_reason.clone(),
+            worktree: worktree.clone(),
+        },
+    };
     // G27 HIGH-1: log and audit the scan verdict either way — a flagged
     // commit was already undone by `checkpoint_uncommitted_changes_in`
     // (soft-reset to dirty-but-uncommitted), so this is a `warn`, not the
@@ -22480,7 +23015,7 @@ async fn checkpoint_uncommitted_worker_changes(
                 goal_id = %card_id,
                 "worker checkpoint: could not open a transaction for the decision_audit row: {e}"
             );
-            return;
+            return result;
         }
     };
     if let Err(e) = decisions::append_audit_tx(
@@ -22499,7 +23034,7 @@ async fn checkpoint_uncommitted_worker_changes(
             goal_id = %card_id,
             "worker checkpoint: could not record the decision_audit row: {e}"
         );
-        return;
+        return result;
     }
     if let Err(e) = tx.commit().await {
         tracing::warn!(
@@ -22508,6 +23043,7 @@ async fn checkpoint_uncommitted_worker_changes(
             "worker checkpoint: could not commit the decision_audit transaction: {e}"
         );
     }
+    result
 }
 
 /// Plain unit tests for [`checkpoint_uncommitted_changes_in`] — the pure git
@@ -39969,6 +40505,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(20),
+            DrainCapPolicy::ParkOnExpiry,
             |session_id, state| observed.push((session_id.to_string(), state)),
         )
         .await
@@ -39983,7 +40520,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 1,
-                timed_out: 0
+                timed_out: 0,
+                still_running: 0,
             }
         );
         assert_eq!(observed, vec![(child.id.clone(), GoalState::Complete)]);
@@ -40036,6 +40574,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             cap,
             std::time::Duration::from_millis(20),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
         )
         .await
@@ -40051,7 +40590,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 0,
-                timed_out: 1
+                timed_out: 1,
+                still_running: 0,
             },
             "an un-landed goal must be counted as timed-out/parked, never as finished"
         );
@@ -40624,6 +41164,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             cap,
             std::time::Duration::from_millis(20),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
         )
         .await
@@ -40639,7 +41180,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 0,
-                timed_out: 1
+                timed_out: 1,
+                still_running: 0,
             }
         );
 
@@ -40657,6 +41199,255 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             "a timed-out drain must not leave the goal silently in_progress"
         );
         assert_eq!(col.state_binding.as_deref(), Some("failed"));
+    }
+
+    /// QA 2026-09-25 (goal `01a0d5ea`, worker `20260925_9`): the SAME
+    /// never-completing goal as the test above, drained with the mid-turn
+    /// suspension's `ReturnOnExpiry`. The wait still ends at the cap, but the
+    /// worker is left exactly as it was — still `in_progress`, no unblock
+    /// decision, no salvage receipt — and reported as still running.
+    #[tokio::test]
+    async fn return_on_expiry_drain_leaves_a_running_goal_running_at_the_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: fake".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+
+        let cap = std::time::Duration::from_millis(80);
+        let start = std::time::Instant::now();
+        let summary = drain_dispatched_goals(
+            &pool,
+            &coordinator.id,
+            cap,
+            std::time::Duration::from_millis(20),
+            DrainCapPolicy::ReturnOnExpiry,
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= cap && elapsed < cap * 4,
+            "must still return at the cap: {elapsed:?}"
+        );
+        assert_eq!(
+            summary,
+            DrainSummary {
+                finished: 0,
+                timed_out: 0,
+                still_running: 1,
+            }
+        );
+        assert!(summary.dispatched_anything());
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "the mid-turn wait must never park a worker that is still running"
+        );
+        assert!(
+            updated.metadata_json.get("salvage_receipt").is_none(),
+            "no park path ran, so no salvage was attempted: {:?}",
+            updated.metadata_json
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_none(),
+            "no unblock decision is minted for a goal that was never parked"
+        );
+    }
+
+    /// QA 2026-09-25: the cap-policy decision itself. `ReturnOnExpiry` never
+    /// reaches the park path, in-flight handler or not; `ParkOnExpiry` keeps
+    /// the post-run drain's exact behaviour.
+    #[test]
+    fn cap_expiry_action_only_parks_under_park_on_expiry() {
+        assert_eq!(
+            cap_expiry_action(DrainCapPolicy::ReturnOnExpiry, false),
+            CapExpiryAction::LeaveRunning
+        );
+        assert_eq!(
+            cap_expiry_action(DrainCapPolicy::ReturnOnExpiry, true),
+            CapExpiryAction::LeaveRunning
+        );
+        assert_eq!(
+            cap_expiry_action(DrainCapPolicy::ParkOnExpiry, false),
+            CapExpiryAction::Park
+        );
+        assert_eq!(
+            cap_expiry_action(DrainCapPolicy::ParkOnExpiry, true),
+            CapExpiryAction::SkipInFlight
+        );
+    }
+
+    /// QA 2026-09-25: R55a's local "stall" is elapsed-vs-budget; under
+    /// `ReturnOnExpiry` a worker that wrote a message inside the activity
+    /// window is progressing and is never parked, while the post-run drain
+    /// keeps R55a's budget behaviour unchanged.
+    #[test]
+    fn a_progressing_worker_is_never_parked_as_stalled_by_the_mid_turn_wait() {
+        let now = 1_790_344_800;
+        let window = WORKER_ACTIVITY_WINDOW;
+        assert!(worker_recently_active(Some(now - 4), now, window));
+        assert!(worker_recently_active(Some(now - 120), now, window));
+        assert!(!worker_recently_active(Some(now - 121), now, window));
+        assert!(
+            !worker_recently_active(None, now, window),
+            "no message at all is not activity"
+        );
+
+        // Mid-turn: progressing → left running; idle past budget → parked.
+        assert!(!local_stall_parks(
+            DrainCapPolicy::ReturnOnExpiry,
+            true,
+            true
+        ));
+        assert!(local_stall_parks(
+            DrainCapPolicy::ReturnOnExpiry,
+            true,
+            false
+        ));
+        // Post-run: R55a unchanged, activity or not.
+        assert!(local_stall_parks(DrainCapPolicy::ParkOnExpiry, true, true));
+        assert!(local_stall_parks(DrainCapPolicy::ParkOnExpiry, true, false));
+        // Nothing stalled → nothing parked, either policy.
+        assert!(!local_stall_parks(
+            DrainCapPolicy::ReturnOnExpiry,
+            false,
+            false
+        ));
+        assert!(!local_stall_parks(
+            DrainCapPolicy::ParkOnExpiry,
+            false,
+            false
+        ));
+    }
+
+    /// QA 2026-09-25: `dispatch_evidence.worktree_path` is written only when
+    /// an attempt finishes, so during a later attempt it names the PREVIOUS
+    /// attempt's worktree — the checkpoint and salvage of `20260925_9` both
+    /// inspected `20260925_4`'s clean worktree. The current attempt's own
+    /// worktree must win whenever it exists; otherwise nothing changes.
+    #[test]
+    fn pick_attempt_worktree_prefers_the_current_attempt_over_stale_evidence() {
+        let root = "/dev/.permagent-goal-worktrees";
+        let stale = format!("{root}/20260925_4");
+        let current = format!("{root}/20260925_9");
+        let exists_current = |p: &str| p == current;
+
+        // Stale evidence, internal worker: its session row points at its own
+        // worktree.
+        assert_eq!(
+            pick_attempt_worktree(
+                Some(stale.as_str()),
+                Some("20260925_9"),
+                Some(current.as_str()),
+                exists_current
+            )
+            .as_deref(),
+            Some(current.as_str())
+        );
+        // Stale evidence, session row keeps the project root (external
+        // worker): the sibling named after the attempt.
+        assert_eq!(
+            pick_attempt_worktree(
+                Some(stale.as_str()),
+                Some("20260925_9"),
+                Some("/dev/CityCircle"),
+                exists_current
+            )
+            .as_deref(),
+            Some(current.as_str())
+        );
+        // Evidence already names this attempt: unchanged.
+        assert_eq!(
+            pick_attempt_worktree(Some(current.as_str()), Some("20260925_9"), None, |_| false)
+                .as_deref(),
+            Some(current.as_str())
+        );
+        // Nothing for this attempt on disk: the pre-fix answer.
+        assert_eq!(
+            pick_attempt_worktree(Some(stale.as_str()), Some("20260925_9"), None, |_| false)
+                .as_deref(),
+            Some(stale.as_str())
+        );
+        // No evidence at all: the session's working_dir, as before.
+        assert_eq!(
+            pick_attempt_worktree(None, Some("20260925_9"), Some("/w"), |_| false).as_deref(),
+            Some("/w")
+        );
+        assert_eq!(pick_attempt_worktree(None, None, None, |_| true), None);
+    }
+
+    /// QA 2026-09-25 (goal `01a0d5ea`: `_2`/`_3`/`_4` each made zero edits
+    /// and each was redispatched identically): the zero-progress circuit
+    /// breaker.
+    #[test]
+    fn zero_progress_breaker_escalates_once_then_parks() {
+        use crate::cost_router::WorkflowRole;
+        // Below the threshold: dispatch as routed.
+        assert_eq!(
+            zero_progress_breaker_verdict(0, Some(WorkflowRole::Edit), false, true),
+            ZeroProgressBreaker::Proceed
+        );
+        assert_eq!(
+            zero_progress_breaker_verdict(1, Some(WorkflowRole::Edit), false, true),
+            ZeroProgressBreaker::Proceed,
+            "one forgiven zero-progress attempt is not yet a pattern"
+        );
+        // Two in a row on a tier with somewhere to go: escalate, once.
+        assert_eq!(
+            zero_progress_breaker_verdict(2, Some(WorkflowRole::Edit), false, true),
+            ZeroProgressBreaker::Escalate
+        );
+        assert_eq!(
+            zero_progress_breaker_verdict(2, None, false, true),
+            ZeroProgressBreaker::Escalate
+        );
+        // Escalation already spent, already on the top tier, or no router
+        // to escalate through: park, never a third identical run.
+        assert_eq!(
+            zero_progress_breaker_verdict(2, Some(WorkflowRole::Edit), true, true),
+            ZeroProgressBreaker::Park
+        );
+        assert_eq!(
+            zero_progress_breaker_verdict(2, Some(WorkflowRole::Orchestrate), false, true),
+            ZeroProgressBreaker::Park
+        );
+        assert_eq!(
+            zero_progress_breaker_verdict(2, Some(WorkflowRole::Edit), false, false),
+            ZeroProgressBreaker::Park
+        );
     }
 
     /// Y2-2 (HARNESS_LOOP_LOG.md "Lane M5 report" NEW Defect #7, evidenced on
@@ -40718,9 +41509,16 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         let cap = std::time::Duration::from_secs(5);
         let poll_interval = std::time::Duration::from_millis(20);
         let start = std::time::Instant::now();
-        let summary = drain_dispatched_goals(&pool, &coordinator.id, cap, poll_interval, |_, _| {})
-            .await
-            .unwrap();
+        let summary = drain_dispatched_goals(
+            &pool,
+            &coordinator.id,
+            cap,
+            poll_interval,
+            DrainCapPolicy::ParkOnExpiry,
+            |_, _| {},
+        )
+        .await
+        .unwrap();
         let elapsed = start.elapsed();
 
         assert!(
@@ -40732,7 +41530,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 0,
-                timed_out: 1
+                timed_out: 1,
+                still_running: 0,
             },
             "the stalled goal must be counted (and parked) exactly like a cap-expiry timeout"
         );
@@ -41205,6 +42004,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(10),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             None,
             DrainRedispatch {
@@ -41302,6 +42102,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             cap,
             std::time::Duration::from_millis(10),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             None,
             DrainRedispatch {
@@ -41412,6 +42213,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             cap,
             std::time::Duration::from_millis(10),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             Some(hook),
             DrainRedispatch {
@@ -41428,7 +42230,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 1,
-                timed_out: 0
+                timed_out: 0,
+                still_running: 0,
             },
             "the goal completed while its handler was protected — it must be counted as finished, \
              never parked"
@@ -41510,6 +42313,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             cap,
             std::time::Duration::from_millis(30),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             Some(hook),
             DrainRedispatch {
@@ -41526,7 +42330,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 0,
-                timed_out: 1
+                timed_out: 1,
+                still_running: 0,
             },
             "counted exactly as the pre-fix drain already counted a cap-expired wait"
         );
@@ -41607,6 +42412,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             std::time::Duration::from_millis(500),
             std::time::Duration::from_millis(10),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             Some(hook),
             DrainRedispatch {
@@ -41692,6 +42498,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             cap,
             std::time::Duration::from_millis(10),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             None,
             DrainRedispatch {
@@ -41721,7 +42528,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 0,
-                timed_out: 1
+                timed_out: 1,
+                still_running: 0,
             },
             "a goal that never restarted is still counted, exactly as Y2-2 counted it"
         );
@@ -41780,6 +42588,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(10),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             None,
             DrainRedispatch {
@@ -41804,7 +42613,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 0,
-                timed_out: 1
+                timed_out: 1,
+                still_running: 0,
             },
             "standing the sweep down must not drop the goal — it is parked and counted, exactly \
              as the pre-Y6 drain counted it"
@@ -41892,6 +42702,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(10),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             None,
             DrainRedispatch {
@@ -42075,6 +42886,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(10),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             None,
             DrainRedispatch {
@@ -42179,6 +42991,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(10),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             None,
             DrainRedispatch {
@@ -42272,6 +43085,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 &coordinator.id,
                 std::time::Duration::from_secs(5),
                 std::time::Duration::from_millis(10),
+                DrainCapPolicy::ParkOnExpiry,
                 |_, _| {},
                 None,
                 DrainRedispatch {
@@ -42516,6 +43330,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             cap,
             std::time::Duration::from_millis(10),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             Some(hook),
             // U2's pin is about DISCOVERY, not re-dispatch: both goals stay
@@ -42537,7 +43352,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 0,
-                timed_out: 2
+                timed_out: 2,
+                still_running: 0,
             },
             "the mid-drain goal must be tracked and parked too, not just the one already \
              dispatched when the drain started"
@@ -42602,6 +43418,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             std::time::Duration::from_millis(75),
             std::time::Duration::from_millis(10),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             None,
             DrainRedispatch {
@@ -42618,7 +43435,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 0,
-                timed_out: 1
+                timed_out: 1,
+                still_running: 0,
             }
         );
         let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
@@ -42711,6 +43529,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &coordinator.id,
             std::time::Duration::from_millis(250),
             std::time::Duration::from_millis(10),
+            DrainCapPolicy::ParkOnExpiry,
             |_, _| {},
             Some(hook),
             DrainRedispatch {
@@ -42728,7 +43547,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 1,
-                timed_out: 1
+                timed_out: 1,
+                still_running: 0,
             }
         );
         let dependent = cards::get_card(&pool, &dependent.id)
@@ -42809,7 +43629,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 1,
-                timed_out: 1
+                timed_out: 1,
+                still_running: 0,
             }
         );
 
@@ -42873,7 +43694,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             summary,
             DrainSummary {
                 finished: 0,
-                timed_out: 0
+                timed_out: 0,
+                still_running: 0,
             },
             "an in-flight goal must be neither finished nor force-parked by this sweep"
         );
@@ -55395,8 +56217,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             r20b_setup_goal_with_committed_work(&pool, "r28ab-checkpoint-idempotent", None).await;
         std::fs::write(dir.path().join("leftover.txt"), "dirty\n").unwrap();
 
-        checkpoint_uncommitted_worker_changes(&pool, &card.id, "test_reason").await;
-        checkpoint_uncommitted_worker_changes(&pool, &card.id, "test_reason").await;
+        checkpoint_uncommitted_worker_changes(&pool, &card.id, None, "test_reason").await;
+        checkpoint_uncommitted_worker_changes(&pool, &card.id, None, "test_reason").await;
 
         let rows: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM decision_audit WHERE goal_id = ? AND outcome = ?",
@@ -55409,6 +56231,154 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         assert_eq!(
             rows, 1,
             "a second call on an already-clean tree must be a no-op, not a second commit/audit row"
+        );
+    }
+
+    /// QA 2026-09-25 fixture: the live shape of goal `01a0d5ea`. Two goal
+    /// worktrees side by side under `.permagent-goal-worktrees/` — the
+    /// PREVIOUS attempt's (clean, still named by `dispatch_evidence`, which
+    /// only a finished attempt writes) and the CURRENT attempt's (named by
+    /// `worker_session_id`, with no session row, like an external worker) —
+    /// and an `in_progress` card whose `baseline_commit` is their shared
+    /// seed. Returns `(card, tempdir, prior_worktree, current_worktree)`.
+    async fn qa0925_stale_evidence_goal(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+    ) -> (
+        cards::Card,
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktrees = tmp.path().join(goal_engine::GOAL_WORKTREES_DIR);
+        let current_id = format!("qa0925-current-{}", uuid::Uuid::new_v4());
+        let prior = worktrees.join("qa0925-prior");
+        let current = worktrees.join(&current_id);
+        let mut baseline = String::new();
+        for dir in [&prior, &current] {
+            std::fs::create_dir_all(dir).unwrap();
+            r20b_git(dir, &["init", "-q", "-b", "main"]);
+            r20b_git(dir, &["config", "user.email", "test@example.com"]);
+            r20b_git(dir, &["config", "user.name", "Test"]);
+            r20b_git(dir, &["config", "commit.gpgsign", "false"]);
+            std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+            r20b_git(dir, &["add", "-A"]);
+            r20b_git(dir, &["commit", "-q", "-m", "seed"]);
+            baseline = r20b_git(dir, &["rev-parse", "HEAD"]);
+        }
+        let card = setup_goal_in_state(pool, "in_progress", 2).await;
+        cards::set_goal_dispatch_evidence(
+            pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": prior.to_string_lossy(),
+                "baseline_commit": baseline,
+                "commits": [],
+                "files_changed": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        persist_card_meta(pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(current_id),
+            );
+            m.insert("baseline_commit".to_string(), serde_json::json!(baseline));
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(pool, &card.id).await.unwrap().unwrap();
+        (card, tmp, prior, current)
+    }
+
+    /// QA 2026-09-25: the checkpoint must land in the CURRENT attempt's
+    /// worktree, on its branch, as a WIP commit — not inspect the previous
+    /// attempt's clean worktree and report "nothing to salvage" while the
+    /// edits sit uncommitted (worker `20260925_9`'s 14 edits).
+    #[tokio::test]
+    async fn checkpoint_commits_the_current_attempts_uncommitted_edit_despite_stale_evidence() {
+        let pool = test_pool().await;
+        let (card, _tmp, prior, current) = qa0925_stale_evidence_goal(&pool).await;
+        std::fs::write(current.join("a.txt"), "one\nhalf-done edit\n").unwrap();
+        std::fs::write(current.join("new.tsx"), "export const x = 1;\n").unwrap();
+
+        let result = checkpoint_uncommitted_worker_changes(
+            &pool,
+            &card.id,
+            None,
+            TIMEOUT_HANDLER_CHECKPOINT_REASON,
+        )
+        .await;
+        assert_eq!(result, WorkerCheckpoint::Committed);
+
+        assert_eq!(
+            r20b_git(&current, &["status", "--porcelain"]),
+            "",
+            "the current attempt's worktree is clean: its edits are committed"
+        );
+        let subject = r20b_git(&current, &["log", "-1", "--format=%s"]);
+        assert!(
+            subject.starts_with(CHECKPOINT_COMMIT_PREFIX),
+            "a WIP checkpoint commit, not the worker's own: {subject}"
+        );
+        assert_eq!(
+            r20b_git(&current, &["log", "--oneline"]).lines().count(),
+            2,
+            "seed + the WIP commit, on the attempt's own branch"
+        );
+        assert_eq!(
+            r20b_git(&prior, &["log", "--oneline"]).lines().count(),
+            1,
+            "the previous attempt's worktree is never touched"
+        );
+        // Salvage now sees the work on the branch.
+        let (baseline, worktree) = resolve_goal_baseline_and_worktree(&pool, &card.metadata_json)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::path::PathBuf::from(&worktree), current);
+        assert_eq!(
+            commits_ahead_of_baseline(std::path::Path::new(&worktree), &baseline)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    /// QA 2026-09-25: credential-shaped uncommitted content is never
+    /// committed on the worker's behalf — the worktree keeps it (the only
+    /// copy), and the park reason says so instead of "nothing to salvage".
+    #[tokio::test]
+    async fn timeout_with_a_secret_in_uncommitted_work_commits_nothing_and_keeps_the_worktree() {
+        let pool = test_pool().await;
+        let (card, _tmp, _prior, current) = qa0925_stale_evidence_goal(&pool).await;
+        std::fs::write(current.join(".env"), "API_KEY=Sup3rS3cretValue123\n").unwrap();
+
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 240, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            r20b_git(&current, &["log", "--oneline"]).lines().count(),
+            1,
+            "nothing may be committed when the credential guard flags the content"
+        );
+        assert!(current.join(".env").exists(), "the worktree is kept");
+        assert!(
+            !r20b_git(&current, &["status", "--porcelain"]).is_empty(),
+            "the flagged work is still there, uncommitted"
+        );
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let last_error = updated
+            .metadata_json
+            .get("last_error")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            last_error.contains("credential guard flagged")
+                && last_error.contains(&current.to_string_lossy().to_string()),
+            "the park reason must name the quarantine and where the work is: {last_error}"
         );
     }
 
