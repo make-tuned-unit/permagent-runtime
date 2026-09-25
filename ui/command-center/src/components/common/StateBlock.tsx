@@ -1,11 +1,18 @@
 /**
- * StateBlock — the Projects tab's empty-vs-error affordance.
+ * StateBlock — the app's one empty/error/loading affordance for a data
+ * surface.
  *
  * Lived inside `ProjectsView` until `ProjectOverview`'s Tasks panel needed the
- * same shape for the same two endpoints. It says the two states apart out
- * loud: an `empty` tone names the action that would fill the surface, an
- * `error` tone names what failed and hands back a retry. A fetch failure that
- * renders as an empty list is the defect this exists to make unwriteable.
+ * same shape for the same two endpoints. It says the states apart out loud:
+ * an `empty` tone names the action that would fill the surface, an `error`
+ * tone names what failed and hands back a retry, and `loading` is a plain
+ * "not ready yet" line. A fetch failure that renders as an empty list is the
+ * defect this exists to make unwriteable.
+ *
+ * `loading` was added when Automate's per-section loading text (a bare
+ * `<div>`, one of three near-identical hand-rolled copies of this shape)
+ * converged onto this component instead of forking a second one (R6/R7,
+ * UX_STANDARD.md — "one concept, one place").
  */
 
 import { type CSSProperties } from 'react';
@@ -14,7 +21,7 @@ import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
 export function StateBlock({ tone, title, detail, onRetry, compact }: {
-  tone: 'empty' | 'error';
+  tone: 'empty' | 'error' | 'loading';
   title: string;
   detail?: string;
   onRetry?: () => void;
@@ -22,7 +29,7 @@ export function StateBlock({ tone, title, detail, onRetry, compact }: {
 }) {
   const { colors } = useTheme();
   const isError = tone === 'error';
-  const accent = isError ? colors.danger : colors.textMuted;
+  const accent = isError ? colors.danger : tone === 'loading' ? colors.textDim : colors.textMuted;
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', alignItems: 'center', gap: space.sm,

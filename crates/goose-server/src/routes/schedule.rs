@@ -77,6 +77,15 @@ pub struct EnrichedJob {
     version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     embedded_version: Option<String>,
+    /// When the job will next fire (`None` while paused/running or unparsable).
+    /// The Automate view uses it to say "next run Mon 10:00 AM" under a
+    /// failure that predates a resume.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_run: Option<chrono::DateTime<chrono::Utc>>,
+    /// Last modification of the recipe YAML. A recipe edited after the last
+    /// failed run means that failure is history, not the current state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recipe_modified_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -96,6 +105,52 @@ pub struct InspectJobResponse {
     session_id: Option<String>,
     process_start_time: Option<String>,
     running_duration_seconds: Option<i64>,
+    /// What the job will do: read from its recipe YAML. `None` when the
+    /// recipe cannot be read or parsed (the detail view says so).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recipe: Option<InspectRecipe>,
+    /// The next few fire times (RFC3339), soonest first. Empty while paused or
+    /// running, or for a spent one-time job.
+    next_runs: Vec<String>,
+}
+
+/// The parts of a schedule's recipe the Automate detail shows.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectRecipe {
+    title: String,
+    description: String,
+    /// Extension names the recipe enables (empty = the session defaults).
+    extensions: Vec<String>,
+    /// The first part of the recipe's instructions (or prompt), for a glance.
+    instructions_preview: Option<String>,
+}
+
+/// How many upcoming fire times `/schedule/{id}/inspect` lists.
+const INSPECT_NEXT_RUNS: usize = 3;
+/// Characters of instructions the inspect preview carries.
+const INSPECT_INSTRUCTIONS_CHARS: usize = 600;
+
+fn inspect_recipe(source: &str) -> Option<InspectRecipe> {
+    let content = std::fs::read_to_string(source).ok()?;
+    let recipe: Recipe = serde_yaml::from_str(&content).ok()?;
+    let instructions_preview = recipe
+        .instructions
+        .clone()
+        .or_else(|| recipe.prompt.clone())
+        .map(|text| text.chars().take(INSPECT_INSTRUCTIONS_CHARS).collect::<String>())
+        .filter(|text| !text.trim().is_empty());
+    Some(InspectRecipe {
+        title: recipe.title,
+        description: recipe.description,
+        extensions: recipe
+            .extensions
+            .unwrap_or_default()
+            .iter()
+            .map(|ext| ext.name())
+            .collect(),
+        instructions_preview,
+    })
 }
 
 // Response for the run_now endpoint
@@ -237,6 +292,7 @@ async fn list_schedules(
     let scheduler = state.scheduler();
 
     let jobs = scheduler.list_scheduled_jobs().await;
+    let now = chrono::Utc::now();
     let enriched: Vec<EnrichedJob> = jobs
         .into_iter()
         .map(|job| {
@@ -257,12 +313,19 @@ async fn list_schedules(
                 .starter_id
                 .as_deref()
                 .and_then(crate::automation::starters::embedded_starter_version);
+            let next_run = permagent::scheduler::next_fire_at(&job, now);
+            let recipe_modified_at = std::fs::metadata(&job.source)
+                .and_then(|meta| meta.modified())
+                .ok()
+                .map(chrono::DateTime::<chrono::Utc>::from);
             EnrichedJob {
                 job,
                 display_name,
                 description,
                 version,
                 embedded_version,
+                next_run,
+                recipe_modified_at,
             }
         })
         .collect();
@@ -764,20 +827,40 @@ pub async fn inspect_running_job(
             _ => ErrorResponse::internal(format!("Error inspecting job: {}", e)),
         })?;
 
-    if let Some((session_id, start_time)) = info {
-        let duration = chrono::Utc::now().signed_duration_since(start_time);
-        Ok(Json(InspectJobResponse {
-            session_id: Some(session_id),
-            process_start_time: Some(start_time.to_rfc3339()),
-            running_duration_seconds: Some(duration.num_seconds()),
-        }))
-    } else {
-        Ok(Json(InspectJobResponse {
-            session_id: None,
-            process_start_time: None,
-            running_duration_seconds: None,
-        }))
+    let now = chrono::Utc::now();
+    let job = scheduler
+        .list_scheduled_jobs()
+        .await
+        .into_iter()
+        .find(|job| job.id == id);
+    let recipe = job.as_ref().and_then(|job| inspect_recipe(&job.source));
+    let mut next_runs = Vec::new();
+    if let Some(job) = &job {
+        let mut cursor = now;
+        while next_runs.len() < INSPECT_NEXT_RUNS {
+            let Some(next) = permagent::scheduler::next_fire_at(job, cursor) else {
+                break;
+            };
+            next_runs.push(next.to_rfc3339());
+            cursor = next;
+        }
     }
+
+    let (session_id, process_start_time, running_duration_seconds) = match info {
+        Some((session_id, start_time)) => (
+            Some(session_id),
+            Some(start_time.to_rfc3339()),
+            Some(now.signed_duration_since(start_time).num_seconds()),
+        ),
+        None => (None, None, None),
+    };
+    Ok(Json(InspectJobResponse {
+        session_id,
+        process_start_time,
+        running_duration_seconds,
+        recipe,
+        next_runs,
+    }))
 }
 
 #[utoipa::path(
