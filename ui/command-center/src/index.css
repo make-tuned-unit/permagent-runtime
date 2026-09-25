@@ -768,6 +768,41 @@ a[href]:active,
   animation: pa-toast-out 140ms var(--pa-ease-smooth) both;
 }
 
+/* ── Same-document View Transitions (R8 item 5) ────────────────────────────
+   Default transition for `runViewTransition` (lib/viewTransition.ts): a quick
+   crossfade plus an 8px slide in the navigation direction, well under the
+   500ms ceiling. `--pa-vt-slide` is the signed offset; `data-vt-direction`
+   (set on `<html>` for the duration of one transition) flips its sign so
+   "back" reads as arriving from the left instead of the right. Never gated by
+   the Reduce Motion CSS guards below — `runViewTransition` itself skips
+   `startViewTransition` entirely under reduced motion, so these rules only
+   ever run when motion is allowed. */
+:root {
+  --pa-vt-slide: 8px;
+}
+:root[data-vt-direction='backward'] {
+  --pa-vt-slide: -8px;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 220ms;
+  animation-timing-function: var(--pa-ease-smooth);
+}
+::view-transition-old(root) {
+  animation-name: pa-vt-out;
+}
+::view-transition-new(root) {
+  animation-name: pa-vt-in;
+}
+@keyframes pa-vt-in {
+  from { opacity: 0; transform: translateX(var(--pa-vt-slide)); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes pa-vt-out {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(calc(-1 * var(--pa-vt-slide))); }
+}
+
 /* Sidebar hover tooltip — a short rise-and-fade so the label reads as attached
    to the row being pointed at rather than appearing from nowhere. Paired with
    a portal (see SidebarTooltip.tsx): the rail clips its own overflow. */

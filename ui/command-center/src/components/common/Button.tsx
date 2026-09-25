@@ -252,7 +252,10 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
         const suppressed = onError?.(outcome.error) === false;
         if (!suppressed) {
           const message = outcome.error instanceof Error ? outcome.error.message : undefined;
-          toast('Action failed', message, undefined, { tone: 'danger' });
+          // `force: true` — the direct consequence of the user's own click a
+          // moment ago is not the ambient chatter the "System messages"
+          // toggle exists to silence (coordinator ruling 2026-09-25).
+          toast('Action failed', message, undefined, { tone: 'danger', force: true });
         }
         return;
       }

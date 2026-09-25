@@ -216,6 +216,27 @@ it('R8: a rejected promise pushes a toast with the error message by default', as
   expect(items[0]?.tone).toBe('danger');
 });
 
+it('R8/coordinator 2026-09-25: the failure toast bypasses the "System messages" preference — it is the direct consequence of the user\'s own click, not ambient chatter', async () => {
+  vi.useFakeTimers();
+  const { setNotificationPref } = await import('../../lib/notifications');
+  setNotificationPref('system', false);
+  let items: AppNotification[] = [];
+  act(() => {
+    root.render(
+      <>
+        <NotificationsProbe onItems={(i) => { items = i; }} />
+        <Button colors={colors} onClick={() => Promise.reject(new Error('daemon unreachable'))}>Add</Button>
+      </>,
+    );
+  });
+  await act(async () => { btn().click(); await Promise.resolve(); });
+  await advance(MIN_PENDING_MS + 10);
+
+  expect(items[0]?.title).toBe('Action failed');
+  expect(items[0]?.body).toBe('daemon unreachable');
+  setNotificationPref('system', true);
+});
+
 it('R8: onErrorFeedback={false} suppresses the shake and the toast', async () => {
   vi.useFakeTimers();
   let items: AppNotification[] = [];

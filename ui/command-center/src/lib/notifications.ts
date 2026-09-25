@@ -433,13 +433,24 @@ async function connect(): Promise<void> {
  *
  *  `opts.tone`/`opts.action` (R8) are for a toast reporting the direct
  *  consequence of something the user just did (an async action's failure, an
- *  undo-able delete) — see `Button.tsx`'s failure path, the first caller. */
+ *  undo-able delete) — see `Button.tsx`'s failure path, the first caller.
+ *
+ *  `opts.force` (coordinator ruling 2026-09-25, NN/g H9 "help users recognize,
+ *  diagnose, and recover from errors" + HAX G16 "convey the consequences of
+ *  user actions") BYPASSES the "System messages" preference. That toggle is
+ *  for ambient, agent-initiated chatter (a Watcher nudge, a background job
+ *  finishing); a failure caused by the user's OWN click a moment ago is not
+ *  ambient — it is the direct, undeniable consequence of an action they just
+ *  took, and silencing it would leave them with a control that visibly failed
+ *  (the shake/tint) and no explanation why. Used by `Button.tsx`'s failure
+ *  path; not the default, so a caller pushing an ambient system toast still
+ *  respects the preference exactly as before. */
 export function toast(
   title: string,
   body = '',
   onActivate?: () => void,
-  opts?: { tone?: AppNotification['tone']; action?: AppNotification['action'] },
+  opts?: { tone?: AppNotification['tone']; action?: AppNotification['action']; force?: boolean },
 ): void {
-  if (!getNotificationPrefs().system) return;
+  if (!opts?.force && !getNotificationPrefs().system) return;
   push({ kind: 'system', title, body, onActivate, tone: opts?.tone, action: opts?.action });
 }
