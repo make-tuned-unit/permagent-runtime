@@ -16,8 +16,9 @@
  *    and the answer response uses effectError.
  *
  * Plain-language rules (the owner's amendments):
- *  - `headline`/`detail` come verbatim from the daemon (A1) — the UI NEVER
- *    synthesizes headlines from technical fields.
+ *  - `headline` comes verbatim from the daemon (A1). `detail` is technical and
+ *    renders only under "Technical details" (U1); the body's cause sentence is
+ *    `summary`, or a local classifier over kind + payload when that is absent.
  *  - ALL decision text is untrusted (S2): rendered as React text nodes only —
  *    no markdown pipeline, no auto-linking, no dangerouslySetInnerHTML.
  */
@@ -39,7 +40,14 @@ export type DecisionKind =
   | 'tool_approval'
   | 'session_gate'
   | 'council_action'
-  | 'malformed';
+  | 'malformed'
+  // Kinds the daemon files that the UI did not know (U4, decisions.rs:1650-1670).
+  | 'model_upgrade'
+  | 'config_change_proposal'
+  | 'person_merge_proposal'
+  | 'person_delete_proposal'
+  | 'capability_gap'
+  | 'regression_proposal';
 
 /** One selectable option (decisions.rs:71-74 — {id, label} only). */
 export interface ChoiceOption {
@@ -82,6 +90,32 @@ export interface Decision {
    *  decision is still open; this is the one-tap offer, never a resolution.
    *  Absent when nothing is staged or the staging expired. */
   staged_answer?: StagedAnswer | null;
+  /** Plain-language cause, at most two sentences (daemon lane D2). Optional:
+   *  daemons older than the inbox redesign never send it, and the UI then
+   *  derives the cause locally from kind + payload (`plainCause`). */
+  summary?: string | null;
+  /** One consequence sentence per answer id (daemon lane D4), e.g.
+   *  `{ approve: "Wakes the goal…" }`. Optional; the UI falls back to its own
+   *  per-kind table (`decisionPlan`). */
+  effects?: Record<string, string> | null;
+  /** The machine-readable layer shown only under "Technical details"
+   *  (daemon lane D2). Optional; the fallback is `detail` plus the row's ids. */
+  technical?: DecisionTechnical | null;
+}
+
+/** Raw diagnostic layer of a decision — never rendered in the body (R3). */
+export interface DecisionTechnical {
+  detail?: string | null;
+  /** Either a label→id map or a list of labelled ids. */
+  ids?: Record<string, string> | Array<{ label: string; value: string }> | null;
+  last_error?: string | null;
+}
+
+/** A windowed, agent-only handled count (daemon lane D3). */
+export interface HandledWindow {
+  count: number;
+  /** RFC3339 start of the window, e.g. local 9 PM or the last inbox view. */
+  since: string;
 }
 
 /**
@@ -113,6 +147,8 @@ export interface InboxSummary {
   /** Goals parked `needs_human_attention` (wave-1 item 1). */
   goals_needing_attention: number;
   oldest_pending_at: string | null;
+  /** Absent on daemons older than the inbox redesign. */
+  handled?: HandledWindow | null;
 }
 
 /** A goal parked for the user (`needs_human_attention`) — its own Inbox
@@ -136,6 +172,9 @@ export interface DecisionsResponse {
   goals_needing_attention: number;
   attention_goals: AttentionGoal[];
   oldest_pending_at: string | null;
+  /** Windowed agent-only handled count; absent on older daemons (then the UI
+   *  says "N handled" from `handled_count` and never names a window). */
+  handled?: HandledWindow | null;
 }
 
 // 'edit' = approve-with-edits: an acceptance that carries the user's revised

@@ -92,6 +92,9 @@ export const realDecisionsClient: DecisionsClient = {
       goals_needing_attention: summary.goals_needing_attention ?? 0,
       attention_goals: attentionGoals ?? [],
       oldest_pending_at: summary.oldest_pending_at,
+      // Windowed agent-only count (inbox redesign D3). Passed through only
+      // when the daemon sends it, so older daemons flatten exactly as before.
+      ...(summary.handled ? { handled: summary.handled } : {}),
     };
   },
 

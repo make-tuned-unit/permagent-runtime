@@ -113,6 +113,55 @@ const PENDING: Decision[] = [
     payload: { reason: 'stuck' },
     created_at: minutesAgo(48),
   }),
+  // The 2026-09-25 screenshot case: a goal parked by its wall-clock cap with
+  // nothing salvaged. The headline is the daemon's own (quoted, cut at 80);
+  // the body must show neither it nor this detail.
+  openDecision({
+    id: 'dec-004a-wallclock',
+    kind: 'unblock',
+    goal_id: 'goal-event-analytics',
+    project_id: 'proj-events',
+    goal_title:
+      'Instrument event detail pages with cta_visible, scroll_depth analytics and event_id on event_cta_click',
+    rank: 0.72,
+    headline: '"Instrument event detail pages with cta_visible, scroll_depth analytics…" is out of budget and needs your direction'
+      .slice(0, 79) + '…',
+    detail:
+      'Goal 01a0d5ea-8084-4c3e-9d0e-5b2f4c1f7a90 parked: wallclock cap exhausted (240s elapsed of 240s). ' +
+      'Last error: worker exceeded its time bound; salvage: no commits past the dispatch baseline — nothing to salvage',
+    payload: { reason: 'wallclock_cap', spent: 240, cap: 240 },
+    created_at: minutesAgo(13),
+  }),
+  openDecision({
+    id: 'dec-004c-tool',
+    kind: 'tool_approval',
+    rank: 0.66,
+    headline: 'Run a shell command in the permagent-runtime repo',
+    detail: 'developer__shell requested by chat session 20260925_14 (request req-8812)',
+    payload: {
+      session_id: '20260925_14',
+      request_id: 'req-8812',
+      tool_name: 'developer__shell',
+      arguments: { command: 'git log --oneline -5', cwd: '/Users/jesse/dev/permagent-runtime' },
+    },
+    created_at: minutesAgo(9),
+  }),
+  openDecision({
+    id: 'dec-004d-delete',
+    kind: 'risk_gate',
+    goal_id: 'goal-old-spike',
+    project_id: 'proj-permagent',
+    goal_title: 'Spike: evaluate the old voice pipeline',
+    rank: 0.64,
+    headline: 'Delete the goal "Spike: evaluate the old voice pipeline"',
+    detail: 'user_data_deletion of goal goal-old-spike',
+    payload: {
+      action_class: 'user_data_deletion',
+      description: 'Delete the goal and its notes',
+      requested_by: 'your agent',
+    },
+    created_at: minutesAgo(6),
+  }),
   // Draft-carrying proposal — exercises "approve with edits" (payload.draft):
   // revise the text and accept (answer='edit'); the daemon learns the
   // draft→revision delta (edit-as-training). Fixture keeps `detail` == `draft`
@@ -174,6 +223,18 @@ export const MOCK_PENDING_DECISIONS: readonly Decision[] = PENDING;
 // ── Evidence digests (served via the goal card in the real daemon) ─────────
 
 const DISPATCH_EVIDENCE: Record<string, DispatchEvidenceData> = {
+  'goal-event-analytics': {
+    worktree_path: '/Users/jesse/dev/.permagent-goal-worktrees/cli-01a0d5ea',
+    baseline_commit: '9c21e0b',
+    head_commit: null,
+    commits: [],
+    diffstat: '',
+    files_changed: 0,
+    insertions: 0,
+    deletions: 0,
+    push_target: null,
+    worker_summary: '',
+  },
   'goal-queue-saving': {
     worktree_path: '/Users/jesse/dev/.permagent-goal-worktrees/cli-f69980d2',
     baseline_commit: 'a1190cd',
@@ -320,6 +381,15 @@ export const mockDecisionsClient: DecisionsClient = {
       decisions: (opts?.all ? pending : pending.slice(0, LIST_CAP)).map(d => ({ ...d })),
       total_pending: pending.length,
       handled_count: resolved.length,
+      // The redesign's windowed agent-only count (daemon lane D3): since the
+      // most recent 9 PM, agent-resolved rows only.
+      handled: (() => {
+        const since = new Date();
+        if (since.getHours() < 21) since.setDate(since.getDate() - 1);
+        since.setHours(21, 0, 0, 0);
+        const count = resolved.filter(r => r.acted_by === 'henry-policy' && (r.resolved_at ?? '') >= since.toISOString()).length;
+        return { count, since: since.toISOString() };
+      })(),
       goals_in_flight: 6,
       goals_needing_attention: 0,
       attention_goals: [],

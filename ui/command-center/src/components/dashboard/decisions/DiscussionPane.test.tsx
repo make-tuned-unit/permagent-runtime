@@ -68,11 +68,11 @@ describe('DiscussionPane', () => {
     expect(navigated).not.toHaveBeenCalled();
   });
 
-  it('explains isolation, labels the input, and renders messages as plain text (rulings 6, 7)', () => {
-    expect(container.textContent).toContain('Talk it through with Henry');
-    expect(container.textContent).toContain('stays separate from your main chat');
-    expect(container.textContent).toContain('nothing typed here answers the decision');
+  it('is an inline composer: placeholder only when idle, a labelled input, messages as plain text (U7; rulings 6, 7)', () => {
     const input = container.querySelector('textarea')!;
+    expect(input.placeholder).toBe('Ask Henry about this…');
+    expect(container.querySelector('[role="log"]')).toBeNull();
+    expect(container.querySelector('h3')).toBeNull();
     expect(container.querySelector('label')!.htmlFor).toBe(input.id);
     discussion.messages = [
       { id: 'user', role: 'user', text: '<b>Question</b>' },

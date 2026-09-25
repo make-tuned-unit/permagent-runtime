@@ -10,9 +10,6 @@ vi.mock('../../../lib/useLiveGoals', () => ({
 vi.mock('../../settings/useSettings', () => ({
   usePersona: () => ({ data: null }),
 }));
-vi.mock('./DecisionItem', () => ({
-  DecisionItem: () => <div data-testid="decision-item" />,
-}));
 vi.mock('./client', () => ({
   decisionsClient: { cancelGoal: vi.fn() },
 }));
@@ -74,51 +71,66 @@ const emptyInbox: DecisionsResponse = {
   oldest_pending_at: null,
 };
 
-describe('DecisionInbox explanatory copy', () => {
-  it('uses readable muted copy for a cold connection failure and keeps retry actionable', async () => {
+describe('DecisionInbox states (R2)', () => {
+  it('a cold connection failure is an error StateBlock with retry — never the all-clear', async () => {
     const refresh = vi.fn().mockResolvedValue(undefined);
-    const inbox = makeInbox({ error: true, refresh });
-    render(inbox);
-
-    const detail = Array.from(document.body.querySelectorAll('div')).find(
-      el => el.textContent === 'This is a connection problem, not an empty inbox.',
-    ) as HTMLDivElement | undefined;
-    expect(detail).toBeDefined();
-    expect(detail!.style.color).toBe(asRendered(getThemedColors().textMuted));
-    expect(detail!.style.color).not.toBe(asRendered(getThemedColors().textDim));
-
-    const retry = Array.from(document.body.querySelectorAll('button')).find(
-      button => button.textContent === 'Retry',
-    ) as HTMLButtonElement | undefined;
-    expect(retry).toBeDefined();
+    render(makeInbox({ error: true, refresh }));
+    expect(document.body.textContent).toContain("Couldn't reach the decision inbox.");
+    expect(document.body.textContent).toContain('This is a connection problem, not an empty inbox.');
+    expect(document.body.textContent).not.toContain('Nothing needs you');
+    const retry = Array.from(document.body.querySelectorAll('button')).find(b => b.textContent === 'Try again');
     await act(async () => retry!.click());
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
-  it('uses readable muted copy for the empty-state activity explanation', () => {
-    render(makeInbox({ data: emptyInbox }));
+  it('a cold load is a skeleton in the final shape, not text in the void', () => {
+    render(makeInbox({ loading: true }));
+    expect(document.body.querySelector('[data-testid="decision-loading"]')).not.toBeNull();
+    expect(document.body.textContent).not.toContain('Checking with');
+  });
 
-    const detail = Array.from(document.body.querySelectorAll('div')).find(
-      el => el.textContent === '0 goals in flight.',
-    ) as HTMLDivElement | undefined;
+  it('empty is a calm StateBlock with the handled summary and a way to review it', async () => {
+    const loadHistory = vi.fn().mockResolvedValue([]);
+    render(makeInbox({ data: { ...emptyInbox, handled_count: 4 }, loadHistory }));
+    expect(document.body.textContent).toContain('Nothing needs you');
+    expect(document.body.textContent).toContain('Henry has handled 4 items so far.');
+    expect(document.body.textContent).not.toMatch(/overnight/);
+    const review = Array.from(document.body.querySelectorAll('button')).find(b => b.textContent === 'Review what Henry did')!;
+    await act(async () => { review.click(); });
+    expect(loadHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('with nothing handled, empty says how much is in flight', () => {
+    render(makeInbox({ data: emptyInbox }));
+    const detail = Array.from(document.body.querySelectorAll('div')).find(el => el.textContent === '0 goals in flight.');
     expect(detail).toBeDefined();
     expect(detail!.style.color).toBe(asRendered(getThemedColors().textMuted));
   });
+});
 
-  it('keeps the history action on the readable semantic without changing navigation', async () => {
+describe('the header handled link (U18)', () => {
+  it('names the daemon window and opens History', async () => {
     const loadHistory = vi.fn().mockResolvedValue([]);
-    const inbox = makeInbox({
-      data: { ...emptyInbox, total_pending: 1 },
-      loadHistory,
-    });
-    render(inbox);
-
-    const history = Array.from(document.body.querySelectorAll('button')).find(
-      button => button.textContent === 'History →',
-    ) as HTMLButtonElement | undefined;
-    expect(history).toBeDefined();
-    expect(history!.style.getPropertyValue('--pa-btn-fg')).toBe(getThemedColors().textMuted);
-    await act(async () => { history!.click(); });
+    const since = new Date(); since.setHours(0, 0, 0, 0);
+    render(makeInbox({ data: { ...emptyInbox, handled_count: 50, handled: { count: 3, since: since.toISOString() } }, loadHistory }));
+    const link = document.body.querySelector('[data-testid="handled-link"]') as HTMLButtonElement;
+    expect(link.textContent).toMatch(/^3 handled since 12 AM ›$/);
+    await act(async () => { link.click(); });
     expect(loadHistory).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain('What Henry did');
+  });
+
+  it('falls back to "N handled" with no window', () => {
+    render(makeInbox({ data: { ...emptyInbox, handled_count: 7 } }));
+    expect(document.body.querySelector('[data-testid="handled-link"]')!.textContent).toBe('7 handled ›');
+  });
+
+  it('a failed history read is an error, not an empty record', async () => {
+    const loadHistory = vi.fn().mockRejectedValue(new Error('down'));
+    render(makeInbox({ data: emptyInbox, loadHistory }));
+    const link = document.body.querySelector('[data-testid="handled-link"]') as HTMLButtonElement;
+    expect(link.textContent).toBe('History ›');
+    await act(async () => { link.click(); });
+    expect(document.body.textContent).toContain("Couldn't load the decision history.");
   });
 });

@@ -20,11 +20,6 @@ vi.mock('../../../hooks/useBrowserNavigate', () => ({ useBrowserNavigate: () => 
 vi.mock('../../../lib/useLiveGoals', () => ({ useLiveGoals: () => ({ activeCount: 0, loaded: true }) }));
 vi.mock('../../settings/useSettings', () => ({ usePersona: () => ({ data: null }) }));
 vi.mock('./DiscussionPane', () => ({ DiscussionPane: () => <aside>Isolated discussion</aside> }));
-vi.mock('./DecisionItem', () => ({
-  DecisionActions: () => <button>Approve</button>,
-  Btn: ({ children }: { children: React.ReactNode }) => <button>{children}</button>,
-  badgeFor: () => ({ label: 'approval' }),
-}));
 vi.mock('./EvidenceDigest', () => ({ EvidenceDigest: () => null }));
 vi.mock('./client', () => ({ decisionsClient: {} }));
 
@@ -40,7 +35,7 @@ beforeEach(() => {
   state.inbox = {
     data: { decisions: ['a', 'b'].map(id => ({ id, tier: 2, kind: 'future', headline: `Decision ${id}`, detail: 'Details', created_at: '2026-01-01', payload: null })),
       total_pending: 2, handled_count: 0, goals_in_flight: 0, goals_needing_attention: 0, attention_goals: [], oldest_pending_at: null },
-    loading: false, error: false, showAll: vi.fn().mockResolvedValue(undefined), refresh: vi.fn(), loadHistory: vi.fn(),
+    loading: false, error: false, showAll: vi.fn().mockResolvedValue(undefined), refresh: vi.fn(), loadHistory: vi.fn(), answer: vi.fn(),
   };
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
 });
@@ -56,5 +51,5 @@ it.each(['Home', 'Council', 'Timeline', 'Settings fallback'])('every entry point
   expect(document.body.querySelectorAll('[data-testid="decision-review"]').length).toBe(1);
   expect(document.body.querySelectorAll('[data-testid="decision-a"]').length).toBe(1);
   expect(document.body.querySelector('[data-testid="decision-b"]')).toBeNull();
-  expect(document.body.textContent).toContain('1 of 2');
+  expect(document.body.querySelector('[data-testid="decision-review"] [role="status"]')!.textContent).toContain('Decision 1 of 2');
 });
