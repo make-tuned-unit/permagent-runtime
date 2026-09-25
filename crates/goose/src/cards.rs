@@ -1436,6 +1436,11 @@ pub struct ActiveGoal {
     /// review chip without a second source of truth for it.
     #[serde(default)]
     pub auto_approve: bool,
+    /// The session that created this goal (its coordinator), so a surface can
+    /// show only its own run's goals. Build's cost bar printed the hold note of
+    /// whichever live goal came first, from any run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_session_id: Option<String>,
 }
 
 /// All goals Henry is actively working — the single source of truth for the
@@ -1476,27 +1481,37 @@ fn active_goal_from_row(r: &sqlx::sqlite::SqliteRow) -> ActiveGoal {
         .and_then(crate::cost_router::RoutingSnapshot::from_metadata)
         .map(|s| s.note)
         .filter(|n| !n.is_empty());
+    let state: String = r
+        .get::<Option<String>, _>("state_binding")
+        .unwrap_or_default();
     // Not `last_plan` itself: that text is written to the worker, not the user.
+    // A hold describes the attempt that was held; once the goal is back in
+    // progress on a new attempt, the note is history (the hold count stays).
     let hold_note = obj
+        .filter(|_| state != "in_progress")
         .map(crate::cost_router::HoldState::from_metadata)
         .and_then(|h| crate::cost_router::hold_user_note(&h));
     let auto_approve = obj
         .and_then(|o| o.get("auto_approve"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    let created_by_session_id = obj
+        .and_then(|o| o.get("created_by_session_id"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     ActiveGoal {
         id: r.get("id"),
         title: r.get("title"),
         project_id: r.get("project_id"),
-        state: r
-            .get::<Option<String>, _>("state_binding")
-            .unwrap_or_default(),
+        state,
         assigned_to: r.get("assigned_to"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
         routing_note,
         hold_note,
         auto_approve,
+        created_by_session_id,
     }
 }
 
@@ -3241,6 +3256,62 @@ mod tests {
         assert!(
             !flag(&unset.id),
             "absent auto_approve must default false, never true"
+        );
+    }
+
+    /// A held goal back in progress on a new attempt must not keep showing
+    /// the old hold note (Build's cost bar printed "held" beside a fresh
+    /// attempt). The note still shows while the goal waits in Ready. The goal's
+    /// creator session is exposed so a surface can scope to its own run.
+    #[tokio::test]
+    async fn active_goal_hold_note_is_hidden_once_the_goal_is_back_in_progress() {
+        let pool = test_pool().await;
+        seed_goal_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        for state in ["ready", "in_progress"] {
+            let col = get_goal_column(&pool, PERSONAL_PROJECT_ID, state)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut meta = serde_json::Map::new();
+            meta.insert("goal_state".to_string(), serde_json::json!(state));
+            meta.insert(
+                "created_by_session_id".to_string(),
+                serde_json::json!("coord-1"),
+            );
+            crate::cost_router::HoldState {
+                count: 1,
+                last_plan: Some("Run verify first".to_string()),
+            }
+            .write_into(&mut meta);
+            create_card(
+                &pool,
+                CreateCard {
+                    project_id: PERSONAL_PROJECT_ID.to_string(),
+                    title: format!("held-{state}"),
+                    description: None,
+                    card_type: Some("goal".to_string()),
+                    column_id: Some(col.id),
+                    created_by: None,
+                    metadata_json: Some(serde_json::Value::Object(meta)),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let active = list_active_goals(&pool).await.unwrap();
+        let by = |state: &str| active.iter().find(|g| g.state == state).unwrap();
+        assert!(
+            by("ready").hold_note.is_some(),
+            "a held goal waiting in Ready says so"
+        );
+        assert_eq!(
+            by("in_progress").hold_note,
+            None,
+            "a new attempt is not held"
+        );
+        assert_eq!(
+            by("in_progress").created_by_session_id.as_deref(),
+            Some("coord-1")
         );
     }
 

@@ -43,7 +43,8 @@ vi.mock('../../lib/api', () => ({
   },
 }));
 
-import { CostStatusline } from './CostStatusline';
+import { runGoalNote, CostStatusline } from './CostStatusline';
+import type { ActiveGoal } from '../../lib/useLiveGoals';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
 import { applyLivenessFrame, _resetLivenessSync } from '../../lib/livenessSync';
@@ -351,5 +352,22 @@ describe('CostStatusline after an app launch (reload hydration, no live frame ye
     expect(text).not.toMatch(/budget unknown/i);
     expect(text).not.toContain('session');
     expect(text).not.toContain('task settled');
+  });
+});
+
+describe('runGoalNote', () => {
+  const goal = (over: Partial<ActiveGoal>): ActiveGoal => ({
+    id: 'g', title: 't', project_id: 'p', state: 'in_progress', assigned_to: null,
+    created_at: '', updated_at: '', ...over,
+  });
+
+  it("shows only its own run's goal note, never another run's", () => {
+    const goals = [
+      goal({ id: 'other', created_by_session_id: 'run-a', hold_note: 'held 1/3: done claimed before verify passed' }),
+      goal({ id: 'mine', created_by_session_id: 'run-b', routing_note: 'routed to the edit tier' }),
+    ];
+    expect(runGoalNote(goals, 'run-b')).toBe('routed to the edit tier');
+    expect(runGoalNote(goals, 'run-c')).toBeUndefined();
+    expect(runGoalNote(goals, null)).toBeUndefined();
   });
 });

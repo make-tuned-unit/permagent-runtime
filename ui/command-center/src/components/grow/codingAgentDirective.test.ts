@@ -1,4 +1,7 @@
+/** @vitest-environment jsdom */
 import { describe, expect, it } from 'vitest';
+import { rememberedAgent } from './ActionCard';
+import { CODING_AGENTS } from './codingAgents';
 import {
   GROW_ACTION_DONE_PREFIX,
   codingAgentDirective,
@@ -72,5 +75,29 @@ describe('codingAgentDirective', () => {
     });
     expect(text).toContain('Decide whether to kill the deals funnel');
     expect(text).toContain('There is no separate artifact');
+  });
+});
+
+describe('codingAgentDirective project slug', () => {
+  const action = { title: 'Fix the funnel', recommendation: 'Do it.' };
+  it('names the Permagent project slug so project tools get it, not the path', () => {
+    const text = codingAgentDirective({ projectName: 'Evntally', projectRoot: '/repo', projectSlug: 'evntally', action });
+    expect(text).toContain('Permagent project: evntally');
+  });
+  it('omits the line when there is no slug', () => {
+    const text = codingAgentDirective({ projectName: 'Evntally', projectRoot: '/repo', action });
+    expect(text).not.toContain('Permagent project:');
+  });
+});
+
+describe('rememberedAgent', () => {
+  it('returns the agent last chosen for a project, and the first agent otherwise', () => {
+    localStorage.removeItem('grow.sendAgent.p1');
+    expect(rememberedAgent('p1')).toBe(CODING_AGENTS[0].id);
+    localStorage.setItem('grow.sendAgent.p1', 'permagent');
+    expect(rememberedAgent('p1')).toBe('permagent');
+    localStorage.setItem('grow.sendAgent.p1', 'not-an-agent');
+    expect(rememberedAgent('p1')).toBe(CODING_AGENTS[0].id);
+    localStorage.removeItem('grow.sendAgent.p1');
   });
 });

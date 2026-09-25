@@ -33,6 +33,8 @@ export interface ActiveGoal {
    *  rows and the goal detail modal can show the identical Auto-approve /
    *  Needs review chip off one field (cards.rs's `list_active_goals`). */
   auto_approve: boolean;
+  /** The session that created the goal (its coordinator). */
+  created_by_session_id?: string | null;
 }
 
 interface ActiveGoalsResponse {

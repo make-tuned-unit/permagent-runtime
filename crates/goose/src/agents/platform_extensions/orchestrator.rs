@@ -8599,6 +8599,14 @@ pub(crate) async fn dispatch_goal_fn(
         "dispatched_at".to_string(),
         serde_json::json!(dispatched_at),
     );
+    // A new attempt starts: the previous attempt's routing note ("held —
+    // still verifying") no longer describes this goal, and Build's cost bar
+    // kept showing it beside the new attempt's figures. A null in the patch
+    // removes the key (goal_transition::apply_patch).
+    claim_patch.insert(
+        crate::cost_router::ROUTING_SNAPSHOT_KEY.to_string(),
+        serde_json::Value::Null,
+    );
     if card.metadata_json.get("first_dispatched_at").is_none() {
         claim_patch.insert(
             "first_dispatched_at".to_string(),
