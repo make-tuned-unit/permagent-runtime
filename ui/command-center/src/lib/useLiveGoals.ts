@@ -29,6 +29,8 @@ export interface ActiveGoal {
   updated_at: string;
   routing_note?: string | null;
   hold_note?: string | null;
+  /** The session that created the goal (its coordinator). */
+  created_by_session_id?: string | null;
 }
 
 interface ActiveGoalsResponse {
