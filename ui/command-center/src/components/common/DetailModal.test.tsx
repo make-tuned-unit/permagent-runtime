@@ -71,6 +71,18 @@ it('moves focus into the panel on open', () => {
   expect(dialog().contains(document.activeElement)).toBe(true);
 });
 
+it('coordinator finding: focuses the close button, not the bare panel div — a script-focused non-interactive element trips :focus-visible even from a pointer-opened modal', () => {
+  render(<button>Inside</button>);
+  const panel = dialog();
+  // The close button is a real `<button>` (a normally-focusable element), so
+  // it inherits the browser's actual input modality; the panel itself is a
+  // `<div tabindex="-1">`, which Chromium always shows a focus-visible ring
+  // on when focused by script, regardless of how the modal was opened.
+  expect(document.activeElement?.tagName).toBe('BUTTON');
+  expect(panel.contains(document.activeElement)).toBe(true);
+  expect(panel).not.toBe(document.activeElement);
+});
+
 it('leaves an autofocused field alone', () => {
   render(<input autoFocus data-testid="field" />);
   expect((document.activeElement as HTMLElement)?.dataset?.testid).toBe('field');
@@ -160,4 +172,38 @@ it('escapes a transformed ancestor: the overlay is portaled to <body>', () => {
   act(() => cardRoot.unmount());
   expect(document.querySelector('[role="dialog"]'), 'unmount removes the portal').toBeNull();
   card.remove();
+});
+
+// ── GM5/R3: 2-line title clamp, tooltip only when actually clamped ─────────
+// jsdom has no layout, so `scrollHeight`/`clientHeight` are always 0/0 for
+// every element — there is nothing to stub on the title node AFTER it
+// mounts, since the measurement effect's first (synchronous) read happens
+// during that same mount. Stubbing the two getters on `HTMLElement.prototype`
+// BEFORE rendering makes every element in the test report the same box,
+// which is enough to prove the branch: the mount-time read decides whether a
+// Tooltip (and its tabIndex=-1 stop) is present at all.
+
+function stubEveryElementBox(scrollHeight: number, clientHeight: number) {
+  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get: () => scrollHeight });
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => clientHeight });
+}
+
+afterEach(() => {
+  delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
+  delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+});
+
+it('gets no Tooltip when the title fits within its 2-line box', () => {
+  stubEveryElementBox(20, 20); // scrollHeight === clientHeight: nothing is clipped
+  render(<button>Inside</button>);
+  const title = document.getElementById(dialog().getAttribute('aria-labelledby')!)!;
+  expect(title.getAttribute('tabindex'), 'no Tooltip means no tabIndex stop either').toBeNull();
+  expect(title.closest('[data-radix-tooltip], [role="tooltip"]')).toBeNull();
+});
+
+it('gets a Tooltip (and the tabIndex=-1 stop for it) once the title is actually clamped', () => {
+  stubEveryElementBox(40, 20); // scrollHeight > clientHeight: the 2-line box is clipping text
+  render(<button>Inside</button>);
+  const title = document.getElementById(dialog().getAttribute('aria-labelledby')!)!;
+  expect(title.getAttribute('tabindex')).toBe('-1');
 });

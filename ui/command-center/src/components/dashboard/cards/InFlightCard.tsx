@@ -5,8 +5,9 @@ import { useOrchestratorName } from '../../world/shared/useOrchestratorName';
 import { SectionTitle, EmptyNote } from '../atoms';
 import { useCommandCenter } from '../../../lib/store';
 import type { ActiveGoal } from '../../../lib/useLiveGoals';
-import { goalStateLabel } from '../../../lib/goalStateLabel';
+import { autonomyChip, goalStateLabel } from '../../../lib/goalStateLabel';
 
+import { Chip } from '../../common/Chip';
 import { Tooltip } from '../../common/Tooltip';
 
 /** A text line that truncates with an ellipsis instead of wrapping or being
@@ -204,7 +205,7 @@ const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
             only one fit under the title. QA saw "2 active" over a box holding
             just the logo. The row is text only now, with tighter padding, so
             two rows fit a 230px tile and each line has the tile's width. */}
-        <div style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, minWidth: 0 }}>
           <div data-testid="inflight-row-text" style={{ flex: 1, minWidth: 0 }}>
             <div style={{
               fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
@@ -233,6 +234,17 @@ const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
               {note || '\u00a0'}
             </div>
           </div>
+          {/* Coordinator ruling (dagK): the same Auto-approve / Needs review
+              chip the goal detail modal shows, off the same `auto_approve`
+              field \u2014 autonomy visible without opening the goal. A sibling of
+              `inflight-row-text`, not a fourth line inside it: that block's
+              three lines (title/status/note) are the fixed unit the whole-row
+              height math and truncation contract are built on. `quiet`:
+              fifteen rows of this chip must read as a rhythm, not fifteen
+              alerts (Chip.tsx's own density rule). */}
+          <Chip kind="static" tone={autonomyChip(goal.auto_approve).tone} quiet style={{ flexShrink: 0 }}>
+            {autonomyChip(goal.auto_approve).label}
+          </Chip>
         </div>
       </div>
     </Tooltip>

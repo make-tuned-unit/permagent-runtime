@@ -22,7 +22,7 @@
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { apiFetch } from '../../lib/api';
-import { goalHoldDetail, goalStateLabel } from '../../lib/goalStateLabel';
+import { autonomyChip, goalHoldDetail, goalStateLabel } from '../../lib/goalStateLabel';
 import { removeRoadmapGoal, setGoalAutoApprove, setGoalDependencies } from '../../lib/roadmapClient';
 import { useCommandCenter } from '../../lib/store';
 import type { ActiveGoal } from '../../lib/useLiveGoals';
@@ -376,14 +376,13 @@ export function GoalDetailModal({
       // Benchmark ask (dagK, Microsoft HAX G16/"automation vs augmentation"):
       // autonomy must be visible at the interaction level, not only inside the
       // Auto-approve section further down — a chip you'd have to scroll to
-      // find is not "visible". A goal card in the list gets the equivalent
-      // treatment when this data reaches `/api/goals/active` (server change,
-      // deferred — see report).
-      headerRight={isGoal && !loading && card && (
-        <Chip kind="static" tone={autoApprove ? 'accent' : 'neutral'}>
-          {autoApprove ? 'Auto-approve' : 'Needs review'}
-        </Chip>
-      )}
+      // find is not "visible". Shares `autonomyChip` with Home's "In flight"
+      // row (InFlightCard.tsx) so the same boolean reads as the same words in
+      // both places.
+      headerRight={isGoal && !loading && card && (() => {
+        const chip = autonomyChip(autoApprove);
+        return <Chip kind="static" tone={chip.tone}>{chip.label}</Chip>;
+      })()}
     >
       {loading ? (
         <div style={{ padding: '32px 0', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
@@ -396,11 +395,46 @@ export function GoalDetailModal({
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
           {card.description && (
-            <div style={{
-              fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.5,
-              whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
-            }}>
-              {card.description}
+            <div>
+              {/* Benchmark follow-up (dagK, Devin plan-first pattern): Jesse's
+                  ruling — don't invent a "Plan" from data that isn't one. This
+                  IS the goal's brief, so it gets the section label the rest of
+                  the modal uses; a real "Worker's plan" section (below) shows
+                  only when a genuine plan artifact exists, which none does
+                  yet — capturing one is round 2, not a client-side guess. */}
+              <div style={{
+                fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
+                textTransform: 'uppercase', letterSpacing: '0.04em',
+              }}>
+                Goal
+              </div>
+              <div style={{
+                marginTop: space.sm, fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.5,
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
+              }}>
+                {card.description}
+              </div>
+            </div>
+          )}
+
+          {/* Round 2 seam: renders only if the daemon ever starts writing a
+              genuine worker-facing plan onto the card (e.g. `meta.worker_plan`).
+              Nothing writes that field today — this is intentionally inert,
+              not a guess at what the field will be called. */}
+          {typeof meta.worker_plan === 'string' && meta.worker_plan.trim() && (
+            <div>
+              <div style={{
+                fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
+                textTransform: 'uppercase', letterSpacing: '0.04em',
+              }}>
+                Worker's plan
+              </div>
+              <div style={{
+                marginTop: space.sm, fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.5,
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
+              }}>
+                {meta.worker_plan as string}
+              </div>
             </div>
           )}
 

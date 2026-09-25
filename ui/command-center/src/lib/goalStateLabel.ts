@@ -53,3 +53,19 @@ export function goalStateLabel({ columnName, stateBinding, holdNote }: GoalState
 export function goalHoldDetail({ holdNote }: GoalStateLabelInputs): string | null {
   return holdNote || null;
 }
+
+/**
+ * Autonomy label — coordinator ruling (dagK), Microsoft HAX "automation vs
+ * augmentation": whether a verified PASS skips manual Review for this goal
+ * (`goal_transition::set_goal_auto_approve`) is visible at the interaction
+ * level, not only inside the toggle section itself. One function so the goal
+ * detail modal's header chip and Home's "In flight" row chip are always the
+ * same word for the same boolean — `autoApprove` comes straight off the
+ * server (the modal's card metadata, or `/api/goals/active`'s `auto_approve`
+ * field), never re-derived.
+ */
+export function autonomyChip(autoApprove: boolean): { label: string; tone: 'accent' | 'neutral' } {
+  return autoApprove
+    ? { label: 'Auto-approve', tone: 'accent' }
+    : { label: 'Needs review', tone: 'neutral' };
+}
