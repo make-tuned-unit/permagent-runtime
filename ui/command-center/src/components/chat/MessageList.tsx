@@ -4,7 +4,7 @@ import { useCommandCenter } from '../../lib/store';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
-import { MessageBubble } from './MessageBubble';
+import { BUBBLE_MAX_WIDTH, MessageBubble } from './MessageBubble';
 import { StreamingIndicator } from './StreamingIndicator';
 import { usePersona } from '../settings/useSettings';
 import { useVoicePreview } from '../../lib/useVoices';
@@ -16,10 +16,15 @@ import { Tooltip } from '../common/Tooltip';
  *  which is exactly what the streaming placeholder is before its first token,
  *  sitting above the StreamingIndicator as a second empty bubble (reported
  *  2026-08-06). Nothing to read ⇒ nothing to draw; the indicator alone
- *  carries the in-flight state. Exported pure for the regression test. */
+ *  carries the in-flight state. Exported pure for the regression test.
+ *
+ *  The rule is role-agnostic: it used to exempt every non-assistant message,
+ *  so an empty user-role message (a tool-result carrier from history, 2026-09-24)
+ *  drew a bare "You 03:21 PM" bubble between two assistant turns. The carrier is
+ *  dropped where history is converted (isToolResultCarrier); this is the
+ *  backstop so no role can ever draw a bubble with nothing in it. */
 export function isRenderableChatMessage(msg: ChatMessage): boolean {
-  return msg.role !== 'assistant'
-    || !!msg.content?.trim()
+  return !!msg.content?.trim()
     || !!msg.thinking?.trim()
     || (msg.images?.length ?? 0) > 0
     || (msg.tool_calls?.length ?? 0) > 0
@@ -223,8 +228,9 @@ export function MessageList() {
             // moment. Display-only; not part of the conversation timeline.
             <div className="flex justify-start">
               <div
-                className="max-w-[85%] rounded-xl px-3.5 py-2.5"
+                className="rounded-xl px-3.5 py-2.5"
                 style={{
+                  maxWidth: BUBBLE_MAX_WIDTH,
                   backgroundColor: colors.surface,
                   boxShadow: colors.cardHighlight ? `${colors.cardShadow}, ${colors.cardHighlight}` : colors.cardShadow,
                   overflowWrap: 'break-word', wordBreak: 'break-word', minWidth: 0,

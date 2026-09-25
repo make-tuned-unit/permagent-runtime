@@ -4,6 +4,8 @@ import type { ToolCall } from '../../lib/store';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
+import { toolLabel } from '../../lib/toolLabel';
 import { GmailSearchResult } from './GmailSearchResult';
 import { GmailReadResult } from './GmailReadResult';
 import { FileReadResult } from './FileReadResult';
@@ -112,12 +114,19 @@ export function ToolResult({ call }: { call: ToolCall }) {
         {expanded
           ? <FiChevronDown size={12} style={{ color: colors.textMuted, flexShrink: 0 }} />
           : <FiChevronRight size={12} style={{ color: colors.textMuted, flexShrink: 0 }} />}
-        <span
-          className="rounded px-1.5 py-0.5 text-[10px] shrink-0"
-          style={{ backgroundColor: `${colors.cyan}1A`, color: colors.cyan }}
-        >
-          {call.name}
-        </span>
+        {/* R3: the badge reads as a plain-English label (toolLabel), never the
+            wire identifier — `card_create`, `gmail__search` — which is
+            internal jargon in user-facing copy. The raw name is not lost: it
+            is on hover here, and repeated as a line in the expanded detail
+            below for anyone who needs to quote it. */}
+        <Tooltip content={call.name}>
+          <span
+            className="rounded px-1.5 py-0.5 text-[10px] shrink-0"
+            style={{ backgroundColor: `${colors.cyan}1A`, color: colors.cyan }}
+          >
+            {toolLabel(call.name)}
+          </span>
+        </Tooltip>
         <span className="flex-1" />
         {hasResult && (
           success
@@ -128,6 +137,10 @@ export function ToolResult({ call }: { call: ToolCall }) {
 
       {expanded && (
         <div id={bodyId} className="px-3 py-2 space-y-2" style={{ borderTop: `1px solid ${colors.border}` }}>
+          {/* The raw identifier, for anyone who needs to quote it back (a bug
+              report, a skill they're editing) — demoted to mono/dim detail
+              rather than the headline the badge above already renamed. */}
+          <div className="text-[9px]" style={{ fontFamily: font.mono, color: colors.textDim }}>{call.name}</div>
           <div className="flex items-center justify-between">
             <div className="text-[9px] uppercase" style={{ fontFamily: font.mono, color: colors.textMuted }}>Result</div>
             <Button

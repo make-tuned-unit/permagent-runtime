@@ -778,6 +778,24 @@ function indexToolResponses(messages: DaemonMessage[]): Map<string, { result: st
   return map;
 }
 
+/** True for a user-role message that exists only to carry tool results back to
+ *  the model. The daemon stores every toolResponse on a user-role message
+ *  (that is the provider wire shape), so converting history one message per
+ *  bubble turned each one into an empty "You" bubble wedged between two
+ *  assistant turns. Its results are not lost: indexToolResponses joins them
+ *  onto the assistant's tool_calls, which already render as tool cards. Any
+ *  real user content (text, an image, an attachment) keeps the message. */
+export function isToolResultCarrier(msg: DaemonMessage): boolean {
+  if (msg.role !== 'user') return false;
+  let carriesResult = false;
+  for (const c of msg.content) {
+    if (c.type === 'toolResponse') { carriesResult = true; continue; }
+    if (c.type === 'text' && !String((c as { text?: unknown }).text ?? '').trim()) continue;
+    return false;
+  }
+  return carriesResult;
+}
+
 /** Convert a DaemonMessage to a ChatMessage for display. `responses` (built via
  *  indexToolResponses over the whole conversation) lights up each tool card
  *  with its result + success. */
@@ -1893,7 +1911,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       const session = await api.getSession(sessionId);
       if (session.conversation && session.conversation.length > 0) {
         const responses = indexToolResponses(session.conversation);
-        const msgs = session.conversation.map((m, i) => daemonMsgToChat(m, i, sessionId, responses));
+        // Map before filtering so each fallback id keeps its conversation index.
+        const msgs = session.conversation
+          .map((m, i) => (isToolResultCarrier(m) ? null : daemonMsgToChat(m, i, sessionId, responses)))
+          .filter((m): m is ChatMessage => m !== null);
         set({ chatMessages: msgs });
       } else {
         // An empty conversation is a LOADED fact, not an un-set state: leaving
