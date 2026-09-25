@@ -150,7 +150,14 @@ export function repairName(raw: string | null | undefined): string | null {
 
 // ── a title from the first message (mirrors providers/base.rs) ──────────────
 
-const TITLE_MAX_CHARS = 80;
+/** The default cap for a compact surface (Home Recent, the chat session
+ *  picker) — one line, mirrors the Rust namer's own limit so an old,
+ *  client-repaired title and a new daemon-named one read the same length. A
+ *  roomier surface (History) passes a bigger `maxChars` — up to `Infinity` —
+ *  so the full label survives instead of being cut with nothing on screen to
+ *  justify it; the caller wraps it in CSS instead (2-line clamp) and shows the
+ *  untruncated text on hover only if it actually clamped. */
+export const TITLE_MAX_CHARS = 80;
 
 function isHeading(line: string): boolean {
   if (!line.startsWith('#')) return false;
@@ -192,10 +199,13 @@ function capChars(s: string, max: number): string {
   return `${cut.replace(/[\s,:;\-–—→([]+$/, '')}…`;
 }
 
-function shortenLine(line: string): string {
+function shortenLine(line: string, maxChars: number): string {
   let s = line.trim().replace(/^[-*+]\s+/, '').replace(/^\d+[.)]\s+/, '');
   s = stripWrappingQuotes(s);
-  return capChars(cutAtFirstSentence(s), TITLE_MAX_CHARS);
+  // Cutting at the first sentence end is a content rule (a title is one
+  // thought, not the paragraph after it) and applies at every length; only
+  // the hard character cap is what a roomier surface opts out of.
+  return capChars(cutAtFirstSentence(s), maxChars);
 }
 
 /** Starts with a letter or digit, has letters, and is mostly alphanumeric —
@@ -212,9 +222,10 @@ function isMeaningful(title: string): boolean {
  * A short title from (possibly long, multi-line) user text: the first line of
  * a `## Task` section or a `Goal:` / `Task:` line; otherwise the first line
  * that is not a "You are …" preamble, a working directory or a heading. Each
- * candidate is cut at its first sentence end or ~80 chars.
+ * candidate is cut at its first sentence end and, unless the caller passes a
+ * bigger `maxChars` (History passes `Infinity`), at `TITLE_MAX_CHARS`.
  */
-export function titleFromMessage(text: string | null | undefined): string | null {
+export function titleFromMessage(text: string | null | undefined, maxChars: number = TITLE_MAX_CHARS): string | null {
   if (!text) return null;
   const stripped = text.replace(/<([a-zA-Z][\w]*)[^>]*>[\s\S]*?<\/[a-zA-Z][\w]*>/g, '').replace(/<\/?[a-zA-Z][\w]*[^>]*>/g, '');
   const lines = stripped.split('\n').map(l => l.split(/\s+/).filter(Boolean).join(' '));
@@ -237,7 +248,7 @@ export function titleFromMessage(text: string | null | undefined): string | null
   });
   candidates.push(...lines.filter(l => l && !isBoilerplate(l)));
   for (const c of candidates) {
-    const t = shortenLine(c);
+    const t = shortenLine(c, maxChars);
     if (isMeaningful(t) && !isPlaceholder(t)) return t;
   }
   return null;
@@ -294,9 +305,20 @@ export function sessionProjectName(s: SessionLabelSource): string | null {
 
 // ── the label ───────────────────────────────────────────────────────────────
 
+export interface LabelOptions {
+  /** The hard character cap for a label derived from the first message.
+   *  Defaults to `TITLE_MAX_CHARS` (one line, for Home Recent and the chat
+   *  session picker). History passes `Infinity`: the row is roomy enough to
+   *  show the whole label, wrapped with CSS line-clamp instead of cut with
+   *  free space still on the row (R3). A name the user actually typed, or a
+   *  repaired stored name, is never capped by this option — only a title
+   *  derived from the first message is. */
+  maxChars?: number;
+}
+
 /** A human label for any session, from whatever the caller has. Never empty,
  *  never a literal, never a placeholder. */
-export function sessionDisplayLabel(s: SessionLabelSource): string {
+export function sessionDisplayLabel(s: SessionLabelSource, opts?: LabelOptions): string {
   const name = repairName(s.name);
   if (s.userSetName && name) return name;
 
@@ -306,7 +328,7 @@ export function sessionDisplayLabel(s: SessionLabelSource): string {
     if (job) return job;
   }
 
-  const fromMessage = titleFromMessage(s.firstUserText);
+  const fromMessage = titleFromMessage(s.firstUserText, opts?.maxChars);
   return fromMessage
     ?? name
     ?? repairName(s.goalTitle)

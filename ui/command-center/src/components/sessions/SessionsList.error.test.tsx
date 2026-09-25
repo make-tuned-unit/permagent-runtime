@@ -87,7 +87,7 @@ describe('C5 — Escape in the rename input cancels the rename only', () => {
   function startRenaming(): HTMLInputElement {
     // EditableName's own span (its wrapper has the same textContent — clicking
     // the wrapper would select the row instead of starting the rename).
-    const name = container.querySelector('span.truncate.cursor-pointer');
+    const name = container.querySelector('[data-testid="session-row-title-text"]');
     expect(name).toBeTruthy();
     act(() => name!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     const input = container.querySelector('input:not([type="search"])');

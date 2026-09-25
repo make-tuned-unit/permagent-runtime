@@ -24,6 +24,17 @@ const EVNTALLY_DIRECTIVE = [
 ].join('\n');
 
 describe('sessionDisplayLabel — every junk title from the 2026-09-24 QA walk', () => {
+  it('{ maxChars: Infinity } (History) shows the whole first-message title, not the 80-char cut', () => {
+    const long = 'Fix event_cta_click funnel leak: 3,836 impressions to 940 clicks, which is a 24.5 percent CTR that suggests either CTA placement or copy issues are to blame';
+    const compact = sessionDisplayLabel({ name: 'x', firstUserText: long });
+    const full = sessionDisplayLabel({ name: 'x', firstUserText: long }, { maxChars: Infinity });
+    expect(compact.endsWith('…')).toBe(true);
+    expect(compact.length).toBeLessThan(full.length);
+    expect(full).toBe(long);
+    // A name the user actually typed is never capped by this option either way.
+    expect(sessionDisplayLabel({ name: long, userSetName: true }, { maxChars: Infinity })).toBe(long);
+  });
+
   it('never shows a raw object literal', () => {
     const raw = "{name: 'scroll_depth', depth: 25|50|75|100, event_id: '{event-id}'}";
     expect(sessionDisplayLabel({ name: raw })).toBe('Scroll depth');
@@ -105,6 +116,14 @@ describe('titleFromMessage', () => {
     const t = titleFromMessage('word '.repeat(40))!;
     expect(t.endsWith('…')).toBe(true);
     expect(Array.from(t).length).toBeLessThanOrEqual(81);
+  });
+
+  it('maxChars: Infinity (History) keeps the whole line, still cut at the first sentence', () => {
+    const long = 'word '.repeat(40).trim();
+    const t = titleFromMessage(long, Infinity)!;
+    expect(t).toBe(long); // no cap, no ellipsis — the row wraps it in CSS instead
+    const twoSentences = 'Fix the staging key rotation. Also look at the backup job while you are in there.';
+    expect(titleFromMessage(twoSentences, Infinity)).toBe('Fix the staging key rotation');
   });
 });
 

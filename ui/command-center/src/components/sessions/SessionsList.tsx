@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState, useRef, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState, useRef, type CSSProperties, type RefObject } from 'react';
 import { FiPlus, FiTrash2, FiMessageSquare, FiX, FiSearch, FiGitBranch } from 'react-icons/fi';
 import { useCommandCenter, type SessionState } from '../../lib/store';
-import { api } from '../../lib/api';
+import { api, extractText, type Session } from '../../lib/api';
 import {
   classifySession,
   labelSource,
@@ -15,12 +15,65 @@ import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
 import { ConfirmDialog } from '../common/ConfirmDialog';
+import { StateBlock } from '../common/StateBlock';
 
 import { Tooltip } from '../common/Tooltip';
 /** `42300` → `"42.3K"`, `1204000` → `"1.2M"` — the same compact form the rest
  *  of the app's stat tiles use for a large running total. */
 function formatCompact(n: number): string {
   return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
+}
+
+/** ≥1600px, History becomes a Linear/Mail-style list + preview split (the
+ *  coordinator's R1 ruling 2026-09-25) instead of one long single column —
+ *  the width is otherwise wasted void or an over-stretched row. Below it, a
+ *  single list capped at a readable width (`NARROW_LIST_MAX_WIDTH`). */
+const WIDE_BREAKPOINT = 1600;
+/** The list column's width at the split, and the single list's cap below it.
+ *  `min(720px, 45%)` so the list never eats the majority of an ultra-wide
+ *  screen just because it's there. */
+const LIST_COLUMN_WIDTH = 'min(720px, 45%)';
+const NARROW_LIST_MAX_WIDTH = 880;
+/** Hover must LINGER before it steals the preview from the selected row —
+ *  otherwise every mouse pass while scrolling to the row you actually want
+ *  flickers the pane through everything in between. */
+const HOVER_PREVIEW_DELAY_MS = 300;
+
+function useWideLayout(): boolean {
+  const [wide, setWide] = useState(() => typeof window !== 'undefined' && window.innerWidth >= WIDE_BREAKPOINT);
+  useEffect(() => {
+    const onResize = () => setWide(window.innerWidth >= WIDE_BREAKPOINT);
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return wide;
+}
+
+/** Whether `text`, laid out in `ref`'s element, overflows the box (the
+ *  `scrollHeight > clientHeight` idiom already used for the chat launcher's
+ *  scroll-clearance test) — i.e. whether a CSS line-clamp on it is actually
+ *  cutting something, which is the one case a title needs its full text on a
+ *  Tooltip (R3: never a silent cut with nothing to explain it). jsdom never
+ *  lays out real box sizes, so this is always `false` in tests by
+ *  construction — exercised for real in the harness, at real widths. */
+function useClamped<T extends HTMLElement>(text: string): [RefObject<T>, boolean] {
+  const ref = useRef<T>(null);
+  const [clamped, setClamped] = useState(false);
+  const measure = () => {
+    const el = ref.current;
+    if (el) setClamped(el.scrollHeight > el.clientHeight + 1);
+  };
+  useLayoutEffect(measure, [text]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return [ref, clamped];
 }
 
 function timeAgo(dateStr: string): string {
@@ -57,7 +110,12 @@ function toRow(session: SessionState): SessionRow {
   const src = labelSource(session);
   return {
     session,
-    label: sessionDisplayLabel(src),
+    // History is roomy: show the whole first-message title (wrapped to 2
+    // lines by CSS below), not the one-line 80-char cut Home Recent and the
+    // chat picker use — this row has ~1500px of empty space to its right at
+    // 2560px, and cutting a title with room still on the row is the R3
+    // violation the coordinator's 2026-09-25 pass flagged.
+    label: sessionDisplayLabel(src, { maxChars: Infinity }),
     kind: classifySession(src),
     project: sessionProjectName(src),
     haystack: sessionSearchText(src),
@@ -69,6 +127,11 @@ function EditableName({ value, onSave }: { value: string; onSave: (name: string)
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
+  // R3: the label is shown in full (SessionsList passes { maxChars: Infinity
+  // }), wrapped to 2 lines instead of cut — so the ONLY case that still needs
+  // the full text on a tooltip is a label long enough to overflow even that.
+  // A short title keeps the plain "click to rename" hint it always had.
+  const [labelRef, clamped] = useClamped<HTMLSpanElement>(value);
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
@@ -83,12 +146,18 @@ function EditableName({ value, onSave }: { value: string; onSave: (name: string)
 
   if (!editing) {
     return (
-      <Tooltip content="Click to rename">
+      <Tooltip content={clamped ? value : 'Click to rename'}>
         <span
-          className="truncate cursor-pointer transition"
+          ref={labelRef}
+          data-testid="session-row-title-text"
+          className="cursor-pointer transition"
           onClick={(e) => { e.stopPropagation(); setEditing(true); }}
           onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; }}
           onMouseLeave={e => { e.currentTarget.style.color = ''; }}
+          style={{
+            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+            overflow: 'hidden', wordBreak: 'break-word',
+          } as CSSProperties}
         >
           {value}
         </span>
@@ -150,6 +219,17 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
   // failed"; failing never removes a match the client filter already found.
   const [deepMatches, setDeepMatches] = useState<Set<string> | null>(null);
   const [forking, setForking] = useState<string | null>(null);
+  // The list/preview split (≥1600px): `selectedId` follows focus (click, or
+  // Enter/↑/↓ from the keyboard) and persists; `hoverId` is a lingering
+  // (HOVER_PREVIEW_DELAY_MS) peek that overrides it while the pointer sits on
+  // a different row, and reverts the moment it leaves. Below the breakpoint
+  // neither renders anything — tracked unconditionally anyway since it's free
+  // and means turning the window wider doesn't lose the selection.
+  const wide = useWideLayout();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
 
@@ -190,6 +270,12 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
   }, [matching]);
   const visible = matching.filter(r => r.kind === kind);
   const activeFilter = SESSION_FILTERS.find(f => f.kind === kind) ?? SESSION_FILTERS[0];
+  const previewId = hoverId ?? selectedId;
+  const previewRow = visible.find(r => r.session.id === previewId);
+
+  // A pending hover timer must not fire into an unmounted list (StrictMode
+  // double-invokes effects, and closing the overlay mid-hover is routine).
+  useEffect(() => () => { if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current); }, []);
 
   // Overlay dismissal — Escape closes back to chat, but only when hosted as an
   // overlay (onClose provided). If a delete confirmation is open, Escape clears
@@ -362,7 +448,25 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto">
+      {/* R1 (coordinator ruling, 2026-09-25): ≥1600px is a list/preview split
+          (Linear/Mail pattern) — the list column is min(720px, 45%) so it
+          never eats most of an ultra-wide screen, and the rest goes to a
+          preview pane instead of sitting as void or over-stretching every
+          row. Below the breakpoint the list alone is capped at a readable
+          width, centred, rather than spanning the full window. */}
+      <div className="flex-1 flex overflow-hidden">
+        <div
+          ref={listRef}
+          className="overflow-y-auto"
+          style={wide
+            ? { width: LIST_COLUMN_WIDTH, flexShrink: 0, borderRight: `1px solid ${colors.border}` }
+            : { flex: 1 }}
+        >
+        {/* Below the breakpoint each block centres itself at a readable width
+            instead of the list wrapping in an extra div — a wrapper here
+            would need its own explicit height for the states' `h-full`
+            centering to keep working, and this reaches the same result
+            without it. */}
         {/* C6 (#568 empty-body lesson, mirrors MemoriesPanel): a failed load is
             NOT "no sessions yet" — surface the failure inline with a retry. */}
         {sessionsError && (
@@ -433,27 +537,62 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
               role="button"
               tabIndex={0}
               aria-current={isActive ? 'true' : undefined}
+              aria-selected={wide && previewId === s.id ? 'true' : undefined}
               onClick={() => handleSelect(s.id)}
+              // Selection (for the ≥1600px preview pane) follows focus, so a
+              // click, a Tab and an arrow-key move all agree on what's
+              // selected without three separate code paths.
+              onFocus={() => setSelectedId(s.id)}
+              // A lingering peek: hovering a DIFFERENT row schedules the
+              // preview to follow it after HOVER_PREVIEW_DELAY_MS; leaving
+              // that row cancels the timer and, if it had already won,
+              // reverts the preview to the selected row. Only one timer is
+              // ever live — entering a new row clears whatever the last one
+              // scheduled, so a fast pass over many rows never flickers.
+              onMouseEnter={() => {
+                if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+                hoverTimerRef.current = setTimeout(() => setHoverId(s.id), HOVER_PREVIEW_DELAY_MS);
+              }}
+              onMouseLeave={() => {
+                if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
+                setHoverId(h => (h === s.id ? null : h));
+              }}
               // R4: a row that looks clickable is keyboard-operable too — Enter
               // and Space activate it exactly like a click, the same contract
               // the shared Button gives every other control on this screen.
+              // ↑/↓ move focus (= selection) to the next/previous row without
+              // opening it — only Enter/Space open, per the coordinator's
+              // 2026-09-25 ruling.
               onKeyDown={(e) => {
                 if (e.target !== e.currentTarget) return; // let the inner rename input/buttons handle their own keys
-                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSelect(s.id); }
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSelect(s.id); return; }
+                if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+                e.preventDefault();
+                const rowEls = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-testid="session-row"]') ?? []);
+                const idx = rowEls.indexOf(e.currentTarget);
+                rowEls[idx + (e.key === 'ArrowDown' ? 1 : -1)]?.focus();
               }}
               className={`group flex items-center gap-3 px-4 py-3 cursor-pointer transition ${
                 isActive ? '' : 'hover:bg-white/[0.03]'
               }`}
               style={{
                 borderBottom: `1px solid ${colors.border}`,
-                backgroundColor: isActive ? `${colors.cyan}0D` : undefined,
+                backgroundColor: isActive ? `${colors.cyan}0D` : wide && previewId === s.id ? colors.fillHover : undefined,
                 borderLeft: isActive ? `2px solid ${colors.cyan}` : undefined,
+                // Below the split, the row centres at a readable width
+                // instead of a single line stretching the full window (R1).
+                ...(wide ? null : { maxWidth: NARROW_LIST_MAX_WIDTH, margin: '0 auto' }),
               }}
             >
               <div className="flex-1 min-w-0">
-                <div className="flex items-baseline gap-2">
+                {/* items-start, not items-baseline: the title can now wrap to
+                    2 lines (R3 — the full label, not an 80-char cut with
+                    empty row space beside it), and baseline alignment would
+                    have floated the timestamp against the title's first line
+                    while its second line hung below alone. */}
+                <div className="flex items-start gap-2">
                   <span
-                    className="truncate flex-1"
+                    className="flex-1"
                     data-testid="session-row-title"
                     style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text }}
                   >
@@ -557,6 +696,19 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
             </div>
           );
         })}
+        </div>
+        {wide && (
+          <div className="flex-1 overflow-y-auto">
+            <SessionPreviewPane
+              row={previewRow}
+              onOpen={handleSelect}
+              onFork={handleFork}
+              onDelete={setConfirmDelete}
+              onOpenGoal={openGoalDetail}
+              forking={forking}
+            />
+          </div>
+        )}
       </div>
 
       {/* Deleting a conversation has no undo, which is the tier that earns a
@@ -572,6 +724,221 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
           onCancel={() => setConfirmDelete(null)}
         />
       )}
+    </div>
+  );
+}
+
+// ── the ≥1600px preview pane ─────────────────────────────────────────────────
+
+/** `GET /api/sessions/{id}` for the preview pane, cached per session id so
+ *  re-hovering a row already seen doesn't refetch, and race-safe: a response
+ *  for an id that isn't the current one any more (rapid hover, or the user
+ *  switched rows before the daemon answered) is dropped. */
+function useSessionDetail(id: string | null) {
+  const cache = useRef<Map<string, Session>>(new Map());
+  const [reloadKey, setReloadKey] = useState(0);
+  const [state, setState] = useState<{ data: Session | null; loading: boolean; error: boolean }>({
+    data: null, loading: false, error: false,
+  });
+
+  useEffect(() => {
+    if (!id) { setState({ data: null, loading: false, error: false }); return; }
+    const cached = cache.current.get(id);
+    if (cached) { setState({ data: cached, loading: false, error: false }); return; }
+    let cancelled = false;
+    setState({ data: null, loading: true, error: false });
+    api.getSession(id).then(s => {
+      if (cancelled) return;
+      cache.current.set(id, s);
+      setState({ data: s, loading: false, error: false });
+    }).catch(() => {
+      if (!cancelled) setState({ data: null, loading: false, error: true });
+    });
+    return () => { cancelled = true; };
+  }, [id, reloadKey]);
+
+  const retry = () => {
+    if (id) cache.current.delete(id);
+    setReloadKey(k => k + 1);
+  };
+
+  return { ...state, retry };
+}
+
+/** The first user-visible user message and the last agent-visible assistant
+ *  reply — the two lines that tell you what a session was actually about
+ *  without opening it. Hidden preambles (a coding directive's boilerplate,
+ *  liveness-probe scaffolding) are skipped the same way the daemon's own
+ *  `first_user_text` column does. */
+function firstUserText(s: Session): string | null {
+  const m = (s.conversation ?? []).find(m => m.role === 'user' && m.metadata?.userVisible !== false);
+  return m ? extractText(m) || null : null;
+}
+
+function lastAssistantText(s: Session): string | null {
+  const conv = s.conversation ?? [];
+  for (let i = conv.length - 1; i >= 0; i--) {
+    const m = conv[i];
+    if (m.role === 'assistant' && m.metadata?.agentVisible !== false) {
+      const t = extractText(m);
+      if (t) return t;
+    }
+  }
+  return null;
+}
+
+function PreviewSkeleton() {
+  const { colors } = useTheme();
+  return (
+    <div aria-hidden="true" data-testid="session-preview-skeleton" style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
+      {[95, 70, 85, 55].map((w, i) => (
+        <div key={i} style={{ height: 12, width: `${w}%`, borderRadius: radius.xs, background: colors.border }} />
+      ))}
+    </div>
+  );
+}
+
+function PreviewMessage({ label, text }: { label: string; text: string | null }) {
+  const { colors } = useTheme();
+  if (!text) return null;
+  return (
+    <div>
+      <div style={{
+        fontSize: textSize.micro, fontWeight: 600, color: colors.textMuted,
+        marginBottom: space.xxs, textTransform: 'uppercase', letterSpacing: '0.06em',
+      }}>
+        {label}
+      </div>
+      <div style={{
+        fontSize: textSize.caption, color: colors.text, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+        display: '-webkit-box', WebkitLineClamp: 6, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+      } as CSSProperties}>
+        {text}
+      </div>
+    </div>
+  );
+}
+
+/** The right-hand pane of the ≥1600px split: everything the row itself has no
+ *  room for — the whole label, both link chips, an absolute created/updated
+ *  time on hover, message/token counts, the first and last message, and the
+ *  row's own actions (Open/Fork/Delete) so opening a session never requires
+ *  going back to the list. Covers all five R2 states: empty (nothing
+ *  selected/hovered), loading (skeleton, not a spinner), error (with retry),
+ *  and populated. */
+function SessionPreviewPane({ row, onOpen, onFork, onDelete, onOpenGoal, forking }: {
+  row: SessionRow | undefined;
+  onOpen: (id: string) => void;
+  onFork: (id: string) => void;
+  onDelete: (id: string) => void;
+  onOpenGoal: (projectId: string, cardId: string) => void;
+  forking: string | null;
+}) {
+  const { colors } = useTheme();
+  const id = row?.session.id ?? null;
+  const { data, loading, error, retry } = useSessionDetail(id);
+
+  if (!row) {
+    return (
+      <div style={{ padding: space.xxl, height: '100%', display: 'flex', alignItems: 'center' }}>
+        <StateBlock
+          tone="empty"
+          title="Select a session to preview"
+          detail="Click a row, or arrow through the list, to see its detail here."
+        />
+      </div>
+    );
+  }
+
+  const s = row.session;
+  const goalProjectId = s.goal_project_id ?? s.project_id ?? null;
+  const kindLabel = SESSION_FILTERS.find(f => f.kind === row.kind)?.label ?? 'Session';
+  const tokens = data ? (data.accumulated_total_tokens ?? data.total_tokens ?? null) : null;
+
+  return (
+    <div data-testid="session-preview" style={{
+      padding: space.xxl, display: 'flex', flexDirection: 'column', gap: space.lg,
+      height: '100%', boxSizing: 'border-box', overflowY: 'auto',
+    }}>
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, flexWrap: 'wrap' }}>
+          <Chip kind="static" quiet>{kindLabel}</Chip>
+          {row.project && <Chip kind="static" quiet title={`Project: ${row.project}`}>{row.project}</Chip>}
+          {s.goal_id && goalProjectId && (
+            <Chip kind="link" tone="accent" quiet title="Open this goal" onClick={() => onOpenGoal(goalProjectId, s.goal_id!)}>
+              Goal: {s.goal_title?.trim() || 'open'}
+            </Chip>
+          )}
+        </div>
+        <h2 data-testid="session-preview-title" style={{
+          marginTop: space.sm, marginBottom: 0, fontFamily: font.body, fontSize: textSize.heading,
+          fontWeight: 600, color: colors.text, lineHeight: 1.35,
+        }}>
+          {row.label}
+        </h2>
+        <div style={{ display: 'flex', gap: space.sm, marginTop: space.xxs, fontSize: textSize.micro, color: colors.textMuted }}>
+          {s.created_at && (
+            <Tooltip content={new Date(s.created_at).toLocaleString()}>
+              <span>Created {timeAgo(s.created_at)}</span>
+            </Tooltip>
+          )}
+          {s.updated_at && (
+            <Tooltip content={new Date(s.updated_at).toLocaleString()}>
+              <span>· Updated {timeAgo(s.updated_at)}</span>
+            </Tooltip>
+          )}
+        </div>
+      </div>
+
+      {loading && <PreviewSkeleton />}
+      {error && <StateBlock tone="error" title="Couldn't load this session" detail="The daemon didn't answer." onRetry={retry} compact />}
+      {data && !loading && !error && (
+        <>
+          <div style={{ display: 'flex', gap: space.lg, fontSize: textSize.micro, color: colors.textMuted, ...tabularNums }}>
+            <span>{data.message_count} message{data.message_count !== 1 ? 's' : ''}</span>
+            {typeof tokens === 'number' && <span>{formatCompact(tokens)} tokens</span>}
+          </div>
+          <PreviewMessage label="First message" text={firstUserText(data)} />
+          <PreviewMessage label="Last reply" text={lastAssistantText(data)} />
+        </>
+      )}
+
+      <div style={{
+        marginTop: 'auto', display: 'flex', gap: space.sm, paddingTop: space.md,
+        borderTop: `1px solid ${colors.border}`,
+      }}>
+        <Button
+          colors={colors}
+          variant="ghostOn"
+          onClick={() => onOpen(s.id)}
+          style={{ '--pa-btn-pad': '6px 14px', '--pa-btn-radius': `${radius.sm}px`, fontSize: textSize.caption } as CSSProperties}
+        >
+          Open
+        </Button>
+        <Button
+          colors={colors}
+          variant="bare"
+          disabled={forking === s.id}
+          onClick={() => onFork(s.id)}
+          style={{
+            '--pa-btn-fg': colors.textMuted, '--pa-btn-fg-hover': colors.cyan, '--pa-btn-bg-hover': colors.cyanSoft,
+            '--pa-btn-pad': '6px 14px', '--pa-btn-radius': `${radius.sm}px`, fontSize: textSize.caption,
+          } as CSSProperties}
+        >
+          <FiGitBranch size={12} /> Fork
+        </Button>
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={() => onDelete(s.id)}
+          style={{
+            '--pa-btn-fg': colors.textMuted, '--pa-btn-fg-hover': colors.danger, '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '6px 14px', '--pa-btn-radius': `${radius.sm}px`, fontSize: textSize.caption,
+          } as CSSProperties}
+        >
+          <FiTrash2 size={12} /> Delete
+        </Button>
+      </div>
     </div>
   );
 }
