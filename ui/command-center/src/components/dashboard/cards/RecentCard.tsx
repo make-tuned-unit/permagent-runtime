@@ -96,33 +96,42 @@ function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: b
       onFocus={e => { e.currentTarget.style.background = colors.fillHover; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; e.currentTarget.style.transition = fadeTransition; }}
       onBlur={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.boxShadow = 'none'; }}
       style={{
-      display: 'flex', alignItems: 'center', gap: space.lg, padding: `${space.md}px`,
+      display: 'flex', alignItems: 'center', padding: `${space.md}px`,
       borderBottom: isLast ? 'none' : `1px solid ${colors.border}`,
       cursor: 'pointer', borderRadius: radius.sm, outline: 'none',
       background: 'transparent', transition: fadeTransition,
     }}>
-      <StatusIcon state={item.state} />
-      {/* The title owns the row: it grows into every spare pixel and the
-          status word is what gives way (below). The full title is one hover
-          away — the server no longer cuts it at 40 characters either. */}
-      <div style={{ flex: '1 1 auto', minWidth: 0 }}>
-        <Tooltip content={label}>
-          <div data-testid="recent-title" style={{
-            fontFamily: font.body, fontSize: 12.5, fontWeight: 500, color: colors.text,
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>{label}</div>
-        </Tooltip>
-        <div style={{ fontSize: 10.5, color: colors.textDim, marginTop: space.xxs }}>
-          {timeAgo(item.ended_at)}
+      {/* dagK coordinator, 2560px pass: title `flex:1` used to grow across
+          the WHOLE row, and on a card stretched to 12 columns (fillHoles)
+          that put the status word ~1,800px to the right of its label — two
+          things that read as unrelated instead of one row. Capped at a
+          readable width (R3; max-width 720 per the coordinator's finding),
+          so title and status stay next to each other at any card width; the
+          icon/hover/border still span the full row. */}
+      <span style={{ display: 'flex', alignItems: 'center', gap: space.lg, width: '100%', maxWidth: 720, minWidth: 0 }}>
+        <StatusIcon state={item.state} />
+        {/* The title owns the row: it grows into every spare pixel and the
+            status word is what gives way (below). The full title is one hover
+            away — the server no longer cuts it at 40 characters either. */}
+        <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+          <Tooltip content={label}>
+            <div data-testid="recent-title" style={{
+              fontFamily: font.body, fontSize: 12.5, fontWeight: 500, color: colors.text,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>{label}</div>
+          </Tooltip>
+          <div style={{ fontSize: 10.5, color: colors.textDim, marginTop: space.xxs }}>
+            {timeAgo(item.ended_at)}
+          </div>
         </div>
-      </div>
-      <span data-testid="recent-status" style={{
-        fontFamily: font.body, fontSize: 9.5, fontWeight: 600,
-        letterSpacing: '0.06em', textTransform: 'uppercase',
-        flex: '0 1 auto', minWidth: 0, maxWidth: '40%',
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        color: statusColor[item.state] || colors.textMuted,
-      }}>{item.state.replace('_', ' ')}</span>
+        <span data-testid="recent-status" style={{
+          fontFamily: font.body, fontSize: 9.5, fontWeight: 600,
+          letterSpacing: '0.06em', textTransform: 'uppercase',
+          flex: '0 1 auto', minWidth: 0, maxWidth: '40%',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          color: statusColor[item.state] || colors.textMuted,
+        }}>{item.state.replace('_', ' ')}</span>
+      </span>
     </div>
   );
 }

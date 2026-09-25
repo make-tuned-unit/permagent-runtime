@@ -20,6 +20,11 @@ import { ConfirmDialog } from '../common/ConfirmDialog';
 import { Button } from '../common/Button';
 import { AsOf } from '../common/AsOf';
 import { useState, useCallback, useEffect, useRef, useMemo, type CSSProperties } from 'react';
+import { FiLayout } from 'react-icons/fi';
+import { LayoutsGallery } from './LayoutsGallery';
+import { LayoutPreviewOverlay } from './LayoutPreviewOverlay';
+import { comingSoonCards, DASHBOARD_TEMPLATES } from './templates';
+import { useDashboardLayoutPreviewEvent, clearDashboardLayoutPreview } from './dashboardLayoutPreviewEvent';
 
 import { Tooltip } from '../common/Tooltip';
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -52,13 +57,22 @@ export function Dashboard() {
   // the goal subscription above — the card must not fetch per render.
   const dueTodos = useDueTodos();
   const todosProps = useMemo(() => ({ todos: dueTodos }), [dueTodos]);
-  const { layout, persistLayout } = useLayout();
+  const { layout, persistLayout, revertLayout } = useLayout();
   // Rendered registry = first-party code cards + daemon-served manifest cards.
   const { registry, status: registryStatus } = useCardRegistry();
   const [isEditMode, setIsEditMode] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [showPicker, setShowPicker] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showLayouts, setShowLayouts] = useState(false);
+  // dagK home-templates lane: the agent's preview_dashboard_layout tool
+  // proposes via a `dashboard_layout_preview` event rather than the gallery —
+  // this surfaces it the same way the gallery's own "Try" does (P9: always an
+  // inspectable overlay, never a silent write).
+  const agentPreview = useDashboardLayoutPreviewEvent();
+  const agentPreviewTemplate = agentPreview?.templateId
+    ? DASHBOARD_TEMPLATES.find(t => t.id === agentPreview.templateId)
+    : undefined;
   const [dragSrcId, setDragSrcId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
@@ -301,11 +315,41 @@ export function Dashboard() {
           </Button>
         )}
         <SaveIndicator state={saveState} />
-        {isEditMode && (
-          <DashboardOverflowMenu items={[
-            { label: 'Reset to default', icon: <FiRotateCcw size={14} />, onClick: () => setShowResetConfirm(true) },
-          ]} />
-        )}
+        <DashboardOverflowMenu items={[
+          {
+            label: 'Revert to previous layout',
+            icon: <FiRotateCcw size={14} />,
+            onClick: () => {
+              setSaveState('saving');
+              revertLayout()
+                .then(() => { setSaveState('saved'); setTimeout(() => setSaveState('idle'), 1000); })
+                .catch(() => { setSaveState('error'); setTimeout(() => setSaveState('idle'), 2000); });
+            },
+          },
+          ...(isEditMode
+            ? [{ label: 'Reset to default', icon: <FiRotateCcw size={14} />, onClick: () => setShowResetConfirm(true) }]
+            : []),
+        ]} />
+        <Button
+          colors={colors}
+          type="button"
+          onClick={() => setShowLayouts(true)}
+          style={{
+            '--pa-btn-bg': colors.surface,
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-border': colors.border,
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-border-hover': colors.borderHi,
+            '--pa-btn-pad': '5px 14px',
+            '--pa-btn-radius': `${radius.md}px`,
+            fontFamily: font.body, fontSize: textSize.caption,
+          } as CSSProperties}
+        >
+          <span style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
+            <FiLayout size={14} /> Layouts
+          </span>
+        </Button>
         <CustomizeButton
           editing={isEditMode}
           onToggle={() => setIsEditMode(!isEditMode)}
@@ -517,6 +561,28 @@ export function Dashboard() {
           failureLabel="Couldn't reset the dashboard"
           onConfirm={resetToDefault}
           onCancel={() => setShowResetConfirm(false)}
+        />
+      )}
+
+      {showLayouts && (
+        <LayoutsGallery
+          currentLayout={layout}
+          onApply={async (next) => { await persistLayout(next); }}
+          onClose={() => setShowLayouts(false)}
+        />
+      )}
+
+      {/* The agent's preview_dashboard_layout tool proposed a layout — shown
+          as the same overlay the gallery's own "Try" uses (R7), regardless of
+          whether Layouts is open. Never applies on its own (P9). */}
+      {!showLayouts && agentPreview && (
+        <LayoutPreviewOverlay
+          current={layout}
+          proposed={agentPreview.layout}
+          reason={agentPreview.reason}
+          comingSoon={agentPreviewTemplate ? comingSoonCards(agentPreviewTemplate) : []}
+          onApply={async () => { await persistLayout(agentPreview.layout); clearDashboardLayoutPreview(); }}
+          onKeepCurrent={() => clearDashboardLayoutPreview()}
         />
       )}
     </div>

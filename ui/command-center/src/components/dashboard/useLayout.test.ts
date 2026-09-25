@@ -8,6 +8,7 @@ import {
   reflow,
   packDense,
   fillHoles,
+  hasInteriorHole,
   justifyRows,
   countHoles,
   layoutForDisplay,
@@ -256,8 +257,31 @@ describe('dense dashboard packing (QA 2026-09-24: holes at 1456px)', () => {
 
   it('fillHoles never grows a card below the last row of the board', () => {
     const cells = fillHoles([{ id: 'a', x: 0, y: 0, w: 6, h: 2 }, { id: 'b', x: 6, y: 0, w: 6, h: 4 }]);
-    expect(cells[0]).toMatchObject({ w: 6, h: 4 });
+    // 'a' is capped at a third of its OWN height (dagK coordinator, 2560px
+    // pass): it grows toward 'b' but stops short rather than doubling into a
+    // half-empty card — the trailing gutter below it is deliberate, not a bug.
+    expect(cells[0]).toMatchObject({ w: 6, h: 3 });
     expect(cells[1]).toMatchObject({ h: 4 });
+  });
+
+  it('fillHoles caps stretch at a third of the span, in both axes', () => {
+    // Rightward: a 3-wide card next to a 9-tall gap should grow by at most 1
+    // column (⌈3/3⌉), not annex the whole row.
+    const wide = fillHoles([{ id: 'a', x: 0, y: 0, w: 3, h: 2 }, { id: 'b', x: 3, y: 2, w: 9, h: 2 }]);
+    expect(wide[0].w).toBe(4);
+    // Downward: a 3-tall card above open rows should grow by at most 1 row.
+    const tall = fillHoles([{ id: 'a', x: 0, y: 0, w: 6, h: 3 }, { id: 'b', x: 6, y: 0, w: 6, h: 8 }]);
+    expect(tall[0].h).toBe(4);
+  });
+
+  it('hasInteriorHole is false for a trailing gutter, true for a boxed hole', () => {
+    // Trailing gutter: nothing to the right of the empty cell on its row.
+    expect(hasInteriorHole([{ id: 'a', x: 0, y: 0, w: 6, h: 2 }])).toBe(false);
+    // Boxed: a card sits to the right of the gap on the same row.
+    expect(hasInteriorHole([
+      { id: 'a', x: 0, y: 0, w: 4, h: 1 },
+      { id: 'b', x: 8, y: 0, w: 4, h: 1 },
+    ])).toBe(true);
   });
 
   it('minSpanForWidth is 1 while the width is unknown and grows as the grid narrows', () => {

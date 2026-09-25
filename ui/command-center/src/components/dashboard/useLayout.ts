@@ -95,6 +95,22 @@ export function packDense(
  * board is drawn, not what the user chose — which is why Customize mode shows
  * the unstretched sizes the resize grip actually edits.
  */
+/**
+ * `fillHoles`'s stretch ceiling, as a fraction of the space being grown into.
+ *
+ * dagK coordinator, 2560px pass: unbounded stretch traded holes for voids —
+ * "While you were away" (4 rows) and Growth stretched to the full 12 columns
+ * at ~2000px, each card left roughly half empty, and In Flight grew tall over
+ * two small tiles with nothing else to show. A card should widen into a
+ * NEARBY gap (another card's row-mate that's slightly short), not annex most
+ * of the row or double its own height. Capped at a third: a card may grow by
+ * at most `⌈span/3⌉` beyond whatever `packDense` gave it, in either axis. A
+ * gap wider than that is left as a deliberate gutter instead — dense packing
+ * already tried to pull a later card into it, and a gutter reads as "this
+ * card is done", not as a bug, the way a half-empty stretched card does.
+ */
+const MAX_STRETCH_FRACTION = 1 / 3;
+
 export function fillHoles(cells: PackedCell[], cols: number = GRID_COLS): PackedCell[] {
   const out = cells.map(c => ({ ...c }));
   const rows = out.reduce((m, c) => Math.max(m, c.y + c.h), 0);
@@ -107,25 +123,60 @@ export function fillHoles(cells: PackedCell[], cols: number = GRID_COLS): Packed
   // card claims the rows beneath a neighbour.
   for (const i of order) {
     const c = out[i];
-    while (c.x + c.w < cols) {
+    const maxGrowW = Math.max(1, Math.ceil(c.w * MAX_STRETCH_FRACTION));
+    let grownW = 0;
+    while (c.x + c.w < cols && grownW < maxGrowW) {
       let clear = true;
       for (let r = c.y; r < c.y + c.h; r++) if (grid[r][c.x + c.w] !== -1) { clear = false; break; }
       if (!clear) break;
       for (let r = c.y; r < c.y + c.h; r++) grid[r][c.x + c.w] = i;
       c.w += 1;
+      grownW += 1;
     }
   }
   for (const i of order) {
     const c = out[i];
-    while (c.y + c.h < rows) {
+    const maxGrowH = Math.max(1, Math.ceil(c.h * MAX_STRETCH_FRACTION));
+    let grownH = 0;
+    while (c.y + c.h < rows && grownH < maxGrowH) {
       let clear = true;
       for (let k = c.x; k < c.x + c.w; k++) if (grid[c.y + c.h][k] !== -1) { clear = false; break; }
       if (!clear) break;
       for (let k = c.x; k < c.x + c.w; k++) grid[c.y + c.h][k] = i;
       c.h += 1;
+      grownH += 1;
     }
   }
   return out;
+}
+
+/**
+ * A hole `fillHoles` left on purpose vs. one that traps the layout.
+ *
+ * A hole that is only ever bounded by the grid's own right/bottom edge (a
+ * trailing gutter after the stretch cap above) is fine to leave blank — it
+ * reads as "this row is done". A hole with a card somewhere to its right on
+ * the same row is "boxed": nothing can ever grow into it, dense packing
+ * already tried and failed, and `justifyRows` is the only fix. Only the
+ * second kind should trigger that fallback — the first kind is the
+ * INTENDED result of capping the stretch above, not a bug to paper over.
+ */
+export function hasInteriorHole(cells: PackedCell[], cols: number = GRID_COLS): boolean {
+  const rows = cells.reduce((m, c) => Math.max(m, c.y + c.h), 0);
+  const grid: boolean[][] = Array.from({ length: rows }, () => new Array(cols).fill(false));
+  cells.forEach(c => {
+    for (let r = c.y; r < c.y + c.h; r++) for (let k = c.x; k < c.x + c.w; k++) grid[r][k] = true;
+  });
+  for (let r = 0; r < rows; r++) {
+    for (let k = 0; k < cols; k++) {
+      if (grid[r][k]) continue;
+      for (let k2 = k + 1; k2 < cols; k2++) {
+        if (grid[r][k2]) return true;
+      }
+      break; // rest of the row (k onward) is empty — trailing gutter, not interior
+    }
+  }
+  return false;
 }
 
 /**
@@ -196,9 +247,11 @@ export function justifyRows(
 
 /**
  * Where every visible card is drawn: dense-packed at (at least) `minSpan`
- * columns wide, then — outside Customize — stretched into leftover holes, and
- * if a boxed-in hole survives that, laid out as justified rows instead. The
- * result has no holes at any width.
+ * columns wide, then — outside Customize — stretched into NEARBY leftover
+ * holes (capped at a third of the card's own span; see `fillHoles`), and if a
+ * boxed-in hole survives that, laid out as justified rows instead. A trailing
+ * gutter past the stretch cap is left blank on purpose (dagK coordinator,
+ * 2560px pass) — the result has no BOXED holes at any width, not zero holes.
  */
 export function layoutForDisplay(
   cards: { id: string; size: CardSize }[],
@@ -209,7 +262,11 @@ export function layoutForDisplay(
   const packed = packDense(sized);
   if (opts.fill === false) return packed;
   const filled = fillHoles(packed);
-  return countHoles(filled) === 0 ? filled : justifyRows(sized);
+  // Only a BOXED hole (a card somewhere to its right on the same row) forces
+  // the justified-rows fallback. A trailing gutter left by the stretch cap in
+  // `fillHoles` is the intended result, not a defect to paper over — see
+  // `hasInteriorHole`'s doc.
+  return hasInteriorHole(filled) ? justifyRows(sized) : filled;
 }
 
 /**
@@ -491,5 +548,19 @@ export function useLayout() {
     });
   }, []);
 
-  return { layout, setLayout, persistLayout };
+  // dagK home-templates lane: the one level of undo `PUT` snapshots on the
+  // daemon side (dashboard.rs's `snapshot_current_layout_before_write`) —
+  // this is the frontend half, in `DashboardOverflowMenu`'s "Revert" item.
+  // Applying a template goes through `persistLayout` above like any other
+  // layout write, so it snapshots the SAME way a hand-arranged change does;
+  // revert does not need to know templates exist.
+  const revertLayout = useCallback(async () => {
+    const restored = await apiFetch<DashboardLayoutData>('/api/dashboard/layout/revert', {
+      method: 'POST',
+    });
+    setLayout(restored);
+    return restored;
+  }, []);
+
+  return { layout, setLayout, persistLayout, revertLayout };
 }

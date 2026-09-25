@@ -211,7 +211,7 @@ function GrowthProjectRow({
         onPointerDown={() => setPressed(true)}
         onPointerUp={() => setPressed(false)}
         style={{
-          display: 'flex', alignItems: 'center', gap: space.lg,
+          display: 'flex', alignItems: 'center',
           width: '100%', padding: `${space.sm}px 0`,
           border: 'none', borderTop: `1px solid ${colors.border}`,
           background: pressed ? colors.fillActive : hover ? colors.fillHover : 'transparent',
@@ -219,7 +219,16 @@ function GrowthProjectRow({
           transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
         }}
       >
-        {children}
+        {/* dagK coordinator, 2560px pass: this row used to be the flex
+            container itself, so a card stretched to the full 12-column grid
+            (fillHoles) put the project name at the left edge and its stats
+            ~1,800px away at the right edge — readable as two unrelated lines,
+            not one row. Capped at a readable width (R3), the name/stats/
+            sparkline cluster together regardless of how wide the card is
+            drawn; the row's hit target and hover fill still span the card. */}
+        <span style={{ display: 'flex', alignItems: 'center', gap: space.lg, width: '100%', maxWidth: 720, minWidth: 0 }}>
+          {children}
+        </span>
       </button>
     </Tooltip>
   );

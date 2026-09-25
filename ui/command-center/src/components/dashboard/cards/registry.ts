@@ -8,6 +8,11 @@ import { TodosCard } from './TodosCard';
 import { ManifestCard } from './ManifestCard';
 import { GrowthResultsCard } from './GrowthResultsCard';
 import { CouncilCard } from './CouncilCard';
+import { TodayFocusCard } from './TodayFocusCard';
+import { OvernightDigestCard } from './OvernightDigestCard';
+import { FleetKpisCard } from './FleetKpisCard';
+import { StalledPatternCard } from './StalledPatternCard';
+import { ProjectHealthGridCard } from './ProjectHealthGridCard';
 
 /**
  * Dashboard card registration mechanism (issue #182).
@@ -102,6 +107,15 @@ export const CARD_REGISTRY: Record<string, CardRegistryEntry> = {
   todos:     { component: TodosCard,    name: 'To-dos',          description: 'Dated cards from every board, soonest first', defaultSize: { w: 5, h: 6 } },
   growth_results: { component: GrowthResultsCard, name: 'Growth', description: 'Growth actions across all projects — trendline and per-project performance', defaultSize: { w: 12, h: 6 } },
   council: { component: CouncilCard, name: 'Council', description: 'Weekly debate across your connected models, with actions in the Decision Inbox', defaultSize: { w: 12, h: 6 } },
+  // dagK home-templates lane — Morning Briefing + Operator Command Center's
+  // new synthesis cards (HOME_TEMPLATES_RESEARCH.md §3). henry_status and
+  // job_health are daemon-served MANIFEST cards instead (see
+  // dashboard_cards.rs's builtin_card_manifests) — they need no entry here.
+  today_focus: { component: TodayFocusCard, name: "Today's Focus", description: 'The one thing today needs from you, and why', defaultSize: { w: 7, h: 4 } },
+  overnight_digest: { component: OvernightDigestCard, name: 'Overnight', description: 'What happened while you were away', defaultSize: { w: 3, h: 4 } },
+  fleet_kpis: { component: FleetKpisCard, name: 'Fleet KPIs', description: 'Projects, active goals, stalled goals and decisions at a glance', defaultSize: { w: 12, h: 2 } },
+  stalled_pattern: { component: StalledPatternCard, name: 'Shared blockers', description: 'Stalled goals across projects that share the same blocker', defaultSize: { w: 12, h: 3 } },
+  project_health_grid: { component: ProjectHealthGridCard, name: 'Project health', description: 'One row per project — active goals, held goals, status', defaultSize: { w: 12, h: 5 } },
 };
 
 /** Turn a declarative manifest into a registry entry backed by ManifestCard. */

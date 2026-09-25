@@ -181,6 +181,42 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
                 placeholder: "City, e.g. San Francisco".to_string(),
             }),
         },
+        // dagK home-templates lane: Morning Briefing's top row
+        // (HOME_TEMPLATES_RESEARCH.md §2.1) — "the same numbers Henry's own
+        // status HUD shows, but as a Home card" rather than a second,
+        // divergent status readout (R7: one concept, one place). Existing
+        // data source: `GET /api/henry/status` (was sidebar/HUD-only).
+        CardManifest {
+            card_type: "henry_status".to_string(),
+            name: "Agent status".to_string(),
+            description: "What your agent is doing right now, and today's totals".to_string(),
+            // h:1 (single 60px grid row) clipped the compact layout's hero
+            // value line — a manifest 'compact' card is icon+label, a hero
+            // value and an inline supporting row (ManifestCard.tsx), which
+            // needs two rows' worth of height, not one (harness visual pass).
+            default_size: CardSize { w: 12, h: 2 },
+            layout: "compact".to_string(),
+            data_endpoint: "/api/dashboard/henry-status".to_string(),
+            refresh_seconds: Some(15),
+            source: "built-in".to_string(),
+            configure: None,
+        },
+        // Operator Command Center (§2.2) — `/api/job-health` already exists
+        // (job_health.rs) and was, per the QA walk, "dead, AutomateZone
+        // unmounted": a real endpoint nothing on Home ever showed. This is
+        // its first Home card, not a new health computation.
+        CardManifest {
+            card_type: "job_health".to_string(),
+            name: "Job health".to_string(),
+            description: "Scheduled jobs and background runs — what's on track, what isn't"
+                .to_string(),
+            default_size: CardSize { w: 4, h: 3 },
+            layout: "list".to_string(),
+            data_endpoint: "/api/dashboard/job-health".to_string(),
+            refresh_seconds: Some(60),
+            source: "built-in".to_string(),
+            configure: None,
+        },
     ]
 }
 
@@ -210,6 +246,8 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/dashboard/calendar", get(get_calendar))
         .route("/api/dashboard/weather", get(get_weather))
         .route("/api/dashboard/weather/location", put(put_weather_location))
+        .route("/api/dashboard/henry-status", get(get_henry_status))
+        .route("/api/dashboard/job-health", get(get_job_health))
         .with_state(state)
 }
 
@@ -890,6 +928,132 @@ async fn put_weather_location(
         .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
 
     Ok(Json(loc))
+}
+
+// ── Henry status (Home wrapper; dagK home-templates lane) ────────────────────
+//
+// The same numbers `GET /api/henry/status` (henry_status.rs) already
+// computes for the sidebar HUD, reduced to what a compact Home card needs —
+// deliberately NOT a second computation of "is Henry busy" (R7: one concept,
+// one place). See HOME_TEMPLATES_RESEARCH.md §2.1's "Henry status line".
+
+async fn get_henry_status(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let persona = state.persona.read().await;
+    let name = persona.first_name.clone();
+    drop(persona);
+
+    let sessions = state
+        .session_manager()
+        .list_session_summaries()
+        .await
+        .unwrap_or_default();
+    let now = chrono::Utc::now();
+    let two_min_ago = now - chrono::Duration::seconds(120);
+    let active_count = sessions
+        .iter()
+        .filter(|s| {
+            s.updated_at >= two_min_ago
+                && matches!(
+                    s.session_type,
+                    permagent::session::session_manager::SessionType::User
+                        | permagent::session::session_manager::SessionType::Scheduled
+                )
+        })
+        .count();
+    let today_midnight = now.date_naive().and_time(chrono::NaiveTime::MIN).and_utc();
+    let sessions_today = sessions
+        .iter()
+        .filter(|s| s.created_at >= today_midnight)
+        .count();
+
+    let summary = match active_count {
+        0 => format!("{name} is ready"),
+        1 => format!("{name} is working on 1 thing for you"),
+        n => format!("{name} is working on {n} things for you"),
+    };
+
+    Json(CardData {
+        cells: vec![CardCell {
+            label: name,
+            value: summary,
+            sub: Some(format!(
+                "{sessions_today} session{} today",
+                if sessions_today == 1 { "" } else { "s" }
+            )),
+            accent: active_count > 0,
+            ..Default::default()
+        }],
+        note: None,
+        configured: None,
+    })
+}
+
+// ── Job health (Home wrapper; dagK home-templates lane) ──────────────────────
+//
+// `GET /api/job-health` (job_health.rs) already exists and computes the real
+// truth table; the 2026-09-24 QA walk found it "dead, AutomateZone unmounted"
+// — a real endpoint nothing on Home ever rendered. This is its first Home
+// card, reusing `job_health::collect` rather than adding a second health
+// computation.
+
+async fn get_job_health(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let Ok(pool) = state.session_manager().pool_clone().await else {
+        return Json(CardData::note(
+            "Job health is unavailable — the runtime database isn't reachable",
+        ));
+    };
+    let scheduled = state.scheduler().list_scheduled_jobs().await;
+    let digest = permagent::job_health::collect(&pool, &scheduled).await;
+
+    if digest.jobs.is_empty() && digest.dead_letters.dead == 0 {
+        return Json(CardData::note("No scheduled jobs yet"));
+    }
+
+    let unhealthy = digest.unhealthy();
+    let mut cells: Vec<CardCell> = Vec::new();
+    if unhealthy.is_empty() && digest.dead_letters.dead == 0 {
+        cells.push(CardCell {
+            label: "All jobs".to_string(),
+            value: "Healthy".to_string(),
+            accent: true,
+            ..Default::default()
+        });
+    } else {
+        for job in unhealthy.iter().take(5) {
+            cells.push(CardCell {
+                label: job.label.clone(),
+                value: format!(
+                    "{} failure{}",
+                    job.failure_streak,
+                    if job.failure_streak == 1 { "" } else { "s" }
+                ),
+                sub: job.detail.clone(),
+                ..Default::default()
+            });
+        }
+        if digest.dead_letters.dead > 0 {
+            cells.push(CardCell {
+                label: "Dead letters".to_string(),
+                value: digest.dead_letters.dead.to_string(),
+                sub: digest
+                    .dead_letters
+                    .oldest_dead_at
+                    .clone()
+                    .map(|t| format!("oldest {t}")),
+                ..Default::default()
+            });
+        }
+    }
+
+    Json(CardData {
+        cells,
+        note: if digest.all_green {
+            None
+        } else {
+            Some("Needs attention".to_string())
+        },
+        configured: None,
+    })
 }
 
 #[cfg(test)]

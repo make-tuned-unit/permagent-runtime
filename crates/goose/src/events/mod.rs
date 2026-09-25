@@ -438,6 +438,14 @@ pub enum PermagentEventType {
     /// destination, so the Downloads pane can toast even for a file nobody
     /// has routed yet.
     InboxFileReceived,
+    /// The agent proposed a Home dashboard layout (a template or a composed
+    /// set of cards) via `preview_dashboard_layout` (dagK home-templates
+    /// lane). NEVER a persisted change — the daemon does not touch
+    /// `dashboard.json` for this event, only `apply_dashboard_layout` does.
+    /// The frontend catches this and shows the current-vs-proposed overlay
+    /// (Apply / Keep current / Try another); P9 (predictable adaptive UIs)
+    /// is why this is a proposal event and not a silent write.
+    DashboardLayoutPreview,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -891,6 +899,29 @@ pub fn app_open_item(
             "kind": kind,
             "project_id": project_id,
             "card_id": card_id,
+            "reason": reason,
+        }),
+    )
+}
+
+/// Emitted when the agent's `preview_dashboard_layout` tool proposes a Home
+/// layout (dagK home-templates lane). `layout` is the full
+/// `{ cards: [...] }` shape the frontend already knows how to render
+/// (`DashboardLayoutData`); `template_id` is `None` for an ad-hoc composed
+/// layout. The daemon never persists on this call — only
+/// `apply_dashboard_layout` (a separate, explicit tool) writes
+/// `dashboard.json` — so the frontend's overlay is always inspectable before
+/// anything changes (P9, `HOME_TEMPLATES_RESEARCH.md`).
+pub fn dashboard_layout_preview(
+    template_id: Option<&str>,
+    layout: &serde_json::Value,
+    reason: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::DashboardLayoutPreview,
+        serde_json::json!({
+            "template_id": template_id,
+            "layout": layout,
             "reason": reason,
         }),
     )

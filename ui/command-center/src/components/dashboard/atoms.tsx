@@ -219,7 +219,13 @@ export function CardScrollBody({ children, style, testId, className }: {
             '--pa-btn-pad': `${space.xxs}px ${space.md}px`,
             '--pa-btn-radius': `${radius.md}px`,
             '--pa-btn-weight': 600,
-            position: 'absolute', bottom: space.xxs, left: '50%', transform: 'translateX(-50%)',
+            // Bottom-RIGHT on the fade, not centred over content: centred, the
+            // pill sat on top of whichever row's text happened to be under the
+            // middle column — on a wide card that is real text, not empty fade
+            // (dagK coordinator, 2560px pass). The fade covers the full width,
+            // so a corner affordance still reads as "there's more" without
+            // masking anything a reader is mid-line on.
+            position: 'absolute', bottom: space.xxs, right: space.xxs,
             fontFamily: font.body, fontSize: textSize.micro, whiteSpace: 'nowrap',
             boxShadow: colors.elevationRaised,
           } as CSSProperties}

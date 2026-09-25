@@ -28,6 +28,7 @@ pub mod context_packet;
 pub mod conversation;
 pub mod cost_router;
 pub mod council;
+pub mod dashboard_insights;
 pub mod decision;
 pub mod decision_inbox;
 pub mod decisions;
