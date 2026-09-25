@@ -5,10 +5,14 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import type { BrainGraph, GraphEntity, GraphMemory } from './useBrainData';
 import {
   boundingSphere,
-  fitDistance,
+  cullOverlappingLabels,
+  fitToInsetRect,
   labelFade,
+  labelScreenPx,
   labelWorldHeight,
   pickLabels,
+  type ContentInsets,
+  type LabelBox,
   type LabelCandidate,
   type LabelSizing,
   type Vec3,
@@ -20,6 +24,7 @@ import {
   NODE_COLOR_FALLBACK,
 } from './graphPalette';
 import { predicateColor } from './brainEdgeColor';
+import { shouldRender } from './brainRenderGate';
 
 // ── Types ──────────────────────────────────────────────────────────────
 interface SimNode {
@@ -231,6 +236,11 @@ export class BrainScene {
   private orbitTarget = new THREE.Vector3();
   /** Keep the whole graph framed until the user zooms (or search re-aims). */
   private autoFit = true;
+  /** Chrome overlapping the canvas (header, bottom bar, an open key panel) —
+   *  BrainView measures these and calls `setContentInsets`. Framing fits the
+   *  sphere into the rect left over, not the full canvas (QA 2026-09-25: the
+   *  graph's bottom sat under the time-slider bar without this). */
+  private contentInsets: ContentInsets = { top: 0, right: 0, bottom: 0, left: 0 };
   /** Last framing: distance from the pivot and the sphere's radius. */
   private fitDist = 32;
   private fitRadius = 10;
@@ -238,6 +248,11 @@ export class BrainScene {
   private dragMoved = false;
   private dragStart = { x: 0, y: 0 };
   private hoveredNode: SimNode | null = null;
+  /** The panel's current selection (BrainView) — used only to break a label
+   *  collision in the selected node's favour over an unselected same-degree
+   *  neighbour. Independent of hover, which already gets its own boost. */
+  private selectedNodeId: string | null = null;
+  setSelectedId(id: string | null) { this.selectedNodeId = id; }
   /** node id → connected node ids (non-self edges) for hover highlighting. */
   private adjacency = new Map<string, Set<string>>();
 
@@ -247,8 +262,14 @@ export class BrainScene {
   private timeRange: [number, number] = [0, 1];
 
   private raf = 0;
+  private rafScheduled = false;
   private lastTime = 0;
   private disposed = false;
+  /** Externally controlled (BrainView: true only while Graph mode is shown).
+   *  See brainRenderGate.ts — this plus a 0×0 canvas or a hidden tab all pause
+   *  the render loop rather than spin it against nothing. */
+  private active = true;
+  private onVisibilityChange = () => { if (!document.hidden) this.scheduleFrame(); };
 
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
@@ -302,9 +323,10 @@ export class BrainScene {
     canvas.addEventListener('mousemove', this.onMouseMove);
     canvas.addEventListener('mouseup', this.onMouseUp);
     canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
 
     this.lastTime = performance.now();
-    this.animate();
+    this.scheduleFrame();
   }
 
   private lastDataKey = '';
@@ -505,12 +527,20 @@ export class BrainScene {
     node.labelMul = 1;
   }
 
+  /** Scratch vector for the label screen-projection pass — one allocation,
+   *  reused every frame rather than per label. */
+  private labelProjectTmp = new THREE.Vector3();
+
   /** Label pass, run every frame. Names track their nodes; each is drawn at a
    *  clamped SCREEN size (never a giant bitmap), only a budget of them show at
    *  once — you, the hovered neighbourhood and search hits always, then the
-   *  biggest hubs — and the far side of the graph recedes. */
+   *  biggest hubs — the far side of the graph recedes — and any two that would
+   *  still overlap on screen (a dense centre, near-identical degree) are
+   *  collision-culled, keeping the higher-priority one: hovered, then
+   *  selected, then degree. */
   private updateLabels() {
     const cam = this.camera.position;
+    const viewW = Math.max(1, this.container.clientWidth);
     const viewH = Math.max(1, this.container.clientHeight);
     const cands: LabelCandidate[] = [];
     const dist = new Map<string, number>();
@@ -529,13 +559,18 @@ export class BrainScene {
     }
     const shown = pickLabels(cands, LABEL_BUDGET);
 
+    // Pass 1: size, position and fade every label the budget allows, and
+    // record its screen-space box for the collision pass below.
+    const boxes: LabelBox[] = [];
+    const bySprite = new Map<string, SimNode>();
     for (const n of this.nodes) {
       const sprite = n.labelSprite;
       if (!sprite) continue;
       const d = dist.get(n.id);
       if (d === undefined || !shown.has(n.id)) { sprite.visible = false; continue; }
 
-      const h = labelWorldHeight(d, FOV_Y, viewH, { ...LABEL_SIZING, worldHeight: LABEL_WORLD_H });
+      const sizing = { ...LABEL_SIZING, worldHeight: LABEL_WORLD_H };
+      const h = labelWorldHeight(d, FOV_Y, viewH, sizing);
       sprite.scale.set((sprite.userData.aspect ?? 4) * h, h, 1);
       // Sit just below the node, scaled with the node itself.
       const r = (n.baseScale ?? 1) * (n.kind === 'self' ? 1.5 : n.kind === 'memory' ? 0.55 : 0.9);
@@ -544,12 +579,41 @@ export class BrainScene {
       const fade = n.kind === 'self' ? 1 : labelFade(d, this.fitDist, this.fitRadius);
       const alpha = Math.min(1, fade * Math.min(1, n.labelMul ?? 1));
       sprite.material.opacity = alpha * 0.95;
-      sprite.visible = alpha > 0.02;
+      if (alpha <= 0.02) { sprite.visible = false; continue; }
+      sprite.visible = true; // tentative — the collision pass may still hide it
+
+      const screenPx = labelScreenPx(d, FOV_Y, viewH, sizing);
+      const proj = this.labelProjectTmp.copy(sprite.position).project(this.camera);
+      const priority = n === this.hoveredNode ? 1e6
+        : n.id === this.selectedNodeId ? 1e5
+          : n.kind === 'self' ? 1e4
+            : (n.baseScale ?? 1);
+      boxes.push({
+        id: n.id,
+        x: (proj.x * 0.5 + 0.5) * viewW,
+        y: (-proj.y * 0.5 + 0.5) * viewH,
+        width: screenPx * (sprite.userData.aspect ?? 4),
+        height: screenPx,
+        priority,
+      });
+      bySprite.set(n.id, n);
+    }
+
+    // Pass 2: two labels that still overlap on screen — only the winner stays.
+    const survivors = cullOverlappingLabels(boxes);
+    for (const box of boxes) {
+      if (!survivors.has(box.id)) bySprite.get(box.id)!.labelSprite!.visible = false;
     }
   }
 
+  /** Chrome-aware content rect the graph must fit inside (BrainView). */
+  setContentInsets(insets: ContentInsets) { this.contentInsets = insets; }
+
   /** Frame every visible node: bounding sphere → distance that fits it in the
-   *  narrower field of view with margin. Eased so a settling layout glides. */
+   *  visible rect left over after `contentInsets`, with margin. The pivot
+   *  pans (in the current camera's own right/up plane) so the sphere centres
+   *  in that rect rather than the full canvas. Eased so a settling layout
+   *  glides. */
   private updateFraming(dt: number) {
     const pts: Vec3[] = [];
     for (const n of this.nodes) {
@@ -557,12 +621,26 @@ export class BrainScene {
     }
     // Pad by the largest node body + a label's worth so edges aren't clipped.
     const sphere = boundingSphere(pts, 1.6);
-    const aspect = this.camera.aspect || 1;
     this.fitRadius = sphere.radius;
-    this.fitDist = fitDistance(sphere.radius, FOV_Y, aspect, 1.12);
+    const viewW = Math.max(1, this.container.clientWidth);
+    const viewH = Math.max(1, this.container.clientHeight);
+    const fit = fitToInsetRect(sphere.radius, FOV_Y, viewW, viewH, this.contentInsets, 1.12);
+    this.fitDist = fit.distance;
     if (!this.autoFit) return;
+    // This frame's orbit basis — orbitYaw/Pitch are already updated for this
+    // frame by the time updateFraming runs (see animate()), so this matches
+    // the camera position/lookAt computed right after this call.
+    const cy = Math.cos(this.orbitYaw), sy = Math.sin(this.orbitYaw);
+    const cp = Math.cos(this.orbitPitch), sp = Math.sin(this.orbitPitch);
+    const dir = new THREE.Vector3(cp * sy, sp, cp * cy);
+    const forward = dir.clone().negate().normalize();
+    const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+    const up = new THREE.Vector3().crossVectors(right, forward);
+    const target = new THREE.Vector3(...sphere.center)
+      .addScaledVector(right, fit.panRight)
+      .addScaledVector(up, fit.panUp);
     const k = 1 - Math.exp(-dt * 4);
-    this.orbitTarget.lerp(new THREE.Vector3(...sphere.center), k);
+    this.orbitTarget.lerp(target, k);
     this.orbitRadius += (this.fitDist - this.orbitRadius) * k;
   }
 
@@ -929,9 +1007,41 @@ export class BrainScene {
   };
 
   // ── Animation Loop ───────────────────────────────────────────────────
-  private animate = () => {
-    if (this.disposed) return;
+  /** True while the graph is the shown mode, sized, and the tab is visible.
+   *  Called once per candidate frame — see brainRenderGate.ts. */
+  private canRender(): boolean {
+    return shouldRender({
+      active: this.active,
+      width: this.container.clientWidth,
+      height: this.container.clientHeight,
+      documentHidden: typeof document !== 'undefined' && document.hidden,
+    });
+  }
+
+  /** Requests exactly one frame, if one isn't already pending and the gate is
+   *  open. Idempotent — safe to call from `resize()`, `setActive()`, and the
+   *  visibility listener without ever double-scheduling. */
+  private scheduleFrame() {
+    if (this.disposed || this.rafScheduled || !this.canRender()) return;
+    this.rafScheduled = true;
     this.raf = requestAnimationFrame(this.animate);
+  }
+
+  /** Graph shown/hidden (BrainView toggling List↔Graph). Resuming re-arms the
+   *  loop; going inactive just lets the next `animate()` decline to reschedule. */
+  setActive(active: boolean) {
+    this.active = active;
+    if (active) this.scheduleFrame();
+  }
+
+  private animate = () => {
+    this.rafScheduled = false;
+    if (this.disposed) return;
+    // The gate closed since this frame was scheduled (mode switched away,
+    // container collapsed, tab backgrounded) — stop here. Nothing polls while
+    // paused; `resize()`/`setActive()`/the visibility listener each re-arm it.
+    if (!this.canRender()) return;
+    this.scheduleFrame();
 
     const now = performance.now();
     const dt = Math.min(0.05, (now - this.lastTime) / 1000);
@@ -1010,15 +1120,23 @@ export class BrainScene {
   resize() {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h);
-    if (this.composer) this.composer.setSize(w, h);
+    // A collapsed container (List mode, or mid-layout) hits this too — never
+    // feed a 0-height aspect ratio or a 0×0 size to the renderer.
+    if (w > 0 && h > 0) {
+      this.camera.aspect = w / h;
+      this.camera.updateProjectionMatrix();
+      this.renderer.setSize(w, h);
+      if (this.composer) this.composer.setSize(w, h);
+    }
+    // The container may have just grown from 0×0 (or the tab regained focus
+    // right as a resize landed) — re-arm the loop if the gate is now open.
+    this.scheduleFrame();
   }
 
   // ── Dispose ──────────────────────────────────────────────────────────
   dispose() {
     this.disposed = true;
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
     cancelAnimationFrame(this.raf);
     const canvas = this.renderer.domElement;
     canvas.removeEventListener('mousedown', this.onMouseDown);

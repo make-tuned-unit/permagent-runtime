@@ -77,6 +77,51 @@ export function worldPerPixel(distance: number, fovYDeg: number, viewportHeightP
   return (2 * Math.max(0.001, distance) * Math.tan(fy / 2)) / Math.max(1, viewportHeightPx);
 }
 
+/** Pixels of chrome overlapping each edge of a fixed-FOV canvas — a header, a
+ *  bottom bar, an open side panel. The canvas itself never crops or resizes;
+ *  only the camera's framing accounts for what these cover. */
+export interface ContentInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/**
+ * Fit a bounding sphere into the sub-rectangle of a `viewportW × viewportH`
+ * canvas left over after `insets`, for a camera that always renders the FULL
+ * canvas (no cropping/`setViewOffset`).
+ *
+ * QA 2026-09-25 at 1440×900: the fit used the whole viewport, so the bottom
+ * of the graph sat under the time-slider bar. Two things change relative to
+ * `fitDistance`: the camera backs off further, sized to the SMALLER effective
+ * field of view the visible band actually subtends (computed from real pixel
+ * geometry, not a small-angle guess); and the orbit pivot pans in the current
+ * camera's own right/up plane so the sphere's on-screen centre lands in the
+ * middle of the visible rect rather than the full canvas's centre — derived
+ * so that a point on the camera's optical axis (screen centre) reprojects to
+ * exactly the visible rect's centre pixel.
+ */
+export function fitToInsetRect(
+  radius: number, fovYDeg: number, viewportW: number, viewportH: number,
+  insets: ContentInsets, margin = 1.15,
+): { distance: number; panRight: number; panUp: number } {
+  const visW = Math.max(1, viewportW - insets.left - insets.right);
+  const visH = Math.max(1, viewportH - insets.top - insets.bottom);
+  const fy = (fovYDeg * Math.PI) / 180;
+  const aspect = viewportW / Math.max(1, viewportH);
+  const fx = horizontalFov(fovYDeg, aspect);
+  const halfY = Math.atan((visH / viewportH) * Math.tan(fy / 2));
+  const halfX = Math.atan((visW / viewportW) * Math.tan(fx / 2));
+  const distance = (radius * margin) / Math.sin(Math.min(halfY, halfX));
+  // The visible rect's centre, in pixels offset from the full canvas's own
+  // centre (+x right, +y down — standard screen coordinates).
+  const offsetPxX = (insets.left - insets.right) / 2;
+  const offsetPxY = (insets.top - insets.bottom) / 2;
+  const upp = worldPerPixel(distance, fovYDeg, viewportH);
+  return { distance, panRight: -offsetPxX * upp, panUp: offsetPxY * upp };
+}
+
 export interface LabelSizing {
   /** Height the label would have in the world if it were not clamped. */
   worldHeight: number;
@@ -130,6 +175,38 @@ export function pickLabels(cands: LabelCandidate[], budget: number): Set<string>
   rest.sort((a, b) => (b.importance - a.importance) || (a.distance - b.distance) || (a.id < b.id ? -1 : 1));
   for (let i = 0; i < rest.length && i < budget; i++) out.add(rest[i].id);
   return out;
+}
+
+/** A label's on-screen box, in pixels, for collision culling. */
+export interface LabelBox {
+  id: string;
+  /** Centre, screen px. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Higher wins a collision. Caller's scale (e.g. hovered > selected > degree). */
+  priority: number;
+}
+
+/**
+ * Screen-space label collision culling (Obsidian critique again: a dense
+ * centre with several similar-sized nodes drew overlapping names — "Nadia
+ * Petrova" over "Priya Chandrasekaran" — illegible, and neither one more
+ * readable than the other). Greedy by priority: highest first, each box kept
+ * unless it overlaps one already kept. Ties break on `id` so the result is
+ * deterministic frame to frame (no flicker from an unstable sort).
+ */
+export function cullOverlappingLabels(boxes: LabelBox[]): Set<string> {
+  const sorted = [...boxes].sort((a, b) => (b.priority - a.priority) || (a.id < b.id ? -1 : 1));
+  const kept: LabelBox[] = [];
+  const keptIds = new Set<string>();
+  for (const b of sorted) {
+    const overlapsKept = kept.some(k =>
+      Math.abs(b.x - k.x) * 2 < (b.width + k.width) && Math.abs(b.y - k.y) * 2 < (b.height + k.height));
+    if (!overlapsKept) { kept.push(b); keptIds.add(b.id); }
+  }
+  return keptIds;
 }
 
 /**
