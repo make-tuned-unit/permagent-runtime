@@ -9,7 +9,9 @@ use tokio::pin;
 use tokio_util::io::StreamReader;
 
 use super::api_client::{ApiClient, AuthMethod};
-use super::base::{ConfigKey, MessageStream, ModelInfo, Provider, ProviderDef, ProviderMetadata};
+use super::base::{
+    collect_stream, ConfigKey, MessageStream, ModelInfo, Provider, ProviderDef, ProviderMetadata,
+};
 use super::errors::ProviderError;
 use super::formats::anthropic::{
     cache_ttl, create_request_split, response_to_streaming_message, thinking_type, ThinkingType,
@@ -389,5 +391,26 @@ impl Provider for AnthropicProvider {
                 yield (message, usage);
             }
         }))
+    }
+
+    /// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md fix 8): route
+    /// non-streaming `AccountedFastCompletion` calls through the SAME
+    /// stable/volatile split the interactive main loop already gets via
+    /// [`Self::stream_split`], instead of the trait default's
+    /// [`super::base::Provider::complete_split`] flattening everything back
+    /// into one blob before it reaches this provider — see that default
+    /// method's doc comment for the cache-read symptom this fixes.
+    async fn complete_split(
+        &self,
+        model_config: &ModelConfig,
+        session_id: &str,
+        system: &SystemPromptParts,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        let stream = self
+            .stream_split(model_config, session_id, system, messages, tools)
+            .await?;
+        collect_stream(stream).await
     }
 }
