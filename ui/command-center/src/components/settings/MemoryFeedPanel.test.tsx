@@ -1,11 +1,14 @@
 /**
  * @vitest-environment jsdom
  *
- * "What Henry learns from" (Settings → Memory, memory-feed lane 2026-09-25).
+ * "What Henry learns from" (Settings → Memory, memory-feed lane 2026-09-25;
+ * layout pass 2026-09-25 after a coordinator review at 1440px).
  * Pins: loading skeleton, error + retry, a source reading "not yet" at zero
- * count, a fed source showing its count and last-fed time, a disabled source
- * showing "Off", an errored source showing its warning, and the source/Brain
- * navigation links actually calling `navigateToTool`.
+ * count, a never-fed source reading "Never" (not "date unknown"), a fed
+ * source showing its count and last-fed time, a disabled source showing
+ * "Off" and linking to Settings → Privacy, a failing source showing its
+ * error, the summary line's counts and failing-filter toggle, and the
+ * source/Brain navigation links actually calling `navigateToTool`.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,15 +18,21 @@ import { act } from 'react-dom/test-utils';
 const hooks = vi.hoisted(() => ({
   getBrainFeedStatus: vi.fn(),
   navigateToTool: vi.fn(),
+  setPendingSettingsSection: vi.fn(),
 }));
 
 vi.mock('../../lib/api', () => ({
   api: { getBrainFeedStatus: hooks.getBrainFeedStatus },
 }));
 
-vi.mock('../../lib/store', () => ({
-  navigateToTool: hooks.navigateToTool,
-}));
+vi.mock('../../lib/store', () => {
+  const state = { setPendingSettingsSection: hooks.setPendingSettingsSection };
+  const useCommandCenter = Object.assign(
+    (selector: (value: typeof state) => unknown) => selector(state),
+    { getState: () => state },
+  );
+  return { useCommandCenter, navigateToTool: hooks.navigateToTool };
+});
 
 import { MemoryFeedPanel } from './MemoryFeedPanel';
 
@@ -55,6 +64,7 @@ async function flush() {
 beforeEach(() => {
   hooks.getBrainFeedStatus.mockReset();
   hooks.navigateToTool.mockReset();
+  hooks.setPendingSettingsSection.mockReset();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -102,6 +112,18 @@ describe('MemoryFeedPanel', () => {
     expect(r?.textContent).toContain('Not yet');
   });
 
+  it('reads "Never" (not "date unknown") for a source with no last_fed_at', async () => {
+    hooks.getBrainFeedStatus.mockResolvedValueOnce({
+      sources: [row('lesson')],
+      chat_outbox: { pending: 0, dead: 0 },
+    });
+    act(() => { root.render(<MemoryFeedPanel />); });
+    await flush();
+    const r = container.querySelector('[data-testid="memory-feed-row-lesson"]');
+    expect(r?.textContent).toContain('Never');
+    expect(r?.textContent).not.toContain('date unknown');
+  });
+
   it('renders a fed source\'s count and never claims "not yet" for it', async () => {
     hooks.getBrainFeedStatus.mockResolvedValueOnce({
       sources: [row('card', { count: 12, last_fed_at: '2026-09-24T12:00:00Z' })],
@@ -114,25 +136,33 @@ describe('MemoryFeedPanel', () => {
     expect(r?.textContent).not.toContain('Not yet');
   });
 
-  it('flags a disabled source with an "Off" chip', async () => {
+  it('flags a disabled source with an "Off" chip that links to Settings → Privacy', async () => {
     hooks.getBrainFeedStatus.mockResolvedValueOnce({
       sources: [row('finance', { enabled: false })],
       chat_outbox: { pending: 0, dead: 0 },
     });
     act(() => { root.render(<MemoryFeedPanel />); });
     await flush();
-    expect(container.querySelector('[data-testid="memory-feed-disabled-finance"]')).toBeTruthy();
+    const chip = container.querySelector('[data-testid="memory-feed-disabled-finance"]') as HTMLElement;
+    expect(chip).toBeTruthy();
+    expect(chip.textContent).toContain('Off');
+    act(() => { chip.click(); });
+    expect(hooks.setPendingSettingsSection).toHaveBeenCalledWith('privacy');
   });
 
-  it('flags an errored source with a warning indicator carrying the error text', async () => {
+  it('flags a failing source with its error and a "failed" count when dead > 0', async () => {
     hooks.getBrainFeedStatus.mockResolvedValueOnce({
-      sources: [row('briefing', { last_error: 'brain unavailable' })],
+      sources: [row('briefing', { last_error: 'brain unavailable', dead: 3 })],
       chat_outbox: { pending: 0, dead: 0 },
     });
     act(() => { root.render(<MemoryFeedPanel />); });
     await flush();
-    const errIcon = container.querySelector('[data-testid="memory-feed-error-briefing"]');
-    expect(errIcon).toBeTruthy();
+    const chip = container.querySelector('[data-testid="memory-feed-error-briefing"]');
+    expect(chip).toBeTruthy();
+    expect(chip?.textContent).toContain('3 failed');
+    // Static chips with an explanation get a tabIndex so the tooltip (the
+    // error text) is keyboard-reachable too — see Chip's own contract.
+    expect(chip?.getAttribute('tabindex')).toBe('0');
   });
 
   it('folds the chat outbox depth into the chat row instead of reading its own (always-zero) pending/dead', async () => {
@@ -143,7 +173,7 @@ describe('MemoryFeedPanel', () => {
     act(() => { root.render(<MemoryFeedPanel />); });
     await flush();
     const r = container.querySelector('[data-testid="memory-feed-row-chat"]');
-    expect(r?.textContent).toContain('2 failed permanently');
+    expect(r?.textContent).toContain('2 failed');
     expect(r?.textContent).toContain('4 queued');
   });
 
@@ -185,5 +215,55 @@ describe('MemoryFeedPanel', () => {
     const r = container.querySelector('[data-testid="memory-feed-row-lesson"]') as HTMLElement;
     const sourceBtn = Array.from(r.querySelectorAll('button')).find(b => b.textContent === 'Source');
     expect(sourceBtn).toBeFalsy();
+  });
+
+  it('summarizes source count, total facts, failing count and off count', async () => {
+    hooks.getBrainFeedStatus.mockResolvedValueOnce({
+      sources: [
+        row('goal', { count: 100 }),
+        row('card', { count: 50, last_error: 'boom' }),
+        row('finance', { count: 0, enabled: false }),
+      ],
+      chat_outbox: { pending: 0, dead: 0 },
+    });
+    act(() => { root.render(<MemoryFeedPanel />); });
+    await flush();
+    expect(container.textContent).toContain('3 sources');
+    expect(container.textContent).toContain('150 facts remembered');
+    expect(container.textContent).toContain('1 failing');
+    expect(container.textContent).toContain('1 turned off');
+  });
+
+  it('the failing-count chip filters the list down to only failing rows, and toggles back', async () => {
+    hooks.getBrainFeedStatus.mockResolvedValueOnce({
+      sources: [
+        row('goal', { count: 100 }),
+        row('card', { count: 50, last_error: 'boom' }),
+      ],
+      chat_outbox: { pending: 0, dead: 0 },
+    });
+    act(() => { root.render(<MemoryFeedPanel />); });
+    await flush();
+    expect(container.querySelector('[data-testid="memory-feed-row-goal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="memory-feed-row-card"]')).toBeTruthy();
+
+    const filterChip = container.querySelector('[data-testid="memory-feed-failing-filter"]') as HTMLElement;
+    expect(filterChip).toBeTruthy();
+    act(() => { filterChip.click(); });
+    expect(container.querySelector('[data-testid="memory-feed-row-goal"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="memory-feed-row-card"]')).toBeTruthy();
+
+    act(() => { filterChip.click(); });
+    expect(container.querySelector('[data-testid="memory-feed-row-goal"]')).toBeTruthy();
+  });
+
+  it('does not show a failing-count chip when nothing is failing', async () => {
+    hooks.getBrainFeedStatus.mockResolvedValueOnce({
+      sources: [row('goal', { count: 1 })],
+      chat_outbox: { pending: 0, dead: 0 },
+    });
+    act(() => { root.render(<MemoryFeedPanel />); });
+    await flush();
+    expect(container.querySelector('[data-testid="memory-feed-failing-filter"]')).toBeFalsy();
   });
 });
