@@ -10,7 +10,7 @@
  * Sections are found by `data-section="<id>"` inside `scrollRoot`, so the page
  * keeps rendering them where it always did.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, RefObject } from 'react';
 import { font, getReduceMotion, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -24,36 +24,78 @@ export interface SectionNavItem {
 }
 
 /** Height of the bar plus breathing room: a section whose top has passed this
- *  line is the one being read. Also the sections' `scroll-margin-top`. */
+ *  line is the one being read. Also the sections' `scroll-margin-top`, and
+ *  the top edge of the IntersectionObserver's reading band below. */
 export const SECTION_NAV_OFFSET = 56;
+
+/**
+ * Pure: which nav item is "current" given which sections are presently
+ * inside the reading band (see the observer's `rootMargin` below), in NO
+ * particular order.
+ *
+ * QA 2026-09-25: the nav lit "Automations" at scroll top. Root cause was
+ * TWO bugs at once, both fixed by making this its own pure function instead
+ * of scroll-math folded into a `useState` initializer:
+ *   1. `useState(() => items[0]?.id)` only runs ONCE, at first mount — on
+ *      that very first render, before any data had loaded, "Automations"
+ *      (rendered while `jobsLoading`) genuinely WAS `items[0]`. Once
+ *      "Running Now" and "Recent Activity" appeared above it, nothing ever
+ *      told the nav its own `items[0]` had changed.
+ *   2. Nothing ran the calculation again on mount/resize — only on a
+ *      `scroll` event, so a page that loads already at the top (no scroll
+ *      ever fires) kept whatever the initializer guessed forever.
+ * This function has no such staleness: called with an empty/no-match
+ * `intersecting` set (nothing has entered the band — true at scroll top,
+ * before the page has scrolled at all) it always resolves to the FIRST item
+ * in `items`, in `items`' own order, never a stale leftover.
+ */
+export function pickActiveSection(items: SectionNavItem[], intersecting: ReadonlySet<string> | readonly string[]): string | null {
+  if (items.length === 0) return null;
+  const inBand = intersecting instanceof Set ? intersecting : new Set(intersecting);
+  return items.find(i => inBand.has(i.id))?.id ?? items[0].id;
+}
 
 export function SectionNav({ items, scrollRoot }: { items: SectionNavItem[]; scrollRoot: RefObject<HTMLElement | null> }) {
   const { colors } = useTheme();
   const material = useGlass('glass');
-  const [active, setActive] = useState<string | null>(items[0]?.id ?? null);
+  const [active, setActive] = useState<string | null>(() => pickActiveSection(items, []));
+  const intersectingRef = useRef<Set<string>>(new Set());
 
   const findSection = useCallback((id: string) =>
     scrollRoot.current?.querySelector<HTMLElement>(`[data-section="${id}"]`) ?? null, [scrollRoot]);
 
-  // Track the section in view from the scroller's own scroll events.
+  // Whenever the section LIST changes (data loads, a section appears or
+  // disappears), recompute immediately against whatever is currently known
+  // to be in the band — not on the next scroll, which may never come.
+  useEffect(() => { setActive(pickActiveSection(items, intersectingRef.current)); }, [items]);
+
+  // A real scrollspy, not scroll-position arithmetic: each section is
+  // observed against a thin horizontal band starting `SECTION_NAV_OFFSET`px
+  // below the scroller's own top (clearing the sticky bar itself) and
+  // ending most of the way down the viewport, so "current" changes as a
+  // section's top crosses that line — the same behaviour a real reader's
+  // eye tracks. `root: scrollRoot.current` scopes it to the page's own
+  // scroller, not the window (this page's scroller is a nested div).
   useEffect(() => {
     const root = scrollRoot.current;
-    if (!root) return;
-    const onScroll = () => {
-      const rootTop = root.getBoundingClientRect().top;
-      let current = items[0]?.id ?? null;
-      for (const item of items) {
-        const el = findSection(item.id);
-        if (el && el.getBoundingClientRect().top - rootTop <= SECTION_NAV_OFFSET) current = item.id;
+    if (!root || typeof IntersectionObserver === 'undefined') return;
+    const elements = items
+      .map(item => ({ id: item.id, el: findSection(item.id) }))
+      .filter((x): x is { id: string; el: HTMLElement } => !!x.el);
+    if (elements.length === 0) return;
+
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        const match = elements.find(x => x.el === entry.target);
+        if (!match) continue;
+        if (entry.isIntersecting) intersectingRef.current.add(match.id);
+        else intersectingRef.current.delete(match.id);
       }
-      // At the very bottom the last short section can never reach the line.
-      if (root.scrollHeight > root.clientHeight && root.scrollTop + root.clientHeight >= root.scrollHeight - 2) {
-        current = items[items.length - 1]?.id ?? current;
-      }
-      setActive(current);
-    };
-    root.addEventListener('scroll', onScroll, { passive: true });
-    return () => root.removeEventListener('scroll', onScroll);
+      setActive(pickActiveSection(items, intersectingRef.current));
+    }, { root, rootMargin: `-${SECTION_NAV_OFFSET}px 0px -65% 0px`, threshold: 0 });
+
+    for (const { el } of elements) observer.observe(el);
+    return () => observer.disconnect();
   }, [scrollRoot, items, findSection]);
 
   const jump = (id: string) => {

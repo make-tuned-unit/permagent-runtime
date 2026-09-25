@@ -15,6 +15,7 @@ import {
   lastFailure,
   nextRunLabel,
   runChip,
+  runState,
   type ScheduleHealthFacts,
 } from './scheduleHealth';
 
@@ -139,6 +140,38 @@ describe('runChip', () => {
 
   it('reads OK for a healthy job', () => {
     expect(runChip({ ...base, last_status: 'ok', last_error: null })).toMatchObject({ label: 'OK', token: 'success' });
+  });
+});
+
+describe('runState — one fact, never "Never run yet" beside "RUNNING NOW" (R5)', () => {
+  it('is "running", from process_start_time, even when last_run is null', () => {
+    // QA 2026-09-25: a card read "RUNNING NOW" / "Never run yet · 12 runs" —
+    // exactly this combination (currently running, no last_run recorded yet).
+    expect(runState({ currently_running: true, last_run: null, process_start_time: '2026-09-25T00:00:00Z' }))
+      .toEqual({ kind: 'running', sinceIso: '2026-09-25T00:00:00Z' });
+  });
+
+  it('falls back to last_run for "since" when process_start_time is missing', () => {
+    expect(runState({ currently_running: true, last_run: '2026-09-25T00:00:00Z', process_start_time: null }))
+      .toEqual({ kind: 'running', sinceIso: '2026-09-25T00:00:00Z' });
+  });
+
+  it('is "running" with no since-time at all rather than inventing one', () => {
+    expect(runState({ currently_running: true, last_run: null, process_start_time: null }))
+      .toEqual({ kind: 'running', sinceIso: null });
+  });
+
+  it('is "ran" from last_run when not currently running', () => {
+    expect(runState({ currently_running: false, last_run: '2026-09-20T00:00:00Z' }))
+      .toEqual({ kind: 'ran', sinceIso: '2026-09-20T00:00:00Z' });
+  });
+
+  it('is "never" only when truly idle with no last_run', () => {
+    expect(runState({ currently_running: false, last_run: null })).toEqual({ kind: 'never' });
+  });
+
+  it('prefers "running" over "never" even with no run history at all', () => {
+    expect(runState({ currently_running: true })).toEqual({ kind: 'running', sinceIso: null });
   });
 });
 

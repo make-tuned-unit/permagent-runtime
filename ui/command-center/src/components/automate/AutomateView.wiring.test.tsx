@@ -43,6 +43,16 @@ const failingJob = {
   last_error: 'invalid config: Unknown extension: bravesearch', next_run: null,
 };
 
+// QA 2026-09-25: this exact combination — running right now, with no
+// completed run on record yet — read as "RUNNING NOW" / "Never run yet ·
+// 12 runs" on the same card.
+const runningJob = {
+  ...okJob,
+  id: 'downloads-sweep', display_name: 'Downloads sweep', last_run: null,
+  currently_running: true, process_start_time: new Date(Date.now() - 6 * 60_000).toISOString(),
+  last_status: null, next_run: null, run_count: 12,
+};
+
 let jobsFixture: unknown[] = [okJob];
 let healthFixture: unknown = { jobs: [{ id: 'digest-mailer', label: 'Digest mailer', cadence: 'weekdays', outcome: 'ok' }] };
 
@@ -61,6 +71,13 @@ beforeEach(() => {
     }
     if (url === '/config/extensions') return { extensions: [], warnings: [] };
     if (url === '/api/runs') return { runs: [] };
+    if (url === '/schedule/digest-mailer/inspect') {
+      return {
+        sessionId: null, processStartTime: null, runningDurationSeconds: null,
+        recipe: { title: 'Digest mailer', description: 'x', extensions: ['gmail', 'developer'], instructionsPreview: 'Read mail…' },
+        nextRuns: ['2026-09-29T09:00:00Z', '2026-09-30T09:00:00Z', '2026-10-01T09:00:00Z'],
+      };
+    }
     return {};
   }) as never);
   container = document.createElement('div');
@@ -151,4 +168,42 @@ it('benchmark §4: an unacknowledged failure is a persistent alert that opens th
   act(() => { closeBtn.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
   expect(container.querySelector('[aria-label*="open the failing run"]')).toBeNull();
   expect(container.querySelector('[aria-label="Open details for Flight monitor"]')).toBeTruthy();
+});
+
+it('R5: a running job never reads "Never run yet" beside its RUNNING chip; the meta line says when it started', async () => {
+  jobsFixture = [runningJob];
+  await act(async () => { root.render(<AutomateView />); });
+  await settle();
+  expect(container.textContent).toContain('RUNNING');
+  expect(container.textContent).not.toContain('Never run yet');
+  expect(container.textContent).toMatch(/Running now · started \d+m ago/);
+
+  // The detail panel's own field agrees — one function, not two guesses.
+  const card = container.querySelector('[aria-label="Open details for Downloads sweep"]')!;
+  act(() => { card.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await settle();
+  expect(container.textContent).toContain('Started');
+  expect(container.textContent).not.toContain('Never');
+});
+
+it('A7: the detail panel consumes /schedule/{id}/inspect — next runs and what it can use', async () => {
+  await act(async () => { root.render(<AutomateView />); });
+  await settle();
+  const card = container.querySelector('[aria-label="Open details for Digest mailer"]')!;
+  act(() => { card.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await settle();
+  const nextRuns = container.querySelector('[data-testid="automation-next-runs"]')!;
+  expect(nextRuns.textContent).toContain('Next 3 runs');
+  expect(nextRuns.textContent).toMatch(/Tue|Wed|Thu/);
+  const canUse = container.querySelector('[data-testid="automation-can-use"]')!;
+  expect(canUse.textContent).toContain('Can use:');
+  expect(canUse.textContent).toContain('gmail, developer');
+});
+
+it('R5: "Agents at work" never says "all resting" while a schedule the daemon says is running is on screen', async () => {
+  jobsFixture = [runningJob];
+  await act(async () => { root.render(<AutomateView />); });
+  await settle();
+  expect(container.textContent).not.toContain('all resting');
+  expect(container.textContent).toContain('1 active');
 });

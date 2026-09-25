@@ -172,6 +172,35 @@ export function historicalFailureNote(
   return `Last run failed${when} — ${since}; ${next}`;
 }
 
+/**
+ * What to say about a job's last/current run — one function so the card's
+ * meta line and the detail panel's "Last Run" field can never disagree with
+ * each other or with its RUNNING/SCHEDULED/PAUSED chip.
+ *
+ * QA 2026-09-25: a card reading "RUNNING NOW" also read "Never run yet · 12
+ * runs" underneath it — `last_run` (stamped when a run completes, on some
+ * daemons only when it STARTS) can lag or predate the in-progress run, and
+ * `run_count` disagreeing with "never" made it worse. While a job is
+ * running, the run in progress is what's true, not whatever its last
+ * finished run says.
+ */
+export interface RunStateFacts {
+  currently_running?: boolean;
+  last_run?: string | null;
+  process_start_time?: string | null;
+}
+
+export type RunState =
+  | { kind: 'running'; sinceIso: string | null }
+  | { kind: 'ran'; sinceIso: string }
+  | { kind: 'never' };
+
+export function runState(job: RunStateFacts): RunState {
+  if (job.currently_running) return { kind: 'running', sinceIso: job.process_start_time ?? job.last_run ?? null };
+  if (job.last_run) return { kind: 'ran', sinceIso: job.last_run };
+  return { kind: 'never' };
+}
+
 /** The status chip's word for a job's last result, honest about history. */
 export type RunChip = { label: string; token: 'success' | 'danger' | 'warning' | 'textDim'; hint?: string };
 

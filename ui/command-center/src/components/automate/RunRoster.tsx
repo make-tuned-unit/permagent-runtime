@@ -22,18 +22,9 @@ import { relativeTimeAgo } from '../../lib/time-decay';
 import { useCommandCenter } from '../../lib/store';
 
 import { Tooltip } from '../common/Tooltip';
-import { rosterDetail, rosterProblem, type RosterScheduleFacts } from './runRosterModel';
+import { reconcileRosterRuns, rosterDetail, rosterProblem, type RosterRunItem, type RosterScheduleFacts } from './runRosterModel';
 
-interface RunItem {
-  kind: 'worker' | 'schedule' | 'session';
-  id: string;
-  name: string;
-  status: 'working' | 'idle' | 'error' | 'missed' | 'paused';
-  detail: string | null;
-  last_activity: string | null;
-  started_at: string | null;
-  interruptible: boolean;
-}
+type RunItem = RosterRunItem;
 
 const KIND_LABEL: Record<RunItem['kind'], string> = {
   worker: 'Worker',
@@ -123,11 +114,19 @@ export function RunRoster({ schedules }: { schedules?: RosterScheduleFacts[] } =
     paused: colors.textMuted,
   }[s]);
 
+  // R5: reconcile against `/schedule/list` BEFORE sorting/counting, so this
+  // panel and "Running Now" never show two different answers to "is it
+  // running" for the same schedule (see runRosterModel.reconcileRosterRuns).
+  const reconciledRuns = useMemo(
+    () => reconcileRosterRuns(runs, schedules ?? []),
+    [runs, schedules],
+  );
+
   // Sort the eye to what matters: active first, then problems, then the rest.
   const rank = (s: RunItem['status']) =>
     ({ working: 0, error: 1, missed: 2, paused: 3, idle: 4 }[s] ?? 5);
-  const sorted = [...runs].sort((a, b) => rank(a.status) - rank(b.status));
-  const activeCount = runs.filter(r => r.status === 'working').length;
+  const sorted = [...reconciledRuns].sort((a, b) => rank(a.status) - rank(b.status));
+  const activeCount = reconciledRuns.filter(r => r.status === 'working').length;
 
   return (
     <div

@@ -18,6 +18,23 @@ export interface RosterScheduleFacts {
   paused?: boolean;
   last_error?: string | null;
   consecutive_failures?: number;
+  /** The daemon's own "is this running right now" — see `reconcileRosterRuns`.
+   *  Left `undefined` (not `false`) when the caller doesn't know, so a test
+   *  fixture built before this field existed cannot be silently downgraded. */
+  currently_running?: boolean;
+  process_start_time?: string | null;
+  display_name?: string | null;
+}
+
+export interface RosterRunItem {
+  kind: 'worker' | 'schedule' | 'session';
+  id: string;
+  name: string;
+  status: 'working' | 'idle' | 'error' | 'missed' | 'paused';
+  detail: string | null;
+  last_activity: string | null;
+  started_at: string | null;
+  interruptible: boolean;
 }
 
 export interface RosterDetail {
@@ -55,6 +72,46 @@ export function rosterDetail(
   const words = cronToEnglish(cron);
   if (words === cron) return { words: cron, raw: null };
   return { words: facts?.tz ? `${words} (${facts.tz})` : words, raw: cron };
+}
+
+/**
+ * R5: "Agents at work" (`/api/runs`, a best-effort aggregate) and "Running
+ * Now" (`/schedule/list`'s own `currently_running`) are two independent
+ * polls of the very same fact for a schedule, and can disagree for a beat —
+ * or entirely, when the aggregate's row for a fresh run hasn't landed yet.
+ * QA 2026-09-25: the roster said "all resting" directly above a card reading
+ * "RUNNING NOW — Downloads sweep". `/schedule/list`'s `currently_running` is
+ * the scheduler's own state, so for any schedule it is the one truth this
+ * reconciles the roster to before render, rather than keeping two answers to
+ * one question on screen at once.
+ */
+export function reconcileRosterRuns(
+  runs: RosterRunItem[],
+  schedules: RosterScheduleFacts[],
+): RosterRunItem[] {
+  const byId = new Map(schedules.map(s => [s.id, s] as const));
+  const seen = new Set<string>();
+  const reconciled = runs.map(r => {
+    if (r.kind !== 'schedule') return r;
+    const facts = byId.get(r.id);
+    if (!facts || typeof facts.currently_running !== 'boolean') return r;
+    seen.add(r.id);
+    if (facts.currently_running) {
+      return r.status === 'working' ? r : { ...r, status: 'working' as const, started_at: facts.process_start_time ?? r.started_at };
+    }
+    // The schedule list says this one is NOT running — `/api/runs` cannot
+    // outrank that for the one binary fact it also claims to know.
+    return r.status === 'working' ? { ...r, status: 'idle' as const } : r;
+  });
+  // Running per the schedule list, but missing from `/api/runs` entirely —
+  // the run started between polls, or the aggregate simply missed the row.
+  const missing: RosterRunItem[] = schedules
+    .filter(s => s.currently_running === true && !seen.has(s.id))
+    .map(s => ({
+      kind: 'schedule' as const, id: s.id, name: s.display_name || s.id, status: 'working' as const,
+      detail: null, last_activity: null, started_at: s.process_start_time ?? null, interruptible: true,
+    }));
+  return missing.length > 0 ? [...reconciled, ...missing] : reconciled;
 }
 
 /** The line explaining a paused or failing schedule, or null when there is nothing to say. */

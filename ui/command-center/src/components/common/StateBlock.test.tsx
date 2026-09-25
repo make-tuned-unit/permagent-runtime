@@ -46,6 +46,15 @@ describe('StateBlock', () => {
     expect(detail.style.color).not.toBe(asRendered(getThemedColors().textDim));
   });
 
+  it('renders a plain, dim "not ready yet" line for loading — no retry, no error emphasis', () => {
+    const root_ = render(<StateBlock tone="loading" title="Loading automations…" />);
+    expect(root_.textContent).toBe('Loading automations…');
+    expect(root_.querySelector('button')).toBeNull();
+    const titleEl = root_.querySelector('div') as HTMLElement;
+    expect(titleEl.style.color).toBe(asRendered(getThemedColors().textDim));
+    expect(titleEl.style.color).not.toBe(asRendered(getThemedColors().danger));
+  });
+
   it('keeps error emphasis and retry action semantics unchanged', () => {
     const retry = vi.fn();
     const root_ = render(

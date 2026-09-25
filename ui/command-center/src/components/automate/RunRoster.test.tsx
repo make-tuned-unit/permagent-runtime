@@ -15,7 +15,7 @@ const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock('../../lib/api', () => ({ apiFetch }));
 
 import { RunRoster } from './RunRoster';
-import { rosterDetail, rosterProblem } from './runRosterModel';
+import { reconcileRosterRuns, rosterDetail, rosterProblem, type RosterRunItem, type RosterScheduleFacts } from './runRosterModel';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -68,6 +68,47 @@ describe('runRosterModel (pure)', () => {
   });
 });
 
+describe('reconcileRosterRuns — one source of truth for "is it running" (R5)', () => {
+  const idleRun: RosterRunItem = {
+    kind: 'schedule', id: 'downloads-sweep', name: 'Downloads sweep', status: 'idle',
+    detail: null, last_activity: null, started_at: null, interruptible: false,
+  };
+
+  it('upgrades a stale-idle roster row when the schedule list says it is running', () => {
+    const facts: RosterScheduleFacts[] = [{ id: 'downloads-sweep', currently_running: true, process_start_time: '2026-09-25T00:00:00Z' }];
+    const [row] = reconcileRosterRuns([idleRun], facts);
+    expect(row).toMatchObject({ status: 'working', started_at: '2026-09-25T00:00:00Z' });
+  });
+
+  it('synthesizes a working row for a schedule missing from /api/runs entirely', () => {
+    const facts: RosterScheduleFacts[] = [{ id: 'downloads-sweep', currently_running: true, display_name: 'Downloads sweep', process_start_time: '2026-09-25T00:00:00Z' }];
+    const rows = reconcileRosterRuns([], facts);
+    expect(rows).toEqual([{
+      kind: 'schedule', id: 'downloads-sweep', name: 'Downloads sweep', status: 'working',
+      detail: null, last_activity: null, started_at: '2026-09-25T00:00:00Z', interruptible: true,
+    }]);
+  });
+
+  it('downgrades a stale-working roster row once the schedule list says it stopped', () => {
+    const workingRun: RosterRunItem = { ...idleRun, status: 'working' };
+    const facts: RosterScheduleFacts[] = [{ id: 'downloads-sweep', currently_running: false }];
+    const [row] = reconcileRosterRuns([workingRun], facts);
+    expect(row.status).toBe('idle');
+  });
+
+  it('leaves a row alone when the schedule facts do not say either way (old fixture, no field)', () => {
+    const workingRun: RosterRunItem = { ...idleRun, status: 'working' };
+    const [row] = reconcileRosterRuns([workingRun], [{ id: 'downloads-sweep' }]);
+    expect(row.status).toBe('working');
+  });
+
+  it('never touches a non-schedule row', () => {
+    const worker: RosterRunItem = { kind: 'worker', id: 'w1', name: 'Librarian', status: 'idle', detail: null, last_activity: null, started_at: null, interruptible: false };
+    const [row] = reconcileRosterRuns([worker], [{ id: 'w1', currently_running: true }]);
+    expect(row.status).toBe('idle');
+  });
+});
+
 describe('RunRoster rows', () => {
   it('shows schedules in plain words with the expression as a secondary', async () => {
     await mount();
@@ -84,6 +125,26 @@ describe('RunRoster rows', () => {
     expect(text).toContain('3d ago');
     expect(text).toContain('7d ago');
     expect(text).not.toMatch(/\d{2,}h \d+m ago/);
+  });
+
+  it('never says "all resting" while a schedule the daemon says is running is on screen (R5)', async () => {
+    apiFetch.mockReset().mockImplementation(async (url: string) => {
+      // /api/runs hasn't caught up yet — an empty aggregate, same shape as
+      // the QA repro (a brand-new run, the aggregate poll a beat behind).
+      if (url === '/api/runs') return { runs: [] };
+      return {};
+    });
+    await act(async () => {
+      root.render(<RunRoster schedules={[{
+        id: 'downloads-sweep', display_name: 'Downloads sweep', currently_running: true,
+        process_start_time: new Date().toISOString(),
+      }]} />);
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const text = container.textContent ?? '';
+    expect(text).not.toContain('all resting');
+    expect(text).toContain('1 active');
+    expect(text).toContain('Downloads sweep');
   });
 
   it('labels a paused row, says why, and resumes it through /schedule/{id}/unpause', async () => {

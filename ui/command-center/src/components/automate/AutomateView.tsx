@@ -46,6 +46,8 @@ import {
   lastFailure,
   nextRunLabel,
   runChip,
+  runState,
+  weekdayTime,
   type ScheduleRunStatus,
 } from './scheduleHealth';
 import { LearnedList } from './LearnedList';
@@ -53,6 +55,7 @@ import { JobHealthStrip } from './JobHealthStrip';
 import { summarizeHealth, type JobHealthDigest } from './jobHealthModel';
 import { SectionNav, SECTION_NAV_OFFSET, type SectionNavItem } from './SectionNav';
 import { Chip } from '../common/Chip';
+import { StateBlock } from '../common/StateBlock';
 // ── Types ────────────────────────────────────────────────────────────
 
 
@@ -92,6 +95,20 @@ interface ScheduledJob {
   user_customized: boolean | null;
   version: string | null;
   embedded_version: string | null;
+}
+
+/** GET /schedule/{id}/inspect (routes/schedule.rs) — camelCase on the wire. */
+interface InspectResponse {
+  sessionId?: string | null;
+  processStartTime?: string | null;
+  runningDurationSeconds?: number | null;
+  recipe?: {
+    title: string;
+    description: string;
+    extensions: string[];
+    instructionsPreview?: string | null;
+  } | null;
+  nextRuns: string[];
 }
 
 interface SessionInfo {
@@ -169,6 +186,21 @@ function timeAgo(iso: string): string {
   if (hrs < 24) return `${hrs}h ago`;
   const days = Math.floor(hrs / 24);
   return `${days}d ago`;
+}
+
+/**
+ * "Ran 3h ago" / "Running now · started 2m ago" / "Never run yet" — the ONE
+ * place this sentence is built, called from both the card meta line and the
+ * detail panel's "Last Run" field so they can't read as two different facts
+ * (see scheduleHealth.runState for why "never" alone was not enough).
+ */
+function runStateWords(job: Parameters<typeof runState>[0]): string {
+  const state = runState(job);
+  switch (state.kind) {
+    case 'running': return state.sinceIso ? `Running now · started ${timeAgo(state.sinceIso)}` : 'Running now';
+    case 'ran': return `Ran ${timeAgo(state.sinceIso)}`;
+    case 'never': return 'Never run yet';
+  }
 }
 
 // Human summary of a job's schedule across kinds (cron / one-time / interval).
@@ -957,9 +989,9 @@ export function AutomateView() {
         {jobs.length > 0 && (
           <Section id="recent-activity" title="Recent Activity" count={allRuns.length}>
             {runsLoading && allRuns.length === 0 ? (
-              <SectionState kind="loading" message="Loading run history…" />
+              <StateBlock tone="loading" title="Loading run history…" compact />
             ) : runsError && allRuns.length === 0 ? (
-              <SectionState kind="error" message={runsError} onRetry={() => { setRunsLoading(true); fetchAllSessions(); }} />
+              <StateBlock tone="error" title={runsError!} onRetry={() => { setRunsLoading(true); fetchAllSessions(); }} compact />
             ) : allRuns.length === 0 ? (
               <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '8px 0' }}>
                 No runs yet. History appears here once an {AUTOMATION.one} runs — use "Run Now" on one to try it.
@@ -1014,9 +1046,9 @@ export function AutomateView() {
         {!trulyEmpty && (
           <Section title={AUTOMATION.title} count={filteredJobs.length} id="automations">
             {jobsLoading && jobs.length === 0 ? (
-              <SectionState kind="loading" message="Loading automations…" />
+              <StateBlock tone="loading" title="Loading automations…" compact />
             ) : jobsError && jobs.length === 0 ? (
-              <SectionState kind="error" message={`Couldn't load automations. ${jobsError}`} onRetry={() => { setJobsLoading(true); fetchJobs(); }} />
+              <StateBlock tone="error" title={`Couldn't load automations. ${jobsError}`} onRetry={() => { setJobsLoading(true); fetchJobs(); }} compact />
             ) : filteredJobs.length === 0 ? (
               <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '8px 0' }}>
                 {q
@@ -1078,10 +1110,11 @@ export function AutomateView() {
         {/* ── INSTALLED ── */}
         <Section id="installed" title="Installed" count={filteredExtensions.length} collapsed>
           {extensionsError ? (
-            <SectionState
-              kind="error"
-              message={`Couldn't read what ${agentName} can do. ${extensionsError}`}
+            <StateBlock
+              tone="error"
+              title={`Couldn't read what ${agentName} can do. ${extensionsError}`}
               onRetry={fetchExtensions}
+              compact
             />
           ) : !showInstalledExpanded ? (
             /* Disclosure pair (this and "Hide ↑" below): both do nothing but
@@ -1212,51 +1245,6 @@ function Section({ id, title, count, accentColor, collapsed, children }: {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Per-section loading / error state (distinct from empty, which each section
-// renders inline). Error offers a retry so a failed fetch is never a dead end.
-// ═══════════════════════════════════════════════════════════════════════
-
-function SectionState({ kind, message, onRetry }: {
-  // `unknown`, not `void`: a retry that returns a promise gets the button
-  // primitive's pending spinner + success tick for the round trip.
-  kind: 'loading' | 'error'; message: string; onRetry?: () => unknown;
-}) {
-  const { colors } = useTheme();
-  if (kind === 'loading') {
-    return (
-      <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '8px 0' }}>{message}</div>
-    );
-  }
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: space.xl, flexWrap: 'wrap',
-      padding: `${space.xl}px ${space.xxl}px`, borderRadius: radius.md,
-      background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.2)}`,
-    }}>
-      <span style={{ fontSize: textSize.caption, color: colors.danger, flex: 1, minWidth: 0 }}>{message}</span>
-      {onRetry && (
-        <Button
-          colors={colors}
-          onClick={onRetry}
-          style={{
-            '--pa-btn-bg': withAlpha(colors.danger, 0.12),
-            '--pa-btn-fg': colors.danger,
-            '--pa-btn-border': withAlpha(colors.danger, 0.25),
-            '--pa-btn-bg-hover': withAlpha(colors.danger, 0.22),
-            '--pa-btn-border-hover': withAlpha(colors.danger, 0.45),
-            '--pa-btn-pad': '4px 12px',
-            '--pa-btn-radius': `${radius.sm}px`,
-            '--pa-btn-weight': 600,
-            fontFamily: font.body,
-            flexShrink: 0,
-          } as CSSProperties}
-        >Retry</Button>
-      )}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════
 // Recipe card (for Recipes + Running Now sections)
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1382,7 +1370,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
         {cronHint ? (
           <Tooltip content={cronHint}><span tabIndex={0} style={{ outline: 'none' }}>{schedule}</span></Tooltip>
         ) : schedule}
-        {' '}&middot; {job.last_run ? `Ran ${timeAgo(job.last_run)}` : 'Never run yet'}
+        {' '}&middot; {runStateWords(job)}
         {!!job.run_count && <> &middot; {job.run_count} run{job.run_count === 1 ? '' : 's'}</>}
         {/* Benchmark research §4: "next run" is a column of its own, not
             buried in the detail panel — shown here whenever the daemon sends
@@ -1514,6 +1502,19 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, onOpenLas
   const statusColor = job.currently_running ? colors.success : job.paused ? colors.textDim : colors.cyan;
   const hasUpdate = job.starter_id && job.user_customized && job.embedded_version && job.version !== job.embedded_version;
   const detailFailure = lastFailure(job);
+  // A7: /schedule/{id}/inspect — the recipe's own extensions and the next few
+  // times it will actually fire, read once per job (best-effort: a failed or
+  // slow fetch just means this block doesn't appear, not an error banner —
+  // everything else on this panel already came from `/schedule/list`).
+  const [inspect, setInspect] = useState<InspectResponse | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setInspect(null);
+    apiFetch<InspectResponse>(`/schedule/${encodeURIComponent(job.id)}/inspect`)
+      .then(data => { if (!cancelled) setInspect(data); })
+      .catch(() => { /* silent — this panel has plenty to show without it */ });
+    return () => { cancelled = true; };
+  }, [job.id]);
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.xxl }}>
@@ -1530,7 +1531,17 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, onOpenLas
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px', marginBottom: detailFailure.kind !== 'none' ? 12 : 20 }}>
         <MetaField label="Schedule" value={scheduleSummary(job)} hint={rawCronTooltip(job)} />
         <MetaField label="Status" value={job.currently_running ? 'Running' : job.paused ? 'Paused' : 'Active'} />
-        <MetaField label="Last Run" value={job.last_run ? timeAgo(job.last_run) : 'Never'} />
+        <MetaField
+          label={job.currently_running ? 'Started' : 'Last Run'}
+          value={(() => {
+            const state = runState(job);
+            switch (state.kind) {
+              case 'running': return state.sinceIso ? timeAgo(state.sinceIso) : 'just now';
+              case 'ran': return timeAgo(state.sinceIso);
+              case 'never': return 'Never';
+            }
+          })()}
+        />
         <MetaField label="Last Result" value={detailFailure.kind === 'historical' ? 'Waiting for next run' : runChip(job)?.label ?? '—'} />
         {!!job.run_count && <MetaField label="Runs" value={String(job.run_count)} />}
         {!!job.max_retries && <MetaField label="Max Retries" value={String(job.max_retries)} />}
@@ -1575,6 +1586,22 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, onOpenLas
           >View that run &rarr;</Button>
         </div>
       )}
+      {/* A7: what /schedule/{id}/inspect adds beyond the list row — the next
+          few real fire times, and what the recipe can actually reach.
+          Absent (not an error state) when the daemon has no answer yet, or
+          for an older daemon / a recipe that failed to parse. */}
+      {!!inspect?.nextRuns?.length && (
+        <div data-testid="automation-next-runs" style={{ marginBottom: space.xl, fontSize: textSize.caption, color: colors.textMuted }}>
+          <span style={{ fontWeight: 600, color: colors.text }}>Next {inspect.nextRuns.length} run{inspect.nextRuns.length === 1 ? '' : 's'}: </span>
+          {inspect.nextRuns.map(iso => weekdayTime(iso)).join(' · ')}
+        </div>
+      )}
+      {inspect?.recipe && (
+        <div data-testid="automation-can-use" style={{ marginBottom: space.xl, fontSize: textSize.caption, color: colors.textMuted }}>
+          <span style={{ fontWeight: 600, color: colors.text }}>Can use: </span>
+          {inspect.recipe.extensions.length > 0 ? inspect.recipe.extensions.join(', ') : "the session's default tools"}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
         {job.currently_running ? (
           <Button colors={colors} onClick={() => onKill(job.id)} flashSuccess={false} style={actionVars(colors, 'danger')}>Stop</Button>
@@ -1609,7 +1636,8 @@ function ExtensionDetail({ ext }: { ext: ExtensionInfo }) {
         {ext.available_tools.length > 0 ? (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm }}>
             {ext.available_tools.map(t => (
-              <span key={t} style={{ fontSize: textSize.micro, fontFamily: font.mono, padding: `${space.xxs}px ${space.md}px`, borderRadius: radius.sm, background: colors.border, color: colors.textMuted }}>{t}</span>
+              // R6: a fixed capability label, not a live claim — `static`.
+              <Chip key={t} kind="static" tone="neutral" quiet>{t}</Chip>
             ))}
           </div>
         ) : (
@@ -1878,7 +1906,7 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
           <div style={{ maxHeight: 600, overflowY: 'auto' }}><RenderedReport text={reportText} /></div>
         </>
       ) : loadError ? (
-        <SectionState kind="error" message="Couldn't load this run's report." onRetry={() => setReloadTick(t => t + 1)} />
+        <StateBlock tone="error" title="Couldn't load this run's report." onRetry={() => setReloadTick(t => t + 1)} compact />
       ) : (
         <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '4px 0' }}>
           No report was captured for this run.
@@ -2405,11 +2433,9 @@ runId, findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActi
 function CategoryBadge({ category }: { category: CategoryKey }) {
   const { colors } = useTheme();
   const color = categoryColor(category, colors);
-  return (
-    <span style={{ fontSize: textSize.micro, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: withAlpha(color, 0.15), color, flexShrink: 0, whiteSpace: 'nowrap' }}>
-      {CATEGORY_LABELS[category]}
-    </span>
-  );
+  // R6: a fixed classification, not a live claim — `static`, with the
+  // category's own colour (there's no single ChipTone per category).
+  return <Chip kind="static" color={color} style={{ flexShrink: 0 }}>{CATEGORY_LABELS[category]}</Chip>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════

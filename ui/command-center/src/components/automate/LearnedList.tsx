@@ -17,6 +17,7 @@ import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { Chip } from '../common/Chip';
 import { Tooltip } from '../common/Tooltip';
 import type { SkillProposal, SkillState } from '../../lib/store';
 import { withAlpha } from '../dashboard/decisions/format';
@@ -74,7 +75,7 @@ export function LearnedList({ skills, proposals, onOpenSkill, onSaveProposal, on
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: space.lg, marginBottom: space.sm }}>
                   <div style={{ width: 8, height: 8, borderRadius: '50%', background: colors.warning, flexShrink: 0, marginTop: space.sm }} />
                   <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, lineHeight: 1.35, overflowWrap: 'anywhere' }}>{human.title}</div>
-                  <span style={{ fontSize: 10, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: withAlpha(colors.warning, 0.15), color: colors.warning, flexShrink: 0 }}>PROPOSED</span>
+                  <Chip kind="static" tone="warning" style={{ flexShrink: 0 }}>PROPOSED</Chip>
                 </div>
                 <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.md }}>
                   Seen {proposal.occurrence_count} time{proposal.occurrence_count !== 1 ? 's' : ''}
