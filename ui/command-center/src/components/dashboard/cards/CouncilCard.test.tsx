@@ -11,7 +11,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
 vi.mock('../../../lib/api', () => ({
-  api: { getCouncilLatest: vi.fn() },
+  api: { getCouncilLatest: vi.fn(), getCouncilReports: vi.fn() },
 }));
 vi.mock('../decisions/useDecisions', () => ({ useDecisions: () => ({}) }));
 vi.mock('../decisions/DecisionInbox', () => ({ DecisionInbox: () => null }));
@@ -23,6 +23,7 @@ import { api } from '../../../lib/api';
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const getLatest = vi.mocked(api.getCouncilLatest);
+const getReports = vi.mocked(api.getCouncilReports);
 
 let container: HTMLDivElement;
 let root: Root;
@@ -43,6 +44,7 @@ async function advance(ms: number) {
 beforeEach(() => {
   vi.useFakeTimers();
   getLatest.mockReset();
+  getReports.mockReset();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -115,4 +117,69 @@ it('renders the report body as formatted markdown, not literal asterisks and has
   expect(h4.style.fontSize).toBe('');
   expect(body.className).toContain('[&_h4]:font-semibold');
   expect(body.style.whiteSpace).not.toBe('pre-wrap');
+});
+
+// ── CR1 (dagK): Past sessions ────────────────────────────────────────────
+// GET /api/council/reports?limit= had no caller anywhere in the UI — the
+// Council card could only ever show the single latest session. These prove
+// the list loads lazily, renders each entry (including one with no report),
+// and that picking one swaps the card's displayed report/session without a
+// second network round trip (the list response already carries the report).
+
+it('CR1: Past sessions loads lazily on first open and lists each entry', async () => {
+  getLatest.mockResolvedValue({
+    report: { headline: 'Latest', markdown: 'latest body' },
+    session: { status: 'complete' },
+    positions: [], openActions: 0,
+  } as never);
+  getReports.mockResolvedValue({
+    sessions: [
+      { session: { id: 's2', started_at: '2026-09-02T00:00:00Z', status: 'complete' }, report: { headline: 'Second newest' } },
+      { session: { id: 's1', started_at: '2026-09-01T00:00:00Z', status: 'failed' }, report: null },
+    ],
+  } as never);
+  await act(async () => { root.render(<CouncilCard />); });
+  await settle();
+
+  expect(getReports).not.toHaveBeenCalled();
+  const toggle = Array.from(container.querySelectorAll('button')).find(b => /Past sessions/i.test(b.textContent ?? ''))!;
+  await act(async () => { toggle.click(); });
+  await settle();
+
+  expect(getReports).toHaveBeenCalledTimes(1);
+  expect(container.textContent).toContain('Second newest');
+  expect(container.textContent).toContain('failed, no report');
+});
+
+it('CR1: opening a past session shows ITS report, with a way back to the latest', async () => {
+  getLatest.mockResolvedValue({
+    report: { headline: 'Latest report', markdown: 'latest body' },
+    session: { status: 'complete' },
+    positions: [], openActions: 0,
+  } as never);
+  getReports.mockResolvedValue({
+    sessions: [
+      { session: { id: 's2', started_at: '2026-09-02T00:00:00Z', status: 'complete' }, report: { headline: 'Older report', markdown: 'older body' } },
+    ],
+  } as never);
+  await act(async () => { root.render(<CouncilCard />); });
+  await settle();
+
+  const toggle = Array.from(container.querySelectorAll('button')).find(b => /Past sessions/i.test(b.textContent ?? ''))!;
+  await act(async () => { toggle.click(); });
+  await settle();
+
+  const row = Array.from(container.querySelectorAll('button')).find(b => /Older report/i.test(b.textContent ?? ''))!;
+  await act(async () => { row.click(); });
+  await settle();
+
+  expect(container.textContent).toContain('Older report');
+  expect(container.textContent).not.toContain('Latest report');
+  // Exactly one network call for the list; opening the row cost nothing more.
+  expect(getReports).toHaveBeenCalledTimes(1);
+
+  const back = Array.from(container.querySelectorAll('button')).find(b => /Back to latest/i.test(b.textContent ?? ''))!;
+  await act(async () => { back.click(); });
+  await settle();
+  expect(container.textContent).toContain('Latest report');
 });

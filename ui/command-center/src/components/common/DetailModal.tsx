@@ -62,6 +62,21 @@ interface Props {
    * a pane you can Tab out of it would simply be false.
    */
   placement?: 'center' | 'contained';
+  /**
+   * Vertical position of a `center`-placement panel within the scrim.
+   *
+   * `center` (the default) puts the panel's MIDDLE at the viewport's middle,
+   * so any content that changes the panel's height — a disclosure expanding,
+   * a row loading in — moves every control in the panel, including the one
+   * still under the pointer (GM2: expanding "Show proof of work" in the goal
+   * detail modal shifted Cancel/Close under a waiting click). `top` fixes the
+   * panel's TOP a constant distance below the viewport's top instead, so
+   * content only ever grows downward into the panel's own internal scroll
+   * (`overflow: auto` on the body, already in place) and nothing already on
+   * screen moves. Ignored for `placement: 'contained'`, which has no scrim to
+   * center or anchor within.
+   */
+  align?: 'center' | 'top';
   /** Overrides on the footer row — the twin of `bodyStyle`, for a footer whose
    *  actions must wrap rather than be squeezed onto one line (a narrow dock),
    *  or that wants its own alignment. */
@@ -81,10 +96,14 @@ const FOCUSABLE = [
   'input:not([disabled])', 'select:not([disabled])', '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
+/** `align: 'top'`'s fixed distance from the viewport's top edge — composed
+ *  from the space scale (3 × `huge`) rather than a bare px literal. */
+const TOP_ANCHOR_OFFSET = space.huge * 3;
+
 export function DetailModal({
   title, badge, onClose, footer, children,
   width = 'min(560px, 92vw)', height, headerLeft, headerRight, bodyStyle, footerStyle,
-  placement = 'center', stopEscapePropagation,
+  placement = 'center', align = 'center', stopEscapePropagation,
 }: Props) {
   const { colors, reduceMotion } = useTheme();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -180,9 +199,13 @@ export function DetailModal({
         style={{
           ...(modal
             // An explicit height is the cap too, or the default 86vh silently
-            // shortens a viewer that asked for more.
+            // shortens a viewer that asked for more. `top` anchoring reserves
+            // the same gap below the panel as above it (TOP_ANCHOR_OFFSET on
+            // both sides) instead of the vh-relative 86vh a centred panel uses.
             ? {
-              width, height, maxHeight: height ?? '86vh',
+              width, height,
+              maxHeight: height ?? (align === 'top' ? `calc(100vh - ${TOP_ANCHOR_OFFSET * 2}px)` : '86vh'),
+              marginTop: align === 'top' ? TOP_ANCHOR_OFFSET : undefined,
               borderRadius: radius.lg,
               border: `1px solid ${colors.border}`,
             }
@@ -203,13 +226,26 @@ export function DetailModal({
           borderBottom: '1px solid', ...edge(edges.top),
         }}>
           {headerLeft}
-          <span id={titleId} style={{
-            fontFamily: font.display, fontSize: textSize.body, fontWeight: 600,
-            color: colors.text, flex: 1, minWidth: 0,
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>
-            {title}
-          </span>
+          {/* GM5/R3: the title never wraps onto a second row — that pushes the
+              badge and close button down with it and breaks the header's
+              fixed height every consumer of this shell relies on. One line,
+              ellipsized, with the untruncated text on hover/focus (never the
+              native HTML attribute this Tooltip primitive replaces, per R3)
+              instead of only in the tab/window title. */}
+          <Tooltip content={title}>
+            {/* tabIndex={-1}: hoverable, and focusable only programmatically —
+                NOT in the Tab order (the FOCUSABLE trap above explicitly
+                excludes `[tabindex="-1"]`), so this doesn't reorder the
+                panel's existing keyboard path through its real controls. */}
+            <span id={titleId} tabIndex={-1} style={{
+              fontFamily: font.display, fontSize: textSize.body, fontWeight: 600,
+              color: colors.text, flex: 1, minWidth: 0,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              display: 'block',
+            }}>
+              {title}
+            </span>
+          </Tooltip>
           {badge && (
             <span style={{
               fontFamily: font.mono, fontSize: 10, letterSpacing: '0.04em',
@@ -284,7 +320,7 @@ export function DetailModal({
         // sit on — and it is theme-aware, which a flat 50% black is not: on the
         // silver theme it reads as a blackout rather than as a recede.
         background: colors.veil,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        display: 'flex', alignItems: align === 'top' ? 'flex-start' : 'center', justifyContent: 'center',
       }}
     >
       {panel}

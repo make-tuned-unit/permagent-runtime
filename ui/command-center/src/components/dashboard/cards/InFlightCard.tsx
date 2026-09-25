@@ -5,13 +5,9 @@ import { useOrchestratorName } from '../../world/shared/useOrchestratorName';
 import { SectionTitle, EmptyNote } from '../atoms';
 import { useCommandCenter } from '../../../lib/store';
 import type { ActiveGoal } from '../../../lib/useLiveGoals';
+import { goalStateLabel } from '../../../lib/goalStateLabel';
 
 import { Tooltip } from '../../common/Tooltip';
-const STATE_LABEL: Record<string, string> = {
-  ready: 'Ready',
-  in_progress: 'In Progress',
-  review: 'Review',
-};
 
 /** A text line that truncates with an ellipsis instead of wrapping or being
  *  sliced by the tile edge. Every line of a row uses it: the title had an
@@ -158,7 +154,7 @@ const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
   // card is a button and looked exactly like one that wasn't.
   const [hover, setHover] = useState(false);
   const [pressed, setPressed] = useState(false);
-  const status = `${goal.hold_note ? 'Held' : (STATE_LABEL[goal.state] ?? goal.state)}${goal.assigned_to ? ` · ${goal.assigned_to}` : ''}`;
+  const status = `${goalStateLabel({ stateBinding: goal.state, holdNote: goal.hold_note })}${goal.assigned_to ? ` · ${goal.assigned_to}` : ''}`;
   const note = goal.hold_note || goal.routing_note;
   return (
     // Every line of the row now truncates, so the tip carries the full text

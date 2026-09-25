@@ -669,6 +669,13 @@ impl GoalEngine for InternalSubagentEngine {
         let kill = GoalKill::Cancel(cancel_token.clone());
         let run_session_id = session_id.clone();
         let join = tokio::spawn(async move {
+            // GM6 (dagK): `return_last_only: true` makes the Ok value the
+            // worker's own closing message — the in-process counterpart to
+            // what `worker_closing_summary` extracts for the external-CLI
+            // engine. It used to be discarded with `.map(|_| ())`, so every
+            // in-process subagent's Evidence panel showed the literal string
+            // "in-process subagent run" instead of what the worker actually
+            // said it did.
             let run = run_subagent_task(SubagentRunParams {
                 config: agent_config,
                 recipe,
@@ -681,7 +688,6 @@ impl GoalEngine for InternalSubagentEngine {
                 persona_override,
             })
             .await
-            .map(|_| ())
             .map_err(|e| e.to_string());
             finalize_internal_run(&worktree, &baseline, run).await
         });
@@ -715,13 +721,13 @@ impl GoalEngine for InternalSubagentEngine {
 async fn finalize_internal_run(
     worktree: &Path,
     baseline: &str,
-    run: Result<(), String>,
+    run: Result<String, String>,
 ) -> GoalOutcome {
     match run {
         // Credential scan first (#508 — a secret must never survive to review),
         // then deterministic evidence from the worktree so verification diffs
         // THE WORKER'S commits.
-        Ok(()) => {
+        Ok(closing_message) => {
             if let Some(reason) = scan_committed_changes(worktree, baseline).await {
                 GoalOutcome::Blocked { reason }
             } else {
@@ -729,9 +735,19 @@ async fn finalize_internal_run(
                 // a push failure leaves the work reviewable-but-unpushed rather
                 // than failing the goal.
                 push_clean_work(worktree, baseline).await;
+                // GM6: the worker's own words when it left any, tail-capped to
+                // match the external engine's cap (`worker_closing_summary`'s
+                // `max`); the old placeholder only when it said nothing at all.
+                let worker_summary = {
+                    let trimmed = closing_message.trim();
+                    if trimmed.is_empty() {
+                        "in-process subagent run".to_string()
+                    } else {
+                        tail(trimmed, 4000)
+                    }
+                };
                 GoalOutcome::Success(Some(
-                    collect_evidence(worktree, baseline, "in-process subagent run".to_string())
-                        .await,
+                    collect_evidence(worktree, baseline, worker_summary).await,
                 ))
             }
         }
@@ -4827,7 +4843,7 @@ mod tests {
             .trim()
             .to_string();
 
-        let outcome = finalize_internal_run(&wt, &baseline, Ok(())).await;
+        let outcome = finalize_internal_run(&wt, &baseline, Ok("done".to_string())).await;
 
         assert!(matches!(outcome, GoalOutcome::Success(Some(_))));
         let goal_ref = format!("refs/heads/{}", goal_branch_name(run_id));
@@ -4844,6 +4860,60 @@ mod tests {
             main_tip.starts_with(&baseline),
             "origin/main must NOT move on the completion path"
         );
+    }
+
+    /// GM6 (dagK): the in-process subagent's own closing message must reach
+    /// the Evidence panel's worker_summary — it used to be discarded
+    /// (`.map(|_| ())`) and replaced with the literal string
+    /// "in-process subagent run", which hid everything the worker actually
+    /// said it did.
+    #[tokio::test]
+    async fn internal_run_surfaces_the_workers_own_closing_message() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let run_id = "20260901_internal_summary";
+        let wt = create_goal_worktree(&repo, &baseline, run_id)
+            .await
+            .unwrap();
+        commit_in_worktree(&wt, "work.txt");
+
+        let outcome = finalize_internal_run(
+            &wt,
+            &baseline,
+            Ok("Implemented the retry loop and added a regression test.".to_string()),
+        )
+        .await;
+
+        match outcome {
+            GoalOutcome::Success(Some(evidence)) => assert_eq!(
+                evidence.worker_summary,
+                "Implemented the retry loop and added a regression test."
+            ),
+            other => panic!("expected Success(Some(evidence)), got {other:?}"),
+        }
+    }
+
+    /// The fallback placeholder survives for the one case a real closing
+    /// message can't cover: the subagent returned successfully but said
+    /// nothing (an empty or whitespace-only closing message).
+    #[tokio::test]
+    async fn internal_run_falls_back_to_a_placeholder_when_the_worker_said_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let run_id = "20260901_internal_blank_summary";
+        let wt = create_goal_worktree(&repo, &baseline, run_id)
+            .await
+            .unwrap();
+        commit_in_worktree(&wt, "work.txt");
+
+        let outcome = finalize_internal_run(&wt, &baseline, Ok("   ".to_string())).await;
+
+        match outcome {
+            GoalOutcome::Success(Some(evidence)) => {
+                assert_eq!(evidence.worker_summary, "in-process subagent run")
+            }
+            other => panic!("expected Success(Some(evidence)), got {other:?}"),
+        }
     }
 
     /// W4, for the internal engine: a failed run must not destroy the work
@@ -4889,7 +4959,7 @@ mod tests {
         git(&wt, &["add", "-f", ".env"]);
         git(&wt, &["commit", "-q", "-m", "oops"]);
 
-        let outcome = finalize_internal_run(&wt, &baseline, Ok(())).await;
+        let outcome = finalize_internal_run(&wt, &baseline, Ok("done".to_string())).await;
 
         assert!(
             matches!(outcome, GoalOutcome::Blocked { .. }),

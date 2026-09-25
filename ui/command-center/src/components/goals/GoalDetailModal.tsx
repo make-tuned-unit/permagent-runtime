@@ -20,13 +20,16 @@
  * modal (epic slice 2) can reuse the same chrome.
  */
 
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { apiFetch } from '../../lib/api';
+import { goalHoldDetail, goalStateLabel } from '../../lib/goalStateLabel';
 import { removeRoadmapGoal, setGoalAutoApprove, setGoalDependencies } from '../../lib/roadmapClient';
 import { useCommandCenter } from '../../lib/store';
+import type { ActiveGoal } from '../../lib/useLiveGoals';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { Chip } from '../common/Chip';
 import { DetailModal } from '../common/DetailModal';
 import { EvidenceDigest } from '../dashboard/decisions/EvidenceDigest';
 
@@ -62,6 +65,28 @@ function fmtTime(iso: string): string {
   return Number.isFinite(t) ? new Date(t).toLocaleString() : iso;
 }
 
+/** Mirrors goal_a2a.rs's `A2aMessage` (from_goal, to_goal, body, ts) — the
+ *  shape appended to a card's `a2a_inbox` / `a2a_sent` metadata arrays. */
+interface A2aMessage {
+  from_goal: string;
+  to_goal: string;
+  body: string;
+  ts: string;
+}
+type A2aMessageEntry = A2aMessage & { direction: 'in' | 'out' };
+
+/** Metadata is an untrusted, server-written JSON blob — validate shape before
+ *  rendering rather than trusting `unknown` fields into JSX. */
+function parseA2aMessages(value: unknown): A2aMessage[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((m): m is A2aMessage =>
+    !!m && typeof m === 'object'
+    && typeof (m as A2aMessage).from_goal === 'string'
+    && typeof (m as A2aMessage).to_goal === 'string'
+    && typeof (m as A2aMessage).body === 'string'
+    && typeof (m as A2aMessage).ts === 'string');
+}
+
 /**
  * Map a cancel failure to a clear, actionable message. The cancel endpoint
  * returns 409 Conflict for two distinct cases — the policy classes the action
@@ -93,6 +118,8 @@ export function GoalDetailModal({
   onClose: () => void;
 }) {
   const { colors } = useTheme();
+  const switchToSession = useCommandCenter(s => s.switchToSession);
+  const openChatDock = useCommandCenter(s => s.openChatDock);
   const [card, setCard] = useState<CardResponse | null>(null);
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [loading, setLoading] = useState(true);
@@ -113,6 +140,10 @@ export function GoalDetailModal({
   // #252 per-goal auto-approve toggle state
   const [togglingAutoApprove, setTogglingAutoApprove] = useState(false);
   const [autoApproveError, setAutoApproveError] = useState<string | null>(null);
+  // GM4: the one place this goal's hold state is read, from the SAME
+  // `/api/goals/active` query the "In flight" cards use — not recomputed from
+  // raw metadata client-side, so the two surfaces cannot drift apart again.
+  const [activeGoal, setActiveGoal] = useState<ActiveGoal | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -122,12 +153,14 @@ export function GoalDetailModal({
       apiFetch<CardResponse>(`/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(cardId)}`),
       apiFetch<BoardColumn[]>(`/api/projects/${encodeURIComponent(projectId)}/columns`).catch(() => [] as BoardColumn[]),
       apiFetch<CardResponse[]>(`/api/projects/${encodeURIComponent(projectId)}/cards?card_type=goal`).catch(() => [] as CardResponse[]),
+      apiFetch<{ goals: ActiveGoal[] }>('/api/goals/active').catch(() => ({ goals: [] as ActiveGoal[] })),
     ])
-      .then(([c, cols, goals]) => {
+      .then(([c, cols, goals, active]) => {
         if (!live) return;
         setCard(c);
         setColumns(cols);
         setProjectGoals(goals);
+        setActiveGoal(active.goals.find(g => g.id === cardId) ?? null);
       })
       .catch(() => { if (live) setLoadError(true); })
       .finally(() => { if (live) setLoading(false); });
@@ -136,9 +169,11 @@ export function GoalDetailModal({
 
   const column = columns.find(c => c.id === card?.columnId) ?? null;
   const stateBinding = cancelledState ?? column?.stateBinding ?? null;
+  const holdNote = cancelledState ? null : activeGoal?.hold_note ?? null;
   const stateLabel = cancelledState
     ? 'Cancelled'
-    : column?.name ?? (stateBinding ?? 'Unknown');
+    : goalStateLabel({ columnName: column?.name, stateBinding, holdNote });
+  const holdDetail = goalHoldDetail({ holdNote });
   const cancellable =
     !cancelledState && !!stateBinding && CANCELLABLE_STATES.includes(stateBinding);
 
@@ -152,6 +187,26 @@ export function GoalDetailModal({
   const depsEditable =
     isGoal && !removed && !cancelledState && !!stateBinding && DEP_EDITABLE_STATES.includes(stateBinding);
   const goalTitle = (id: string) => projectGoals.find(g => g.id === id)?.title ?? id;
+
+  // GM7: goal_a2a.rs writes every delivered agent-to-agent message onto the
+  // target's `a2a_inbox` metadata (and the sender's `a2a_sent`) — data the
+  // daemon already returns on this same card fetch, that the UI never read.
+  // Without this, an agent could steer another agent's goal and nothing on
+  // screen would ever say so (R5: nothing the agent did may be hidden).
+  const a2aInbox = parseA2aMessages(meta.a2a_inbox);
+  const a2aSent = parseA2aMessages(meta.a2a_sent);
+  const a2aMessages: Array<A2aMessageEntry> = [
+    ...a2aInbox.map(m => ({ ...m, direction: 'in' as const })),
+    ...a2aSent.map(m => ({ ...m, direction: 'out' as const })),
+  ].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+
+  // GM1: every worker session id rendered anywhere in this modal must be one
+  // click from its transcript (R5, agent transparency) — the pattern used by
+  // Automate's run rows (AutomateView.tsx RunDetail.openConversation).
+  const openTranscript = (sessionId: string) => {
+    switchToSession(sessionId).catch(err => console.error('[goal-detail] open session failed:', err));
+    openChatDock();
+  };
 
   const startEditDeps = () => {
     setDraftDeps(dependsOn);
@@ -312,7 +367,24 @@ export function GoalDetailModal({
   ) : null;
 
   return (
-    <DetailModal title={card?.title ?? 'Goal'} badge={badge} onClose={onClose} footer={footer}>
+    <DetailModal
+      title={card?.title ?? 'Goal'}
+      badge={badge}
+      onClose={onClose}
+      footer={footer}
+      align="top"
+      // Benchmark ask (dagK, Microsoft HAX G16/"automation vs augmentation"):
+      // autonomy must be visible at the interaction level, not only inside the
+      // Auto-approve section further down — a chip you'd have to scroll to
+      // find is not "visible". A goal card in the list gets the equivalent
+      // treatment when this data reaches `/api/goals/active` (server change,
+      // deferred — see report).
+      headerRight={isGoal && !loading && card && (
+        <Chip kind="static" tone={autoApprove ? 'accent' : 'neutral'}>
+          {autoApprove ? 'Auto-approve' : 'Needs review'}
+        </Chip>
+      )}
+    >
       {loading ? (
         <div style={{ padding: '32px 0', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
           Loading…
@@ -335,11 +407,47 @@ export function GoalDetailModal({
           <MetaGrid colors={colors} rows={[
             ['State', stateLabel],
             ['Assigned to', card.assignedTo || '—'],
-            ['Worker session', workerSessionId || '—'],
+            ['Worker session', workerSessionId
+              ? (
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  type="button"
+                  flashSuccess={false}
+                  onClick={() => openTranscript(workerSessionId)}
+                  style={{
+                    '--pa-btn-fg': colors.cyan,
+                    '--pa-btn-fg-hover': colors.cyan,
+                    '--pa-btn-bg-hover': colors.cyanSoft,
+                    '--pa-btn-bg-active': colors.cyanGlow,
+                    '--pa-btn-pad': '0 4px',
+                    '--pa-btn-radius': `${radius.xs}px`,
+                    marginLeft: -4,
+                    fontFamily: font.body,
+                    fontSize: textSize.caption,
+                  } as CSSProperties}
+                >
+                  Open transcript
+                </Button>
+              )
+              : '—'],
             ['Attempts', attemptCount != null ? String(attemptCount) : '—'],
             ['Created', fmtTime(card.createdAt)],
             ['Updated', fmtTime(card.updatedAt)],
           ]} />
+
+          {/* GM4: the SAME sentence the "In flight" list's tooltip shows for
+              a held goal (cost_router::hold_done::hold_user_note) — the badge
+              above only says "Held"; this says why. */}
+          {holdDetail && (
+            <div style={{
+              fontSize: textSize.caption, color: colors.text,
+              borderRadius: radius.md, border: `1px solid ${colors.warning}`,
+              background: colors.warning + '14', padding: `${space.md}px ${space.xl}px`,
+            }}>
+              {holdDetail}
+            </div>
+          )}
 
           {/* #252: per-goal auto-approve opt-in — a verified PASS skips the
               manual Review answer for THIS goal only. Fail-closed: a FAIL or
@@ -501,6 +609,44 @@ export function GoalDetailModal({
           )}
 
           {/*
+            GM7: Prime A2A (goal_a2a.rs) lets one goal's worker steer another's
+            mid-run — real work the agent did that had no surface anywhere in
+            the UI before this. `a2a_inbox`/`a2a_sent` are already returned on
+            this same card fetch; nothing server-side had to change.
+          */}
+          {isGoal && a2aMessages.length > 0 && (
+            <div>
+              <div style={{
+                fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
+                textTransform: 'uppercase', letterSpacing: '0.04em',
+              }}>
+                Messages
+              </div>
+              <div style={{ marginTop: space.sm, display: 'flex', flexDirection: 'column', gap: space.sm }}>
+                {a2aMessages.map((m, i) => (
+                  <div key={i} style={{
+                    fontSize: textSize.caption, color: colors.text,
+                    borderRadius: radius.sm, border: `1px solid ${colors.border}`,
+                    padding: `${space.sm}px ${space.md}px`,
+                  }}>
+                    <div style={{
+                      display: 'flex', gap: space.sm, alignItems: 'baseline',
+                      fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
+                    }}>
+                      <span>{m.direction === 'in' ? 'From' : 'To'} {goalTitle(m.direction === 'in' ? m.from_goal : m.to_goal)}</span>
+                      <span>·</span>
+                      <span>{fmtTime(m.ts)}</span>
+                    </div>
+                    <div style={{ marginTop: space.xs, whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text' }}>
+                      {m.body}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/*
             #524: the layered Evidence panel — the same component the Decision
             Inbox uses, keyed on this goal's card. It self-fetches the deterministic
             dispatch evidence plus the L2 verifier digest, rendering "No verification
@@ -543,7 +689,7 @@ export function GoalDetailModal({
 
 function MetaGrid({ colors, rows }: {
   colors: ReturnType<typeof useTheme>['colors'];
-  rows: [string, string][];
+  rows: [string, ReactNode][];
 }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 14px' }}>

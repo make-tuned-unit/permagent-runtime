@@ -18,6 +18,7 @@ import type { Project } from './useProjects';
 import { ViewHeader } from '../common/ViewHeader';
 import { Button } from '../common/Button';
 import { CouncilEscalation } from './CouncilEscalation';
+import { RecentRunsPanel } from './RecentRunsPanel';
 
 import { Tooltip } from '../common/Tooltip';
 // Ensure a project site_url has a scheme so the in-app browser navigates
@@ -194,8 +195,12 @@ export function BuildView() {
               {activeTask ? '· ' : ''}{agentName} · {hasActive ? 'thinking' : 'idle'}
               {/* Idle Build said only "idle" — true, and no help at all to
                   someone who has just arrived and is looking at an empty
-                  terminal. One clause on the line that is already there. */}
-              {!hasActive && !activeTask && ' — the terminal below runs your coding agent'}
+                  terminal. One clause on the line that is already there.
+                  B1 (dagK): it used to claim "the terminal below runs your
+                  coding agent" — false exactly when it showed (idle, no
+                  active task): the terminal is a plain shell until a project
+                  is launched through the picker beside the title. */}
+              {!hasActive && !activeTask && ' — the terminal below is a plain shell; launch a project to run your coding agent'}
             </span>
           </span>
         }
@@ -291,6 +296,12 @@ export function BuildView() {
       />
 
       <CouncilEscalation />
+
+      {/* B1 (dagK): `api.getHarnessRunHistory` existed with no caller — a run
+          left no trace in the UI the moment it finished. This surfaces the
+          daemon's own history (status, goal, duration, cost, evidence, and a
+          click through to the transcript) instead of only ever-active runs. */}
+      <RecentRunsPanel />
 
       {/* Terminal + Browser side by side, resizable */}
       <div style={{ flex: 1, minHeight: 0, padding: `${space.xl}px 18px` }}>

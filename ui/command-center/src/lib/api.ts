@@ -1447,6 +1447,18 @@ export interface CouncilLatest {
   openActions: number;
 }
 
+/** CR1 (dagK): one row of `GET /api/council/reports` — a past Council
+ *  session, and its report when the chair wrote one (a `failed` session may
+ *  not have one). */
+export interface CouncilReportsEntry {
+  session: CouncilSession;
+  report: CouncilReport | null;
+}
+
+export interface CouncilReportsResponse {
+  sessions: CouncilReportsEntry[];
+}
+
 export interface HarnessCouncilRecommendation {
   recommended: boolean;
   reason: string;
@@ -1800,6 +1812,11 @@ export const api = {
 
   getCouncilLatest: () =>
     apiFetch<CouncilLatest>('/api/council/latest'),
+
+  /** CR1: recent finished Council sessions (newest first) for a "Past
+   *  sessions" list — `/api/council/latest` only ever surfaces the newest. */
+  getCouncilReports: (limit?: number) =>
+    apiFetch<CouncilReportsResponse>(`/api/council/reports${limit ? `?limit=${limit}` : ''}`),
 
   getActiveHarnessRuns: () =>
     apiFetch<HarnessRunView[]>('/api/coding-sessions/harness-runs'),
