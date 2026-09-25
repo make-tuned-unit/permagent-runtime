@@ -5,6 +5,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import type { BrainGraph, GraphEntity, GraphMemory } from './useBrainData';
 import {
   boundingSphere,
+  boxPxForMinGlyphPx,
   cullOverlappingLabels,
   fitToInsetRect,
   labelFade,
@@ -155,14 +156,40 @@ const LABEL_TEXT_PX = 13;
 const LABEL_BOX_PX = 20;
 const LABEL_PAD_PX = 6;
 const LABEL_FONT = `500 ${LABEL_TEXT_PX * LABEL_SS}px -apple-system, "Segoe UI", system-ui, sans-serif`;
-/** On-screen label height limits (CSS px). The ceiling is the bitmap's own. */
-const LABEL_SIZING: Omit<LabelSizing, 'worldHeight'> = { maxPx: LABEL_BOX_PX, minPx: 13, nativePx: LABEL_BOX_PX };
+/**
+ * `labelScreenPx`'s min/max clamp a label's SPRITE BOX height, not its glyph
+ * text — the bitmap draws `LABEL_TEXT_PX` text inside a taller `LABEL_BOX_PX`
+ * box for halo breathing room, so the box is always `LABEL_BOX_PX /
+ * LABEL_TEXT_PX` (~1.54x) the size of the text a person actually reads.
+ *
+ * QA follow-up 2026-09-25: the box floor used to be 13px, which is only an
+ * ~8.5px GLYPH — well under the app's own 11px text floor (textSize.micro) —
+ * because nothing had translated "on-screen size" from box units into the
+ * units a person reads. `LABEL_MIN_GLYPH_PX` is that floor in the units that
+ * matter; the box floor is derived from it so the guarantee is on the text,
+ * not the invisible box around it.
+ */
+const LABEL_BOX_TO_TEXT = LABEL_BOX_PX / LABEL_TEXT_PX;
+const LABEL_MIN_GLYPH_PX = 11;
+/** On-screen label height limits (CSS px, box units). The ceiling is the
+ *  bitmap's own — at that ceiling the glyph renders at its native LABEL_TEXT_PX. */
+const LABEL_SIZING: Omit<LabelSizing, 'worldHeight'> = {
+  maxPx: LABEL_BOX_PX,
+  minPx: boxPxForMinGlyphPx(LABEL_MIN_GLYPH_PX, LABEL_BOX_TO_TEXT),
+  nativePx: LABEL_BOX_PX,
+};
 /** Natural world height of a label (what it would be with no clamp). */
 const LABEL_WORLD_H = 0.9;
 /** How many un-forced labels may show at once. */
 const LABEL_BUDGET = 14;
 /** Camera fov (degrees) — shared by the camera and the framing math. */
 const FOV_Y = 50;
+/** Target fraction of the visible band's own half-fov the bounding sphere's
+ *  silhouette should fill (brainCamera.ts: fitToInsetRect). QA 2026-09-25:
+ *  the previous radius-multiplying margin only approximated a fill fraction
+ *  and landed the graph around 40% of the band at 1440×1000; this is solved
+ *  exactly, so 0.82 means ~82% regardless of how tight the insets are. */
+const FIT_FILL = 0.82;
 
 function makeLabelSprite(text: string, color: string): THREE.Sprite {
   const canvas = document.createElement('canvas');
@@ -624,7 +651,7 @@ export class BrainScene {
     this.fitRadius = sphere.radius;
     const viewW = Math.max(1, this.container.clientWidth);
     const viewH = Math.max(1, this.container.clientHeight);
-    const fit = fitToInsetRect(sphere.radius, FOV_Y, viewW, viewH, this.contentInsets, 1.12);
+    const fit = fitToInsetRect(sphere.radius, FOV_Y, viewW, viewH, this.contentInsets, FIT_FILL);
     this.fitDist = fit.distance;
     if (!this.autoFit) return;
     // This frame's orbit basis — orbitYaw/Pitch are already updated for this

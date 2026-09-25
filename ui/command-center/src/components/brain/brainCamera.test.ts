@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  boundingSphere, cullOverlappingLabels, fitDistance, fitToInsetRect, labelFade, labelScreenPx,
-  labelWorldHeight, pickLabels, worldPerPixel,
+  boundingSphere, boxPxForMinGlyphPx, cullOverlappingLabels, fitDistance, fitToInsetRect,
+  glyphPxFromBoxPx, horizontalFov, labelFade, labelScreenPx, labelWorldHeight, pickLabels,
+  worldPerPixel, type ContentInsets,
 } from './brainCamera';
 
 describe('boundingSphere', () => {
@@ -26,6 +27,24 @@ describe('fitDistance', () => {
   });
 });
 
+describe('glyph/box conversion', () => {
+  const RATIO = 20 / 13; // the Brain graph's actual box:text bitmap ratio
+
+  it('round-trips', () => {
+    const box = boxPxForMinGlyphPx(11, RATIO);
+    expect(glyphPxFromBoxPx(box, RATIO)).toBeCloseTo(11, 6);
+  });
+
+  it('the box floor derived from an 11px glyph minimum never renders less than 11px of actual text', () => {
+    // QA follow-up 2026-09-25: at the OLD box floor (13px) the glyph itself
+    // rendered at ~8.5px (13 / 1.54) — under the app's own 11px text floor —
+    // because the clamp bounded the invisible box, not the text a person
+    // reads. This is the guarantee that regression can't come back silently.
+    const box = boxPxForMinGlyphPx(11, RATIO);
+    expect(glyphPxFromBoxPx(box, RATIO)).toBeGreaterThanOrEqual(11 - 1e-9);
+  });
+});
+
 describe('label sizing', () => {
   it('clamps a near label to the ceiling and a far one to the floor', () => {
     const sizing = { worldHeight: 0.9, maxPx: 20, minPx: 13, nativePx: 20 };
@@ -46,6 +65,15 @@ describe('label sizing', () => {
     const h = labelWorldHeight(distance, 50, 900, sizing);
     const upp = worldPerPixel(distance, 50, 900);
     expect(h / upp).toBeCloseTo(labelScreenPx(distance, 50, 900, sizing), 5);
+  });
+
+  it('a Brain-graph-shaped sizing (box floor derived from an 11px glyph) never shows readable text under 11px, at any distance', () => {
+    const RATIO = 20 / 13;
+    const sizing = { worldHeight: 0.9, maxPx: 20, minPx: boxPxForMinGlyphPx(11, RATIO), nativePx: 20 };
+    for (const distance of [0.01, 0.5, 1, 5, 20, 100, 10_000]) {
+      const boxPx = labelScreenPx(distance, 50, 900, sizing);
+      expect(glyphPxFromBoxPx(boxPx, RATIO)).toBeGreaterThanOrEqual(11 - 1e-9);
+    }
   });
 });
 
@@ -120,17 +148,51 @@ describe('cullOverlappingLabels', () => {
 describe('fitToInsetRect', () => {
   const FOV = 50;
 
-  it('with zero insets, matches the plain fitDistance and pans nowhere', () => {
-    const fit = fitToInsetRect(10, FOV, 1440, 900, { top: 0, right: 0, bottom: 0, left: 0 }, 1.15);
-    const plain = fitDistance(10, FOV, 1440 / 900, 1.15);
-    expect(fit.distance).toBeCloseTo(plain, 5);
-    expect(fit.panRight).toBeCloseTo(0, 8);
-    expect(fit.panUp).toBeCloseTo(0, 8);
+  /** The angle a sphere of `radius` actually subtends at `distance`, as a
+   *  fraction of the rig's own binding half-fov — recomputed independently of
+   *  `fitToInsetRect`'s own math, so this proves the RESULT hits the
+   *  requested `fill`, not just that the formula was transcribed correctly. */
+  function measuredFill(radius: number, distance: number, viewportW: number, viewportH: number, insets: ContentInsets) {
+    const visW = Math.max(1, viewportW - insets.left - insets.right);
+    const visH = Math.max(1, viewportH - insets.top - insets.bottom);
+    const fy = (FOV * Math.PI) / 180;
+    const fx = horizontalFov(FOV, viewportW / viewportH);
+    const halfY = Math.atan((visH / viewportH) * Math.tan(fy / 2));
+    const halfX = Math.atan((visW / viewportW) * Math.tan(fx / 2));
+    const half = Math.min(halfY, halfX);
+    return Math.asin(radius / distance) / half;
+  }
+
+  it('hits the requested fill fraction exactly, independent of how tight the insets are', () => {
+    // QA follow-up 2026-09-25: the previous radius-multiplying "margin" only
+    // approximated a fill and landed at ~40% instead of ~85-90% once insets
+    // narrowed the binding half-fov — this checks the actual angle, not the
+    // formula's own working, across several inset shapes at once.
+    for (const insets of [
+      { top: 0, right: 0, bottom: 0, left: 0 },
+      { top: 64, right: 0, bottom: 64, left: 0 },
+      { top: 116, right: 0, bottom: 82, left: 330 },
+    ]) {
+      const fit = fitToInsetRect(10, FOV, 1440, 1000, insets, 0.82);
+      expect(measuredFill(10, fit.distance, 1440, 1000, insets)).toBeCloseTo(0.82, 6);
+    }
   });
 
-  it('backs the camera off further when chrome eats into the canvas (never fits a smaller sphere into the same distance)', () => {
-    const noInset = fitToInsetRect(10, FOV, 1440, 900, { top: 0, right: 0, bottom: 0, left: 0 });
-    const withInset = fitToInsetRect(10, FOV, 1440, 900, { top: 64, right: 0, bottom: 64, left: 0 });
+  it('a fill of 1.0 puts the sphere exactly at the visible rect\'s edge', () => {
+    const fit = fitToInsetRect(10, FOV, 1440, 900, { top: 0, right: 0, bottom: 0, left: 0 }, 1.0);
+    expect(measuredFill(10, fit.distance, 1440, 900, { top: 0, right: 0, bottom: 0, left: 0 })).toBeCloseTo(1, 6);
+  });
+
+  it('a smaller fill backs the camera off further (looks smaller on screen)', () => {
+    const insets = { top: 0, right: 0, bottom: 0, left: 0 };
+    const loose = fitToInsetRect(10, FOV, 1440, 900, insets, 0.5);
+    const tight = fitToInsetRect(10, FOV, 1440, 900, insets, 0.9);
+    expect(loose.distance).toBeGreaterThan(tight.distance);
+  });
+
+  it('backs the camera off further when chrome eats into the canvas, for the same fill target', () => {
+    const noInset = fitToInsetRect(10, FOV, 1440, 900, { top: 0, right: 0, bottom: 0, left: 0 }, 0.82);
+    const withInset = fitToInsetRect(10, FOV, 1440, 900, { top: 64, right: 0, bottom: 64, left: 0 }, 0.82);
     expect(withInset.distance).toBeGreaterThan(noInset.distance);
   });
 

@@ -101,10 +101,19 @@ export interface ContentInsets {
  * middle of the visible rect rather than the full canvas's centre — derived
  * so that a point on the camera's optical axis (screen centre) reprojects to
  * exactly the visible rect's centre pixel.
+ *
+ * `fill` is a target fraction of the binding half-fov the sphere's own
+ * angular radius should occupy — 1.0 means its silhouette exactly touches the
+ * visible rect's edge, 0.5 means it looks half that size. QA follow-up
+ * 2026-09-25: a `margin` multiplying the radius (the previous shape of this
+ * parameter) only approximates a fill fraction at small angles, and at
+ * 1440×1000 it was landing around 40% instead of the intended ~85–90% — this
+ * solves the exact angle instead of guessing at one, so the fill is whatever
+ * `fill` says regardless of how wide the binding half-fov actually is.
  */
 export function fitToInsetRect(
   radius: number, fovYDeg: number, viewportW: number, viewportH: number,
-  insets: ContentInsets, margin = 1.15,
+  insets: ContentInsets, fill = 0.82,
 ): { distance: number; panRight: number; panUp: number } {
   const visW = Math.max(1, viewportW - insets.left - insets.right);
   const visH = Math.max(1, viewportH - insets.top - insets.bottom);
@@ -113,7 +122,10 @@ export function fitToInsetRect(
   const fx = horizontalFov(fovYDeg, aspect);
   const halfY = Math.atan((visH / viewportH) * Math.tan(fy / 2));
   const halfX = Math.atan((visW / viewportW) * Math.tan(fx / 2));
-  const distance = (radius * margin) / Math.sin(Math.min(halfY, halfX));
+  const half = Math.min(halfY, halfX);
+  // asin(radius / distance) = fill * half  ⇒  distance = radius / sin(fill * half).
+  const targetAngle = Math.min(Math.max(fill, 0.01), 1) * half;
+  const distance = radius / Math.sin(targetAngle);
   // The visible rect's centre, in pixels offset from the full canvas's own
   // centre (+x right, +y down — standard screen coordinates).
   const offsetPxX = (insets.left - insets.right) / 2;
@@ -148,6 +160,23 @@ export function labelScreenPx(distance: number, fovYDeg: number, viewportHeightP
 /** World height to give a sprite so it lands at `labelScreenPx`. */
 export function labelWorldHeight(distance: number, fovYDeg: number, viewportHeightPx: number, s: LabelSizing): number {
   return labelScreenPx(distance, fovYDeg, viewportHeightPx, s) * worldPerPixel(distance, fovYDeg, viewportHeightPx);
+}
+
+/**
+ * `labelScreenPx` clamps a label's SPRITE BOX height. A bitmap that draws its
+ * text smaller than its own box (halo breathing room) means the box and the
+ * glyph a person actually reads are different sizes, related by a fixed
+ * ratio (the bitmap's own box-px ÷ text-px). These two functions translate
+ * between them, so a "never below N px" guarantee can be stated — and
+ * tested — in the units that matter: what's legible, not the invisible box.
+ */
+export function glyphPxFromBoxPx(boxPx: number, boxToTextRatio: number): number {
+  return boxPx / boxToTextRatio;
+}
+
+/** The box height whose glyph renders at exactly `minGlyphPx`. */
+export function boxPxForMinGlyphPx(minGlyphPx: number, boxToTextRatio: number): number {
+  return minGlyphPx * boxToTextRatio;
 }
 
 export interface LabelCandidate {
