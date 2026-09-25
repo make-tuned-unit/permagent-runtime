@@ -593,6 +593,7 @@ derive_utoipa!(IconTheme as IconThemeSchema);
         super::routes::schedule::UpdateScheduleRequest,
         super::routes::schedule::KillJobResponse,
         super::routes::schedule::InspectJobResponse,
+        super::routes::schedule::InspectRecipe,
         permagent::scheduler::ScheduledJob,
         super::routes::schedule::RunNowResponse,
         super::routes::schedule::ListSchedulesResponse,

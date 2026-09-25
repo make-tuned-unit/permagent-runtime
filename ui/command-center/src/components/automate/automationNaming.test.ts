@@ -33,6 +33,12 @@ const INTERNAL = [
   /kind === 'recipe'/,
   /const recipe = /,
   /^\s*recipe,\s*$/,
+  // Wire fields named by the daemon's own recipe YAML file, not UI copy:
+  // `recipe_modified_at` (routes/schedule.rs EnrichedJob) and the
+  // `/schedule/{id}/inspect` response's parsed-recipe fields.
+  /recipe_modified_at/,
+  /InspectRecipe/,
+  /\brecipe:\s*InspectRecipe/,
 ];
 
 /**

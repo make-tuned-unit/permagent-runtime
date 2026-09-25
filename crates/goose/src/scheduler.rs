@@ -988,6 +988,39 @@ fn missed_fire_at(job: &ScheduledJob) -> Option<DateTime<Utc>> {
     }
 }
 
+/// When this job will next fire, for display ("next run Mon 10:00 AM").
+/// `None` while paused or running, for a spent one-time job, or when the
+/// schedule will not parse. Interval jobs count from the later of the last run
+/// and the last resume, which is what the armed interval does; cron is searched
+/// in the job's armed clock, the same way `missed_fire_at` searches it.
+pub fn next_fire_at(job: &ScheduledJob, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    if job.paused || job.currently_running {
+        return None;
+    }
+    if let Some(at) = job.at {
+        return (job.last_run.is_none() && at > now).then_some(at);
+    }
+    if let Some(secs) = job.every_seconds {
+        let from = job.last_run.into_iter().chain(job.resumed_at).max()?;
+        let secs = i64::try_from(secs).ok().filter(|s| *s > 0)?;
+        // Whole steps already elapsed, plus one — arithmetic, not a loop, so a
+        // 1-second interval that last ran a year ago costs nothing.
+        let elapsed = (now - from).num_seconds().max(0);
+        return Some(from + Duration::seconds((elapsed / secs + 1) * secs));
+    }
+    let schedule = parse_cron_schedule(&job.cron)?;
+    match resolve_cron_timezone(job.tz.as_deref()) {
+        CronTimezone::Local => schedule
+            .find_next_occurrence(&now.with_timezone(&Local), false)
+            .ok()
+            .map(|at| at.with_timezone(&Utc)),
+        CronTimezone::Fixed(offset) => schedule
+            .find_next_occurrence(&now.with_timezone(&offset), false)
+            .ok()
+            .map(|at| at.with_timezone(&Utc)),
+    }
+}
+
 /// Pure missed-run predicate: was a scheduled fire due in the window since
 /// `last_run` that did not run? Used at startup to flag `Missed`. Paused jobs are
 /// never "missed". Cron occurrences are evaluated in the job's armed clock.
@@ -4964,6 +4997,42 @@ prompt: 'sweep [{{ dev_roots }}]'
             ..Default::default()
         })
         .is_err());
+    }
+
+    /// Next-fire display value across kinds; nothing while paused.
+    #[test]
+    fn next_fire_at_across_kinds() {
+        let now = ts("2026-01-01T00:30:00Z");
+        let cron_job = ScheduledJob {
+            cron: "0 0 * * * *".to_string(),
+            tz: Some("utc".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            next_fire_at(&cron_job, now),
+            Some(ts("2026-01-01T01:00:00Z"))
+        );
+        let paused = ScheduledJob {
+            paused: true,
+            ..cron_job.clone()
+        };
+        assert_eq!(next_fire_at(&paused, now), None);
+
+        // Interval counts from the later of last run and resume, in whole steps.
+        let every = ScheduledJob {
+            every_seconds: Some(3600),
+            last_run: Some(ts("2025-12-31T21:10:00Z")),
+            resumed_at: Some(ts("2025-12-31T22:00:00Z")),
+            ..Default::default()
+        };
+        assert_eq!(next_fire_at(&every, now), Some(ts("2026-01-01T01:00:00Z")));
+
+        let at_job = ScheduledJob {
+            at: Some(ts("2026-01-02T00:00:00Z")),
+            ..Default::default()
+        };
+        assert_eq!(next_fire_at(&at_job, now), Some(ts("2026-01-02T00:00:00Z")));
+        assert_eq!(next_fire_at(&at_job, ts("2026-01-03T00:00:00Z")), None);
     }
 
     /// Missed-run detection: given last_run + schedule + now → missed?

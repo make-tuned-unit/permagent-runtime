@@ -87,6 +87,8 @@ export interface SkillState {
   trigger_type?: string;
   trigger_config?: Record<string, unknown>;
   steps?: Array<{ action: string; tool?: string; description?: string }>;
+  /** The tool this skill was learned from (`toolUsed` on GET /permagent/skills). */
+  toolUsed?: string | null;
   usageCount?: number;
   last_run?: string;
   status?: string;

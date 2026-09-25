@@ -39,9 +39,22 @@ import {
 } from './findingCategories';
 
 import { Tooltip } from '../common/Tooltip';
+import {
+  acknowledgeFailure,
+  historicalFailureNote,
+  isFailureAcknowledged,
+  lastFailure,
+  nextRunLabel,
+  runChip,
+  type ScheduleRunStatus,
+} from './scheduleHealth';
+import { LearnedList } from './LearnedList';
+import { JobHealthStrip } from './JobHealthStrip';
+import { summarizeHealth, type JobHealthDigest } from './jobHealthModel';
+import { SectionNav, SECTION_NAV_OFFSET, type SectionNavItem } from './SectionNav';
+import { Chip } from '../common/Chip';
 // ── Types ────────────────────────────────────────────────────────────
 
-type ScheduleRunStatus = 'ok' | 'error' | 'skipped' | 'missed';
 
 interface ScheduledJob {
   id: string;
@@ -61,6 +74,13 @@ interface ScheduledJob {
   last_error?: string | null;
   /** Failures since the last success; the daemon auto-pauses at a threshold. */
   consecutive_failures?: number;
+  /** Set by every Resume. A failure before it is history, not the current state. */
+  resumed_at?: string | null;
+  /** Each failed run with its own end time (newest last). */
+  failed_runs?: Array<{ run_number?: number; timestamp: string; session_id?: string | null; error?: string }> | null;
+  /** Newer daemons only: the recipe YAML's mtime, and the next fire time. */
+  recipe_modified_at?: string | null;
+  next_run?: string | null;
   // Richer schedule kinds (optional — a plain cron job omits them).
   at?: string | null;
   every_seconds?: number | null;
@@ -159,32 +179,21 @@ function scheduleSummary(job: ScheduledJob): string {
   return job.tz ? `${base} (${job.tz})` : base;
 }
 
+// A2: the schedule reads as English everywhere; the raw cron expression is
+// still available (for anyone editing the recipe by hand) on hover/focus via
+// the shared Tooltip, never printed inline. Only cron jobs have one to show —
+// "once" and "every N" schedules have no expression underneath.
+function rawCronTooltip(job: ScheduledJob): string | undefined {
+  if (job.at || job.every_seconds != null) return undefined;
+  return job.cron?.trim() ? `cron: ${job.cron}` : undefined;
+}
+
 function formatInterval(secs: number): string {
   const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`;
   if (secs % 86400 === 0) return plural(secs / 86400, 'day');
   if (secs % 3600 === 0) return plural(secs / 3600, 'hour');
   if (secs % 60 === 0) return plural(secs / 60, 'minute');
   return plural(secs, 'second');
-}
-
-// Last-run status pill metadata. Maps to a theme color TOKEN (resolved at the
-// call site where `colors` is in scope): ok→green, error→red, missed→amber,
-// skipped→dim.
-function statusInfo(
-  status: ScheduleRunStatus | null | undefined,
-): { label: string; token: 'success' | 'danger' | 'warning' | 'textDim' } | null {
-  switch (status) {
-    case 'ok':
-      return { label: 'OK', token: 'success' };
-    case 'error':
-      return { label: 'ERROR', token: 'danger' };
-    case 'missed':
-      return { label: 'MISSED', token: 'warning' };
-    case 'skipped':
-      return { label: 'SKIPPED', token: 'textDim' };
-    default:
-      return null;
-  }
 }
 
 // Derive a translucent tint from a semantic token so status backgrounds track
@@ -403,7 +412,12 @@ export function AutomateView() {
   const [showInstalledExpanded, setShowInstalledExpanded] = useState(() => {
     try { return localStorage.getItem('automate:installed-expanded') === 'true'; } catch { return false; }
   });
+  /** `/api/job-health`; null until it answers (or when it cannot). */
+  const [health, setHealth] = useState<JobHealthDigest | null>(null);
+  const [healthLoaded, setHealthLoaded] = useState(false);
   const prevRunningRef = useRef<Set<string>>(new Set());
+  /** The page's own scroller — SectionNav reads/drives it (A5). */
+  const scrollRootRef = useRef<HTMLDivElement>(null);
   const jobsRequestGeneration = useRef(0);
   const { gradient, colors } = useTheme();
 
@@ -505,13 +519,26 @@ export function AutomateView() {
     }
   }, []);
 
+  // The standing health table — see jobHealthModel.ts. A failed fetch leaves
+  // the strip saying "unknown", never green.
+  const fetchHealth = useCallback(async () => {
+    try {
+      setHealth(await apiFetch<JobHealthDigest>('/api/job-health'));
+    } catch (err) {
+      setHealth({ error: err instanceof Error ? err.message : 'the daemon did not answer' });
+    } finally {
+      setHealthLoaded(true);
+    }
+  }, []);
+
   useEffect(() => {
     fetchJobs();
     fetchAllSessions();
+    fetchHealth();
     fetchExtensions();
     loadSkills();
     loadProposals();
-  }, [fetchJobs, fetchAllSessions, fetchExtensions, loadSkills, loadProposals]);
+  }, [fetchJobs, fetchAllSessions, fetchHealth, fetchExtensions, loadSkills, loadProposals]);
 
   useEffect(() => () => { ++jobsRequestGeneration.current; }, []);
 
@@ -522,13 +549,15 @@ export function AutomateView() {
   const onScheduleEvent = useCallback(() => {
     fetchJobs();
     fetchAllSessions();
-  }, [fetchJobs, fetchAllSessions]);
+    fetchHealth();
+  }, [fetchJobs, fetchAllSessions, fetchHealth]);
   useScheduleEvents(onScheduleEvent);
 
   // Backstop only — see `SCHEDULE_LIST_POLL_MS`. Skips entirely while the
   // tab is hidden (`usePollWhenVisible`), and stops on unmount.
   usePollWhenVisible(fetchJobs, SCHEDULE_LIST_POLL_MS);
   usePollWhenVisible(fetchAllSessions, SCHEDULE_LIST_POLL_MS);
+  usePollWhenVisible(fetchHealth, SCHEDULE_LIST_POLL_MS);
 
   // ── Derived data ──
 
@@ -549,6 +578,16 @@ export function AutomateView() {
   const filteredSkills = q ? skills.filter(s => s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q)) : skills;
   const filteredProposals = q ? proposals.filter(p => p.description.toLowerCase().includes(q)) : proposals;
   const filteredExtensions = q ? extensions.filter(e => e.display_name.toLowerCase().includes(q) || e.description.toLowerCase().includes(q)) : extensions;
+
+  // A6: the standing health line at the top of the page — see jobHealthModel.
+  // Recomputed from the same `jobs` list the cards use, so a resume that
+  // clears a card's ERROR chip clears its health-strip entry in the same
+  // render (both read `lastFailure`, not a second copy of the rule).
+  const healthSummary = useMemo(
+    () => healthLoaded ? summarizeHealth(health, jobs) : null,
+    [health, healthLoaded, jobs],
+  );
+  const jobIds = useMemo(() => new Set(jobs.map(j => j.id)), [jobs]);
 
   // ── Action state tracking (in-button feedback) ──
 
@@ -665,6 +704,25 @@ export function AutomateView() {
     }
   }, []);
 
+  // UX_BENCHMARK_RESEARCH §4: "one click to that run's output" — from the
+  // schedule row, from its failure alert, or from the detail panel's error
+  // box, all the same target. Prefers the cached `sessions` map (already
+  // fetched for Recent Activity); falls back to a live lookup for a job whose
+  // last run fell outside that map's 5-per-job window.
+  const openLastRun = useCallback(async (jobId: string) => {
+    const name = jobNameMap.get(jobId) || jobId;
+    const cached = sessions.get(jobId)?.[0];
+    if (cached) { setDetail({ kind: 'run', run: { ...cached, jobId }, displayName: name }); return; }
+    try {
+      const data = await apiFetch<SessionInfo[]>(`/schedule/${encodeURIComponent(jobId)}/sessions?limit=1`);
+      const run = data[0];
+      if (run) setDetail({ kind: 'run', run: { ...run, jobId }, displayName: name });
+    } catch {
+      // No run to show (or the daemon didn't answer) — leave the current
+      // panel open rather than navigating to nothing.
+    }
+  }, [sessions, jobNameMap]);
+
   const handleActionDone = useCallback((key: string, afterRefresh?: () => void) => {
     setActionState(key, null);
     fetchJobs().then(() => afterRefresh?.());
@@ -675,6 +733,17 @@ export function AutomateView() {
   // invitation would flash over a loading state or hide a failed fetch.
   const trulyEmpty = jobs.length === 0 && skills.length === 0 && proposals.length === 0
     && !skillsLoading && !jobsLoading && !jobsError;
+
+  // A5: the jump bar only lists sections that actually render below, in the
+  // same order and under the same condition as the JSX — so it never offers a
+  // jump to a section that isn't there.
+  const sectionNavItems: SectionNavItem[] = [
+    ...(runningJobs.length > 0 ? [{ id: 'running', label: 'Running Now', count: runningJobs.length }] : []),
+    ...(jobs.length > 0 ? [{ id: 'recent-activity', label: 'Recent Activity', count: allRuns.length }] : []),
+    ...(!trulyEmpty ? [{ id: 'automations', label: AUTOMATION.title, count: filteredJobs.length }] : []),
+    { id: 'learned', label: 'Learned', count: filteredSkills.length + filteredProposals.length },
+    { id: 'installed', label: 'Installed', count: filteredExtensions.length },
+  ];
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
@@ -738,7 +807,21 @@ export function AutomateView() {
           </>}
         />
 
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: `${space.xxxl}px 32px 40px` }}>
+        <div ref={scrollRootRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: `${space.xxxl}px 32px 40px` }}>
+
+        {/* A5: sticky jump bar — the page is one long scroll, and Learned was
+            reachable only by scrolling past everything above it. */}
+        <SectionNav items={sectionNavItems} scrollRoot={scrollRootRef} />
+
+        {/* A6: one line up top — "everything is running", or which jobs need
+            attention (failing / missed / never run / wedged / undelivered).
+            `null` while the first fetch is in flight (R2 loading state is the
+            strip's own absence, not a spinner). */}
+        <JobHealthStrip
+          summary={healthSummary}
+          onOpen={id => { const job = jobs.find(j => j.id === id); if (job) setDetail({ kind: 'recipe', job }); }}
+          canOpen={id => jobIds.has(id)}
+        />
 
         {/* Live run roster — everything at work right now, at a glance */}
         <RunRoster schedules={jobs} />
@@ -856,12 +939,13 @@ export function AutomateView() {
 
         {/* ── RUNNING NOW ── (only when something is executing) */}
         {runningJobs.length > 0 && (
-          <Section title="Running Now" count={runningJobs.length} accentColor={colors.success}>
+          <Section id="running" title="Running Now" count={runningJobs.length} accentColor={colors.success}>
             {runningJobs.map(job => (
               <RecipeCard key={job.id} job={job} onRunNow={handleRunNow} onPause={handlePause}
                 onUnpause={handleUnpause} onDelete={handleDelete} onKill={handleKill}
                 onResetToDefault={handleResetToDefault} actionStates={actionStates} onActionDone={handleActionDone}
                 onSelect={() => setDetail({ kind: 'recipe', job })}
+                onOpenLastRun={openLastRun}
                 selected={detail?.kind === 'recipe' && detail.job.id === job.id} />
             ))}
           </Section>
@@ -871,7 +955,7 @@ export function AutomateView() {
             result is the thing most likely to need a click — confirm/reject —
             so it must be reachable without scrolling.) */}
         {jobs.length > 0 && (
-          <Section title="Recent Activity" count={allRuns.length}>
+          <Section id="recent-activity" title="Recent Activity" count={allRuns.length}>
             {runsLoading && allRuns.length === 0 ? (
               <SectionState kind="loading" message="Loading run history…" />
             ) : runsError && allRuns.length === 0 ? (
@@ -928,7 +1012,7 @@ export function AutomateView() {
             "Recipe" is the internal type's name — `RecipeCard`, the
             `kind: 'recipe'` detail tag — and it stays there.) */}
         {!trulyEmpty && (
-          <Section title={AUTOMATION.title} count={filteredJobs.length}>
+          <Section title={AUTOMATION.title} count={filteredJobs.length} id="automations">
             {jobsLoading && jobs.length === 0 ? (
               <SectionState kind="loading" message="Loading automations…" />
             ) : jobsError && jobs.length === 0 ? (
@@ -946,6 +1030,7 @@ export function AutomateView() {
                     onUnpause={handleUnpause} onDelete={handleDelete} onKill={handleKill}
                     onResetToDefault={handleResetToDefault} actionStates={actionStates} onActionDone={handleActionDone}
                     onSelect={() => setDetail({ kind: 'recipe', job })}
+                    onOpenLastRun={openLastRun}
                     selected={detail?.kind === 'recipe' && detail.job.id === job.id} />
                 ))}
               </div>
@@ -954,7 +1039,7 @@ export function AutomateView() {
         )}
 
         {/* ── LEARNED ── */}
-        <Section title="Learned" count={filteredSkills.length + filteredProposals.length}>
+        <Section id="learned" title="Learned" count={filteredSkills.length + filteredProposals.length}>
           {skillsLoading ? (
             <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading...</div>
           ) : filteredSkills.length === 0 && filteredProposals.length === 0 ? (
@@ -972,109 +1057,26 @@ export function AutomateView() {
               </div>
             </div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: space.xl }}>
-              {/* Proposal cards first (amber) */}
-              {filteredProposals.map(proposal => (
-                <div key={proposal.argument_shape_hash} style={{
-                  padding: `${space.xxl}px ${space.xxxl}px`, borderRadius: radius.lg,
-                  background: withAlpha(colors.warning, 0.04), border: `1px solid ${withAlpha(colors.warning, 0.2)}`,
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.sm }}>
-                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: colors.warning }} />
-                    <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proposal.description}</div>
-                    <span style={{ fontSize: 10, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: withAlpha(colors.warning, 0.15), color: colors.warning }}>PROPOSED</span>
-                  </div>
-                  <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.md }}>
-                    Seen {proposal.occurrence_count} time{proposal.occurrence_count !== 1 ? 's' : ''} using {proposal.tool_used}
-                  </div>
-                  <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
-                    {/* `saveProposal` now resolves `false` on failure, so the
-                        tick is honest: it appears only for a skill the daemon
-                        actually created, and a rejected save says so below
-                        instead of leaving the card sitting there unexplained. */}
-                    <Button
-                      colors={colors}
-                      variant="primary"
-                      onClick={async () => {
-                        setProposalError(null);
-                        const ok = await saveProposal(proposal);
-                        if (!ok) setProposalError(proposal.argument_shape_hash);
-                        return ok;
-                      }}
-                      style={PRIMARY_ACTION_VARS}
-                    >Save</Button>
-                    <Button
-                      colors={colors}
-                      onClick={() => dismissProposal(proposal.argument_shape_hash)}
-                      style={actionVars(colors)}
-                    >Dismiss</Button>
-                    {proposalError === proposal.argument_shape_hash && (
-                      <span style={{ fontSize: textSize.micro, color: colors.danger }}>
-                        Couldn't save this skill. The daemon may be down.
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-              {/* Saved skills sorted by graduation tier: MASTERED > TRUSTED > LEARNED */}
-              {[...filteredSkills]
-                .sort((a, b) => {
-                  const tierOf = (s: typeof a) => {
-                    const u = s.usageCount || 0;
-                    if (u >= 10) return 0; // MASTERED
-                    if (u >= 3) return 1;  // TRUSTED
-                    return 2;              // LEARNED
-                  };
-                  return tierOf(a) - tierOf(b);
-                })
-                .map(skill => {
-                  const uses = skill.usageCount || 0;
-                  const tier = uses >= 10 ? 'MASTERED' : uses >= 3 ? 'TRUSTED' : 'LEARNED';
-                  const tierBg = tier === 'MASTERED' ? withAlpha(colors.warning, 0.15) : tier === 'TRUSTED' ? withAlpha(colors.success, 0.12) : colors.purpleSoft;
-                  const tierFg = tier === 'MASTERED' ? colors.warning : tier === 'TRUSTED' ? colors.success : colors.purpleBright;
-                  const dotColor = tier === 'MASTERED' ? colors.warning : tier === 'TRUSTED' ? colors.success : (skill.status === 'active' ? colors.purpleBright : colors.textDim);
-                  return (
-                    <div
-                      key={skill.id}
-                      onClick={() => openSkill(skill.id)}
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`Open ${skill.name} in the skills library`}
-                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSkill(skill.id); } }}
-                      // D10: a Mac pointer target needs a hover fill AND a
-                      // press fill, not a border tint alone — `fillHover` /
-                      // `fillActive` are the theme-safe ladder for exactly
-                      // this (tokens.ts), visible on every theme unlike the
-                      // old white-alpha idiom.
-                      onMouseEnter={e => { e.currentTarget.style.borderColor = colors.borderHi; e.currentTarget.style.background = colors.fillHover; }}
-                      onMouseLeave={e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.background = colors.surface; }}
-                      onMouseDown={e => { e.currentTarget.style.background = colors.fillActive; }}
-                      onMouseUp={e => { e.currentTarget.style.background = colors.fillHover; }}
-                      onFocus={e => { e.currentTarget.style.borderColor = colors.borderHi; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; }}
-                      onBlur={e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.boxShadow = 'none'; }}
-                      style={{
-                        padding: `${space.xxl}px ${space.xxxl}px`, borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
-                        background: colors.surface, border: `1px solid ${colors.border}`,
-                        transition: springTransition('border-color', 'background', 'box-shadow'),
-                      }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.sm }}>
-                        <div style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor }} />
-                        <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill.name}</div>
-                        <span style={{ fontSize: 10, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: tierBg, color: tierFg }}>{tier}</span>
-                      </div>
-                      {skill.description && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.md }}>{skill.description}</div>}
-                      <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
-                        Used {uses} time{uses !== 1 ? 's' : ''} &middot; {skill.status}
-                      </div>
-                    </div>
-                  );
-                })}
-            </div>
+            <LearnedList
+              skills={filteredSkills}
+              proposals={filteredProposals}
+              onOpenSkill={openSkill}
+              onSaveProposal={async proposal => {
+                // `saveProposal` resolves `false` on failure, so the tick is
+                // honest and a rejected save says so on its card.
+                setProposalError(null);
+                const ok = await saveProposal(proposal);
+                if (!ok) setProposalError(proposal.argument_shape_hash);
+                return ok;
+              }}
+              onDismissProposal={dismissProposal}
+              proposalError={proposalError}
+            />
           )}
         </Section>
 
         {/* ── INSTALLED ── */}
-        <Section title="Installed" count={filteredExtensions.length} collapsed>
+        <Section id="installed" title="Installed" count={filteredExtensions.length} collapsed>
           {extensionsError ? (
             <SectionState
               kind="error"
@@ -1171,6 +1173,7 @@ export function AutomateView() {
           onClose={() => setDetail(null)}
           onRunNow={handleRunNow} onPause={handlePause} onUnpause={handleUnpause}
           onDelete={handleDelete} onKill={handleKill} onResetToDefault={handleResetToDefault}
+          onOpenLastRun={openLastRun}
           actionStates={actionStates} onActionDone={handleActionDone} />
       )}
 
@@ -1183,22 +1186,24 @@ export function AutomateView() {
 // Section header
 // ═══════════════════════════════════════════════════════════════════════
 
-function Section({ title, count, accentColor, collapsed, children }: {
+function Section({ id, title, count, accentColor, collapsed, children }: {
+  /** A5: matched by SectionNav's jump targets — see `data-section` below. */
+  id?: string;
   title: string; count: number; accentColor?: string; collapsed?: boolean;
   children: React.ReactNode;
 }) {
   const { colors } = useTheme();
   return (
-    <div style={{ marginBottom: 28 }}>
+    <div
+      data-section={id}
+      style={{ marginBottom: 28, scrollMarginTop: id ? SECTION_NAV_OFFSET : undefined }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginBottom: space.xl }}>
         <div style={{ fontSize: 10, fontWeight: 700, fontFamily: font.mono, letterSpacing: '0.08em', textTransform: 'uppercase', color: accentColor || colors.textDim }}>
           {title}
         </div>
-        {!collapsed && count > 0 && (
-          <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.textDim, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: colors.border }}>
-            {count}
-          </span>
-        )}
+        {/* R6: the one count-chip style, via the shared primitive. */}
+        {!collapsed && count > 0 && <Chip kind="count">{count}</Chip>}
         <div style={{ flex: 1, height: 1, background: colors.border }} />
       </div>
       {children}
@@ -1256,7 +1261,7 @@ function SectionState({ kind, message, onRetry }: {
 // ═══════════════════════════════════════════════════════════════════════
 
 function RecipeCard({
-job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone, onSelect, selected }: {
+job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone, onSelect, onOpenLastRun, selected }: {
   // Every one of these is an async handler that REJECTS on failure (see
   // `failAction`), and the button primitive reads that rejection: it is what
   // holds the spinner for the round trip and withholds the success tick when
@@ -1271,24 +1276,52 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
   actionStates: Record<string, 'loading' | 'success'>;
   onActionDone: (key: string, afterRefresh?: () => void) => void;
   onSelect: () => void;
+  /** Opens the job's most recent run (its output) — see UX_BENCHMARK_RESEARCH
+   *  §4: an unfixed failure is one click from its run, not from the schedule. */
+  onOpenLastRun: (jobId: string) => void;
   selected: boolean;
 }) {
   const { colors } = useTheme();
   const name = job.display_name || job.id;
   const desc = job.description || '';
   const schedule = scheduleSummary(job);
+  const cronHint = rawCronTooltip(job);
   const statusColor = job.currently_running ? colors.success : job.paused ? colors.textDim : colors.cyan;
   const hasUpdate = job.starter_id && job.user_customized && job.embedded_version && job.version !== job.embedded_version;
-  const runStatus = statusInfo(job.last_status);
+  const runStatus = runChip(job);
+  const failure = lastFailure(job);
+  const nextRun = failure.kind !== 'historical' ? nextRunLabel(job.next_run) : null;
+  // A failing run that nobody has looked at yet is a standing alert, not a
+  // dot that clears itself on refresh — it stays flagged, across reloads,
+  // until it's actually opened (see scheduleHealth's ack helpers).
+  const [ackTick, setAckTick] = useState(0);
+  // `ackTick` forces this to re-read localStorage right after `activate()`
+  // acknowledges the failure, so the same click that opens the run also
+  // drops the card out of its "needs attention" state.
+  const unacknowledged = ackTick >= 0 && failure.kind === 'current' && !isFailureAcknowledged(job.id, failure);
+  // While the failure sits unacknowledged, the card's own click/Enter opens
+  // the failing run (and acknowledges it) instead of the schedule detail —
+  // "one click to the run that needs attention", same shape as a Recent
+  // Activity row. Acknowledging flips it back to the ordinary card the next
+  // render, so a second click opens the detail like any other row.
+  const activate = () => {
+    if (unacknowledged) {
+      acknowledgeFailure(job.id, failure);
+      setAckTick(t => t + 1);
+      onOpenLastRun(job.id);
+    } else {
+      onSelect();
+    }
+  };
 
   return (
     <div
-      onClick={onSelect}
+      onClick={activate}
       role="button"
       tabIndex={0}
       aria-pressed={selected}
-      aria-label={`Open details for ${name}`}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
+      aria-label={unacknowledged ? `${name} failed — open the failing run` : `Open details for ${name}`}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); } }}
       // D10: hover/press get a real fill, not just the border tint the card
       // already had — `selected`'s own cyan tint takes priority and is never
       // overwritten by the pointer state.
@@ -1304,38 +1337,64 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
       border: `1px solid ${selected ? colors.borderHi : colors.border}`,
       transition: springTransition('border-color', 'background', 'box-shadow'),
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.sm }}>
+      {/* A1: the title owns its row. It shared one line with three chips and
+          lost — "Nightly …", "Moni…" at 1456px. It now wraps to two lines and
+          the chips sit on a meta row beneath it. */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: space.lg, marginBottom: space.sm }}>
         <div style={{
-          width: 8, height: 8, borderRadius: '50%', background: statusColor, flexShrink: 0,
+          width: 8, height: 8, borderRadius: '50%', background: statusColor, flexShrink: 0, marginTop: space.sm,
           boxShadow: job.currently_running ? `0 0 8px ${statusColor}` : 'none',
         }} />
-        <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
-        {job.version && (
-          <span style={{ fontSize: 10, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: colors.border, color: colors.textDim }}>
-            v{job.version}
-          </span>
-        )}
-        {!job.currently_running && runStatus && (
-          <Tooltip content={job.last_error || undefined}>
-            <span tabIndex={0} style={{ outline: 'none' }}>
-              <span
-                style={{ fontSize: 10, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: withAlpha(colors[runStatus.token], 0.15), color: colors[runStatus.token] }}
-              >
-                {runStatus.label}
-              </span>
-            </span>
-          </Tooltip>
-        )}
-        <span style={{ fontSize: 10, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: colors.cyanSoft, color: colors.cyan }}>
+        <div
+          data-testid="automation-title"
+          style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, lineHeight: 1.35, overflow: 'hidden', overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' } as CSSProperties}
+        >{name}</div>
+      </div>
+      {/* R6: one chip primitive for state/status/version, via the shared
+          `Chip` — this used to be three hand-rolled `<span>`s with their own
+          colour math and no hover/focus affordance on the ones that had a
+          reason ("why did it fail?") to explain. */}
+      <div data-testid="automation-chips" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: space.sm, marginBottom: space.md }}>
+        <Chip kind="state" tone="accent" pulse={job.currently_running} data-testid="automation-state-chip">
           {job.currently_running ? 'RUNNING' : job.paused ? 'PAUSED' : 'SCHEDULED'}
-        </span>
+        </Chip>
+        {!job.currently_running && runStatus && (
+          <Chip
+            kind="state"
+            tone={runStatus.token === 'textDim' ? 'neutral' : runStatus.token}
+            title={runStatus.hint}
+            data-testid="automation-run-chip"
+          >{runStatus.label}</Chip>
+        )}
+        {job.version && (
+          <Chip kind="static" tone="neutral" quiet>v{job.version}</Chip>
+        )}
+        {unacknowledged && (
+          // Persistent, not a dot: stays until the run is actually opened —
+          // clicking anywhere on the card does the same thing (`activate`).
+          <Chip kind="link" tone="danger" onClick={activate} data-testid="automation-needs-attention">
+            Needs attention — view run
+          </Chip>
+        )}
       </div>
       {desc && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.md, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' } as React.CSSProperties}>{desc}</div>}
-      <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginBottom: space.lg }}>
-        {schedule} &middot; {job.last_run ? `Ran ${timeAgo(job.last_run)}` : 'Never run yet'}
+      <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginBottom: failure.kind === 'historical' ? space.xs : space.lg }}>
+        {cronHint ? (
+          <Tooltip content={cronHint}><span tabIndex={0} style={{ outline: 'none' }}>{schedule}</span></Tooltip>
+        ) : schedule}
+        {' '}&middot; {job.last_run ? `Ran ${timeAgo(job.last_run)}` : 'Never run yet'}
         {!!job.run_count && <> &middot; {job.run_count} run{job.run_count === 1 ? '' : 's'}</>}
+        {/* Benchmark research §4: "next run" is a column of its own, not
+            buried in the detail panel — shown here whenever the daemon sends
+            one and the row isn't already covering it in the historical note. */}
+        {nextRun && <> &middot; {nextRun}</>}
         {hasUpdate && <> &middot; <span style={{ color: colors.warning }}>Update available</span></>}
       </div>
+      {failure.kind === 'historical' && (
+        <div data-testid="automation-failure-history" style={{ fontSize: 10, color: colors.textMuted, fontFamily: font.body, lineHeight: 1.4, marginBottom: space.lg }}>
+          {historicalFailureNote(failure, job, schedule)}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: space.sm, flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
         {job.currently_running ? (
           // No tick on Stop: the run leaving "RUNNING" is the confirmation.
@@ -1362,7 +1421,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
 // ═══════════════════════════════════════════════════════════════════════
 
 function DetailPanel({
-detail, lastStatus, starterId, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone }: {
+detail, lastStatus, starterId, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, onOpenLastRun, actionStates, onActionDone }: {
   detail: DetailTarget;
   lastStatus?: ScheduleRunStatus | null;
   /** The run's job's starter (a run carries only its job id). */
@@ -1374,6 +1433,7 @@ detail, lastStatus, starterId, onClose, onRunNow, onPause, onUnpause, onDelete, 
   onDelete: (id: string) => Promise<void>;
   onKill: (id: string) => Promise<void>;
   onResetToDefault: (id: string) => Promise<void>;
+  onOpenLastRun: (jobId: string) => void;
   actionStates: Record<string, 'loading' | 'success'>;
   onActionDone: (key: string, afterRefresh?: () => void) => void;
 }) {
@@ -1430,6 +1490,7 @@ detail, lastStatus, starterId, onClose, onRunNow, onPause, onUnpause, onDelete, 
       {detail.kind === 'recipe' && (
         <RecipeDetail job={detail.job} onRunNow={onRunNow} onPause={onPause}
           onUnpause={onUnpause} onDelete={onDelete} onKill={onKill} onResetToDefault={onResetToDefault}
+          onOpenLastRun={onOpenLastRun}
           actionStates={actionStates} onActionDone={onActionDone} />
       )}
       {detail.kind === 'extension' && <ExtensionDetail ext={detail.ext} />}
@@ -1439,11 +1500,12 @@ detail, lastStatus, starterId, onClose, onRunNow, onPause, onUnpause, onDelete, 
 }
 
 function RecipeDetail({
-job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone }: {
+job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, onOpenLastRun, actionStates, onActionDone }: {
   job: ScheduledJob;
   onRunNow: (id: string) => Promise<void>; onPause: (id: string) => Promise<void>;
   onUnpause: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>;
   onKill: (id: string) => Promise<void>; onResetToDefault: (id: string) => Promise<void>;
+  onOpenLastRun: (jobId: string) => void;
   actionStates: Record<string, 'loading' | 'success'>;
   onActionDone: (key: string, afterRefresh?: () => void) => void;
 }) {
@@ -1451,6 +1513,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
   const name = job.display_name || job.id;
   const statusColor = job.currently_running ? colors.success : job.paused ? colors.textDim : colors.cyan;
   const hasUpdate = job.starter_id && job.user_customized && job.embedded_version && job.version !== job.embedded_version;
+  const detailFailure = lastFailure(job);
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.xxl }}>
@@ -1464,11 +1527,11 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
           Update available (v{job.embedded_version}). Reset to default to apply.
         </div>
       )}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px', marginBottom: job.last_status === 'error' && job.last_error ? 12 : 20 }}>
-        <MetaField label="Schedule" value={scheduleSummary(job)} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px', marginBottom: detailFailure.kind !== 'none' ? 12 : 20 }}>
+        <MetaField label="Schedule" value={scheduleSummary(job)} hint={rawCronTooltip(job)} />
         <MetaField label="Status" value={job.currently_running ? 'Running' : job.paused ? 'Paused' : 'Active'} />
         <MetaField label="Last Run" value={job.last_run ? timeAgo(job.last_run) : 'Never'} />
-        <MetaField label="Last Result" value={statusInfo(job.last_status)?.label ?? '—'} />
+        <MetaField label="Last Result" value={detailFailure.kind === 'historical' ? 'Waiting for next run' : runChip(job)?.label ?? '—'} />
         {!!job.run_count && <MetaField label="Runs" value={String(job.run_count)} />}
         {!!job.max_retries && <MetaField label="Max Retries" value={String(job.max_retries)} />}
         {/* A bare UUID under a bare "ID" is chrome: it tells a reader nothing
@@ -1477,9 +1540,39 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
             hand. */}
         <ReferenceIdField id={job.id} />
       </div>
-      {job.last_status === 'error' && job.last_error && (
-        <div style={{ marginBottom: space.xxxl, padding: `${space.md}px ${space.xl}px`, borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, fontSize: textSize.micro, color: colors.danger, fontFamily: font.mono, wordBreak: 'break-word' }}>
-          Last error: {job.last_error}
+      {/* A3: a failure the user has resumed past (or fixed the recipe
+          after) is history — say so in neutral colours with the next run,
+          instead of a red "Last error" that reads as still broken. */}
+      {detailFailure.kind === 'current' && (
+        <div data-testid="automation-last-error" style={{ marginBottom: space.xxxl, padding: `${space.md}px ${space.xl}px`, borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, fontSize: textSize.micro, color: colors.danger, fontFamily: font.mono, wordBreak: 'break-word' }}>
+          <div>Last error: {detailFailure.cause}</div>
+          {/* Benchmark research §4: the run that produced this error is one
+              click away, not just its message. Opening it also clears the
+              card's own "needs attention" alert. */}
+          <Button
+            colors={colors}
+            variant="bare"
+            onClick={() => { acknowledgeFailure(job.id, detailFailure); onOpenLastRun(job.id); }}
+            style={{
+              '--pa-btn-fg': colors.danger, '--pa-btn-fg-hover': colors.text, '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0', fontFamily: font.body, fontSize: textSize.micro, marginTop: space.sm,
+            } as CSSProperties}
+          >View this run &rarr;</Button>
+        </div>
+      )}
+      {detailFailure.kind === 'historical' && (
+        <div data-testid="automation-failure-history" style={{ marginBottom: space.xxxl, padding: `${space.md}px ${space.xl}px`, borderRadius: radius.sm, background: colors.surface, border: `1px solid ${colors.border}`, fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.body, lineHeight: 1.5, wordBreak: 'break-word' }}>
+          <div>{historicalFailureNote(detailFailure, job, scheduleSummary(job))}</div>
+          <div style={{ fontFamily: font.mono, color: colors.textDim, marginTop: space.xs }}>That run's error: {detailFailure.cause}</div>
+          <Button
+            colors={colors}
+            variant="bare"
+            onClick={() => onOpenLastRun(job.id)}
+            style={{
+              '--pa-btn-fg': colors.textMuted, '--pa-btn-fg-hover': colors.text, '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0', fontFamily: font.body, fontSize: textSize.micro, marginTop: space.sm,
+            } as CSSProperties}
+          >View that run &rarr;</Button>
         </div>
       )}
       <div style={{ display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
@@ -1849,12 +1942,15 @@ function ReferenceIdField({ id }: { id: string }) {
   );
 }
 
-function MetaField({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function MetaField({ label, value, mono, hint }: { label: string; value: string; mono?: boolean; hint?: string }) {
   const { colors } = useTheme();
+  const body = <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: mono ? font.mono : font.body }}>{value}</div>;
   return (
     <div>
       <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', color: colors.textDim, marginBottom: space.xxs, letterSpacing: '0.05em' }}>{label}</div>
-      <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: mono ? font.mono : font.body }}>{value}</div>
+      {/* A2: the human summary is what's shown; the raw cron (when there is
+          one) is one hover/focus away, never printed alongside it. */}
+      {hint ? <Tooltip content={hint}><span tabIndex={0} style={{ outline: 'none', display: 'block' }}>{body}</span></Tooltip> : body}
     </div>
   );
 }
