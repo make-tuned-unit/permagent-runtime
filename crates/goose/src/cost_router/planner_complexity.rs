@@ -253,7 +253,12 @@ fn content_tokens(text: &str) -> std::collections::BTreeSet<String> {
 /// content-word sets share at least one word and clear
 /// [`HISTORY_OVERLAP_JACCARD_THRESHOLD`] Jaccard similarity. Deterministic,
 /// no LLM — the same "facts only" rule as the rest of this module.
-fn objectives_overlap(new_objective: &str, prior_title: &str) -> bool {
+///
+/// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md ranked fix 5): also
+/// reused by `orchestrator.rs`'s pre-plan duplicate-goal check
+/// (`decompose_roadmap`/`create_roadmap`), so "is this the same objective as
+/// that other one" has exactly one implementation, not two that could drift.
+pub(crate) fn objectives_overlap(new_objective: &str, prior_title: &str) -> bool {
     let a = content_tokens(new_objective);
     let b = content_tokens(prior_title);
     if a.is_empty() || b.is_empty() {
