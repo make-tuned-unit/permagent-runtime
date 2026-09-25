@@ -251,9 +251,19 @@ export function GrowAnalytics({
           the user analytics was installed here when it was not (reported
           2026-08-04). In a surface where every failure is silent, a false
           "verified" is the worst thing this panel can say. Keying remounts it,
-          which clears the whole class rather than the one field that leaked. */}
+          which clears the whole class rather than the one field that leaked.
+
+          `fp:` prefix: this panel and `AnalyticsConnectionPanel` below are
+          both keyed on the same `project.id` and sit as siblings in this same
+          fragment (one hidden behind `providersOpen`, but both mounted in the
+          same React children list), so two bare `key={project.id}` collided —
+          "two children with the same key" in dev, and undefined behaviour
+          per React's own docs. The prefix keeps each panel's remount-on-
+          project-switch behaviour (still id-scoped, still changes when the
+          project changes) while making the two keys distinct from each
+          other. See `analyticsPanelScope.test.ts` for the pinned contract. */}
       <FirstPartyAnalyticsPanel
-        key={project.id}
+        key={`fp:${project.id}`}
         colors={colors}
         projectId={project.id}
         stats={fpStats}
@@ -286,7 +296,7 @@ export function GrowAnalytics({
         </Button>
       ) : (
         <AnalyticsConnectionPanel
-          key={project.id}
+          key={`conn:${project.id}`}
           colors={colors}
           projectId={project.id}
           conn={conn}

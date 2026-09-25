@@ -18,6 +18,7 @@ import {
   fromDatetimeLocalValue,
   groupPostsByDay,
   filterByQueue,
+  queueBucket,
   queueCounts,
   readMediaMeta,
   readPostMeta,
@@ -30,9 +31,24 @@ import {
 } from './calendarPosts';
 import { draftPostPrompt } from './growStrategy';
 import { growChip } from './growStyles';
+import { Chip, type ChipTone } from '../common/Chip';
 import { FIELD_CLASS, growCard, growField, growLabel } from './growChrome';
 import { ROW_INNER_R, ROW_PAD, ROW_R, CARD_R } from './growGeometry';
 import { SEGMENT_STRIP_PAD, SEGMENT_STRIP_RADIUS, segmentedTab } from './growStyles';
+
+/** R6: one chip style per meaning. A post's schedule state — Draft / Scheduled
+ *  / Posted / Needs attention — is the semantic status and gets the tone; the
+ *  same buckets `queueBucket()` uses for the Calendar's filter tabs, so a row
+ *  can never disagree with its own filter. Format and channel ("carousel",
+ *  "ig") are neutral tags, not statuses, and stay a plain outline whatever
+ *  they say. This replaces four look-alike chips (POSTED / READY / IG /
+ *  CAROUSEL, QA 2026-09-25) that read as one undifferentiated row of pills. */
+const STATUS_CHIP_LABEL: Record<ReturnType<typeof queueBucket>, string> = {
+  draft: 'Draft', scheduled: 'Scheduled', posted: 'Posted', attention: 'Needs attention',
+};
+const STATUS_CHIP_TONE: Record<ReturnType<typeof queueBucket>, ChipTone> = {
+  draft: 'neutral', scheduled: 'accent', posted: 'success', attention: 'danger',
+};
 import { ErrorState, LoadingState } from './GrowStateBlocks';
 import { HiggsfieldConnect, NETWORKS, PostizConnect, ProjectChannels, useConnectedChannels } from './PublisherSettings';
 import { PostStill, PostVideo } from './PostMedia';
@@ -109,7 +125,7 @@ export function CalendarSection({
       ) : posts.length === 0 ? (
         <div style={{
           border: `1px dashed ${colors.border}`, borderRadius: CARD_R, padding: space.huge,
-          textAlign: 'center', fontSize: textSize.caption, color: colors.textDim,
+          fontSize: textSize.caption, color: colors.textDim,
         }}>
           No posts yet. Draft one with {agentName} above — it is written in this project's voice, a still is generated, and Approve schedules it on this project's connected accounts when you are ready.
         </div>
@@ -150,7 +166,7 @@ export function CalendarSection({
           {filtered.length === 0 ? (
             <div style={{
               border: `1px dashed ${colors.border}`, borderRadius: CARD_R, padding: space.huge,
-              textAlign: 'center', fontSize: textSize.caption, color: colors.textDim,
+              fontSize: textSize.caption, color: colors.textDim,
             }}>
               No posts in {QUEUE_FILTERS.find((f) => f.id === queueFilter)?.label.toLowerCase()}.
             </div>
@@ -237,10 +253,10 @@ function CalendarPostRow({
   // `.pa-btn` owns the cursor now: `wait` while busy was the only feedback this
   // row had, and it said nothing about hover, press or disabled.
   const btn: CSSProperties = growChip();
-  const chip: CSSProperties = {
-    ...growLabel(colors),
-    background: colors.bgDeeper, padding: `1px ${space.sm}px`, borderRadius: radius.pill,
-  };
+  const statusBucket = queueBucket(post);
+  const channelLabel = media.channel
+    ? (NETWORKS.find((n) => n.id === media.channel)?.label ?? media.channel)
+    : null;
 
   const saveEdit = async () => {
     setBusy(true);
@@ -312,10 +328,18 @@ function CalendarPostRow({
   return (
     <div style={growCard(colors, { r: ROW_R, pad: ROW_PAD })}>
       <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginBottom: space.sm }}>
-        <span style={chip}>{status}</span>
-        <span style={chip}>{media.mediaStatus}</span>
-        {media.channel && <span style={chip}>{media.channel}</span>}
-        {media.format && <span style={chip}>{media.format}</span>}
+        <Chip kind="static" tone={STATUS_CHIP_TONE[statusBucket]}>
+          {STATUS_CHIP_LABEL[statusBucket]}
+        </Chip>
+        {/* A still in flight is worth a quiet word; "ready" is the expected
+            resting state and says nothing a silent thumbnail doesn't already
+            say, so it earns no chip. A failed still is already covered by
+            "Needs attention" above — this never doubles that claim. */}
+        {media.mediaStatus === 'generating' && (
+          <Chip kind="static" tone="warning">Generating still…</Chip>
+        )}
+        {channelLabel && <Chip kind="static" tone="neutral">{channelLabel}</Chip>}
+        {media.format && <Chip kind="static" tone="neutral">{media.format}</Chip>}
         <div style={{ flex: 1 }} />
         {!editing ? (
           <>
@@ -344,10 +368,14 @@ function CalendarPostRow({
             colors={colors}
           />
         ) : media.stillFile ? (
-          // The still, what made it and when, and the control that replaces
-          // it — together. "Regenerate still" used to live only at the far
-          // right of the card's last row, a screen-width away from the image
-          // it acts on, and nothing said how old the image was.
+          // The still and the control that replaces it, together.
+          // "Regenerate still" used to live only at the far right of the
+          // card's last row, a screen-width away from the image it acts on.
+          // Provenance ("AI still · made 8 days ago") moved OUT of this
+          // column (QA 2026-09-25): at the 112px thumbnail width it wrapped
+          // to three lines and pushed the button down unpredictably. It now
+          // sits in the meta row under the title, which has the row's full
+          // width to say it in one line.
           <div
             data-testid="post-still-column"
             style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: space.xs, flexShrink: 0, width: STILL_COLUMN_W }}
@@ -360,9 +388,6 @@ function CalendarPostRow({
               colors={colors}
               alt={post.title}
             />
-            <span data-testid="still-provenance" style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.35 }}>
-              {stillProvenance(media)}
-            </span>
             {canRetryStill && (
               <Button
                 colors={colors}
@@ -403,6 +428,13 @@ function CalendarPostRow({
       ) : (
         <>
           <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{post.title}</div>
+          {/* Moved from the 112px thumbnail column, where it wrapped to three
+              lines (QA 2026-09-25) — the meta row has the row's full width. */}
+          {!media.videoFile && media.stillFile && (
+            <div data-testid="still-provenance" style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs / 2 }}>
+              {stillProvenance(media)}
+            </div>
+          )}
           {post.description && (
             <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.xs, lineHeight: 1.5 }}>{post.description}</div>
           )}

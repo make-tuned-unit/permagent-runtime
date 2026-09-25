@@ -2150,10 +2150,14 @@ function WatchlistSection({
           </tbody>
         </table>
       )}
-      <form onSubmit={onAdd} style={{ display: 'flex', gap: space.md, marginTop: space.xl, flexWrap: 'wrap' }}>
-        <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="AAPL" style={inputStyle(colors)} />
-        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Name" style={inputStyle(colors)} />
-        <Button colors={colors} type="submit" pending={busy} disabled={busy || !symbol.trim()}>Add</Button>
+      {/* One row: ticker, name and Add together read as one action. Each
+          input shrinks before the row wraps, and Add never shrinks — a
+          disabled Add crammed onto its own line under two full-width inputs
+          (QA 2026-09-25) read as a text link rather than the row's control. */}
+      <form onSubmit={onAdd} style={{ display: 'flex', gap: space.md, marginTop: space.xl }}>
+        <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="AAPL" style={{ ...inputStyle(colors), flex: '1 1 80px', minWidth: 0 }} />
+        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Name" style={{ ...inputStyle(colors), flex: '1 1 80px', minWidth: 0 }} />
+        <Button colors={colors} type="submit" pending={busy} disabled={busy || !symbol.trim()} style={{ flexShrink: 0 }}>Add</Button>
       </form>
     </Card>
   );
@@ -2257,24 +2261,32 @@ function HoldingsSparkline({ values, colors }: { values: number[]; colors: Theme
   const trend = `${x0.toFixed(1)},${yOf(fitted[0]).toFixed(1)} ${x1.toFixed(1)},${yOf(fitted[n - 1]).toFixed(1)}`;
 
   return (
-    <svg
-      data-testid="holdings-sparkline"
-      viewBox={`0 0 ${W} ${H}`}
-      preserveAspectRatio="none"
-      width="100%"
-      height={40}
-      role="img"
-      aria-label="Holdings net P&L trend"
-      style={{ marginTop: space.lg, display: 'block' }}
-    >
-      {zeroY != null && (
-        <line x1={0} x2={W} y1={zeroY} y2={zeroY} stroke={colors.border} strokeWidth={1} vectorEffect="non-scaling-stroke" />
-      )}
-      {poly && (
-        <polyline points={poly} fill="none" stroke={colors.success} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-      )}
-      <polyline points={trend} fill="none" stroke={AGENT_TRIM.financier} strokeWidth={1.25} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
-    </svg>
+    // F1 pushed this card to the full width of Finance's left column
+    // (~1600px at 2560px wide, QA 2026-09-25) while the chart kept its fixed
+    // 40px height, so a real trend read as a near-flat hairline. The SVG's
+    // own viewBox (240x40, `preserveAspectRatio="none"`) already stretches
+    // non-uniformly to fill whatever box it's given, so giving that box a
+    // sensible height is all this needs — no change to the plotting math.
+    <div style={{ marginTop: space.lg, height: 'clamp(120px, 12vw, 200px)' }}>
+      <svg
+        data-testid="holdings-sparkline"
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        width="100%"
+        height="100%"
+        role="img"
+        aria-label="Holdings net P&L trend"
+        style={{ display: 'block' }}
+      >
+        {zeroY != null && (
+          <line x1={0} x2={W} y1={zeroY} y2={zeroY} stroke={colors.border} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+        )}
+        {poly && (
+          <polyline points={poly} fill="none" stroke={colors.success} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+        )}
+        <polyline points={trend} fill="none" stroke={AGENT_TRIM.financier} strokeWidth={1.25} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </div>
   );
 }
 

@@ -71,7 +71,7 @@ export function GrowthInboxSection({
       ) : !inbox ? null : empty ? (
         <div style={{
           border: `1px dashed ${colors.border}`, borderRadius: CARD_R, padding: space.huge,
-          textAlign: 'center', fontSize: textSize.caption, color: colors.textDim, lineHeight: 1.6,
+          fontSize: textSize.caption, color: colors.textDim, lineHeight: 1.6,
         }}>
           {/* Say what this list is ranked FROM. "Not enough signal yet" on a
               project with thousands of pageviews read as "your analytics are

@@ -172,7 +172,9 @@ describe('Grow calendar lens', () => {
     await openCalendar();
     expect(container.textContent).toContain('Monday post');
     expect(container.textContent).toMatch(/Aug|August|2026/);
-    expect(container.textContent).toContain('scheduled');
+    // R6: the status chip now shows the semantic label ("Scheduled"), not the
+    // raw wire value it used to render verbatim.
+    expect(container.textContent).toContain('Scheduled');
     expect(container.textContent).not.toContain('No posts yet');
   });
 
