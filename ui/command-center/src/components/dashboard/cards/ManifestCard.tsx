@@ -163,7 +163,11 @@ export function ManifestCard({ manifest }: Props) {
       background: colors.surface,
       border: `1px solid ${colors.border}`,
       boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
-      height: '100%', boxSizing: 'border-box',
+      // auto_height cards (a one-line status strip) size to their content
+      // instead of stretching to fill the grid row the packer reserved —
+      // Dashboard.tsx pairs this with `alignSelf: 'start'` on the grid cell
+      // itself so the reserved space is left blank below, not stretched into.
+      height: manifest.autoHeight ? 'auto' : '100%', boxSizing: 'border-box',
       overflow: 'hidden',
       display: 'flex', flexDirection: 'column',
     }}>
@@ -360,6 +364,36 @@ export function ManifestCard({ manifest }: Props) {
     const [hero, ...rest] = cells;
     const inline = rest.filter(c => c.group !== 'forecast');
     const forecast = rest.filter(c => c.group === 'forecast');
+    // A hero-only card (no supporting values, no forecast — e.g. a "status
+    // line" card like henry_status) has nothing that needs the label/value
+    // stacked on their own rows; one inline row is the whole content, so the
+    // tile's height follows it instead of reserving two rows' worth of
+    // vertical space for a single fact (coordinator, Phase-1 presentation
+    // pass: "card height must follow content"). Weather/system-stats always
+    // carry inline cells, so this branch never changes their look.
+    const heroOnly = inline.length === 0 && forecast.length === 0;
+    if (heroOnly) {
+      return shell(
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md, minHeight: 0 }}>
+          <CardIcon name={hero.icon} size={14} />
+          <span style={{
+            fontFamily: font.body, fontSize: 10, fontWeight: 600, letterSpacing: '0.08em',
+            textTransform: 'uppercase', color: colors.textDim, flexShrink: 0,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {hero.label || manifest.name}
+          </span>
+          <span style={{
+            fontFamily: font.display, fontSize: 15, fontWeight: 600, lineHeight: 1.2,
+            color: hero.accent ? colors.cyan : colors.text,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0,
+            fontVariantNumeric: 'tabular-nums',
+          }}>
+            {hero.value}
+          </span>
+        </div>,
+      );
+    }
     return shell(
       <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, minHeight: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, color: colors.textDim }}>

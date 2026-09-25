@@ -123,6 +123,44 @@ export function comingSoonCards(template: DashboardTemplate): string[] {
 }
 
 /**
+ * Human names for the Phase-2 card types that don't have a registry entry
+ * yet (a `comingSoon` card is, by definition, not registered — so
+ * `useCardRegistry()` has nothing to look its name up in). Kept here, next to
+ * the templates that name them, so a Phase-2 card ships its display name in
+ * the same commit that removes it from this list (coordinator, Phase-1
+ * presentation pass: "'Coming soon' must use human card names, not
+ * identifiers").
+ */
+const COMING_SOON_NAMES: Record<string, string> = {
+  week_headline: 'Week Headline',
+  week_small_multiples: 'Week Small Multiples',
+  memory_growth: 'Memory Growth',
+  on_this_week: 'On This Week',
+  people_attention: 'Needs Attention — People',
+  open_commitments: 'Open Commitments',
+  recent_meetings: 'Recent Meetings',
+  finance_summary: 'Finance Board',
+  finance_watchlist: 'Watchlist',
+  cost_vs_outcome: 'Cost vs. Outcome',
+};
+
+/** Human name for any card type, built-in or not-yet-built. */
+export function cardDisplayName(type: string): string {
+  return COMING_SOON_NAMES[type] ?? type;
+}
+
+/** Whether `template`'s realized card-type set matches the layout on screen
+ *  — the gallery's "this is what you have" marker. Position-agnostic (a
+ *  reflow doesn't change identity) and order-agnostic, by design: what makes
+ *  a layout "the current one" is which cards are on it, not their exact
+ *  pixel order after a resize. */
+export function isCurrentTemplate(template: DashboardTemplate, currentLayout: DashboardLayoutData): boolean {
+  const templateTypes = [...new Set(realizedLayout(template).cards.map(c => c.type))].sort();
+  const currentTypes = [...new Set(currentLayout.cards.map(c => c.type))].sort();
+  return templateTypes.length === currentTypes.length && templateTypes.every((t, i) => t === currentTypes[i]);
+}
+
+/**
  * Live templates from the daemon, falling back to the static mirror above so
  * the gallery still renders with the daemon unreachable (offline, or the
  * harness). Fetched once — templates don't change at runtime.

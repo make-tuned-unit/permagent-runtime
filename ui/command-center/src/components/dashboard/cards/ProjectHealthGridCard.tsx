@@ -1,10 +1,12 @@
 /**
  * Project Health Grid — Operator Command Center's per-project table (§2.2,
- * §3 `project_health_grid`). One row per project: active/held goal counts and
- * a plain status word. No fabricated sparkline (P12) — a real 14-day activity
- * series needs an activity-journal source Phase 1 doesn't have yet (Phase 2,
- * HOME_TEMPLATES_RESEARCH.md §5); "dormant" is said as a word, not drawn as a
- * flat line that could be misread as "zero today".
+ * §3 `project_health_grid`). Small multiples: at a wide card width, rows
+ * render as 2-3 columns rather than one long list (coordinator, Phase-1
+ * presentation pass), each with a real 14-day activity sparkline where the
+ * activity journal has one, a status chip coloured by meaning, and a
+ * plain-words reason for anything not "active". No fabricated sparkline
+ * (P12) — a project with no journaled goal activity shows "no history yet",
+ * never a flat, misleadingly-confident zero line.
  */
 import { radius, space, font, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
@@ -48,32 +50,72 @@ export function ProjectHealthGridCard() {
         <EmptyNote hint="Add a project to see it here">No projects yet</EmptyNote>
       ) : (
         <CardScrollBody testId="project-health-body">
-          {rows.map(row => (
-            <button
-              key={row.projectId}
-              type="button"
-              data-card-row=""
-              onClick={() => openProject(row.projectId)}
-              style={{
-                display: 'flex', alignItems: 'center', width: '100%', maxWidth: 720,
-                gap: space.lg, padding: `${space.md}px 0`, borderTop: `1px solid ${colors.border}`,
-                border: 'none', borderTopWidth: 1, background: 'transparent', cursor: 'pointer',
-                textAlign: 'left',
-              }}
-            >
-              <span style={{
-                flex: 1, minWidth: 0, fontFamily: font.body, fontSize: textSize.small,
-                color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }}>{row.projectName}</span>
-              <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, flexShrink: 0 }}>
-                {row.activeGoals} active{row.heldGoals > 0 ? ` · ${row.heldGoals} held` : ''}
-              </span>
-              <StatusChip status={row.status} />
-            </button>
-          ))}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+            gap: space.md,
+          }}>
+            {rows.map(row => (
+              <ProjectHealthTile key={row.projectId} row={row} onOpen={() => openProject(row.projectId)} />
+            ))}
+          </div>
         </CardScrollBody>
       )}
     </div>
+  );
+}
+
+function ProjectHealthTile({ row, onOpen }: { row: ProjectHealthRow; onOpen: () => void }) {
+  const { colors } = useTheme();
+  return (
+    <button
+      type="button"
+      data-card-row=""
+      onClick={onOpen}
+      style={{
+        display: 'flex', flexDirection: 'column', gap: space.xs, width: '100%',
+        padding: space.md, borderRadius: radius.md,
+        border: `1px solid ${colors.border}`, background: colors.bg,
+        cursor: 'pointer', textAlign: 'left',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
+        <span style={{
+          flex: 1, minWidth: 0, fontFamily: font.body, fontSize: textSize.small, fontWeight: 500,
+          color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>{row.projectName}</span>
+        <StatusChip status={row.status} />
+      </div>
+      <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim }}>
+        {row.activeGoals} active{row.heldGoals > 0 ? ` · ${row.heldGoals} held` : ''}
+      </div>
+      {row.reason && (
+        <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.4 }}>
+          {row.reason}
+        </div>
+      )}
+      <Sparkline points={row.sparkline} colors={colors} />
+    </button>
+  );
+}
+
+function Sparkline({ points, colors }: { points: ProjectHealthRow['sparkline']; colors: ReturnType<typeof useTheme>['colors'] }) {
+  if (points.length < 2) {
+    return (
+      <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, marginTop: space.xxs }}>
+        No activity history yet
+      </div>
+    );
+  }
+  const w = 120;
+  const h = 24;
+  const max = Math.max(1, ...points.map(p => p.count));
+  const step = w / (points.length - 1);
+  const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${(i * step).toFixed(1)} ${(h - (p.count / max) * h).toFixed(1)}`).join(' ');
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ marginTop: space.xxs }} aria-hidden>
+      <path d={path} fill="none" stroke={colors.cyan} strokeWidth={1.5} />
+    </svg>
   );
 }
 

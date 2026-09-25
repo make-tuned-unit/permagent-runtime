@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DASHBOARD_TEMPLATES, realizedLayout, comingSoonCards } from './templates';
+import { DASHBOARD_TEMPLATES, realizedLayout, comingSoonCards, cardDisplayName, isCurrentTemplate } from './templates';
 import { countHoles } from './useLayout';
 
 describe('DASHBOARD_TEMPLATES', () => {
@@ -72,5 +72,39 @@ describe('comingSoonCards', () => {
     expect(names).toContain('open_commitments');
     // `calendar` already exists — must not be listed as coming soon.
     expect(names).not.toContain('calendar');
+  });
+});
+
+describe('cardDisplayName', () => {
+  it('gives every Phase-2 comingSoon identifier a human name', () => {
+    for (const t of DASHBOARD_TEMPLATES) {
+      for (const type of comingSoonCards(t)) {
+        const name = cardDisplayName(type);
+        expect(name).not.toBe(type);
+        expect(name).not.toMatch(/_/);
+      }
+    }
+  });
+});
+
+describe('isCurrentTemplate', () => {
+  it('matches when the current layout has the same card types, any order', () => {
+    const morning = DASHBOARD_TEMPLATES.find(t => t.id === 'morning_briefing')!;
+    const layout = realizedLayout(morning);
+    const reordered = { cards: [...layout.cards].reverse() };
+    expect(isCurrentTemplate(morning, reordered)).toBe(true);
+  });
+
+  it('does not match a layout missing one of the template\'s cards', () => {
+    const morning = DASHBOARD_TEMPLATES.find(t => t.id === 'morning_briefing')!;
+    const layout = realizedLayout(morning);
+    const short = { cards: layout.cards.slice(1) };
+    expect(isCurrentTemplate(morning, short)).toBe(false);
+  });
+
+  it('does not match a different template', () => {
+    const morning = DASHBOARD_TEMPLATES.find(t => t.id === 'morning_briefing')!;
+    const operator = DASHBOARD_TEMPLATES.find(t => t.id === 'operator_command_center')!;
+    expect(isCurrentTemplate(morning, realizedLayout(operator))).toBe(false);
   });
 });

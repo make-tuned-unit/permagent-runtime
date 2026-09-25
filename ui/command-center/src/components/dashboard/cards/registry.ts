@@ -76,6 +76,11 @@ export interface CardManifest {
   source: string;
   /** Optional inline setup flow shown when the endpoint reports unconfigured. */
   configure?: CardConfigure;
+  /** `true` for a card whose content is naturally short and doesn't grow (a
+   *  one-line status strip) — drawn at its content's height, up to
+   *  `defaultSize.h`, instead of stretching to fill a reserved grid row
+   *  (dagK Phase-1 presentation pass: "card height must follow content"). */
+  autoHeight?: boolean;
 }
 
 export interface CardRegistryEntry {

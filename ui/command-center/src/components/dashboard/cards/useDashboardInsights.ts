@@ -11,16 +11,32 @@ import { apiFetch } from '../../../lib/api';
  * load). Every field is a deterministic count or cluster from real rows — see
  * `permagent::dashboard_insights` for the honest-data rules (P12).
  */
-export interface TodayFocus {
-  kind: 'decision' | 'goal' | null;
-  refId: string | null;
+export interface TodayFocusItem {
+  kind: 'decision' | 'goal';
+  refId: string;
   projectId: string | null;
-  title: string | null;
-  reason: string | null;
+  title: string;
+  /** The ranking signals in plain words, e.g. "the oldest of 3 decisions
+   *  waiting, from 2d ago" or "stalled the longest of 2 held goals · shares
+   *  its blocker with 1 other goal". */
+  reason: string;
+}
+export interface TodayFocus {
+  /** `null` — nothing qualifies; never a forced pick. */
+  top: TodayFocusItem | null;
+  /** Up to 2 next-ranked items, each with its own reason. */
+  runnersUp: TodayFocusItem[];
+}
+export interface DigestItem {
+  id: string;
+  title: string;
+  projectId: string | null;
 }
 export interface OvernightDigest {
-  newDecisions: number;
-  stalledSince: number;
+  finished: DigestItem[];
+  stalledNew: DigestItem[];
+  newDecisions: DigestItem[];
+  newMemories: number;
   quiet: boolean;
 }
 export interface FleetKpis {
@@ -33,10 +49,17 @@ export interface FleetKpis {
 export interface StalledGoalRef {
   goalId: string;
   projectId: string;
+  title: string;
 }
 export interface StalledCluster {
-  keyword: string;
+  phrase: string;
+  sentence: string;
+  nextStep: string | null;
   goals: StalledGoalRef[];
+}
+export interface ProjectActivityPoint {
+  date: string;
+  count: number;
 }
 export interface ProjectHealthRow {
   projectId: string;
@@ -44,7 +67,13 @@ export interface ProjectHealthRow {
   activeGoals: number;
   heldGoals: number;
   status: 'active' | 'stalled' | 'dormant';
+  /** Plain-words reason for a non-"active" status (why it's stalled/dormant). */
+  reason: string | null;
   lastTouched: string | null;
+  /** Real daily counts from the activity journal, last 14 days — empty when
+   *  the project has no journaled goal activity yet ("no history" is honest;
+   *  never a fabricated flat line, P12). */
+  sparkline: ProjectActivityPoint[];
 }
 export interface DashboardInsights {
   todayFocus: TodayFocus;

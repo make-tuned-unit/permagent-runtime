@@ -34,8 +34,11 @@ export function FleetKpisCard() {
         <div style={{ display: 'flex', width: '100%', gap: space.xxl }}>
           <Kpi label="Projects" value={kpis.projectCount} colors={colors} />
           <Kpi label="Active goals" value={kpis.activeGoalCount} colors={colors} />
-          <Kpi label="Stalled" value={kpis.stalledGoalCount} accent={kpis.stalledGoalCount > 0} colors={colors} />
-          <Kpi label="Decisions waiting" value={kpis.pendingDecisionCount} accent={kpis.pendingDecisionCount > 0} colors={colors} />
+          {/* Coloured by MEANING, not just "has a number": stalled/waiting
+              are attention-worthy (danger/cyan), never the same neutral text
+              as a plain count (coordinator, Phase-1 presentation pass). */}
+          <Kpi label="Stalled" value={kpis.stalledGoalCount} tone={kpis.stalledGoalCount > 0 ? 'danger' : undefined} colors={colors} />
+          <Kpi label="Decisions waiting" value={kpis.pendingDecisionCount} tone={kpis.pendingDecisionCount > 0 ? 'cyan' : undefined} colors={colors} />
           <Kpi label="Sessions today" value={kpis.sessionsToday} colors={colors} />
         </div>
       )}
@@ -43,7 +46,8 @@ export function FleetKpisCard() {
   );
 }
 
-function Kpi({ label, value, accent, colors }: { label: string; value: number; accent?: boolean; colors: ReturnType<typeof useTheme>['colors'] }) {
+function Kpi({ label, value, tone, colors }: { label: string; value: number; tone?: 'cyan' | 'danger'; colors: ReturnType<typeof useTheme>['colors'] }) {
+  const color = tone === 'danger' ? colors.danger : tone === 'cyan' ? colors.cyan : colors.text;
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{
@@ -53,7 +57,7 @@ function Kpi({ label, value, accent, colors }: { label: string; value: number; a
       }}>{label}</div>
       <div style={{
         fontFamily: font.display, fontSize: textSize.title, fontWeight: 600,
-        ...tabularNums, color: accent ? colors.cyan : colors.text,
+        ...tabularNums, color,
       }}>{value}</div>
     </div>
   );

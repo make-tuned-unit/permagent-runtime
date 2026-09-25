@@ -429,6 +429,14 @@ export function Dashboard() {
               style={{
                 gridColumn: `${x + 1} / span ${w}`,
                 gridRow: `${y + 1} / span ${h}`,
+                // auto_height cards (e.g. a one-line status strip) draw at
+                // their content's height and sit at the TOP of the row(s)
+                // the packer reserved, leaving the rest blank instead of
+                // stretching a single line across a tall box (coordinator,
+                // Phase-1 presentation pass: "card height must follow
+                // content"). Every other card keeps the grid's default
+                // stretch, unchanged.
+                alignSelf: entry?.manifest?.autoHeight ? 'start' : undefined,
                 cursor: isEditMode ? (isDragging ? 'grabbing' : 'grab') : 'default',
                 borderRadius: radius.lg,
                 outline: isDragTarget

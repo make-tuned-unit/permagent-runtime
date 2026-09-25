@@ -76,6 +76,14 @@ pub struct CardManifest {
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub configure: Option<CardConfigure>,
+    /// `true` for a card whose content is naturally short and doesn't grow
+    /// (a one-line status strip) — the frontend draws it at its content's
+    /// height, up to `default_size.h`, instead of stretching it to fill a
+    /// reserved grid row (dagK Phase-1 presentation pass: "card height must
+    /// follow content"). Omitted (⇒ `false`) for every card whose content
+    /// varies or can overflow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_height: bool,
 }
 
 // ── Data payload returned by every manifest-card data endpoint ───────────────
@@ -153,6 +161,7 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
             refresh_seconds: Some(30),
             source: "built-in".to_string(),
             configure: None,
+            auto_height: false,
         },
         CardManifest {
             card_type: "calendar".to_string(),
@@ -165,6 +174,7 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
             refresh_seconds: Some(300),
             source: "built-in".to_string(),
             configure: None,
+            auto_height: false,
         },
         CardManifest {
             card_type: "weather".to_string(),
@@ -180,6 +190,7 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
                 label: "Set location".to_string(),
                 placeholder: "City, e.g. San Francisco".to_string(),
             }),
+            auto_height: false,
         },
         // dagK home-templates lane: Morning Briefing's top row
         // (HOME_TEMPLATES_RESEARCH.md §2.1) — "the same numbers Henry's own
@@ -190,16 +201,18 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
             card_type: "henry_status".to_string(),
             name: "Agent status".to_string(),
             description: "What your agent is doing right now, and today's totals".to_string(),
-            // h:1 (single 60px grid row) clipped the compact layout's hero
-            // value line — a manifest 'compact' card is icon+label, a hero
-            // value and an inline supporting row (ManifestCard.tsx), which
-            // needs two rows' worth of height, not one (harness visual pass).
-            default_size: CardSize { w: 12, h: 2 },
+            // h:1 is a ceiling, not a fixed height — `auto_height` below (and
+            // ManifestCard's hero-only single-row branch) draws it as one
+            // thin strip that follows its content, not a stretched 60px box.
+            default_size: CardSize { w: 12, h: 1 },
             layout: "compact".to_string(),
             data_endpoint: "/api/dashboard/henry-status".to_string(),
             refresh_seconds: Some(15),
             source: "built-in".to_string(),
             configure: None,
+            // A one-line status strip: height follows content instead of
+            // reserving 2 grid rows for it (dagK Phase-1 presentation pass).
+            auto_height: true,
         },
         // Operator Command Center (§2.2) — `/api/job-health` already exists
         // (job_health.rs) and was, per the QA walk, "dead, AutomateZone
@@ -216,6 +229,7 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
             refresh_seconds: Some(60),
             source: "built-in".to_string(),
             configure: None,
+            auto_height: false,
         },
     ]
 }
@@ -1072,6 +1086,7 @@ mod tests {
             refresh_seconds: Some(30),
             source: "built-in".to_string(),
             configure: None,
+            auto_height: false,
         };
         let v = manifest_to_json(&m);
         assert_eq!(v["type"], "system_stats");
@@ -1079,6 +1094,32 @@ mod tests {
         assert_eq!(v["dataEndpoint"], "/api/dashboard/system-stats");
         assert_eq!(v["defaultSize"]["w"], 5);
         assert_eq!(v["refreshSeconds"], 30);
+        assert!(
+            v.get("autoHeight").is_none(),
+            "false is the quiet default, omitted from the wire"
+        );
+    }
+
+    #[test]
+    fn henry_status_is_the_one_auto_height_builtin() {
+        let manifests = builtin_card_manifests();
+        let henry = manifests
+            .iter()
+            .find(|m| m.card_type == "henry_status")
+            .unwrap();
+        assert!(
+            henry.auto_height,
+            "a one-line status strip must follow its content, not stretch"
+        );
+        let v = manifest_to_json(henry);
+        assert_eq!(v["autoHeight"], true);
+        for other in manifests.iter().filter(|m| m.card_type != "henry_status") {
+            assert!(
+                !other.auto_height,
+                "{} should not be auto-height",
+                other.card_type
+            );
+        }
     }
 
     #[test]

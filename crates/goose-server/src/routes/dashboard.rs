@@ -694,9 +694,45 @@ async fn get_insights(
         .filter(|s| s.created_at >= today_midnight)
         .count();
 
+    // "Finished" for the overnight digest: non-active sessions (same 2-minute
+    // active threshold `get_dashboard` uses) that wrapped up since midnight —
+    // named rows, not just a count (coordinator, Phase-1 presentation pass).
+    let two_min_ago = now - chrono::Duration::seconds(120);
+    let finished_sessions: Vec<permagent::dashboard_insights::SessionFact> = sessions
+        .iter()
+        .filter(|s| {
+            s.updated_at < two_min_ago
+                && s.updated_at >= today_midnight
+                && matches!(
+                    s.session_type,
+                    permagent::session::session_manager::SessionType::User
+                        | permagent::session::session_manager::SessionType::Scheduled
+                )
+        })
+        .map(|s| permagent::dashboard_insights::SessionFact {
+            id: s.id.clone(),
+            title: if s.name.is_empty() || s.name == "New Chat" {
+                format!("Session {}", s.id)
+            } else {
+                s.name.clone()
+            },
+            ended_at: s.updated_at,
+        })
+        .collect();
+
+    // Memory delta: honestly 0 — the daemon has no timestamped memory-delta
+    // tracking yet (the same gap `get_dashboard`'s `memory_delta_today`
+    // already documents). Never fabricated (P12).
+    let new_memories: i64 = 0;
+
     let today_focus = permagent::dashboard_insights::compute_today_focus(&decisions, &goals);
-    let overnight_digest =
-        permagent::dashboard_insights::compute_overnight_digest(&decisions, &goals, today_midnight);
+    let overnight_digest = permagent::dashboard_insights::compute_overnight_digest(
+        &decisions,
+        &goals,
+        &finished_sessions,
+        new_memories,
+        today_midnight,
+    );
     let fleet_kpis = permagent::dashboard_insights::compute_fleet_kpis(
         &projects,
         &goals,
@@ -705,10 +741,13 @@ async fn get_insights(
     );
     let stalled_patterns = permagent::dashboard_insights::find_stalled_patterns(&goals);
 
-    // project_health_grid: one row per project with a goal, "dormant"
-    // otherwise. No fabricated sparkline (P12) — a real 14-day activity
-    // series needs an activity-journal source Phase 1 does not have; Phase 2
-    // adds it per HOME_TEMPLATES_RESEARCH.md §5.
+    // project_health_grid: one row per project, with a plain-words reason for
+    // a non-"active" status (coordinator, Phase-1 presentation pass) and a
+    // real 14-day daily activity count where the activity journal has one —
+    // "no history yet" otherwise, never a fabricated flat sparkline (P12).
+    let daily_activity = permagent::activity_journal::daily_goal_activity_by_project(&pool, 14)
+        .await
+        .unwrap_or_default();
     let grid: Vec<serde_json::Value> = projects
         .iter()
         .map(|p| {
@@ -722,13 +761,28 @@ async fn get_insights(
             } else {
                 "active"
             };
+            let reason = match status {
+                "stalled" => project_goals
+                    .iter()
+                    .find(|g| g.is_stalled())
+                    .and_then(|g| g.hold_note.clone()),
+                "dormant" => Some("No active goals right now".to_string()),
+                _ => None,
+            };
+            let sparkline: Vec<serde_json::Value> = daily_activity
+                .iter()
+                .filter(|d| d.project_id == p.id)
+                .map(|d| serde_json::json!({ "date": d.date, "count": d.count }))
+                .collect();
             serde_json::json!({
                 "projectId": p.id,
                 "projectName": p.name,
                 "activeGoals": project_goals.len(),
                 "heldGoals": held,
                 "status": status,
+                "reason": reason,
                 "lastTouched": last_touched.map(|t| t.to_rfc3339()),
+                "sparkline": sparkline,
             })
         })
         .collect();

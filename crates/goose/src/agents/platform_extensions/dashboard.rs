@@ -372,15 +372,18 @@ impl DashboardClient {
             .and_then(|n| n.as_u64());
         match template_id {
             "morning_briefing" => match pending {
-                Some(n) if n > 0 => {
-                    format!("{n} decision(s) are waiting — Morning Briefing puts them first.")
-                }
+                Some(n) if n > 0 => format!(
+                    "{} waiting — Morning Briefing puts {} first.",
+                    plural_count(n, "decision", "decisions"),
+                    if n == 1 { "it" } else { "them" },
+                ),
                 _ => "Morning Briefing puts today's decisions and what's in flight first."
                     .to_string(),
             },
             "operator_command_center" => match stalled {
                 Some(n) if n > 0 => format!(
-                    "{n} goal(s) are stalled — Operator Command Center surfaces the pattern across projects."
+                    "{} stalled — Operator Command Center surfaces the pattern across projects.",
+                    plural_count(n, "goal is", "goals are"),
                 ),
                 _ => "Operator Command Center shows the state of every project at once."
                     .to_string(),
@@ -454,8 +457,8 @@ impl DashboardClient {
         );
         if !coming_soon.is_empty() {
             msg.push_str(&format!(
-                " {} card(s) from this template aren't built yet and were left out: {}.",
-                coming_soon.len(),
+                " {} from this template aren't built yet and were left out: {}.",
+                plural_count(coming_soon.len() as u64, "card", "cards"),
                 coming_soon.join(", ")
             ));
         }
@@ -482,6 +485,11 @@ fn packed_to_layout(packed: &[crate::dashboard_insights::PackedCard]) -> serde_j
             "visible": true,
         })).collect::<Vec<_>>(),
     })
+}
+
+/// "N word" with the given noun pluralized properly — never "1 goal(s)".
+fn plural_count(n: u64, singular: &str, plural: &str) -> String {
+    format!("{n} {}", if n == 1 { singular } else { plural })
 }
 
 /// Pull `template_id`/`cards` out of a tool call's raw JSON arguments.
@@ -788,5 +796,25 @@ mod tests {
     fn build_reason_falls_back_for_an_unknown_template_id() {
         let reason = DashboardClient::build_reason("not_a_real_template", None);
         assert!(!reason.is_empty());
+    }
+
+    #[test]
+    fn build_reason_pluralizes_correctly_for_exactly_one() {
+        let one = json!({ "fleetKpis": { "pendingDecisionCount": 1 } });
+        let reason = DashboardClient::build_reason("morning_briefing", Some(&one));
+        assert!(reason.contains("1 decision "), "{reason}");
+        assert!(!reason.contains("decisions"), "{reason}");
+        assert!(reason.contains("puts it first"), "{reason}");
+
+        let goal_one = json!({ "fleetKpis": { "stalledGoalCount": 1 } });
+        let goal_reason = DashboardClient::build_reason("operator_command_center", Some(&goal_one));
+        assert!(goal_reason.contains("1 goal is stalled"), "{goal_reason}");
+    }
+
+    #[test]
+    fn plural_count_never_writes_the_lazy_s_parenthesis() {
+        assert_eq!(plural_count(1, "goal", "goals"), "1 goal");
+        assert_eq!(plural_count(3, "goal", "goals"), "3 goals");
+        assert_eq!(plural_count(0, "goal", "goals"), "0 goals");
     }
 }

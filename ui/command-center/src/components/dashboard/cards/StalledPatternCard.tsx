@@ -1,23 +1,22 @@
 /**
  * Stalled-Goal Pattern — Operator Command Center's synthesis card (§2.2, §3
- * `stalled_pattern`). The daemon's deterministic clustering already refuses
- * to report a "pattern" from fewer than 2 goals sharing a keyword (P12) —
- * this card's only job is to hide itself gracefully when that comes back
- * empty, never to force one into view.
+ * `stalled_pattern`). The daemon clusters on a shared two-word PHRASE in the
+ * blocker notes (not a single word — a keyword is not an insight) and hands
+ * back a ready sentence, the goals by name, and a suggested next step. This
+ * card renders exactly that; it does no clustering of its own.
  */
 import { radius, space, font, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { SectionTitle, EmptyNote, CardScrollBody } from '../atoms';
 import { useCommandCenter } from '../../../lib/store';
 import { useDashboardInsights } from './useDashboardInsights';
-import { Button } from '../../common/Button';
-import type { CSSProperties } from 'react';
 
 export function StalledPatternCard() {
   const { colors } = useTheme();
   const { data, loading, error } = useDashboardInsights();
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
   const clusters = data?.stalledPatterns ?? [];
+  const projectNames = new Map((data?.projectHealthGrid ?? []).map(p => [p.projectId, p.projectName]));
 
   return (
     <div style={{
@@ -36,44 +35,45 @@ export function StalledPatternCard() {
       ) : loading && !data ? (
         <EmptyNote>Loading…</EmptyNote>
       ) : clusters.length === 0 ? (
-        <EmptyNote hint="Shown when 2+ stalled goals share a keyword in their blocker note">
+        <EmptyNote hint="Shown when 2+ stalled goals share a phrase in their blocker note">
           Not enough concurrent activity yet to find cross-project patterns
         </EmptyNote>
       ) : (
         <CardScrollBody testId="stalled-pattern-body">
-          {clusters.map(cluster => {
-            const projectCount = new Set(cluster.goals.map(g => g.projectId)).size;
-            return (
-              <div key={cluster.keyword} data-card-row="" style={{ padding: `${space.md}px 0`, borderTop: `1px solid ${colors.border}` }}>
-                <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text }}>
-                  {cluster.goals.length} goals across {projectCount} project{projectCount === 1 ? '' : 's'} share "{cluster.keyword}"
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, marginTop: space.sm }}>
-                  {cluster.goals.map(g => (
-                    <Button
-                      key={g.goalId}
-                      colors={colors}
-                      type="button"
-                      onClick={() => openGoalDetail(g.projectId, g.goalId)}
-                      style={{
-                        '--pa-btn-bg': colors.cyanSoft,
-                        '--pa-btn-fg': colors.cyan,
-                        '--pa-btn-border': 'transparent',
-                        '--pa-btn-bg-hover': colors.cyanSoft,
-                        '--pa-btn-fg-hover': colors.cyan,
-                        '--pa-btn-pad': `${space.xxs}px ${space.sm}px`,
-                        '--pa-btn-radius': `${radius.sm}px`,
-                        '--pa-btn-weight': 600,
-                        fontFamily: font.body, fontSize: textSize.micro,
-                      } as CSSProperties}
-                    >
-                      Goal →
-                    </Button>
-                  ))}
-                </div>
+          {clusters.map(cluster => (
+            <div key={cluster.phrase} data-card-row="" style={{ padding: `${space.md}px 0`, borderTop: `1px solid ${colors.border}` }}>
+              <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text, lineHeight: 1.4 }}>
+                {cluster.sentence}
               </div>
-            );
-          })}
+              {cluster.nextStep && (
+                <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.cyan, marginTop: space.xxs }}>
+                  {cluster.nextStep}
+                </div>
+              )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxs, marginTop: space.sm, maxWidth: 640 }}>
+                {cluster.goals.map(g => (
+                  <button
+                    key={g.goalId}
+                    type="button"
+                    onClick={() => openGoalDetail(g.projectId, g.goalId)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: space.sm, width: '100%',
+                      background: 'transparent', border: 'none', padding: `${space.xxs}px 0`,
+                      cursor: 'pointer', textAlign: 'left',
+                    }}
+                  >
+                    <span style={{
+                      fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1,
+                    }}>{g.title}</span>
+                    <span style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, flexShrink: 0 }}>
+                      {projectNames.get(g.projectId) ?? g.projectId}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
         </CardScrollBody>
       )}
     </div>

@@ -50,8 +50,8 @@ afterEach(() => {
 
 function insights(over: Partial<DashboardInsights> = {}): DashboardInsights {
   return {
-    todayFocus: { kind: null, refId: null, projectId: null, title: null, reason: null },
-    overnightDigest: { newDecisions: 0, stalledSince: 0, quiet: true },
+    todayFocus: { top: null, runnersUp: [] },
+    overnightDigest: { finished: [], stalledNew: [], newDecisions: [], newMemories: 0, quiet: true },
     fleetKpis: { projectCount: 0, activeGoalCount: 0, stalledGoalCount: 0, pendingDecisionCount: 0, sessionsToday: 0 },
     stalledPatterns: [],
     projectHealthGrid: [],
@@ -72,13 +72,18 @@ it('TodayFocusCard: never forces a pick when nothing qualifies', async () => {
   expect(container.textContent).toContain('Nothing urgent');
 });
 
-it('TodayFocusCard: shows the daemon-ranked pick and its reason', async () => {
+it('TodayFocusCard: shows the daemon-ranked pick, its reason, and the runners-up', async () => {
   apiFetch.mockResolvedValue(insights({
-    todayFocus: { kind: 'decision', refId: 'd1', projectId: null, title: 'Approve the People merge', reason: 'The oldest of 3 decisions waiting on you, from 2d ago' },
+    todayFocus: {
+      top: { kind: 'decision', refId: 'd1', projectId: null, title: 'Approve the People merge', reason: 'the oldest of 3 decisions waiting, from 2d ago' },
+      runnersUp: [{ kind: 'decision', refId: 'd2', projectId: null, title: 'Confirm the bench plan', reason: '#2 oldest of 3 decisions waiting, from 1d ago' }],
+    },
   }));
   await render(<TodayFocusCard />);
   expect(container.textContent).toContain('Approve the People merge');
   expect(container.textContent).toContain('2d ago');
+  expect(container.textContent).toContain('Confirm the bench plan');
+  expect(container.textContent).toContain('Next up');
 });
 
 it('TodayFocusCard: reports a fetch failure honestly, not as empty', async () => {
@@ -95,11 +100,18 @@ it('OvernightDigestCard: says "Quiet night" instead of four blank rows', async (
   expect(container.textContent).toContain('Quiet night');
 });
 
-it('OvernightDigestCard: shows only the buckets that actually happened', async () => {
-  apiFetch.mockResolvedValue(insights({ overnightDigest: { newDecisions: 2, stalledSince: 0, quiet: false } }));
+it('OvernightDigestCard: shows only the buckets that actually happened, named', async () => {
+  apiFetch.mockResolvedValue(insights({
+    overnightDigest: {
+      finished: [], stalledNew: [], newMemories: 0, quiet: false,
+      newDecisions: [{ id: 'd1', title: 'Approve the People merge', projectId: null }, { id: 'd2', title: 'Confirm bench plan', projectId: null }],
+    },
+  }));
   await render(<OvernightDigestCard />);
   expect(container.textContent).toContain('New decisions');
+  expect(container.textContent).toContain('Approve the People merge');
   expect(container.textContent).not.toContain('Newly stalled');
+  expect(container.textContent).not.toContain('Finished');
 });
 
 // ── FleetKpisCard ────────────────────────────────────────────────────────────
@@ -127,15 +139,30 @@ it('StalledPatternCard: hides itself rather than force a pattern', async () => {
   expect(container.textContent).toContain('Not enough concurrent activity');
 });
 
-it('StalledPatternCard: names the shared keyword and opens the right goal for each button', async () => {
+it('StalledPatternCard: renders the sentence, next step, and each goal by name+project', async () => {
   apiFetch.mockResolvedValue(insights({
-    stalledPatterns: [{ keyword: 'daemon', goals: [{ goalId: 'g1', projectId: 'p1' }, { goalId: 'g2', projectId: 'p2' }] }],
+    stalledPatterns: [{
+      phrase: 'daemon restarts',
+      sentence: '2 goals in 2 projects are stuck on the same thing: daemon restarts.',
+      nextStep: 'Fixing this unblocks 2 goals.',
+      goals: [
+        { goalId: 'g1', projectId: 'p1', title: 'Ship the telemetry lane' },
+        { goalId: 'g2', projectId: 'p2', title: 'Bench Prime synthesis' },
+      ],
+    }],
+    projectHealthGrid: [
+      { projectId: 'p1', projectName: 'Harness Bench', activeGoals: 1, heldGoals: 1, status: 'stalled', reason: null, lastTouched: null, sparkline: [] },
+      { projectId: 'p2', projectName: 'Solar Forum', activeGoals: 1, heldGoals: 1, status: 'stalled', reason: null, lastTouched: null, sparkline: [] },
+    ],
   }));
   await render(<StalledPatternCard />);
-  expect(container.textContent).toContain('daemon');
-  const buttons = Array.from(container.querySelectorAll('button')).filter(b => b.textContent?.includes('Goal'));
-  expect(buttons.length).toBe(2);
-  (buttons[1] as HTMLButtonElement).click();
+  expect(container.textContent).toContain('stuck on the same thing: daemon restarts');
+  expect(container.textContent).toContain('Fixing this unblocks 2 goals');
+  expect(container.textContent).toContain('Ship the telemetry lane');
+  expect(container.textContent).toContain('Harness Bench');
+  const buttons = Array.from(container.querySelectorAll('button')).filter(b => b.textContent?.includes('Bench Prime synthesis'));
+  expect(buttons.length).toBe(1);
+  (buttons[0] as HTMLButtonElement).click();
   expect(openGoalDetail).toHaveBeenCalledWith('p2', 'g2');
 });
 
@@ -147,18 +174,20 @@ it('ProjectHealthGridCard: reads "No projects yet" when the fleet is empty', asy
   expect(container.textContent).toContain('No projects yet');
 });
 
-it('ProjectHealthGridCard: labels a project with no goals "Dormant", not a flat-zero chart', async () => {
+it('ProjectHealthGridCard: labels a project with no goals "Dormant" with a reason, no fabricated sparkline', async () => {
   apiFetch.mockResolvedValue(insights({
-    projectHealthGrid: [{ projectId: 'p1', projectName: 'Solar Forum', activeGoals: 0, heldGoals: 0, status: 'dormant', lastTouched: null }],
+    projectHealthGrid: [{ projectId: 'p1', projectName: 'Solar Forum', activeGoals: 0, heldGoals: 0, status: 'dormant', reason: 'No active goals right now', lastTouched: null, sparkline: [] }],
   }));
   await render(<ProjectHealthGridCard />);
   expect(container.textContent).toContain('Solar Forum');
   expect(container.textContent).toContain('Dormant');
+  expect(container.textContent).toContain('No active goals right now');
+  expect(container.textContent).toContain('No activity history yet');
 });
 
 it('ProjectHealthGridCard: clicking a row navigates to that project', async () => {
   apiFetch.mockResolvedValue(insights({
-    projectHealthGrid: [{ projectId: 'p1', projectName: 'Solar Forum', activeGoals: 2, heldGoals: 0, status: 'active', lastTouched: null }],
+    projectHealthGrid: [{ projectId: 'p1', projectName: 'Solar Forum', activeGoals: 2, heldGoals: 0, status: 'active', reason: null, lastTouched: null, sparkline: [] }],
   }));
   await render(<ProjectHealthGridCard />);
   const row = container.querySelector('button');
