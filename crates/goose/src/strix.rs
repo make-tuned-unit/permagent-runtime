@@ -171,6 +171,20 @@ pub fn is_empty_input_skip(err: &str) -> bool {
     err.contains("no scannable files")
 }
 
+/// Strix's exit code when a scan COMPLETED and reported vulnerabilities
+/// (`strix/interface/main.py`: `if report_state.vulnerability_reports:
+/// sys.exit(2)`, verified in strix 1.4.1 on 2026-09-25). A finding is the
+/// scan's product, not a failure: treating 2 as a crash dropped every scan
+/// that found something (Plekk, 2026-09-25: a complete SARIF with a CVSS 9.8
+/// auth finding was discarded as "scanner exited exit status: 2").
+pub const SCANNER_EXIT_FINDINGS: i32 = 2;
+
+/// Whether the scanner's exit means "the scan ran": clean (0) or with
+/// findings ([`SCANNER_EXIT_FINDINGS`]). The caller still requires the SARIF.
+pub fn scanner_completed(status: std::process::ExitStatus) -> bool {
+    status.success() || status.code() == Some(SCANNER_EXIT_FINDINGS)
+}
+
 pub fn classify_scanner_failure(status: std::process::ExitStatus, detail: &str) -> String {
     if detail.contains(EMPTY_MODEL_INPUT_MARKER) {
         // Named, not blamed on the project: the tree already passed
@@ -292,6 +306,23 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn exit_two_is_a_completed_scan_with_findings_not_a_crash() {
+        use std::os::unix::process::ExitStatusExt;
+        // ExitStatus::from_raw takes a wait(2) status: exit code << 8.
+        assert!(scanner_completed(std::process::ExitStatus::from_raw(0)));
+        assert!(scanner_completed(std::process::ExitStatus::from_raw(
+            2 << 8
+        )));
+        assert!(!scanner_completed(std::process::ExitStatus::from_raw(
+            1 << 8
+        )));
+        assert!(!scanner_completed(std::process::ExitStatus::from_raw(
+            3 << 8
+        )));
+    }
+
     use super::*;
 
     #[test]

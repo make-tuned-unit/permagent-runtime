@@ -1430,7 +1430,7 @@ async fn scan_project_remote(
         cleanup_strix_sandboxes(Some(ssh_target)).await;
     }
     let output = output?;
-    if !output.status.success() {
+    if !strix::scanner_completed(output.status) {
         return Err(strix::classify_scanner_failure(
             output.status,
             &scanner_failure_detail(&output),
@@ -1493,7 +1493,7 @@ async fn scan_project_local(target: &std::path::Path) -> Result<Vec<Finding>, St
         cleanup_strix_sandboxes(None).await;
     }
     let output = output?;
-    if !output.status.success() {
+    if !strix::scanner_completed(output.status) {
         return Err(strix::classify_scanner_failure(
             output.status,
             &scanner_failure_detail(&output),
