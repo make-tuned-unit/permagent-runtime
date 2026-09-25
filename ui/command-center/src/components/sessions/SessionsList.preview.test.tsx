@@ -181,4 +181,70 @@ describe('≥1600px: list/preview split', () => {
     act(() => rows[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
     expect(switchToSession).toHaveBeenCalledWith('row-2');
   });
+
+  it('the selected row gets the theme fill + a left accent bar, not a barely-visible neutral tint', async () => {
+    render();
+    await act(async () => { await Promise.resolve(); });
+    const row = container.querySelectorAll('[data-testid="session-row"]')[0] as HTMLElement;
+    act(() => { row.dispatchEvent(new MouseEvent('click', { bubbles: true })); row.focus(); });
+    await act(async () => { await Promise.resolve(); });
+    // jsdom resolves CSS custom-property-free colors from inline style as-authored.
+    expect(row.style.borderLeft).toContain('2px solid');
+    expect(row.style.backgroundColor).not.toBe('');
+    expect(row.style.backgroundColor).not.toMatch(/rgba\(255,\s*255,\s*255/); // not the old neutral fillHover
+  });
+
+  describe('header actions: Open / Fork / Rename / Delete, right under the title', () => {
+    async function selectRow1() {
+      render();
+      await act(async () => { await Promise.resolve(); });
+      const row = container.querySelectorAll('[data-testid="session-row"]')[0] as HTMLElement;
+      act(() => { row.dispatchEvent(new MouseEvent('click', { bubbles: true })); row.focus(); });
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    }
+
+    it('renders in header order directly under the title, not at the pane bottom', async () => {
+      await selectRow1();
+      const preview = container.querySelector('[data-testid="session-preview"]')!;
+      const title = preview.querySelector('[data-testid="session-preview-title"]')!;
+      const buttons = Array.from(preview.querySelectorAll('button')).map(b => b.textContent?.trim());
+      expect(buttons).toEqual(['Open', 'Fork', 'Rename', 'Delete']);
+      // The action row is a near sibling of the title, not pushed to the
+      // bottom by `margin-top: auto` — its container comes right after title.
+      const actionRow = preview.querySelector('button')!.closest('div')!;
+      expect(title.compareDocumentPosition(actionRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('Rename starts the row\'s inline rename, not a dialog', async () => {
+      await selectRow1();
+      const rename = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Rename')!;
+      act(() => rename.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+      const input = container.querySelector('input:not([type="search"])') as HTMLInputElement;
+      expect(input).toBeTruthy();
+      expect(input.value).toBe('Plan the Atlas launch');
+    });
+
+    it('Delete opens the confirm dialog (never deletes on one click)', async () => {
+      await selectRow1();
+      const del = Array.from(container.querySelectorAll('button')).find(b => b.textContent?.includes('Delete'))!;
+      act(() => del.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+      // ConfirmDialog renders through DetailModal's portal, into document.body
+      // rather than into `container` — assert there, same as any modal test.
+      expect(document.body.textContent).toContain('Delete session?');
+      expect(useCommandCenter.getState().deleteSession).not.toHaveBeenCalled();
+    });
+  });
+
+  it('caps the preview body at a readable measure (~72ch), not the full pane width', async () => {
+    await (async () => {
+      render();
+      await act(async () => { await Promise.resolve(); });
+      const row = container.querySelectorAll('[data-testid="session-row"]')[0] as HTMLElement;
+      act(() => { row.dispatchEvent(new MouseEvent('click', { bubbles: true })); row.focus(); });
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    })();
+    const preview = container.querySelector('[data-testid="session-preview"]')!;
+    const measured = preview.querySelector('[data-testid="session-preview-title"]')!.closest('div[style*="72ch"]');
+    expect(measured).toBeTruthy();
+  });
 });

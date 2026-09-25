@@ -228,3 +228,35 @@ describe('R4 — keyboard: a session row is Enter-activatable', () => {
     expect(useCommandCenter.getState().switchToSession).toHaveBeenCalledWith('chat-1');
   });
 });
+
+describe('rename — 2026-09-25 coordinator finding: a single click must never start it', () => {
+  it('a single click on the title selects/opens it, exactly like clicking anywhere else on the row', async () => {
+    render();
+    await act(async () => { await Promise.resolve(); });
+    const title = container.querySelector('[data-testid="session-row-title-text"]') as HTMLElement;
+    act(() => title.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    // It opened the row (the click bubbled through, unobstructed) — it did
+    // NOT turn the title into a rename input.
+    expect(useCommandCenter.getState().switchToSession).toHaveBeenCalledWith('chat-1');
+    expect(container.querySelector('input:not([type="search"])')).toBeNull();
+  });
+
+  it('a double-click on the title starts a rename', async () => {
+    render();
+    await act(async () => { await Promise.resolve(); });
+    const title = container.querySelector('[data-testid="session-row-title-text"]') as HTMLElement;
+    act(() => title.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+    const input = container.querySelector('input:not([type="search"])') as HTMLInputElement;
+    expect(input).toBeTruthy();
+    expect(input.value).toBe('How do I rotate the staging keys?');
+  });
+
+  it('F2 on a focused row starts a rename without opening it', async () => {
+    render();
+    await act(async () => { await Promise.resolve(); });
+    const row = container.querySelector('[data-testid="session-row"]') as HTMLElement;
+    act(() => row.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true, cancelable: true })));
+    expect(container.querySelector('input:not([type="search"])')).toBeTruthy();
+    expect(useCommandCenter.getState().switchToSession).not.toHaveBeenCalled();
+  });
+});

@@ -85,11 +85,12 @@ describe('C5 — Escape in the rename input cancels the rename only', () => {
   const session = { id: 'sess-1234567890', name: 'My chat', created_at: 'c', updated_at: undefined, message_count: 2 };
 
   function startRenaming(): HTMLInputElement {
-    // EditableName's own span (its wrapper has the same textContent — clicking
-    // the wrapper would select the row instead of starting the rename).
+    // A single click on the title selects/opens the row, same as anywhere
+    // else on it (2026-09-25 coordinator finding) — only a double-click, F2,
+    // or the preview's Rename button starts a rename.
     const name = container.querySelector('[data-testid="session-row-title-text"]');
     expect(name).toBeTruthy();
-    act(() => name!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    act(() => name!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
     const input = container.querySelector('input:not([type="search"])');
     expect(input).toBeTruthy();
     return input as HTMLInputElement;
@@ -97,7 +98,14 @@ describe('C5 — Escape in the rename input cancels the rename only', () => {
 
   it('one Escape closes the input but does NOT close the overlay', () => {
     const onClose = vi.fn();
-    useCommandCenter.setState({ sessions: [session], sessionsError: false, loadSessions: vi.fn() });
+    // A double-click's two preceding single clicks now reach the row's own
+    // onClick (open) — real, unmocked store actions here would throw past the
+    // test into an unhandled rejection, so they're stubbed like every other
+    // row-interaction test stubs them.
+    useCommandCenter.setState({
+      sessions: [session], sessionsError: false, loadSessions: vi.fn(),
+      switchToSession: vi.fn(() => Promise.resolve()), openChatDock: vi.fn(), setActivePanel: vi.fn(),
+    });
     render(<SessionsList onClose={onClose} />);
 
     const input = startRenaming();

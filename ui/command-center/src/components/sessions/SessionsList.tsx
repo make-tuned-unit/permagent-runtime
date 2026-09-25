@@ -122,41 +122,61 @@ function toRow(session: SessionState): SessionRow {
   };
 }
 
-function EditableName({ value, onSave }: { value: string; onSave: (name: string) => void }) {
+/**
+ * The row's title/rename field. `editing` is CONTROLLED by the parent
+ * (`renamingId`, on `SessionsList`) rather than owned here — rename can now
+ * be started from three places (double-click, F2, and the preview pane's
+ * Rename button), and only one of them (double-click) is even on this
+ * component, so one shared switch is simpler than three ways to flip a local
+ * boolean.
+ *
+ * A single click does NOT start a rename (2026-09-25 coordinator finding:
+ * clicking a row's title to select it silently turned it into an editable
+ * field instead). The title has no click handler of its own any more, so a
+ * plain click falls through to the row's own onClick exactly like clicking
+ * anywhere else on the row — select/open, never rename.
+ */
+function EditableName({ value, editing, onStartEdit, onStopEditing, onSave }: {
+  value: string;
+  editing: boolean;
+  onStartEdit: () => void;
+  onStopEditing: () => void;
+  onSave: (name: string) => void;
+}) {
   const { colors } = useTheme();
-  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
   // R3: the label is shown in full (SessionsList passes { maxChars: Infinity
   // }), wrapped to 2 lines instead of cut — so the ONLY case that still needs
   // the full text on a tooltip is a label long enough to overflow even that.
-  // A short title keeps the plain "click to rename" hint it always had.
   const [labelRef, clamped] = useClamped<HTMLSpanElement>(value);
 
   useEffect(() => {
-    if (editing) inputRef.current?.focus();
-  }, [editing]);
+    if (editing) { setDraft(value); inputRef.current?.focus(); inputRef.current?.select(); }
+  }, [editing, value]);
 
   const commit = () => {
-    setEditing(false);
     const trimmed = draft.trim();
     if (trimmed && trimmed !== value) onSave(trimmed);
-    else setDraft(value);
+    onStopEditing();
   };
 
   if (!editing) {
     return (
-      <Tooltip content={clamped ? value : 'Click to rename'}>
+      <Tooltip content={clamped ? value : 'Double-click, F2, or Rename to edit'}>
         <span
           ref={labelRef}
           data-testid="session-row-title-text"
-          className="cursor-pointer transition"
-          onClick={(e) => { e.stopPropagation(); setEditing(true); }}
-          onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; }}
-          onMouseLeave={e => { e.currentTarget.style.color = ''; }}
+          className="transition"
+          // Double-click is the ONLY pointer path into rename. Its two
+          // preceding single clicks still reach the row's onClick (open) —
+          // harmless (opening what you're about to rename) and unavoidable
+          // without inventing a click-timing heuristic of its own; F2 and the
+          // preview's Rename button are the reliable, single-action paths.
+          onDoubleClick={(e) => { e.stopPropagation(); onStartEdit(); }}
           style={{
             display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
-            overflow: 'hidden', wordBreak: 'break-word',
+            overflow: 'hidden', wordBreak: 'break-word', cursor: 'inherit',
           } as CSSProperties}
         >
           {value}
@@ -179,8 +199,7 @@ function EditableName({ value, onSave }: { value: string; onSave: (name: string)
           // surface on the same keypress (the confirmDelete guard is the
           // sibling pattern; editing state lives here, so stop the event).
           e.stopPropagation();
-          setDraft(value);
-          setEditing(false);
+          onStopEditing();
         }
       }}
       onClick={e => e.stopPropagation()}
@@ -210,6 +229,10 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
   const openChatDock = useCommandCenter(s => s.openChatDock);
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // Controlled from three places: double-click on the title, F2 while a row
+  // is focused, and the preview pane's Rename button — none of them own a
+  // local boolean, they all just point this at a session id (or clear it).
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const [kind, setKind] = useState<SessionKind>('conversation');
   const [query, setQuery] = useState('');
   const [insights, setInsights] = useState<{ total_sessions: number; total_tokens: number } | null>(null);
@@ -565,6 +588,7 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
               // 2026-09-25 ruling.
               onKeyDown={(e) => {
                 if (e.target !== e.currentTarget) return; // let the inner rename input/buttons handle their own keys
+                if (e.key === 'F2') { e.preventDefault(); setRenamingId(s.id); return; }
                 if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSelect(s.id); return; }
                 if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
                 e.preventDefault();
@@ -577,8 +601,13 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
               }`}
               style={{
                 borderBottom: `1px solid ${colors.border}`,
-                backgroundColor: isActive ? `${colors.cyan}0D` : wide && previewId === s.id ? colors.fillHover : undefined,
-                borderLeft: isActive ? `2px solid ${colors.cyan}` : undefined,
+                // isActive (open in chat right now) and "selected" (the
+                // preview pane's target) get the SAME strong treatment — the
+                // Settings nav rail's cyanSoft fill + a left accent bar,
+                // instead of the barely-visible neutral fillHover selection
+                // previously had (2026-09-25 coordinator finding).
+                backgroundColor: isActive || (wide && previewId === s.id) ? colors.cyanSoft : undefined,
+                borderLeft: isActive || (wide && previewId === s.id) ? `2px solid ${colors.cyan}` : undefined,
                 // Below the split, the row centres at a readable width
                 // instead of a single line stretching the full window (R1).
                 ...(wide ? null : { maxWidth: NARROW_LIST_MAX_WIDTH, margin: '0 auto' }),
@@ -598,6 +627,9 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
                   >
                     <EditableName
                       value={label}
+                      editing={renamingId === s.id}
+                      onStartEdit={() => setRenamingId(s.id)}
+                      onStopEditing={() => setRenamingId(null)}
                       onSave={(name) => renameSession(s.id, name)}
                     />
                   </span>
@@ -704,6 +736,7 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
               onOpen={handleSelect}
               onFork={handleFork}
               onDelete={setConfirmDelete}
+              onRename={() => previewRow && setRenamingId(previewRow.session.id)}
               onOpenGoal={openGoalDetail}
               forking={forking}
             />
@@ -822,15 +855,16 @@ function PreviewMessage({ label, text }: { label: string; text: string | null })
 /** The right-hand pane of the ≥1600px split: everything the row itself has no
  *  room for — the whole label, both link chips, an absolute created/updated
  *  time on hover, message/token counts, the first and last message, and the
- *  row's own actions (Open/Fork/Delete) so opening a session never requires
- *  going back to the list. Covers all five R2 states: empty (nothing
- *  selected/hovered), loading (skeleton, not a spinner), error (with retry),
- *  and populated. */
-function SessionPreviewPane({ row, onOpen, onFork, onDelete, onOpenGoal, forking }: {
+ *  row's own actions (Open/Fork/Rename/Delete) so opening or acting on a
+ *  session never requires going back to the list. Covers all five R2 states:
+ *  empty (nothing selected/hovered), loading (skeleton, not a spinner),
+ *  error (with retry), and populated. */
+function SessionPreviewPane({ row, onOpen, onFork, onDelete, onRename, onOpenGoal, forking }: {
   row: SessionRow | undefined;
   onOpen: (id: string) => void;
   onFork: (id: string) => void;
   onDelete: (id: string) => void;
+  onRename: () => void;
   onOpenGoal: (projectId: string, cardId: string) => void;
   forking: string | null;
 }) {
@@ -860,84 +894,110 @@ function SessionPreviewPane({ row, onOpen, onFork, onDelete, onOpenGoal, forking
       padding: space.xxl, display: 'flex', flexDirection: 'column', gap: space.lg,
       height: '100%', boxSizing: 'border-box', overflowY: 'auto',
     }}>
-      <div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, flexWrap: 'wrap' }}>
-          <Chip kind="static" quiet>{kindLabel}</Chip>
-          {row.project && <Chip kind="static" quiet title={`Project: ${row.project}`}>{row.project}</Chip>}
-          {s.goal_id && goalProjectId && (
-            <Chip kind="link" tone="accent" quiet title="Open this goal" onClick={() => onOpenGoal(goalProjectId, s.goal_id!)}>
-              Goal: {s.goal_title?.trim() || 'open'}
-            </Chip>
-          )}
-        </div>
-        <h2 data-testid="session-preview-title" style={{
-          marginTop: space.sm, marginBottom: 0, fontFamily: font.body, fontSize: textSize.heading,
-          fontWeight: 600, color: colors.text, lineHeight: 1.35,
-        }}>
-          {row.label}
-        </h2>
-        <div style={{ display: 'flex', gap: space.sm, marginTop: space.xxs, fontSize: textSize.micro, color: colors.textMuted }}>
-          {s.created_at && (
-            <Tooltip content={new Date(s.created_at).toLocaleString()}>
-              <span>Created {timeAgo(s.created_at)}</span>
-            </Tooltip>
-          )}
-          {s.updated_at && (
-            <Tooltip content={new Date(s.updated_at).toLocaleString()}>
-              <span>· Updated {timeAgo(s.updated_at)}</span>
-            </Tooltip>
-          )}
-        </div>
-      </div>
-
-      {loading && <PreviewSkeleton />}
-      {error && <StateBlock tone="error" title="Couldn't load this session" detail="The daemon didn't answer." onRetry={retry} compact />}
-      {data && !loading && !error && (
-        <>
-          <div style={{ display: 'flex', gap: space.lg, fontSize: textSize.micro, color: colors.textMuted, ...tabularNums }}>
-            <span>{data.message_count} message{data.message_count !== 1 ? 's' : ''}</span>
-            {typeof tokens === 'number' && <span>{formatCompact(tokens)} tokens</span>}
+      {/* A readable measure, not the full pane width — at 2560px the pane is
+          well over 1300px wide, and running text edge-to-edge at that width
+          is unreadable regardless of how good the content is (2026-09-25
+          coordinator finding). The chips/title/actions share it too, so the
+          column reads as one thing instead of a wide header over a narrow
+          column of text. */}
+      <div style={{ maxWidth: '72ch', display: 'flex', flexDirection: 'column', gap: space.lg }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, flexWrap: 'wrap' }}>
+            <Chip kind="static" quiet>{kindLabel}</Chip>
+            {row.project && <Chip kind="static" quiet title={`Project: ${row.project}`}>{row.project}</Chip>}
+            {s.goal_id && goalProjectId && (
+              <Chip kind="link" tone="accent" quiet title="Open this goal" onClick={() => onOpenGoal(goalProjectId, s.goal_id!)}>
+                Goal: {s.goal_title?.trim() || 'open'}
+              </Chip>
+            )}
           </div>
-          <PreviewMessage label="First message" text={firstUserText(data)} />
-          <PreviewMessage label="Last reply" text={lastAssistantText(data)} />
-        </>
-      )}
+          <h2 data-testid="session-preview-title" style={{
+            marginTop: space.sm, marginBottom: 0, fontFamily: font.body, fontSize: textSize.heading,
+            fontWeight: 600, color: colors.text, lineHeight: 1.35,
+          }}>
+            {row.label}
+          </h2>
+          <div style={{ display: 'flex', gap: space.sm, marginTop: space.xxs, fontSize: textSize.micro, color: colors.textMuted }}>
+            {s.created_at && (
+              <Tooltip content={new Date(s.created_at).toLocaleString()}>
+                <span>Created {timeAgo(s.created_at)}</span>
+              </Tooltip>
+            )}
+            {s.updated_at && (
+              <Tooltip content={new Date(s.updated_at).toLocaleString()}>
+                <span>· Updated {timeAgo(s.updated_at)}</span>
+              </Tooltip>
+            )}
+          </div>
 
-      <div style={{
-        marginTop: 'auto', display: 'flex', gap: space.sm, paddingTop: space.md,
-        borderTop: `1px solid ${colors.border}`,
-      }}>
-        <Button
-          colors={colors}
-          variant="ghostOn"
-          onClick={() => onOpen(s.id)}
-          style={{ '--pa-btn-pad': '6px 14px', '--pa-btn-radius': `${radius.sm}px`, fontSize: textSize.caption } as CSSProperties}
-        >
-          Open
-        </Button>
-        <Button
-          colors={colors}
-          variant="bare"
-          disabled={forking === s.id}
-          onClick={() => onFork(s.id)}
-          style={{
-            '--pa-btn-fg': colors.textMuted, '--pa-btn-fg-hover': colors.cyan, '--pa-btn-bg-hover': colors.cyanSoft,
-            '--pa-btn-pad': '6px 14px', '--pa-btn-radius': `${radius.sm}px`, fontSize: textSize.caption,
-          } as CSSProperties}
-        >
-          <FiGitBranch size={12} /> Fork
-        </Button>
-        <Button
-          colors={colors}
-          variant="bare"
-          onClick={() => onDelete(s.id)}
-          style={{
-            '--pa-btn-fg': colors.textMuted, '--pa-btn-fg-hover': colors.danger, '--pa-btn-bg-hover': 'transparent',
-            '--pa-btn-pad': '6px 14px', '--pa-btn-radius': `${radius.sm}px`, fontSize: textSize.caption,
-          } as CSSProperties}
-        >
-          <FiTrash2 size={12} /> Delete
-        </Button>
+          {/* Actions directly under the title, not ~900px below the content
+              at 2560px (2026-09-25 coordinator finding) — Open is the one
+              tinted primary action (D8), Fork and Rename are neutral, Delete
+              reads as danger at rest (not only on hover) since it's now a
+              standing header control rather than a faint row-hover icon, and
+              still goes through the same ConfirmDialog before anything
+              happens. */}
+          <div style={{ display: 'flex', gap: space.sm, marginTop: space.md }}>
+            <Button
+              colors={colors}
+              variant="primary"
+              onClick={() => onOpen(s.id)}
+              style={{ '--pa-btn-pad': '6px 14px', '--pa-btn-radius': `${radius.sm}px`, fontSize: textSize.caption } as CSSProperties}
+            >
+              Open
+            </Button>
+            <Button
+              colors={colors}
+              variant="bare"
+              disabled={forking === s.id}
+              onClick={() => onFork(s.id)}
+              style={{
+                '--pa-btn-fg': colors.textMuted, '--pa-btn-fg-hover': colors.cyan, '--pa-btn-bg-hover': colors.cyanSoft,
+                '--pa-btn-border': colors.border, '--pa-btn-border-hover': colors.borderHi,
+                '--pa-btn-pad': '6px 14px', '--pa-btn-radius': `${radius.sm}px`, fontSize: textSize.caption,
+              } as CSSProperties}
+            >
+              <FiGitBranch size={12} /> Fork
+            </Button>
+            <Button
+              colors={colors}
+              variant="bare"
+              onClick={onRename}
+              style={{
+                '--pa-btn-fg': colors.textMuted, '--pa-btn-fg-hover': colors.cyan, '--pa-btn-bg-hover': colors.cyanSoft,
+                '--pa-btn-border': colors.border, '--pa-btn-border-hover': colors.borderHi,
+                '--pa-btn-pad': '6px 14px', '--pa-btn-radius': `${radius.sm}px`, fontSize: textSize.caption,
+              } as CSSProperties}
+            >
+              Rename
+            </Button>
+            <Button
+              colors={colors}
+              variant="bare"
+              onClick={() => onDelete(s.id)}
+              style={{
+                '--pa-btn-fg': colors.danger, '--pa-btn-bg-hover': `${colors.danger}1A`, '--pa-btn-bg-active': `${colors.danger}26`,
+                '--pa-btn-border': `${colors.danger}40`, '--pa-btn-border-hover': colors.danger,
+                '--pa-btn-pad': '6px 14px', '--pa-btn-radius': `${radius.sm}px`, fontSize: textSize.caption,
+              } as CSSProperties}
+            >
+              <FiTrash2 size={12} /> Delete
+            </Button>
+          </div>
+        </div>
+
+        {loading && <PreviewSkeleton />}
+        {error && <StateBlock tone="error" title="Couldn't load this session" detail="The daemon didn't answer." onRetry={retry} compact />}
+        {data && !loading && !error && (
+          <>
+            <div style={{ display: 'flex', gap: space.lg, fontSize: textSize.micro, color: colors.textMuted, ...tabularNums }}>
+              <span>{data.message_count} message{data.message_count !== 1 ? 's' : ''}</span>
+              {typeof tokens === 'number' && <span>{formatCompact(tokens)} tokens</span>}
+            </div>
+            <PreviewMessage label="First message" text={firstUserText(data)} />
+            <PreviewMessage label="Last reply" text={lastAssistantText(data)} />
+          </>
+        )}
       </div>
     </div>
   );
