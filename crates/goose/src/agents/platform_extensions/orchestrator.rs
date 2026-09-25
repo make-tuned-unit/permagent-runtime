@@ -16479,16 +16479,8 @@ async fn mint_approve_review_decision(
     card: &cards::Card,
     coordinator_session_id: Option<&str>,
 ) -> Result<(decisions::Decision, cards::Card), String> {
-    let headline = format!("Review the finished work on \"{}\"", card.title);
-    let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
-        let cut: String = headline
-            .chars()
-            .take(decisions::MAX_HEADLINE_CHARS - 1)
-            .collect();
-        format!("{}…", cut)
-    } else {
-        headline
-    };
+    // D1: the title travels as the inbox's `goal_title`, never in the headline.
+    let headline = "Review the finished work on this goal".to_string();
     // Layer 1: cite the deterministic evidence the tracker just
     // persisted, so the decision itself carries proof-of-work
     // (commit SHA, push target, diffstat) rather than a bare
@@ -18354,20 +18346,12 @@ pub(crate) async fn park_refused_goal(
     match decisions::find_open_decision_for_goal(pool, &card.id, "unblock").await {
         Ok(Some(_)) => {}
         Ok(None) => {
-            let headline = format!("\"{}\" is blocked and needs your direction", card.title);
-            let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
-                let cut: String = headline
-                    .chars()
-                    .take(decisions::MAX_HEADLINE_CHARS - 1)
-                    .collect();
-                format!("{}…", cut)
-            } else {
-                headline
-            };
+            // D1: the title travels as the inbox's `goal_title`.
+            let headline = "Goal is blocked and needs your direction".to_string();
             let payload = match serde_json::to_value(decisions::UnblockPayload {
                 reason: decisions::UnblockReason::Stuck,
-                spent: None,
-                cap: None,
+                cause: Some(decisions::UnblockCause::AutoLandRefused),
+                ..Default::default()
             }) {
                 Ok(payload) => payload,
                 Err(e) => {
@@ -20768,23 +20752,13 @@ pub async fn handle_goal_blocked(
         .await?
         .is_none()
     {
-        let headline = format!(
-            "\"{}\" was blocked from committing a credential and needs your attention",
-            card.title
-        );
-        let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
-            let cut: String = headline
-                .chars()
-                .take(decisions::MAX_HEADLINE_CHARS - 1)
-                .collect();
-            format!("{}…", cut)
-        } else {
-            headline
-        };
+        // D1: the title travels as the inbox's `goal_title`.
+        let headline =
+            "Goal was blocked from committing a credential and needs your attention".to_string();
         let payload = serde_json::to_value(decisions::UnblockPayload {
             reason: decisions::UnblockReason::Stuck,
-            spent: None,
-            cap: None,
+            cause: Some(decisions::UnblockCause::CredentialBlocked),
+            ..Default::default()
         })
         .map_err(|e| e.to_string())?;
         // The park below must still happen even if the inbox card cannot be
@@ -20894,19 +20868,8 @@ pub async fn escalate_session_loop(
     {
         existing.id
     } else {
-        let headline = format!(
-            "\"{}\" looks stuck in a loop and needs your direction",
-            title
-        );
-        let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
-            let cut: String = headline
-                .chars()
-                .take(decisions::MAX_HEADLINE_CHARS - 1)
-                .collect();
-            format!("{}…", cut)
-        } else {
-            headline
-        };
+        // D1: the title travels as the inbox's `goal_title`.
+        let headline = "Goal looks stuck in a loop and needs your direction".to_string();
         let detail = format!(
             "The runaway-loop guard stopped this goal's worker: {}.\n\nRecent actions:\n{}\n\n\
              Keep going (re-dispatch a fresh attempt — its work is preserved), give direction, \
@@ -20915,8 +20878,8 @@ pub async fn escalate_session_loop(
         );
         let payload = serde_json::to_value(decisions::UnblockPayload {
             reason: decisions::UnblockReason::Stuck,
-            spent: None,
-            cap: None,
+            cause: Some(decisions::UnblockCause::RunawayLoop),
+            ..Default::default()
         })
         .map_err(|e| e.to_string())?;
         decisions::create_decision(
@@ -21818,11 +21781,8 @@ async fn credit_complete_sibling_goal(
     .await
     .map_err(String::from)?;
 
-    let headline = format!("Review the credited work on \"{}\"", sibling.title);
-    let headline: String = headline
-        .chars()
-        .take(decisions::MAX_HEADLINE_CHARS)
-        .collect();
+    // D1: the title travels as the inbox's `goal_title`.
+    let headline = "Review the credited work on this goal".to_string();
     let mut payload = serde_json::json!({});
     if let Some(sid) = calling_session_id.filter(|_| headless_auto_land) {
         payload["minting_session_id"] = serde_json::json!(sid);
@@ -24391,14 +24351,8 @@ async fn hand_to_review_for_a_human(
             .unwrap_or(None)
             .is_some();
     if !already_has_review_decision {
-        let headline = format!(
-            "\"{}\" needs review — verify could not check it automatically",
-            card.title
-        );
-        let headline: String = headline
-            .chars()
-            .take(decisions::MAX_HEADLINE_CHARS)
-            .collect();
+        // D1: the title travels as the inbox's `goal_title`.
+        let headline = "Needs review — verify could not check this goal automatically".to_string();
         let detail = format!(
             "{ahead} commit(s) committed past the dispatch baseline. Salvage ran verify, but \
              {verify_note} Inspect the diff directly before approving — this was never \
@@ -27106,14 +27060,8 @@ async fn land_salvage_approved_by_reviewer(
         return SalvageOutcome::NotSalvaged { note };
     }
 
-    let headline = format!(
-        "\"{}\" was reviewed and approved (no automated checks ran)",
-        card.title
-    );
-    let headline: String = headline
-        .chars()
-        .take(decisions::MAX_HEADLINE_CHARS)
-        .collect();
+    // D1: the title travels as the inbox's `goal_title`.
+    let headline = "Goal was reviewed and approved (no automated checks ran)".to_string();
     let detail = format!(
         "{ahead} commit(s) committed past the dispatch baseline. No automated check could run \
          ({verify_note}); an independent reviewer ({reviewer_provider}/{reviewer_model}) \
@@ -28192,18 +28140,12 @@ async fn maybe_hold_review(
                 .await?
                 .is_none()
             {
-                let headline = format!(
-                    "\"{}\" was held repeatedly and needs your direction",
-                    card.title
-                );
-                let headline: String = headline
-                    .chars()
-                    .take(decisions::MAX_HEADLINE_CHARS)
-                    .collect();
+                // D1: the title travels as the inbox's `goal_title`.
+                let headline = "Goal was held repeatedly and needs your direction".to_string();
                 let payload = serde_json::to_value(decisions::UnblockPayload {
                     reason: decisions::UnblockReason::Stuck,
-                    spent: None,
-                    cap: None,
+                    cause: Some(decisions::UnblockCause::HeldRepeatedly),
+                    ..Default::default()
                 })
                 .map_err(|e| e.to_string())?;
                 if let Err(error) = create_decision_with_retry(
@@ -28420,18 +28362,12 @@ async fn maybe_headless_unblock_verify_gap(
         return Ok(None);
     }
 
-    let headline = format!(
-        "\"{}\" was held repeatedly and needs your direction",
-        card.title
-    );
-    let headline: String = headline
-        .chars()
-        .take(decisions::MAX_HEADLINE_CHARS)
-        .collect();
+    // D1: the title travels as the inbox's `goal_title`.
+    let headline = "Goal was held repeatedly and needs your direction".to_string();
     let payload = serde_json::to_value(decisions::UnblockPayload {
         reason: decisions::UnblockReason::Stuck,
-        spent: None,
-        cap: None,
+        cause: Some(decisions::UnblockCause::HeldRepeatedly),
+        ..Default::default()
     })
     .map_err(|e| e.to_string())?;
     // Same soft-fail as the ordinary park path just below: a persistent
@@ -33201,6 +33137,8 @@ mod tests {
                     reason: decisions::UnblockReason::Stuck,
                     spent: None,
                     cap: None,
+                    cause: None,
+                    salvage: None,
                 })
                 .unwrap(),
                 ..Default::default()

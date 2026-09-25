@@ -3324,6 +3324,8 @@ async fn escalate_persistent_failure(
         reason: crate::decisions::UnblockReason::AttemptCap,
         spent: Some(retry_spent as u64),
         cap: Some(max_retries as u64),
+        cause: None,
+        salvage: None,
     };
     let payload_json = match serde_json::to_value(&payload) {
         Ok(v) => v,
@@ -7584,6 +7586,8 @@ mod fire_claim_tests {
             reason: crate::decisions::UnblockReason::AttemptCap,
             spent: Some(3),
             cap: Some(3),
+            cause: None,
+            salvage: None,
         };
         let parsed: crate::decisions::UnblockContract =
             serde_json::from_value(serde_json::to_value(goal).unwrap()).unwrap();

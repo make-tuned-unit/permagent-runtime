@@ -93,6 +93,10 @@ const OUTBOX_ELIGIBLE_KINDS: &[&str] = &[
     "person_merge_proposal",
     "person_delete_proposal",
     "council_action",
+    // D5: an approved regression writes a permagent-eval task, and that arm
+    // lives in `decisions_effects::apply_decision_effect` — the route only
+    // reaches it for outbox-eligible kinds.
+    "regression_proposal",
 ];
 
 /// Payload marker for the review-fail → debugger-dispatch proposal (a `choice`
@@ -246,18 +250,65 @@ pub struct ApproveReviewPayload {
 }
 
 /// Why a goal is blocked (`kind='unblock'`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnblockReason {
     TokenBudget,
     AttemptCap,
     WallclockCap,
+    #[default]
     Stuck,
     RefinementBudget,
 }
 
+/// The specific cause behind an [`UnblockReason`], recorded by the producer
+/// that parked the goal (Decision Inbox redesign D2). `reason` says which
+/// budget or guard tripped; `cause` says what actually happened, so the inbox
+/// can explain it in plain language without parsing the technical `detail`.
+/// Optional on the wire: every row minted before this field existed still
+/// parses, and the read-time classifier falls back to `detail` for those.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnblockCause {
+    /// One attempt hit the worker's own per-attempt time bound.
+    AttemptTimeout,
+    /// The goal's total wall-clock budget (anchored at `first_dispatched_at`)
+    /// is spent, or too little of it is left for another attempt.
+    WallBudget,
+    /// A human rejected the work in review until the attempts ran out.
+    ReviewRejected,
+    /// The finished work was not allowed to land automatically.
+    AutoLandRefused,
+    /// The worker tried to commit something that looks like a secret.
+    CredentialBlocked,
+    /// The runaway-loop guard stopped a worker repeating itself.
+    RunawayLoop,
+    /// Review was held repeatedly because the work could not be verified.
+    HeldRepeatedly,
+    /// An independent reviewer did not confirm the work.
+    ReviewerNotConfirmed,
+    /// Finished work could not be merged onto the trunk automatically.
+    MergeConflict,
+    /// A spending limit or spend authorization stopped the goal.
+    SpendBlocked,
+    /// The goal stalled with no further progress after a gate.
+    Stalled,
+}
+
+/// What the salvage-before-park pass found (D2), copied from the goal's
+/// `salvage_receipt` when the park it explains carries that receipt's note.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SalvageFacts {
+    /// The receipt's stable outcome slug (e.g. `salvage_skipped_no_commits`).
+    pub outcome: String,
+    /// Commits past the dispatch baseline that have not landed, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commits_past_baseline: Option<u64>,
+}
+
 /// Payload for `kind='unblock'` — a goal exhausted its budget and is parked.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnblockPayload {
     pub reason: UnblockReason,
@@ -265,6 +316,12 @@ pub struct UnblockPayload {
     pub spent: Option<u64>,
     #[serde(default)]
     pub cap: Option<u64>,
+    /// D2: the specific cause, when the producer knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<UnblockCause>,
+    /// D2: structured salvage outcome, when a salvage pass ran before the park.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salvage: Option<SalvageFacts>,
 }
 
 /// The unblock wire contract accepts either the unchanged goal payload or the
@@ -2426,13 +2483,68 @@ pub async fn find_open_sell_notice(
 #[derive(Debug, Clone, Serialize)]
 pub struct InboxSummary {
     pub total_pending: i64,
+    /// Legacy: every resolved decision, all time, any actor. Kept for older
+    /// UIs; the modal reads [`Self::handled`] instead (D3).
     pub handled_count: i64,
+    /// D3: decisions the agent (not the user) resolved inside a stated window.
+    pub handled: HandledWindow,
     pub goals_in_flight: i64,
     /// Goals flagged `needs_human_attention` — parked FOR the user. Until
     /// wave 1 this flag only ever HID a goal from the active lists (the
     /// inverted-flag bug): raised to get attention, rendered nowhere.
     pub goals_needing_attention: i64,
     pub oldest_pending_at: Option<String>,
+}
+
+/// D3: how many decisions the agent resolved on its own since `since`.
+///
+/// "The agent" is every answering actor except the user (`jesse`): Henry's
+/// policy, the system, and the unattended launch/headless policies. Only
+/// `answered` rows count — a superseded or expired card was not handled by
+/// anyone. Any tier. `since` is an RFC 3339 UTC timestamp, the same format
+/// as `resolved_at`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct HandledWindow {
+    pub count: i64,
+    pub since: String,
+}
+
+/// How far back the inbox's "handled" count looks when nothing narrower is
+/// known. The daemon does not record when the user last opened the inbox:
+/// `GET /api/decisions` is polled every 15 s by several surfaces, so it cannot
+/// stand in for "the user looked", and the modal has no open-specific call.
+pub const HANDLED_WINDOW_HOURS: i64 = 24;
+
+/// The start of the handled window: the later of the user's last inbox view
+/// (when one is known) and `now - HANDLED_WINDOW_HOURS`.
+pub fn handled_window_start(
+    now: chrono::DateTime<chrono::Utc>,
+    last_view: Option<chrono::DateTime<chrono::Utc>>,
+) -> chrono::DateTime<chrono::Utc> {
+    let floor = now - chrono::Duration::hours(HANDLED_WINDOW_HOURS);
+    match last_view {
+        Some(v) if v > floor && v <= now => v,
+        _ => floor,
+    }
+}
+
+/// Count agent-resolved decisions since `since` (see [`HandledWindow`]).
+pub async fn handled_since(
+    pool: &Pool<Sqlite>,
+    since: chrono::DateTime<chrono::Utc>,
+) -> Result<HandledWindow, String> {
+    let since = since.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM decisions \
+         WHERE status = 'answered' AND acted_by IS NOT NULL AND acted_by != ? \
+           AND resolved_at >= ?",
+    )
+    .bind(ACTOR_JESSE)
+    .bind(&since)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(HandledWindow { count, since })
 }
 
 /// A goal parked with `needs_human_attention` — surfaced as its own Inbox
@@ -2485,7 +2597,11 @@ pub async fn list_attention_goals(pool: &Pool<Sqlite>) -> Result<Vec<AttentionGo
 pub struct OpenDecisionItem {
     #[serde(flatten)]
     pub decision: Decision,
+    /// The goal's full, untruncated title (the headline never carries it).
     pub goal_title: Option<String>,
+    /// `summary`, `effects`, `technical` for the inbox modal.
+    #[serde(flatten)]
+    pub presentation: DecisionPresentation,
 }
 
 pub async fn list_open_decisions(pool: &Pool<Sqlite>) -> Result<Vec<OpenDecisionItem>, String> {
@@ -2504,9 +2620,13 @@ pub async fn list_open_decisions(pool: &Pool<Sqlite>) -> Result<Vec<OpenDecision
 
     Ok(rows
         .iter()
-        .map(|r| OpenDecisionItem {
-            decision: row_to_decision(r),
-            goal_title: r.get("goal_title"),
+        .map(|r| {
+            let decision = row_to_decision(r);
+            OpenDecisionItem {
+                presentation: present_decision(&decision),
+                goal_title: r.get("goal_title"),
+                decision,
+            }
         })
         .collect())
 }
@@ -2557,9 +2677,12 @@ pub async fn inbox_summary(pool: &Pool<Sqlite>) -> Result<InboxSummary, String> 
             .await
             .map_err(|e| e.to_string())?;
 
+    let handled = handled_since(pool, handled_window_start(chrono::Utc::now(), None)).await?;
+
     Ok(InboxSummary {
         total_pending,
         handled_count,
+        handled,
         goals_in_flight,
         goals_needing_attention,
         oldest_pending_at,
@@ -2575,6 +2698,10 @@ pub struct HistoryItem {
     pub audit_created_at: String,
     #[serde(flatten)]
     pub decision: Decision,
+    /// The goal's full title, when the decision is about a goal.
+    pub goal_title: Option<String>,
+    #[serde(flatten)]
+    pub presentation: DecisionPresentation,
 }
 
 /// Resolved decisions joined with audit rows, cursor-paginated on audit.seq
@@ -2591,8 +2718,10 @@ pub async fn decision_history(
                 a.created_at AS audit_created_at, \
                 d.id, d.kind, d.goal_id, d.project_id, d.tier, d.headline, d.detail, \
                 d.payload_json, d.rank, d.status, d.answer, d.answer_note, \
-                d.answer_choice_id, d.answer_input, d.acted_by, d.created_at, d.resolved_at \
+                d.answer_choice_id, d.answer_input, d.acted_by, d.created_at, d.resolved_at, \
+                c.title AS goal_title \
          FROM decision_audit a JOIN decisions d ON a.decision_id = d.id \
+         LEFT JOIN cards c ON d.goal_id = c.id \
          WHERE d.status != 'open' AND a.seq < ? \
          ORDER BY a.seq DESC LIMIT ?",
     )
@@ -2604,14 +2733,419 @@ pub async fn decision_history(
 
     Ok(rows
         .iter()
-        .map(|r| HistoryItem {
-            seq: r.get("seq"),
-            outcome: r.get("outcome"),
-            audit_acted_by: r.get("audit_acted_by"),
-            audit_created_at: r.get("audit_created_at"),
-            decision: row_to_decision(r),
+        .map(|r| {
+            let decision = row_to_decision(r);
+            HistoryItem {
+                seq: r.get("seq"),
+                outcome: r.get("outcome"),
+                audit_acted_by: r.get("audit_acted_by"),
+                audit_created_at: r.get("audit_created_at"),
+                goal_title: r.get("goal_title"),
+                presentation: present_decision(&decision),
+                decision,
+            }
         })
         .collect())
+}
+
+// ── Inbox presentation: summary, effects, technical (modal redesign) ────────
+
+/// The raw, technical side of a decision, for the modal's collapsed
+/// "Technical details". Never rendered as the body.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DecisionTechnical {
+    /// The daemon's verbatim `detail`.
+    pub detail: String,
+    pub decision_id: String,
+    pub kind: String,
+    pub tier: i64,
+    pub goal_id: Option<String>,
+    pub project_id: Option<String>,
+    /// The last error the producer recorded, when one can be found.
+    pub last_error: Option<String>,
+}
+
+/// Additive, read-only fields the inbox modal renders. Flattened into every
+/// list and history item, so older UIs simply ignore them.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DecisionPresentation {
+    /// Plain-language cause, at most two sentences, no IDs. `None` when the
+    /// kind has nothing clearer to say than its headline.
+    pub summary: Option<String>,
+    /// Allowed answer id → one sentence saying what that answer does. Built
+    /// by `decisions_effects::answer_effects`, next to the effect arms.
+    pub effects: std::collections::BTreeMap<String, String>,
+    pub technical: DecisionTechnical,
+}
+
+/// Build the modal's presentation fields for one decision row.
+pub fn present_decision(decision: &Decision) -> DecisionPresentation {
+    DecisionPresentation {
+        summary: summarize_decision(
+            &decision.kind,
+            &decision.payload,
+            decision.goal_id.is_some(),
+            &decision.headline,
+            &decision.detail,
+        ),
+        effects: crate::decisions_effects::answer_effects(
+            &decision.kind,
+            &decision.payload,
+            decision.goal_id.is_some(),
+        ),
+        technical: DecisionTechnical {
+            detail: decision.detail.clone(),
+            decision_id: decision.id.clone(),
+            kind: decision.kind.clone(),
+            tier: decision.tier,
+            goal_id: decision.goal_id.clone(),
+            project_id: decision.project_id.clone(),
+            last_error: last_error_of(&decision.payload, &decision.detail),
+        },
+    }
+}
+
+/// The recorded last error: a scheduled job's `payload.last_error`, else the
+/// text after the `Last error: ` marker `exhaust_and_park` writes into
+/// `detail`.
+fn last_error_of(payload: &serde_json::Value, detail: &str) -> Option<String> {
+    if let Some(e) = payload.get("last_error").and_then(|v| v.as_str()) {
+        let e = e.trim();
+        if !e.is_empty() {
+            return Some(e.to_string());
+        }
+    }
+    detail
+        .split_once("Last error: ")
+        .map(|(_, rest)| rest.trim().to_string())
+        .filter(|e| !e.is_empty() && e != "(none recorded)")
+}
+
+/// "4 min", "45 seconds", "1 h 5 min".
+fn plain_duration(secs: u64) -> String {
+    if secs < 60 {
+        return format!("{secs} seconds");
+    }
+    let mins = (secs + 30) / 60;
+    if mins < 60 {
+        return format!("{mins} min");
+    }
+    let (h, m) = (mins / 60, mins % 60);
+    if m == 0 {
+        format!("{h} h")
+    } else {
+        format!("{h} h {m} min")
+    }
+}
+
+/// "950", "120k", "1.5M".
+fn plain_count(n: u64) -> String {
+    if n >= 1_000_000 {
+        let tenths = (n + 50_000) / 100_000;
+        if tenths % 10 == 0 {
+            format!("{}M", tenths / 10)
+        } else {
+            format!("{}.{}M", tenths / 10, tenths % 10)
+        }
+    } else if n >= 1_000 {
+        format!("{}k", (n + 500) / 1_000)
+    } else {
+        n.to_string()
+    }
+}
+
+fn plural(n: u64, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+/// The leading `N` of an `N commit(s) …` salvage note.
+fn leading_commit_count(text: &str) -> Option<u64> {
+    let idx = text.find(" commit(s)")?;
+    let digits: String = text
+        .get(..idx)?
+        .chars()
+        .rev()
+        .take_while(char::is_ascii_digit)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    digits.parse().ok()
+}
+
+/// One sentence on what salvage found, from the structured payload (D2) or,
+/// for rows minted before it existed, the salvage note inside `detail`.
+fn salvage_sentence(payload: &serde_json::Value, detail: &str) -> Option<String> {
+    let (outcome, commits) = match payload.get("salvage") {
+        Some(s) => (
+            s.get("outcome")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            s.get("commits_past_baseline").and_then(|v| v.as_u64()),
+        ),
+        None => {
+            let lower = detail.to_ascii_lowercase();
+            if !lower.contains("salvage") {
+                return None;
+            }
+            let outcome = if lower.contains("salvage verify failed")
+                || lower.contains("did not report a genuine")
+            {
+                "salvage_verify_failed"
+            } else {
+                ""
+            };
+            let commits = if lower.contains("no commits past the dispatch baseline")
+                || lower.contains("nothing left to land")
+                || lower.contains("no dispatch baseline recorded")
+            {
+                Some(0)
+            } else {
+                lower
+                    .split("salvage:")
+                    .nth(1)
+                    .and_then(leading_commit_count)
+            };
+            (outcome.to_string(), commits)
+        }
+    };
+    if outcome.contains("verify_failed") || outcome.contains("verify_timed_out") {
+        return Some("Its changes did not pass their checks.".to_string());
+    }
+    match commits {
+        Some(0) => Some("It made no changes worth keeping.".to_string()),
+        Some(n) => Some(format!(
+            "It left {} that {} not landed yet.",
+            plural(n, "saved change", "saved changes"),
+            if n == 1 { "has" } else { "have" }
+        )),
+        None => None,
+    }
+}
+
+/// Resolve an unblock's specific cause: the structured `payload.cause` when
+/// the producer recorded one, else a keyword read of the legacy headline and
+/// detail. `None` = a plain stuck goal with no more specific story.
+fn unblock_cause(
+    payload: &serde_json::Value,
+    reason: &str,
+    headline: &str,
+    detail: &str,
+) -> Option<UnblockCause> {
+    if let Some(cause) = payload
+        .get("cause")
+        .and_then(|c| serde_json::from_value::<UnblockCause>(c.clone()).ok())
+    {
+        return Some(cause);
+    }
+    let text = format!("{headline}\n{detail}").to_ascii_lowercase();
+    if reason == "wallclock_cap" {
+        return Some(if text.contains("worker exceeded its time bound") {
+            UnblockCause::AttemptTimeout
+        } else {
+            UnblockCause::WallBudget
+        });
+    }
+    if reason != "stuck" {
+        return None;
+    }
+    let cause = if text.contains("runaway-loop guard") || text.contains("stuck in a loop") {
+        UnblockCause::RunawayLoop
+    } else if text.contains("blocked from committing a credential")
+        || text.contains("credential guard")
+    {
+        UnblockCause::CredentialBlocked
+    } else if text.contains("held repeatedly") || text.contains("held twice") {
+        UnblockCause::HeldRepeatedly
+    } else if text.contains("not confirmed by its reviewer") {
+        UnblockCause::ReviewerNotConfirmed
+    } else if text.contains("could not be fast-forwarded") || text.contains("could not land") {
+        UnblockCause::MergeConflict
+    } else if text.contains("spend authorization") {
+        UnblockCause::SpendBlocked
+    } else if text.contains("stalled after a headless gate") {
+        UnblockCause::Stalled
+    } else if text.contains("auto-land") || text.contains("auto land") {
+        UnblockCause::AutoLandRefused
+    } else {
+        return None;
+    };
+    Some(cause)
+}
+
+/// The plain-language cause for a decision (the modal's ④). A small
+/// classifier over `kind` + `payload`, falling back to the legacy `detail`
+/// text for rows minted before the structured fields existed. At most two
+/// sentences, no IDs, no jargon. `None` when there is nothing clearer to say
+/// than the headline.
+pub fn summarize_decision(
+    kind: &str,
+    payload: &serde_json::Value,
+    has_goal: bool,
+    headline: &str,
+    detail: &str,
+) -> Option<String> {
+    let join = |first: String, second: Option<String>| match second {
+        Some(s) => format!("{first} {s}"),
+        None => first,
+    };
+    match kind {
+        "unblock" => {
+            if payload["reason"] == CONSECUTIVE_FAILURE_LIMIT {
+                let n = payload["failure_count"].as_u64().unwrap_or(3);
+                return Some(format!(
+                    "This scheduled job failed {n} times in a row, so its runs are paused."
+                ));
+            }
+            // Worker escalations (`decision_inbox::sink`) stamp their kind.
+            if detail.contains("escalate_kind: credential") {
+                return Some(
+                    "The worker needs a password, key or sign-in it doesn't have, so it \
+                     stopped to ask you."
+                        .to_string(),
+                );
+            }
+            if detail.contains("escalate_kind: information") {
+                return Some(
+                    "The worker stopped to ask you a question before going further.".to_string(),
+                );
+            }
+            let reason = payload["reason"].as_str().unwrap_or("stuck");
+            let spent = payload["spent"].as_u64();
+            let cap = payload["cap"].as_u64();
+            if !has_goal {
+                if reason == "attempt_cap" && detail.starts_with("Scheduled job") {
+                    return Some(match spent {
+                        Some(n) => format!(
+                            "A scheduled job kept failing and used all {} of its retries.",
+                            n
+                        ),
+                        None => {
+                            "A scheduled job kept failing and used all its retries.".to_string()
+                        }
+                    });
+                }
+                return None;
+            }
+            let salvage = salvage_sentence(payload, detail);
+            let cause = unblock_cause(payload, reason, headline, detail);
+            let first =
+                match (reason, cause) {
+                    (_, Some(UnblockCause::AttemptTimeout)) => match cap {
+                        Some(c) => format!(
+                            "Ran out of time: each attempt gets {}, and this one used all of it.",
+                            plain_duration(c)
+                        ),
+                        None => {
+                            "Ran out of time: this attempt used all the time it had.".to_string()
+                        }
+                    },
+                    (_, Some(UnblockCause::WallBudget)) => match (spent, cap) {
+                        (Some(s), Some(c)) if s < c => format!(
+                            "Ran out of time: this goal has {} in total, and too little is left \
+                         for another attempt.",
+                            plain_duration(c)
+                        ),
+                        (_, Some(c)) => format!(
+                        "Ran out of time: this goal has {} in total, and it has used all of it.",
+                        plain_duration(c)
+                    ),
+                        _ => {
+                            "Ran out of time: this goal has used its whole time budget.".to_string()
+                        }
+                    },
+                    (_, Some(UnblockCause::ReviewRejected)) => match cap {
+                        Some(c) => format!(
+                            "The work was sent back in review until it used all {}.",
+                            plural(c, "attempt", "attempts")
+                        ),
+                        None => "The work was sent back in review until it ran out of attempts."
+                            .to_string(),
+                    },
+                    (_, Some(UnblockCause::AutoLandRefused)) => {
+                        "The work is finished, but it wasn't allowed to land on its own."
+                            .to_string()
+                    }
+                    (_, Some(UnblockCause::CredentialBlocked)) => {
+                        "The worker tried to commit something that looks like a password or key, \
+                     so it was stopped."
+                            .to_string()
+                    }
+                    (_, Some(UnblockCause::RunawayLoop)) => return Some(
+                        "The worker kept repeating the same steps, so it was stopped. Its work \
+                         so far is kept."
+                            .to_string(),
+                    ),
+                    (_, Some(UnblockCause::HeldRepeatedly)) => {
+                        "The work was held back more than once because it couldn't be verified."
+                            .to_string()
+                    }
+                    (_, Some(UnblockCause::ReviewerNotConfirmed)) => {
+                        "An independent reviewer didn't confirm the work, so it was not landed."
+                            .to_string()
+                    }
+                    (_, Some(UnblockCause::MergeConflict)) => return Some(
+                        "The finished work couldn't be merged automatically. It needs a manual \
+                         merge or rebase."
+                            .to_string(),
+                    ),
+                    (_, Some(UnblockCause::SpendBlocked)) => {
+                        "A spending limit stopped this goal before it could continue.".to_string()
+                    }
+                    (_, Some(UnblockCause::Stalled)) => {
+                        "The goal stopped making progress after a spending check.".to_string()
+                    }
+                    ("attempt_cap", None) => match cap {
+                        Some(c) => format!(
+                            "Used all {} without finishing.",
+                            plural(c, "attempt", "attempts")
+                        ),
+                        None => "Used all its attempts without finishing.".to_string(),
+                    },
+                    ("token_budget", None) => match cap {
+                        Some(c) => format!(
+                            "Ran out of budget: it used its whole allowance of {} tokens.",
+                            plain_count(c)
+                        ),
+                        None => "Ran out of its token budget.".to_string(),
+                    },
+                    ("refinement_budget", None) => match cap {
+                        Some(c) => format!(
+                            "Its checks kept failing: it was sent back to fix them {}, which is \
+                         the limit.",
+                            plural(c, "time", "times")
+                        ),
+                        None => "Its checks kept failing, and it reached the limit on retries."
+                            .to_string(),
+                    },
+                    _ => "The goal got stuck and paused so you can decide what happens next."
+                        .to_string(),
+                };
+            Some(join(first, salvage))
+        }
+        "approve_review" => Some("The work is finished and waiting for your review.".to_string()),
+        "malformed" => {
+            Some("This request was filed incorrectly, so Henry can't act on it.".to_string())
+        }
+        "capability_gap" => {
+            Some("Henry didn't have a tool for this and is asking whether it should.".to_string())
+        }
+        "regression_proposal" => Some(
+            "Henry wants to turn a past failure into a test, so it gets caught if it happens \
+             again."
+                .to_string(),
+        ),
+        "tool_approval" => Some("A tool call is waiting for your permission to run.".to_string()),
+        "session_gate" => {
+            Some("A terminal session paused at a step that needs your permission.".to_string())
+        }
+        _ => None,
+    }
 }
 
 // ── Answering ───────────────────────────────────────────────────────────────
@@ -2736,8 +3270,29 @@ fn answer_allowed_for_kind(kind: &str, answer: &str) -> bool {
         "unblock" => matches!(answer, "approve" | "reject" | "input"),
         "choice" => matches!(answer, "choice" | "reject"),
         "automation_proposal" => matches!(answer, "approve" | "reject" | "edit"),
+        // D5: `regression_proposal` approve writes the eval task and reject is
+        // an explicit no-write arm (decisions_effects). `capability_gap` has no
+        // effect arm at all: both answers are records the user can use to
+        // close the card, and `decisions_effects::answer_effects` says so.
+        "regression_proposal" | "capability_gap" => matches!(answer, "approve" | "reject"),
         _ => false,
     }
+}
+
+/// The answers the HTTP answer route accepts for this decision. Mirrors
+/// [`answer_allowed_for_kind`] plus the scheduled-job carve-out: a
+/// scheduled-job `unblock` is routed to `scheduler::scheduled_job_resume`,
+/// which takes only approve/reject. The inbox's `effects` map is keyed on
+/// exactly this list.
+pub fn allowed_answers(kind: &str, payload: &serde_json::Value) -> Vec<&'static str> {
+    if kind == "unblock" && payload["reason"] == CONSECUTIVE_FAILURE_LIMIT {
+        return vec!["approve", "reject"];
+    }
+    VALID_ANSWERS
+        .iter()
+        .copied()
+        .filter(|a| answer_allowed_for_kind(kind, a))
+        .collect()
 }
 
 impl std::fmt::Display for AnswerError {
@@ -6380,5 +6935,436 @@ mod tests {
                 .expect_err("an answered decision takes no proposals"),
             AnswerError::AlreadyResolved(_)
         ));
+    }
+
+    // ── Decision Inbox modal redesign: summary / effects / handled / D5 / D6 ──
+
+    fn summary(payload: serde_json::Value, headline: &str, detail: &str) -> String {
+        summarize_decision("unblock", &payload, true, headline, detail)
+            .expect("a goal unblock always has a summary")
+    }
+
+    fn assert_plain(s: &str) {
+        assert!(s.ends_with('.'), "{s}");
+        let sentences = s.matches(". ").count() + 1;
+        assert!(sentences <= 2, "at most two sentences: {s}");
+        assert!(!s.contains("goal-"), "no ids: {s}");
+        assert!(!s.contains('"'), "no quoted titles: {s}");
+    }
+
+    #[test]
+    fn summary_classifier_covers_every_park_reason() {
+        let cases: Vec<(serde_json::Value, &str, &str, &str)> = vec![
+            // Per-attempt wallclock, legacy row (no cause): read from detail.
+            (
+                serde_json::json!({"reason": "wallclock_cap", "spent": 240, "cap": 240}),
+                "\"Instrument event detail pages\" is out of budget and needs your direction",
+                "Goal goal-1 parked: wallclock cap exhausted (240s elapsed of 240s). Last \
+                 error: worker exceeded its time bound; salvage: no commits past the dispatch \
+                 baseline — nothing to salvage",
+                "Ran out of time: each attempt gets 4 min, and this one used all of it. It \
+                 made no changes worth keeping.",
+            ),
+            // Whole-goal wall budget.
+            (
+                serde_json::json!({"reason": "wallclock_cap", "spent": 7200, "cap": 3600,
+                                   "cause": "wall_budget"}),
+                "Goal ran out of time and needs your direction",
+                "Goal goal-1 parked: wallclock cap exhausted. Last error: worker crashed",
+                "Ran out of time: this goal has 1 h in total, and it has used all of it.",
+            ),
+            // Wall budget too small for another attempt.
+            (
+                serde_json::json!({"reason": "wallclock_cap", "spent": 3000, "cap": 3600,
+                                   "cause": "wall_budget"}),
+                "Goal ran out of time and needs your direction",
+                "x",
+                "Ran out of time: this goal has 1 h in total, and too little is left for \
+                 another attempt.",
+            ),
+            (
+                serde_json::json!({"reason": "attempt_cap", "spent": 3, "cap": 3}),
+                "h",
+                "Goal goal-1 parked: attempt cap exhausted (3/3 attempts). Last error: boom",
+                "Used all 3 attempts without finishing.",
+            ),
+            (
+                serde_json::json!({"reason": "attempt_cap", "spent": 3, "cap": 3,
+                                   "cause": "review_rejected"}),
+                "h",
+                "d",
+                "The work was sent back in review until it used all 3 attempts.",
+            ),
+            (
+                serde_json::json!({"reason": "token_budget", "spent": 120000, "cap": 100000}),
+                "h",
+                "d",
+                "Ran out of budget: it used its whole allowance of 100k tokens.",
+            ),
+            (
+                serde_json::json!({"reason": "refinement_budget", "spent": 3, "cap": 3}),
+                "h",
+                "d",
+                "Its checks kept failing: it was sent back to fix them 3 times, which is the \
+                 limit.",
+            ),
+            // Verify failure found by salvage (structured).
+            (
+                serde_json::json!({"reason": "attempt_cap", "spent": 3, "cap": 3,
+                    "salvage": {"outcome": "salvage_verify_failed", "commits_past_baseline": 2}}),
+                "h",
+                "d",
+                "Used all 3 attempts without finishing. Its changes did not pass their checks.",
+            ),
+            // Unlanded commits (legacy detail).
+            (
+                serde_json::json!({"reason": "attempt_cap", "spent": 3, "cap": 3}),
+                "h",
+                "Last error: x; salvage: 2 commit(s) past baseline, but no wall budget remains",
+                "Used all 3 attempts without finishing. It left 2 saved changes that have not \
+                 landed yet.",
+            ),
+            // Escalations (worker asked).
+            (
+                serde_json::json!({"reason": "stuck"}),
+                "Which database should I use?",
+                "Which database should I use?\nescalate_kind: information",
+                "The worker stopped to ask you a question before going further.",
+            ),
+            (
+                serde_json::json!({"reason": "stuck"}),
+                "Needs an API key",
+                "Needs a key\nescalate_kind: credential",
+                "The worker needs a password, key or sign-in it doesn't have, so it stopped to \
+                 ask you.",
+            ),
+            // Legacy stuck rows, classified from their headline/detail.
+            (
+                serde_json::json!({"reason": "stuck"}),
+                "\"Build it\" looks stuck in a loop and needs your direction",
+                "The runaway-loop guard stopped this goal's worker: repeated edits.",
+                "The worker kept repeating the same steps, so it was stopped. Its work so far \
+                 is kept.",
+            ),
+            (
+                serde_json::json!({"reason": "stuck"}),
+                "\"Build it\" was held repeatedly and needs your direction",
+                "held repeatedly with no verify",
+                "The work was held back more than once because it couldn't be verified.",
+            ),
+            (
+                serde_json::json!({"reason": "stuck", "cause": "credential_blocked"}),
+                "h",
+                "d",
+                "The worker tried to commit something that looks like a password or key, so it \
+                 was stopped.",
+            ),
+            (
+                serde_json::json!({"reason": "stuck"}),
+                "Goal work could not land and needs a manual merge or rebase",
+                "finished on branch, but it could not be fast-forwarded onto trunk",
+                "The finished work couldn't be merged automatically. It needs a manual merge or \
+                 rebase.",
+            ),
+            (
+                serde_json::json!({"reason": "stuck"}),
+                "Something odd",
+                "no recognisable marker",
+                "The goal got stuck and paused so you can decide what happens next.",
+            ),
+        ];
+        for (payload, headline, detail, expected) in cases {
+            let got = summary(payload.clone(), headline, detail);
+            assert_eq!(got, expected, "payload {payload}");
+            assert_plain(&got);
+        }
+
+        // A scheduled job pause, and a goal-less scheduler escalation.
+        assert_eq!(
+            summarize_decision(
+                "unblock",
+                &serde_json::json!({"reason": CONSECUTIVE_FAILURE_LIMIT, "failure_count": 3}),
+                false,
+                "h",
+                "d",
+            )
+            .as_deref(),
+            Some("This scheduled job failed 3 times in a row, so its runs are paused.")
+        );
+        assert_eq!(
+            summarize_decision(
+                "unblock",
+                &serde_json::json!({"reason": "attempt_cap", "spent": 5, "cap": 5}),
+                false,
+                "h",
+                "Scheduled job 'x' failed after exhausting 5 of 5 retries.",
+            )
+            .as_deref(),
+            Some("A scheduled job kept failing and used all 5 of its retries.")
+        );
+        // Kinds with nothing clearer than their headline say nothing.
+        assert_eq!(
+            summarize_decision("choice", &serde_json::json!({}), true, "h", "d"),
+            None
+        );
+    }
+
+    /// D4: every kind's `effects` map is keyed on exactly the answers the
+    /// answer route accepts for it — no button without a sentence, no sentence
+    /// for an answer the route refuses.
+    #[test]
+    fn effects_map_matches_allowed_answers_for_every_kind() {
+        let variants: Vec<(&str, serde_json::Value, bool)> = vec![
+            ("approve_review", serde_json::json!({}), true),
+            (
+                "unblock",
+                serde_json::json!({"reason": "attempt_cap"}),
+                true,
+            ),
+            (
+                "unblock",
+                serde_json::json!({"reason": "wallclock_cap"}),
+                true,
+            ),
+            (
+                "unblock",
+                serde_json::json!({"reason": "attempt_cap"}),
+                false,
+            ),
+            (
+                "unblock",
+                serde_json::json!({"reason": CONSECUTIVE_FAILURE_LIMIT}),
+                false,
+            ),
+            (
+                "choice",
+                serde_json::json!({"proposal": PROPOSAL_CHECK_APPROVAL}),
+                false,
+            ),
+            (
+                "choice",
+                serde_json::json!({"proposal": PROPOSAL_DEBUG_DISPATCH}),
+                true,
+            ),
+            (
+                "choice",
+                serde_json::json!({"proposal": PROPOSAL_ROADMAP_CREATE}),
+                false,
+            ),
+            ("choice", serde_json::json!({}), true),
+            ("choice", serde_json::json!({}), false),
+            (
+                "risk_gate",
+                serde_json::json!({"action_class": "user_data_deletion"}),
+                true,
+            ),
+            (
+                "risk_gate",
+                serde_json::json!({"action_class": "other"}),
+                false,
+            ),
+            (
+                "automation_proposal",
+                serde_json::json!({"normalized_command": "ls"}),
+                false,
+            ),
+            ("enrichment_proposal", serde_json::json!({}), false),
+            ("project_intel_proposal", serde_json::json!({}), false),
+            ("file_to_project", serde_json::json!({}), false),
+            ("model_upgrade", serde_json::json!({}), false),
+            ("config_change_proposal", serde_json::json!({}), false),
+            ("tool_approval", serde_json::json!({}), false),
+            ("session_gate", serde_json::json!({}), false),
+            ("capability_gap", serde_json::json!({}), false),
+            ("regression_proposal", serde_json::json!({}), false),
+            ("person_merge_proposal", serde_json::json!({}), false),
+            ("person_delete_proposal", serde_json::json!({}), false),
+            ("council_action", serde_json::json!({}), false),
+            ("malformed", serde_json::json!({}), false),
+        ];
+        for (kind, payload, has_goal) in variants {
+            let effects = crate::decisions_effects::answer_effects(kind, &payload, has_goal);
+            let mut keys: Vec<&str> = effects.keys().map(String::as_str).collect();
+            let mut allowed = allowed_answers(kind, &payload);
+            keys.sort_unstable();
+            allowed.sort_unstable();
+            assert_eq!(keys, allowed, "kind {kind} payload {payload}");
+            for (answer, sentence) in &effects {
+                assert!(
+                    !sentence.is_empty() && sentence.ends_with('.'),
+                    "{kind}/{answer}: {sentence}"
+                );
+            }
+        }
+        let goal_unblock = crate::decisions_effects::answer_effects(
+            "unblock",
+            &serde_json::json!({"reason": "wallclock_cap"}),
+            true,
+        );
+        assert_eq!(
+            goal_unblock["approve"],
+            "Wakes the goal with a fresh time budget and more attempts."
+        );
+        assert!(goal_unblock["reject"].starts_with("Cancels this goal"));
+        let automation = crate::decisions_effects::answer_effects(
+            "automation_proposal",
+            &serde_json::json!({}),
+            false,
+        );
+        assert_eq!(automation["approve"], "Records your approval.");
+    }
+
+    /// D6: a scheduled-job unblock offers only what `scheduled_job_resume`
+    /// takes; the general (non-HTTP) answer path still refuses it outright.
+    #[test]
+    fn scheduled_job_unblock_answers_are_resume_or_keep_paused() {
+        let payload = serde_json::json!({"reason": CONSECUTIVE_FAILURE_LIMIT});
+        assert_eq!(
+            allowed_answers("unblock", &payload),
+            vec!["approve", "reject"]
+        );
+        assert_eq!(
+            allowed_answers("unblock", &serde_json::json!({"reason": "stuck"})),
+            vec!["approve", "reject", "input"]
+        );
+    }
+
+    #[test]
+    fn handled_window_is_the_later_of_last_view_and_a_day_ago() {
+        let now = chrono::Utc::now();
+        let day_ago = now - chrono::Duration::hours(HANDLED_WINDOW_HOURS);
+        assert_eq!(handled_window_start(now, None), day_ago);
+        let recent = now - chrono::Duration::hours(2);
+        assert_eq!(handled_window_start(now, Some(recent)), recent);
+        let old = now - chrono::Duration::hours(72);
+        assert_eq!(handled_window_start(now, Some(old)), day_ago);
+        // A view "in the future" (clock skew) never empties the window.
+        let future = now + chrono::Duration::hours(1);
+        assert_eq!(handled_window_start(now, Some(future)), day_ago);
+    }
+
+    /// D3: `handled.count` is agent-resolved only, answered only, windowed.
+    #[tokio::test]
+    async fn handled_counts_only_agent_answers_inside_the_window() {
+        let pool = test_pool().await;
+        let approve = DecisionAnswer {
+            answer: "approve".to_string(),
+            ..Default::default()
+        };
+        let by_henry = create_decision(&pool, valid_unblock()).await.unwrap();
+        answer_decision(&pool, &by_henry.id, &approve, ACTOR_HENRY)
+            .await
+            .unwrap();
+        let by_jesse = create_decision(&pool, valid_unblock()).await.unwrap();
+        answer_decision(&pool, &by_jesse.id, &approve, ACTOR_JESSE)
+            .await
+            .unwrap();
+        let old_henry = create_decision(&pool, valid_unblock()).await.unwrap();
+        answer_decision(&pool, &old_henry.id, &approve, ACTOR_HENRY)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE decisions SET resolved_at = '2020-01-01T00:00:00.000Z' WHERE id = ?")
+            .bind(&old_henry.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let superseded = create_decision(&pool, valid_unblock()).await.unwrap();
+        supersede_decision(&pool, &superseded.id, "moot")
+            .await
+            .unwrap();
+        let _open = create_decision(&pool, valid_unblock()).await.unwrap();
+
+        let summary = inbox_summary(&pool).await.unwrap();
+        assert_eq!(summary.handled.count, 1, "only Henry's in-window answer");
+        assert_eq!(
+            summary.handled_count, 4,
+            "legacy all-time count is unchanged"
+        );
+        let since = chrono::DateTime::parse_from_rfc3339(&summary.handled.since).unwrap();
+        let age = chrono::Utc::now() - since.with_timezone(&chrono::Utc);
+        assert!((age - chrono::Duration::hours(24)).num_seconds().abs() < 60);
+
+        let later = handled_since(&pool, chrono::Utc::now() + chrono::Duration::minutes(1))
+            .await
+            .unwrap();
+        assert_eq!(later.count, 0);
+    }
+
+    /// D5: `regression_proposal` and `capability_gap` are answerable with the
+    /// answers their effect arms handle; anything else still leaves them open.
+    #[tokio::test]
+    async fn regression_and_capability_proposals_are_answerable() {
+        let pool = test_pool().await;
+        let gap = create_decision(
+            &pool,
+            NewDecision {
+                kind: "capability_gap".to_string(),
+                headline: Some("I had no tool to read the weather card".to_string()),
+                detail: Some("tried search, curl".to_string()),
+                payload: serde_json::json!({
+                    "user_goal": "Know the weather",
+                    "missing_capability": "read the dashboard weather card",
+                    "attempts": ["web search failed"]
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(gap.kind, "capability_gap");
+        let input = DecisionAnswer {
+            answer: "input".to_string(),
+            input_text: Some("x".to_string()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            answer_decision(&pool, &gap.id, &input, ACTOR_JESSE).await,
+            Err(AnswerError::Invalid(_))
+        ));
+        let reject = DecisionAnswer {
+            answer: "reject".to_string(),
+            ..Default::default()
+        };
+        answer_decision(&pool, &gap.id, &reject, ACTOR_JESSE)
+            .await
+            .expect("capability_gap reject is a record the user can close the card with");
+
+        let regression = create_decision(
+            &pool,
+            NewDecision {
+                kind: "regression_proposal".to_string(),
+                headline: Some("Pin the weather-card failure as a test".to_string()),
+                detail: Some("incident inc-123".to_string()),
+                payload: serde_json::json!({
+                    "task_id": "weather-card-read",
+                    "title": "Reads the dashboard weather card",
+                    "prompt": "Tell me the weather.",
+                    "test": ["python3", "check.py"],
+                    "oracle_filename": "check.py",
+                    "oracle_source": "import sys\nsys.exit(0)\n",
+                    "incident_id": "inc-123"
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(regression.kind, "regression_proposal");
+        assert!(effect_outbox_claim_key(&regression.id, "regression_proposal").is_some());
+        let (answered, proof) = answer_decision(&pool, &regression.id, &reject, ACTOR_JESSE)
+            .await
+            .unwrap();
+        let (effect, _) = crate::decisions_effects::apply_decision_effect(
+            &pool,
+            &answered,
+            proof,
+            "regression_proposal",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            effect.as_deref(),
+            Some("regression proposal declined; nothing was written")
+        );
     }
 }

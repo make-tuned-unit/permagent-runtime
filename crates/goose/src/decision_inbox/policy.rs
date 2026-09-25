@@ -256,6 +256,12 @@ pub async fn resume_answered_decision(
     patch.insert("budget".to_string(), serde_json::Value::Object(budget_obj));
 
     let actor = proof.acted_by().to_string();
+    // D7: an answered wall-clock park restarts the goal's wall budget too, or
+    // the next dispatch re-parks it on the same spent clock.
+    if let Some((key, value)) = crate::decisions_effects::wall_budget_reset_patch(decision, &actor)
+    {
+        patch.insert(key, value);
+    }
     goal_transition::advance_goal_checked(
         pool,
         goal_id,

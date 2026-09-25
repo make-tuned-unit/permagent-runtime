@@ -4070,7 +4070,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN
-                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','config_change_proposal','malformed')),
+                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','config_change_proposal','person_merge_proposal','person_delete_proposal','malformed')),
             goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
             project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
             tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -4159,6 +4159,11 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 || !sql.contains("auto-mode-launch")
                 || !sql.contains("headless_policy")
                 || !sql.contains("config_change_proposal")
+                // Decision Inbox D10: the people tool files these two kinds
+                // (`merge_people` / `delete_person`), but no CHECK admitted
+                // them, so every proposal failed at insert.
+                || !sql.contains("person_merge_proposal")
+                || !sql.contains("person_delete_proposal")
         })
         .unwrap_or(false)
     {
@@ -4186,7 +4191,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             "CREATE TABLE decisions_new (
                 id            TEXT PRIMARY KEY,
                 kind          TEXT NOT NULL CHECK (kind IN
-                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','config_change_proposal','malformed')),
+                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','config_change_proposal','person_merge_proposal','person_delete_proposal','malformed')),
                 goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
                 project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
                 tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -7560,6 +7565,100 @@ mod inbox_schema_tests {
             .await
             .unwrap();
         assert_eq!(still_there, "session_gate");
+    }
+
+    /// Decision Inbox D10: `person_merge_proposal` / `person_delete_proposal`
+    /// are in `validate_new_decision`'s allowlist and are filed by the people
+    /// tool, but no `kind` CHECK admitted them, so every proposal failed at
+    /// insert. A DB carrying every earlier widening (the current production
+    /// shape) must be rebuilt to admit both, losslessly and idempotently.
+    #[tokio::test]
+    async fn decisions_kind_check_widens_for_person_proposals_in_place() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        sqlx::query("DROP TABLE decisions")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE decisions (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL CHECK (kind IN
+                    ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','config_change_proposal','malformed')),
+                goal_id TEXT REFERENCES cards(id) ON DELETE SET NULL,
+                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                tier INTEGER NOT NULL CHECK (tier IN (0,1,2)),
+                headline TEXT NOT NULL CHECK (length(headline) > 0 AND length(headline) <= 80),
+                detail TEXT NOT NULL CHECK (length(detail) > 0),
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                rank REAL,
+                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','answered','expired','superseded')),
+                answer TEXT CHECK (answer IN ('approve','reject','choice','input','edit')),
+                answer_note TEXT, answer_choice_id TEXT, answer_input TEXT,
+                acted_by TEXT CHECK (acted_by IN ('jesse','henry-policy','system','auto-mode-launch','headless_policy')),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                resolved_at TEXT,
+                CHECK (status != 'answered'
+                       OR (answer IS NOT NULL AND acted_by IS NOT NULL AND resolved_at IS NOT NULL))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO decisions (id, kind, tier, headline, detail, status)
+             VALUES ('d-legacy-pp', 'council_action', 2, 'Legacy open row', 'detail', 'open')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for kind in ["person_merge_proposal", "person_delete_proposal"] {
+            assert!(
+                sqlx::query(
+                    "INSERT INTO decisions (id, kind, tier, headline, detail)
+                     VALUES ('d-pp-pre', ?, 2, 'x', 'y')",
+                )
+                .bind(kind)
+                .execute(&pool)
+                .await
+                .is_err(),
+                "old kind CHECK must reject '{kind}' before the widening runs"
+            );
+        }
+
+        apply_decision_inbox_schema(&pool).await.unwrap();
+
+        let survived: String =
+            sqlx::query_scalar("SELECT headline FROM decisions WHERE id='d-legacy-pp'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(survived, "Legacy open row");
+        for (id, kind) in [
+            ("d-pm", "person_merge_proposal"),
+            ("d-pd", "person_delete_proposal"),
+        ] {
+            sqlx::query(
+                "INSERT INTO decisions (id, kind, tier, headline, detail)
+                 VALUES (?, ?, 2, 'Person proposal', 'detail')",
+            )
+            .bind(id)
+            .bind(kind)
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("widened CHECK must accept kind='{kind}': {e}"));
+        }
+
+        apply_decision_inbox_schema(&pool).await.unwrap();
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE kind IN ('person_merge_proposal','person_delete_proposal')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(n, 2);
     }
 }
 

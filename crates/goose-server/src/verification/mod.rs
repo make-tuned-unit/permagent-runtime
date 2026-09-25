@@ -1229,14 +1229,14 @@ async fn park_for_review(
     match permagent::decisions::find_open_decision_for_goal(pool, goal_id, "unblock").await {
         Ok(Some(_)) => {}
         Ok(None) => {
-            let headline: String = format!("\"{}\" was not confirmed by its reviewer", card.title)
-                .chars()
-                .take(permagent::decisions::MAX_HEADLINE_CHARS)
-                .collect();
+            // D1: the title travels as the inbox's `goal_title`.
+            let headline = "Goal was not confirmed by its reviewer".to_string();
             match serde_json::to_value(permagent::decisions::UnblockPayload {
                 reason: permagent::decisions::UnblockReason::Stuck,
                 spent: None,
                 cap: None,
+                cause: Some(permagent::decisions::UnblockCause::ReviewerNotConfirmed),
+                salvage: None,
             }) {
                 Ok(payload) => {
                     if let Err(e) = permagent::decisions::create_decision(
