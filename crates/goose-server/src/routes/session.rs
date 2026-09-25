@@ -66,9 +66,41 @@ pub struct ForkResponse {
 
 const MAX_NAME_LENGTH: usize = 200;
 
+/// `GET /api/sessions?types=user,scheduled,sub_agent` — opt-in session types.
+/// Absent, the list is User + Scheduled, exactly as before.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+pub struct ListSessionsQuery {
+    /// Comma-separated session types (`user`, `scheduled`, `sub_agent`, …).
+    /// `subagent` is accepted for `sub_agent`. Unknown names are a 400, so a
+    /// typo cannot silently fall back to the default list.
+    types: Option<String>,
+}
+
+/// Parse `?types=`. `Ok(None)` means "not given" (use the default list).
+fn parse_session_types(raw: Option<&str>) -> Result<Option<Vec<SessionType>>, StatusCode> {
+    let Some(raw) = raw.map(str::trim).filter(|r| !r.is_empty()) else {
+        return Ok(None);
+    };
+    let mut types = Vec::new();
+    for part in raw.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let canonical = match part.to_ascii_lowercase().as_str() {
+            "subagent" => "sub_agent".to_string(),
+            other => other.to_string(),
+        };
+        let t: SessionType = canonical.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
+        if !types.contains(&t) {
+            types.push(t);
+        }
+    }
+    Ok(Some(types))
+}
+
 #[utoipa::path(
     get,
     path = "/sessions",
+    params(
+        ("types" = Option<String>, Query, description = "Comma-separated session types to list (default: user,scheduled)")
+    ),
     responses(
         (status = 200, description = "List of available sessions retrieved successfully", body = SessionListResponse),
         (status = 401, description = "Unauthorized - missing or invalid bearer token"),
@@ -81,8 +113,11 @@ const MAX_NAME_LENGTH: usize = 200;
 )]
 async fn list_sessions(
     State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<ListSessionsQuery>,
 ) -> Result<axum::response::Response, StatusCode> {
     use axum::response::IntoResponse;
+
+    let types = parse_session_types(params.types.as_deref())?;
 
     // #341 instrumentation: split backend wall-time into fetch (query + per-row
     // deserialize, itself split into pool-acquire/SQL-exec in session_manager)
@@ -90,11 +125,12 @@ async fn list_sessions(
     // DB-layer hypotheses for the 2-5.6s list latency; these logs prove on every
     // real load that the daemon path is ms-scale and the seconds are client-side.
     let fetch_start = std::time::Instant::now();
-    let sessions = state
-        .session_manager()
-        .list_session_summaries()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let manager = state.session_manager();
+    let sessions = match types.as_deref() {
+        Some(types) => manager.list_session_summaries_of_types(types).await,
+        None => manager.list_session_summaries().await,
+    }
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let fetch_ms = fetch_start.elapsed().as_secs_f64() * 1000.0;
     let session_count = sessions.len();
 

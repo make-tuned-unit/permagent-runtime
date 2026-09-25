@@ -18,7 +18,13 @@ import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
 vi.mock('../../lib/api', () => ({
-  api: { getSessions: vi.fn(() => Promise.resolve([])), createSession: vi.fn() },
+  api: {
+    getSessions: vi.fn(() => Promise.resolve([])),
+    createSession: vi.fn(),
+    getSessionInsights: vi.fn(() => Promise.resolve({ total_sessions: 0, total_tokens: 0 })),
+    searchSessions: vi.fn(() => Promise.resolve([])),
+    forkSession: vi.fn(),
+  },
   apiFetch: vi.fn(),
   extractText: vi.fn(() => ''),
   extractSystemNotice: vi.fn(() => null),
@@ -79,19 +85,27 @@ describe('C5 — Escape in the rename input cancels the rename only', () => {
   const session = { id: 'sess-1234567890', name: 'My chat', created_at: 'c', updated_at: undefined, message_count: 2 };
 
   function startRenaming(): HTMLInputElement {
-    // EditableName's own span (its wrapper has the same textContent — clicking
-    // the wrapper would select the row instead of starting the rename).
-    const name = container.querySelector('span.truncate.cursor-pointer');
+    // A single click on the title selects/opens the row, same as anywhere
+    // else on it (2026-09-25 coordinator finding) — only a double-click, F2,
+    // or the preview's Rename button starts a rename.
+    const name = container.querySelector('[data-testid="session-row-title-text"]');
     expect(name).toBeTruthy();
-    act(() => name!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    const input = container.querySelector('input');
+    act(() => name!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+    const input = container.querySelector('input:not([type="search"])');
     expect(input).toBeTruthy();
     return input as HTMLInputElement;
   }
 
   it('one Escape closes the input but does NOT close the overlay', () => {
     const onClose = vi.fn();
-    useCommandCenter.setState({ sessions: [session], sessionsError: false, loadSessions: vi.fn() });
+    // A double-click's two preceding single clicks now reach the row's own
+    // onClick (open) — real, unmocked store actions here would throw past the
+    // test into an unhandled rejection, so they're stubbed like every other
+    // row-interaction test stubs them.
+    useCommandCenter.setState({
+      sessions: [session], sessionsError: false, loadSessions: vi.fn(),
+      switchToSession: vi.fn(() => Promise.resolve()), openChatDock: vi.fn(), setActivePanel: vi.fn(),
+    });
     render(<SessionsList onClose={onClose} />);
 
     const input = startRenaming();
@@ -99,7 +113,7 @@ describe('C5 — Escape in the rename input cancels the rename only', () => {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     });
 
-    expect(container.querySelector('input')).toBeNull(); // rename cancelled
+    expect(container.querySelector('input:not([type="search"])')).toBeNull(); // rename cancelled
     expect(onClose).not.toHaveBeenCalled(); // overlay survived the keypress
   });
 

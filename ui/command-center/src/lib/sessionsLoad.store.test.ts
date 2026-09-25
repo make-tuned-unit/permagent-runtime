@@ -52,8 +52,16 @@ describe('loadSessions error latch', () => {
     await useCommandCenter.getState().loadSessions();
     const s = useCommandCenter.getState();
     expect(s.sessionsError).toBe(false);
+    // The store also carries lib/sessionLabel.ts's naming/classifying fields
+    // (working_dir, schedule_id, …) for every session, defaulted to null when
+    // the daemon response omits them.
     expect(s.sessions).toEqual([
-      { id: 's1', name: 'First chat', created_at: 'c', updated_at: 'u', message_count: 3 },
+      {
+        id: 's1', name: 'First chat', created_at: 'c', updated_at: 'u', message_count: 3,
+        user_set_name: undefined, session_type: undefined,
+        working_dir: null, schedule_id: null, recipe_title: null, first_user_text: null,
+        goal_id: null, goal_title: null, goal_project_id: null, project_id: null, project_name: null,
+      },
     ]);
   });
 

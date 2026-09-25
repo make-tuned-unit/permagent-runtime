@@ -499,6 +499,20 @@ export interface SessionSummary {
   created_at: string;
   updated_at: string;
   message_count: number;
+  // What the list needs to NAME and SORT a session (History's label, its
+  // Conversations / Agent runs / System split, the project badge and goal
+  // link). Optional: a daemon older than this projection omits them, and the
+  // label falls back to the stored name (lib/sessionLabel.ts).
+  working_dir?: string | null;
+  schedule_id?: string | null;
+  recipe_title?: string | null;
+  /** The first user-visible user message, cut to a few hundred chars. */
+  first_user_text?: string | null;
+  goal_id?: string | null;
+  goal_title?: string | null;
+  goal_project_id?: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
 }
 
 export interface SessionListResponse {
@@ -1593,6 +1607,33 @@ export const api = {
         ...(workingDir ? { workingDir } : {}),
         ...(projectId ? { projectId } : {}),
       }),
+    }),
+
+  /**
+   * Full-transcript search — GET /api/sessions/search. Unlike the client-side
+   * filter over `SessionSummary` (label + first message only), this searches
+   * every message in every session, so a session found only by something said
+   * on turn 40 still turns up. History treats it as an enrichment: a session
+   * id this returns is folded into the label-based match, never a replacement
+   * for it, so a daemon that 500s (or an offline session) still searches.
+   */
+  searchSessions: (query: string, limit = 50) =>
+    apiFetch<Session[]>(
+      `/api/sessions/search?query=${encodeURIComponent(query)}&limit=${limit}`,
+    ),
+
+  /** Compact History header — GET /api/sessions/insights: total session count
+   *  and total tokens across all of them. */
+  getSessionInsights: () => apiFetch<{ total_sessions: number; total_tokens: number }>('/api/sessions/insights'),
+
+  /** Fork a session — POST /api/sessions/{id}/fork. `copy: true` duplicates the
+   *  whole conversation into a new session id rather than truncating this one,
+   *  which is what History's row-level "Fork" offers (a safe branch, not an
+   *  edit of the original). */
+  forkSession: (id: string) =>
+    apiFetch<{ sessionId: string }>(`/api/sessions/${encodeURIComponent(id)}/fork`, {
+      method: 'POST',
+      body: JSON.stringify({ copy: true, truncate: false }),
     }),
 
   /**
