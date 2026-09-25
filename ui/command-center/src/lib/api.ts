@@ -1281,6 +1281,90 @@ export interface DeviceInfo {
   revoked: boolean;
 }
 
+/** One daemon control-plane auth event (`/api/security/auth-log`) — a refused
+ *  request, or an admitted one whose route can execute code, touch secrets,
+ *  spend money or write data. See `crates/goose/src/security/auth_audit.rs`. */
+export interface AuthEventEntry {
+  id: string;
+  ts: string;
+  outcome: string;
+  principal: string | null;
+  credential: string;
+  class: string;
+  method: string;
+  path: string;
+  status: number | null;
+  peer: string | null;
+}
+
+// ── Local inference (/local-inference/*) ──────────────────────────────
+export type LocalModelDownloadStatus =
+  | { state: 'NotDownloaded' }
+  | { state: 'Downloading'; progress_percent: number; bytes_downloaded: number; total_bytes: number; speed_bps: number | null }
+  | { state: 'Downloaded' };
+
+/** One entry in the local-model registry — mirrors `LocalModelResponse`
+ *  (crates/goose-server/src/routes/local_inference.rs). */
+export interface LocalModelInfo {
+  id: string;
+  repo_id: string;
+  filename: string;
+  quantization: string;
+  size_bytes: number;
+  status: LocalModelDownloadStatus;
+  recommended: boolean;
+  vision_capable: boolean;
+  mmproj_status: LocalModelDownloadStatus | null;
+}
+
+// ── Backups (/api/backups) ────────────────────────────────────────────
+export interface SnapshotInfo {
+  db: string;
+  filename: string;
+  timestamp: string;
+  tier: 'Daily' | 'Weekly' | 'Monthly';
+  size_bytes: number;
+  integrity_ok: boolean;
+}
+
+export type BackupRunResult =
+  | { status: 'ok'; db: string; filename: string; timestamp: string; tier: string; size_bytes: number; integrity_ok: boolean }
+  | { status: 'error'; message: string }
+  | { status: 'skipped'; reason: string };
+
+export interface BackupRunResponse {
+  brain: BackupRunResult;
+  brain_graph: BackupRunResult;
+  brain_recognition: BackupRunResult;
+  spectral: BackupRunResult;
+}
+
+// ── Messaging gateways (/gateway/*) and the remote tunnel (/tunnel/*) ──
+export interface PairedUserInfo {
+  platform: string;
+  user_id: string;
+  display_name: string | null;
+  session_id: string;
+  paired_at: number;
+}
+
+export interface GatewayStatusInfo {
+  gateway_type: string;
+  running: boolean;
+  configured: boolean;
+  paired_users: PairedUserInfo[];
+  info: Record<string, string>;
+}
+
+export type TunnelState = 'Idle' | 'Starting' | 'Running' | 'Error' | 'Disabled';
+
+export interface TunnelInfo {
+  state: TunnelState;
+  url: string;
+  hostname: string;
+  secret: string;
+}
+
 // ── Governance / spend ──────────────────────────────────────────────────
 /** A budget ceiling triplet (soft warn ≤ gate/pause ≤ hard stop), USD. */
 export interface Ceilings {
@@ -1785,6 +1869,20 @@ export const api = {
   getIntegrations: () =>
     apiFetch<Array<{ provider: string; connected: boolean; token_present: boolean }>>('/integrations'),
 
+  /** Start the Gmail OAuth flow: exchanges a Google OAuth client id/secret for
+   *  the URL to open in a browser. The daemon runs a short-lived local
+   *  callback listener (port 8095) that completes the exchange when the user
+   *  finishes consenting — this call only mints the URL. */
+  gmailConnect: (clientId: string, clientSecret: string) =>
+    apiFetch<{ auth_url: string; callback_port: number }>('/integrations/gmail/connect', {
+      method: 'POST',
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+    }),
+
+  /** Forget the stored Gmail token. */
+  gmailDisconnect: () =>
+    apiFetch<void>('/integrations/gmail', { method: 'DELETE' }),
+
   /**
    * Read a NON-SECRET config value. The daemon answers with the **bare JSON
    * value** — `true`, `24`, `"anthropic"` — or `null` when the key is unset.
@@ -1920,6 +2018,13 @@ export const api = {
   /** Recent cloud-egress audit entries (everything that has left this machine). */
   getEgressLog: (limit = 100) =>
     apiFetch<EgressLogEntry[]>(`/api/security/egress-log?limit=${limit}`),
+
+  /** Recent daemon control-plane auth events — every refused request, and
+   *  every admitted request whose route can execute code, touch secrets,
+   *  spend money or write data. Detection, not prevention (see
+   *  auth_audit.rs doc comment) — an empty log is not proof nothing ran. */
+  getAuthLog: (limit = 100) =>
+    apiFetch<AuthEventEntry[]>(`/api/security/auth-log?limit=${limit}`),
 
   // ── Briefings ─────────────────────────────────────────────────────────
   /** Mark briefings as seen ("ack" = seen, never approval). */
@@ -2534,6 +2639,11 @@ export const api = {
       model: string;
       provider: string;
       error_message: string | null;
+      /** Entities the Librarian described but could not place with confidence
+       *  — it needs the user to say who/what one of them is before it can
+       *  describe them truthfully. `undefined` on a daemon that predates this
+       *  field (treat the same as 0 — nothing to show, not "unknown"). */
+      entities_awaiting_context?: number;
     }>('/api/librarian/status'),
 
   getLibrarianRunStatus: () =>
@@ -2646,4 +2756,61 @@ export const api = {
     }
     return resp.json() as Promise<{ status: 'started' }>;
   },
+
+  // ── Local inference (/local-inference/*) — UI-less until now; see
+  // crates/goose-server/src/routes/local_inference.rs. ─────────────────
+  listLocalModels: () => apiFetch<LocalModelInfo[]>('/local-inference/models'),
+
+  downloadLocalModel: (spec: string) =>
+    apiFetch<string>('/local-inference/download', {
+      method: 'POST',
+      body: JSON.stringify({ spec }),
+    }),
+
+  cancelLocalModelDownload: (modelId: string) =>
+    apiFetch<void>(`/local-inference/models/${encodeURIComponent(modelId)}/download`, {
+      method: 'DELETE',
+    }),
+
+  deleteLocalModel: (modelId: string) =>
+    apiFetch<void>(`/local-inference/models/${encodeURIComponent(modelId)}`, {
+      method: 'DELETE',
+    }),
+
+  // ── Backups (/api/backups) — UI-less until now; see
+  // crates/goose-server/src/routes/backup.rs. ───────────────────────────
+  getBackups: () => apiFetch<{ snapshots: SnapshotInfo[] }>('/api/backups'),
+
+  runBackups: () => apiFetch<BackupRunResponse>('/api/backups/run', { method: 'POST' }),
+
+  // ── Messaging gateways (/gateway/*) — UI-less until now; see
+  // crates/goose-server/src/routes/gateway.rs. ──────────────────────────
+  getGatewayStatus: () => apiFetch<GatewayStatusInfo[]>('/gateway/status'),
+
+  startGateway: (gatewayType: string, platformConfig: unknown, maxSessions = 0) =>
+    apiFetch<void>('/gateway/start', {
+      method: 'POST',
+      body: JSON.stringify({ gateway_type: gatewayType, platform_config: platformConfig, max_sessions: maxSessions }),
+    }),
+
+  stopGateway: (gatewayType: string) =>
+    apiFetch<void>('/gateway/stop', {
+      method: 'POST',
+      body: JSON.stringify({ gateway_type: gatewayType }),
+    }),
+
+  createGatewayPairingCode: (gatewayType: string) =>
+    apiFetch<{ code: string; expires_at: number }>('/gateway/pair', {
+      method: 'POST',
+      body: JSON.stringify({ gateway_type: gatewayType }),
+    }),
+
+  unpairGatewayUser: (platform: string, userId: string) =>
+    apiFetch<void>(`/gateway/pair/${encodeURIComponent(platform)}/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+    }),
+
+  // ── Remote tunnel (/tunnel/*) — the alternative to a tailnet for reaching
+  // this hub; UI-less until now. See crates/goose-server/src/tunnel/mod.rs. ─
+  getTunnelInfo: () => apiFetch<TunnelInfo>('/tunnel/status'),
 };

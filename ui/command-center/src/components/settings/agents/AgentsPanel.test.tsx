@@ -238,7 +238,7 @@ describe('AgentsPanel', () => {
 
     const text = container.textContent ?? '';
     expect(text).toContain('Scheduler');
-    expect(text).toMatch(/run themselves/i);
+    expect(text).toMatch(/run on their own/i);
     // No dispatch / run-now control — section titles may say "Dispatch roster".
     const controls = [...container.querySelectorAll('button, a')].filter(el =>
       /^(dispatch|run now)$/i.test((el.textContent ?? '').trim()),
@@ -261,8 +261,11 @@ describe('AgentsPanel', () => {
 
     expect(container.querySelector('[data-testid="worker-row-strix"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="gate-chip-strix"]')?.textContent).toBe('off');
-    // An ungated worker gets no chip: "no switch known" is not "switched off".
-    expect(container.querySelector('[data-testid="gate-chip-scheduler"]')).toBeNull();
+    // Every row shows its on/off state the same way (Jesse's 1440px review,
+    // round 3) — a worker with no switch at all reads "Always on" rather than
+    // showing nothing, which used to be indistinguishable from a daemon that
+    // forgot to serialise the gate.
+    expect(container.querySelector('[data-testid="gate-chip-scheduler"]')?.textContent).toBe('Always on');
   });
 
   // REGRESSION. There was no enable control on an agent's own page at all — the
@@ -291,11 +294,25 @@ describe('AgentsPanel', () => {
     expect(writesAfter.length).toBe(writesBefore.length);
   });
 
+  /** Focuses a `live-status-<id>` pill and reads its Tooltip's content — the
+   *  raw daemon text lives ONLY there now (Jesse's 1440px review, round 3):
+   *  the chip itself shows one of five plain words, never the raw value. */
+  async function liveStatusTooltip(id: string): Promise<string> {
+    const pill = container.querySelector(`[data-testid="live-status-${id}"]`) as HTMLElement;
+    expect(pill).toBeTruthy();
+    await act(async () => { pill.focus(); });
+    const tipId = pill.getAttribute('aria-describedby');
+    expect(tipId).toBeTruthy();
+    const tip = tipId ? document.getElementById(tipId) : null;
+    return tip?.textContent ?? '';
+  }
+
   it('re-reads the agent after a flip, so its live state is not left stale', async () => {
     mockRosterAndDetail();
     await mount();
     await open('worker-row-strix');
-    expect(container.textContent).toContain('off (strix_enabled=false)');
+    expect(container.querySelector('[data-testid="live-status-strix"]')?.textContent).toBe('Off');
+    expect(await liveStatusTooltip('strix')).toContain('off (strix_enabled=false)');
 
     // After the write lands the daemon answers with the flag on, and the page
     // must show THAT rather than the state it was opened with.
@@ -320,8 +337,9 @@ describe('AgentsPanel', () => {
     expect(upsertConfig).toHaveBeenCalledWith('strix_enabled', true);
     const after = apiFetchMock.mock.calls.slice(before).map(c => c[0]);
     expect(after).toContain('/api/agents/strix');
-    expect(container.textContent).toContain('on — sweeping every 24h');
-    expect(container.textContent).not.toContain('off (strix_enabled=false)');
+    expect(container.querySelector('[data-testid="live-status-strix"]')?.textContent).toBe('Running');
+    expect(await liveStatusTooltip('strix')).toContain('on — sweeping every 24h');
+    expect(await liveStatusTooltip('strix')).not.toContain('off (strix_enabled=false)');
   });
 
   // REGRESSION. The roster was fetched once, on mount, and nothing refetched it —
@@ -647,10 +665,13 @@ describe('AgentsPanel', () => {
     mockRosterAndDetail();
     await mount();
 
-    const row = container.querySelector('[data-testid="worker-row-scheduler"]');
-    expect(row?.textContent ?? '').toMatch(/could not be read/i);
-    expect(row?.textContent ?? '').toContain('pool locked');
-    expect((row?.textContent ?? '').toLowerCase()).not.toMatch(/\bidle\b/);
+    // Scheduler's mock live_state is `{ status: 'unavailable', reason: 'pool
+    // locked' }` — the chip must say "Unknown" (never "Idle": that word is
+    // reserved for `not_queryable`, a property of the worker, not a failed
+    // read), with the reason reachable only via the pill's Tooltip.
+    expect(container.querySelector('[data-testid="live-status-scheduler"]')?.textContent).toBe('Unknown');
+    expect(await liveStatusTooltip('scheduler')).toMatch(/could not be read/i);
+    expect(await liveStatusTooltip('scheduler')).toContain('pool locked');
   });
 
   it('renders attribution wording for empty activity', async () => {
@@ -663,5 +684,202 @@ describe('AgentsPanel', () => {
     expect((empty?.textContent ?? '').toLowerCase()).toContain('not proof the agent did nothing');
     expect((empty?.textContent ?? '').toLowerCase()).not.toContain('no work yet');
     expect((empty?.textContent ?? '').toLowerCase()).not.toMatch(/\bthis agent did nothing\b/);
+  });
+
+  // Jesse's 1440px review of the real daemon: worker rows were printing the
+  // FULL engineering paragraph (Scheduler's guardrail internals, Git
+  // Steward's config keys, ...), because the roster had no separate short
+  // field. ST1 round 2: a curated/first-sentence `summary` is the row's
+  // default line; the long paragraph moves behind "How this works".
+  describe('plain-language rows (ST1 round 2)', () => {
+    const LONG_WHAT_IT_DOES =
+      'Runs saved recipes and reminders in the background on cron, one-time, or interval schedules — retrying transient failures, recovering runs missed during downtime, and escalating repeated failures to the Decision Inbox. Guardrails are enforced, not advisory.';
+
+    it("shows the daemon's curated summary on the roster row, not the long paragraph", async () => {
+      apiFetchMock.mockImplementation(async (endpoint: string) => {
+        if (endpoint === '/api/agents/roster') {
+          return {
+            workers: [{
+              id: 'scheduler', display_name: 'Scheduler',
+              summary: 'Runs your recurring automations and reminders on schedule.',
+              what_it_does: LONG_WHAT_IT_DOES,
+              why_it_matters: 'Lets you promise recurring work and actually deliver it.',
+              state_source: 'queryable', live_state: { status: 'not_queryable' },
+              dispatchable: false, gate: null,
+            }],
+            dispatch_roster: [], capabilities: [],
+          } as never;
+        }
+        if (endpoint.startsWith('/api/agents/scheduler/work')) return EMPTY_WORK as never;
+        throw new Error(`unexpected fetch ${endpoint}`);
+      });
+      await mount();
+
+      const row = container.querySelector('[data-testid="worker-row-scheduler"]');
+      expect(row?.textContent ?? '').toContain('Runs your recurring automations and reminders on schedule.');
+      expect(row?.textContent ?? '').not.toContain('Guardrails are enforced, not advisory');
+    });
+
+    it('falls back to the first sentence of what_it_does when a daemon sends no summary', async () => {
+      const whatItDoes = 'Runs saved recipes on a schedule. Guardrails are enforced, not advisory, and a headless run withholds two self-replicating extensions unless the recipe declares them.';
+      apiFetchMock.mockImplementation(async (endpoint: string) => {
+        if (endpoint === '/api/agents/roster') {
+          return {
+            workers: [{
+              id: 'scheduler', display_name: 'Scheduler',
+              what_it_does: whatItDoes,
+              why_it_matters: 'Lets you promise recurring work and actually deliver it.',
+              state_source: 'queryable', live_state: { status: 'not_queryable' },
+              dispatchable: false, gate: null,
+            }],
+            dispatch_roster: [], capabilities: [],
+          } as never;
+        }
+        if (endpoint.startsWith('/api/agents/scheduler/work')) return EMPTY_WORK as never;
+        throw new Error(`unexpected fetch ${endpoint}`);
+      });
+      await mount();
+
+      const row = container.querySelector('[data-testid="worker-row-scheduler"]');
+      expect(row?.textContent ?? '').toContain('Runs saved recipes on a schedule.');
+      expect(row?.textContent ?? '').not.toContain('Guardrails are enforced, not advisory');
+    });
+
+    it('puts the long paragraph behind a "How this works" disclosure on the detail page', async () => {
+      mockRosterAndDetail();
+      await mount();
+      await open('worker-row-strix');
+
+      const details = container.querySelector('details');
+      expect(details).toBeTruthy();
+      expect(details?.querySelector('summary')?.textContent).toBe('How this works');
+      expect(details?.textContent ?? '').toContain('Sweeps one project per pass for security flaws');
+      expect(details?.textContent ?? '').toContain('Exposed secrets get found before someone else finds them');
+      // The Details element is collapsed by default — its content isn't
+      // hidden from the DOM (native <details> just visually collapses it),
+      // so the real assertion is that the disclosure element EXISTS to hold
+      // it, not that the text is absent before opening.
+      expect(details?.hasAttribute('open')).toBe(false);
+    });
+
+    it('shows real last activity on the roster row, de-jargoning the retired "recipe" the daemon still writes', async () => {
+      apiFetchMock.mockImplementation(async (endpoint: string) => {
+        if (endpoint === '/api/agents/roster') return ROSTER as never;
+        if (endpoint.startsWith('/api/agents/scheduler/work')) {
+          return {
+            ...EMPTY_WORK,
+            activity: {
+              attribution: 'actor_exact_match', status: 'ok', truncated: false,
+              items: [{
+                id: 'j1', ts: new Date().toISOString(), kind: 'run', actor: 'scheduler',
+                title: 'Ran the daily digest recipe', detail: null, ref_kind: null, ref_id: null,
+                goal_project_id: null,
+              }],
+            },
+          } as never;
+        }
+        if (endpoint.match(/^\/api\/agents\/[^/]+\/work/)) return EMPTY_WORK as never;
+        const detail = endpoint.match(/^\/api\/agents\/([^/?]+)$/);
+        if (detail) { const d = detailFor(detail[1]); if (d) return d as never; }
+        throw new Error(`unexpected fetch ${endpoint}`);
+      });
+      await mount();
+
+      const activity = container.querySelector('[data-testid="worker-row-scheduler-activity"]');
+      // "recipe" is the retired internal name (automationNaming.test.ts bans
+      // it in Automate's own source); the daemon's activity journal still
+      // writes it, so the UI must swap it — deJargonDaemonText, tested on its
+      // own in lib/vocabulary.test.ts.
+      expect(activity?.textContent ?? '').toContain('Ran the daily digest automation');
+      expect(activity?.textContent ?? '').not.toMatch(/\brecipe\b/i);
+      expect(activity?.textContent ?? '').toMatch(/last activity/i);
+    });
+
+    it('says plainly when no activity is attributed, rather than showing nothing', async () => {
+      mockRosterAndDetail();
+      await mount();
+
+      const activity = container.querySelector('[data-testid="worker-row-scheduler-activity"]');
+      expect(activity?.textContent ?? '').toMatch(/no activity attributed/i);
+    });
+
+    it("says the read failed, distinct from 'no activity', when the work fetch itself fails", async () => {
+      apiFetchMock.mockImplementation(async (endpoint: string) => {
+        if (endpoint === '/api/agents/roster') return ROSTER as never;
+        if (endpoint.startsWith('/api/agents/scheduler/work')) throw new Error('daemon down');
+        if (endpoint.match(/^\/api\/agents\/[^/]+\/work/)) return EMPTY_WORK as never;
+        const detail = endpoint.match(/^\/api\/agents\/([^/?]+)$/);
+        if (detail) { const d = detailFor(detail[1]); if (d) return d as never; }
+        throw new Error(`unexpected fetch ${endpoint}`);
+      });
+      await mount();
+
+      const activity = container.querySelector('[data-testid="worker-row-scheduler-activity"]');
+      expect(activity?.textContent ?? '').toMatch(/couldn.t be read/i);
+      expect(activity?.textContent ?? '').not.toMatch(/no activity attributed/i);
+    });
+  });
+
+  describe('plain-language copy (ST1 round 2)', () => {
+    it('uses plain section titles instead of internal jargon', async () => {
+      mockRosterAndDetail();
+      await mount();
+      const text = container.textContent ?? '';
+      expect(text).toContain('Background agents');
+      expect(text).toContain('Agents that take on goals');
+      expect(text).toContain('What your agents can use');
+      expect(text).not.toContain('Dispatch roster');
+      expect(text).not.toMatch(/Platform extensions — not agents/);
+    });
+
+    it('says switched-off agents stay listed, not that their switch merely "isn\'t flipped yet"', async () => {
+      mockRosterAndDetail();
+      await mount();
+      expect(container.textContent).toContain('Switched-off agents stay listed so you can turn them on.');
+    });
+  });
+
+  // Jesse's 1440px review, round 3: (1) the status column leaked raw daemon
+  // internals — mapped and gated behind a Tooltip above; (2) three workers
+  // with no gate had NO on/off chip at all, which read as "we don't know",
+  // not "always on"; (3) "recipe" survived into the UI via daemon-authored
+  // journal text — de-jargoned above. This block pins the row-level view of
+  // all three fixes together.
+  describe('status column and every-row gate chip (ST1 round 3)', () => {
+    it('gives an ungated worker an "Always on" chip, not a missing one', async () => {
+      mockRosterAndDetail();
+      await mount();
+      // Scheduler has `gate: null` in this fixture.
+      expect(container.querySelector('[data-testid="gate-chip-scheduler"]')?.textContent).toBe('Always on');
+    });
+
+    it('does not show the same on/off word twice for one worker', async () => {
+      // A worker whose gate says "on" AND whose live_state literally says
+      // "on" too — the exact daemon shape that produced the duplicate. The
+      // status pill must narrow to a DIFFERENT word ("Running"), not repeat
+      // the gate chip's "on".
+      apiFetchMock.mockImplementation(async (endpoint: string) => {
+        if (endpoint === '/api/agents/roster') {
+          return {
+            workers: [{
+              id: 'initiative', display_name: 'Initiative', summary: 'Notices repeats.',
+              what_it_does: 'Watches for repeats.', why_it_matters: 'Automates them.',
+              state_source: 'queryable', live_state: { status: 'ok', value: 'on' },
+              dispatchable: false, gate: { config_key: 'initiative_enabled', enabled: true },
+            }],
+            dispatch_roster: [], capabilities: [],
+          } as never;
+        }
+        if (endpoint.startsWith('/api/agents/initiative/work')) return EMPTY_WORK as never;
+        throw new Error(`unexpected fetch ${endpoint}`);
+      });
+      await mount();
+
+      // Gate chip and status pill each say something, and they say DIFFERENT
+      // things — "on" (the switch) and "Running" (the live status) — rather
+      // than the daemon's identical "on" value leaking into both.
+      expect(container.querySelector('[data-testid="gate-chip-initiative"]')?.textContent).toBe('on');
+      expect(container.querySelector('[data-testid="live-status-initiative"]')?.textContent).toBe('Running');
+    });
   });
 });

@@ -669,6 +669,15 @@ pub(super) struct LibrarianStatusResponse {
     model: String,
     provider: String,
     error_message: Option<String>,
+    /// Entities the Librarian described but could not place with confidence —
+    /// it needs the user to say who/what one of them is before it can
+    /// describe them truthfully (librarian_state::entities_awaiting_context).
+    /// Added for the Settings → Agents → Librarian UI (dagK settings pass,
+    /// ST1): the daemon has tracked this count since #387 v2, but nothing
+    /// outside the agent's own capabilities brief ever read it — there was no
+    /// route surfacing it, so the operator-facing "K awaiting your context"
+    /// line existed only in the system prompt, never in the UI.
+    entities_awaiting_context: usize,
 }
 
 /// GET /api/librarian/status
@@ -712,6 +721,7 @@ pub(super) async fn get_librarian_status() -> Json<LibrarianStatusResponse> {
         model: schedule.model,
         provider: "ollama".to_string(),
         error_message: rt_state.error_message,
+        entities_awaiting_context: rt_state.entities_awaiting_context,
     })
 }
 

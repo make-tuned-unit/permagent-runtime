@@ -6,8 +6,9 @@
  */
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
-import { Chip, Row, Section } from '../atoms';
+import { Chip, Details, ListRow, Row, Section } from '../atoms';
 import { Button } from '../../common/Button';
+import { Tooltip } from '../../common/Tooltip';
 import { H1 } from '../../common/H1';
 import { Toggle } from '../../common/Toggle';
 import {
@@ -21,7 +22,7 @@ import {
   gateRowHint,
   grantsNotEnforcedNote,
   grantsSummary,
-  liveStateLabel,
+  liveStatusChip,
   NO_AGENT_SECRETS_NOTE,
   presenceLabel,
   readAgentGate,
@@ -29,6 +30,7 @@ import {
   requiredSecretHints,
   STORED_SECRETS_NOTE,
   truncatedNote,
+  workerSummary,
   type AgentGate,
   type LabelTone,
 } from '../agentsPanel';
@@ -36,6 +38,8 @@ import { font, radius, space, textSize, type } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { api } from '../../../lib/api';
 import { useCommandCenter } from '../../../lib/store';
+import { timeAgo } from '../format';
+import { deJargonDaemonText } from '../../../lib/vocabulary';
 import {
   fetchAgentDetail,
   fetchAgentWork,
@@ -44,6 +48,7 @@ import {
   saveSecret,
   type AgentDetail,
   type BackgroundWorker,
+  type LiveState,
   type Capability,
   type DispatchPersona,
   type ListSection,
@@ -73,6 +78,31 @@ function StatusText({ text, tone }: { text: string; tone: LabelTone }) {
     <span style={{ fontSize: textSize.micro, color: toneColor(tone, colors), fontWeight: tone === 'error' ? 600 : 400 }}>
       {text}
     </span>
+  );
+}
+
+/** A worker's live status, narrowed to one of five plain words (Running,
+ *  Idle, Scheduled (N jobs), Off, Unknown — see `liveStatusChip`), rendered
+ *  as a chip with the raw daemon text (a config key, a failure reason,
+ *  whatever it actually said) reachable only via Tooltip, never printed
+ *  bare. This is LIVE STATUS, distinct from the on/off `GateChip` beside the
+ *  name — the two must never say the same thing in different words. */
+function LiveStatusPill({ id, live }: { id: string; live: LiveState }) {
+  const { colors } = useTheme();
+  const chip = liveStatusChip(live);
+  return (
+    <Tooltip content={chip.detail}>
+      <span
+        tabIndex={0}
+        data-testid={`live-status-${id}`}
+        style={{
+          ...type.label, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.pill,
+          border: `1px solid ${colors.border}`, color: toneColor(chip.tone, colors), fontFamily: font.body,
+        }}
+      >
+        {chip.label}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -415,8 +445,8 @@ function WorkReviewBlock({ work }: { work: WorkReview }) {
                 {activity.items.map(item => (
                   <div key={item.id} style={{ fontSize: textSize.caption, color: colors.text, lineHeight: 1.45 }}>
                     <span style={{ color: colors.textDim, fontFamily: font.mono, marginRight: space.md }}>{item.ts}</span>
-                    <strong>{item.title}</strong>
-                    {item.detail && <span style={{ color: colors.textMuted }}> — {item.detail}</span>}
+                    <strong>{deJargonDaemonText(item.title)}</strong>
+                    {item.detail && <span style={{ color: colors.textMuted }}> — {deJargonDaemonText(item.detail)}</span>}
                   </div>
                 ))}
                 {activity.truncated && (
@@ -618,9 +648,7 @@ function AgentDetailPane({
   // off — offering to flip a key that daemon does not read would be a lie.
   const gate = readAgentGate(detail);
 
-  const headerLive = detail.kind === 'worker'
-    ? liveStateLabel(detail.live_state)
-    : availabilityLabel(detail.availability);
+  const headerAvailability = detail.kind === 'dispatch_persona' ? availabilityLabel(detail.availability) : null;
 
   return (
     <div>
@@ -644,24 +672,29 @@ function AgentDetailPane({
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: space.xxl }}>
         <AgentPortrait agentId={id} size={56} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <H1 sub={detail.kind === 'worker' ? detail.what_it_does : detail.role}>
+          <H1 sub={detail.kind === 'worker' ? workerSummary(detail) : detail.role}>
             {detail.display_name}
           </H1>
         </div>
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px', marginBottom: space.xxxl, fontSize: textSize.caption, color: colors.textMuted }}>
-        <span>{detail.kind === 'worker' ? 'Background worker' : 'Dispatch persona'}</span>
-        <span>
-          {detail.kind === 'worker'
-            ? `state source: ${detail.state_source}`
-            : `engine: ${engineLabel(detail.engine)}`}
-        </span>
-        <StatusText text={headerLive.text} tone={headerLive.tone} />
+        <span>{detail.kind === 'worker' ? 'Runs on its own' : 'Takes on goals'}</span>
+        {detail.kind === 'dispatch_persona' && <span>{`engine: ${engineLabel(detail.engine)}`}</span>}
+        {detail.kind === 'worker'
+          ? <LiveStatusPill id={id} live={detail.live_state} />
+          : headerAvailability && <StatusText text={headerAvailability.text} tone={headerAvailability.tone} />}
         {detail.kind === 'dispatch_persona' && (
           <span>cost: {detail.cost_tier}</span>
         )}
       </div>
+
+      {detail.kind === 'worker' && (
+        <Details summary="How this works">
+          <div style={{ marginBottom: space.md }}>{detail.what_it_does}</div>
+          <div>{detail.why_it_matters}</div>
+        </Details>
+      )}
 
       {gate && (
         <AgentEnableRow
@@ -731,6 +764,17 @@ function AgentDetailPane({
   );
 }
 
+/** One worker's most recent attributed activity, for its roster row. Three
+ *  DISTINCT states (R2/R5): `ok` (a real item, timestamped and titled), `none`
+ *  (the read succeeded and found nothing attributed — brief ST1's "say what's
+ *  available or say what's missing"), and `unavailable` (the read itself
+ *  failed — never collapsed into `none`, or a dead read would read as a quiet
+ *  agent). */
+export type RecentActivityState =
+  | { status: 'ok'; ts: string; title: string }
+  | { status: 'none' }
+  | { status: 'unavailable' };
+
 export function AgentsPanel({ goto }: PanelProps) {
   const { colors } = useTheme();
   const [roster, setRoster] = useState<RosterResponse | null>(null);
@@ -739,26 +783,54 @@ export function AgentsPanel({ goto }: PanelProps) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [unknownFocus, setUnknownFocus] = useState<string | null>(null);
+  // Keyed by worker id. `undefined` = not yet loaded (roster rows render with
+  // no activity line rather than a permanent "loading" — the request is
+  // cheap and near-instant, and a skeleton here would outlive the fetch on
+  // most daemons).
+  const [recentActivity, setRecentActivity] = useState<Record<string, RecentActivityState>>({});
 
   const pendingAgentFocus = useCommandCenter(s => s.pendingAgentFocus);
   const clearPendingAgentFocus = useCommandCenter(s => s.clearPendingAgentFocus);
+
+  // One cheap, capped read per worker — brief ST1: every roster row needs its
+  // last activity, not just the one the user happens to click into. Each
+  // worker's read fails independently (Promise.allSettled), so one dead
+  // worker cannot blank the other twelve rows.
+  const loadRecentActivity = useCallback((workers: BackgroundWorker[]) => {
+    void Promise.allSettled(workers.map(w => fetchAgentWork(w.id, 1))).then(results => {
+      setRecentActivity(prev => {
+        const next = { ...prev };
+        results.forEach((r, i) => {
+          const id = workers[i].id;
+          if (r.status !== 'fulfilled') { next[id] = { status: 'unavailable' }; return; }
+          const activity = r.value.activity;
+          if (activity.status === 'unavailable') { next[id] = { status: 'unavailable' }; return; }
+          const item = activity.items[0];
+          next[id] = item ? { status: 'ok', ts: item.ts, title: deJargonDaemonText(item.title) } : { status: 'none' };
+        });
+        return next;
+      });
+    });
+  }, []);
 
   const loadRoster = useCallback(() => {
     fetchRoster()
       // Never hand a non-array to the render path — a degraded daemon reply used
       // to take whole settings panes down with `.map of undefined`.
       .then(r => {
+        const workers = Array.isArray(r?.workers) ? r.workers : [];
         setRoster({
-          workers: Array.isArray(r?.workers) ? r.workers : [],
+          workers,
           dispatch_roster: Array.isArray(r?.dispatch_roster) ? r.dispatch_roster : [],
           capabilities: Array.isArray(r?.capabilities) ? r.capabilities : [],
         });
         setError(null);
+        loadRecentActivity(workers);
       })
       .catch(err => setError(
         `Could not load the agents roster — ${err instanceof Error ? err.message : 'the daemon did not answer'}.`,
       ));
-  }, []);
+  }, [loadRecentActivity]);
 
   useEffect(() => { loadRoster(); }, [loadRoster]);
 
@@ -846,7 +918,7 @@ export function AgentsPanel({ goto }: PanelProps) {
 
   return (
     <div>
-      <H1 sub="Workers that run themselves, the dispatch roster goals go to, and capabilities with their declared secrets — three populations, kept honest. Flag-gated workers are listed here whether or not they are switched on, each with its own switch.">
+      <H1 sub="Agents that work on their own, agents that take on your goals, and what they're all allowed to use. A switched-off agent still shows up here — its switch is on this page.">
         Agents
       </H1>
 
@@ -865,12 +937,17 @@ export function AgentsPanel({ goto }: PanelProps) {
       )}
 
       <Section
-        title="Workers"
-        sub="Background workers run themselves and are not dispatchable. A worker whose flag is off is listed here too, marked off — its switch is on its own page."
+        title="Background agents"
+        sub="They run on their own — you don't send them a goal. Switched-off agents stay listed so you can turn them on."
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
           {roster.workers.map(worker => (
-            <WorkerRow key={worker.id} worker={worker} onOpen={() => setSelectedId(worker.id)} />
+            <WorkerRow
+              key={worker.id}
+              worker={worker}
+              activity={recentActivity[worker.id]}
+              onOpen={() => setSelectedId(worker.id)}
+            />
           ))}
           {roster.workers.length === 0 && (
             <div style={{ fontSize: textSize.caption, color: colors.textDim }}>No background workers visible.</div>
@@ -879,8 +956,8 @@ export function AgentsPanel({ goto }: PanelProps) {
       </Section>
 
       <Section
-        title="Dispatch roster"
-        sub="Worker personas goals are dispatched to — engine, availability, cost, and grants."
+        title="Agents that take on goals"
+        sub="You (or the app) hand these a goal to work on. Shows what's running it, whether it's ready, and what it costs."
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
           {roster.dispatch_roster.map(persona => (
@@ -899,8 +976,8 @@ export function AgentsPanel({ goto }: PanelProps) {
       <SkillsSection />
 
       <Section
-        title="Capabilities"
-        sub="Platform extensions — not agents. Enablement is managed under Tools."
+        title="What your agents can use"
+        sub="Tools your agents can call — not agents themselves. Turn one on or off under Tools."
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
           {roster.capabilities.map(cap => (
@@ -908,8 +985,7 @@ export function AgentsPanel({ goto }: PanelProps) {
           ))}
           {roster.capabilities.length === 0 && (
             <div style={{ fontSize: textSize.caption, color: colors.textDim }}>
-              The roster listed no capabilities. That is what the daemon returned, not proof none
-              are installed.
+              Nothing came back from the daemon just now — that's not proof none are installed.
             </div>
           )}
         </div>
@@ -924,8 +1000,29 @@ export function AgentsPanel({ goto }: PanelProps) {
  * previously sent the user hunting through five panes for a control they could
  * not find because the row it belonged to was filtered away.
  */
-function GateChip({ id, gate }: { id: string; gate: AgentGate }) {
+/** Every row shows its on/off state the same way, in the same place — Jesse's
+ *  1440px review: Scheduler, the Watcher and the Financier had no gate chip
+ *  at all, so "switched on" and "has no switch" looked identical (blank).
+ *  `gate: null` means the worker has no switch to flip, which is a fact worth
+ *  saying — "Always on" — not a reason to render nothing. This is the ONE
+ *  place on/off is shown; the live-status chip beside it never repeats it
+ *  (see `liveStatusChip`, which narrows a bare "on"/"off" daemon value to a
+ *  different word — Running/Idle — for exactly that reason). */
+function GateChip({ id, gate }: { id: string; gate: AgentGate | null }) {
   const { colors } = useTheme();
+  if (!gate) {
+    return (
+      <span
+        data-testid={`gate-chip-${id}`}
+        style={{
+          ...type.label, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.pill,
+          border: `1px solid ${colors.border}`, color: colors.textDim, fontFamily: font.body,
+        }}
+      >
+        Always on
+      </span>
+    );
+  }
   return (
     <span
       data-testid={`gate-chip-${id}`}
@@ -941,73 +1038,75 @@ function GateChip({ id, gate }: { id: string; gate: AgentGate }) {
   );
 }
 
-function WorkerRow({ worker, onOpen }: { worker: BackgroundWorker; onOpen: () => void }) {
+/** The row's "last activity" line — brief ST1's third and fourth asks: show
+ *  what's available, or say plainly what's missing, never leave it blank as
+ *  though there were nothing to say. `undefined` (not yet loaded) renders
+ *  nothing, on purpose — see the `recentActivity` state's own comment. */
+function RecentActivityLine({ activity }: { activity: RecentActivityState | undefined }) {
   const { colors } = useTheme();
-  const live = liveStateLabel(worker.live_state);
+  if (!activity) return null;
+  if (activity.status === 'unavailable') {
+    return <span style={{ color: colors.textDim }}>Recent work — couldn&apos;t be read just now</span>;
+  }
+  if (activity.status === 'none') {
+    return <span style={{ color: colors.textDim }}>No activity attributed to this agent yet</span>;
+  }
+  return (
+    <span style={{ color: colors.textDim }}>
+      Last activity {timeAgo(activity.ts) || activity.ts} — {activity.title}
+    </span>
+  );
+}
+
+function WorkerRow({ worker, activity, onOpen }: {
+  worker: BackgroundWorker;
+  activity: RecentActivityState | undefined;
+  onOpen: () => void;
+}) {
   const problem = worker.live_state.status === 'unavailable';
   const gate = readAgentGate(worker);
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      data-testid={`worker-row-${worker.id}`}
-      style={{
-        display: 'block', width: '100%', textAlign: 'left', padding: `${space.xl}px 14px`,
-        borderRadius: radius.md, background: colors.bgDeeper,
-        border: `1px solid ${problem ? colors.danger : colors.border}`,
-        cursor: 'pointer', fontFamily: font.body,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
-        <AgentPortrait agentId={worker.id} size={28} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', columnGap: space.xl, rowGap: space.xxs, marginBottom: space.xs }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
-              <span style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{worker.display_name}</span>
-              {gate && <GateChip id={worker.id} gate={gate} />}
-            </span>
-            <StatusText text={live.text} tone={live.tone} />
+    <ListRow
+      testId={`worker-row-${worker.id}`}
+      onOpen={onOpen}
+      tone={problem ? 'problem' : 'default'}
+      icon={<AgentPortrait agentId={worker.id} size={28} />}
+      title={worker.display_name}
+      chip={<GateChip id={worker.id} gate={gate} />}
+      status={<LiveStatusPill id={worker.id} live={worker.live_state} />}
+      detail={
+        <>
+          <div>{workerSummary(worker)}</div>
+          <div style={{ fontSize: textSize.micro, marginTop: space.xs }} data-testid={`worker-row-${worker.id}-activity`}>
+            <RecentActivityLine activity={activity} />
           </div>
-          <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.45 }}>{worker.what_it_does}</div>
-        </div>
-      </div>
-    </button>
+        </>
+      }
+    />
   );
 }
 
 function PersonaRow({ persona, onOpen }: { persona: DispatchPersona; onOpen: () => void }) {
-  const { colors } = useTheme();
   const avail = availabilityLabel(persona.availability);
   const gate = readAgentGate(persona);
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      data-testid={`persona-row-${persona.key}`}
-      style={{
-        display: 'block', width: '100%', textAlign: 'left', padding: `${space.xl}px 14px`,
-        borderRadius: radius.md, background: colors.bgDeeper,
-        border: `1px solid ${colors.border}`, cursor: 'pointer', fontFamily: font.body,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: space.lg }}>
-        <AgentPortrait agentId={persona.key} size={28} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', columnGap: space.xl, rowGap: space.xxs, marginBottom: space.xs }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
-              <span style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{persona.display_name}</span>
-              {gate && <GateChip id={persona.key} gate={gate} />}
-            </span>
-            <StatusText text={avail.text} tone={avail.tone} />
-          </div>
-          <div style={{ fontSize: textSize.micro, color: colors.textMuted, display: 'flex', flexWrap: 'wrap', gap: '4px 12px' }}>
+    <ListRow
+      testId={`persona-row-${persona.key}`}
+      onOpen={onOpen}
+      icon={<AgentPortrait agentId={persona.key} size={28} />}
+      title={persona.display_name}
+      chip={<GateChip id={persona.key} gate={gate} />}
+      status={<StatusText text={avail.text} tone={avail.tone} />}
+      detail={
+        <>
+          <div style={{ fontSize: textSize.micro, display: 'flex', flexWrap: 'wrap', gap: '4px 12px' }}>
             <span>{engineLabel(persona.engine)}</span>
             <span>{persona.cost_tier}</span>
           </div>
-          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.sm }}>{grantsSummary(persona)}</div>
-        </div>
-      </div>
-    </button>
+          <div style={{ fontSize: textSize.micro, marginTop: space.xs }}>{grantsSummary(persona)}</div>
+        </>
+      }
+    />
   );
 }
 
@@ -1021,44 +1120,45 @@ function CapabilityRow({
   const { colors } = useTheme();
   // Capabilities are not agents — no detail route; deep-link to Tools instead.
   return (
-    <div
-      data-testid={`capability-row-${capability.key}`}
-      style={{
-        padding: `${space.xl}px 14px`, borderRadius: radius.md, background: colors.bgDeeper,
-        border: `1px solid ${colors.border}`,
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: space.xl, marginBottom: space.xs }}>
-        <span style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{capability.display_name}</span>
+    <ListRow
+      testId={`capability-row-${capability.key}`}
+      title={capability.display_name}
+      status={
         <span style={{ fontSize: textSize.micro, color: capability.enabled ? colors.cyan : colors.textDim }}>
           {capability.enabled ? 'enabled' : 'disabled'}
         </span>
-      </div>
-      <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: space.xs }}>
-        {capability.source} · {defaultEnabledLabel(capability.default_enabled)}
-      </div>
-      <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.45, marginBottom: space.md }}>
-        {requiredSecretsLabel(capability.required_secrets)}
-        {requiredSecretHints(capability.required_secrets).map(hint => (
-          <div key={hint} data-testid="required-secret-hint" style={{ marginTop: space.xxs }}>{hint}</div>
-        ))}
-      </div>
-      <Button
-        colors={colors}
-        variant="bare"
-        type="button"
-        className="hover:underline"
-        onClick={onManage}
-        style={{
-          '--pa-btn-fg': colors.cyan,
-          '--pa-btn-bg-hover': 'transparent',
-          '--pa-btn-pad': '0',
-          '--pa-btn-weight': 600,
-          fontFamily: font.body,
-        } as CSSProperties}
-      >
-        Manage in Tools
-      </Button>
-    </div>
+      }
+      detail={
+        <>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: space.xs }}>
+            {capability.source} · {defaultEnabledLabel(capability.default_enabled)}
+          </div>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.45 }}>
+            {requiredSecretsLabel(capability.required_secrets)}
+            {requiredSecretHints(capability.required_secrets).map(hint => (
+              <div key={hint} data-testid="required-secret-hint" style={{ marginTop: space.xxs }}>{hint}</div>
+            ))}
+          </div>
+        </>
+      }
+      trailing={
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
+          className="hover:underline"
+          onClick={onManage}
+          style={{
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-weight': 600,
+            fontFamily: font.body,
+          } as CSSProperties}
+        >
+          Manage in Tools
+        </Button>
+      }
+    />
   );
 }
