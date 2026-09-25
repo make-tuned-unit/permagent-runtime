@@ -106,6 +106,15 @@ export interface GrowthResultsData {
   fleet: GrowthFleetResults;
 }
 
+/** The `/api/growth-actions/measure` reply — the same nightly sweep, run on
+ *  demand instead of waiting for the cron window. */
+export interface MeasureNowResult {
+  actionsConsidered: number;
+  windowsJudged: number;
+  actionsCompleted: number;
+  errors: string[];
+}
+
 export function formatDeltaPct(delta: number | null | undefined): string | null {
   if (delta == null || Number.isNaN(delta)) return null;
   const pct = delta * 100;

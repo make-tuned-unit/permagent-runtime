@@ -244,7 +244,7 @@ export function FirstPartyAnalyticsPanel({
           <div>
             <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>Self-hosted analytics</div>
             <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs / 2 }}>
-              Your daemon collects pageviews directly — no third-party account, your data stays here.
+              Permagent collects pageviews directly — no third-party account, your data stays here.
             </div>
           </div>
           <Button

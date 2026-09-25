@@ -55,6 +55,11 @@ export function readMediaMeta(card: SocialCard): {
   format: string | null;
   channel: string | null;
   mediaFeedback: string;
+  /** When the still was generated (ISO), or null for a still made before the
+   *  generator recorded it. */
+  stillGeneratedAt: string | null;
+  /** `mflux` (the image model) or `compose` (the branded fallback), when known. */
+  stillSource: string | null;
 } {
   const meta = card.metadataJson;
   const raw = meta && typeof meta.mediaStatus === 'string' ? meta.mediaStatus : null;
@@ -82,6 +87,11 @@ export function readMediaMeta(card: SocialCard): {
     format: meta && typeof meta.format === 'string' ? meta.format : null,
     channel: meta && typeof meta.channel === 'string' ? meta.channel : null,
     mediaFeedback,
+    stillGeneratedAt:
+      still && typeof still.generatedAt === 'string' && !Number.isNaN(Date.parse(still.generatedAt))
+        ? still.generatedAt
+        : null,
+    stillSource: still && typeof still.source === 'string' ? still.source : null,
   };
 }
 
@@ -130,6 +140,55 @@ export function groupPostsByDay(posts: SocialCard[]): DayGroup[] {
   }));
 }
 
+/**
+ * The calendar's status filter (UX_BENCHMARK_RESEARCH §9, dagK 2026-09-25:
+ * Buffer's queue — one list, filtered by status, rather than scattered
+ * states). `attention` is not a `PostStatus` — a post's schedule state
+ * (draft/scheduled/posted) and its still's generation state are two different
+ * facts on the same card, and a still stuck on `failed` or `generating` needs
+ * the user's eyes regardless of which schedule state the post is in. There is
+ * no publish-failure status in the data model yet (`PostStatus` has no
+ * `failed`; a scheduled post either becomes `posted` or stays `scheduled`),
+ * so "failed" here means the nearest real thing: media generation failed.
+ */
+export type QueueFilter = 'all' | 'draft' | 'scheduled' | 'posted' | 'attention';
+
+export const QUEUE_FILTERS: { id: QueueFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'draft', label: 'Draft' },
+  { id: 'scheduled', label: 'Scheduled' },
+  { id: 'posted', label: 'Posted' },
+  { id: 'attention', label: 'Needs attention' },
+];
+
+/** Whether a card's still generation needs the user's eyes: failed outright,
+ *  or generating past the point a card would normally have finished (the
+ *  generator writes `stillGeneratedAt` on success; a still with none and no
+ *  error is either brand new or stuck, and `mediaStatus` disambiguates). */
+export function needsAttention(card: SocialCard): boolean {
+  return readMediaMeta(card).mediaStatus === 'failed';
+}
+
+/** One bucket per card — `attention` takes priority over its schedule status,
+ *  since a card whose still failed needs a look whatever its schedule state. */
+export function queueBucket(card: SocialCard): Exclude<QueueFilter, 'all'> {
+  if (needsAttention(card)) return 'attention';
+  return readPostMeta(card).status;
+}
+
+export function queueCounts(posts: SocialCard[]): Record<Exclude<QueueFilter, 'all'>, number> {
+  const counts: Record<Exclude<QueueFilter, 'all'>, number> = {
+    draft: 0, scheduled: 0, posted: 0, attention: 0,
+  };
+  for (const post of posts) counts[queueBucket(post)] += 1;
+  return counts;
+}
+
+export function filterByQueue(posts: SocialCard[], filter: QueueFilter): SocialCard[] {
+  if (filter === 'all') return posts;
+  return posts.filter((p) => queueBucket(p) === filter);
+}
+
 function formatDayHeading(day: string): string {
   const [y, m, d] = day.split('-').map(Number);
   if (!y || !m || !d) return day;
@@ -157,4 +216,28 @@ export function fromDatetimeLocalValue(local: string): string | null {
   const t = Date.parse(local);
   if (Number.isNaN(t)) return null;
   return new Date(t).toISOString();
+}
+
+/**
+ * The one line under a post's still: what made it and when.
+ *
+ * "compose" is the branded fallback the generator draws when the image model
+ * is unavailable — worth saying, because it is the reason a still can look
+ * plain. A still from before the generator recorded a time says so rather
+ * than inventing one.
+ */
+export function stillProvenance(
+  media: { stillGeneratedAt: string | null; stillSource: string | null },
+  now: number = Date.now(),
+): string {
+  const what = media.stillSource === 'compose'
+    ? 'Fallback still'
+    : media.stillSource === 'mflux' ? 'AI still' : 'Still';
+  if (!media.stillGeneratedAt) return `${what} · date not recorded`;
+  const then = Date.parse(media.stillGeneratedAt);
+  const days = Math.floor((now - then) / 86_400_000);
+  const when = days <= 0
+    ? 'today'
+    : days === 1 ? 'yesterday' : `${days} days ago`;
+  return `${what} · made ${when}`;
 }

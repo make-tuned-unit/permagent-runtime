@@ -56,6 +56,45 @@ import {
 
 import { Tooltip } from '../common/Tooltip';
 import { classifyQuoteError, unknownSymbolHint } from './quoteError';
+
+/**
+ * F1 (dagK UX QA, 2026-09-25): the whole tab sat in one flex column capped at
+ * 1120px — Holdings, household, watchlist and notes stacked top to bottom —
+ * so a 2560px display showed a ~690px column (chat docked) or a 1120px one
+ * (chat closed) with 1,400+px of empty gradient beside it. R1: content at
+ * wide widths must use the width, not float in void.
+ *
+ * A container query, not a viewport one: how wide the Finance column actually
+ * is depends on whether the chat panel is docked beside it, the same reason
+ * Settings' row layout answers to `@container` rather than `@media`
+ * (`components/settings/atoms.tsx`). `.pa-fin-scroll` is the query container;
+ * `.pa-fin-layout`'s own width can't be queried by its own descendants, so the
+ * container has to be an ancestor, not the element being sized.
+ *
+ * Below 1200px of container width the two columns stack — Holdings/Lots then
+ * Household/Watchlist/Notes — in the exact order they always rendered, so a
+ * narrow window loses nothing, it just loses the second column.
+ */
+const FINANCE_CSS = `
+.pa-fin-scroll { container-type: inline-size; }
+.pa-fin-layout { max-width: 1120px; margin: 0 auto; width: 100%; }
+.pa-fin-cols { display: flex; flex-direction: column; gap: ${space.xxl}px; }
+@container (min-width: 1200px) {
+  .pa-fin-layout { max-width: 1600px; }
+  .pa-fin-cols { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(360px, 480px); align-items: start; }
+}
+`;
+
+function ensureFinanceStyles(): void {
+  if (typeof document === 'undefined') return;
+  if (document.getElementById('pa-finance-view')) return;
+  const el = document.createElement('style');
+  el.id = 'pa-finance-view';
+  el.textContent = FINANCE_CSS;
+  document.head.appendChild(el);
+}
+ensureFinanceStyles();
+
 interface Quote {
   symbol: string;
   name?: string | null;
@@ -553,7 +592,7 @@ export function FinanceView() {
           </>
         }
       />
-      <div style={{ flex: 1, overflow: 'auto', padding: `${space.xxxl}px ${space.huge}px 48px` }}>
+      <div className="pa-fin-scroll" style={{ flex: 1, overflow: 'auto', padding: `${space.xxxl}px ${space.huge}px 48px` }}>
         {error && (
           <div style={{
             ...type.small,
@@ -572,7 +611,7 @@ export function FinanceView() {
           <div style={{ ...type.small, color: colors.textMuted }}>Loading…</div>
         )}
         {view && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, maxWidth: 1120 }}>
+          <div className="pa-fin-layout" style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
             <SummaryStrip
               board={view}
               colors={colors}
@@ -581,41 +620,49 @@ export function FinanceView() {
               mutate={mutate}
               setLab={setLab}
             />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
-              <HoldingsSection
-                holdings={view.holdings}
-                rsiThreshold={view.rsiThreshold}
-                picker={view.picker}
-                colors={colors}
-                busy={busy}
-                mutate={mutate}
-                draft={draft}
-                setDraft={setDraft}
-                onRecorded={(hint) => { if (hint) setError(hint); }}
-              />
-              {view.pickerEnabled && (
-                <PicksSection
-                  board={view}
+            {/* F1: Holdings+Lots left, Household/Watchlist/Notes right, as a
+                CSS grid once the container has room (≥1200px) — see
+                `.pa-fin-cols` above. Below that it's the same single column
+                in the same order it always rendered. */}
+            <div className="pa-fin-cols">
+              <div data-testid="finance-col-holdings" style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
+                <HoldingsSection
+                  holdings={view.holdings}
+                  rsiThreshold={view.rsiThreshold}
+                  picker={view.picker}
                   colors={colors}
-                  onPrefill={(next) => {
-                    setDraft(next);
-                    requestAnimationFrame(() => {
-                      document.getElementById('finance-holdings-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    });
-                  }}
+                  busy={busy}
+                  mutate={mutate}
+                  draft={draft}
+                  setDraft={setDraft}
+                  onRecorded={(hint) => { if (hint) setError(hint); }}
                 />
-              )}
-            </div>
-            <HouseholdSection
-              household={view.household}
-              colors={colors}
-              busy={busy}
-              mutate={mutate}
-              setError={setError}
-            />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: space.xxl }}>
-              <WatchlistSection board={view} colors={colors} busy={busy} mutate={mutate} />
-              <NotesSection board={view} colors={colors} busy={busy} mutate={mutate} />
+                {view.pickerEnabled && (
+                  <PicksSection
+                    board={view}
+                    colors={colors}
+                    onPrefill={(next) => {
+                      setDraft(next);
+                      requestAnimationFrame(() => {
+                        document.getElementById('finance-holdings-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      });
+                    }}
+                  />
+                )}
+              </div>
+              <div data-testid="finance-col-household" style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
+                <HouseholdSection
+                  household={view.household}
+                  colors={colors}
+                  busy={busy}
+                  mutate={mutate}
+                  setError={setError}
+                />
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: space.xxl }}>
+                  <WatchlistSection board={view} colors={colors} busy={busy} mutate={mutate} />
+                  <NotesSection board={view} colors={colors} busy={busy} mutate={mutate} />
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -1195,6 +1242,67 @@ function PickerControls({
   );
 }
 
+/** The trade-entry/edit form's card look — shared by the top-of-section "new
+ *  trade" form and each row's inline "edit this trade" expansion, so the two
+ *  read as the same control rather than a form that looks different depending
+ *  on where it opened. */
+function tradeFormCardStyle(colors: ThemeColors): CSSProperties {
+  return {
+    border: `1px solid ${colors.border}`,
+    borderRadius: radius.sm,
+    padding: space.xl,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: space.lg,
+    background: colors.bgDeeper,
+  };
+}
+
+/** The ticker/company/dates/prices/notes fields, shared between the top
+ *  "record a new trade" form and a row's inline "edit this trade" form —
+ *  one field set, so the two can never drift apart. */
+function TradeFormFields({
+  draft, setDraft, money, colors,
+}: {
+  draft: TradeDraft;
+  setDraft: (d: TradeDraft) => void;
+  money: ReturnType<typeof useMoney>;
+  colors: ThemeColors;
+}) {
+  return (
+    <>
+      <div style={{ display: 'flex', gap: space.lg, flexWrap: 'wrap' }}>
+        <Field colors={colors} label="Ticker">
+          <input value={draft.ticker} onChange={(e) => setDraft({ ...draft, ticker: e.target.value })} placeholder="SHOP.TO" style={inputStyle(colors)} required />
+        </Field>
+        <Field colors={colors} label="Company">
+          <input value={draft.company} onChange={(e) => setDraft({ ...draft, company: e.target.value })} placeholder="defaults to ticker" style={inputStyle(colors)} />
+        </Field>
+        <Field colors={colors} label="Entry date">
+          <input value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} required />
+        </Field>
+        <Field colors={colors} label={money.converting ? `Entry price (${BASE_CURRENCY})` : 'Entry price'}>
+          <input value={draft.price} onChange={(e) => setDraft({ ...draft, price: e.target.value })} placeholder="0.00" style={inputStyle(colors)} required />
+        </Field>
+        <Field colors={colors} label="Shares">
+          <input value={draft.shares} onChange={(e) => setDraft({ ...draft, shares: e.target.value })} placeholder="0" style={inputStyle(colors)} required />
+        </Field>
+      </div>
+      <div style={{ display: 'flex', gap: space.lg, flexWrap: 'wrap' }}>
+        <Field colors={colors} label="Exit date">
+          <input value={draft.exitDate} onChange={(e) => setDraft({ ...draft, exitDate: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} />
+        </Field>
+        <Field colors={colors} label={money.converting ? `Exit price (${BASE_CURRENCY})` : 'Exit price'}>
+          <input value={draft.exitPrice} onChange={(e) => setDraft({ ...draft, exitPrice: e.target.value })} placeholder="0.00" style={inputStyle(colors)} />
+        </Field>
+        <Field colors={colors} label="Notes" wide>
+          <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="Why you took it" style={{ ...inputStyle(colors), minWidth: 220 }} />
+        </Field>
+      </div>
+    </>
+  );
+}
+
 function HoldingsSection({
   holdings, rsiThreshold, picker, colors, busy, mutate, draft, setDraft, onRecorded,
 }: {
@@ -1239,12 +1347,19 @@ function HoldingsSection({
     });
   };
 
+  // Benchmark research §9 (dagK 2026-09-25, Finance lots): Edit used to jump
+  // the whole card's attention to a form pinned above the table — one lot's
+  // detail rendered on a "separate surface" from the row it belonged to, and
+  // on a long list that meant scrolling away from what you clicked. Editing
+  // now expands THAT row, in place, the same way Close already does just
+  // below it (`LotActions`) — so the top form is reserved for a brand-new
+  // trade and never doubles as the edit surface.
   const onEdit = (row: HoldingRow) => {
     setDraft(draftFromRow(row));
-    setShowForm(true);
-    requestAnimationFrame(() => {
-      document.getElementById('finance-holdings-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    });
+    // The edit form expands INSIDE its row now, so the row has to stay in the
+    // filtered list for it to have anywhere to render — a closed lot edited
+    // while "Open" is selected would otherwise vanish along with its form.
+    if (filter === 'open' && row.exitDate) setFilter('all');
   };
 
   return (
@@ -1255,7 +1370,12 @@ function HoldingsSection({
           colors={colors}
           type="button"
           aria-expanded={showForm || editing}
-          onClick={() => { setShowForm((s) => !s); if (editing) setDraft(emptyDraft()); }}
+          onClick={() => {
+            // Editing already expands its own row; this button's job here is
+            // only to cancel that, never to also pop the new-trade form open.
+            if (editing) { setDraft(emptyDraft()); return; }
+            setShowForm((s) => !s);
+          }}
         >
           {showForm || editing ? 'Hide form' : 'Record a trade'}
         </Button>
@@ -1264,61 +1384,18 @@ function HoldingsSection({
         Journal of trades already made. Does not buy or sell
         {!picker.reachable ? ' — scanner is down, lots stay on this tab.' : '.'}
       </p>
-      {(showForm || editing) && (
+      {showForm && !editing && (
         <form
           id="finance-holdings-form"
           onSubmit={onSubmit}
-          style={{
-            border: `1px solid ${colors.border}`,
-            borderRadius: radius.sm,
-            padding: space.xl,
-            marginBottom: 14,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: space.lg,
-            background: colors.bgDeeper,
-          }}
+          style={tradeFormCardStyle(colors)}
         >
-          <div style={{ ...type.label, color: colors.textMuted }}>
-            {editing ? 'Edit trade' : 'Record a trade already made'}
-          </div>
-          <div style={{ display: 'flex', gap: space.lg, flexWrap: 'wrap' }}>
-            <Field colors={colors} label="Ticker">
-              <input value={draft.ticker} onChange={(e) => setDraft({ ...draft, ticker: e.target.value })} placeholder="SHOP.TO" style={inputStyle(colors)} required />
-            </Field>
-            <Field colors={colors} label="Company">
-              <input value={draft.company} onChange={(e) => setDraft({ ...draft, company: e.target.value })} placeholder="defaults to ticker" style={inputStyle(colors)} />
-            </Field>
-            <Field colors={colors} label="Entry date">
-              <input value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} required />
-            </Field>
-            <Field colors={colors} label={money.converting ? `Entry price (${BASE_CURRENCY})` : 'Entry price'}>
-              <input value={draft.price} onChange={(e) => setDraft({ ...draft, price: e.target.value })} placeholder="0.00" style={inputStyle(colors)} required />
-            </Field>
-            <Field colors={colors} label="Shares">
-              <input value={draft.shares} onChange={(e) => setDraft({ ...draft, shares: e.target.value })} placeholder="0" style={inputStyle(colors)} required />
-            </Field>
-          </div>
-          <div style={{ display: 'flex', gap: space.lg, flexWrap: 'wrap' }}>
-            <Field colors={colors} label="Exit date">
-              <input value={draft.exitDate} onChange={(e) => setDraft({ ...draft, exitDate: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} />
-            </Field>
-            <Field colors={colors} label={money.converting ? `Exit price (${BASE_CURRENCY})` : 'Exit price'}>
-              <input value={draft.exitPrice} onChange={(e) => setDraft({ ...draft, exitPrice: e.target.value })} placeholder="0.00" style={inputStyle(colors)} />
-            </Field>
-            <Field colors={colors} label="Notes" wide>
-              <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="Why you took it" style={{ ...inputStyle(colors), minWidth: 220 }} />
-            </Field>
-          </div>
+          <div style={{ ...type.label, color: colors.textMuted }}>Record a trade already made</div>
+          <TradeFormFields draft={draft} setDraft={setDraft} money={money} colors={colors} />
           <div style={{ display: 'flex', gap: space.md }}>
             <Button colors={colors} variant="primary" type="submit" pending={busy} disabled={busy}>
-              {editing ? 'Save trade' : 'Record trade'}
+              Record trade
             </Button>
-            {editing && (
-              <Button colors={colors} type="button" disabled={busy} onClick={() => { setDraft(emptyDraft()); setShowForm(false); }}>
-                Cancel
-              </Button>
-            )}
           </div>
         </form>
       )}
@@ -1376,9 +1453,11 @@ function HoldingsSection({
                 const symbolHint = quoteFailed && classifyQuoteError(p.quoteError) === 'unknown-symbol'
                   ? unknownSymbolHint(p.symbol)
                   : null;
-                // The hint row sits under its lot, so the lot's own cells drop
-                // their rule and the pair reads as one row.
-                const cell: CSSProperties = symbolHint ? { ...td(colors), borderBottom: 'none' } : td(colors);
+                const isEditingRow = editing && draft.editingId === p.id;
+                // The hint row (or the inline edit form) sits under its lot,
+                // so the lot's own cells drop their rule and the pair reads
+                // as one row.
+                const cell: CSSProperties = symbolHint || isEditingRow ? { ...td(colors), borderBottom: 'none' } : td(colors);
                 return (
                   <Fragment key={p.id}>
                   <tr style={closed ? { opacity: 0.55 } : undefined}>
@@ -1421,6 +1500,29 @@ function HoldingsSection({
                     <tr data-testid="lot-symbol-hint">
                       <td colSpan={6} style={{ ...td(colors), ...type.caption, color: colors.textMuted, paddingTop: 0 }}>
                         {symbolHint}
+                      </td>
+                    </tr>
+                  )}
+                  {isEditingRow && (
+                    // Benchmark research §9: the lot's detail expands IN this
+                    // row rather than opening on a separate surface — same
+                    // fields, same submit path (`onSubmit` above already
+                    // branches on `draft.editingId`), just anchored to the
+                    // lot it edits instead of the top of the card.
+                    <tr data-testid="lot-edit-row">
+                      <td colSpan={6} style={{ ...td(colors), paddingTop: 0 }}>
+                        <form onSubmit={onSubmit} style={tradeFormCardStyle(colors)}>
+                          <div style={{ ...type.label, color: colors.textMuted }}>Edit trade</div>
+                          <TradeFormFields draft={draft} setDraft={setDraft} money={money} colors={colors} />
+                          <div style={{ display: 'flex', gap: space.md }}>
+                            <Button colors={colors} variant="primary" type="submit" pending={busy} disabled={busy}>
+                              Save trade
+                            </Button>
+                            <Button colors={colors} type="button" disabled={busy} onClick={() => setDraft(emptyDraft())}>
+                              Cancel
+                            </Button>
+                          </div>
+                        </form>
                       </td>
                     </tr>
                   )}
@@ -2048,10 +2150,14 @@ function WatchlistSection({
           </tbody>
         </table>
       )}
-      <form onSubmit={onAdd} style={{ display: 'flex', gap: space.md, marginTop: space.xl, flexWrap: 'wrap' }}>
-        <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="AAPL" style={inputStyle(colors)} />
-        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Name" style={inputStyle(colors)} />
-        <Button colors={colors} type="submit" pending={busy} disabled={busy || !symbol.trim()}>Add</Button>
+      {/* One row: ticker, name and Add together read as one action. Each
+          input shrinks before the row wraps, and Add never shrinks — a
+          disabled Add crammed onto its own line under two full-width inputs
+          (QA 2026-09-25) read as a text link rather than the row's control. */}
+      <form onSubmit={onAdd} style={{ display: 'flex', gap: space.md, marginTop: space.xl }}>
+        <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="AAPL" style={{ ...inputStyle(colors), flex: '1 1 80px', minWidth: 0 }} />
+        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Name" style={{ ...inputStyle(colors), flex: '1 1 80px', minWidth: 0 }} />
+        <Button colors={colors} type="submit" pending={busy} disabled={busy || !symbol.trim()} style={{ flexShrink: 0 }}>Add</Button>
       </form>
     </Card>
   );
@@ -2155,24 +2261,32 @@ function HoldingsSparkline({ values, colors }: { values: number[]; colors: Theme
   const trend = `${x0.toFixed(1)},${yOf(fitted[0]).toFixed(1)} ${x1.toFixed(1)},${yOf(fitted[n - 1]).toFixed(1)}`;
 
   return (
-    <svg
-      data-testid="holdings-sparkline"
-      viewBox={`0 0 ${W} ${H}`}
-      preserveAspectRatio="none"
-      width="100%"
-      height={40}
-      role="img"
-      aria-label="Holdings net P&L trend"
-      style={{ marginTop: space.lg, display: 'block' }}
-    >
-      {zeroY != null && (
-        <line x1={0} x2={W} y1={zeroY} y2={zeroY} stroke={colors.border} strokeWidth={1} vectorEffect="non-scaling-stroke" />
-      )}
-      {poly && (
-        <polyline points={poly} fill="none" stroke={colors.success} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-      )}
-      <polyline points={trend} fill="none" stroke={AGENT_TRIM.financier} strokeWidth={1.25} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
-    </svg>
+    // F1 pushed this card to the full width of Finance's left column
+    // (~1600px at 2560px wide, QA 2026-09-25) while the chart kept its fixed
+    // 40px height, so a real trend read as a near-flat hairline. The SVG's
+    // own viewBox (240x40, `preserveAspectRatio="none"`) already stretches
+    // non-uniformly to fill whatever box it's given, so giving that box a
+    // sensible height is all this needs — no change to the plotting math.
+    <div style={{ marginTop: space.lg, height: 'clamp(120px, 12vw, 200px)' }}>
+      <svg
+        data-testid="holdings-sparkline"
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        width="100%"
+        height="100%"
+        role="img"
+        aria-label="Holdings net P&L trend"
+        style={{ display: 'block' }}
+      >
+        {zeroY != null && (
+          <line x1={0} x2={W} y1={zeroY} y2={zeroY} stroke={colors.border} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+        )}
+        {poly && (
+          <polyline points={poly} fill="none" stroke={colors.success} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+        )}
+        <polyline points={trend} fill="none" stroke={AGENT_TRIM.financier} strokeWidth={1.25} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </div>
   );
 }
 

@@ -31,6 +31,7 @@ import {
   type GrowthFleetResults,
   type GrowthResultRow,
   type GrowthResultsData,
+  type MeasureNowResult,
 } from './growthResults';
 
 type LoadState = 'loading' | 'ready' | 'error';
@@ -96,6 +97,37 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
   const onScreen = useToolOnScreen('grow');
   usePollWhenVisible(() => load(project.id, { silent: true }), RESULTS_POLL_MS, onScreen);
 
+  // G6: "Measure now" runs the same nightly sweep (`sweep::run` behind
+  // /api/growth-actions/measure) on demand rather than making the user wait
+  // for the cron window to see whether a just-shipped action moved anything.
+  // Its own state, not `state`/`data` above — a measure run's outcome ("3
+  // windows judged") is not the same fact as "the results read ok", and
+  // conflating them would flash the whole lens back to its loading copy for a
+  // button the user pressed on purpose.
+  const [measuring, setMeasuring] = useState(false);
+  const [measureResult, setMeasureResult] = useState<MeasureNowResult | null>(null);
+  const [measureError, setMeasureError] = useState<string | null>(null);
+
+  const measureNow = useCallback(() => {
+    setMeasuring(true);
+    setMeasureError(null);
+    setMeasureResult(null);
+    return apiFetch<MeasureNowResult>('/api/growth-actions/measure', { method: 'POST' })
+      .then((r) => {
+        setMeasureResult(r);
+        // Judging a window can flip a card's verdict, so the tallies and rows
+        // above need the fresh read too — silent, since the user is already
+        // looking at a result line that says the run finished.
+        load(project.id, { silent: true });
+        return r;
+      })
+      .catch((e) => {
+        setMeasureError(e instanceof Error ? e.message : String(e));
+        return false;
+      })
+      .finally(() => setMeasuring(false));
+  }, [project.id, load]);
+
   if (state === 'loading' && !data) {
     return <p style={{ fontSize: textSize.small, color: colors.textDim }}>Loading results…</p>;
   }
@@ -128,13 +160,29 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
   return (
     <section>
       <div style={{ marginBottom: space.xxxl }}>
-        <h3 style={{
-          ...growLabel(colors), margin: `0 0 ${space.xs}px`,
-        }}>This project</h3>
-        <p style={{ fontSize: textSize.small, color: colors.textMuted, margin: 0, lineHeight: 1.5 }}>
-          Actions you marked implemented, and what the 7 / 14 / 28-day windows
-          have said so far{projectResults?.segmentLabel ? ` — ${projectResults.segmentLabel}` : ''}.
-        </p>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: space.lg, justifyContent: 'space-between' }}>
+          <div style={{ minWidth: 0 }}>
+            <h3 style={{
+              ...growLabel(colors), margin: `0 0 ${space.xs}px`,
+            }}>This project</h3>
+            <p style={{ fontSize: textSize.small, color: colors.textMuted, margin: 0, lineHeight: 1.5 }}>
+              Actions you marked implemented, and what the 7 / 14 / 28-day windows
+              have said so far{projectResults?.segmentLabel ? ` — ${projectResults.segmentLabel}` : ''}.
+            </p>
+          </div>
+          {/* G6: the nightly sweep that judges these windows otherwise runs on
+              its own clock — a user who just shipped a fix and wants to know
+              whether it moved anything had no way to ask sooner. */}
+          <Button
+            colors={colors}
+            data-testid="measure-now-button"
+            onClick={measureNow}
+            disabled={measuring}
+            pending={measuring}
+            flashSuccess={false}
+            style={{ flexShrink: 0 }}
+          >Measure now</Button>
+        </div>
         {/* The windows are judged by a nightly sweep, so "when did this last
             change" is a real question here in a way it is not on a live board.
             Quiet while fresh; it speaks up once the reading has aged past two
@@ -142,6 +190,24 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
         <p style={{ fontSize: textSize.micro, color: colors.textDim, margin: `${space.sm}px 0 0` }}>
           <AsOf asOf={asOf} prefix="Verdicts read" staleAfterMs={RESULTS_POLL_MS * 2} dot />
         </p>
+        {measuring && (
+          <p data-testid="measure-now-status" style={{ fontSize: textSize.micro, color: colors.textDim, margin: `${space.xs}px 0 0` }}>
+            Measuring — checking every window that has enough data yet…
+          </p>
+        )}
+        {!measuring && measureResult && (
+          <p data-testid="measure-now-status" style={{ fontSize: textSize.micro, color: colors.textDim, margin: `${space.xs}px 0 0` }}>
+            Checked {measureResult.actionsConsidered} action{measureResult.actionsConsidered === 1 ? '' : 's'},
+            {' '}judged {measureResult.windowsJudged} window{measureResult.windowsJudged === 1 ? '' : 's'}
+            {measureResult.actionsCompleted > 0 ? `, completed ${measureResult.actionsCompleted}` : ''}.
+            {measureResult.errors.length > 0 ? ` ${measureResult.errors.length} error${measureResult.errors.length === 1 ? '' : 's'}.` : ''}
+          </p>
+        )}
+        {!measuring && measureError && (
+          <p data-testid="measure-now-status" style={{ fontSize: textSize.micro, color: colors.danger, margin: `${space.xs}px 0 0` }}>
+            Couldn&rsquo;t measure now: {measureError}
+          </p>
+        )}
       </div>
 
       {projectResults && projectResults.implemented > 0 ? (
