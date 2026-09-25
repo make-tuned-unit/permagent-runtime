@@ -770,35 +770,13 @@ async fn retry_first_byte_stall(
 /// Default bound on a single mid-turn suspension, read from the SAME
 /// `PERMAGENT_HEADLESS_DRAIN_SECS` config key `CliSession::drain_dispatched_goals`
 /// reads for its own (post-run) wait — both are bounds on the same
-/// underlying `drain_dispatched_goals` call, so one operator knob still
-/// overrides both when explicitly set.
-///
-/// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md fix 1): this default
-/// USED to be kept byte-identical to `crates/goose-cli`'s
-/// `DEFAULT_HEADLESS_DRAIN_SECS` (240s) on purpose. That constant is tuned
-/// DOWN on purpose, to sit under the eval harness's own measured
-/// `harness_timeout` floor (400.1s) so its SIGKILL never fires before the
-/// eval's own cap-expiry park path can — see that constant's doc comment in
-/// `goose-cli/src/cli.rs`. Mirroring it here meant an INTERACTIVE
-/// coordinator's suspend cap — which has no SIGKILL clock to race, since
-/// suspending it costs zero LLM calls — was needlessly bound by an
-/// eval-only safety margin. Worse, `headless_wallclock_cap_patch`
-/// (`orchestrator.rs`) reads the very same `PERMAGENT_HEADLESS_DRAIN_SECS`
-/// knob to size a DISPATCHED WORKER's own execution budget when no
-/// tier-specific floor applies: goal 01a0d5ea's edit-tier worker (session
-/// 20260925_9, 25 turns, 5 files touched) was killed at "wallclock cap
-/// exhausted (240s elapsed of 240s)" with zero commits, entirely because
-/// this coordinator-wait-sized value doubled as its whole work budget.
-///
-/// Deliberately decoupled from `DEFAULT_HEADLESS_DRAIN_SECS` now and raised
-/// to comfortably cover the largest per-tier worker budget
-/// (`DEFAULT_WORKER_WALLCLOCK_BUDGET_ORCHESTRATE_SECS`, 1800s in
-/// `orchestrator.rs`) — an operator who explicitly sets
-/// `PERMAGENT_HEADLESS_DRAIN_SECS` (interactively or for the eval harness)
-/// still overrides this default outright; only the FALLBACK moves. The eval
-/// harness's own `DEFAULT_HEADLESS_DRAIN_SECS` (`goose-cli/src/cli.rs`) is
-/// intentionally left at 240s — untouched by this change.
-const DEFAULT_MID_TURN_DISPATCH_SUSPEND_CAP_SECS: u64 = 1800;
+/// underlying `drain_dispatched_goals` call, so one operator knob covers
+/// both without needing to know which of the two call sites is currently
+/// waiting. Cannot literally be the same Rust constant: `crates/goose-cli`
+/// depends on `crates/goose`, not the other way around, so its
+/// `DEFAULT_HEADLESS_DRAIN_SECS` is not reachable from here — kept at the
+/// identical value (240s) on purpose.
+const DEFAULT_MID_TURN_DISPATCH_SUSPEND_CAP_SECS: u64 = 240;
 
 /// Read-only tools whose only effect is looking at existing state — never
 /// dispatching, steering, escalating, or otherwise changing anything. Matched
@@ -6000,27 +5978,6 @@ mod tests {
     mod suspend_for_dispatched_goals_tests {
         use super::*;
         use crate::session::session_manager::SessionType;
-
-        /// 2026-09-25 DAG K cost fix: the interactive suspend cap's fallback
-        /// default must cover the largest per-tier worker budget
-        /// (`orchestrator.rs`'s `DEFAULT_WORKER_WALLCLOCK_BUDGET_ORCHESTRATE_SECS`,
-        /// 1800s) — otherwise the coordinator could give up on the wait
-        /// before a worker it just gave a real budget to has any chance to
-        /// finish. Pinned as a literal (not by importing the orchestrator
-        /// constant, to keep this test from silently tracking a future
-        /// change on the other side of the crate) so a future edit to either
-        /// value is caught by a failing assertion instead of drifting apart
-        /// unnoticed.
-        #[test]
-        fn interactive_suspend_default_covers_the_largest_worker_tier_budget() {
-            const LARGEST_WORKER_TIER_BUDGET_SECS: u64 = 1800;
-            assert!(
-                DEFAULT_MID_TURN_DISPATCH_SUSPEND_CAP_SECS >= LARGEST_WORKER_TIER_BUDGET_SECS,
-                "the coordinator's default wait must be at least as long as the biggest tier \
-                 budget it might be waiting on ({DEFAULT_MID_TURN_DISPATCH_SUSPEND_CAP_SECS} < \
-                 {LARGEST_WORKER_TIER_BUDGET_SECS})"
-            );
-        }
 
         /// What this module can and cannot prove.
         ///

@@ -2353,12 +2353,42 @@ impl AccountedFastCompletion {
         tools: &[Tool],
         is_compaction_usage: bool,
     ) -> Result<(Message, ProviderUsage)> {
+        Self::complete_fast_accounted_with_purpose(
+            manager,
+            session,
+            provider,
+            system,
+            messages,
+            tools,
+            is_compaction_usage,
+            CallPurpose::Unknown,
+        )
+        .await
+    }
+
+    /// Same as [`Self::complete_fast_accounted`] but tags the ledger row with
+    /// a genuine [`CallPurpose`] instead of the honest-default `Unknown`.
+    /// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md Q1): added so
+    /// internal callers that DO know why they are calling — the planner, the
+    /// reviewer, the summarizer — can say so, instead of every one of them
+    /// falling through `CallProvenance::default()` and showing up as
+    /// `unknown` in the cost ledger.
+    pub(crate) async fn complete_fast_accounted_with_purpose(
+        manager: Arc<SessionManager>,
+        session: Session,
+        provider: Arc<dyn Provider>,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+        is_compaction_usage: bool,
+        purpose: CallPurpose,
+    ) -> Result<(Message, ProviderUsage)> {
         let completion = Self {
             manager,
             session,
             provider,
             is_compaction_usage,
-            provenance: CallProvenance::default(),
+            provenance: CallProvenance::with_purpose(purpose),
         };
         completion
             .complete_fast_inner(system, messages, tools)
@@ -2378,13 +2408,40 @@ impl AccountedFastCompletion {
         tools: &[Tool],
         is_compaction_usage: bool,
     ) -> Result<(Message, ProviderUsage)> {
+        Self::complete_accounted_with_purpose(
+            manager,
+            session,
+            provider,
+            system,
+            messages,
+            tools,
+            is_compaction_usage,
+            CallPurpose::Unknown,
+        )
+        .await
+    }
+
+    /// Same as [`Self::complete_accounted`] but tags the ledger row with a
+    /// genuine [`CallPurpose`] instead of the honest-default `Unknown`. See
+    /// [`Self::complete_fast_accounted_with_purpose`]'s doc comment for why
+    /// this exists.
+    pub(crate) async fn complete_accounted_with_purpose(
+        manager: Arc<SessionManager>,
+        session: Session,
+        provider: Arc<dyn Provider>,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+        is_compaction_usage: bool,
+        purpose: CallPurpose,
+    ) -> Result<(Message, ProviderUsage)> {
         let model_config = provider.get_model_config();
         let completion = Self {
             manager,
             session,
             provider,
             is_compaction_usage,
-            provenance: CallProvenance::default(),
+            provenance: CallProvenance::with_purpose(purpose),
         };
         completion
             .complete_one(
