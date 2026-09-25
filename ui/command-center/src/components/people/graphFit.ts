@@ -34,7 +34,7 @@
  */
 
 import type { GraphCluster, GraphNode } from './peopleGraph';
-import { isBridge, isYou } from './peopleGraph';
+import { isBridge, isYou, UNASSIGNED_CLUSTER_ID } from './peopleGraph';
 
 export type Vec3 = [number, number, number];
 
@@ -378,6 +378,29 @@ function fitAlong(
   }
   ({ target, dist } = fitCamera(bodies, dir, viewport, insets, fovDeg, dist, target));
 
+  // The chips were relaxed as free bodies alongside the faces, so a big
+  // cluster's faces spread out while its chip stayed at the ring centroid —
+  // QA 2026-09-24 at 1456px: "NO PROJECT" and "HARBOURVIEW RESIDENTS'
+  // ASSOCIATION" floated far from their people. Re-anchor every chip on its
+  // own members at the final camera; only chips move, the camera does not.
+  anchorClusterLabels(nodes, bodies, {
+    position: add(target, scale(dir, dist)), target, fov: fovDeg, center,
+  }, viewport, insets);
+  // Moved chips shift the drawing's box: re-centre by panning only. Same
+  // distance, so the on-screen spacing between faces is unchanged.
+  {
+    const { right, up } = cameraBasis(dir);
+    const f = focalPx(viewport, fovDeg);
+    for (let k = 0; k < 8; k++) {
+      const cam: CameraPose = { position: add(target, scale(dir, dist)), target, fov: fovDeg, center };
+      const b = screenBounds(bodies, cam, viewport);
+      const dx = (b.left + b.right) / 2 - center.x;
+      const dy = (b.top + b.bottom) / 2 - center.y;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) break;
+      target = add(target, add(scale(right, dx * dist / f), scale(up, -dy * dist / f)));
+    }
+  }
+
   const camera: CameraPose = { position: add(target, scale(dir, dist)), target, fov: fovDeg, center };
   const b = screenBounds(bodies, camera, viewport);
   const aw = viewport.width - insets.left - insets.right;
@@ -389,6 +412,90 @@ function fitAlong(
     else fitted.labels.set(body.id.slice(2), body.p);
   }
   return { fitted, fill };
+}
+
+/**
+ * The people a cluster's chip should name: its single-project members when it
+ * has any (a bridge person sits BETWEEN clusters, so averaging them in drags
+ * the chip toward the neighbour), else everyone in it.
+ */
+export function clusterMembers(nodes: GraphNode[], clusterId: string): GraphNode[] {
+  const inIt = nodes.filter(n => !isYou(n) && (n.projectIds.length === 0
+    ? clusterId === UNASSIGNED_CLUSTER_ID
+    : n.projectIds.includes(clusterId)));
+  const solo = inIt.filter(n => n.projectIds.length <= 1);
+  return solo.length > 0 ? solo : inIt;
+}
+
+/**
+ * Put each cluster chip right next to its members on screen: at their screen
+ * centroid, one gap above the top-most face — or, when that spot is taken or
+ * outside the free rectangle, the nearest clear spot searched outward (below
+ * the lowest face, sideways, further up/down). Faces never move and the camera
+ * never changes here: zooming out to make room would shrink the spacing
+ * between fixed-pixel faces and re-stack them. Mutates chip bodies.
+ */
+export function anchorClusterLabels(
+  nodes: GraphNode[], bodies: Body[], cam: CameraPose, viewport: Viewport, insets: Insets,
+): void {
+  const { right, up } = cameraBasis(sub(cam.position, cam.target));
+  const f = focalPx(viewport, cam.fov);
+  const byId = new Map(bodies.map(b => [b.id, b]));
+  // Everything already on screen that a chip must not land on.
+  const placed: { x: number; y: number; hw: number; hh: number }[] = bodies
+    .filter(b => b.id.startsWith('n:'))
+    .map(b => ({ ...projectPoint(b.p, cam, viewport), hw: b.hw, hh: b.hh }));
+  const inside = (x: number, y: number, hw: number, hh: number) =>
+    x - hw >= insets.left && x + hw <= viewport.width - insets.right
+    && y - hh >= insets.top && y + hh <= viewport.height - insets.bottom;
+  const clear = (x: number, y: number, hw: number, hh: number) => placed.every(o =>
+    Math.abs(o.x - x) >= o.hw + hw + GAP - 0.01 || Math.abs(o.y - y) >= o.hh + hh + GAP - 0.01);
+
+  for (const chip of bodies) {
+    if (!chip.id.startsWith('c:')) continue;
+    const members = clusterMembers(nodes, chip.id.slice(2))
+      .map(n => byId.get(`n:${n.id}`))
+      .filter((b): b is Body => !!b);
+    if (members.length === 0) continue;
+    let world: Vec3 = [0, 0, 0];
+    for (const m of members) world = add(world, m.p);
+    world = scale(world, 1 / members.length);
+    let sx = 0;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const m of members) {
+      const s = projectPoint(m.p, cam, viewport);
+      sx += s.x;
+      top = Math.min(top, s.y - m.hh);
+      bottom = Math.max(bottom, s.y + m.hh);
+    }
+    sx /= members.length;
+    const { hw, hh } = chip;
+    const rowStep = 2 * hh + GAP;
+    // Candidate spots, nearest first: above / below the members, then sideways
+    // and one row further out. First one that is inside and clear wins.
+    const ys: number[] = [];
+    for (let k = 0; k < 4; k++) ys.push(top - GAP - hh - k * rowStep, bottom + GAP + hh + k * rowStep);
+    const xs: number[] = [sx];
+    for (let k = 1; k <= 6; k++) xs.push(sx - k * hw * 0.5, sx + k * hw * 0.5);
+    let best: { x: number; y: number } | null = null;
+    let fallback: { x: number; y: number } | null = null;
+    for (const y of ys) {
+      for (const x0 of xs) {
+        // Keep the chip in the free rectangle horizontally.
+        const x = Math.min(viewport.width - insets.right - hw, Math.max(insets.left + hw, x0));
+        if (!inside(x, y, hw, hh)) continue;
+        if (!fallback) fallback = { x, y };
+        if (clear(x, y, hw, hh)) { best = { x, y }; break; }
+      }
+      if (best) break;
+    }
+    const spot = best ?? fallback ?? { x: sx, y: top - GAP - hh };
+    const at = projectPoint(world, cam, viewport);
+    const k = at.depth / f;
+    chip.p = add(world, add(scale(right, (spot.x - at.x) * k), scale(up, -(spot.y - at.y) * k)));
+    placed.push({ x: spot.x, y: spot.y, hw, hh });
+  }
 }
 
 /**

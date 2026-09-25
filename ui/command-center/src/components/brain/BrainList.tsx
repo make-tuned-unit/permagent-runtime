@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties } from 'react';
 import { concentric, duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { Button } from '../common/Button';
@@ -40,7 +40,28 @@ interface BrainListProps {
   searchLoading?: boolean;
   searchError?: string | null;
   entities?: GraphEntity[];
+  /** The graph's memory sample — used to count each entity's linked memories,
+   *  the same count the side panel's MEMORIES stat shows. */
+  graphMemories?: GraphMemory[];
   filters?: TypeFilters;
+}
+
+/** Per-entity row facts: linked memories in the graph sample, and the most
+ *  recent field write (the only per-entity timestamp the graph API carries). */
+export function entityRowStats(entities: GraphEntity[], memories: GraphMemory[]): Map<string, { memories: number; updatedAt: string | null }> {
+  const counts = new Map<string, number>();
+  for (const m of memories) {
+    for (const id of m.ent) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  const out = new Map<string, { memories: number; updatedAt: string | null }>();
+  for (const e of entities) {
+    let updatedAt: string | null = null;
+    for (const f of e.fields ?? []) {
+      if (f.updated_at && (!updatedAt || f.updated_at > updatedAt)) updatedAt = f.updated_at;
+    }
+    out.set(e.id, { memories: counts.get(e.id) ?? 0, updatedAt });
+  }
+  return out;
 }
 
 interface PageState {
@@ -60,7 +81,7 @@ interface PageState {
 
 export function BrainList({
   onSelect, selectedId, timeValue, searchQuery, searchResults, searchLoading, searchError,
-  entities = [], filters,
+  entities = [], graphMemories = [], filters,
 }: BrainListProps) {
   const { colors, reduceMotion } = useTheme();
   // Hard scroll edge (D11/§1.8): the stats bar is pinned above the scrolling
@@ -75,6 +96,7 @@ export function BrainList({
     return key in filters ? filters[key] : true;
   });
   const showEntities = !filters || filteredEntities.length > 0;
+  const rowStats = useMemo(() => entityRowStats(entities, graphMemories), [entities, graphMemories]);
   const showMemories = !filters || filters.memory;
   const [state, setState] = useState<PageState>({
     memories: [], total: 0, hasMore: false, loading: true, error: false,
@@ -208,6 +230,7 @@ export function BrainList({
               <EntityRow
                 key={ent.id}
                 entity={ent}
+                stats={rowStats.get(ent.id)}
                 selected={ent.id === selectedId}
                 onClick={() => onSelect({
                   id: ent.id,
@@ -441,8 +464,9 @@ function typeAccent(type: string, colors: ReturnType<typeof useTheme>['colors'])
   }
 }
 
-function EntityRow({ entity, selected, onClick }: {
+function EntityRow({ entity, stats, selected, onClick }: {
   entity: GraphEntity;
+  stats?: { memories: number; updatedAt: string | null };
   selected: boolean;
   onClick: () => void;
 }) {
@@ -453,12 +477,17 @@ function EntityRow({ entity, selected, onClick }: {
   const rowHoverBg = colors.surfaceHi;
   const rowTransition = reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}, border-color ${duration.fast}ms ${ease.out}, transform ${duration.fast}ms ${ease.out}, filter ${duration.fast}ms ${ease.out}`;
   const typeColor = typeAccent(entity.type, colors);
+  const meta = [
+    stats && stats.memories > 0 ? `${stats.memories} ${stats.memories === 1 ? 'memory' : 'memories'}` : null,
+    stats?.updatedAt ? `updated ${formatDate(stats.updatedAt)}` : null,
+  ].filter(Boolean).join(' · ');
 
   return (
     <div
       role="button"
       tabIndex={0}
       aria-label={`${entity.type}: ${entity.name}`}
+      data-testid="brain-entity-row"
       onClick={onClick}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
@@ -467,7 +496,12 @@ function EntityRow({ entity, selected, onClick }: {
         border: selected ? `1px solid ${colors.borderHi}` : '1px solid transparent',
         outline: 'none',
         transition: rowTransition,
-        display: 'flex', alignItems: 'center', gap: space.lg,
+        // name | kind | description | meta (QA 2026-09-24: the description was
+        // a 200px sliver pinned to the far right with ~1,200px of nothing
+        // between it and the name). The description column takes the rest.
+        display: 'grid',
+        gridTemplateColumns: 'minmax(140px, 22%) 112px minmax(0, 1fr) auto',
+        alignItems: 'center', columnGap: space.xl,
       }}
       onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowHoverBg; }}
       onMouseLeave={e => {
@@ -479,41 +513,37 @@ function EntityRow({ entity, selected, onClick }: {
       onFocus={e => { (e.currentTarget as HTMLDivElement).style.outline = `2px solid ${colors.cyan}`; }}
       onBlur={e => { (e.currentTarget as HTMLDivElement).style.outline = 'none'; }}
     >
-      {/* `minWidth`, not `width` (#1171 silver screenshot): a fixed width let
-          a long type name ("ORGANIZATION") overflow the box, and since the
-          box is anchored `flex-end`, the overflow ran past its own left
-          edge — pushing the leading dot off the row. `minWidth` keeps every
-          short type name aligned at the same column while letting a longer
-          one grow the box instead of spilling out of it. */}
-      <span style={{
-        display: 'inline-flex', alignItems: 'center', gap: space.sm,
-        flexShrink: 0, minWidth: 62, justifyContent: 'flex-end',
+      <span data-testid="brain-entity-name" style={{
+        fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0,
       }}>
+        {entity.name}
+      </span>
+      <span data-testid="brain-entity-kind" style={{ display: 'inline-flex', alignItems: 'center', gap: space.sm, minWidth: 0 }}>
         <span aria-hidden style={{
           width: 6, height: 6, borderRadius: radius.pill, background: typeColor, flexShrink: 0,
         }} />
         <span style={{
           fontFamily: font.mono, fontSize: 10, fontWeight: 600,
           color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>
           {entity.type}
         </span>
       </span>
-      <span style={{
-        fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
+      <span data-testid="brain-entity-description" style={{
+        fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.45,
+        color: entity.note ? colors.textMuted : colors.textDim,
+        overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+        minWidth: 0,
       }}>
-        {entity.name}
+        {entity.note || 'No description yet'}
       </span>
-      {entity.note && (
-        <span style={{
-          fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted,
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          maxWidth: 200, flexShrink: 1,
-        }}>
-          {entity.note}
-        </span>
-      )}
+      <span style={{
+        fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, whiteSpace: 'nowrap', textAlign: 'right',
+      }}>
+        {meta}
+      </span>
     </div>
   );
 }

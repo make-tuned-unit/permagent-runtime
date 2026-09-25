@@ -34,6 +34,9 @@ vi.mock('./BrainScene', () => ({
     setTimeRange: vi.fn(),
     focusSearchHit: vi.fn(),
     clearSearchFocus: vi.fn(),
+    setActive: vi.fn(),
+    setSelectedId: vi.fn(),
+    setContentInsets: vi.fn(),
     resize: vi.fn(),
     dispose: vi.fn(),
   })),
@@ -86,14 +89,30 @@ afterEach(() => {
   localStorage.clear();
 });
 
-async function render(mode: 'graph' | 'list') {
+const legend = () => container.querySelector('[data-testid="canvas-legend"]');
+const keyButton = () => container.querySelector<HTMLButtonElement>('[data-testid="canvas-legend-open"]');
+
+async function mount(mode: 'graph' | 'list') {
   localStorage.setItem(VIEW_MODE_KEY, mode);
   await act(async () => root.render(<BrainView />));
 }
 
-const legend = () => container.querySelector('[data-testid="canvas-legend"]');
+/** Mount and open the key with its own "Key" button — it starts collapsed
+ *  (QA 2026-09-25: open by default, it covered the left third of the graph). */
+async function render(mode: 'graph' | 'list') {
+  await mount(mode);
+  if (mode === 'graph') {
+    await act(async () => keyButton()!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  }
+}
 
 describe('Brain graph key', () => {
+  it('starts collapsed on a first visit, behind its "Key" button', async () => {
+    await mount('graph');
+    expect(legend()).toBeNull();
+    expect(keyButton()!.textContent).toBe('Key');
+  });
+
   it('teaches the gestures the scene actually has', async () => {
     await render('graph');
     const text = legend()!.textContent ?? '';

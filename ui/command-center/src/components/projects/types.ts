@@ -137,6 +137,15 @@ export interface ProjectRef {
 export type DirectoryPerson = Person & {
   projects: ProjectRef[];
   next_follow_up_at?: string | null;
+  /**
+   * What the record is. Being added by the backend (dagK memory-feed lane):
+   * the directory was minting rows from project/organisation entities, so
+   * "Harbourview Residents' Association" read as a person. Absent on older
+   * daemons — treat absent as 'person'. 'self' marks the user's own record.
+   */
+  kind?: 'person' | 'organisation' | 'organization' | 'self' | null;
+  /** Alternative self marker, if the backend flags the user's record this way. */
+  is_self?: boolean | null;
 };
 
 export interface PersonRelationship {

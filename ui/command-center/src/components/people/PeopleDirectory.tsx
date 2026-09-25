@@ -28,9 +28,11 @@ import { useCommandCenter } from '../../lib/store';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { contactLabel, isFollowUpDue, isQuiet } from './contactAge';
+import { isOrganisation, isSelf, noInteractionsRecorded } from './peopleKind';
 import type { DirectoryPerson } from '../projects/types';
 import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
+import { StateBlock } from '../common/StateBlock';
 
 type Status = 'loading' | 'error' | 'ready';
 
@@ -145,7 +147,10 @@ export function PeopleDirectory() {
     load();
   }, [load, peopleRev]);
 
-  const duplicates = useMemo(() => duplicateIds(people), [people]);
+  // Self is never a "duplicate contact" of themself — it is the same person as
+  // whatever other record carries their name, and flagging it just repeats
+  // what `isSelf` already renders as "You".
+  const duplicates = useMemo(() => duplicateIds(people.filter(p => !isSelf(p))), [people]);
   const unassignedCount = useMemo(
     () => people.filter(p => p.projects.length === 0).length,
     [people],
@@ -155,8 +160,17 @@ export function PeopleDirectory() {
     () => people.filter(p => isFollowUpDue(p.next_follow_up_at)).length,
     [people],
   );
+  // Organisations chip (P3): only shown once the backend actually sends a
+  // `kind` the directory can filter on — with none, the chip would just be a
+  // button that always shows everyone, which is worse than not having it.
+  const orgCount = useMemo(() => people.filter(isOrganisation).length, [people]);
+  const [orgsOnly, setOrgsOnly] = useState(false);
+  // P2: when not one contact has a recorded interaction, 36 identical "never"
+  // rows say nothing a single banner doesn't — so the banner replaces them.
+  const noInteractions = useMemo(() => noInteractionsRecorded(people), [people]);
   const visible = useMemo(() => {
     const filtered = people.filter(p => {
+      if (orgsOnly && !isOrganisation(p)) return false;
       if (cohort === 'quiet') return isQuiet(p.last_contact_at);
       if (cohort === 'followup') return isFollowUpDue(p.next_follow_up_at);
       return true;
@@ -170,7 +184,7 @@ export function PeopleDirectory() {
       if (aQ !== bQ) return aQ - bQ;
       return a.display_name.localeCompare(b.display_name);
     });
-  }, [people, cohort]);
+  }, [people, cohort, orgsOnly]);
 
   /** Resolves false when nothing was added — the failure is swallowed into
    *  `addError` below, so the button must not tick over the top of it. */
@@ -286,25 +300,31 @@ export function PeopleDirectory() {
         </div>
       )}
 
+      {noInteractions && status === 'ready' && (
+        <div data-testid="no-interactions-banner" style={{ fontSize: textSize.micro, color: colors.textDim }}>
+          No interactions recorded yet.
+        </div>
+      )}
+
       {status === 'loading' ? (
         <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading people…</div>
       ) : status === 'error' ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
-          <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load people.</span>
-          <Button
-            colors={colors}
-            variant="bare"
-            onClick={load}
-            className="hover:underline"
-            style={{ ...linkVars(), '--pa-btn-weight': 600 } as CSSProperties}
-          >
-            Retry
-          </Button>
-        </div>
+        // R2/R7: the same failed-vs-empty distinction as Projects and the
+        // Dashboard now reads the same way here — one shared component
+        // instead of a fourth hand-rolled "couldn't load" row.
+        <StateBlock
+          tone="error"
+          title="Couldn't load people."
+          onRetry={load}
+          compact
+        />
       ) : people.length === 0 ? (
-        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
-          {debouncedQuery.trim() ? 'No people match that search.' : 'No people yet.'}
-        </div>
+        <StateBlock
+          tone="empty"
+          title={debouncedQuery.trim() ? 'No people match that search.' : 'No people yet.'}
+          detail={debouncedQuery.trim() ? undefined : 'Add a person to start building the directory.'}
+          compact
+        />
       ) : (
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap' }}>
@@ -332,7 +352,27 @@ export function PeopleDirectory() {
                 {label}
               </Chip>
             ))}
+            {/* P3: only appears once the backend actually sends a `kind` this
+                can filter on — an org chip that always shows everyone (or
+                always shows none) is worse than no chip. */}
+            {orgCount > 0 && (
+              <Chip
+                kind="filter"
+                tone="accent"
+                pressed={orgsOnly}
+                onClick={() => setOrgsOnly(v => !v)}
+                data-testid="people-filter-organisations"
+              >
+                {`Organisations ${orgCount}`}
+              </Chip>
+            )}
           </div>
+          {/* R2: a cohort/organisations filter that matches nobody must say
+              so — the row list simply rendering nothing (as it did before)
+              is indistinguishable from a slow load or a broken filter. */}
+          {visible.length === 0 ? (
+            <StateBlock tone="empty" title="No one matches this filter." compact />
+          ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
             {visible.map(p => (
               // The row IS the button, and it distributes its own children
@@ -343,6 +383,7 @@ export function PeopleDirectory() {
               <Button
                 key={p.entity_uuid}
                 colors={colors}
+                data-testid={isOrganisation(p) ? 'people-row-organisation' : 'people-row-person'}
                 onClick={() => openPersonDetail(null, p)}
                                 style={{
                   '--pa-btn-bg': rowVeil,
@@ -360,7 +401,18 @@ export function PeopleDirectory() {
                   fontFamily: font.body,
                 } as CSSProperties}
               >
-                <span style={{ fontSize: textSize.caption, fontWeight: 600 }}>{p.display_name}</span>
+                {/* P5/R6: the same shape convention the Brain graph's own key
+                    teaches — round is a person, square is an organisation —
+                    reused here so "what kind of row is this" reads the same
+                    way on both surfaces (one concept, one visual language). */}
+                <span aria-hidden style={{
+                  width: 8, height: 8, flexShrink: 0,
+                  borderRadius: isOrganisation(p) ? 2 : radius.pill,
+                  background: isOrganisation(p) ? colors.warning : colors.cyan,
+                }} />
+                <span style={{ fontSize: textSize.caption, fontWeight: 600 }}>
+                  {isSelf(p) ? 'You' : p.display_name}
+                </span>
                 {(p.role || p.company) && (
                   <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                     {[p.role, p.company].filter(Boolean).join(' · ')}
@@ -384,9 +436,14 @@ export function PeopleDirectory() {
                   </Chip>
                 )}
                 <span style={{ flex: 1 }} />
-                <span style={{ fontSize: 10, color: isQuiet(p.last_contact_at) ? colors.textDim : colors.textMuted, fontFamily: font.mono }}>
-                  {contactLabel(p.last_contact_at)}
-                </span>
+                {/* P2: the banner above already says nobody has a recorded
+                    interaction — repeating "never" on every one of N rows
+                    added nothing, so it is only drawn once something has one. */}
+                {!noInteractions && (
+                  <span style={{ fontSize: 10, color: isQuiet(p.last_contact_at) ? colors.textDim : colors.textMuted, fontFamily: font.mono }}>
+                    {contactLabel(p.last_contact_at)}
+                  </span>
+                )}
                 {p.projects.length === 0 ? (
                   <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
                     no project
@@ -405,6 +462,7 @@ export function PeopleDirectory() {
               </Button>
             ))}
           </div>
+          )}
         </>
       )}
     </div>

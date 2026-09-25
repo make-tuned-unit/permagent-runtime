@@ -4,11 +4,28 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import type { BrainGraph, GraphEntity, GraphMemory } from './useBrainData';
 import {
+  boundingSphere,
+  boxPxForMinGlyphPx,
+  cullOverlappingLabels,
+  fitToInsetRect,
+  labelFade,
+  labelScreenPx,
+  labelWorldHeight,
+  pickLabels,
+  type ContentInsets,
+  type LabelBox,
+  type LabelCandidate,
+  type LabelSizing,
+  type Vec3,
+} from './brainCamera';
+import {
   MEMORY_FRESH,
   MEMORY_STALE,
   NODE_COLORS,
   NODE_COLOR_FALLBACK,
 } from './graphPalette';
+import { predicateColor } from './brainEdgeColor';
+import { shouldRender } from './brainRenderGate';
 
 // ── Types ──────────────────────────────────────────────────────────────
 interface SimNode {
@@ -37,6 +54,10 @@ interface SimEdge {
   k: number;
   rest: number;
   weight: number;
+  /** The graph triple's relationship (e.g. "works_at") — only on `entity`
+   *  edges. Drives the edge's color (brainEdgeColor) so two different
+   *  relationship types never draw as the same generic line. */
+  predicate?: string;
 }
 
 interface Pulse {
@@ -86,6 +107,14 @@ const PULSE_COLORS: Record<string, [number, number, number]> = {
   entity: [0.78, 0.55, 1.0],
 };
 
+/** An edge's own color: `self`/`memory` keep their fixed hue, `entity`
+ *  (a graph-triple relationship) is colored by its predicate so two
+ *  different relationship kinds never draw as the same generic line. */
+function edgeRGB(e: SimEdge, table: Record<string, [number, number, number]>): [number, number, number] {
+  if (e.kind === 'entity') return predicateColor(e.predicate);
+  return table[e.kind] || table.memory;
+}
+
 // ── Pulse Shaders ──────────────────────────────────────────────────────
 const PULSE_VERT = `
 attribute float size;
@@ -110,21 +139,66 @@ void main() {
 }`;
 
 // ── Node labels (Obsidian pass 2) ──────────────────────────────────────
-// Obsidian's graph wears its names: every node carries a small label that
-// fades in as you approach and dims out of a hovered node's neighborhood.
-// Each label is a canvas-rendered billboard sprite; depthTest is off so a
-// name is never occluded by geometry.
+// Obsidian's graph wears its names: important nodes carry a small label, and
+// a hovered node's neighbourhood names itself. Each label is a canvas-rendered
+// billboard sprite; depthTest is off so a name is never occluded by geometry.
+//
+// Crispness (QA 2026-09-24): the label used to be a fixed 1.05 WORLD units
+// tall, so a node near the lens stretched its 40px bitmap across half the
+// screen — blurred and enormous. Now the bitmap is supersampled and the sprite
+// is resized every frame to a clamped SCREEN height (brainCamera.labelWorldHeight)
+// that never exceeds the bitmap's own resolution: it is only ever downsampled.
 
-const LABEL_FONT = '500 26px -apple-system, "Segoe UI", system-ui, sans-serif';
+/** Bitmap supersample factor — covers a 2x display with headroom. */
+const LABEL_SS = 3;
+/** CSS px: text size, bitmap height and side padding, before supersampling. */
+const LABEL_TEXT_PX = 13;
+const LABEL_BOX_PX = 20;
+const LABEL_PAD_PX = 6;
+const LABEL_FONT = `500 ${LABEL_TEXT_PX * LABEL_SS}px -apple-system, "Segoe UI", system-ui, sans-serif`;
+/**
+ * `labelScreenPx`'s min/max clamp a label's SPRITE BOX height, not its glyph
+ * text — the bitmap draws `LABEL_TEXT_PX` text inside a taller `LABEL_BOX_PX`
+ * box for halo breathing room, so the box is always `LABEL_BOX_PX /
+ * LABEL_TEXT_PX` (~1.54x) the size of the text a person actually reads.
+ *
+ * QA follow-up 2026-09-25: the box floor used to be 13px, which is only an
+ * ~8.5px GLYPH — well under the app's own 11px text floor (textSize.micro) —
+ * because nothing had translated "on-screen size" from box units into the
+ * units a person reads. `LABEL_MIN_GLYPH_PX` is that floor in the units that
+ * matter; the box floor is derived from it so the guarantee is on the text,
+ * not the invisible box around it.
+ */
+const LABEL_BOX_TO_TEXT = LABEL_BOX_PX / LABEL_TEXT_PX;
+const LABEL_MIN_GLYPH_PX = 11;
+/** On-screen label height limits (CSS px, box units). The ceiling is the
+ *  bitmap's own — at that ceiling the glyph renders at its native LABEL_TEXT_PX. */
+const LABEL_SIZING: Omit<LabelSizing, 'worldHeight'> = {
+  maxPx: LABEL_BOX_PX,
+  minPx: boxPxForMinGlyphPx(LABEL_MIN_GLYPH_PX, LABEL_BOX_TO_TEXT),
+  nativePx: LABEL_BOX_PX,
+};
+/** Natural world height of a label (what it would be with no clamp). */
+const LABEL_WORLD_H = 0.9;
+/** How many un-forced labels may show at once. */
+const LABEL_BUDGET = 14;
+/** Camera fov (degrees) — shared by the camera and the framing math. */
+const FOV_Y = 50;
+/** Target fraction of the visible band's own half-fov the bounding sphere's
+ *  silhouette should fill (brainCamera.ts: fitToInsetRect). QA 2026-09-25:
+ *  the previous radius-multiplying margin only approximated a fill fraction
+ *  and landed the graph around 40% of the band at 1440×1000; this is solved
+ *  exactly, so 0.82 means ~82% regardless of how tight the insets are. */
+const FIT_FILL = 0.82;
 
 function makeLabelSprite(text: string, color: string): THREE.Sprite {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d')!;
   ctx.font = LABEL_FONT;
   const metrics = ctx.measureText(text);
-  const padX = 10;
+  const padX = LABEL_PAD_PX * LABEL_SS;
   const w = Math.ceil(metrics.width) + padX * 2;
-  const h = 40;
+  const h = LABEL_BOX_PX * LABEL_SS;
   canvas.width = w;
   canvas.height = h;
   // (Re)set state — resizing the canvas clears it.
@@ -132,13 +206,16 @@ function makeLabelSprite(text: string, color: string): THREE.Sprite {
   c2.font = LABEL_FONT;
   c2.textBaseline = 'middle';
   c2.textAlign = 'center';
-  // Soft dark halo keeps names readable over bright nodes and edges.
+  // Tight dark halo keeps names readable over bright nodes and edges without
+  // the soft smear a wide blur gave.
   c2.shadowColor = 'rgba(4, 8, 16, 0.9)';
-  c2.shadowBlur = 8;
+  c2.shadowBlur = 2 * LABEL_SS;
   c2.fillStyle = color;
   c2.fillText(text, w / 2, h / 2);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.generateMipmaps = true;
   const mat = new THREE.SpriteMaterial({
     map: texture,
     transparent: true,
@@ -147,10 +224,9 @@ function makeLabelSprite(text: string, color: string): THREE.Sprite {
     depthWrite: false,
   });
   const sprite = new THREE.Sprite(mat);
-  // World-space size proportional to the canvas aspect, clamped so long
-  // memory snippets don't dominate.
-  const scaleY = 1.05;
-  sprite.scale.set((w / h) * scaleY, scaleY, 1);
+  // Aspect is fixed by the bitmap; the height is set per frame (updateLabels).
+  sprite.userData.aspect = w / h;
+  sprite.scale.set(sprite.userData.aspect * LABEL_WORLD_H, LABEL_WORLD_H, 1);
   sprite.renderOrder = 10;
   return sprite;
 }
@@ -183,10 +259,27 @@ export class BrainScene {
   private orbitYaw = 0;
   private orbitPitch = 0.18;
   private orbitRadius = 32;
+  /** Orbit pivot — the framed sphere's centre, eased toward each frame. */
+  private orbitTarget = new THREE.Vector3();
+  /** Keep the whole graph framed until the user zooms (or search re-aims). */
+  private autoFit = true;
+  /** Chrome overlapping the canvas (header, bottom bar, an open key panel) —
+   *  BrainView measures these and calls `setContentInsets`. Framing fits the
+   *  sphere into the rect left over, not the full canvas (QA 2026-09-25: the
+   *  graph's bottom sat under the time-slider bar without this). */
+  private contentInsets: ContentInsets = { top: 0, right: 0, bottom: 0, left: 0 };
+  /** Last framing: distance from the pivot and the sphere's radius. */
+  private fitDist = 32;
+  private fitRadius = 10;
   private dragging = false;
   private dragMoved = false;
   private dragStart = { x: 0, y: 0 };
   private hoveredNode: SimNode | null = null;
+  /** The panel's current selection (BrainView) — used only to break a label
+   *  collision in the selected node's favour over an unselected same-degree
+   *  neighbour. Independent of hover, which already gets its own boost. */
+  private selectedNodeId: string | null = null;
+  setSelectedId(id: string | null) { this.selectedNodeId = id; }
   /** node id → connected node ids (non-self edges) for hover highlighting. */
   private adjacency = new Map<string, Set<string>>();
 
@@ -196,8 +289,14 @@ export class BrainScene {
   private timeRange: [number, number] = [0, 1];
 
   private raf = 0;
+  private rafScheduled = false;
   private lastTime = 0;
   private disposed = false;
+  /** Externally controlled (BrainView: true only while Graph mode is shown).
+   *  See brainRenderGate.ts — this plus a 0×0 canvas or a hidden tab all pause
+   *  the render loop rather than spin it against nothing. */
+  private active = true;
+  private onVisibilityChange = () => { if (!document.hidden) this.scheduleFrame(); };
 
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
@@ -215,7 +314,7 @@ export class BrainScene {
     this.renderer.setClearColor(0x000000, 0);
     container.appendChild(this.renderer.domElement);
 
-    this.camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 200);
+    this.camera = new THREE.PerspectiveCamera(FOV_Y, w / h, 0.1, 400);
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0x0b1220, 0.006);
 
@@ -251,9 +350,10 @@ export class BrainScene {
     canvas.addEventListener('mousemove', this.onMouseMove);
     canvas.addEventListener('mouseup', this.onMouseUp);
     canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
 
     this.lastTime = performance.now();
-    this.animate();
+    this.scheduleFrame();
   }
 
   private lastDataKey = '';
@@ -354,7 +454,7 @@ export class BrainScene {
         const a = byId.get(e.from);
         const b = byId.get(e.to);
         if (a && b && a !== b) {
-          this.edges.push({ a, b, kind: 'entity', k: 0.10, rest: 4.0, weight: 0.8 });
+          this.edges.push({ a, b, kind: 'entity', k: 0.10, rest: 4.0, weight: 0.8, predicate: e.predicate });
         }
       }
     }
@@ -436,6 +536,8 @@ export class BrainScene {
     this.rebuildPulses();
     this.applyFilters();
     this.alpha = 1.0;
+    // First load frames the whole graph; a live refresh keeps the user's zoom.
+    if (oldPositions.size === 0) this.autoFit = true;
   }
 
   /** Create + register the node's in-scene name label. */
@@ -452,34 +554,121 @@ export class BrainScene {
     node.labelMul = 1;
   }
 
-  /** Distance-faded label pass, run every frame: names appear as you approach
-   *  (hubs from further away), track their nodes, and honor filter/search/
-   *  hover multipliers. Self is always named. */
+  /** Scratch vector for the label screen-projection pass — one allocation,
+   *  reused every frame rather than per label. */
+  private labelProjectTmp = new THREE.Vector3();
+
+  /** Label pass, run every frame. Names track their nodes; each is drawn at a
+   *  clamped SCREEN size (never a giant bitmap), only a budget of them show at
+   *  once — you, the hovered neighbourhood and search hits always, then the
+   *  biggest hubs — the far side of the graph recedes — and any two that would
+   *  still overlap on screen (a dense centre, near-identical degree) are
+   *  collision-culled, keeping the higher-priority one: hovered, then
+   *  selected, then degree. */
   private updateLabels() {
     const cam = this.camera.position;
+    const viewW = Math.max(1, this.container.clientWidth);
+    const viewH = Math.max(1, this.container.clientHeight);
+    const cands: LabelCandidate[] = [];
+    const dist = new Map<string, number>();
+    for (const n of this.nodes) {
+      if (!n.labelSprite || !n.mesh.visible) continue;
+      const d = cam.distanceTo(n.pos);
+      dist.set(n.id, d);
+      const mul = n.labelMul ?? 1;
+      cands.push({
+        id: n.id,
+        distance: d,
+        // Hubs first; memories only when something asks for them.
+        importance: n.kind === 'memory' ? 0 : (n.baseScale ?? 1),
+        forced: n.kind === 'self' || mul > 1.01,
+      });
+    }
+    const shown = pickLabels(cands, LABEL_BUDGET);
+
+    // Pass 1: size, position and fade every label the budget allows, and
+    // record its screen-space box for the collision pass below.
+    const boxes: LabelBox[] = [];
+    const bySprite = new Map<string, SimNode>();
     for (const n of this.nodes) {
       const sprite = n.labelSprite;
       if (!sprite) continue;
-      if (!n.mesh.visible) { sprite.visible = false; continue; }
+      const d = dist.get(n.id);
+      if (d === undefined || !shown.has(n.id)) { sprite.visible = false; continue; }
 
+      const sizing = { ...LABEL_SIZING, worldHeight: LABEL_WORLD_H };
+      const h = labelWorldHeight(d, FOV_Y, viewH, sizing);
+      sprite.scale.set((sprite.userData.aspect ?? 4) * h, h, 1);
       // Sit just below the node, scaled with the node itself.
       const r = (n.baseScale ?? 1) * (n.kind === 'self' ? 1.5 : n.kind === 'memory' ? 0.55 : 0.9);
-      sprite.position.set(n.pos.x, n.pos.y - r - 0.55, n.pos.z);
+      sprite.position.set(n.pos.x, n.pos.y - r - h * 0.6, n.pos.z);
 
-      let alpha: number;
-      if (n.kind === 'self') {
-        alpha = 1;
-      } else {
-        const d = cam.distanceTo(n.pos);
-        // Bigger nodes announce themselves from further away.
-        const far = n.kind === 'memory' ? 16 : 30 + (n.baseScale ?? 1) * 8;
-        const near = far - 10;
-        alpha = THREE.MathUtils.clamp(1 - (d - near) / (far - near), 0, 1);
-      }
-      alpha *= n.labelMul ?? 1;
+      const fade = n.kind === 'self' ? 1 : labelFade(d, this.fitDist, this.fitRadius);
+      const alpha = Math.min(1, fade * Math.min(1, n.labelMul ?? 1));
       sprite.material.opacity = alpha * 0.95;
-      sprite.visible = alpha > 0.02;
+      if (alpha <= 0.02) { sprite.visible = false; continue; }
+      sprite.visible = true; // tentative — the collision pass may still hide it
+
+      const screenPx = labelScreenPx(d, FOV_Y, viewH, sizing);
+      const proj = this.labelProjectTmp.copy(sprite.position).project(this.camera);
+      const priority = n === this.hoveredNode ? 1e6
+        : n.id === this.selectedNodeId ? 1e5
+          : n.kind === 'self' ? 1e4
+            : (n.baseScale ?? 1);
+      boxes.push({
+        id: n.id,
+        x: (proj.x * 0.5 + 0.5) * viewW,
+        y: (-proj.y * 0.5 + 0.5) * viewH,
+        width: screenPx * (sprite.userData.aspect ?? 4),
+        height: screenPx,
+        priority,
+      });
+      bySprite.set(n.id, n);
     }
+
+    // Pass 2: two labels that still overlap on screen — only the winner stays.
+    const survivors = cullOverlappingLabels(boxes);
+    for (const box of boxes) {
+      if (!survivors.has(box.id)) bySprite.get(box.id)!.labelSprite!.visible = false;
+    }
+  }
+
+  /** Chrome-aware content rect the graph must fit inside (BrainView). */
+  setContentInsets(insets: ContentInsets) { this.contentInsets = insets; }
+
+  /** Frame every visible node: bounding sphere → distance that fits it in the
+   *  visible rect left over after `contentInsets`, with margin. The pivot
+   *  pans (in the current camera's own right/up plane) so the sphere centres
+   *  in that rect rather than the full canvas. Eased so a settling layout
+   *  glides. */
+  private updateFraming(dt: number) {
+    const pts: Vec3[] = [];
+    for (const n of this.nodes) {
+      if (n.mesh.visible) pts.push([n.pos.x, n.pos.y, n.pos.z]);
+    }
+    // Pad by the largest node body + a label's worth so edges aren't clipped.
+    const sphere = boundingSphere(pts, 1.6);
+    this.fitRadius = sphere.radius;
+    const viewW = Math.max(1, this.container.clientWidth);
+    const viewH = Math.max(1, this.container.clientHeight);
+    const fit = fitToInsetRect(sphere.radius, FOV_Y, viewW, viewH, this.contentInsets, FIT_FILL);
+    this.fitDist = fit.distance;
+    if (!this.autoFit) return;
+    // This frame's orbit basis — orbitYaw/Pitch are already updated for this
+    // frame by the time updateFraming runs (see animate()), so this matches
+    // the camera position/lookAt computed right after this call.
+    const cy = Math.cos(this.orbitYaw), sy = Math.sin(this.orbitYaw);
+    const cp = Math.cos(this.orbitPitch), sp = Math.sin(this.orbitPitch);
+    const dir = new THREE.Vector3(cp * sy, sp, cp * cy);
+    const forward = dir.clone().negate().normalize();
+    const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+    const up = new THREE.Vector3().crossVectors(right, forward);
+    const target = new THREE.Vector3(...sphere.center)
+      .addScaledVector(right, fit.panRight)
+      .addScaledVector(up, fit.panUp);
+    const k = 1 - Math.exp(-dt * 4);
+    this.orbitTarget.lerp(target, k);
+    this.orbitRadius += (this.fitDist - this.orbitRadius) * k;
   }
 
   setSearch(query: string) { this.search = query.toLowerCase(); this.applyFilters(); }
@@ -584,7 +773,7 @@ export class BrainScene {
       if (e.a !== node && e.b !== node) continue;
       if (!e.a.mesh.visible || !e.b.mesh.visible) continue;
       positions.push(e.a.pos.x, e.a.pos.y, e.a.pos.z, e.b.pos.x, e.b.pos.y, e.b.pos.z);
-      const c = PULSE_COLORS[e.kind] || PULSE_COLORS.memory;
+      const c = edgeRGB(e, PULSE_COLORS);
       colors.push(c[0], c[1], c[2], c[0], c[1], c[2]);
     }
     if (positions.length === 0) return;
@@ -632,6 +821,8 @@ export class BrainScene {
     this.orbitPitch = Math.asin(Math.max(-1, Math.min(1, target.y / r + 0.08)));
     this.orbitYaw = Math.atan2(target.x, target.z);
     this.orbitRadius = Math.max(12, Math.min(80, r * 2.2));
+    this.orbitTarget.set(0, 0, 0);
+    this.autoFit = false;
   }
 
   // ── Edge Geometry ────────────────────────────────────────────────────
@@ -642,7 +833,7 @@ export class BrainScene {
     for (const e of this.edges) {
       if (!e.a.mesh.visible || !e.b.mesh.visible) continue;
       positions.push(e.a.pos.x, e.a.pos.y, e.a.pos.z, e.b.pos.x, e.b.pos.y, e.b.pos.z);
-      const c = EDGE_COLORS[e.kind] || EDGE_COLORS.memory;
+      const c = edgeRGB(e, EDGE_COLORS);
       colors.push(c[0], c[1], c[2], c[0], c[1], c[2]);
     }
     const geo = new THREE.BufferGeometry();
@@ -680,7 +871,7 @@ export class BrainScene {
       const z = a.z + (b.z - a.z) * p.t;
       positions.push(x, y, z);
 
-      const c = PULSE_COLORS[p.edge.kind] || PULSE_COLORS.memory;
+      const c = edgeRGB(p.edge, PULSE_COLORS);
       colors.push(c[0], c[1], c[2]);
 
       const taper = 0.5 + 0.5 * Math.sin(p.t * Math.PI);
@@ -836,14 +1027,48 @@ export class BrainScene {
 
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
+    // The user has taken the zoom: stop auto-framing from fighting them.
+    this.autoFit = false;
     const zoomDelta = e.deltaY * 0.04 * (this.orbitRadius / 32);
-    this.orbitRadius = Math.max(8, Math.min(180, this.orbitRadius + zoomDelta));
+    this.orbitRadius = Math.max(4, Math.min(Math.max(180, this.fitDist * 2), this.orbitRadius + zoomDelta));
   };
 
   // ── Animation Loop ───────────────────────────────────────────────────
-  private animate = () => {
-    if (this.disposed) return;
+  /** True while the graph is the shown mode, sized, and the tab is visible.
+   *  Called once per candidate frame — see brainRenderGate.ts. */
+  private canRender(): boolean {
+    return shouldRender({
+      active: this.active,
+      width: this.container.clientWidth,
+      height: this.container.clientHeight,
+      documentHidden: typeof document !== 'undefined' && document.hidden,
+    });
+  }
+
+  /** Requests exactly one frame, if one isn't already pending and the gate is
+   *  open. Idempotent — safe to call from `resize()`, `setActive()`, and the
+   *  visibility listener without ever double-scheduling. */
+  private scheduleFrame() {
+    if (this.disposed || this.rafScheduled || !this.canRender()) return;
+    this.rafScheduled = true;
     this.raf = requestAnimationFrame(this.animate);
+  }
+
+  /** Graph shown/hidden (BrainView toggling List↔Graph). Resuming re-arms the
+   *  loop; going inactive just lets the next `animate()` decline to reschedule. */
+  setActive(active: boolean) {
+    this.active = active;
+    if (active) this.scheduleFrame();
+  }
+
+  private animate = () => {
+    this.rafScheduled = false;
+    if (this.disposed) return;
+    // The gate closed since this frame was scheduled (mode switched away,
+    // container collapsed, tab backgrounded) — stop here. Nothing polls while
+    // paused; `resize()`/`setActive()`/the visibility listener each re-arm it.
+    if (!this.canRender()) return;
+    this.scheduleFrame();
 
     const now = performance.now();
     const dt = Math.min(0.05, (now - this.lastTime) / 1000);
@@ -852,15 +1077,23 @@ export class BrainScene {
     // Auto-rotate
     if (!this.dragging) this.orbitYaw += 0.0012;
 
-    // Update camera
+    // Update camera — orbit the framed sphere's centre at the fitted distance.
+    this.updateFraming(dt);
     const cy = Math.cos(this.orbitYaw), sy = Math.sin(this.orbitYaw);
     const cp = Math.cos(this.orbitPitch), sp = Math.sin(this.orbitPitch);
+    const t = this.orbitTarget;
     this.camera.position.set(
-      this.orbitRadius * cp * sy,
-      this.orbitRadius * sp + 4,
-      this.orbitRadius * cp * cy,
+      t.x + this.orbitRadius * cp * sy,
+      t.y + this.orbitRadius * sp,
+      t.z + this.orbitRadius * cp * cy,
     );
-    this.camera.lookAt(0, 0, 0);
+    this.camera.lookAt(t);
+    // Keep the whole framed sphere inside the clip range at any zoom.
+    const far = this.orbitRadius + this.fitRadius * 2 + 20;
+    if (Math.abs(this.camera.far - far) > 5) {
+      this.camera.far = far;
+      this.camera.updateProjectionMatrix();
+    }
 
     // Self rotation + breathing pulse
     if (this.selfMesh) {
@@ -914,15 +1147,23 @@ export class BrainScene {
   resize() {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h);
-    if (this.composer) this.composer.setSize(w, h);
+    // A collapsed container (List mode, or mid-layout) hits this too — never
+    // feed a 0-height aspect ratio or a 0×0 size to the renderer.
+    if (w > 0 && h > 0) {
+      this.camera.aspect = w / h;
+      this.camera.updateProjectionMatrix();
+      this.renderer.setSize(w, h);
+      if (this.composer) this.composer.setSize(w, h);
+    }
+    // The container may have just grown from 0×0 (or the tab regained focus
+    // right as a resize landed) — re-arm the loop if the gate is now open.
+    this.scheduleFrame();
   }
 
   // ── Dispose ──────────────────────────────────────────────────────────
   dispose() {
     this.disposed = true;
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
     cancelAnimationFrame(this.raf);
     const canvas = this.renderer.domElement;
     canvas.removeEventListener('mousedown', this.onMouseDown);
