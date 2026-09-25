@@ -140,17 +140,14 @@ const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
     why: 'the trust-level options are two-line cards: a title row with a badge '
       + 'above a description',
   },
-  'components/settings/agents/AgentsPanel.tsx': {
-    count: 2,
-    why: 'the worker and persona rows are whole cards — a portrait, a status row '
-      + 'and a description — that open a detail page',
-  },
   'components/settings/atoms.tsx': {
     count: 1,
-    why: "ListRow's clickable variant is the same whole-card shape as "
-      + 'AgentsPanel\'s worker/persona rows above (icon, status row, detail, '
-      + 'optional trailing controls) — it exists to converge future card lists '
-      + 'onto ONE row component instead of each hand-rolling its own',
+    why: "ListRow's clickable variant is the whole-card shape formerly "
+      + "hand-rolled per-component (AgentsPanel's worker/persona rows, "
+      + 'DevicesPanel\'s device rows): a portrait/icon, a status row, a '
+      + 'description, optional trailing controls, opening a detail page or '
+      + 'not. Converged here (dagK settings pass, R7) so a 4th card list '
+      + 'does not invent a 4th look',
   },
   'components/skills/SkillCard.tsx': {
     count: 1,

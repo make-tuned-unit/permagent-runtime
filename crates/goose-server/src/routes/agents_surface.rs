@@ -84,12 +84,86 @@ fn gate_for(descriptor_id: &str, flags: FeatureFlags) -> Option<Gate> {
 struct BackgroundWorker {
     id: String,
     display_name: String,
+    /// One plain sentence, what this does FOR THE USER — the roster's default
+    /// line. `what_it_does`/`why_it_matters` below are the full engineering
+    /// prose (crate names, config keys, guardrail internals) that used to be
+    /// the ONLY text on this row; they now live behind the UI's "Details"
+    /// disclosure. See `worker_summary` for the curated table this is drawn
+    /// from (dagK settings pass, ST1 round 2 — Jesse's 1440px review: "the
+    /// real daemon returns long engineering paragraphs").
+    summary: String,
     what_it_does: String,
     why_it_matters: String,
     state_source: &'static str,
     live_state: LiveState,
     dispatchable: bool,
     gate: Option<Gate>,
+}
+
+/// A hand-written, plain-language one-sentence summary per worker id — what it
+/// does for the user, no crate names, no config keys, no internal guardrail
+/// mechanics. `what_it_does`/`why_it_matters` on [`FeatureDescriptor`] are
+/// written for the AGENT'S system prompt (precise, exhaustive, full of the
+/// mechanism the agent must respect); they were never meant to be the only
+/// sentence a human reads before deciding whether a row is theirs.
+///
+/// A worker id with no entry here falls back to the first sentence of its
+/// `what_it_does` (still better than the whole paragraph) — see
+/// `every_worker_summary_is_short_and_present` for the length floor that
+/// fallback is held to, and `every_current_worker_has_a_curated_summary` for
+/// why it should not be relied on for today's roster.
+fn worker_summary_table(id: &str) -> Option<&'static str> {
+    // Matched against the descriptors' own id constants (not string literals
+    // duplicated a second time) so a renamed descriptor id fails to compile
+    // here instead of silently falling through to the generic fallback.
+    if id == permagent::playbook::PLAYBOOK_FEATURE_ID {
+        return Some("Learns how you tend to decide, from your past decisions.");
+    }
+    if id == permagent::strix::STRIX_FEATURE_ID {
+        return Some("Scans your own projects for security flaws.");
+    }
+    Some(match id {
+        "scheduler" => "Runs your recurring automations and reminders on schedule.",
+        "librarian" => "Writes searchable descriptions for new memories overnight.",
+        "git_steward" => {
+            "Keeps your repos tidy — commit messages, PR descriptions, stale branches."
+        }
+        "initiative" => "Notices commands you repeat and offers to automate them.",
+        "watcher" => "Surfaces the one thing worth your attention, at most once a day.",
+        "onboarding_coach" => "Suggests a feature you haven't tried yet, gently and rarely.",
+        "growth_measurement" => "Measures whether a shipped growth change actually helped.",
+        "concierge" => "Triages your email inbox and drafts replies for you to approve.",
+        "financier" => "Tracks your watchlist, positions, and market research.",
+        "forecaster" => "Watches public signals for where a project's market is heading.",
+        "council" => "Debates your open decisions across every connected model.",
+        _ => return None,
+    })
+}
+
+/// First sentence of a longer description, trimmed, for a worker id this
+/// table does not (yet) cover. Capped at 160 chars so a descriptor with no
+/// early period (or one written as a single very long clause) cannot leak the
+/// whole paragraph onto the roster row.
+fn first_sentence(text: &str) -> String {
+    let end = text.find(". ").map(|i| i + 1).unwrap_or(text.len());
+    let cut = &text[..end.min(text.len())];
+    if cut.chars().count() > 160 {
+        let truncated: String = cut.chars().take(157).collect();
+        format!("{truncated}...")
+    } else {
+        cut.trim_end_matches('.').to_string() + "."
+    }
+}
+
+/// The summary this worker's row shows by default — curated if the table has
+/// one, else the first sentence of `what_it_does`. Never empty: a worker with
+/// an empty `what_it_does` (none exist today; `every_worker_descriptor_reaches_the_roster`
+/// would already have said so) would still get an empty string here, which
+/// `every_worker_summary_is_short_and_present` exists to catch before it ships.
+fn worker_summary(d: &FeatureDescriptor) -> String {
+    worker_summary_table(d.id)
+        .map(str::to_string)
+        .unwrap_or_else(|| first_sentence(d.what_it_does))
 }
 
 #[derive(Serialize, Clone)]
@@ -235,6 +309,7 @@ fn background_worker(
     BackgroundWorker {
         id: d.id.to_string(),
         display_name: d.display_name.to_string(),
+        summary: worker_summary(d),
         what_it_does: d.what_it_does.to_string(),
         why_it_matters: d.why_it_matters.to_string(),
         state_source,
@@ -1022,6 +1097,46 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every worker gets a plain-language summary short enough to be a roster
+    /// row's ONE line — not the agent-facing `what_it_does` paragraph. Jesse's
+    /// 1440px review of the real daemon: the roster was still printing full
+    /// engineering paragraphs (Scheduler's guardrail internals, Git Steward's
+    /// `steward_scan_enabled`, ...) because nothing pinned a length or a
+    /// presence guarantee on the summary shown by default.
+    #[test]
+    fn every_worker_summary_is_short_and_present() {
+        for d in WORKER_DESCRIPTORS {
+            let summary = worker_summary(d);
+            assert!(!summary.trim().is_empty(), "{} has no summary at all", d.id);
+            assert!(
+                summary.chars().count() <= 120,
+                "{}'s summary is {} chars, over the 120 budget for a roster row: {summary:?}",
+                d.id,
+                summary.chars().count()
+            );
+        }
+    }
+
+    /// Every CURRENT worker has a hand-written entry in `worker_summary_table`
+    /// — the `first_sentence` fallback exists for a worker added later without
+    /// one, not as the steady state for today's roster. A new worker landing
+    /// with no curated summary should fail loudly here, not silently ship
+    /// whatever its `what_it_does` happens to start with.
+    #[test]
+    fn every_current_worker_has_a_curated_summary() {
+        let missing: Vec<&str> = WORKER_DESCRIPTORS
+            .iter()
+            .map(|d| d.id)
+            .filter(|id| worker_summary_table(id).is_none())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "worker(s) with no curated summary, falling back to a truncated \
+             what_it_does sentence: {missing:?} — add an entry to \
+             worker_summary_table"
+        );
+    }
 
     #[test]
     fn workers_are_never_dispatchable_and_have_no_affordance() {

@@ -24,7 +24,7 @@ import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
 import { PronunciationSection } from '../voice/PronunciationSection';
-import { Section, Row, Block, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, selectStyle } from './atoms';
+import { Section, Row, Block, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, ListRow, selectStyle } from './atoms';
 import { Button } from '../common/Button';
 import { H1 } from '../common/H1';
 import { Tooltip } from '../common/Tooltip';
@@ -622,7 +622,7 @@ export function extensionLabel(ext: ToolExtension): string {
   return label || ext.name || 'Unnamed extension';
 }
 
-function ToolsPanel({ goto }: PanelProps) {
+export function ToolsPanel({ goto }: PanelProps) {
   const { colors } = useThemeHook();
   const [extensions, setExtensions] = useState<ToolExtension[]>([]);
   const [loading, setLoading] = useState(true);
@@ -631,6 +631,12 @@ function ToolsPanel({ goto }: PanelProps) {
   // it at all — this pane showed stale enabled/disabled state for the whole
   // session it was open.
   const configRev = useCommandCenter(s => s.configRev);
+  // The persona's own configured name — "What Henry can use" is a different
+  // sentence than "What your agent can use" once the user has actually named
+  // it, and this is the one place in the app that already knows the name (the
+  // Persona pane's `first_name`). Falls back to "your agent" rather than
+  // blocking the section on a slow or failed identity read.
+  const [personaName, setPersonaName] = useState<string | null>(null);
 
   useEffect(() => {
     api.getExtensions()
@@ -640,7 +646,14 @@ function ToolsPanel({ goto }: PanelProps) {
       .catch(() => setLoading(false));
   }, [configRev]);
 
+  useEffect(() => {
+    api.getIdentity()
+      .then(id => { if (id.first_name?.trim()) setPersonaName(id.first_name.trim()); })
+      .catch(() => {});
+  }, []);
+
   const enabledCount = extensions.filter(e => e.enabled).length;
+  const enabledExtensions = extensions.filter(e => e.enabled);
   // stdio servers that declare required env vars are the ones with API keys —
   // the panel points at where those are actually managed.
   const needKeys = extensions.filter(e => (e.env_keys?.length ?? 0) > 0);
@@ -650,6 +663,39 @@ function ToolsPanel({ goto }: PanelProps) {
       {/* MCP is defined here, once — the nav label carries the user's word and
           the pane carries the acronym. */}
       <H1 sub="Tools your agent can use. Most arrive over MCP — the Model Context Protocol — so connecting a server is what gives the agent something new it can call.">Tools</H1>
+
+      {/* "What Henry can use" — distinct from Models (which is "which brain
+          answers which job") and from the raw MCP server list below (which is
+          how you connect/disconnect one): this section answers the plain
+          question a non-technical reader actually has, in one line per
+          enabled tool, using the persona's own name once it has one. */}
+      <Section title={`What ${personaName ?? 'your agent'} can use`}>
+        {loading ? (
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: `${space.lg}px ${space.xxl}px` }}>
+            Checking what&apos;s connected…
+          </div>
+        ) : enabledExtensions.length === 0 ? (
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: `${space.lg}px ${space.xxl}px`, lineHeight: 1.5 }}>
+            Nothing connected yet — {personaName ?? 'your agent'} can only talk. Connect a tool below to give it something to do.
+          </div>
+        ) : (
+          <div style={{ padding: `${space.lg}px ${space.xxl}px`, display: 'flex', flexWrap: 'wrap', gap: space.sm }}>
+            {enabledExtensions.map(e => (
+              <span
+                key={e.name}
+                data-testid={`can-use-${e.name}`}
+                style={{
+                  ...type.label, padding: `${space.xxs}px ${space.md}px`, borderRadius: radius.pill,
+                  border: `1px solid ${colors.border}`, color: colors.text, fontFamily: font.body,
+                }}
+              >
+                {extensionLabel(e)}
+              </span>
+            ))}
+          </div>
+        )}
+      </Section>
+
       <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.xxl }}>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
@@ -1739,24 +1785,27 @@ function DevicesPanel() {
             No devices paired yet. Create a pairing link below.
           </div>
         )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         {devices?.map(d => (
-          <Row
+          <ListRow
             key={d.id}
-            label={d.name}
+            testId={`device-row-${d.id}`}
+            title={d.name}
             // Never having connected is not the same fact as being revoked —
             // dimmed, not hidden, so the entry a claim link created is still
             // findable while it says plainly that nothing has happened yet.
-            dim={!d.revoked && !d.last_seen}
-            hint={
-              (d.revoked ? 'Revoked · ' : '')
-              + `Paired ${new Date(d.created).toLocaleDateString()}`
+            tone={d.revoked ? 'problem' : !d.last_seen ? 'dim' : 'default'}
+            chip={d.revoked && (
+              <span style={{ fontSize: textSize.micro, fontWeight: 600, color: colors.danger }}>REVOKED</span>
+            )}
+            detail={
+              `Paired ${new Date(d.created).toLocaleDateString()}`
               // `timeAgo`, the History format ("3d ago"): `relativeTimeAgo`
               // only counts hours, so a phone idle for six weeks read
               // "last seen 1058h 52m ago".
               + ` · ${d.last_seen ? `last seen ${timeAgo(d.last_seen) || 'at an unknown time'}` : 'never seen'}`
             }
-          >
-            {editingId === d.id ? (
+            trailing={editingId === d.id ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
                 <TextInput value={editName} onChange={setEditName} placeholder="Device name" />
                 <Button
@@ -1775,47 +1824,42 @@ function DevicesPanel() {
                 >Save</Button>
                 <Button colors={colors} style={ghost(colors)} onClick={() => setEditingId(null)}>Cancel</Button>
               </div>
-            ) : (
+            ) : !d.revoked && (
               <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
-                {d.revoked ? (
-                  <span style={{ fontSize: textSize.micro, fontWeight: 600, color: colors.danger }}>REVOKED</span>
-                ) : (
-                  <>
-                    <Button
-                      colors={colors}
-                      style={ghost(colors)}
-                      onClick={() => { setEditingId(d.id); setEditName(d.name); setConfirmRevokeId(null); }}
-                    >Rename</Button>
-                    <Tooltip content="This device stops authenticating immediately. Pair it again to restore access.">
-                    <Button
-                      colors={colors}
-                      // The danger palette rides in as custom properties, not as
-                      // an inline `color`/`borderColor`: those would beat the
-                      // hover rule and leave this reading as unpressable.
-                      style={{
-                        ...ghost(colors),
-                        '--pa-btn-fg': colors.danger,
-                        '--pa-btn-border': `${colors.danger}66`,
-                        '--pa-btn-border-hover': colors.danger,
-                        '--pa-btn-bg-hover': `${colors.danger}1A`,
-                        '--pa-btn-bg-active': `${colors.danger}26`,
-                      } as CSSProperties}
-                      // The first press only arms the confirmation — nothing is
-                      // in flight, so it returns nothing and nothing ticks.
-                      onClick={() => {
-                        if (confirmRevokeId !== d.id) { setConfirmRevokeId(d.id); return; }
-                        return api.revokeDevice(d.id)
-                          .then(() => { setConfirmRevokeId(null); loadDevices(); return true; })
-                          .catch(() => { setConfirmRevokeId(null); return false; });
-                      }}
-                    >{confirmRevokeId === d.id ? 'Confirm revoke' : 'Revoke'}</Button>
-                    </Tooltip>
-                  </>
-                )}
+                <Button
+                  colors={colors}
+                  style={ghost(colors)}
+                  onClick={() => { setEditingId(d.id); setEditName(d.name); setConfirmRevokeId(null); }}
+                >Rename</Button>
+                <Tooltip content="This device stops authenticating immediately. Pair it again to restore access.">
+                <Button
+                  colors={colors}
+                  // The danger palette rides in as custom properties, not as
+                  // an inline `color`/`borderColor`: those would beat the
+                  // hover rule and leave this reading as unpressable.
+                  style={{
+                    ...ghost(colors),
+                    '--pa-btn-fg': colors.danger,
+                    '--pa-btn-border': `${colors.danger}66`,
+                    '--pa-btn-border-hover': colors.danger,
+                    '--pa-btn-bg-hover': `${colors.danger}1A`,
+                    '--pa-btn-bg-active': `${colors.danger}26`,
+                  } as CSSProperties}
+                  // The first press only arms the confirmation — nothing is
+                  // in flight, so it returns nothing and nothing ticks.
+                  onClick={() => {
+                    if (confirmRevokeId !== d.id) { setConfirmRevokeId(d.id); return; }
+                    return api.revokeDevice(d.id)
+                      .then(() => { setConfirmRevokeId(null); loadDevices(); return true; })
+                      .catch(() => { setConfirmRevokeId(null); return false; });
+                  }}
+                >{confirmRevokeId === d.id ? 'Confirm revoke' : 'Revoke'}</Button>
+                </Tooltip>
               </div>
             )}
-          </Row>
+          />
         ))}
+        </div>
       </Section>
 
       <Section title="Pair a device" sub="Turn on tailnet access below, then scan the QR code with the device you are adding. Both devices must be on your tailnet.">

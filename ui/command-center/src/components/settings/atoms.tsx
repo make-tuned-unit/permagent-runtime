@@ -401,7 +401,7 @@ export function Details({ summary, children }: { summary: string; children: Reac
  * support); omit it for a row that is display-only and let `trailing` carry
  * whatever action it needs instead.
  */
-export function ListRow({ icon, title, chip, status, detail, trailing, onOpen, tone }: {
+export function ListRow({ icon, title, chip, status, detail, trailing, onOpen, tone, testId }: {
   icon?: React.ReactNode;
   title: string;
   /** A short status pill next to the title — "on"/"off", "connected", etc. */
@@ -415,6 +415,7 @@ export function ListRow({ icon, title, chip, status, detail, trailing, onOpen, t
   onOpen?: () => void;
   /** Dims the row for something never seen / not yet real (R3 — honest, not hidden). */
   tone?: 'default' | 'dim' | 'problem';
+  testId?: string;
 }) {
   const { colors } = useTheme();
   const border = tone === 'problem' ? colors.danger : colors.border;
@@ -438,9 +439,9 @@ export function ListRow({ icon, title, chip, status, detail, trailing, onOpen, t
     padding: `${space.xl}px 14px`, borderRadius: radius.md, background: colors.bgDeeper,
     border: `1px solid ${border}`, fontFamily: font.body,
   };
-  if (!onOpen) return <div style={shared}>{body}</div>;
+  if (!onOpen) return <div data-testid={testId} style={shared}>{body}</div>;
   return (
-    <button type="button" onClick={onOpen} style={{ ...shared, display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer' }}>
+    <button type="button" onClick={onOpen} data-testid={testId} style={{ ...shared, display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer' }}>
       {body}
     </button>
   );

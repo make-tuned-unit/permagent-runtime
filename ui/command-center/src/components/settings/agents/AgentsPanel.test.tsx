@@ -238,7 +238,7 @@ describe('AgentsPanel', () => {
 
     const text = container.textContent ?? '';
     expect(text).toContain('Scheduler');
-    expect(text).toMatch(/run themselves/i);
+    expect(text).toMatch(/run on their own/i);
     // No dispatch / run-now control — section titles may say "Dispatch roster".
     const controls = [...container.querySelectorAll('button, a')].filter(el =>
       /^(dispatch|run now)$/i.test((el.textContent ?? '').trim()),
@@ -663,5 +663,147 @@ describe('AgentsPanel', () => {
     expect((empty?.textContent ?? '').toLowerCase()).toContain('not proof the agent did nothing');
     expect((empty?.textContent ?? '').toLowerCase()).not.toContain('no work yet');
     expect((empty?.textContent ?? '').toLowerCase()).not.toMatch(/\bthis agent did nothing\b/);
+  });
+
+  // Jesse's 1440px review of the real daemon: worker rows were printing the
+  // FULL engineering paragraph (Scheduler's guardrail internals, Git
+  // Steward's config keys, ...), because the roster had no separate short
+  // field. ST1 round 2: a curated/first-sentence `summary` is the row's
+  // default line; the long paragraph moves behind "How this works".
+  describe('plain-language rows (ST1 round 2)', () => {
+    const LONG_WHAT_IT_DOES =
+      'Runs saved recipes and reminders in the background on cron, one-time, or interval schedules — retrying transient failures, recovering runs missed during downtime, and escalating repeated failures to the Decision Inbox. Guardrails are enforced, not advisory.';
+
+    it("shows the daemon's curated summary on the roster row, not the long paragraph", async () => {
+      apiFetchMock.mockImplementation(async (endpoint: string) => {
+        if (endpoint === '/api/agents/roster') {
+          return {
+            workers: [{
+              id: 'scheduler', display_name: 'Scheduler',
+              summary: 'Runs your recurring automations and reminders on schedule.',
+              what_it_does: LONG_WHAT_IT_DOES,
+              why_it_matters: 'Lets you promise recurring work and actually deliver it.',
+              state_source: 'queryable', live_state: { status: 'not_queryable' },
+              dispatchable: false, gate: null,
+            }],
+            dispatch_roster: [], capabilities: [],
+          } as never;
+        }
+        if (endpoint.startsWith('/api/agents/scheduler/work')) return EMPTY_WORK as never;
+        throw new Error(`unexpected fetch ${endpoint}`);
+      });
+      await mount();
+
+      const row = container.querySelector('[data-testid="worker-row-scheduler"]');
+      expect(row?.textContent ?? '').toContain('Runs your recurring automations and reminders on schedule.');
+      expect(row?.textContent ?? '').not.toContain('Guardrails are enforced, not advisory');
+    });
+
+    it('falls back to the first sentence of what_it_does when a daemon sends no summary', async () => {
+      const whatItDoes = 'Runs saved recipes on a schedule. Guardrails are enforced, not advisory, and a headless run withholds two self-replicating extensions unless the recipe declares them.';
+      apiFetchMock.mockImplementation(async (endpoint: string) => {
+        if (endpoint === '/api/agents/roster') {
+          return {
+            workers: [{
+              id: 'scheduler', display_name: 'Scheduler',
+              what_it_does: whatItDoes,
+              why_it_matters: 'Lets you promise recurring work and actually deliver it.',
+              state_source: 'queryable', live_state: { status: 'not_queryable' },
+              dispatchable: false, gate: null,
+            }],
+            dispatch_roster: [], capabilities: [],
+          } as never;
+        }
+        if (endpoint.startsWith('/api/agents/scheduler/work')) return EMPTY_WORK as never;
+        throw new Error(`unexpected fetch ${endpoint}`);
+      });
+      await mount();
+
+      const row = container.querySelector('[data-testid="worker-row-scheduler"]');
+      expect(row?.textContent ?? '').toContain('Runs saved recipes on a schedule.');
+      expect(row?.textContent ?? '').not.toContain('Guardrails are enforced, not advisory');
+    });
+
+    it('puts the long paragraph behind a "How this works" disclosure on the detail page', async () => {
+      mockRosterAndDetail();
+      await mount();
+      await open('worker-row-strix');
+
+      const details = container.querySelector('details');
+      expect(details).toBeTruthy();
+      expect(details?.querySelector('summary')?.textContent).toBe('How this works');
+      expect(details?.textContent ?? '').toContain('Sweeps one project per pass for security flaws');
+      expect(details?.textContent ?? '').toContain('Exposed secrets get found before someone else finds them');
+      // The Details element is collapsed by default — its content isn't
+      // hidden from the DOM (native <details> just visually collapses it),
+      // so the real assertion is that the disclosure element EXISTS to hold
+      // it, not that the text is absent before opening.
+      expect(details?.hasAttribute('open')).toBe(false);
+    });
+
+    it('shows real last activity on the roster row when the daemon has one', async () => {
+      apiFetchMock.mockImplementation(async (endpoint: string) => {
+        if (endpoint === '/api/agents/roster') return ROSTER as never;
+        if (endpoint.startsWith('/api/agents/scheduler/work')) {
+          return {
+            ...EMPTY_WORK,
+            activity: {
+              attribution: 'actor_exact_match', status: 'ok', truncated: false,
+              items: [{
+                id: 'j1', ts: new Date().toISOString(), kind: 'run', actor: 'scheduler',
+                title: 'Ran the daily digest recipe', detail: null, ref_kind: null, ref_id: null,
+                goal_project_id: null,
+              }],
+            },
+          } as never;
+        }
+        if (endpoint.match(/^\/api\/agents\/[^/]+\/work/)) return EMPTY_WORK as never;
+        const detail = endpoint.match(/^\/api\/agents\/([^/?]+)$/);
+        if (detail) { const d = detailFor(detail[1]); if (d) return d as never; }
+        throw new Error(`unexpected fetch ${endpoint}`);
+      });
+      await mount();
+
+      const activity = container.querySelector('[data-testid="worker-row-scheduler-activity"]');
+      expect(activity?.textContent ?? '').toContain('Ran the daily digest recipe');
+      expect(activity?.textContent ?? '').toMatch(/last activity/i);
+    });
+
+    it('says plainly when no activity is attributed, rather than showing nothing', async () => {
+      mockRosterAndDetail();
+      await mount();
+
+      const activity = container.querySelector('[data-testid="worker-row-scheduler-activity"]');
+      expect(activity?.textContent ?? '').toMatch(/no activity attributed/i);
+    });
+
+    it("says the read failed, distinct from 'no activity', when the work fetch itself fails", async () => {
+      apiFetchMock.mockImplementation(async (endpoint: string) => {
+        if (endpoint === '/api/agents/roster') return ROSTER as never;
+        if (endpoint.startsWith('/api/agents/scheduler/work')) throw new Error('daemon down');
+        if (endpoint.match(/^\/api\/agents\/[^/]+\/work/)) return EMPTY_WORK as never;
+        const detail = endpoint.match(/^\/api\/agents\/([^/?]+)$/);
+        if (detail) { const d = detailFor(detail[1]); if (d) return d as never; }
+        throw new Error(`unexpected fetch ${endpoint}`);
+      });
+      await mount();
+
+      const activity = container.querySelector('[data-testid="worker-row-scheduler-activity"]');
+      expect(activity?.textContent ?? '').toMatch(/couldn.t be read/i);
+      expect(activity?.textContent ?? '').not.toMatch(/no activity attributed/i);
+    });
+  });
+
+  describe('plain-language copy (ST1 round 2)', () => {
+    it('uses plain section titles instead of internal jargon', async () => {
+      mockRosterAndDetail();
+      await mount();
+      const text = container.textContent ?? '';
+      expect(text).toContain('Background agents');
+      expect(text).toContain('Agents that take on goals');
+      expect(text).toContain('What your agents can use');
+      expect(text).not.toContain('Dispatch roster');
+      expect(text).not.toMatch(/Platform extensions — not agents/);
+    });
   });
 });

@@ -213,6 +213,29 @@ export function defaultEnabledLabel(value: boolean | null): string {
   return value ? 'default on' : 'default off';
 }
 
+/**
+ * First sentence of a longer description, trimmed and capped — the client-side
+ * twin of the daemon's own fallback (`agents_surface.rs::first_sentence`). Used
+ * only when a worker row arrives with no `summary` at all (an older daemon):
+ * the daemon curates a real summary for every worker it knows about, so this
+ * exists purely so a client talking to an old daemon degrades to "the first
+ * sentence" rather than to the whole paragraph.
+ */
+export function firstSentence(text: string): string {
+  const idx = text.indexOf('. ');
+  const cut = idx === -1 ? text : text.slice(0, idx + 1);
+  if (cut.length > 160) return `${cut.slice(0, 157)}...`;
+  return cut.endsWith('.') ? cut : `${cut}.`;
+}
+
+/** The one-sentence line a worker row shows by default (R3 — plain language,
+ *  not the agent-facing engineering paragraph). Prefers the daemon's curated
+ *  `summary`; falls back to `firstSentence(what_it_does)` only for a daemon
+ *  that predates the field. */
+export function workerSummary(w: { summary?: string; what_it_does: string }): string {
+  return w.summary && w.summary.trim().length > 0 ? w.summary : firstSentence(w.what_it_does);
+}
+
 export function engineLabel(engine: string): string {
   switch (engine) {
     case 'internal_subagent':

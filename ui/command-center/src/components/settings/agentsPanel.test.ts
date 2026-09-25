@@ -16,6 +16,8 @@ import {
   STORED_SECRETS_NOTE,
   gateRowHint,
   readAgentGate,
+  firstSentence,
+  workerSummary,
 } from './agentsPanel';
 
 describe('liveStateLabel', () => {
@@ -232,5 +234,45 @@ describe('per-agent secret copy', () => {
     expect(NO_AGENT_SECRETS_NOTE).toContain('nothing in the runtime reads');
     expect(NO_AGENT_SECRETS_NOTE).toContain('nothing to enter');
     expect(STORED_SECRETS_NOTE).toContain('values never are');
+  });
+});
+
+describe('workerSummary', () => {
+  // Jesse's 1440px review of the real daemon: worker rows were printing the
+  // full engineering paragraph (Scheduler's guardrail internals, Git
+  // Steward's config keys, ...) because there was no separate short field.
+  it('prefers the daemon-curated summary over the long description', () => {
+    expect(workerSummary({
+      summary: 'Runs your recurring automations and reminders on schedule.',
+      what_it_does: 'Runs saved recipes and reminders in the background on cron, one-time, or interval schedules — retrying transient failures, recovering runs missed during downtime, and escalating repeated failures to the Decision Inbox. Guardrails are enforced, not advisory: schedules cannot fire more often than every 15 minutes.',
+    })).toBe('Runs your recurring automations and reminders on schedule.');
+  });
+
+  it('falls back to the first sentence for a daemon that predates summary', () => {
+    expect(workerSummary({
+      what_it_does: 'The agent that owns repo hygiene and CI. It runs on its own schedule.',
+    })).toBe('The agent that owns repo hygiene and CI.');
+  });
+
+  it('treats an empty-string summary the same as a missing one', () => {
+    expect(workerSummary({ summary: '  ', what_it_does: 'Does the thing. And more.' }))
+      .toBe('Does the thing.');
+  });
+});
+
+describe('firstSentence', () => {
+  it('cuts at the first sentence boundary', () => {
+    expect(firstSentence('First bit. Second bit. Third bit.')).toBe('First bit.');
+  });
+
+  it('returns the whole string, with a period, when there is no sentence boundary', () => {
+    expect(firstSentence('No period anywhere here')).toBe('No period anywhere here.');
+  });
+
+  it('caps a single very long clause rather than leaking the whole paragraph', () => {
+    const long = 'x'.repeat(300);
+    const result = firstSentence(long);
+    expect(result.length).toBeLessThanOrEqual(161);
+    expect(result.endsWith('...')).toBe(true);
   });
 });

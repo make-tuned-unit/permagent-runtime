@@ -29,6 +29,14 @@ export interface AgentGateWire {
 export interface BackgroundWorker {
   id: string;
   display_name: string;
+  /** One plain sentence, what this does for the user — the roster row's
+   *  default line. Added alongside `what_it_does`/`why_it_matters` (dagK
+   *  settings pass, ST1 round 2): those two are written for the agent's own
+   *  system prompt and are full engineering paragraphs, never meant to be the
+   *  only sentence a human reads before deciding whether a row is theirs.
+   *  `undefined` on a daemon that predates this field — callers should fall
+   *  back to `firstSentence(what_it_does)` (see `agentsPanel.ts`). */
+  summary?: string;
   what_it_does: string;
   why_it_matters: string;
   state_source: 'queryable' | 'static';
