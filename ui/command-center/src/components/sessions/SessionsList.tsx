@@ -6,6 +6,7 @@ import { font, radius, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { ConfirmDialog } from '../common/ConfirmDialog';
+import { pressableEnterOnly } from '../common/pressable';
 
 import { Tooltip } from '../common/Tooltip';
 function timeAgo(dateStr: string): string {
@@ -249,13 +250,19 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
 
         {sessions.map(s => {
           const isActive = s.id === chatSessionId;
+          // R4/R8: a row that opens on click with no role/keyboard path — the
+          // "list rows" case the pressable() helper exists for. Enter-only
+          // (not Space) because the row nests its own interactive children
+          // (the rename span, the delete button), where Space is ambiguous.
+          const rowPress = pressableEnterOnly(() => handleSelect(s.id), { label: s.name || s.id });
           return (
             <div
               key={s.id}
-              onClick={() => handleSelect(s.id)}
-              className={`group flex items-center gap-3 px-4 py-3 cursor-pointer transition ${
+              {...rowPress}
+              className={`group flex items-center gap-3 px-4 py-3 cursor-pointer transition ${rowPress.className} ${
                 isActive ? '' : 'hover:bg-white/[0.03]'
               }`}
+              aria-current={isActive ? 'true' : undefined}
               style={{
                 borderBottom: `1px solid ${colors.border}`,
                 backgroundColor: isActive ? `${colors.cyan}0D` : undefined,

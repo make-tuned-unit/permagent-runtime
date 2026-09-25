@@ -24,7 +24,7 @@ vi.mock('./api', async (importOriginal) => {
   return { ...actual, eventsWsUrl: vi.fn(async () => 'ws://localhost/events') };
 });
 
-import { ensureNotificationStream, useNotifications } from './notifications';
+import { ensureNotificationStream, useNotifications, toast, setNotificationPref } from './notifications';
 import type { AppNotification } from './notifications';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -103,5 +103,27 @@ describe('inbox_file_received → download notification', () => {
     const found = captured.find((n) => n.kind === 'download');
     expect(found, `expected a download notification, got: ${JSON.stringify(captured)}`).toBeTruthy();
     expect(found?.body).toContain('invoice.pdf');
+  });
+});
+
+describe('toast() — "System messages" preference vs. opts.force (R8, coordinator ruling 2026-09-25)', () => {
+  afterEach(() => setNotificationPref('system', true));
+
+  it('a normal toast is silenced by the "System messages" preference', async () => {
+    setNotificationPref('system', false);
+    act(() => { root.render(<Probe />); });
+    act(() => { toast('Background job finished'); });
+    await flush();
+    expect(captured.find(n => n.title === 'Background job finished')).toBeUndefined();
+  });
+
+  it('opts.force bypasses the preference — a failure caused by the user\'s own click always toasts (NN/g H9, HAX G16)', async () => {
+    setNotificationPref('system', false);
+    act(() => { root.render(<Probe />); });
+    act(() => { toast('Action failed', 'the daemon said no', undefined, { tone: 'danger', force: true }); });
+    await flush();
+    const found = captured.find(n => n.title === 'Action failed');
+    expect(found).toBeTruthy();
+    expect(found?.tone).toBe('danger');
   });
 });

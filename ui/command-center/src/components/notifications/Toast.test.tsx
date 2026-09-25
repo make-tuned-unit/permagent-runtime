@@ -179,4 +179,80 @@ describe('ToastCard', () => {
     await advance(32); // one faked animation frame's worth
     expect(card().style.opacity).toBe('1');
   });
+
+  // R8 item 3: tone, an inline action ("Undo"), and swipe-to-dismiss.
+  describe('R8 additions', () => {
+    it('tints the title by tone (danger for a failed action)', async () => {
+      await act(async () => {
+        root.render(
+          <ToastCard
+            notification={makeNotification({ title: 'Action failed', tone: 'danger' })}
+            ttlMs={60_000}
+            onDismiss={vi.fn()}
+            onActivate={vi.fn()}
+          />,
+        );
+      });
+      const title = card().querySelector('button > div')! as HTMLElement;
+      expect(title.textContent).toBe('Action failed');
+      expect(title.style.color).not.toBe('');
+    });
+
+    it('renders an inline action and firing it calls onAction and dismisses', async () => {
+      const onAction = vi.fn();
+      const onDismiss = vi.fn();
+      await act(async () => {
+        root.render(
+          <ToastCard
+            notification={makeNotification({ action: { label: 'Undo', onAction } })}
+            ttlMs={60_000}
+            onDismiss={onDismiss}
+            onActivate={vi.fn()}
+          />,
+        );
+      });
+      const undoBtn = Array.from(card().querySelectorAll('button')).find(b => b.textContent === 'Undo')!;
+      await act(async () => {
+        undoBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      expect(onAction).toHaveBeenCalledTimes(1);
+      await advance(duration.snappy);
+      expect(onDismiss).toHaveBeenCalledWith('n1');
+    });
+
+    it('a small drag springs back rather than dismissing', async () => {
+      const onDismiss = vi.fn();
+      await act(async () => {
+        root.render(
+          <ToastCard notification={makeNotification()} ttlMs={60_000} onDismiss={onDismiss} onActivate={vi.fn()} />,
+        );
+      });
+      const el = card();
+      await act(async () => {
+        el.dispatchEvent(new MouseEvent('pointerdown', { clientX: 0, bubbles: true }));
+        el.dispatchEvent(new MouseEvent('pointermove', { clientX: 30, bubbles: true }));
+        el.dispatchEvent(new MouseEvent('pointerup', { clientX: 30, bubbles: true }));
+      });
+      expect(onDismiss).not.toHaveBeenCalled();
+    });
+
+    it('dragging past the swipe threshold dismisses', async () => {
+      const onDismiss = vi.fn();
+      await act(async () => {
+        root.render(
+          <ToastCard notification={makeNotification()} ttlMs={60_000} onDismiss={onDismiss} onActivate={vi.fn()} />,
+        );
+      });
+      const el = card();
+      // Each dispatch gets its own `act()` — React 18's automatic batching
+      // otherwise leaves `pointerup`'s handler closing over the PRE-move
+      // `dragX` when all three fire inside one synchronous block, which a
+      // real browser's discrete native events would not do.
+      await act(async () => { el.dispatchEvent(new MouseEvent('pointerdown', { clientX: 0, bubbles: true })); });
+      await act(async () => { el.dispatchEvent(new MouseEvent('pointermove', { clientX: 120, bubbles: true })); });
+      await act(async () => { el.dispatchEvent(new MouseEvent('pointerup', { clientX: 120, bubbles: true })); });
+      await advance(duration.snappy);
+      expect(onDismiss).toHaveBeenCalledWith('n1');
+    });
+  });
 });

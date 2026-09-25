@@ -11,6 +11,18 @@
 import type { CSSProperties } from 'react';
 import { concentric, font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
+import type { ViewTransitionDirection } from '../../lib/viewTransition';
+
+/** For a segmented control's tab switch (R8 item 5, coordinator ruling
+ *  2026-09-25): 'forward' when the newly-selected tab sits to the right of
+ *  the current one in the strip's own order, 'backward' when it sits to the
+ *  left — so the view-transition slide reads as moving toward the tab you
+ *  clicked, the way it would if the tabs were physical pages. */
+export function segmentDirection<K>(keys: readonly K[], from: K, to: K): ViewTransitionDirection {
+  const fromIdx = keys.indexOf(from);
+  const toIdx = keys.indexOf(to);
+  return toIdx < fromIdx ? 'backward' : 'forward';
+}
 
 /**
  * The strip a segmented tab sits in: its radius, and the padding that insets

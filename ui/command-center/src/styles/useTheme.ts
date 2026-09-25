@@ -9,6 +9,20 @@ import type { ThemeId, ThemeColors, ThemeGlass, GlassSurface, IdleAnim, UIDensit
 export function useTheme() {
   const [, setTick] = useState(0);
   useEffect(() => onThemeChange(() => setTick(t => t + 1)), []);
+  const reduceMotion = getReduceMotion();
+  // R8: the CSS-only motion primitives (`.pa-pressable`, `.pa-enter`,
+  // `.pa-skeleton`, toasts, modal/popover entrances, the agent pulse) have no
+  // JS of their own to check `reduceMotion` in — they are plain animations in
+  // index.css. The OS's own `prefers-reduced-motion` reaches them already via
+  // the app-wide `@media` guard, but the in-app override (Settings > Reduce
+  // Motion) previously only reached components that read this hook and
+  // disabled their OWN inline animation. Mirroring it onto `<html>` lets the
+  // stylesheet key off it too, so a person who turned the setting on inside
+  // the app — without their OS agreeing — still gets it everywhere, not just
+  // in the surfaces that happened to check.
+  useEffect(() => {
+    document.documentElement.dataset.reduceMotion = reduceMotion ? 'true' : 'false';
+  }, [reduceMotion]);
   return {
     theme: getTheme(),
     themePref: getThemePref(),
@@ -22,7 +36,7 @@ export function useTheme() {
     mobiusGlow: getMobiusGlow(),
     idleAnim: getIdleAnim(),
     density: getDensity(),
-    reduceMotion: getReduceMotion(),
+    reduceMotion,
   };
 }
 

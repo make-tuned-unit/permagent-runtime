@@ -8,6 +8,7 @@ import { maybeSpeakReply, replyDedupeKey } from './speakReplies';
 import { readLiveConversation } from './voiceHandoff';
 import { appendTraceRecord, sessionFrameToRecord } from './traceEvents';
 import { startEventPruning } from './eventBus';
+import { runViewTransition } from './viewTransition';
 import type { Person, PersonAssociation } from '../components/projects/types';
 import type { BrainMemoryTarget } from '../components/brain/brainMemoryFocus';
 
@@ -858,13 +859,23 @@ export function layoutHasTool(node: LayoutNode, tool: ToolType): boolean {
  * Switch the main window to the workspace hosting `tool`, closing any overlay.
  * Shared by in-window callers (Settings) and the chat window's cross-window
  * app_navigate handler. Returns false if no workspace hosts the tool.
+ *
+ * R8 item 5 (coordinator ruling 2026-09-25): the switch itself runs inside
+ * `runViewTransition`, which no-ops under Reduce Motion or on a WKWebView/
+ * browser without `startViewTransition` — every other caller of this
+ * function keeps working unmodified either way. This is the one place every
+ * main-view switch passes through (sidebar rows, Settings, the cross-window
+ * `app_navigate` handler), so wiring it here reaches all of them at once
+ * rather than each call site separately.
  */
 export function navigateToTool(tool: ToolType): boolean {
   const { workspaces, switchWorkspace, setActivePanel } = useCommandCenter.getState();
   const ws = workspaces.find(w => layoutHasTool(w.layoutJson, tool));
   if (!ws) return false;
-  setActivePanel('chat');
-  switchWorkspace(ws.id);
+  runViewTransition(() => {
+    setActivePanel('chat');
+    switchWorkspace(ws.id);
+  });
   return true;
 }
 

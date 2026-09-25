@@ -28,6 +28,15 @@ export interface AppNotification {
   /** Custom click action — wins over url/target when present (e.g. the
    *  "note saved" toast navigating to the exact note). */
   onActivate?: () => void;
+  /** R8: tints the toast card (success green / danger red) instead of the
+   *  default neutral cyan title. Tray rows are unaffected — the tint is a
+   *  toast-only affordance, since a permanent tray row tinted red for a
+   *  since-resolved failure would be stale information (R3). */
+  tone?: 'neutral' | 'success' | 'danger';
+  /** An inline action offered on the TOAST only (never the tray row — a row
+   *  you can return to any time has no need for an Undo slot). Firing it
+   *  dismisses the toast. */
+  action?: { label: string; onAction: () => void };
 }
 
 export type NotificationKind =
@@ -420,8 +429,28 @@ async function connect(): Promise<void> {
 /** Imperative toast for app code (#45's primitive): surfaces in the tray and
  *  as a transient toast, no daemon event required. Honors the Settings
  *  "System messages" preference — before this guard the toggle persisted
- *  prefs.system while every toast ignored it. */
-export function toast(title: string, body = '', onActivate?: () => void): void {
-  if (!getNotificationPrefs().system) return;
-  push({ kind: 'system', title, body, onActivate });
+ *  prefs.system while every toast ignored it.
+ *
+ *  `opts.tone`/`opts.action` (R8) are for a toast reporting the direct
+ *  consequence of something the user just did (an async action's failure, an
+ *  undo-able delete) — see `Button.tsx`'s failure path, the first caller.
+ *
+ *  `opts.force` (coordinator ruling 2026-09-25, NN/g H9 "help users recognize,
+ *  diagnose, and recover from errors" + HAX G16 "convey the consequences of
+ *  user actions") BYPASSES the "System messages" preference. That toggle is
+ *  for ambient, agent-initiated chatter (a Watcher nudge, a background job
+ *  finishing); a failure caused by the user's OWN click a moment ago is not
+ *  ambient — it is the direct, undeniable consequence of an action they just
+ *  took, and silencing it would leave them with a control that visibly failed
+ *  (the shake/tint) and no explanation why. Used by `Button.tsx`'s failure
+ *  path; not the default, so a caller pushing an ambient system toast still
+ *  respects the preference exactly as before. */
+export function toast(
+  title: string,
+  body = '',
+  onActivate?: () => void,
+  opts?: { tone?: AppNotification['tone']; action?: AppNotification['action']; force?: boolean },
+): void {
+  if (!opts?.force && !getNotificationPrefs().system) return;
+  push({ kind: 'system', title, body, onActivate, tone: opts?.tone, action: opts?.action });
 }

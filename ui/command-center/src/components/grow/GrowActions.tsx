@@ -20,6 +20,8 @@ import { Button } from '../common/Button';
 import type { Project } from '../projects/types';
 import { groupActionsByCategory } from './growActionTabs';
 import { SEGMENT_STRIP_PAD, SEGMENT_STRIP_RADIUS, segmentedTab } from './growStyles';
+import { segmentDirection } from '../common/segmented';
+import { runViewTransition } from '../../lib/viewTransition';
 import { SUMMARY_CLASS, growLabel } from './growChrome';
 import { CARD_PAD, CARD_R } from './growGeometry';
 import { WINDOW_DAYS } from './growthWindows';
@@ -318,7 +320,11 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
                   role="tab"
                   aria-selected={selected}
                   tabIndex={0}
-                  onClick={() => setCategoryTab(group.key)}
+                  // R8 item 5: crossfade + slide toward the clicked category.
+                  onClick={() => runViewTransition(
+                    () => setCategoryTab(group.key),
+                    { direction: segmentDirection(actionGroups.map(g => g.key), categoryTab ?? group.key, group.key) },
+                  )}
                   onFocus={() => setFocusCategory(group.key)}
                   onBlur={() => setFocusCategory(null)}
                   style={{
