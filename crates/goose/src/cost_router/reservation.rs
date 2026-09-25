@@ -148,8 +148,10 @@ pub struct ReservationBound {
     pub amount_usd: f64,
     /// Input-token upper bound reserved for the request.
     pub input_tokens: usize,
-    /// Maximum output tokens per physical attempt: [`RESERVED_OUTPUT_TOKENS`],
-    /// clamped down to the model's own `max_tokens` when that is smaller.
+    /// Maximum output tokens per physical attempt: [`output_reservation_cap`]
+    /// ([`RESERVED_OUTPUT_TOKENS`], or [`REASONING_RESERVED_OUTPUT_TOKENS`] for
+    /// a reasoning model), clamped down to the model's own `max_tokens` when
+    /// that is smaller.
     /// This is also the number the caller must send the provider as its
     /// request-level output cap, or the reservation prices a number the call
     /// was never actually limited to.
@@ -308,6 +310,31 @@ pub const PROMPT_OVERHEAD_TOKENS: usize = 4_096;
 /// `ProviderInvocationContext::reserved_output_tokens`), so the model is
 /// asked to stop at the cap instead of being merely priced as if it would.
 pub const RESERVED_OUTPUT_TOKENS: usize = 4_096;
+
+/// [`RESERVED_OUTPUT_TOKENS`] for a reasoning model
+/// (`ModelConfig::is_reasoning_model`).
+///
+/// A reasoning model's hidden reasoning is billed and capped as output, so
+/// the 4,096 cap above is not an answer budget for it: on 2026-09-25 two
+/// gpt-5.4-mini goal workers each spent the whole 4,096 reasoning, got back
+/// an incomplete response holding only a reasoning item, and ended their run
+/// with no tool call. The measured reply sizes behind the 4,096 cap were
+/// visible output only. OpenAI's reasoning guide asks for at least 25,000
+/// tokens of room for reasoning plus output; this matches the unreserved
+/// default (`model::REASONING_DEFAULT_MAX_OUTPUT_TOKENS`). The hold is still
+/// released at settlement, so a larger cap costs headroom, not money.
+pub const REASONING_RESERVED_OUTPUT_TOKENS: usize =
+    crate::model::REASONING_DEFAULT_MAX_OUTPUT_TOKENS as usize;
+
+/// The enforced output cap a reservation prices for `model_config`, before
+/// it is clamped to the model's own `max_tokens`.
+pub fn output_reservation_cap(model_config: &ModelConfig) -> usize {
+    if model_config.is_reasoning_model() {
+        REASONING_RESERVED_OUTPUT_TOKENS
+    } else {
+        RESERVED_OUTPUT_TOKENS
+    }
+}
 
 /// The safety margin a counted prompt is padded by: half again the count, plus
 /// [`PROMPT_OVERHEAD_TOKENS`].
@@ -477,7 +504,9 @@ fn calculate_bound_for_prompt(
     // produce more than its own `max_tokens` needs no larger a hold than
     // that). See `RESERVED_OUTPUT_TOKENS` for the measured evidence this
     // bound is based on.
-    let output = model_max_output.min(RESERVED_OUTPUT_TOKENS);
+    // A reasoning model gets [`REASONING_RESERVED_OUTPUT_TOKENS`] instead:
+    // its reasoning counts against the same cap.
+    let output = model_max_output.min(output_reservation_cap(model_config));
     let input_rate = positive_rate(pricing.input, "input")?;
     let output_rate = positive_rate(pricing.output, "output")?;
     let cache_read_rate = optional_positive_rate(pricing.cache_read, "cache_read")?;
@@ -1390,6 +1419,45 @@ mod tests {
             ),
             Err(ReservationBoundError::InvalidAttempts)
         );
+    }
+
+    /// 2026-09-25: a reasoning model's reasoning is capped as output, so the
+    /// reservation (and through it the wire `max_output_tokens`) must leave
+    /// room for it. The catalog's `reasoning` flag decides, not the name.
+    #[test]
+    fn a_reasoning_model_reserves_room_for_its_reasoning() {
+        let reasoning = ModelConfig {
+            reasoning: Some(true),
+            ..config(Some(400_000), Some(128_000))
+        };
+        let bound = plan_reservation_bound("openai", "gpt-4o", CostTier::PaidApi, &reasoning, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bound.output_tokens, REASONING_RESERVED_OUTPUT_TOKENS);
+        assert_eq!(
+            bound.input_tokens,
+            400_000 - REASONING_RESERVED_OUTPUT_TOKENS
+        );
+
+        let plain = ModelConfig {
+            reasoning: Some(false),
+            ..config(Some(400_000), Some(128_000))
+        };
+        let bound = plan_reservation_bound("openai", "gpt-4o", CostTier::PaidApi, &plain, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bound.output_tokens, RESERVED_OUTPUT_TOKENS);
+
+        // Still a ceiling, never a floor: a reasoning model whose own
+        // max_tokens is smaller keeps its own number.
+        let small = ModelConfig {
+            reasoning: Some(true),
+            ..config(Some(400_000), Some(8_000))
+        };
+        let bound = plan_reservation_bound("openai", "gpt-4o", CostTier::PaidApi, &small, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bound.output_tokens, 8_000);
     }
 
     /// Requirement 3 of the `RESERVED_OUTPUT_TOKENS` fix: a model whose own

@@ -7,6 +7,14 @@ use utoipa::ToSchema;
 
 pub const DEFAULT_CONTEXT_LIMIT: usize = 128_000;
 
+/// Output cap for a model that does not reason, when nothing else sets one.
+pub const DEFAULT_MAX_OUTPUT_TOKENS: i32 = 4_096;
+
+/// Output cap for a reasoning model when nothing else sets one. Reasoning
+/// tokens are billed and capped as output, so this has to leave room for the
+/// reasoning AND the answer after it; see [`ModelConfig::max_output_tokens`].
+pub const REASONING_DEFAULT_MAX_OUTPUT_TOKENS: i32 = 32_768;
+
 #[derive(Debug, Clone, Deserialize)]
 struct PredefinedModel {
     name: String,
@@ -310,12 +318,37 @@ impl ModelConfig {
         REASONING_PREFIXES.iter().any(|p| base.starts_with(p))
     }
 
+    /// Whether this model spends hidden reasoning tokens before it answers.
+    ///
+    /// The model catalog's own `reasoning` flag wins when the catalog knows the
+    /// model (`with_canonical_limits` copies it in); the name-prefix check
+    /// above is only the fallback for a model the catalog has no entry for.
+    pub fn is_reasoning_model(&self) -> bool {
+        self.reasoning
+            .unwrap_or_else(|| self.is_openai_reasoning_model())
+    }
+
+    /// The output cap sent with a request when nothing set one explicitly
+    /// (`GOOSE_MAX_TOKENS`, the catalog's own output limit, or a reservation
+    /// cap applied through `with_max_tokens`).
+    ///
+    /// A reasoning model's hidden reasoning tokens count against this same
+    /// cap. At 4,096 a reasoning model can spend the whole allowance thinking
+    /// and return an incomplete response holding only a reasoning item — no
+    /// text and no tool call — which is what ended two goal workers on
+    /// 2026-09-25. OpenAI's reasoning guide asks for at least 25,000 tokens of
+    /// room for reasoning plus output; [`REASONING_DEFAULT_MAX_OUTPUT_TOKENS`]
+    /// clears that.
     pub fn max_output_tokens(&self) -> i32 {
         if let Some(tokens) = self.max_tokens {
             return tokens;
         }
 
-        4_096
+        if self.is_reasoning_model() {
+            REASONING_DEFAULT_MAX_OUTPUT_TOKENS
+        } else {
+            DEFAULT_MAX_OUTPUT_TOKENS
+        }
     }
 
     pub fn get_config_param<T: for<'de> serde::Deserialize<'de>>(
@@ -498,6 +531,64 @@ mod tests {
             assert_eq!(config.context_limit, None);
             assert_eq!(config.max_tokens, None);
             assert_eq!(config.reasoning, None);
+        }
+    }
+
+    mod max_output_tokens {
+        use super::*;
+
+        fn unset(model_name: &str, reasoning: Option<bool>) -> ModelConfig {
+            ModelConfig {
+                model_name: model_name.to_string(),
+                reasoning,
+                ..ModelConfig::default()
+            }
+        }
+
+        /// 2026-09-25: gpt-5.4-mini workers were sent a 4,096 cap, spent it
+        /// all reasoning, and returned no text and no tool call.
+        #[test]
+        fn a_reasoning_model_defaults_to_room_for_its_reasoning() {
+            assert_eq!(
+                unset("gpt-5.4-mini", None).max_output_tokens(),
+                REASONING_DEFAULT_MAX_OUTPUT_TOKENS
+            );
+            // The catalog's flag counts for a name the fallback does not know.
+            assert_eq!(
+                unset("some-reasoner", Some(true)).max_output_tokens(),
+                REASONING_DEFAULT_MAX_OUTPUT_TOKENS
+            );
+        }
+
+        #[test]
+        fn a_non_reasoning_model_keeps_the_plain_default() {
+            assert_eq!(
+                unset("gpt-4o", None).max_output_tokens(),
+                DEFAULT_MAX_OUTPUT_TOKENS
+            );
+            // The catalog wins over the name fallback when it knows the model.
+            assert_eq!(
+                unset("gpt-5.4-mini", Some(false)).max_output_tokens(),
+                DEFAULT_MAX_OUTPUT_TOKENS
+            );
+        }
+
+        #[test]
+        fn an_explicit_max_tokens_is_respected_for_a_reasoning_model() {
+            let explicit = ModelConfig {
+                max_tokens: Some(2_000),
+                ..unset("gpt-5.4-mini", Some(true))
+            };
+            assert_eq!(explicit.max_output_tokens(), 2_000);
+
+            let _guard = env_lock::lock_env([
+                ("GOOSE_MAX_TOKENS", Some("3000")),
+                ("GOOSE_CONTEXT_LIMIT", None::<&str>),
+            ]);
+            assert_eq!(
+                ModelConfig::new_or_fail("gpt-5.4-mini").max_output_tokens(),
+                3_000
+            );
         }
     }
 

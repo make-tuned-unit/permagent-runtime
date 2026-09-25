@@ -24,6 +24,37 @@ pub struct ResponsesApiResponse {
     pub reasoning: Option<ResponseReasoningInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<ResponseUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incomplete_details: Option<IncompleteDetails>,
+}
+
+/// Why a response stopped early, on a response whose `status` is
+/// `"incomplete"` (for example `{"reason": "max_output_tokens"}`).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct IncompleteDetails {
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// The `incomplete_details.reason` the Responses API gives when the output
+/// cap ran out. For a reasoning model this is usually a response holding
+/// only a reasoning item: the cap was spent thinking before any text or tool
+/// call was written.
+pub const INCOMPLETE_MAX_OUTPUT_TOKENS: &str = "max_output_tokens";
+
+/// The reason a response is incomplete, or `None` for a finished one. An
+/// incomplete response with no stated reason reports `"unknown"`, so it is
+/// never mistaken for a normal completion.
+pub fn incomplete_reason(status: &str, details: Option<&IncompleteDetails>) -> Option<String> {
+    if status != "incomplete" {
+        return None;
+    }
+    Some(
+        details
+            .and_then(|d| d.reason.clone())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| "unknown".to_string()),
+    )
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -219,6 +250,17 @@ pub enum ResponsesStreamEvent {
         sequence_number: i32,
         response: ResponseMetadata,
     },
+    /// The terminal event for a response that stopped early — most often the
+    /// output cap running out (`incomplete_details.reason ==
+    /// "max_output_tokens"`). It carries the same `usage` and `output` as
+    /// `response.completed`; before it was handled here it was skipped as an
+    /// unknown event, so the call settled with no usage at all and the turn
+    /// read as an ordinary, if empty, completion.
+    #[serde(rename = "response.incomplete")]
+    ResponseIncomplete {
+        sequence_number: i32,
+        response: ResponseMetadata,
+    },
     #[serde(rename = "response.failed")]
     ResponseFailed { sequence_number: i32, error: Value },
     #[serde(rename = "response.function_call_arguments.delta")]
@@ -258,6 +300,7 @@ fn is_known_responses_stream_event_type(event_type: &str) -> bool {
             | "response.content_part.done"
             | "response.output_text.done"
             | "response.completed"
+            | "response.incomplete"
             | "response.failed"
             | "response.function_call_arguments.delta"
             | "response.function_call_arguments.done"
@@ -305,6 +348,8 @@ pub struct ResponseMetadata {
     pub usage: Option<ResponseUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ResponseReasoningInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incomplete_details: Option<IncompleteDetails>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -631,6 +676,11 @@ pub fn responses_api_to_message(response: &ResponsesApiResponse) -> anyhow::Resu
     Ok(message)
 }
 
+/// [`incomplete_reason`] for a non-streamed response.
+pub fn get_responses_incomplete_reason(response: &ResponsesApiResponse) -> Option<String> {
+    incomplete_reason(&response.status, response.incomplete_details.as_ref())
+}
+
 pub fn get_responses_usage(response: &ResponsesApiResponse) -> Usage {
     response
         .usage
@@ -788,16 +838,28 @@ where
                     // Text is already complete from deltas, this is just a summary event
                 }
 
-                ResponsesStreamEvent::ResponseCompleted { response, .. } => {
+                ResponsesStreamEvent::ResponseCompleted { response, .. }
+                | ResponsesStreamEvent::ResponseIncomplete { response, .. } => {
                     let model = model_name.as_ref().unwrap_or(&response.model);
                     let usage = response
                         .usage
                         .as_ref()
                         .map_or_else(Usage::default, usage_from_response_usage);
+                    let incomplete =
+                        incomplete_reason(&response.status, response.incomplete_details.as_ref());
+                    if let Some(reason) = incomplete.as_deref() {
+                        tracing::warn!(
+                            model = %model,
+                            reason,
+                            output_tokens = ?usage.output_tokens,
+                            "Responses API returned an incomplete response"
+                        );
+                    }
                     final_usage = Some(ProviderUsage {
                         usage,
                         model: model.clone(),
                         invocation_id: None,
+                        incomplete_reason: incomplete,
                     });
 
                     // For complete output, use the response output items
@@ -1116,6 +1178,7 @@ mod tests {
             }],
             reasoning: None,
             usage: None,
+            incomplete_details: None,
         };
 
         let message = responses_api_to_message(&response).unwrap();
@@ -1202,6 +1265,83 @@ mod tests {
         assert_eq!(usage.cache_read_input_tokens, Some(8000));
 
         Ok(())
+    }
+
+    /// 2026-09-25: a gpt-5.4-mini worker spent its whole output cap
+    /// reasoning. The stream ended with `response.incomplete`, which used to
+    /// be skipped as an unknown event: no usage settled, and the turn read as
+    /// an ordinary completion holding only a reasoning item.
+    #[tokio::test]
+    async fn test_responses_stream_incomplete_is_surfaced_with_usage() -> anyhow::Result<()> {
+        let lines = vec![
+            r#"data: {"type":"response.created","sequence_number":1,"response":{"id":"resp_1","object":"response","created_at":0,"status":"in_progress","model":"gpt-5.4-mini","output":[]}}"#.to_string(),
+            r#"data: {"type":"response.output_item.done","sequence_number":2,"output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"Considering the event ids"}]}}"#.to_string(),
+            r#"data: {"type":"response.incomplete","sequence_number":3,"response":{"id":"resp_1","object":"response","created_at":0,"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"model":"gpt-5.4-mini","output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"Considering the event ids"}]}],"usage":{"input_tokens":27000,"output_tokens":4096,"total_tokens":31096}}}"#.to_string(),
+        ];
+
+        let response_stream = tokio_stream::iter(lines.into_iter().map(Ok));
+        let messages = responses_api_to_streaming_message(response_stream);
+        futures::pin_mut!(messages);
+
+        let mut last_message: Option<Message> = None;
+        let mut usage: Option<ProviderUsage> = None;
+        while let Some(item) = messages.next().await {
+            let (message, maybe_usage) = item?;
+            if message.is_some() {
+                last_message = message;
+            }
+            if maybe_usage.is_some() {
+                usage = maybe_usage;
+            }
+        }
+
+        let usage = usage.expect("an incomplete response still reports its usage");
+        assert_eq!(
+            usage.incomplete_reason.as_deref(),
+            Some(INCOMPLETE_MAX_OUTPUT_TOKENS)
+        );
+        assert_eq!(usage.usage.output_tokens, Some(4096));
+        let message = last_message.expect("the reasoning item is still returned");
+        assert!(message
+            .content
+            .iter()
+            .all(|c| matches!(c, MessageContent::Thinking(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn test_incomplete_reason_distinguishes_incomplete_from_completed() {
+        let incomplete: ResponsesApiResponse = serde_json::from_value(serde_json::json!({
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 0,
+            "status": "incomplete",
+            "incomplete_details": { "reason": "max_output_tokens" },
+            "model": "gpt-5.4-mini",
+            "output": []
+        }))
+        .unwrap();
+        assert_eq!(
+            get_responses_incomplete_reason(&incomplete).as_deref(),
+            Some("max_output_tokens")
+        );
+
+        let completed: ResponsesApiResponse = serde_json::from_value(serde_json::json!({
+            "id": "resp_2",
+            "object": "response",
+            "created_at": 0,
+            "status": "completed",
+            "model": "gpt-5.4-mini",
+            "output": []
+        }))
+        .unwrap();
+        assert_eq!(get_responses_incomplete_reason(&completed), None);
+
+        // Incomplete with no stated reason is still incomplete.
+        assert_eq!(
+            incomplete_reason("incomplete", None).as_deref(),
+            Some("unknown")
+        );
     }
 
     #[test]

@@ -4,8 +4,8 @@ use super::embedding::{EmbeddingCapable, EmbeddingRequest, EmbeddingResponse};
 use super::errors::ProviderError;
 use super::formats::openai::{create_request_split, get_usage, response_to_message};
 use super::formats::openai_responses::{
-    create_responses_request, get_responses_usage, responses_api_to_message,
-    responses_api_to_streaming_message, ResponsesApiResponse,
+    create_responses_request, get_responses_incomplete_reason, get_responses_usage,
+    responses_api_to_message, responses_api_to_streaming_message, ResponsesApiResponse,
 };
 use super::inventory::{config_secret_value, InventoryIdentityInput};
 use super::openai_compatible::{
@@ -703,7 +703,10 @@ impl OpenAiProvider {
                 let message = responses_api_to_message(&responses_api_response)?;
                 let usage_data = get_responses_usage(&responses_api_response);
                 let usage =
-                    super::base::ProviderUsage::new(model_config.model_name.clone(), usage_data);
+                    super::base::ProviderUsage::new(model_config.model_name.clone(), usage_data)
+                        .with_incomplete_reason(get_responses_incomplete_reason(
+                            &responses_api_response,
+                        ));
 
                 log.write(
                     &serde_json::to_value(&message).unwrap_or_default(),
