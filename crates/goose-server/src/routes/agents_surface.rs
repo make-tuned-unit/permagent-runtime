@@ -145,8 +145,7 @@ fn worker_summary_table(id: &str) -> Option<&'static str> {
 /// early period (or one written as a single very long clause) cannot leak the
 /// whole paragraph onto the roster row.
 fn first_sentence(text: &str) -> String {
-    let end = text.find(". ").map(|i| i + 1).unwrap_or(text.len());
-    let cut = &text[..end.min(text.len())];
+    let cut = text.split_once(". ").map_or(text, |(first, _)| first);
     if cut.chars().count() > 160 {
         let truncated: String = cut.chars().take(157).collect();
         format!("{truncated}...")
