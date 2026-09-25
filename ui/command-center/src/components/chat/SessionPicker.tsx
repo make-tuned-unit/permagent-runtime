@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiChevronDown } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
+import { labelSource, sessionDisplayLabel } from '../../lib/sessionLabel';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
@@ -138,7 +139,7 @@ export function SessionPicker() {
                     count back on the same line. */}
                 <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: space.xxs }}>
                   <span style={{ fontSize: textSize.caption, color: isCurrent ? colors.cyan : colors.text, fontFamily: font.body }}>
-                    {session.name || `Session ${session.id}`}
+                    {sessionDisplayLabel(labelSource(session))}
                   </span>
                   {session.updated_at && (
                     <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>

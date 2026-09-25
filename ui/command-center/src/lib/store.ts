@@ -78,6 +78,19 @@ export interface SessionState {
   created_at?: string;
   updated_at?: string;
   message_count: number;
+  /** Everything below feeds lib/sessionLabel.ts — the one label and the one
+   *  conversation / agent run / system split every session surface uses. */
+  user_set_name?: boolean;
+  session_type?: string;
+  working_dir?: string | null;
+  schedule_id?: string | null;
+  recipe_title?: string | null;
+  first_user_text?: string | null;
+  goal_id?: string | null;
+  goal_title?: string | null;
+  goal_project_id?: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
 }
 
 export interface SkillState {
@@ -1854,6 +1867,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           created_at: s.created_at,
           updated_at: s.updated_at,
           message_count: s.message_count,
+          user_set_name: s.user_set_name,
+          session_type: s.session_type,
+          working_dir: s.working_dir ?? null,
+          schedule_id: s.schedule_id ?? null,
+          recipe_title: s.recipe_title ?? null,
+          first_user_text: s.first_user_text ?? null,
+          goal_id: s.goal_id ?? null,
+          goal_title: s.goal_title ?? null,
+          goal_project_id: s.goal_project_id ?? null,
+          project_id: s.project_id ?? null,
+          project_name: s.project_name ?? null,
         })),
         sessionsError: false,
       });

@@ -18,7 +18,13 @@ import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
 vi.mock('../../lib/api', () => ({
-  api: { getSessions: vi.fn(() => Promise.resolve([])), createSession: vi.fn() },
+  api: {
+    getSessions: vi.fn(() => Promise.resolve([])),
+    createSession: vi.fn(),
+    getSessionInsights: vi.fn(() => Promise.resolve({ total_sessions: 0, total_tokens: 0 })),
+    searchSessions: vi.fn(() => Promise.resolve([])),
+    forkSession: vi.fn(),
+  },
   apiFetch: vi.fn(),
   extractText: vi.fn(() => ''),
   extractSystemNotice: vi.fn(() => null),
@@ -84,7 +90,7 @@ describe('C5 — Escape in the rename input cancels the rename only', () => {
     const name = container.querySelector('span.truncate.cursor-pointer');
     expect(name).toBeTruthy();
     act(() => name!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    const input = container.querySelector('input');
+    const input = container.querySelector('input:not([type="search"])');
     expect(input).toBeTruthy();
     return input as HTMLInputElement;
   }
@@ -99,7 +105,7 @@ describe('C5 — Escape in the rename input cancels the rename only', () => {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     });
 
-    expect(container.querySelector('input')).toBeNull(); // rename cancelled
+    expect(container.querySelector('input:not([type="search"])')).toBeNull(); // rename cancelled
     expect(onClose).not.toHaveBeenCalled(); // overlay survived the keypress
   });
 

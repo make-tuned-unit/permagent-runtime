@@ -1747,9 +1747,23 @@ impl SessionManager {
     /// [`SessionSummary`]. Use this for the HTTP `/api/sessions` list path;
     /// the heavy [`Session`] fields are served only on single-session GET.
     pub async fn list_session_summaries(&self) -> Result<Vec<SessionSummary>> {
-        self.storage
-            .list_session_summaries(Some(&[SessionType::User, SessionType::Scheduled]))
+        self.list_session_summaries_of_types(&Self::DEFAULT_LIST_TYPES)
             .await
+    }
+
+    /// The session types the list views show when a caller asks for nothing
+    /// else: the ones a person started or scheduled.
+    pub const DEFAULT_LIST_TYPES: [SessionType; 2] = [SessionType::User, SessionType::Scheduled];
+
+    /// [`Self::list_session_summaries`] for an explicit set of types. History's
+    /// "Agent runs" filter asks for `SubAgent` here (goal and harness workers),
+    /// which the default list deliberately leaves out. An empty slice lists
+    /// nothing rather than everything.
+    pub async fn list_session_summaries_of_types(
+        &self,
+        types: &[SessionType],
+    ) -> Result<Vec<SessionSummary>> {
+        self.storage.list_session_summaries(Some(types)).await
     }
 
     pub async fn delete_session(&self, id: &str) -> Result<()> {
@@ -2081,6 +2095,35 @@ pub struct SessionSummary {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub message_count: usize,
+    // What the list needs to NAME and CLASSIFY a session without the heavy
+    // blobs: the UI's one label function (ui/command-center/src/lib/
+    // sessionLabel.ts) re-titles sessions the old namer mis-named from the
+    // first user message, names a scheduled run after its job, and splits
+    // History into conversations / agent runs / system. All optional so an
+    // older client (or a serialized summary from before this) still reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_id: Option<String>,
+    /// `recipe_json.title`, extracted in SQL — the recipe blob itself stays out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe_title: Option<String>,
+    /// The first user-visible user message's first text part, cut to 500 chars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_user_text: Option<String>,
+    /// The goal card a goal worker ran for (`extension_data["goal_worker.v1"]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_project_id: Option<String>,
+    /// The session's project: its creation-time hint, else its goal's project,
+    /// else the project whose root is the session's working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
 }
 
 impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionSummary {
@@ -2109,8 +2152,27 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionSummary {
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
             message_count: row.try_get("message_count").unwrap_or(0) as usize,
+            working_dir: opt_text(row, "working_dir"),
+            schedule_id: opt_text(row, "schedule_id"),
+            recipe_title: opt_text(row, "recipe_title"),
+            first_user_text: opt_text(row, "first_user_text"),
+            goal_id: opt_text(row, "goal_id"),
+            goal_title: opt_text(row, "goal_title"),
+            goal_project_id: opt_text(row, "goal_project_id"),
+            project_id: opt_text(row, "project_id"),
+            project_name: opt_text(row, "project_name"),
         })
     }
+}
+
+/// A nullable TEXT column as `Some(non-blank)`, else `None` — a missing column
+/// (older query), NULL and "" all read as absent.
+fn opt_text(row: &sqlx::sqlite::SqliteRow, column: &str) -> Option<String> {
+    use sqlx::Row;
+    row.try_get::<Option<String>, _>(column)
+        .ok()
+        .flatten()
+        .filter(|v| !v.trim().is_empty())
 }
 
 /// SQL for [`SessionStorage::list_sessions_by_schedule_id`] — the Automate
@@ -4480,18 +4542,56 @@ impl SessionStorage {
             None => (String::new(), Vec::new()),
         };
 
+        // Naming/classifying columns (see `SessionSummary`). Every json_extract
+        // is behind json_valid: one malformed blob must not fail the whole
+        // list. The first-user-text subquery rides idx_messages_session. The
+        // project lookups are scalar subqueries with LIMIT 1, not joins, so a
+        // duplicated slug or root path can never duplicate a session row. No
+        // CTE: `created_at`/`updated_at` stay direct column reads, exactly as
+        // before, so their decoding is untouched.
+        const GOAL_ID: &str = r#"(CASE WHEN json_valid(s.extension_data)
+                THEN json_extract(s.extension_data, '$."goal_worker.v1"') END)"#;
         let query = format!(
             r#"
             SELECT s.id, s.name, s.description, s.user_set_name, s.session_type,
-                   s.created_at, s.updated_at,
+                   s.created_at, s.updated_at, s.working_dir, s.schedule_id,
+                   CASE WHEN json_valid(s.recipe_json)
+                        THEN json_extract(s.recipe_json, '$.title') END AS recipe_title,
+                   {goal} AS goal_id,
+                   g.title AS goal_title,
+                   g.project_id AS goal_project_id,
+                   COALESCE(
+                       (SELECT p.id FROM projects p WHERE p.slug = s.project_hint_wing LIMIT 1),
+                       g.project_id,
+                       (SELECT p.id FROM projects p
+                         WHERE p.root_path = s.working_dir AND p.root_path <> '' LIMIT 1)
+                   ) AS project_id,
+                   COALESCE(
+                       (SELECT p.name FROM projects p WHERE p.slug = s.project_hint_wing LIMIT 1),
+                       (SELECT p.name FROM projects p WHERE p.id = g.project_id LIMIT 1),
+                       (SELECT p.name FROM projects p
+                         WHERE p.root_path = s.working_dir AND p.root_path <> '' LIMIT 1)
+                   ) AS project_name,
+                   (SELECT substr(json_extract(m.content_json, '$[0].text'), 1, 500)
+                      FROM messages m
+                     WHERE m.session_id = s.id
+                       AND m.role = 'user'
+                       AND json_valid(m.content_json)
+                       AND (m.metadata_json IS NULL
+                            OR NOT json_valid(m.metadata_json)
+                            OR COALESCE(json_extract(m.metadata_json, '$.userVisible'), 1) <> 0)
+                     ORDER BY m.id
+                     LIMIT 1) AS first_user_text,
                    COALESCE(mc.c, 0) as message_count
             FROM sessions s
+            LEFT JOIN cards g ON g.id = {goal}
             LEFT JOIN (SELECT session_id, COUNT(*) AS c FROM messages GROUP BY session_id) mc
                    ON mc.session_id = s.id
-            {}
+            {where_clause}
             ORDER BY s.updated_at DESC
             "#,
-            where_clause
+            goal = GOAL_ID,
+            where_clause = where_clause,
         );
 
         // Same as list_sessions_by_types: `where_clause` is only "?" placeholders.
@@ -5612,6 +5712,116 @@ mod tests {
         assert_eq!(s.session_type, SessionType::User);
         // message_count is computed by the lean query's subselect, not dropped.
         assert_eq!(s.message_count, 1);
+    }
+
+    /// History's "Agent runs" filter asks for SubAgent sessions explicitly; the
+    /// default list must still leave them out. The summary also carries what
+    /// the UI names a session by: the first user-visible user message, the
+    /// working dir, the recipe title, and the goal a worker ran for.
+    #[tokio::test]
+    async fn test_list_session_summaries_of_types_and_naming_fields() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let chat = sm
+            .create_session(
+                PathBuf::from("/tmp/chat"),
+                "CLI Session".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+        // A hidden (not user-visible) user message first: it must not be the
+        // first_user_text.
+        sm.add_message(
+            &chat.id,
+            &Message {
+                id: None,
+                role: Role::User,
+                created: chrono::Utc::now().timestamp_millis(),
+                content: vec![MessageContent::text("internal preamble")],
+                metadata: crate::conversation::message::MessageMetadata {
+                    user_visible: false,
+                    agent_visible: true,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        sm.add_message(
+            &chat.id,
+            &Message {
+                id: None,
+                role: Role::User,
+                created: chrono::Utc::now().timestamp_millis(),
+                content: vec![MessageContent::text("Rotate the staging keys")],
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let worker = sm
+            .create_session(
+                PathBuf::from("/tmp/repo"),
+                "worker".to_string(),
+                SessionType::SubAgent,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+        let mut ext = ExtensionData::new();
+        ext.set_extension_state(
+            GOAL_ID_EXTENSION_NAME,
+            GOAL_ID_EXTENSION_VERSION,
+            serde_json::Value::String("card-that-does-not-exist".to_string()),
+        );
+        sm.update(&worker.id).extension_data(ext).apply().await.unwrap();
+
+        // Default: unchanged — User + Scheduled only.
+        let default_ids: Vec<String> = sm
+            .list_session_summaries()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(default_ids, vec![chat.id.clone()]);
+
+        // Opt-in: SubAgent too.
+        let all = sm
+            .list_session_summaries_of_types(&[
+                SessionType::User,
+                SessionType::Scheduled,
+                SessionType::SubAgent,
+            ])
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2);
+        let chat_row = all.iter().find(|s| s.id == chat.id).unwrap();
+        assert_eq!(
+            chat_row.first_user_text.as_deref(),
+            Some("Rotate the staging keys")
+        );
+        assert_eq!(chat_row.working_dir.as_deref(), Some("/tmp/chat"));
+        assert_eq!(chat_row.goal_id, None);
+        let worker_row = all.iter().find(|s| s.id == worker.id).unwrap();
+        assert_eq!(worker_row.session_type, SessionType::SubAgent);
+        assert_eq!(
+            worker_row.goal_id.as_deref(),
+            Some("card-that-does-not-exist")
+        );
+        // A goal id whose card is gone: no title, no project — and no error.
+        assert_eq!(worker_row.goal_title, None);
+        assert_eq!(worker_row.project_id, None);
+
+        // An empty type list is nothing, not everything.
+        assert!(sm
+            .list_session_summaries_of_types(&[])
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     /// Locks in that the GROUP BY/COALESCE rewrite of the message_count column
