@@ -435,7 +435,17 @@ select:focus-visible {
 
 /* Honor the OS reduced-motion preference app-wide. The in-app `reduceMotion`
    toggle is threaded per-surface, but the OS signal was never read — this is
-   the safety net so animations calm down for users who asked the system to. */
+   the safety net so animations calm down for users who asked the system to.
+
+   R8: the second selector mirrors the same collapse for `useTheme`'s own
+   `data-reduce-motion` attribute (set in styles/useTheme.ts) — the in-app
+   Settings toggle, which can be ON while the OS setting is OFF. A CSS-only
+   effect like `.pa-pressable`, `.pa-enter` or a toast has no JS branch to
+   check `reduceMotion` in; this is how the app's own override still reaches
+   it. Press feedback still changes STATE instantly (the `:active` background/
+   border/color rules aren't animations, just style application to a devious
+   0.001ms-away frame boundary), so a click still visibly registers with
+   motion off — it just no longer eases or springs. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -445,6 +455,14 @@ select:focus-visible {
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+}
+:root[data-reduce-motion='true'] *,
+:root[data-reduce-motion='true'] *::before,
+:root[data-reduce-motion='true'] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
 }
 
 /* Spinner utility — used for in-progress affordances (e.g. dictation
@@ -509,7 +527,11 @@ select:focus-visible {
     color 160ms var(--pa-ease-smooth),
     box-shadow 160ms var(--pa-ease-smooth),
     opacity 160ms var(--pa-ease-smooth),
-    transform 80ms var(--pa-ease-smooth);
+    filter 160ms var(--pa-ease-smooth),
+    /* Governs the RELEASE (the spring back to rest). The press-IN overrides
+       this to 60ms on `:active` below, so going down is near-instant and
+       coming back up is the felt spring — see R8. */
+    transform 220ms var(--pa-ease-snappy);
 }
 /* Text color is part of hover, not just fill: the commonest resting pattern in
    this app is a muted icon that comes up to full on hover, and expressing that
@@ -523,13 +545,24 @@ select:focus-visible {
 .pa-btn--primary:hover:not(:disabled) {
   filter: brightness(1.08);
 }
-/* Pressed: a small give, not a bounce. 80ms so it reads as mechanical. */
+/* Pressed (R8, Jesse 2026-09-25: "feedback on buttons when I click them"). A
+   springy dip, not the old imperceptible 3% nudge: 0.96 goes in almost
+   instantly (the `transition-duration` override below) and releases on the
+   base rule's own snappy spring, so the press reads as immediate and the
+   release reads alive rather than mechanical. `filter` stacks with
+   `background`/`border-color` rather than replacing them, so a ghost button
+   still gets a felt press even though it has no fill to darken. */
 .pa-btn:active:not(:disabled) {
-  transform: scale(0.97);
+  transform: scale(0.96);
+  filter: brightness(0.96);
   background: var(--pa-btn-bg-active, var(--pa-btn-bg-hover, var(--pa-btn-bg, transparent)));
+  /* Fast in. The base rule's `transform 220ms var(--pa-ease-snappy)` still
+     governs the RELEASE, because removing `:active` reverts to it — only the
+     press-in itself needs to be quicker than a spring can read. */
+  transition-duration: 60ms;
 }
 .pa-btn--primary:active:not(:disabled) {
-  filter: brightness(0.94);
+  filter: brightness(0.9);
 }
 .pa-btn:disabled {
   opacity: 0.45;
@@ -548,6 +581,23 @@ select:focus-visible {
 }
 .pa-btn--primary[data-state='success'] {
   box-shadow: 0 0 0 2px var(--pa-btn-success, #34d399);
+}
+/* Failure (R8 item 2): a short horizontal shake plus a danger tint, so a
+   rejected action reads as "this did not work" on the control itself, not
+   only in a toast. `animation`, not `transition` — a shake is a path, not a
+   two-point tween — and it is a *repeat count of 1* deliberately: two more
+   than that reads as the button complaining rather than reporting once. */
+.pa-btn[data-state='failure'] {
+  border-color: var(--pa-btn-danger, #ffb4a2);
+  color: var(--pa-btn-danger, #ffb4a2);
+  animation: pa-btn-shake 320ms var(--pa-ease-snappy);
+}
+@keyframes pa-btn-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(3px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(1px); }
 }
 /* The label span exists so the spinner and the tick can sit beside the label
    rather than inside it. It must not become a layout of its own: Tailwind's
@@ -577,6 +627,145 @@ select:focus-visible {
 .pa-btn__tick {
   flex: none;
   font-weight: 700;
+}
+
+/* ── Global press feedback (R8) ───────────────────────────────────────────
+   Every native interactive role gets the same felt press as `.pa-btn`, even
+   when it never runs through the `Button` component — a native `<a href>` or
+   a `<summary>` disclosure has no reason to. `.pa-pressable` is the escape
+   hatch for a div/li/tr that legitimately acts as a control (see
+   `components/common/pressable.ts`, which also supplies the role/tabIndex/
+   keyboard activation this CSS assumes exists). Transform + filter only
+   (compositor-friendly, D9), and a row wants a *hover lift* it can also
+   settle back out of, which `.pa-btn` (a button that never idly sits
+   "hovered" while unrelated things happen around it) does not need. */
+button,
+[role='button'],
+[role='tab'],
+[role='menuitem'],
+[role='option'],
+summary,
+a[href],
+.pa-pressable {
+  transition: transform 220ms var(--pa-ease-snappy), filter 160ms var(--pa-ease-smooth);
+}
+button:active:not(:disabled),
+[role='button']:active,
+[role='tab']:active,
+[role='menuitem']:active,
+[role='option']:active,
+summary:active,
+a[href]:active,
+.pa-pressable:active {
+  transform: scale(0.97);
+  transition-duration: 60ms;
+}
+/* Row/card affordance (D13: no shadow-elevation, anti-slop #8: no glow as
+   depth) — a luminance lift on hover, a filter dip on press. `filter` never
+   triggers layout, so this is safe on a row whose neighbours must not reflow. */
+.pa-pressable {
+  cursor: pointer;
+}
+.pa-pressable:hover {
+  filter: brightness(1.06);
+}
+.pa-pressable:active {
+  filter: brightness(0.94);
+}
+.pa-pressable:focus-visible {
+  outline: 2px solid rgb(var(--tw-accent, 0 213 255));
+  outline-offset: 2px;
+}
+
+/* ── Enter/exit (R8) ───────────────────────────────────────────────────────
+   `.pa-enter` — fade + small rise for anything that just appeared: a card on
+   first paint, a list row, a chat message. `--pa-enter-delay` staggers a list
+   (set it per item, e.g. `calc(var(--pa-enter-i, 0) * 32ms)`); callers are
+   responsible for capping the total at <=300ms (D9) by capping the item count
+   the delay is computed over, not the delay itself, since a delay clamp alone
+   would still leave later items animating on top of a settled list. */
+@keyframes pa-enter {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.pa-enter {
+  animation: pa-enter 220ms var(--pa-ease-snappy) both;
+  animation-delay: var(--pa-enter-delay, 0ms);
+}
+
+/* ── Skeleton shimmer (R2, R8) ─────────────────────────────────────────────
+   A loading placeholder in the FINAL layout shape (R2), not a spinner in the
+   void. The sweep runs left-to-right once every 1.6s — slow enough to read as
+   "waiting", not "broken". */
+@keyframes pa-skeleton-sweep {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.pa-skeleton {
+  background-image: linear-gradient(
+    100deg,
+    var(--pa-skel-base, rgba(255,255,255,0.06)) 30%,
+    var(--pa-skel-shine, rgba(255,255,255,0.14)) 50%,
+    var(--pa-skel-base, rgba(255,255,255,0.06)) 70%
+  );
+  background-size: 200% 100%;
+  animation: pa-skeleton-sweep 1.6s ease-in-out infinite;
+  border-radius: var(--pa-skel-radius, 6px);
+}
+
+/* ── Modal / popover entrance (R8 item 6) ──────────────────────────────────
+   Scale-from-origin + fade in, faster out. `transform-origin` stays at the
+   caller's default (center for a centered dialog; a popover sets its own via
+   `--pa-pop-origin`). */
+@keyframes pa-modal-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.pa-modal-in {
+  animation: pa-modal-in 180ms var(--pa-ease-snappy) both;
+}
+@keyframes pa-popover-in {
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.pa-popover-in {
+  transform-origin: var(--pa-pop-origin, top center);
+  animation: pa-popover-in 140ms var(--pa-ease-snappy) both;
+}
+@keyframes pa-scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.pa-scrim-in {
+  animation: pa-scrim-in 160ms var(--pa-ease-smooth) both;
+}
+
+/* ── Agent-activity pulse (R8 item 7) ──────────────────────────────────────
+   A slow opacity breathe for "the agent is working right now" — sidebar/orb
+   only, never a data value (a pulsing number would read as a live metric
+   changing). Opacity only, so it composites for free. */
+@keyframes pa-agent-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.pa-agent-pulse {
+  animation: pa-agent-pulse 1.8s var(--pa-ease-smooth) infinite;
+}
+
+/* Toast (components/common/Toast.tsx) enter/exit springs. */
+@keyframes pa-toast-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes pa-toast-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to   { opacity: 0; transform: translateY(6px) scale(0.98); }
+}
+.pa-toast-in {
+  animation: pa-toast-in 220ms var(--pa-ease-snappy) both;
+}
+.pa-toast-out {
+  animation: pa-toast-out 140ms var(--pa-ease-smooth) both;
 }
 
 /* Sidebar hover tooltip — a short rise-and-fade so the label reads as attached

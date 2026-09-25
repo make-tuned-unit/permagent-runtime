@@ -19,12 +19,16 @@
  * transform to nothing and animates opacity alone — a fade, not a slide.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type FocusEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type FocusEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { concentric, duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useGlass } from '../common/Glass';
 import { Button } from '../common/Button';
 import type { AppNotification } from '../../lib/notifications';
+
+/** Horizontal drag distance (px) past which releasing counts as "swipe to
+ *  dismiss" rather than an aborted drag that should spring back (R8 item 3). */
+const SWIPE_DISMISS_PX = 80;
 
 import { Tooltip } from '../common/Tooltip';
 /** Outer radius is the floating-glass step (D4) — the same one Tooltip uses
@@ -53,6 +57,8 @@ export function ToastCard({ notification, ttlMs, onDismiss, onActivate }: ToastC
 
   const [entered, setEntered] = useState(reduceMotion);
   const [leaving, setLeaving] = useState(false);
+  const [dragX, setDragX] = useState(0);
+  const dragStartX = useRef<number | null>(null);
 
   // Timer bookkeeping lives in refs, not state — pausing/resuming on hover
   // must never itself trigger a render (that would restart the spring-in).
@@ -124,24 +130,57 @@ export function ToastCard({ notification, ttlMs, onDismiss, onActivate }: ToastC
     resume();
   };
 
+  // Swipe-to-dismiss (R8 item 3), pointer events so it works with mouse and
+  // touch alike. A drag under the threshold springs back on release rather
+  // than dismissing — an aborted swipe must not read as a successful one.
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (leavingRef.current) return;
+    pause();
+    dragStartX.current = e.clientX;
+  };
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragStartX.current == null) return;
+    setDragX(Math.max(0, e.clientX - dragStartX.current));
+  };
+  const endDrag = () => {
+    if (dragStartX.current == null) return;
+    dragStartX.current = null;
+    if (dragX > SWIPE_DISMISS_PX) {
+      beginLeave();
+    } else {
+      setDragX(0);
+      resume();
+    }
+  };
+
+  const dragging = dragStartX.current != null;
   const transform = reduceMotion
     ? undefined
-    : entered && !leaving
-      ? 'translateY(0) scale(1)'
-      : leaving
-        ? 'translateY(-4px) scale(0.98)'
-        : 'translateY(8px) scale(0.98)';
+    : dragging
+      ? `translateX(${dragX}px)`
+      : entered && !leaving
+        ? 'translateY(0) scale(1)'
+        : leaving
+          ? 'translateY(-4px) scale(0.98)'
+          : 'translateY(8px) scale(0.98)';
 
-  const opacity = entered && !leaving ? 1 : 0;
+  const opacity = dragging
+    ? Math.max(0.15, 1 - dragX / 240)
+    : entered && !leaving ? 1 : 0;
 
   const exitDuration = reduceMotion ? duration.fast : duration.snappy;
   const exitEase = reduceMotion ? ease.smooth : ease.snappy;
   const activeDuration = leaving ? exitDuration : duration.snappy;
   const activeEase = leaving ? exitEase : ease.snappy;
 
-  const transition = reduceMotion
-    ? `opacity ${activeDuration}ms ${activeEase}`
-    : [`opacity ${activeDuration}ms ${activeEase}`, `transform ${activeDuration}ms ${activeEase}`].join(', ');
+  const transition = dragging
+    ? 'none'
+    : reduceMotion
+      ? `opacity ${activeDuration}ms ${activeEase}`
+      : [`opacity ${activeDuration}ms ${activeEase}`, `transform ${activeDuration}ms ${activeEase}`].join(', ');
+
+  const tone = notification.tone ?? 'neutral';
+  const toneColor = tone === 'success' ? colors.success : tone === 'danger' ? colors.danger : colors.cyan;
 
   return (
     <div
@@ -152,6 +191,10 @@ export function ToastCard({ notification, ttlMs, onDismiss, onActivate }: ToastC
       onFocus={pause}
       onBlur={onBlur}
       onKeyDown={onKeyDown}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
       style={{
         position: 'relative',
         pointerEvents: leaving ? 'none' : 'auto',
@@ -162,27 +205,50 @@ export function ToastCard({ notification, ttlMs, onDismiss, onActivate }: ToastC
       }}
     >
       {/* Same reasoning as the tray row: the toast IS the button, a stacked
-          title + body block, and centring it would be wrong. */}
-      <button
-        onClick={() => { onActivate(notification); beginLeave(); }}
+          title + body block, and centring it would be wrong. An `action`
+          (R8's Undo slot) can't nest a real `<button>` inside another one
+          (invalid DOM, and two activation targets fighting for the same
+          click) — so it renders as a SIBLING row, its own outer corner
+          absorbed into the card below via a shared background instead. */}
+      <div
         style={{
-          textAlign: 'left', cursor: 'pointer', width: '100%',
           ...glass,
-          border: `1px solid ${colors.borderHi}`, borderRadius: OUTER_R,
+          border: `1px solid ${tone === 'neutral' ? colors.borderHi : toneColor}`, borderRadius: OUTER_R,
           boxShadow: `${glass.boxShadow}, ${colors.elevationFloating}`,
-          padding: `${space.lg}px ${DISMISS_CLEARANCE}px ${space.lg}px ${space.xl}px`,
-          color: colors.text,
-        } as CSSProperties}
+          overflow: 'hidden',
+        }}
       >
-        <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600, color: colors.cyan }}>
-          {notification.title}
-        </div>
-        {notification.body && (
-          <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs }}>
-            {notification.body}
+        <button
+          onClick={() => { if (dragX === 0) { onActivate(notification); beginLeave(); } }}
+          style={{
+            textAlign: 'left', cursor: 'pointer', width: '100%',
+            background: 'transparent', border: 'none',
+            padding: `${space.lg}px ${DISMISS_CLEARANCE}px ${notification.action ? 0 : space.lg}px ${space.xl}px`,
+            color: colors.text,
+          } as CSSProperties}
+        >
+          <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600, color: toneColor }}>
+            {notification.title}
+          </div>
+          {notification.body && (
+            <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs }}>
+              {notification.body}
+            </div>
+          )}
+        </button>
+        {notification.action && (
+          <div style={{ padding: `0 ${DISMISS_CLEARANCE}px ${space.lg}px ${space.xl}px` }}>
+            <Button
+              colors={colors}
+              variant="ghostOn"
+              onClick={(e) => { e.stopPropagation(); notification.action!.onAction(); beginLeave(); }}
+              style={{ '--pa-btn-pad': '3px 10px' } as CSSProperties}
+            >
+              {notification.action.label}
+            </Button>
           </div>
         )}
-      </button>
+      </div>
       <Tooltip content="Dismiss">
         <Button
           colors={colors}

@@ -177,6 +177,11 @@ export function DetailModal({
         aria-labelledby={titleId}
         tabIndex={-1}
         onClick={e => e.stopPropagation()}
+        // R8 item 6: scale-from-origin entrance for the modal case only — a
+        // `contained` dock sits inline in the layout it opened from and has
+        // no "origin" to pop out of; popping it would read as the layout
+        // itself glitching rather than as a control appearing.
+        className={modal ? 'pa-modal-in' : undefined}
         style={{
           ...(modal
             // An explicit height is the cap too, or the default 86vh silently
@@ -278,6 +283,10 @@ export function DetailModal({
   return createPortal(
     <div
       onClick={onClose}
+      // R8 item 6: scale-from-origin + fade in, faster out. The scrim fades
+      // in behind it; both are CSS keyframes (`index.css`), so they inherit
+      // the app-wide Reduce Motion collapse with no extra branch here.
+      className="pa-scrim-in"
       style={{
         position: 'fixed', inset: 0, zIndex: 120,
         // `veil` is the token for exactly this layer — the thing glass would

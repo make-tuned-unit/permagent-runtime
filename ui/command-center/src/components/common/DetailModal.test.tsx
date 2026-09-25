@@ -161,3 +161,29 @@ it('escapes a transformed ancestor: the overlay is portaled to <body>', () => {
   expect(document.querySelector('[role="dialog"]'), 'unmount removes the portal').toBeNull();
   card.remove();
 });
+
+it('R8 item 6: a centered modal scales in from its origin; the scrim fades', () => {
+  act(() => {
+    root.render(
+      <DetailModal title="Decisions" onClose={vi.fn()}>
+        <button>Inside</button>
+      </DetailModal>,
+    );
+  });
+  const panel = document.querySelector('[role="dialog"]') as HTMLElement;
+  expect(panel.className).toContain('pa-modal-in');
+  const scrim = panel.parentElement as HTMLElement;
+  expect(scrim.className).toContain('pa-scrim-in');
+});
+
+it('R8 item 6: a contained dock does not pop — it has no origin to scale from', () => {
+  act(() => {
+    root.render(
+      <DetailModal title="Decisions" onClose={vi.fn()} placement="contained">
+        <button>Inside</button>
+      </DetailModal>,
+    );
+  });
+  const panel = document.querySelector('[role="dialog"]') as HTMLElement;
+  expect(panel.className).not.toContain('pa-modal-in');
+});

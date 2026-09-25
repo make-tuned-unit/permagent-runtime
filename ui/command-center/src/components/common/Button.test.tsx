@@ -13,8 +13,17 @@ import { resolve } from 'node:path';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
-import { Button, MIN_PENDING_MS, SUCCESS_FLASH_MS } from './Button';
+import { Button, FAILURE_FLASH_MS, MIN_PENDING_MS, SUCCESS_FLASH_MS } from './Button';
 import { getThemedColors } from '../../styles/tokens';
+import { useNotifications, type AppNotification } from '../../lib/notifications';
+
+/** Reads the live notification list into a plain array a test can assert on,
+ *  without pulling in a testing-library this repo doesn't otherwise use. */
+function NotificationsProbe({ onItems }: { onItems: (items: AppNotification[]) => void }) {
+  const { items } = useNotifications();
+  onItems(items);
+  return null;
+}
 
 const colors = getThemedColors();
 
@@ -99,7 +108,7 @@ it('holds the pending phase for 700ms when the round trip is faster', async () =
   expect(btn().getAttribute('data-state')).toBe('success');
 });
 
-it('holds the floor on failure too, then shows no tick', async () => {
+it('holds the floor on failure too, then shows the failure state (not a tick)', async () => {
   vi.useFakeTimers();
   act(() => {
     root.render(<Button colors={colors} onClick={() => Promise.reject(new Error('nope'))}>Save</Button>);
@@ -111,7 +120,9 @@ it('holds the floor on failure too, then shows no tick', async () => {
   expect(btn().getAttribute('data-pending')).toBe('true');
   await advance(60);
   expect(btn().getAttribute('data-pending')).toBeNull();
-  expect(btn().getAttribute('data-state')).toBeNull();
+  // R8: a rejected promise is a genuine, uncaught failure — it now surfaces
+  // as `data-state="failure"` (the CSS shake/tint), never as `"success"`.
+  expect(btn().getAttribute('data-state')).toBe('failure');
 });
 
 it('holds the floor for prop-driven pending as well', async () => {
@@ -171,15 +182,76 @@ it('never ticks when the action reports failure', async () => {
   expect(btn().getAttribute('data-pending')).toBeNull();
 });
 
-it('never ticks when the promise rejects', async () => {
+it('never ticks when the promise rejects — it shows failure instead', async () => {
   vi.useFakeTimers();
   act(() => {
     root.render(<Button colors={colors} onClick={() => Promise.reject(new Error('nope'))}>Add</Button>);
   });
   await act(async () => { btn().click(); await Promise.resolve(); });
   await advance(MIN_PENDING_MS + 10);
-  expect(btn().getAttribute('data-state')).toBeNull();
+  expect(btn().getAttribute('data-state')).toBe('failure');
   expect(btn().getAttribute('data-pending')).toBeNull();
+
+  await advance(FAILURE_FLASH_MS + 10);
+  expect(btn().getAttribute('data-state')).toBeNull();
+});
+
+it('R8: a rejected promise pushes a toast with the error message by default', async () => {
+  vi.useFakeTimers();
+  let items: AppNotification[] = [];
+  act(() => { root.render(<NotificationsProbe onItems={(i) => { items = i; }} />); });
+  act(() => {
+    root.render(
+      <>
+        <NotificationsProbe onItems={(i) => { items = i; }} />
+        <Button colors={colors} onClick={() => Promise.reject(new Error('network down'))}>Add</Button>
+      </>,
+    );
+  });
+  await act(async () => { btn().click(); await Promise.resolve(); });
+  await advance(MIN_PENDING_MS + 10);
+
+  expect(items[0]?.title).toBe('Action failed');
+  expect(items[0]?.body).toBe('network down');
+  expect(items[0]?.tone).toBe('danger');
+});
+
+it('R8: onErrorFeedback={false} suppresses the shake and the toast', async () => {
+  vi.useFakeTimers();
+  let items: AppNotification[] = [];
+  act(() => {
+    root.render(
+      <>
+        <NotificationsProbe onItems={(i) => { items = i; }} />
+        <Button colors={colors} onErrorFeedback={false} onClick={() => Promise.reject(new Error('nope'))}>
+          Add
+        </Button>
+      </>,
+    );
+  });
+  const before = items.length;
+  await act(async () => { btn().click(); await Promise.resolve(); });
+  await advance(MIN_PENDING_MS + 10);
+  expect(btn().getAttribute('data-state')).toBeNull();
+  expect(items.length).toBe(before);
+});
+
+it('R8: resolving false still shows no failure state and no toast (caller already handled it)', async () => {
+  vi.useFakeTimers();
+  let items: AppNotification[] = [];
+  act(() => {
+    root.render(
+      <>
+        <NotificationsProbe onItems={(i) => { items = i; }} />
+        <Button colors={colors} onClick={() => Promise.resolve(false)}>Add</Button>
+      </>,
+    );
+  });
+  const before = items.length;
+  await act(async () => { btn().click(); await Promise.resolve(); });
+  await advance(MIN_PENDING_MS + 10);
+  expect(btn().getAttribute('data-state')).toBeNull();
+  expect(items.length).toBe(before);
 });
 
 it('takes pending and success from props for form submits', async () => {
