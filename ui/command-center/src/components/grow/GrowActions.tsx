@@ -23,11 +23,14 @@ import { SEGMENT_STRIP_PAD, SEGMENT_STRIP_RADIUS, segmentedTab } from './growSty
 import { SUMMARY_CLASS, growLabel } from './growChrome';
 import { CARD_PAD, CARD_R } from './growGeometry';
 import { WINDOW_DAYS } from './growthWindows';
-import { SkeletonCards } from './GrowStateBlocks';
+import { ErrorState, SkeletonCards } from './GrowStateBlocks';
 import { ActionCard } from './ActionCard';
 import { GrowthInboxSection } from './GrowthInbox';
 import type { GrowthActionsData, GrowthInboxData, LoadState } from './growTypes';
 import { GENERATION_POLL_MS, VERDICT_POLL_MS } from './growPolling';
+
+/** When the loading line admits the read is slow. */
+export const SLOW_LOAD_MS = 4000;
 
 /**
  * Actions — what to DO about the data. The Analytics lens answers "what
@@ -106,7 +109,12 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
       })
       .catch(() => {
         if (generation !== actionsGen.current) return;
-        if (!opts?.silent) setActionsState('error');
+        // A silent re-read that fails keeps the board on screen — unless there
+        // is no board yet. A silent read issued while the first load was still
+        // in flight supersedes it (the generation bump discards the first
+        // reply), so if the silent one then fails, swallowing the error left
+        // the skeletons up forever with nothing to say why.
+        setActionsState((prev) => (!opts?.silent || prev === 'loading' ? 'error' : prev));
       });
   }, []);
 
@@ -177,6 +185,15 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
     VERDICT_POLL_MS,
     onScreen && !serverGenerating,
   );
+
+  // Past a few seconds the loading line says why it is still loading, rather
+  // than leaving the same words up as if nothing had changed.
+  const [slowLoad, setSlowLoad] = useState(false);
+  useEffect(() => {
+    if (actionsState !== 'loading') { setSlowLoad(false); return; }
+    const t = setTimeout(() => setSlowLoad(true), SLOW_LOAD_MS);
+    return () => clearTimeout(t);
+  }, [actionsState]);
 
   const hasActions = (actions?.actions?.length ?? 0) > 0;
   const tracking = actions?.tracking ?? [];
@@ -275,9 +292,33 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
           </div>
         )}
 
-        {actionsState === 'loading' && <SkeletonCards colors={colors} count={2} height={92} />}
+        {/* The placeholders SAY what they are. Two blank boxes beside
+            "Review my analytics" read as a broken panel: the read behind them
+            can take several seconds on a busy database (14 s was logged on
+            2026-09-24), and nothing on screen said anything was happening. */}
+        {actionsState === 'loading' && (
+          <div role="status" data-testid="actions-loading" style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+            <div style={{
+              fontSize: textSize.micro, color: colors.textDim,
+              display: 'flex', alignItems: 'center', gap: space.sm,
+            }}>
+              <FiLoader size={11} className="pa-spin" aria-hidden />
+              <span>
+                {slowLoad
+                  ? 'Still loading your last review — the analytics database is busy. It will appear here.'
+                  : 'Loading your last analytics review…'}
+              </span>
+            </div>
+            <SkeletonCards colors={colors} count={2} height={92} />
+          </div>
+        )}
         {actionsState === 'error' && (
-          <div style={{ fontSize: textSize.caption, color: colors.danger }}>Couldn&rsquo;t load actions.</div>
+          <ErrorState
+            colors={colors}
+            inline
+            message="Couldn’t load your analytics review."
+            onRetry={() => loadActions(project.id)}
+          />
         )}
 
         {/* An empty list ALWAYS explains itself — silence is indistinguishable

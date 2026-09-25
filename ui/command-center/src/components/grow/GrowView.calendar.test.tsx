@@ -23,7 +23,7 @@ vi.mock('../../lib/api', () => ({
 import { GrowView } from './GrowView';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
-import { groupPostsByDay, type SocialCard } from './calendarPosts';
+import { filterByQueue, groupPostsByDay, queueBucket, queueCounts, type SocialCard } from './calendarPosts';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -111,6 +111,43 @@ describe('groupPostsByDay', () => {
       .filter((g) => g.day !== 'unscheduled')
       .flatMap((g) => g.posts.map((p) => p.title));
     expect(scheduledTitles).toEqual(['Sooner', 'Later']);
+  });
+});
+
+/**
+ * UX_BENCHMARK_RESEARCH §9 (dagK 2026-09-25: Buffer's queue). `attention`
+ * overrides the schedule status because a failed still needs a look
+ * regardless of whether the post is a draft or already scheduled.
+ */
+describe('queueBucket / queueCounts / filterByQueue', () => {
+  const draft: SocialCard = { id: '1', title: 'D', description: '', metadataJson: { postStatus: 'draft' } };
+  const scheduled: SocialCard = { id: '2', title: 'S', description: '', metadataJson: { postStatus: 'scheduled' } };
+  const posted: SocialCard = { id: '3', title: 'P', description: '', metadataJson: { postStatus: 'posted' } };
+  const failedStill: SocialCard = {
+    id: '4', title: 'F', description: '',
+    metadataJson: { postStatus: 'scheduled', mediaStatus: 'failed' },
+  };
+
+  it('buckets a card by its schedule status', () => {
+    expect(queueBucket(draft)).toBe('draft');
+    expect(queueBucket(scheduled)).toBe('scheduled');
+    expect(queueBucket(posted)).toBe('posted');
+  });
+
+  it('puts a failed-still card in attention regardless of its schedule status', () => {
+    expect(queueBucket(failedStill)).toBe('attention');
+  });
+
+  it('counts every bucket', () => {
+    const counts = queueCounts([draft, scheduled, posted, failedStill]);
+    expect(counts).toEqual({ draft: 1, scheduled: 1, posted: 1, attention: 1 });
+  });
+
+  it('filters to one bucket, or passes everything through for "all"', () => {
+    const all = [draft, scheduled, posted, failedStill];
+    expect(filterByQueue(all, 'all')).toEqual(all);
+    expect(filterByQueue(all, 'draft').map((p) => p.id)).toEqual(['1']);
+    expect(filterByQueue(all, 'attention').map((p) => p.id)).toEqual(['4']);
   });
 });
 
@@ -343,5 +380,38 @@ describe('Grow calendar lens', () => {
     )).toBe(false);
     expect(container.textContent).toContain('Keep this hook');
     expect(container.textContent).toContain('Keep this body.');
+  });
+
+  it('filters the visible posts by the status tab, and counts every bucket', async () => {
+    const cards = [
+      { id: 'd1', title: 'A draft', description: '', metadataJson: { postStatus: 'draft' } },
+      { id: 's1', title: 'A scheduled post', description: '', metadataJson: { postStatus: 'scheduled', scheduledFor: '2026-08-20T12:00:00Z' } },
+      { id: 'p1card', title: 'A posted post', description: '', metadataJson: { postStatus: 'posted' } },
+    ];
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === '/api/projects') return Promise.resolve([project('p1', 'First')]);
+      if (url.includes('/cards?card_type=social_post')) return Promise.resolve(cards);
+      return Promise.resolve(growExtras(url) ?? []);
+    }) as typeof apiFetch);
+
+    await renderGrow();
+    await openCalendar();
+
+    const tabs = () => Array.from(container.querySelectorAll('[data-testid="queue-filter"] [role="tab"]'));
+    expect(tabs().map((t) => t.textContent)).toEqual(['All (3)', 'Draft (1)', 'Scheduled (1)', 'Posted (1)']);
+    // No card here has a failed still, so "Needs attention" earns no tab.
+    expect(tabs().some((t) => t.textContent?.includes('Needs attention'))).toBe(false);
+
+    expect(container.textContent).toContain('A draft');
+    expect(container.textContent).toContain('A scheduled post');
+    expect(container.textContent).toContain('A posted post');
+
+    const draftTab = tabs().find((t) => t.textContent === 'Draft (1)')!;
+    await act(async () => { draftTab.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+
+    expect(container.textContent).toContain('A draft');
+    expect(container.textContent).not.toContain('A scheduled post');
+    expect(container.textContent).not.toContain('A posted post');
+    expect(draftTab.getAttribute('aria-selected')).toBe('true');
   });
 });

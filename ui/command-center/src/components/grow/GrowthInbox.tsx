@@ -73,8 +73,17 @@ export function GrowthInboxSection({
           border: `1px dashed ${colors.border}`, borderRadius: CARD_R, padding: space.huge,
           textAlign: 'center', fontSize: textSize.caption, color: colors.textDim, lineHeight: 1.6,
         }}>
-          Not enough signal yet. Publish a post or ship a goal and I'll start surfacing your 2-3
-          highest-leverage growth moves here each week — ranked, no guesswork.
+          {/* Say what this list is ranked FROM. "Not enough signal yet" on a
+              project with thousands of pageviews read as "your analytics are
+              not connected" — but this ranker never reads traffic: it scores
+              published posts and shipped goals, with no model involved.
+              Traffic is read by the review below it. */}
+          <span data-testid="growth-moves-empty">
+            No moves yet. These are ranked from your published posts and shipped goals, and{' '}
+            {projectName} has neither yet — publish a post or ship a goal and your 2–3
+            highest-leverage moves appear here each week. Your site traffic is read separately,
+            in <strong>From your analytics</strong> below.
+          </span>
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>

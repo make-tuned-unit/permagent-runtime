@@ -173,7 +173,7 @@ export function ActionVerify({
           </div>
           {target && identity.targetDir && (
             <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
-              Pre-registered before the baseline was frozen: {target} should go{' '}
+              Predicted before measuring started: {target} should go{' '}
               {identity.targetDir}
               {identity.verifiedAt && ` · verified ${new Date(identity.verifiedAt).toLocaleDateString()}`}
             </span>

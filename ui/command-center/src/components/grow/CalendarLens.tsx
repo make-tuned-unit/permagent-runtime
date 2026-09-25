@@ -17,20 +17,30 @@ import type { Project } from '../projects/types';
 import {
   fromDatetimeLocalValue,
   groupPostsByDay,
+  filterByQueue,
+  queueCounts,
   readMediaMeta,
   readPostMeta,
   toDatetimeLocalValue,
+  QUEUE_FILTERS,
   type PostStatus,
+  type QueueFilter,
   type SocialCard,
+  stillProvenance,
 } from './calendarPosts';
 import { draftPostPrompt } from './growStrategy';
 import { growChip } from './growStyles';
 import { FIELD_CLASS, growCard, growField, growLabel } from './growChrome';
 import { ROW_INNER_R, ROW_PAD, ROW_R, CARD_R } from './growGeometry';
+import { SEGMENT_STRIP_PAD, SEGMENT_STRIP_RADIUS, segmentedTab } from './growStyles';
 import { ErrorState, LoadingState } from './GrowStateBlocks';
 import { HiggsfieldConnect, NETWORKS, PostizConnect, ProjectChannels, useConnectedChannels } from './PublisherSettings';
 import { PostStill, PostVideo } from './PostMedia';
 import type { LoadState } from './growTypes';
+
+/** The still's column: wide enough for its provenance line and the button
+ *  under the 72px thumbnail without the text column jumping around. */
+const STILL_COLUMN_W = 112;
 
 /**
  * The lens section: the header and its hand-off, the three connection rows, and
@@ -49,6 +59,16 @@ export function CalendarSection({
   onReload: (opts?: { silent?: boolean }) => void;
   onMutate: (projectId: string, post: SocialCard, body: Record<string, unknown> | null) => Promise<void>;
 }) {
+  // UX_BENCHMARK_RESEARCH §9 (dagK 2026-09-25: Buffer's queue): one list,
+  // filtered by status, instead of every post's state only ever readable by
+  // scanning its own chip. Reset to "All" on a project switch — a filter
+  // chosen on one project silently applied to the next would hide posts with
+  // no sign anything was filtered.
+  const [queueFilter, setQueueFilter] = useState<QueueFilter>('all');
+  useEffect(() => { setQueueFilter('all'); }, [active.id]);
+  const counts = queueCounts(posts);
+  const filtered = filterByQueue(posts, queueFilter);
+
   return (
     <section>
       <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, margin: `0 0 ${space.xl}px` }}>
@@ -94,13 +114,56 @@ export function CalendarSection({
           No posts yet. Draft one with {agentName} above — it is written in this project's voice, a still is generated, and Approve schedules it on this project's connected accounts when you are ready.
         </div>
       ) : (
-        <CalendarLens
-          projectId={active.id}
-          posts={posts}
-          colors={colors}
-          onMutate={onMutate}
-          onReload={() => onReload({ silent: true })}
-        />
+        <>
+          <div
+            role="tablist"
+            aria-label="Filter posts by status"
+            data-testid="queue-filter"
+            style={{
+              display: 'flex', gap: SEGMENT_STRIP_PAD, flexWrap: 'wrap',
+              background: colors.bgDeeper, borderRadius: SEGMENT_STRIP_RADIUS, padding: SEGMENT_STRIP_PAD,
+              marginBottom: space.lg,
+            }}
+          >
+            {QUEUE_FILTERS.map(({ id, label }) => {
+              const selected = queueFilter === id;
+              const n = id === 'all' ? posts.length : counts[id];
+              // "Needs attention" only earns a tab when something is actually
+              // in it — an always-present empty bucket for a state most
+              // projects never hit is noise, not a queue.
+              if (id === 'attention' && n === 0) return null;
+              return (
+                <button
+                  key={id}
+                  className="pa-btn"
+                  role="tab"
+                  aria-selected={selected}
+                  tabIndex={0}
+                  onClick={() => setQueueFilter(id)}
+                  style={segmentedTab(colors, selected)}
+                >
+                  {label} ({n})
+                </button>
+              );
+            })}
+          </div>
+          {filtered.length === 0 ? (
+            <div style={{
+              border: `1px dashed ${colors.border}`, borderRadius: CARD_R, padding: space.huge,
+              textAlign: 'center', fontSize: textSize.caption, color: colors.textDim,
+            }}>
+              No posts in {QUEUE_FILTERS.find((f) => f.id === queueFilter)?.label.toLowerCase()}.
+            </div>
+          ) : (
+            <CalendarLens
+              projectId={active.id}
+              posts={filtered}
+              colors={colors}
+              onMutate={onMutate}
+              onReload={() => onReload({ silent: true })}
+            />
+          )}
+        </>
       )}
     </section>
   );
@@ -281,14 +344,36 @@ function CalendarPostRow({
             colors={colors}
           />
         ) : media.stillFile ? (
-          <PostStill
-            projectId={projectId}
-            cardId={post.id}
-            filename={media.stillFile}
-            cacheKey={media.mediaStatus}
-            colors={colors}
-            alt={post.title}
-          />
+          // The still, what made it and when, and the control that replaces
+          // it — together. "Regenerate still" used to live only at the far
+          // right of the card's last row, a screen-width away from the image
+          // it acts on, and nothing said how old the image was.
+          <div
+            data-testid="post-still-column"
+            style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: space.xs, flexShrink: 0, width: STILL_COLUMN_W }}
+          >
+            <PostStill
+              projectId={projectId}
+              cardId={post.id}
+              filename={media.stillFile}
+              cacheKey={media.mediaStatus}
+              colors={colors}
+              alt={post.title}
+            />
+            <span data-testid="still-provenance" style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.35 }}>
+              {stillProvenance(media)}
+            </span>
+            {canRetryStill && (
+              <Button
+                colors={colors}
+                type="button"
+                style={{ ...btn, '--pa-btn-pad': `2px ${space.md}px` } as CSSProperties}
+                disabled={busy}
+                pending={busy}
+                onClick={() => retryMedia()}
+              >Regenerate still</Button>
+            )}
+          </div>
         ) : null}
         <div style={{ flex: 1, minWidth: 0 }}>
       {editing ? (
@@ -385,12 +470,14 @@ function CalendarPostRow({
       )}
       {canRetryStill && (
         <div style={{ display: 'flex', gap: space.md, marginTop: space.lg, alignItems: 'flex-start' }}>
+          {/* With a still on screen the button sits beside it and these notes
+              feed it; a post with no still yet keeps the button here. */}
           <textarea
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             disabled={busy}
             aria-label="Still taste notes"
-            placeholder="Taste notes for a new still — copy stays"
+            placeholder="Notes for the next still (used by Regenerate still) — copy stays"
             rows={2}
             className={FIELD_CLASS}
             style={{
@@ -398,13 +485,15 @@ function CalendarPostRow({
               borderRadius: ROW_INNER_R, resize: 'vertical',
             }}
           />
-          <Button
-            colors={colors}
-            type="button"
-            style={btn}
-            disabled={busy}
-            onClick={() => retryMedia()}
-          >Regenerate still</Button>
+          {!media.stillFile || media.videoFile ? (
+            <Button
+              colors={colors}
+              type="button"
+              style={btn}
+              disabled={busy}
+              onClick={() => retryMedia()}
+            >Regenerate still</Button>
+          ) : null}
         </div>
       )}
     </div>

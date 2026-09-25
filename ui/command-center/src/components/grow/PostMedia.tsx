@@ -111,7 +111,16 @@ export function PostStill({
         variant="bare"
         type="button"
         className="pa-btn--composite"
-        onClick={() => setOpen(true)}
+        onClick={(e) => {
+          // Focus the thumbnail BEFORE the viewer opens. WebKit — the engine
+          // the desktop app runs in — does not focus a button on click, so the
+          // viewer recorded <body> as its opener and Escape handed focus back
+          // to nothing: the next Tab started from the top of the document and
+          // the Grow tabs had lost their place. Chromium focuses on click,
+          // which is why this only ever showed up in the app.
+          e.currentTarget.focus();
+          setOpen(true);
+        }}
         aria-label={alt ? `View image full size: ${alt}` : 'View image full size'}
         title="View full size"
         style={{

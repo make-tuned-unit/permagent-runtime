@@ -123,7 +123,7 @@ export function AnalyticsConnectionPanel({
   const statsLine = statsState === 'loading'
     ? 'Fetching stats…'
     : statsState === 'error'
-      ? 'Stats fetch failed — the daemon may be unreachable.'
+      ? 'Stats fetch failed — Permagent couldn’t reach your analytics provider.'
       : stats?.error
         ? stats.error
         : stats
