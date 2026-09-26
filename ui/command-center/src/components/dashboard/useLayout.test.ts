@@ -14,6 +14,7 @@ import {
   layoutForDisplay,
   minSpanForWidth,
   stripRetiredCards,
+  NO_STRETCH_CARD_TYPES,
   type PackedCell,
   type DashboardLayoutData,
 } from './useLayout';
@@ -282,6 +283,38 @@ describe('dense dashboard packing (QA 2026-09-24: holes at 1456px)', () => {
       { id: 'a', x: 0, y: 0, w: 4, h: 1 },
       { id: 'b', x: 8, y: 0, w: 4, h: 1 },
     ])).toBe(true);
+  });
+
+  it('fillHoles never stretches an ambient (no-stretch) card, even alone in a wide gap', () => {
+    // 'weather' is 3 wide with 9 empty columns to its right on the same row —
+    // an interior-hole-free layout, so fillHoles alone decides its width.
+    const out = fillHoles([{ id: 'weather', x: 0, y: 0, w: 3, h: 2 }]);
+    expect(out[0].w).toBe(3);
+  });
+
+  it('justifyRows gives an ambient card none of the row\'s spare width', () => {
+    // A row with one ambient (weather, 3 wide) and one stretchable (system,
+    // renamed to avoid also matching NO_STRETCH_CARD_TYPES) card, 12 total —
+    // all 6 spare columns must go to the stretchable card only.
+    const cells = justifyRows([
+      { id: 'weather', size: { w: 3, h: 2 } },
+      { id: 'recent', size: { w: 3, h: 2 } },
+    ]);
+    const weather = cells.find(c => c.id === 'weather')!;
+    const recent = cells.find(c => c.id === 'recent')!;
+    expect(weather.w).toBe(3);
+    expect(recent.w).toBe(9);
+  });
+
+  it('justifyRows leaves a trailing gutter when an entire row is ambient cards', () => {
+    const cells = justifyRows([{ id: 'weather', size: { w: 3, h: 2 } }]);
+    expect(cells[0].w).toBe(3);
+  });
+
+  it('NO_STRETCH_CARD_TYPES names the ambient card types', () => {
+    expect(NO_STRETCH_CARD_TYPES.has('weather')).toBe(true);
+    expect(NO_STRETCH_CARD_TYPES.has('system_stats')).toBe(true);
+    expect(NO_STRETCH_CARD_TYPES.has('decisions')).toBe(false);
   });
 
   it('minSpanForWidth is 1 while the width is unknown and grows as the grid narrows', () => {

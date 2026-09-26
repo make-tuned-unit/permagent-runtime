@@ -1294,29 +1294,85 @@ async fn get_cost_vs_outcome(State(state): State<Arc<AppState>>) -> Json<CardDat
             "Cost vs. outcome is unavailable — the runtime database isn't reachable",
         ));
     };
-    let since = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+    let since_ts = chrono::Utc::now() - chrono::Duration::days(7);
+    let since = since_ts.to_rfc3339();
     let spend: f64 =
         sqlx::query_scalar("SELECT COALESCE(SUM(cost_usd), 0.0) FROM cost_ledger WHERE ts >= ?")
             .bind(&since)
             .fetch_one(&pool)
             .await
             .unwrap_or(0.0);
-    Json(CardData {
-        cells: vec![CardCell {
-            label: "This week's agent spend".to_string(),
-            value: format!("${spend:.2}"),
-            ..Default::default()
-        }],
-        note: Some(
-            "Not enough verified outcomes wired up yet to compute a cost-per-outcome ratio"
+
+    // Verified outcomes this week, reusing growth_actions.rs's own fleet
+    // join rather than a second query against the same tables (coordinator
+    // ruling: wire this up rather than leave the ratio permanently absent).
+    // `.11` is the action's status, `.4` its judged_at — VERIFIED-only, and
+    // only ones judged in the window, so this agrees with what the Growth
+    // card itself would call "verified this week".
+    let rows = crate::routes::growth_actions::fleet_outcome_rows(&pool).await;
+    let verified_this_week = rows
+        .iter()
+        .filter(|r| {
+            r.11 == permagent::growth::store::STATUS_VERIFIED
+                && chrono::DateTime::parse_from_rfc3339(&r.4)
+                    .map(|t| t.with_timezone(&chrono::Utc) >= since_ts)
+                    .unwrap_or(false)
+        })
+        .count();
+
+    let mut cells = vec![CardCell {
+        label: "This week's agent spend".to_string(),
+        value: format!("${spend:.2}"),
+        ..Default::default()
+    }];
+    let note = if verified_this_week == 0 {
+        // Honest per P12: division by zero dressed up as a ratio is exactly
+        // the fabrication this rule forbids — the spend number stands alone.
+        Some(
+            "Not enough verified outcomes yet this week to compute a cost-per-outcome ratio"
                 .to_string(),
-        ),
+        )
+    } else {
+        cells.push(CardCell {
+            label: "Verified outcomes this week".to_string(),
+            value: verified_this_week.to_string(),
+            ..Default::default()
+        });
+        cells.push(CardCell {
+            label: "Cost per verified outcome".to_string(),
+            value: format!("${:.2}", spend / verified_this_week as f64),
+            ..Default::default()
+        });
+        None
+    };
+    Json(CardData {
+        cells,
+        note,
         configured: None,
     })
 }
 
+/// Env var name for the overdue-contact threshold (coordinator ruling: a
+/// config key, never a hardcoded personal preference — "agnostic and
+/// plug-and-play"). Per-person cadence is round 2; this is the fleet-wide
+/// default in the meantime.
+const PEOPLE_ATTENTION_DAYS_ENV: &str = "PERMAGENT_PEOPLE_ATTENTION_DAYS";
+const PEOPLE_ATTENTION_DAYS_DEFAULT: i64 = 21;
+
+/// Read fresh on every call (not cached at startup) so changing the env var
+/// takes effect without a daemon restart. Anything unparsable falls back to
+/// the default rather than erroring the whole card.
+fn people_attention_threshold_days() -> i64 {
+    std::env::var(PEOPLE_ATTENTION_DAYS_ENV)
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(PEOPLE_ATTENTION_DAYS_DEFAULT)
+}
+
 /// People overdue for contact (§3 `people_attention`). No per-person cadence
-/// field exists yet, so a fixed 21-day threshold stands in for "your stated
+/// field exists yet, so a configurable fleet-wide threshold
+/// (`PERMAGENT_PEOPLE_ATTENTION_DAYS`, default 21) stands in for "your stated
 /// or inferred cadence" — people with no `last_contact_at` at all are
 /// excluded rather than defaulted to overdue (honest-data rule).
 async fn get_people_attention(State(state): State<Arc<AppState>>) -> Json<CardData> {
@@ -1329,7 +1385,7 @@ async fn get_people_attention(State(state): State<Arc<AppState>>) -> Json<CardDa
         .await
         .unwrap_or_default();
     let now = chrono::Utc::now();
-    const OVERDUE_AFTER_DAYS: i64 = 21;
+    let overdue_after_days = people_attention_threshold_days();
     let mut overdue: Vec<(i64, String)> = people
         .iter()
         .filter_map(|p| {
@@ -1338,7 +1394,7 @@ async fn get_people_attention(State(state): State<Arc<AppState>>) -> Json<CardDa
                 .ok()?
                 .with_timezone(&chrono::Utc);
             let days = (now - dt).num_days();
-            (days >= OVERDUE_AFTER_DAYS).then_some((days, p.display_name.clone()))
+            (days >= overdue_after_days).then_some((days, p.display_name.clone()))
         })
         .collect();
     overdue.sort_by(|a, b| b.0.cmp(&a.0));
@@ -1616,6 +1672,29 @@ async fn get_on_this_week(State(state): State<Arc<AppState>>) -> Json<CardData> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial]
+    fn people_attention_threshold_defaults_to_21_days() {
+        let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, None)]);
+        assert_eq!(people_attention_threshold_days(), 21);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn people_attention_threshold_reads_the_env_var() {
+        let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, Some("10"))]);
+        assert_eq!(people_attention_threshold_days(), 10);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn people_attention_threshold_ignores_garbage_and_falls_back() {
+        let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, Some("not-a-number"))]);
+        assert_eq!(people_attention_threshold_days(), 21);
+        let _guard2 = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, Some("-5"))]);
+        assert_eq!(people_attention_threshold_days(), 21);
+    }
 
     #[test]
     fn human_activity_kind_never_leaks_the_raw_identifier() {

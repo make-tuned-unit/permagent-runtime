@@ -429,14 +429,21 @@ export function Dashboard() {
               style={{
                 gridColumn: `${x + 1} / span ${w}`,
                 gridRow: `${y + 1} / span ${h}`,
-                // auto_height cards (e.g. a one-line status strip) draw at
-                // their content's height and sit at the TOP of the row(s)
-                // the packer reserved, leaving the rest blank instead of
-                // stretching a single line across a tall box (coordinator,
-                // Phase-1 presentation pass: "card height must follow
-                // content"). Every other card keeps the grid's default
-                // stretch, unchanged.
-                alignSelf: entry?.manifest?.autoHeight ? 'start' : undefined,
+                // Rows size to content, with the configured `h` as a MAX, not
+                // a fixed height (coordinator, 2560px pass: In Flight/Needs
+                // You/To-dos sat 50%+ empty; ambient status strips left a
+                // void band under them). Outside Customize, every card is
+                // top-aligned instead of stretched to the row's full track
+                // height, and capped at the pixel height its own `h` would
+                // have reserved — content shorter than that shrinks the box
+                // (no more empty band); content at or past it hits the cap,
+                // which gives the card's own CardScrollBody/overflow a
+                // DEFINITE height to fill-then-scroll against, unchanged from
+                // before. Customize keeps the true stretched box so the
+                // resize grip still edits what you see (layoutForDisplay's
+                // `fill: false` does the matching thing for width).
+                alignSelf: isEditMode ? undefined : 'start',
+                maxHeight: isEditMode ? undefined : h * ROW_HEIGHT + (h - 1) * GAP,
                 cursor: isEditMode ? (isDragging ? 'grabbing' : 'grab') : 'default',
                 borderRadius: radius.lg,
                 outline: isDragTarget

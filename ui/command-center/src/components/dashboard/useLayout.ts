@@ -111,7 +111,22 @@ export function packDense(
  */
 const MAX_STRETCH_FRACTION = 1 / 3;
 
-export function fillHoles(cells: PackedCell[], cols: number = GRID_COLS): PackedCell[] {
+/**
+ * Card types that must NEVER stretch to fill leftover grid space (P8 calm
+ * technology: an ambient readout stays small and quiet in the periphery).
+ * Coordinator, 2560px pass: Weather + System stats were the only two cards
+ * left in the last row and grew to ~1,000px each under the interior-hole
+ * fallback — a glanced-at reading is not the thing that should annex the
+ * board's leftover width. IDs double as card types throughout this app
+ * (`addCard`/`tcard` both set `id = type`), so an id-based check is exact.
+ */
+export const NO_STRETCH_CARD_TYPES = new Set<string>(['weather', 'system_stats']);
+
+export function fillHoles(
+  cells: PackedCell[],
+  cols: number = GRID_COLS,
+  noStretch: ReadonlySet<string> = NO_STRETCH_CARD_TYPES,
+): PackedCell[] {
   const out = cells.map(c => ({ ...c }));
   const rows = out.reduce((m, c) => Math.max(m, c.y + c.h), 0);
   const grid: (number | -1)[][] = Array.from({ length: rows }, () => new Array(cols).fill(-1));
@@ -123,6 +138,7 @@ export function fillHoles(cells: PackedCell[], cols: number = GRID_COLS): Packed
   // card claims the rows beneath a neighbour.
   for (const i of order) {
     const c = out[i];
+    if (noStretch.has(c.id)) continue;
     const maxGrowW = Math.max(1, Math.ceil(c.w * MAX_STRETCH_FRACTION));
     let grownW = 0;
     while (c.x + c.w < cols && grownW < maxGrowW) {
@@ -136,6 +152,7 @@ export function fillHoles(cells: PackedCell[], cols: number = GRID_COLS): Packed
   }
   for (const i of order) {
     const c = out[i];
+    if (noStretch.has(c.id)) continue;
     const maxGrowH = Math.max(1, Math.ceil(c.h * MAX_STRETCH_FRACTION));
     let grownH = 0;
     while (c.y + c.h < rows && grownH < maxGrowH) {
@@ -217,6 +234,7 @@ export function countHoles(cells: PackedCell[], cols: number = GRID_COLS): numbe
 export function justifyRows(
   cards: { id: string; size: CardSize }[],
   cols: number = GRID_COLS,
+  noStretch: ReadonlySet<string> = NO_STRETCH_CARD_TYPES,
 ): PackedCell[] {
   const pending = cards.map((c, i) => ({ i, id: c.id, w: Math.max(1, Math.min(cols, c.size.w)), h: Math.max(1, c.size.h) }));
   const out: PackedCell[] = new Array(cards.length);
@@ -232,10 +250,21 @@ export function justifyRows(
     }
     const h = Math.max(...row.map(r => r.h));
     const spare = cols - used;
+    // Ambient cards take none of the row's spare width (P8) — it all goes to
+    // the last STRETCHABLE card in the row instead. A row that is entirely
+    // ambient cards gets no stretch at all: the spare stays a trailing
+    // gutter, same as `fillHoles` leaving one on purpose.
+    const stretchable = row.filter(r => !noStretch.has(r.id));
+    const stretchWidth = stretchable.reduce((sum, r) => sum + r.w, 0);
     let x = 0;
     let given = 0;
-    row.forEach((r, idx) => {
-      const extra = idx === row.length - 1 ? spare - given : Math.floor((spare * r.w) / used);
+    row.forEach(r => {
+      const isLastStretchable = stretchable.length > 0 && r === stretchable[stretchable.length - 1];
+      const extra = noStretch.has(r.id)
+        ? 0
+        : isLastStretchable
+          ? spare - given
+          : Math.floor((spare * r.w) / stretchWidth);
       given += extra;
       out[r.i] = { id: r.id, x, y, w: r.w + extra, h };
       x += r.w + extra;

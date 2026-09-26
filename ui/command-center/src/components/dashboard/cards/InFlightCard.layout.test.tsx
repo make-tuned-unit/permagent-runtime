@@ -77,19 +77,29 @@ describe('InFlightCard fits a grid-sized tile', () => {
     expect(style).not.toMatch(/minmax\(280px/);
   });
 
-  it('truncates every text line of a row with an ellipsis instead of cutting it', () => {
+  it('clamps the title to 2 lines and truncates status/note with an ellipsis', () => {
     act(() => root.render(<InFlightCard goals={GOALS} />));
     const texts = qa('inflight-row-text');
     expect(texts).toHaveLength(2);
     // Both rows have title, status and note line (row 2's note line is blank).
     const lines = texts.flatMap(t => Array.from(t.children) as HTMLElement[]);
     expect(lines).toHaveLength(6);
-    for (const line of lines) {
+    lines.forEach((line, i) => {
       const label = line.textContent ?? '';
-      expect(line.style.whiteSpace, label).toBe('nowrap');
-      expect(line.style.overflow, label).toBe('hidden');
-      expect(line.style.textOverflow, label).toBe('ellipsis');
-    }
+      const isTitle = i % 3 === 0;
+      if (isTitle) {
+        // Coordinator, 2560px pass: a wide tile has room the title was still
+        // truncating with (R3) — the title clamps to 2 lines instead of
+        // cutting to 1, status/note stay single-line beneath it.
+        expect(line.style.display, label).toBe('-webkit-box');
+        expect(line.style.webkitLineClamp, label).toBe('2');
+        expect(line.style.overflow, label).toBe('hidden');
+      } else {
+        expect(line.style.whiteSpace, label).toBe('nowrap');
+        expect(line.style.overflow, label).toBe('hidden');
+        expect(line.style.textOverflow, label).toBe('ellipsis');
+      }
+    });
     // The text column may shrink below its content so the ellipsis can engage.
     for (const t of texts) expect(t.style.minWidth).toBe('0');
     expect(lines[1].textContent).toBe('Ready · permagent-runtime');
